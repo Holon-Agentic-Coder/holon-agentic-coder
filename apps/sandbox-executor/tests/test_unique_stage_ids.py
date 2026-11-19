@@ -90,12 +90,12 @@ class TestSameSecondIds(unittest.TestCase):
     def test_duplicate_error_names_both_owners(self):
         records = [
             {"plan_id": "P-x", "intent_branch": "I-100/_", "agent": "alpha", "created_at": "t1"},
-            {"plan_id": "P-x", "intent_branch": "I-200/_", "agent": "beta", "created_at": "t2"},
+            {"plan_id": "P-x", "intent_branch": "I-100/_", "agent": "beta", "created_at": "t2"},
         ]
         with self.assertRaises(ValueError) as ctx:
             validate_ledger_unique_ids(records)
         message = str(ctx.exception)
-        for expected in ("I-100", "alpha", "t1", "I-200", "beta", "t2"):
+        for expected in ("I-100", "alpha", "t1", "beta", "t2"):
             self.assertIn(expected, message)
 
 
@@ -163,26 +163,35 @@ class TestUniqueStageIDs(unittest.TestCase):
         ]
         validate_ledger_unique_ids(records, id_key="plan_id", parent_key="intent_branch")
 
-    def test_ledger_unique_ids_validation_duplicate_rejected(self):
-        """validate_ledger_unique_ids raises ValueError on duplicate ID across distinct parents."""
+    def test_ledger_unique_ids_validation_repeated_intent_and_plan_pair_rejected(self):
+        """A repeated (intent, plan id) pair at one ledger revision fails the duplicate check."""
         records = [
-            {"plan_id": "P-duplicate", "intent_branch": "I-100/_"},
-            {"plan_id": "P-duplicate", "intent_branch": "I-200/_"},
+            {"plan_id": "P-duplicate", "intent_branch": "I-100/_", "status": "proposed"},
+            {"plan_id": "P-duplicate", "intent_branch": "I-100/_", "status": "approved"},
         ]
         with self.assertRaises(ValueError) as ctx:
             validate_ledger_unique_ids(records, id_key="plan_id", parent_key="intent_branch")
-        self.assertIn("Duplicate plan_id 'P-duplicate' collision detected", str(ctx.exception))
+        self.assertIn("Duplicate plan_id 'P-duplicate' recorded twice for the same intent", str(ctx.exception))
 
-    def test_ledger_unique_ids_validation_idempotent_duplicate_permitted(self):
-        """Identical plan_id under the same intent branch is accepted as idempotent update."""
+    def test_ledger_unique_ids_same_plan_id_under_two_intents_permitted(self):
+        """Two intents planned in the same second by the same runner and model share a plan id and stay distinct."""
+        records = [
+            {"plan_id": "P-1794567531-CLA-CS5.5", "intent_branch": "I-1794567515-alpha/_"},
+            {"plan_id": "P-1794567531-CLA-CS5.5", "intent_branch": "I-1794567515-beta/_"},
+            {"plan_id": "P-1794567531-CLA-CS5.5", "intent_branch": "I-1794567515-alpha--1-child/_"},
+        ]
+        validate_ledger_unique_ids(records, id_key="plan_id", parent_key="intent_branch")
+
+    def test_ledger_unique_ids_validation_superseding_row_permitted(self):
+        """A superseding row (higher ledger_revision) of the same intent and plan is the append-only update."""
         records = [
             {"plan_id": "P-1", "intent_branch": "I-100/_", "status": "proposed"},
-            {"plan_id": "P-1", "intent_branch": "I-100/_", "status": "approved"},
+            {"plan_id": "P-1", "intent_branch": "I-100/_", "status": "approved", "ledger_revision": 2},
         ]
         validate_ledger_unique_ids(records, id_key="plan_id", parent_key="intent_branch")
 
     def test_extract_parent_ref_plan_branch_collision_detection(self):
-        """_extract_parent_ref distinguishes plans under the same intent for plan_branch parent."""
+        """_extract_parent_ref keys an execution on its full plan path; one execution id under two plans is fine."""
         rec1 = {
             "execution_id": "E-colliding",
             "plan_branch": "I-100/P-plan-1/_",
@@ -195,12 +204,14 @@ class TestUniqueStageIDs(unittest.TestCase):
         ref1 = _extract_parent_ref(rec1, "plan_branch")
         ref2 = _extract_parent_ref(rec2, "plan_branch")
         self.assertNotEqual(ref1, ref2)
-        self.assertEqual(ref1, "P-plan-1")
-        self.assertEqual(ref2, "P-plan-2")
+        self.assertEqual(ref1, "I-100/P-plan-1")
+        self.assertEqual(ref2, "I-100/P-plan-2")
+        self.assertEqual(_extract_parent_ref({"plan_branch": "I-100/P-plan-1/E-colliding/_"}, "plan_branch"), ref1)
+        self.assertEqual(
+            _extract_parent_ref({"intent_branch": "I-1-a/P-2-b--1-child/_"}, "intent_branch"), "I-1-a/P-2-b--1-child"
+        )
 
-        with self.assertRaises(ValueError) as ctx:
-            validate_ledger_unique_ids([rec1, rec2], id_key="execution_id", parent_key="plan_branch")
-        self.assertIn("Duplicate execution_id 'E-colliding' collision detected", str(ctx.exception))
+        validate_ledger_unique_ids([rec1, rec2], id_key="execution_id", parent_key="plan_branch")
 
     def test_extract_parent_ref_fallbacks(self):
         """_extract_parent_ref supports fallback keys plan_id and intent_id."""
@@ -220,7 +231,7 @@ class TestUniqueStageIDs(unittest.TestCase):
             ledger_file.write_text(
                 json.dumps({"plan_id": "P-1", "intent_branch": "I-100/_"})
                 + "\n"
-                + json.dumps({"plan_id": "P-1", "intent_branch": "I-200/_"})
+                + json.dumps({"plan_id": "P-1", "intent_branch": "I-100/_"})
                 + "\n"
             )
             with self.assertRaises(ValueError):
@@ -246,11 +257,11 @@ class TestUniqueStageIDs(unittest.TestCase):
             )
             validate_stage_ledger(tmp_dir, "plan")
 
-            # Duplicate plan_id across distinct intents raises
+            # A repeated intent-and-plan pair raises
             plans_file.write_text(
                 json.dumps({"plan_id": "P-dup", "intent_branch": "I-100/_"})
                 + "\n"
-                + json.dumps({"plan_id": "P-dup", "intent_branch": "I-200/_"})
+                + json.dumps({"plan_id": "P-dup", "intent_branch": "I-100/_"})
                 + "\n"
             )
             with self.assertRaises(ValueError):
@@ -266,15 +277,14 @@ class TestUniqueStageIDs(unittest.TestCase):
             )
             validate_stage_ledger(tmp_dir, "execute")
 
-            # Duplicate execution_id across distinct plans raises
+            # One hexless execution id under two plans is keyed on its full path and passes
             execs_file.write_text(
                 json.dumps({"execution_id": "E-dup", "plan_branch": "I-100/P-1/_"})
                 + "\n"
                 + json.dumps({"execution_id": "E-dup", "plan_branch": "I-100/P-2/_"})
                 + "\n"
             )
-            with self.assertRaises(ValueError):
-                validate_stage_ledger(tmp_dir, "execute")
+            validate_stage_ledger(tmp_dir, "execute")
 
 
 if __name__ == "__main__":

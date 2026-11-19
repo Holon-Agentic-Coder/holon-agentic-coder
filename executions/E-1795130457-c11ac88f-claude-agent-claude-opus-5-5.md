@@ -56,3 +56,33 @@ redone.
   `flow/stages/test_decomposition.py`, `test_planner.py`, `test_unique_stage_ids.py`, `test_prompt_templates.py`.
 - Verified: targeted suites green; full suite `-n auto --dist worksteal`: 4406 passed, 1 skipped in `17.58s`;
   `uv run task lint` clean.
+
+### Step 5: Key every lookup on (intent, plan ID); executions on their full path
+
+- Plan rows: `plan_paths.is_row_of_plan` (plan id *and* bare intent branch) now backs every plans.jsonl read — the
+  executor's plan lookup (`entrypoint/executor.py`), Stage 2 adoption (`flow/stages/plan.py`), the Stage 3 decision
+  read (`flow/stages/plan_decision.py`), touch-set admission (`flow/in_flight.py`), calibration's predicted metrics
+  (`calibration.parse_predicted_metrics` now takes the plan branch; plan-file fallback tries the nested layout then
+  the flat legacy file) and the review-loop CLI context (`entrypoint/review_loop.py`, which matched a plan id as a
+  substring of the head branch).
+- Execution rows: `plan_paths.is_row_of_execution` keys an execution on its id and its plan when the branch is known;
+  `flow/git_refs._latest_execution_summary` takes the execution branch (callers in `stages/execute.py`,
+  `stages/integration.py`, `partial_salvage.py`); `calibration_ev.is_matching_record` never matches a record of
+  another plan, whatever its id (review rows of the plan still match through the plan); a bare execution id given to
+  `holon calibrate` resolves only when exactly one plan owns it (`calibration._unique_plan_branch_of_execution`).
+- Duplicate check (`ledger.validate_ledger_unique_ids`): plan ids are keyed on the full intent path; a repeated
+  (intent, plan id) pair at one `ledger_revision` fails, a superseding row (higher revision) passes, and the same plan
+  id under two intents passes. Execution rows are keyed, not repeat-checked (the real `executions.jsonl` legitimately
+  repeats two (plan, execution) pairs at revision 1 from reruns). The real `plans.jsonl` passes.
+- Flow checkpoints already store full `plan_branch`/`execution_branch` paths (no schema change, so resume from an older
+  checkpoint is unaffected). `cli/` has no plan or execution lookup of its own (`holon calibrate` goes through
+  `generate_calibration`).
+- Residual: the knowledge index (`knowledge/index.py`) indexes action rows by `execution_id` alone for consult
+  analytics; action rows carry no plan, so two same-named executions would share index entries. Not a lookup of a
+  plan or execution artefact; left as is.
+- Budgets: `git_refs.py` +1, `stages/execute.py` +2 (recorded in the budgets description).
+- Tests: same-second twin intents resolve to their own plan rows and plan files (`test_calibration.py`,
+  `test_unique_stage_ids.py`, `test_plan_paths.py`), repeated pair rejected, superseding row and cross-intent id
+  permitted, execution rows never matched across plans, ambiguous bare execution id resolves to nothing, the newer
+  same-named execution row of another plan never wins.
+- Verified: full suite `-n auto --dist worksteal`: 4407 passed, 1 skipped in `18.18s`; `uv run task lint` clean.

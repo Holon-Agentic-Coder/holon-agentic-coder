@@ -68,7 +68,7 @@ class TestReviewLoopEntrypoint:
             json.dumps({"branch": "I-100-test", "slug": "test", "description": "test intent"}) + "\n"
         )
         plans_file = ledger_dir / "plans.jsonl"
-        plans_file.write_text(json.dumps({"plan_id": "P-200-test", "plan_branch": "I-100-test/P-200-test/_"}) + "\n")
+        plans_file.write_text(json.dumps({"plan_id": "P-200-test", "intent_branch": "I-100-test/_"}) + "\n")
 
         test_args = [
             "review_loop",

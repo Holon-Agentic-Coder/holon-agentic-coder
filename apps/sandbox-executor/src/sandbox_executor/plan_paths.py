@@ -155,3 +155,16 @@ def is_row_of_plan(row: dict, plan_branch: str) -> bool:
     if not plan_id or row.get("plan_id") != plan_id:
         return False
     return bare_branch(str(row.get("intent_branch") or "")) == parent
+
+
+def is_row_of_execution(row: dict, execution_id: str, branch: str = "") -> bool:
+    """True when an ``executions.jsonl`` row is execution ``execution_id``, keyed on its full path when known.
+
+    A new-generation execution id carries no hex, so the same id may repeat under another plan. With ``branch`` (any
+    ref at or below the execution branch) the row must also belong to that plan; a row naming no plan, or a lookup
+    without a branch, matches on the id alone.
+    """
+    if not execution_id or row.get("execution_id") != execution_id:
+        return False
+    wanted, recorded = plan_branch_of(branch), plan_branch_of(str(row.get("plan_branch") or ""))
+    return not (wanted and recorded) or wanted == recorded

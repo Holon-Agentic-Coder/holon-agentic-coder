@@ -17,6 +17,7 @@ from sandbox_executor.flow.combined_base import _combined_diff_verdict, _integra
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.git import changed_paths, empty_diff_summary, run_git
 from sandbox_executor.ledger import LedgerRewriteError, atomic_ledger_append, validate_ledger_file_unique_ids
+from sandbox_executor.plan_paths import is_row_of_execution
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_target import ReviewTargetError, is_pr_reference, resolve_review_target
 
@@ -254,12 +255,12 @@ def _read_ledger_rows(repo_dir: str, ref: str, ledger_name: str) -> list[dict[st
     return rows
 
 
-def _latest_execution_summary(rows: list[dict[str, Any]], execution_id: str) -> dict[str, Any] | None:
-    """Return the authoritative summary row for an execution: highest ledger_revision, then latest written."""
+def _latest_execution_summary(rows: list[dict[str, Any]], execution_id: str, branch: str = "") -> dict[str, Any] | None:
+    """Return an execution's authoritative summary row (keyed on ``branch``'s plan when given): newest revision."""
     best: tuple[int, int] | None = None
     chosen: dict[str, Any] | None = None
     for idx, row in enumerate(rows):
-        if row.get("entry_type") != "summary" or row.get("execution_id") != execution_id:
+        if row.get("entry_type") != "summary" or not is_row_of_execution(row, execution_id, branch):
             continue
         try:
             revision = int(row.get("ledger_revision") or 1)

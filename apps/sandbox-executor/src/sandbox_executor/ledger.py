@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, TextIO
 
 from sandbox_executor.naming import distinct_stage_id, stage_id
+from sandbox_executor.plan_paths import bare_branch, plan_branch_of
 from sandbox_executor.ref_names import ensure_stage_segment_fits
 
 try:
@@ -35,6 +36,8 @@ VALID_ORIGINS: set[str] = {"initial_implementation", "pr_review", "ci_fix", "cal
 VALID_SEVERITIES: set[str] = {"critical", "important", "nit"}
 VALID_DISPOSITIONS: set[str] = {"applied", "rejected"}
 VALID_ENTRY_TYPES: set[str] = {"action", "summary"}
+# Identifier keys whose (parent, id) pair may not repeat at one ledger revision (see validate_ledger_unique_ids).
+_REPEAT_CHECKED_ID_KEYS: frozenset[str] = frozenset({"plan_id"})
 # Optional ActionRecord fields that are omitted from the serialised record when unset, so records that do not use them
 # (everything except ACT-BUDGET actions) keep their existing shape.
 OPTIONAL_OMITTED_FIELDS: tuple[str, ...] = ("stage", "budget_name", "budget_seconds", "elapsed_seconds")
@@ -952,29 +955,28 @@ def format_query_results_table(records: list[dict[str, Any]]) -> str:
 
 
 def _extract_parent_ref(record: dict[str, Any], parent_key: str) -> str | None:
-    """Extract and normalise the root parent intent or branch identifier from a record."""
+    """Extract the full parent path a row's identifier is keyed on.
+
+    A plan row is keyed on its bare intent branch (a child intent or a plan nested under a plan keeps its whole path);
+    an execution row on its plan branch (``plan_paths.plan_branch_of``, so a ``plan_branch`` that embeds the
+    execution segment still names its plan).
+    """
     parent_raw = record.get(parent_key)
-    if not isinstance(parent_raw, str):
-        if parent_key == "plan_branch":
-            fallback_key = "plan_id"
-        elif parent_key == "intent_branch":
-            fallback_key = "intent_id"
-        else:
-            fallback_key = "intent_branch"
+    if not isinstance(parent_raw, str) or not parent_raw.strip():
+        fallback_key = {"plan_branch": "plan_id", "intent_branch": "intent_id"}.get(parent_key, "intent_branch")
         parent_raw = record.get(fallback_key)
     if not isinstance(parent_raw, str) or not parent_raw.strip():
         return None
-    cleaned = parent_raw.removesuffix("/_").strip("/")
-    parts = cleaned.split("/")
     if parent_key == "plan_branch":
-        for part in parts:
-            if part.startswith("P-"):
-                return part
-        return cleaned if cleaned else None
-    for part in parts:
-        if part.startswith("I-"):
-            return part
-    return parts[0] if parts else None
+        return plan_branch_of(parent_raw) or bare_branch(parent_raw) or None
+    return bare_branch(parent_raw) or None
+
+
+def _ledger_revision(record: dict[str, Any]) -> int:
+    try:
+        return int(record.get("ledger_revision") or 1)
+    except (TypeError, ValueError):
+        return 1
 
 
 def validate_ledger_unique_ids(
@@ -982,7 +984,13 @@ def validate_ledger_unique_ids(
     id_key: str = "plan_id",
     parent_key: str = "intent_branch",
 ) -> None:
-    """Validate that identifier values do not collide across distinct intents or parent branches.
+    """Validate that no plan is recorded twice for one intent.
+
+    Identifiers are keyed on their full parent path, never on the id alone: a new-generation plan or execution id
+    carries no hex, so two intents planned in the same second by the same runner and model share a plan id and stay
+    distinct. A repeated (intent, plan id) pair at one ``ledger_revision`` fails; a superseding row (a higher
+    revision) is the append-only way to update a plan row and passes. Execution rows are only keyed, never
+    repeat-checked: an execution's reruns and superseding summaries legitimately repeat its (plan, execution) pair.
 
     Args:
         records: An iterable of ledger record dictionaries.
@@ -990,9 +998,11 @@ def validate_ledger_unique_ids(
         parent_key: The dictionary key for the parent reference (e.g. 'intent_branch' or 'plan_branch').
 
     Raises:
-        ValueError: If a duplicate identifier is detected across distinct parent branches/intents.
+        ValueError: If a plan row repeats an (intent, plan id) pair at the same ledger revision.
     """
-    seen: dict[str, tuple[str, dict[str, Any]]] = {}
+    if id_key not in _REPEAT_CHECKED_ID_KEYS:
+        return
+    seen: dict[tuple[str, str, int], dict[str, Any]] = {}
     for record in records:
         id_val = record.get(id_key)
         if not isinstance(id_val, str) or not id_val.strip():
@@ -1000,13 +1010,13 @@ def validate_ledger_unique_ids(
         parent_ref = _extract_parent_ref(record, parent_key)
         if not parent_ref:
             continue
-        if id_val in seen and seen[id_val][0] != parent_ref:
-            first_ref, first_record = seen[id_val]
+        key = (parent_ref, id_val, _ledger_revision(record))
+        if key in seen:
             raise ValueError(
-                f"Duplicate {id_key} '{id_val}' collision detected across distinct intents/branches: "
-                f"{_describe_id_owner(first_ref, first_record)} vs {_describe_id_owner(parent_ref, record)}"
+                f"Duplicate {id_key} '{id_val}' recorded twice for the same intent at ledger revision {key[2]}: "
+                f"{_describe_id_owner(parent_ref, seen[key])} vs {_describe_id_owner(parent_ref, record)}"
             )
-        seen.setdefault(id_val, (parent_ref, record))
+        seen[key] = record
 
 
 def _describe_id_owner(parent_ref: str, record: dict[str, Any]) -> str:

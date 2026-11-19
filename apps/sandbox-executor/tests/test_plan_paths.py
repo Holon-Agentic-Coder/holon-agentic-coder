@@ -107,3 +107,18 @@ def test_a_plan_row_is_matched_on_its_intent_and_plan_id_together() -> None:
     assert not is_row_of_plan({"plan_id": PLAN, "intent_branch": "I-1794567515-other/_"}, branch)
     assert not is_row_of_plan({"plan_id": "P-1-other", "intent_branch": f"{ROOT}/_"}, branch)
     assert not is_row_of_plan({"plan_id": PLAN}, branch)
+
+
+def test_an_execution_row_is_matched_on_its_full_path_when_the_branch_is_known() -> None:
+    from sandbox_executor.flow.git_refs import _latest_execution_summary
+    from sandbox_executor.plan_paths import is_row_of_execution
+
+    mine = {"entry_type": "summary", "execution_id": EXEC, "plan_branch": f"{ROOT}/{PLAN}/_", "status": "success"}
+    other = {**mine, "plan_branch": f"I-1794567515-other/{PLAN}/_", "status": "failure", "ledger_revision": 2}
+    branch = f"refs/remotes/origin/{ROOT}/{PLAN}/{EXEC}/_"
+    assert is_row_of_execution(mine, EXEC, branch)
+    assert not is_row_of_execution(other, EXEC, branch)
+    assert is_row_of_execution(other, EXEC)  # a bare id lookup (no branch known) matches on the id
+    assert is_row_of_execution({"execution_id": EXEC, "plan_branch": "85"}, EXEC, branch)  # a row naming no plan
+    # The newer superseding row of another plan's same-named execution never wins.
+    assert _latest_execution_summary([mine, other], EXEC, branch) == mine

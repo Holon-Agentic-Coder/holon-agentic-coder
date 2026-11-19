@@ -108,6 +108,25 @@ def test_no_comment_in_dry_run_or_skip_push_or_when_comments_cannot_be_listed() 
     assert result == {"posted": False, "reason": "comments could not be listed"}
 
 
+def test_comment_names_the_failed_automatic_rerun_exactly_when_attempted() -> None:
+    line = "The failed job was automatically rerun once and failed again."
+    plain = render_invalidation(APPROVED, FAILING, RECORD["failed_details"])
+    assert line not in plain
+    rerun = render_invalidation(APPROVED, FAILING, RECORD["failed_details"], {"attempted": True, "outcome": "failed"})
+    assert line in rerun
+    assert rerun.replace(f"{line}\n\n", "") == plain
+    undispatched = render_invalidation(APPROVED, FAILING, RECORD["failed_details"], {"attempted": False})
+    assert undispatched == plain
+
+
+def test_invalidate_passes_the_timing_rerun_note_into_the_comment() -> None:
+    fakes = Fakes([])
+    record = {**RECORD, "timing_rerun": {"attempted": True, "run_ids": ["42"], "outcome": "failed"}}
+    reverified = reverify_final_head(record, APPROVED, FAILING)
+    assert invalidate_approval(_context(), reverified, fakes.lister, fakes.poster)["posted"] is True
+    assert "The failed job was automatically rerun once and failed again." in fakes.posted[0][1]
+
+
 def test_render_degrades_when_the_approved_head_is_unknown() -> None:
     body = render_invalidation(None, FAILING, RECORD["failed_details"])
     assert "an earlier commit" in body

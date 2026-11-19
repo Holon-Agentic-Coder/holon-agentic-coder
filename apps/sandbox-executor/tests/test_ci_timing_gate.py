@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import io
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -508,8 +509,67 @@ def test_replay_recent_main_durations_pass_ceiling(duration: float) -> None:
     assert evaluate(duration, [], DEFAULTS, override=False).passed
 
 
+# The macOS unit job's thresholds: the observed same-code swing is 370.2 - 235 = 135.2 s, so the minimum delta is 150.
+MACOS_THRESHOLDS = Thresholds(min_delta=150.0)
+MACOS_NOISE_DURATIONS = (312.7, 332.0, 370.2)
+MACOS_BASELINE_MEDIANS = (235.0, 280.0, 306.0)
+
+
+@pytest.mark.parametrize("duration", MACOS_NOISE_DURATIONS)
+@pytest.mark.parametrize("median", MACOS_BASELINE_MEDIANS)
+def test_macos_min_delta_passes_the_recorded_noise_cases(duration: float, median: float) -> None:
+    verdict = evaluate(duration, [median] * 5, MACOS_THRESHOLDS, override=False)
+    assert verdict.passed, verdict.lines
+
+
+def test_macos_min_delta_still_fails_a_real_slowdown() -> None:
+    assert exceeds_relative(480.0, 280.0, MACOS_THRESHOLDS)
+    verdict = evaluate(480.0, [280.0] * 5, MACOS_THRESHOLDS, override=False)
+    assert not verdict.passed
+    assert verdict.lines[0].startswith("::error::Timing regression")
+
+
+@pytest.mark.parametrize("baselines", [[], [280.0] * 5, [235.0] * 5])
+@pytest.mark.parametrize("override", [False, True])
+def test_macos_ceiling_fails_601_seconds_whatever_the_baseline_or_label(baselines: list[float], override: bool) -> None:
+    verdict = evaluate(601.0, baselines, MACOS_THRESHOLDS, override=override)
+    assert not verdict.passed
+    assert "ceiling cannot be overridden" in verdict.lines[0]
+
+
+def test_macos_cold_start_passes_noise_but_not_the_ceiling() -> None:
+    assert evaluate(370.2, [], MACOS_THRESHOLDS, override=False).passed
+    assert not evaluate(601.0, [], MACOS_THRESHOLDS, override=False).passed
+
+
+def test_unit_workflow_compares_with_main_per_runner_os() -> None:
+    """Pin test-unit.yml's wiring of ci_timing_gate.py: step-name prefix, per-OS deltas, ceiling and artefact name."""
+    repo_root = Path(__file__).resolve().parents[3]
+    content = (repo_root / ".github" / "workflows" / "test-unit.yml").read_text(encoding="utf-8")
+
+    # The failed-step name must keep the "CI Timing Gate" prefix, which ci_failure_detail tags as timing_gate.
+    assert "- name: CI Timing Gate (compare with main)" in content
+    assert "scripts/ci_timing_gate.py" in content
+    assert "./.github/actions/ci-timing-gate" not in content
+
+    # The whole job is measured from before checkout, compare mode runs on pull requests only.
+    assert content.index("Record job start time") < content.index("actions/checkout")
+    assert "github.event_name == 'pull_request' && 'compare' || 'record'" in content
+
+    # Per-OS minimum delta: 120 s on ubuntu, 150 s on macOS (above the observed 135.2 s same-code swing).
+    assert re.search(r"- os: ubuntu-latest\n\s+timing-min-delta: 120\b", content)
+    assert re.search(r"- os: macos-latest\n\s+timing-min-delta: 150\b", content)
+    assert '--min-delta "${{ matrix.timing-min-delta }}"' in content
+
+    # Label-proof absolute ceiling, the override label forwarded, and baselines keyed per workflow/job/OS.
+    assert "--ceiling 600" in content
+    assert "timing-regression-accepted" in content
+    assert "name: ci-timing-test-unit-unit-${{ matrix.os }}" in content
+    assert "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" in content
+
+
 def test_every_workflow_wires_start_and_check_steps() -> None:
-    """Assert all 5 workflows wire the local ci-timing-gate composite action correctly."""
+    """Assert the 4 fixed-budget workflows wire the local ci-timing-gate composite action correctly."""
     repo_root = Path(__file__).resolve().parents[3]
     workflows_dir = repo_root / ".github" / "workflows"
     expected_workflows = [
@@ -517,7 +577,6 @@ def test_every_workflow_wires_start_and_check_steps() -> None:
         "make.yml",
         "test-hygiene.yml",
         "test-integration.yml",
-        "test-unit.yml",
     ]
 
     for wf_name in expected_workflows:

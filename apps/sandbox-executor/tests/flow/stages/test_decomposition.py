@@ -568,26 +568,51 @@ class TestEntropyBudgetHandoffInFlow:
 
     def test_budget_precheck_reads_the_newest_plan_row(self):
         rows = [
-            {"plan_id": "P-2-agent-model", "entropy": 12.6, "plan_file": "plans/P-2-agent-model.md"},
-            {"plan_id": "P-2-agent-model", "entropy": 2.0, "plan_file": "plans/P-2-agent-model.md"},
+            {
+                "plan_id": "P-2-agent-model",
+                "intent_branch": "I-1-parent/_",
+                "entropy": 12.6,
+                "plan_file": "plans/P-2-agent-model.md",
+            },
+            {
+                "plan_id": "P-2-agent-model",
+                "intent_branch": "I-1-parent/_",
+                "entropy": 2.0,
+                "plan_file": "plans/P-2-agent-model.md",
+            },
         ]
         decision = self._decide(rows, {"plans/P-2-agent-model.md": "# Plan\n"})
         assert (decision.decision, decision.entropy) == ("execute", 2.0)
 
-    @pytest.mark.parametrize("plan_file", ["plans/P-x/nested.md", "plans/P-x/../../README.md"])
+    @pytest.mark.parametrize(
+        "plan_file", ["plans/P-x/nested.md", "plans/P-x/../../README.md", "plans/../P-2-agent-model.md"]
+    )
     def test_budget_precheck_ignores_a_plan_file_below_a_subdirectory_of_plans(self, plan_file):
-        rows = [{"plan_id": "P-2-agent-model", "entropy": 9.0, "plan_file": plan_file}]
-        files = {"plans/P-2-agent-model.md": "# Plan\n" + SUB_INTENT_LIST, plan_file: "# Plan\n"}
+        rows = [{"plan_id": "P-2-agent-model", "intent_branch": "I-1-parent/_", "entropy": 9.0, "plan_file": plan_file}]
+        files = {"plans/I-1-parent/P-2-agent-model.md": "# Plan\n" + SUB_INTENT_LIST, plan_file: "# Plan\n"}
         assert self._decide(rows, files).decision == "decomposed"
 
     def test_budget_precheck_with_a_missing_plan_file_judges_the_row_alone(self):
-        rows = [{"plan_id": "P-2-agent-model", "entropy": 9.0, "plan_file": "plans/P-2-agent-model.md"}]
+        rows = [
+            {
+                "plan_id": "P-2-agent-model",
+                "intent_branch": "I-1-parent/_",
+                "entropy": 9.0,
+                "plan_file": "plans/P-2-agent-model.md",
+            }
+        ]
         decision = self._decide(rows, {})
         assert (decision.decision, decision.entropy, decision.entropy_budget) == ("over_budget", 9.0, 5.0)
 
+    def test_budget_precheck_ignores_the_row_of_the_same_plan_id_under_another_intent(self):
+        rows = [{"plan_id": "P-2-agent-model", "intent_branch": "I-9-other/_", "entropy": 9.0}]
+        assert self._decide(rows, {}) is None
+
     def test_budget_precheck_ignores_a_plan_file_outside_plans(self):
-        rows = [{"plan_id": "P-2-agent-model", "entropy": 9.0, "plan_file": "README.md"}]
-        files = {"plans/P-2-agent-model.md": "# Plan\n" + SUB_INTENT_LIST, "README.md": "# Readme\n"}
+        rows = [
+            {"plan_id": "P-2-agent-model", "intent_branch": "I-1-parent/_", "entropy": 9.0, "plan_file": "README.md"}
+        ]
+        files = {"plans/I-1-parent/P-2-agent-model.md": "# Plan\n" + SUB_INTENT_LIST, "README.md": "# Readme\n"}
         decision = self._decide(rows, files)
         assert decision.decision == "decomposed"
         assert [i["goal"] for i in decision.sub_intents] == ["Add the parser", "Add the CLI flag"]
@@ -845,7 +870,12 @@ class TestEntropyBudgetHandoffInFlow:
 
     def test_budget_precheck_ignores_rows_of_other_plans(self):
         rows = [
-            {"plan_id": "P-2-agent-model", "entropy": 2.0, "plan_file": "plans/P-2-agent-model.md"},
+            {
+                "plan_id": "P-2-agent-model",
+                "intent_branch": "I-1-parent/_",
+                "entropy": 2.0,
+                "plan_file": "plans/P-2-agent-model.md",
+            },
             {"plan_id": "P-3-agent-model", "entropy": 12.6, "plan_file": "plans/P-3-agent-model.md"},
         ]
         files = {"plans/P-2-agent-model.md": "# Plan\n", "plans/P-3-agent-model.md": "# Plan\n"}
@@ -853,7 +883,14 @@ class TestEntropyBudgetHandoffInFlow:
         assert self._decide(rows[1:], files) is None
 
     def test_budget_precheck_reads_the_recorded_plan_file_and_the_intent_budget(self):
-        rows = [{"plan_id": "P-2-agent-model", "entropy": 9.0, "plan_file": "plans/P-2-agent-model-v2.md"}]
+        rows = [
+            {
+                "plan_id": "P-2-agent-model",
+                "intent_branch": "I-1-parent/_",
+                "entropy": 9.0,
+                "plan_file": "plans/P-2-agent-model-v2.md",
+            }
+        ]
         decision = self._decide(rows, {"plans/P-2-agent-model-v2.md": "# Plan\n" + SUB_INTENT_LIST})
         assert decision.decision == "decomposed"
         # No list and no budget on the row: the intent's budget (5.0, not the default) decides.

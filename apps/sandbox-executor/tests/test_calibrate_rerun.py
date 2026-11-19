@@ -26,7 +26,7 @@ from tests.test_calibrate_sync import CALIBRATED, EXEC, commit_file, git, make_r
 
 PLAN_ID = "P-2-y"
 CAL_SUBJECT = f"chore(calibration): add calibration report for {PLAN_ID}"
-CAL_REPORT_REL = f"plans/{PLAN_ID}_calibration.md"
+CAL_REPORT_REL = f"plans/I-1-x/{PLAN_ID}_calibration.md"
 
 
 def commit_calibration(
@@ -130,7 +130,7 @@ def realistic_calibrate(**kwargs: object) -> SimpleNamespace:
     git(cwd, "checkout", "-q", CALIBRATED) if local.returncode == 0 else git(cwd, "checkout", "-qb", CALIBRATED)
     evaluated = git(cwd, "rev-parse", "HEAD")
     report = cwd / CAL_REPORT_REL
-    report.parent.mkdir(exist_ok=True)
+    report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text(f"# Calibration Report for {PLAN_ID}\n\n- **Evaluated Commit SHA:** {evaluated}\n")
     ledger = cwd / LEDGER_REL
     ledger.parent.mkdir(parents=True, exist_ok=True)

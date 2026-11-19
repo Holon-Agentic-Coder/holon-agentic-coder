@@ -67,6 +67,7 @@ from sandbox_executor.ledger import (
     generate_action_id,
     suppress_ledger_failures,
 )
+from sandbox_executor.plan_paths import is_row_of_plan, recorded_plan_file
 
 # The redactors live in the shared module; they are re-exported here so existing importers of
 # `sandbox_executor.entrypoint.executor` keep working unchanged.
@@ -1113,11 +1114,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         continue
                     try:
                         data = json.loads(line)
-                        plan_id = data.get("plan_id")
-                        if isinstance(plan_id, str) and (
-                            plan_branch_prefix.split("/")[-1] == plan_id or plan_branch_prefix.endswith("/" + plan_id)
-                        ):
-                            # The newest matching row wins, so a superseding row the flow back-filled is read.
+                        # Keyed on the intent and the plan id together; the newest matching row wins, so a
+                        # superseding row the flow back-filled is read.
+                        if is_row_of_plan(data, plan_branch_prefix):
                             plan_data = data
                     except Exception as e:
                         print(f"Warning: skipping line {line_no} in plans.jsonl: {e}", file=sys.stderr)
@@ -1133,7 +1132,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
         # Load plan markdown content if available
         plan_content = ""
-        plan_file_rel = plan_data.get("plan_file")
+        plan_file_rel = recorded_plan_file(plan_data.get("plan_file"), plan_branch_prefix)
         if plan_file_rel and os.path.exists(os.path.join(repo_dir, plan_file_rel)):
             with open(os.path.join(repo_dir, plan_file_rel)) as f:
                 plan_content = f.read()

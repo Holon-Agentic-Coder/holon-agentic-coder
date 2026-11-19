@@ -24,6 +24,7 @@ from sandbox_executor.calibration import (
     CalibrationReport,
     EntropyFactors,
     PredictedMetrics,
+    _unique_plan_branch_of_execution,
     compute_calibration_deltas,
     extract_branch_components,
     fetch_remote_ref_if_needed,
@@ -177,6 +178,7 @@ class TestMetricsParsing(unittest.TestCase):
     def test_parse_predicted_metrics_from_ledger(self):
         record = {
             "plan_id": "P-test-123",
+            "intent_branch": "I-1-x/_",
             "p_success": 0.92,
             "entropy": 1.8,
             "impact": 65.0,
@@ -190,7 +192,7 @@ class TestMetricsParsing(unittest.TestCase):
             patch("os.path.exists", side_effect=lambda p: "plans.jsonl" in str(p)),
             patch("builtins.open", unittest.mock.mock_open(read_data=jsonl_content)),
         ):
-            pred, meta = parse_predicted_metrics("P-test-123")
+            pred, meta = parse_predicted_metrics("I-1-x/P-test-123/_")
             self.assertEqual(pred.p_success, 0.92)
             self.assertEqual(pred.entropy, 1.8)
             self.assertEqual(pred.impact, 65.0)
@@ -220,7 +222,7 @@ class TestMetricsParsing(unittest.TestCase):
             patch("os.path.exists", side_effect=exists_side_effect),
             patch("builtins.open", unittest.mock.mock_open(read_data=md_content)),
         ):
-            pred, _meta = parse_predicted_metrics("P-test-456")
+            pred, _meta = parse_predicted_metrics("I-1-x/P-test-456/_")
             self.assertEqual(pred.p_success, 0.85)
             self.assertEqual(pred.entropy, 2.1)
             self.assertEqual(pred.impact, 45.0)
@@ -252,7 +254,7 @@ class TestMetricsParsing(unittest.TestCase):
             patch("os.path.exists", return_value=True),
             patch("builtins.open", unittest.mock.mock_open(read_data=md_content)),
         ):
-            pred, _meta = parse_predicted_metrics("P-test-multi")
+            pred, _meta = parse_predicted_metrics("I-1-x/P-test-multi/_")
             self.assertEqual(pred.p_success, 0.90)
             self.assertEqual(pred.entropy, 1.5)
             self.assertEqual(pred.impact, 50.0)
@@ -1263,13 +1265,13 @@ def test_run_calibrate_rejected_report_commit_raises(calibration_repo, capsys):
         run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
 
     message = str(excinfo.value)
-    assert "plans/P-2_calibration.md" in message
+    assert "plans/I-1-cal/P-2_calibration.md" in message
     assert "pre-commit rejected" in message
     assert _HOOK_SECRET not in message
     assert "committed" not in capsys.readouterr().out
     # Nothing reached git: the report is absent from HEAD and HEAD still carries no ACT-CAL row.
     head_has_report = subprocess.run(
-        ["git", "-C", str(repo), "cat-file", "-e", "HEAD:plans/P-2_calibration.md"], capture_output=True
+        ["git", "-C", str(repo), "cat-file", "-e", "HEAD:plans/I-1-cal/P-2_calibration.md"], capture_output=True
     )
     assert head_has_report.returncode != 0
     assert _cal_rows(git("show", f"HEAD:{ledger_rel}")) == []
@@ -1290,7 +1292,10 @@ def test_cli_calibrate_rejected_report_commit_exits_non_zero(calibration_repo, c
 
     assert excinfo.value.code == 1
     captured = capsys.readouterr()
-    assert "Error during calibration: Git commit of calibration report plans/P-2_calibration.md failed" in captured.err
+    assert (
+        "Error during calibration: Git commit of calibration report plans/I-1-cal/P-2_calibration.md failed"
+        in captured.err
+    )
     assert _HOOK_SECRET not in captured.err
     assert "committed" not in captured.out
 
@@ -1335,12 +1340,12 @@ def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
     assert row["predicted_metrics"] == report.predicted.to_dict()
     assert row["actual_metrics"] == report.actual.to_dict()
     assert row["calibration_deltas"] == report.deltas.to_dict()
-    assert row["calibration_report_path"] == "plans/P-2_calibration.md"
+    assert row["calibration_report_path"] == "plans/I-1-cal/P-2_calibration.md"
 
     # The ACT-CAL row is committed with the report on the calibrated branch, and nothing else is.
     assert _cal_rows(git("show", f"HEAD:{ledger_rel}")) == rows
     committed = sorted(git("show", "--name-only", "--pretty=format:", "HEAD").split())
-    assert committed == [ledger_rel, "plans/P-2_calibration.md"]
+    assert committed == [ledger_rel, "plans/I-1-cal/P-2_calibration.md"]
     assert "untracked_scratch.txt" in git("status", "--porcelain")
     # Exactly one summary row, unchanged: no duplicate summary was written.
     all_rows = [json.loads(line) for line in git("show", f"HEAD:{ledger_rel}").splitlines() if line.strip()]
@@ -1381,7 +1386,7 @@ def test_run_calibrate_ledger_failure_warns_and_still_commits_report(calibration
     warnings = [rec.getMessage() for rec in caplog.records if rec.levelname == "WARNING"]
     assert any("ACT-CAL" in msg and ledger_path in msg and "ledger denied" in msg for msg in warnings)
     committed = git("show", "--name-only", "--pretty=format:", "HEAD").split()
-    assert committed == ["plans/P-2_calibration.md"]
+    assert committed == ["plans/I-1-cal/P-2_calibration.md"]
 
 
 def test_run_calibrate_ledger_failure_reaches_operator_log_fn(calibration_repo):
@@ -1396,7 +1401,7 @@ def test_run_calibrate_ledger_failure_reaches_operator_log_fn(calibration_repo):
     ledger_path = os.path.join(str(repo), "holon-knowledge", "ledger", "executions.jsonl")
     assert any("ACT-CAL" in msg and ledger_path in msg and "ledger denied" in msg for msg in logs)
     committed = git("show", "--name-only", "--pretty=format:", "HEAD").split()
-    assert committed == ["plans/P-2_calibration.md"]
+    assert committed == ["plans/I-1-cal/P-2_calibration.md"]
 
 
 def test_record_calibration_action_accepts_fallback_dict(tmp_path, guard_real_ledger):
@@ -1498,7 +1503,7 @@ def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
     working = (repo / ledger_rel).read_text(encoding="utf-8")
     assert [r["outcome"] for r in _cal_rows(working)] == ["success", "failure"]
     failure = _cal_rows(working)[-1]
-    assert "Git commit of calibration report plans/P-2_calibration.md failed" in failure["error_context"]
+    assert "Git commit of calibration report plans/I-1-cal/P-2_calibration.md failed" in failure["error_context"]
     assert failure["action"] == "Calibration failed for plan P-2; existing report and ledger rows left uncommitted"
     assert _HOOK_SECRET not in working
     recon = [json.loads(line) for line in working.splitlines() if line.strip()]
@@ -1546,7 +1551,7 @@ def test_stage5_commits_reconciliation_row_on_calibrated_branch(calibration_repo
 # A calibration paragraph that the old pinned prettier@3.8.4 accepts as formatted (its `--check` passes) but the
 # repository `npx prettier --check` (lint-docs, CI hygiene) rejects, and the same paragraph in the repository style that
 # check accepts at width 120. Both are verbatim Prettier output.
-_REPORT_REL = "plans/P-2_calibration.md"
+_REPORT_REL = "plans/I-1-cal/P-2_calibration.md"
 _PINNED_WRAP = (
     "# Calibration Report\n\n"
     "Plan `P-1793275710-claude-agent-claude-opus-5-5` executed with minimal error ($p\\_success\\_error = 0.20$,\n"
@@ -1626,7 +1631,7 @@ class TestFormatCalibrationReport:
     """The calibration report is formatted with the lint-docs Prettier invocation and fails closed."""
 
     def _write_report(self, repo: Path) -> None:
-        (repo / "plans").mkdir(exist_ok=True)
+        (repo / _REPORT_REL).parent.mkdir(parents=True, exist_ok=True)
         (repo / _REPORT_REL).write_text(_PINNED_WRAP, encoding="utf-8")
 
     def test_report_needing_rewrap_is_formatted_to_repository_style(self, tmp_path):
@@ -1778,3 +1783,81 @@ class TestFormatCalibrationReport:
             run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
 
         assert git("show", f"HEAD:{_REPORT_REL}") == _REPOSITORY_STYLE
+
+
+def _write_plan(root: Path, rel: str, ev: float) -> None:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"# Plan\n\n## Overall Plan Metrics\n\n| metric | value |\n| ev_pred | {ev} |\n", encoding="utf-8")
+
+
+def test_twin_intents_planned_in_one_second_resolve_to_their_own_plan_rows(tmp_path: Path) -> None:
+    """Same runner, model and second under two intents: one plan id, two plan files, two rows, resolved apart."""
+    plan_id = "P-1794567531-CLA-CS5.5"
+    ledger = tmp_path / "holon-knowledge" / "ledger" / "plans.jsonl"
+    ledger.parent.mkdir(parents=True)
+    rows = [
+        {"plan_id": plan_id, "intent_branch": f"I-1794567515-{slug}/_", "ev": ev, "plan_file": f"plans/{slug}.md"}
+        for slug, ev in (("alpha", 11.0), ("beta", 22.0))
+    ]
+    ledger.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    alpha, alpha_meta = parse_predicted_metrics(f"I-1794567515-alpha/{plan_id}/E-1-CLA-CS5.5/_", str(tmp_path))
+    beta, beta_meta = parse_predicted_metrics(f"I-1794567515-beta/{plan_id}/_", str(tmp_path))
+    assert (alpha.ev, beta.ev) == (11.0, 22.0)
+    assert (alpha_meta["intent_branch"], beta_meta["intent_branch"]) == (
+        rows[0]["intent_branch"],
+        rows[1]["intent_branch"],
+    )
+    assert parse_predicted_metrics(f"I-1794567515-gamma/{plan_id}/_", str(tmp_path))[1] == {}
+
+
+def test_plan_markdown_fallback_reads_the_nested_layout_then_the_legacy_flat_file(tmp_path: Path) -> None:
+    _write_plan(tmp_path, "plans/I-1-alpha/P-2-CLA-CF5.md", 5.0)
+    _write_plan(tmp_path, "plans/P-3-hex-claude-agent-claude-fable-5.md", 7.0)
+    nested, nested_meta = parse_predicted_metrics("I-1-alpha/P-2-CLA-CF5/_", str(tmp_path))
+    legacy, legacy_meta = parse_predicted_metrics("I-1-beta/P-3-hex-claude-agent-claude-fable-5/_", str(tmp_path))
+    assert (nested.ev, nested_meta["plan_file"]) == (5.0, "plans/I-1-alpha/P-2-CLA-CF5.md")
+    assert (legacy.ev, legacy_meta["plan_file"]) == (7.0, "plans/P-3-hex-claude-agent-claude-fable-5.md")
+    assert parse_predicted_metrics("I-1-beta/P-2-CLA-CF5/_", str(tmp_path)) == (PredictedMetrics(), {})
+
+
+@pytest.mark.parametrize(
+    ("branch", "plan_branch", "plan_parent"),
+    [
+        ("I-1-a/P-2-CLA-CS5.5/E-3-CLA-CS5.5/_", "I-1-a/P-2-CLA-CS5.5/_", "I-1-a"),
+        ("I-1-a--1-child/P-2-CLA-CS5.5/E-3-CLA-CS5.5/_", "I-1-a--1-child/P-2-CLA-CS5.5/_", "I-1-a--1-child"),
+        ("I-1-a/P-2-CLA-CS5.5/P-4-CLA-CF5/E-5-CLA-CF5/_", "I-1-a/P-2-CLA-CS5.5/P-4-CLA-CF5/_", "I-1-a/P-2-CLA-CS5.5"),
+        (
+            "I-1-a/P-2-ab12cd34-claude-agent-m/E-3-ef56ab78-claude-agent-m/_",
+            "I-1-a/P-2-ab12cd34-claude-agent-m/_",
+            "I-1-a",
+        ),
+    ],
+)
+def test_branch_components_keep_the_full_parent_of_the_plan(branch: str, plan_branch: str, plan_parent: str) -> None:
+    components = extract_branch_components(branch)
+    assert (components["plan_branch"], components["plan_parent"]) == (plan_branch, plan_parent)
+
+
+def test_a_bare_execution_id_owned_by_two_plans_resolves_to_neither(tmp_path: Path) -> None:
+    ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+    ledger.parent.mkdir(parents=True)
+    rows = [
+        {"entry_type": "summary", "execution_id": "E-9-CLA-CS5.5", "plan_branch": f"I-1-{slug}/P-2-CLA-CS5.5/_"}
+        for slug in ("alpha", "beta")
+    ]
+    ledger.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    assert _unique_plan_branch_of_execution("E-9-CLA-CS5.5", str(tmp_path)) == ""
+    ledger.write_text(json.dumps(rows[0]) + "\n", encoding="utf-8")
+    assert _unique_plan_branch_of_execution("E-9-CLA-CS5.5", str(tmp_path)) == rows[0]["plan_branch"]
+
+
+def test_execution_rows_never_match_across_plans_even_with_one_execution_id() -> None:
+    from sandbox_executor.calibration_ev import is_matching_record
+
+    row = {"entry_type": "summary", "execution_id": "E-9-CLA-CS5.5", "plan_branch": "I-1-alpha/P-2-CLA-CS5.5/_"}
+    assert is_matching_record(row, "E-9-CLA-CS5.5", "I-1-alpha/P-2-CLA-CS5.5/_")
+    assert not is_matching_record(row, "E-9-CLA-CS5.5", "I-1-beta/P-2-CLA-CS5.5/_")
+    # A review row of the plan matches through its plan; a bare id lookup without a plan matches on the id.
+    assert is_matching_record({**row, "execution_id": "REV-1"}, "E-9-CLA-CS5.5", "I-1-alpha/P-2-CLA-CS5.5/_")
+    assert is_matching_record(row, "E-9-CLA-CS5.5", "")

@@ -41,6 +41,7 @@ from sandbox_executor.knowledge import (
     reconcile_records,
 )
 from sandbox_executor.ledger import LedgerRewriteError
+from sandbox_executor.plan_paths import calibration_report_for_branch, legacy_calibration_report_rel, split_plan_branch
 from sandbox_executor.ref_names import calibration_branch
 
 logger = logging.getLogger(__name__)
@@ -228,17 +229,11 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
             f"Calibration run encountered exception: {CredentialRedactor.redact_text(str(e))}. "
             "Generating fallback report."
         )
-        clean = context.execution_branch.strip().rstrip("/_").rstrip("/")
-        parts = clean.split("/")
-        plan_id = "P-unknown"
-        for part in parts:
-            if part.startswith("P-"):
-                plan_id = part
-                break
-        plans_dir = os.path.join(repo_dir, "plans")
-        os.makedirs(plans_dir, exist_ok=True)
-        report_rel = f"plans/{plan_id}_calibration.md"
+        plan_id = split_plan_branch(context.execution_branch)[1] or "P-unknown"
+        # Beside the plan file (plans/{intent}/...); a branch naming no plan falls back to the flat legacy location.
+        report_rel = calibration_report_for_branch(context.execution_branch) or legacy_calibration_report_rel(plan_id)
         report_path = os.path.join(repo_dir, report_rel)
+        os.makedirs(os.path.dirname(report_path), exist_ok=True)
         fallback_report_written = not os.path.exists(report_path)
         if fallback_report_written:
             with open(report_path, "w", encoding="utf-8") as f:

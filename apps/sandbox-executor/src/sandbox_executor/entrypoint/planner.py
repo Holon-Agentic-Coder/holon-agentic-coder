@@ -29,6 +29,7 @@ from sandbox_executor.ledger import (
     build_plan_id,
     validate_ledger_file_unique_ids,
 )
+from sandbox_executor.plan_paths import plan_file_rel
 from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
 from sandbox_executor.touch_set import parse_touch_set_section
 from sandbox_executor.turns import record_budget_failure, run_turn, supervise_authoring_turn
@@ -252,21 +253,16 @@ def format_agent_cmd_for_display(cmd: list[str]) -> str:
     return " ".join(print_cmd)
 
 
-PLAN_FILE_PATTERN = r"plans/P-[^/]+\.md"
-
-
-def plan_file_rel(plan_id: str) -> str:
-    """Repo-relative plan markdown path; carries the plan id so same-second plans never collide."""
-    return f"plans/{plan_id}.md"
-
-
 def _taken_plan_ids(repo_dir: str, intent_branch_prefix: str) -> set[str]:
     """Plan ids already recorded for this intent, so a same-second twin derives a distinct variant name."""
     ledger_path = os.path.join(repo_dir, "holon-knowledge/ledger/plans.jsonl")
-    taken: set[str] = set()
+    prefix = intent_branch_prefix.removesuffix("/_").rstrip("/")
+    # A plan file already on disk under this intent is taken too, so a new plan never overwrites one.
+    plan_dir = os.path.dirname(os.path.join(repo_dir, plan_file_rel(prefix, "P-0")))
+    on_disk = os.listdir(plan_dir) if os.path.isdir(plan_dir) else []
+    taken = {name.removesuffix(".md") for name in on_disk if name.startswith("P-") and name.endswith(".md")}
     if not os.path.exists(ledger_path):
         return taken
-    prefix = intent_branch_prefix.removesuffix("/_").rstrip("/")
     with open(ledger_path, encoding="utf-8") as f:
         for line in f:
             if not line.strip():
@@ -416,6 +412,7 @@ Include metrics in this format:
         "parent_intent_id": intent_data.get("parent_intent_id", "NONE"),
         "description": intent_data.get("description", ""),
         "plan_id": plan_id,
+        "plan_file": plan_file_rel(intent_branch_prefix, plan_id),
         "date": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
         "intent_json": json.dumps(intent_data, indent=2),
         "safe_model": safe_model,
@@ -443,7 +440,7 @@ Include metrics in this format:
             json.dump({**intent_data, "replan_feedback": replan_feedback} if replan_feedback else intent_data, f)
 
         # Invoke AI agent
-        plan_md_rel = plan_file_rel(plan_id)
+        plan_md_rel = plan_file_rel(intent_branch_prefix, plan_id)
         plan_md_path = os.path.join(repo_dir, plan_md_rel)
         os.makedirs(os.path.dirname(plan_md_path), exist_ok=True)
 

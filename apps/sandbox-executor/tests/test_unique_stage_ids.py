@@ -7,7 +7,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sandbox_executor.entrypoint.planner import PLAN_FILE_PATTERN, plan_file_rel
 from sandbox_executor.flow.review.ids import build_review_id
 from sandbox_executor.ledger import (
     _describe_id_owner,
@@ -19,6 +18,7 @@ from sandbox_executor.ledger import (
     validate_ledger_unique_ids,
     validate_stage_ledger,
 )
+from sandbox_executor.plan_paths import PLAN_FILE_PATTERN, plan_file_rel
 
 
 class TestSameSecondIds(unittest.TestCase):
@@ -29,10 +29,16 @@ class TestSameSecondIds(unittest.TestCase):
         second = build_plan_id(1794446836, "I-1/ids", "claude-agent", "claude-sonnet-5-5", taken={first})
         self.assertNotEqual(first, second)
         self.assertEqual(second, f"{first}-2")
-        self.assertNotEqual(plan_file_rel(first), plan_file_rel(second))
-        self.assertEqual(plan_file_rel(first), f"plans/{first}.md")
-        self.assertRegex(plan_file_rel(first), PLAN_FILE_PATTERN)
-        self.assertRegex(plan_file_rel(second), PLAN_FILE_PATTERN)
+        self.assertNotEqual(plan_file_rel("I-1/ids", first), plan_file_rel("I-1/ids", second))
+        self.assertEqual(plan_file_rel("I-1/ids", first), f"plans/I-1/ids/{first}.md")
+        self.assertRegex(plan_file_rel("I-1-ids", first), PLAN_FILE_PATTERN)
+        self.assertRegex(plan_file_rel("I-1-ids", second), PLAN_FILE_PATTERN)
+
+    def test_same_second_twin_intents_get_distinct_plan_files(self):
+        first = build_plan_id(1794446836, "I-1-alpha", "claude-agent", "claude-sonnet-5-5")
+        twin = build_plan_id(1794446836, "I-1-beta", "claude-agent", "claude-sonnet-5-5")
+        self.assertEqual(first, twin)
+        self.assertNotEqual(plan_file_rel("I-1-alpha", first), plan_file_rel("I-1-beta", twin))
 
     def test_execution_ids_differ_within_one_second(self):
         first = build_execution_id(1794446836, "I-1/ids/P-1-CLA-CS5.5", "claude-agent", "claude-sonnet-5-5")

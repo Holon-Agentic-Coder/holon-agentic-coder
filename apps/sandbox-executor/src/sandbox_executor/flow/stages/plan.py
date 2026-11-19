@@ -4,17 +4,12 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import time
 from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.budgets import ENV_REPLAN_FEEDBACK
-from sandbox_executor.entrypoint.planner import (
-    PLAN_FILE_PATTERN,
-    load_metrics_config,
-    parse_metrics,
-)
+from sandbox_executor.entrypoint.planner import load_metrics_config, parse_metrics
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _dispatch_role, _stage_failure
 from sandbox_executor.flow.git_refs import (
@@ -31,6 +26,7 @@ from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.knowledge import ConsultEngine
 from sandbox_executor.ledger import build_plan_id
 from sandbox_executor.naming import MissingTickerError, model_code, ticker_for
+from sandbox_executor.plan_paths import is_row_of_plan, plan_file_rel, recorded_plan_file
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +84,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
             payload={
                 "plan_id": plan_id,
                 "plan_branch": plan_branch,
-                "plan_file": f"plans/{plan_id}.md",
+                "plan_file": plan_file_rel(intent_prefix, plan_id),
                 "metrics": {},
                 "consulted_knowledge_ids": consulted_ids,
                 "dry_run": True,
@@ -161,11 +157,9 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
 
     plan_id = plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
     plan_ref = f"refs/remotes/origin/{plan_branch}"
-    plan_rows = [r for r in _read_ledger_rows(repo_dir, plan_ref, "plans.jsonl") if r.get("plan_id") == plan_id]
+    plan_rows = [r for r in _read_ledger_rows(repo_dir, plan_ref, "plans.jsonl") if is_row_of_plan(r, plan_branch)]
     plan_row = plan_rows[-1] if plan_rows else {}
-    plan_md_rel = str(plan_row.get("plan_file") or f"plans/{plan_id}.md")
-    if not re.fullmatch(PLAN_FILE_PATTERN, plan_md_rel):
-        plan_md_rel = f"plans/{plan_id}.md"
+    plan_md_rel = recorded_plan_file(plan_row.get("plan_file"), plan_branch)
     plan_content = _git_show_text(repo_dir, plan_ref, plan_md_rel)
     if plan_content is None:
         return _stage_failure(context, FlowStage.PLAN, start_time, no_plan_error, plan_branch=plan_branch)

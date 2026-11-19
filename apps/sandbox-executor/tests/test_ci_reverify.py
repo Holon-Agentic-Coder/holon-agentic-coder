@@ -62,6 +62,26 @@ def test_blocked_error_names_the_approved_head() -> None:
     assert "no longer stands" in error
 
 
+def test_timing_rerun_note_is_copied_and_named_exactly_when_attempted() -> None:
+    clause = "after one automatic rerun of the timing gate"
+    plain = reverify_final_head(RED_RECORD, APPROVED, FINAL)
+    assert plain["timing_rerun"] is None
+    assert clause not in plain["report"]
+
+    rerun_note = {"attempted": True, "run_ids": ["42"], "outcome": "failed"}
+    retried = reverify_final_head({**RED_RECORD, "timing_rerun": rerun_note}, APPROVED, FINAL)
+    assert retried["timing_rerun"] == rerun_note
+    assert clause in retried["report"]
+    assert "Not ready to merge" in retried["report"]
+
+    green = reverify_final_head({"state": "success", "timing_rerun": {"attempted": True}}, APPROVED, APPROVED)
+    assert green["verdict"] == "green"
+    assert clause in green["report"]
+
+    undispatched = reverify_final_head({**RED_RECORD, "timing_rerun": {"attempted": False}}, APPROVED, FINAL)
+    assert undispatched["report"] == plain["report"]
+
+
 def test_approved_head_comes_from_an_approved_review_only() -> None:
     context = FlowContext(repo_dir="/tmp", execution_branch="I-1-x/P-2-y/E-3-z/_", agent="a", model="m")
     assert approved_head_of(context) is None

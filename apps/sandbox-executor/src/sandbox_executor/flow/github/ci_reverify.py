@@ -49,15 +49,22 @@ def _failed_details(record: Mapping[str, Any]) -> list[dict[str, Any]]:
     return list(record.get("failed_details") or [bare_detail(n) for n in record.get("failed_checks") or []])
 
 
+def _timing_rerun_clause(record: Mapping[str, Any]) -> str:
+    """The clause naming the one automatic timing-gate rerun, empty when none was attempted."""
+    note = record.get("timing_rerun") or {}
+    return " after one automatic rerun of the timing gate" if note.get("attempted") else ""
+
+
 def _report(verdict: str, record: Mapping[str, Any], final_head: str | None, moved: bool | None) -> str:
     head = short_sha(final_head)
+    rerun = _timing_rerun_clause(record)
     if verdict == RED:
         named = ", ".join(describe_failure(d) for d in _failed_details(record))
-        return f"CI is red on final head {head}: {named}. Not ready to merge."
+        return f"CI is red on final head {head}{rerun}: {named}. Not ready to merge."
     if verdict == UNVERIFIED:
         return f"CI on final head {head} is not verified ({record.get('reason') or 'no result'}). Not merge-ready."
     if verdict == GREEN:
-        return f"CI is green on final head {head}" + ("; the head moved after approval." if moved else ".")
+        return f"CI is green on final head {head}{rerun}" + ("; the head moved after approval." if moved else ".")
     return "CI was not re-verified: nothing was pushed."
 
 
@@ -71,6 +78,7 @@ def reverify_final_head(record: Mapping[str, Any], approved_head: str | None, fi
         "final_head": final_head,
         "head_moved": moved,
         "failed_details": _failed_details(record) if verdict == RED else [],
+        "timing_rerun": record.get("timing_rerun"),
         "report": _report(verdict, record, final_head, moved),
     }
 

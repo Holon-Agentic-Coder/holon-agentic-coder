@@ -155,3 +155,31 @@ def test_dry_run_reports_what_the_real_run_writes(tmp_path: Path) -> None:
     assert _ids(dry) == _ids(real)
     assert len(real) == 3
     assert ws.promote(dry_run=True) == []
+
+
+def test_fresh_index_with_existing_failure_mode_still_records_the_veto(tmp_path: Path) -> None:
+    """A rebuilt index re-creates the veto for a committed failure mode without returning it again."""
+    ws = _Workspace(tmp_path)
+    ws.seed("rebuild1_fp", "failure", 3)
+    assert _ids(ws.promote()) == ["KB-failure-rebuild1"]
+
+    ws.db = ActionIndexDatabase(db_path=str(tmp_path / "fresh_index.db"))
+    ws.db.sync_ledger(str(ws.ledger))
+    assert ws.promote() == []
+    vetoes = {row["context_fingerprint"]: row["state"] for row in wisdom.list_vetoes(index_db=ws.db)}
+    assert vetoes["rebuild1_fp"] == "proven-fail"
+
+
+def test_repeated_veto_still_escalates_to_proven_fail(tmp_path: Path) -> None:
+    """A repeated failure mode is re-evaluated until its veto reaches proven-fail."""
+    ws = _Workspace(tmp_path)
+    ws.seed("escal001_fp", "failure", 2)
+    assert _ids(ws.promote()) == ["KB-failure-escal001"]
+    states = {r["context_fingerprint"]: r["state"] for r in wisdom.list_vetoes(index_db=ws.db)}
+    assert states["escal001_fp"] == "repeated"
+
+    ws.seed("escal001_fp", "failure", 1)
+    assert ws.promote() == []
+    vetoes = {row["context_fingerprint"]: row for row in wisdom.list_vetoes(index_db=ws.db)}
+    assert vetoes["escal001_fp"]["state"] == "proven-fail"
+    assert vetoes["escal001_fp"]["reproduction_count"] == 3

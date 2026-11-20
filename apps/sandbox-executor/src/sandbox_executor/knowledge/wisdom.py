@@ -172,16 +172,21 @@ def persist_wb_rule(rule_data: dict[str, Any], wb_dir: str = DEFAULT_WB_DIR) -> 
     return out_file
 
 
-def _already_promoted(context_fingerprint: str, success_count: int, kb_dir: str, wb_dir: str) -> bool:
-    """Return True when the candidate's terminal promotion artefacts already exist on disk.
+def _already_promoted(conn: Any, context_fingerprint: str, success_count: int, kb_dir: str, wb_dir: str) -> bool:
+    """Return True when the candidate's terminal promotion artefacts already exist.
 
-    A failure mode is terminal while the fingerprint has no success (a later success is still evaluated,
-    which lifts its veto); a success candidate is terminal once both its pattern and its heuristic exist,
-    so a pattern-only candidate stays eligible to ascend to a heuristic.
+    A failure mode is terminal only while the fingerprint has no success, its KB file exists and the index
+    already holds its proven-fail (or operator-lifted) veto row: evaluation is the only writer of
+    ``active_vetoes``, so a fresh index or a still-escalating veto is evaluated again, and a later success
+    is evaluated so the veto is lifted. A success candidate is terminal once both its pattern and its
+    heuristic exist, so a pattern-only candidate stays eligible to ascend to a heuristic.
     """
     fp8 = context_fingerprint[:8]
     if success_count == 0 and os.path.exists(os.path.join(kb_dir, "failure_modes", f"KB-failure-{fp8}.json")):
-        return True
+        veto = conn.execute(
+            "SELECT state FROM active_vetoes WHERE context_fingerprint = ?;", (context_fingerprint,)
+        ).fetchone()
+        return veto is not None and veto["state"] in ("proven-fail", "lifted")
     pattern_path = os.path.join(kb_dir, "patterns", f"KB-pattern-{fp8}.json")
     heuristic_path = os.path.join(wb_dir, "heuristics", f"WB-heuristic-{fp8}.json")
     return os.path.exists(pattern_path) and os.path.exists(heuristic_path)
@@ -303,8 +308,8 @@ def promote_pending_candidates(
 
     Returns only the items this call newly promoted (in a dry run, the items it would newly write), so a
     second call against an unchanged index returns ``[]``. Candidates whose terminal artefacts already
-    exist are skipped before evaluation. A recorded failure mode is terminal until the fingerprint
-    records a success, which is still evaluated so its veto is lifted.
+    exist are skipped before evaluation. A recorded failure mode is terminal once its veto row is proven-fail
+    (or lifted) and until the fingerprint records a success, which is still evaluated so its veto is lifted.
     """
     db = index_db or ActionIndexDatabase(DEFAULT_PROJECT_DB_PATH)
     conn = db.get_connection()
@@ -325,7 +330,7 @@ def promote_pending_candidates(
         signatures = cur.fetchall()
 
         for sig in signatures:
-            if _already_promoted(sig["context_fingerprint"], sig["success_count"], kb_dir, wb_dir):
+            if _already_promoted(conn, sig["context_fingerprint"], sig["success_count"], kb_dir, wb_dir):
                 continue
             sig_hash = sig["signature_hash"]
             eval_res = evaluate_action_promotion(sig_hash, index_db=db)

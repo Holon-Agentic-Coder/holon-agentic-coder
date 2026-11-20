@@ -209,6 +209,33 @@ plan. The file on disk is now the source of truth:
 agent produced `plans/I-.../P-*.md` on a plan branch under the intent branch, the flow stage fails; it never writes a
 placeholder plan of its own.
 
+### Agent API errors
+
+A planner run once received an Anthropic API 400 and the stdout fallback wrote that single error line as the plan; the
+metrics check then hid the real error behind `missing or non-numeric overall metrics`. API failures now surface as API
+failures:
+
+- **Detection.** When the agent left no usable plan file, every turn's stdout and stderr is checked for an API error
+  (`agent_api_error.py`): an `API Error:` line, an HTTP 4xx or 5xx status line, or an error JSON body (including the
+  claude CLI's `is_error` result). Detection is anchored to the first line of the output (any line of a short output
+  without a `# Plan for` title), so a valid plan that quotes an API error is never rejected.
+- **Failure.** The planner exits non-zero with `Error: the planner agent's API call failed: ...` (credentials redacted,
+  at most 2000 characters). This is checked before the budget and metrics checks, and the stdout fallback never writes
+  API-error text to the plan path.
+- **No stray plan file.** Any failed attempt removes its own plan file when `git status` reports it as untracked; a
+  tracked or staged plan file is never touched. The host side does the same in Stage 2: it snapshots the untracked plan
+  files under `plans/{intent}/` before dispatching the planner and, after a failed dispatch, removes only the new ones,
+  so a killed container also leaves a clean worktree (`plan_attempt.py`).
+- **Stage error.** The planner writes the failure text to the git-ignored `.holon/plan/failure.txt`; Stage 2 reads and
+  removes it and fails with `Plan stage failed: <failure text> (planner agent exited with code N)`.
+- **No ledger row.** An API failure writes no ledger row; the ledgers stay `intents.jsonl`, `plans.jsonl` and
+  `executions.jsonl`.
+
+The token-reduction proxy (`--token-reduce`) caused that 400 by adding a plain (5m) `cache_control` block before the
+claude CLI's own `ttl='1h'` blocks. It now injects only blocks whose ttl is consistent with the existing ones in API
+prefix order (tools, then system, then messages), never exceeds the limit of 4 blocks, and never changes the client's
+own blocks (`token_reduction/cache_control.py`).
+
 ---
 
 ## 3. Verification

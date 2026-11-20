@@ -164,11 +164,11 @@ def _post_marked_comment(
     context: FlowContext, pr_number: str | None, body: str, marker: str, seams: RerunSeams
 ) -> dict[str, Any]:
     """Post ``body`` once per ``marker`` on the PR (the approval's when none is given); never raises."""
-    pr_number = pr_number or approval_pr_number(context)
-    if context.dry_run or context.skip_push or not pr_number:
-        return {"posted": False, "reason": "dry run, push skipped or no pull request"}
-    repo_dir = context.target_worktree
-    try:
+    try:  # approval_pr_number reads the checkpointed review payload, which may be malformed
+        pr_number = pr_number or approval_pr_number(context)
+        if context.dry_run or context.skip_push or not pr_number:
+            return {"posted": False, "reason": "dry run, push skipped or no pull request"}
+        repo_dir = context.target_worktree
         existing = (seams.lister or gh_comment_lister(repo_dir))(pr_number)
         if existing is None:
             return {"posted": False, "reason": "comments could not be listed"}
@@ -277,6 +277,7 @@ def review_calibration_freshness(
             stage = run_stage or _flow_run_stage()
             refreshed = rerun_calibration(context, prior, stage, seams=seams, pr_number=pr_number)
             if refreshed is not prior:  # a rerun ran: record its outcome, so a failed refresh is never mistaken for one
+                context.stage_results["calibrate"] = refreshed  # the checkpoint and later readers name the final head
                 record["rerun"], record["rerun_status"] = True, refreshed.status.value
                 extras = {"rerun_error": refreshed.error, "rerun_stale": refreshed.payload.get("calibration_stale")}
                 record.update({key: value for key, value in extras.items() if value})

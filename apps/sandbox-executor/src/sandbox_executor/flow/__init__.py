@@ -26,6 +26,7 @@ from sandbox_executor.flow.admission import (
     check_admission,
     format_refusal,
 )
+from sandbox_executor.flow.admission_record import override_already_recorded
 from sandbox_executor.flow.calibrate_rebuild import (
     holds_only_calibration_commits,
     is_ancestor,
@@ -430,6 +431,7 @@ __all__ = [
     "new_local_child_branches",
     "next_poll_interval",
     "open_flow_pull_requests",
+    "override_already_recorded",
     "parse_metrics",
     "pending_check_names",
     "post_pr_review_consensus",

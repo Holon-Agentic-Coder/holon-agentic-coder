@@ -268,7 +268,7 @@ moved once by `scripts/migrate_plan_layout.py`; a plan file that no branch could
 
 ### 2.7 The 5-Stage Holon Flow Lifecycle
 
-The five deterministic stages form one provenance lifecycle ([Stage 3 admission](touch_set.md#admission-state)):
+The five stages form one lifecycle (Stage 3 [admission](touch_set.md#admission-state), [refresh](plan_refresh.md)):
 
 | Stage              | Name                  | CLI Command                            | Artifacts & Outputs                                                                       |
 | :----------------- | :-------------------- | :------------------------------------- | :---------------------------------------------------------------------------------------- |
@@ -1132,10 +1132,10 @@ push that already carries its salvage row.
   resume under the same override adds no commit to the plan branch.
 - **Partial work from an earlier plan tip is kept.** A recorded `partial_head` qualifies when it descends from the
   current plan tip, or when its fork point lies on the plan branch's first-parent history after the intent branch tip
-  and the plan branch changed only `holon-knowledge/ledger/*.jsonl` since. The executor then merges the current plan tip
-  into the new execution branch (ledger conflicts are reconciled with the plan side as byte prefix), so the branch
-  always descends from today's plan tip. Any other merge conflict aborts the merge and the execution starts from the
-  plan tip, with the reason logged.
+  and every first-parent commit of the plan branch since changed only `holon-knowledge/ledger/*.jsonl` or is a Stage 3
+  refresh merge ([plan_refresh.md](plan_refresh.md)). The executor then merges the current plan tip into the new
+  execution branch (ledger conflicts are reconciled with the plan side as byte prefix), so the branch always descends
+  from today's plan tip. Any other merge conflict aborts the merge and the execution starts from the plan tip.
 - **The branch tip is preferred.** When the failed execution branch's tip strictly descends from the recorded
   `partial_head`, adds more than the failure commit's ledgers and notes, and passes the same lineage rule (a merge of
   `origin/main` to settle a sync conflict, for example), the resume starts from the tip; no hand-written ledger row is

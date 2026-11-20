@@ -487,7 +487,14 @@ def detect_harness_agent(environ: Mapping[str, str] | None = None) -> tuple[str,
 
 
 def _require_mapped(name: str, origin: str) -> None:
-    if normalise_agent_id(name) not in AGENT_IMAGE_MAPPING:
+    norm = normalise_agent_id(name)
+    if norm == "gemini":
+        raise UnmappedAgentRunnerError(
+            f"Agent runner '{name}' (from {origin}) has been removed. "
+            "The gemini-agent runner has been superseded by antigravity-agent; "
+            "please use 'antigravity-agent' instead."
+        )
+    if norm not in AGENT_IMAGE_MAPPING:
         supported = ", ".join(f"{rid}-agent" for rid in sorted(AGENT_IMAGE_MAPPING))
         raise UnmappedAgentRunnerError(
             f"Agent runner '{name}' (from {origin}) has no container image. Supported runners: {supported}. "

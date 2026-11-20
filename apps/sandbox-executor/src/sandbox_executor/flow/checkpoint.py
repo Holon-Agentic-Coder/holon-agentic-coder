@@ -207,6 +207,18 @@ def save_checkpoint(context: FlowContext, filepath: str | None = None) -> str:
     return target_path
 
 
+def save_admission(context: FlowContext, admission: dict[str, Any] | None) -> str | None:
+    """Set the Stage 3 ``admission`` object and save the checkpoint at its default path (where other worktrees'
+    discovery reads it); the error text on failure, when the context keeps its previous object."""
+    previous, context.admission = context.admission, admission
+    try:
+        save_checkpoint(context)
+    except OSError as exc:
+        context.admission = previous
+        return str(exc)
+    return None
+
+
 def load_checkpoint(filepath: str) -> FlowCheckpoint:
     """Load a flow checkpoint from disk."""
     if not os.path.exists(filepath):

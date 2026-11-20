@@ -12,7 +12,6 @@ Discovery is host-side and read-only via injected ``gh``/``git`` runners; failur
 
 from __future__ import annotations
 
-import glob
 import json
 import logging
 import os
@@ -23,10 +22,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from sandbox_executor.flow.admission_state import BLOCKED_BY_LOCAL_FLOW, BLOCKED_BY_PULL_REQUEST, AdmissionRecord
-from sandbox_executor.flow.checkpoint import load_checkpoint
-from sandbox_executor.flow.context import FlowStage
 from sandbox_executor.flow.git_refs import _read_ledger_rows, _resolve_branch_ref
 from sandbox_executor.flow.github import merge
+from sandbox_executor.flow.worktree_checkpoints import WorktreeCheckpoint, worktree_checkpoints
 from sandbox_executor.git import is_metadata_path, run_git
 from sandbox_executor.plan_paths import is_row_of_plan
 from sandbox_executor.redaction import redact_agent_secrets
@@ -42,7 +40,6 @@ GitRunner = Callable[[list[str], str], subprocess.CompletedProcess[str]]
 MAX_OPEN_PULL_REQUESTS = 50
 #: Open pull requests of any head listed per admission, before the flow heads among them are picked out.
 MAX_LISTED_PULL_REQUESTS = 1000
-_IN_FLIGHT_STAGES = frozenset({FlowStage.EXECUTE, FlowStage.REVIEW})
 _EXECUTION_HEAD_RE = re.compile(r"^(?P<plan>I-\d+-\S*/P-\d+-[^/]+)/E-\d+-[^/]+/_$")
 
 
@@ -173,44 +170,21 @@ def _other_worktrees(repo_dir: str, run_git: GitRunner) -> list[str] | Admission
     return [path for path in paths if os.path.realpath(path) != own]
 
 
-@dataclass(frozen=True)
-class _OtherCheckpoint:
-    plan_branch: str
-    worktree: str
-    in_flight_stage: bool
-    record: AdmissionRecord | None
-
-
-def _read_checkpoint(path: str, worktree: str) -> _OtherCheckpoint | None:
-    """A checkpoint's plan branch, stage and admission record; ``None`` for a bad file or one without a plan branch."""
-    try:
-        checkpoint = load_checkpoint(path)
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-        logger.debug("Skipping unreadable checkpoint %s: %s", path, exc)  # stale or foreign: never blocks
-        return None
-    if not checkpoint.context.plan_branch:
-        return None
-    in_flight_stage = checkpoint.current_stage in _IN_FLIGHT_STAGES
-    record = AdmissionRecord.from_dict(checkpoint.context.admission)
-    return _OtherCheckpoint(str(checkpoint.context.plan_branch), worktree, in_flight_stage, record)
-
-
 def _other_checkpoints(
     repo_dir: str, own_root: str, run_git: GitRunner | None
-) -> list[_OtherCheckpoint] | AdmissionUnavailable:
+) -> list[WorktreeCheckpoint] | AdmissionUnavailable:
     """Checkpoints at execute or review in other worktrees, outside ``own_root``, whose plan branch still resolves."""
     worktrees = _other_worktrees(repo_dir, run_git or _host_git)
     if isinstance(worktrees, AdmissionUnavailable):
         return worktrees
-    found: list[_OtherCheckpoint] = []
-    for worktree in worktrees:
-        for path in sorted(glob.glob(os.path.join(worktree, ".holon", "flow", "checkpoint-*.json"))):
-            checkpoint = _read_checkpoint(path, worktree)
-            if checkpoint is None or not checkpoint.in_flight_stage or _root_intent(checkpoint.plan_branch) == own_root:
-                continue
-            if _resolve_branch_ref(repo_dir, checkpoint.plan_branch) is not None:  # a deleted plan branch is stale
-                found.append(checkpoint)
-    return found
+    return [
+        checkpoint
+        for worktree in worktrees
+        for checkpoint in worktree_checkpoints(worktree)
+        if checkpoint.in_flight_stage
+        and _root_intent(checkpoint.plan_branch) != own_root
+        and _resolve_branch_ref(repo_dir, checkpoint.plan_branch) is not None  # a deleted plan branch is stale
+    ]
 
 
 def local_in_flight_flows(

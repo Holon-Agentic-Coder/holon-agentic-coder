@@ -278,6 +278,11 @@ The evolution pipeline traverses five deterministic stages, representing a singl
 | **4. Review Loop** | PR Review Loop        | `holon review-loop <execution_branch>` | PR raised + sandboxed reviewer ensemble (unanimity) + micro-actions in `executions.jsonl` |
 | **5. Calibrate**   | Calibration Analysis  | `holon calibrate <execution_branch>`   | `/calibrated` branch + `plans/I-.../P-*_calibration.md` (included in PR diff)             |
 
+Before Stage 3 dispatches, `holon flow` runs touch-set admission under a per-repository lock and records the outcome in
+the flow checkpoint's top-level `admission` object: `blocked` (with `blocked_since` and the `blocked_by` pull requests
+or local flows to watch) or `admitted`. A blocked flow is not in flight, so it blocks no other flow, and the oldest
+waiter is admitted first. See "Admission state" in `docs/touch_set.md` for the fields and states.
+
 #### Target Worktree and the Default Branch
 
 `holon flow` runs host git operations (checkouts, commits, pushes) in its target worktree, so it never uses a worktree

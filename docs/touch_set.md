@@ -3,8 +3,10 @@
 The planner declares the files a plan expects to change in a `## Touch Set` section of the plan file. Stage 2 records
 the parsed set on the plan row, Stage 3 admits the plan only when that set overlaps no flow in flight, Stage 3 then
 enforces it on the execution diff, and Stage 5 calibration scores it. The parsing, matching, overlap and scoring rules
-live in `sandbox_executor/touch_set.py`; discovery in `flow/in_flight.py`, the admission decision in `flow/admission.py`
-and enforcement in `flow/stages/touch_set_guard.py`.
+live in `sandbox_executor/touch_set.py`; discovery in `flow/in_flight.py` (other worktrees' checkpoints read by
+`flow/worktree_checkpoints.py`), the admission decision in `flow/admission_decision.py` (the oldest-waiter rule in
+`flow/admission_order.py`), the lock and the recorded state in `flow/admission_lock.py` and `flow/admission_state.py`,
+the Stage 3 hook in `flow/admission.py` and enforcement in `flow/stages/touch_set_guard.py`.
 
 ## Plan row `touch_set`
 
@@ -46,10 +48,11 @@ flow reads the active plan row's `touch_set` and compares it with every flow in 
 - **In flight:** an open pull request whose head is a flow execution branch (`I-.../P-.../E-.../_`, one
   `gh pr list --state open` call; more than 50 open flow pull requests outside this lineage, or more than 1000 open pull
   requests in all, make discovery unavailable), and a checkpoint (`.holon/flow/checkpoint-*.json`) in another git
-  worktree of the repository whose current stage is execute or review and whose plan branch still exists. Flows of the
-  same root intent (this run's own lineage) are excluded, and a local flow that also has a pull request is listed once.
-  Discovery runs host-side and only reads refs and checkpoint files; it never fetches, checks out or writes another
-  flow's branch.
+  worktree of the repository whose current stage is execute or review, whose plan branch still exists and whose
+  admission state is not `blocked` (see [Admission state](#admission-state)). Flows of the same root intent (this run's
+  own lineage) are excluded, and a local flow that also has a pull request is listed once, so a flow with an open pull
+  request stays in flight whatever its checkpoint says. Discovery runs host-side and only reads refs and checkpoint
+  files; it never fetches, checks out or writes another flow's branch.
 - **Compared:** this plan's declared entries against the other flow's declared entries (two literals overlap when equal,
   a literal and a directory or glob when the entry matches the literal, two directories when one contains the other, and
   a glob against a directory or glob when one literal prefix starts the other: conservative on purpose), and against the
@@ -62,12 +65,51 @@ flow reads the active plan row's `touch_set` and compares it with every flow in 
   and a `gh` or `git` failure during discovery, are refused too (fail closed), with the reason in `admission_reason`. A
   dry run only logs the decision. Refusal never closes, merges or edits the other flow.
 
-A checkpoint left at execute or review by an abandoned run still counts as in flight while its plan branch exists;
-delete the checkpoint (or the branch) or use the override. Local flows are compared by their declared sets only, so a
-local flow without a pull request whose plan row records no touch set never conflicts (a known gap: its files are not
-known until it opens a pull request). A resumed Stage 3 (`--from-stage execute` or a `--checkpoint` resume) is admitted
-again like a fresh one, so a flow that started since can refuse it, and each admitted resume under `--allow-overlap`
-appends another override row.
+A checkpoint left at execute or review by an abandoned admitted run (or one older than the admission state) still counts
+as in flight while its plan branch exists; delete the checkpoint (or the branch) or use the override. A blocked
+checkpoint never counts as in flight. Local flows are compared by their declared sets only, so a local flow without a
+pull request whose plan row records no touch set never conflicts (a known gap: its files are not known until it opens a
+pull request). A resumed Stage 3 (`--from-stage execute` or a `--checkpoint` resume) is admitted again like a fresh one,
+so a flow that started since can refuse it, and each admitted resume under `--allow-overlap` appends another override
+row.
+
+## Admission state
+
+Outside a dry run, admission holds an exclusive lock on `<git-common-dir>/holon-admission.lock` (the git directory every
+worktree of the repository shares, from `git rev-parse --git-common-dir`) from discovery until it has written its
+outcome into this flow's checkpoint, so two overlapping flows on the same host are never admitted together. The wait is
+bounded (120 seconds); a timeout refuses fail-closed with the reason, and the kernel releases the lock of a process that
+dies. Flows on different hosts are not serialised; once one opens a pull request, the other's admission sees it.
+
+The outcome is the top-level `admission` object of the checkpoint JSON (`.holon/flow/checkpoint-<slug>.json`, also kept
+under `context.admission`). It is the machine-readable interface for operators: a waiting runner reads
+`admission.blocked_by` to know exactly which pull requests or flows to watch before it re-runs the flow.
+
+- **`blocked`:** a refusal for a touch-set overlap records
+  `{"state": "blocked", "blocked_since": "<UTC timestamp>", "blocked_by": [...]}`. `blocked_since` is kept from the
+  first refusal across retries; `blocked_by` is replaced on each refusal. Each entry names its kind, its reference and
+  the overlapping files: `{"kind": "pull_request", "number", "branch", "files"}` for an open pull request (`branch` is
+  its head) or `{"kind": "local_flow", "plan_branch", "worktree", "files"}` for a flow in another worktree. A refusal
+  without an overlap (no touch set, discovery or lock unavailable) records nothing.
+- **`admitted`:** an admission records `{"state": "admitted"}`; an `--allow-overlap` admission records
+  `{"state": "admitted", "override": true, "override_conflicts": [...]}` (the `{flow, files}` conflicts it overrode, as
+  in the `admission_override` row). If that row cannot be written the run is refused and the previous state is put back.
+- **No field:** a checkpoint written before the admission state existed loads with no `admission` object and keeps the
+  older rule (at execute or review it counts as in flight).
+
+A blocked flow is not in flight: it blocks no other flow, so two refused flows that overlap no longer list each other
+forever. Every `blocked_by` entry therefore names an open pull request, an admitted (or older) local flow, or an older
+waiting flow, never a newer waiter, and no cycle can form.
+
+**Oldest waiter first.** When the lock holder finds no overlap, it still defers to another blocked flow whose declared
+touch set overlaps its own, whose `(blocked_since, plan_branch)` is older than its own (a flow never refused counts as
+blocked now) and whose own `blocked_by` entries have all cleared (no longer an open pull request; a local flow neither
+in flight nor waiting). It then records itself blocked by that flow as a `local_flow` entry, and the refusal names "an
+older waiting flow on branch ... (worktree ..., blocked since ...)". So when a pull request merges and every flow
+waiting on it re-checks, the one blocked longest is admitted first and the others wait for it. A waiter's entry naming
+the checking flow itself is clear unless that flow is admitted; one naming another pull request or flow of the checking
+flow's own lineage is never clear. An abandoned waiter whose blockers have cleared holds newer overlapping flows back
+until its plan branch is deleted (which drops its checkpoint from discovery) or a flow is run with `--allow-overlap`.
 
 ## `--allow-overlap`
 

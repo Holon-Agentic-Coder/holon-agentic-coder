@@ -11,7 +11,15 @@ waits-for graph stays acyclic.
 
 from __future__ import annotations
 
-from sandbox_executor.flow.admission_state import BLOCKED_BY_PULL_REQUEST, BlockedBy
+from typing import Any
+
+from sandbox_executor.flow import admission_state
+from sandbox_executor.flow.admission_state import (
+    ADMISSION_ADMITTED,
+    BLOCKED_BY_PULL_REQUEST,
+    AdmissionRecord,
+    BlockedBy,
+)
 from sandbox_executor.flow.in_flight import BlockedWaiter, InFlightFlow, _root_intent
 from sandbox_executor.touch_set import TouchSet, overlapping_entries
 
@@ -54,3 +62,22 @@ def older_ready_waiter(
         and all(blocker_is_clear(entry, open_numbers, busy, own_plan_branch) for entry in waiter.record.blocked_by)
     ]
     return min(ready, key=waiter_key, default=None)
+
+
+def older_waiter_flows(
+    admission: dict[str, Any] | None,
+    plan_branch: str,
+    own: TouchSet,
+    flows: list[InFlightFlow],
+    waiters: list[BlockedWaiter],
+) -> list[InFlightFlow]:
+    """The older ready waiter this flow (its ``admission`` object and plan branch) defers to, as a local flow."""
+    record = AdmissionRecord.from_dict(admission)
+    since = record.blocked_since if record is not None and record.blocked else None
+    own_admitted = record is not None and record.state == ADMISSION_ADMITTED
+    waiter = older_ready_waiter((since or admission_state.utc_now(), plan_branch), own, flows, waiters, own_admitted)
+    if waiter is None:
+        return []
+    since = waiter.record.blocked_since
+    label = f"an older waiting flow on branch {waiter.plan_branch} (worktree {waiter.worktree}, blocked since {since})"
+    return [InFlightFlow(label, waiter.plan_branch, waiter.declared, worktree=waiter.worktree)]

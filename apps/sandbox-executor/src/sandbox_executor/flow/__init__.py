@@ -19,13 +19,11 @@ The engine is split into focused modules; see docs/architecture.md (Flow engine 
 from __future__ import annotations
 
 from sandbox_executor.entrypoint.planner import parse_metrics
-from sandbox_executor.flow.admission import (
-    AdmissionConflict,
-    AdmissionDecision,
-    admission_stage_failure,
-    check_admission,
-    format_refusal,
-)
+from sandbox_executor.flow.admission import admission_stage_failure, check_admission, format_refusal, record_admission
+from sandbox_executor.flow.admission_decision import AdmissionConflict, AdmissionDecision, decide_admission, refusal
+from sandbox_executor.flow.admission_lock import AdmissionLockError, admission_lock, admission_lock_path
+from sandbox_executor.flow.admission_order import blocker_is_clear, older_ready_waiter, older_waiter_flows, waiter_key
+from sandbox_executor.flow.admission_state import AdmissionRecord, BlockedBy, admitted_record, blocked_record, utc_now
 from sandbox_executor.flow.calibrate_rebuild import (
     holds_only_calibration_commits,
     is_ancestor,
@@ -61,6 +59,7 @@ from sandbox_executor.flow.checkpoint import (
     get_default_checkpoint_path,
     load_checkpoint,
     migrate_checkpoint_data,
+    save_admission,
     save_checkpoint,
 )
 from sandbox_executor.flow.child_progress import _child_intent_branch, _sub_intent_depth
@@ -143,8 +142,10 @@ from sandbox_executor.flow.host_remote import (
 )
 from sandbox_executor.flow.in_flight import (
     AdmissionUnavailable,
+    BlockedWaiter,
     InFlightFlow,
     discover_in_flight_flows,
+    local_blocked_waiters,
     local_in_flight_flows,
     open_flow_pull_requests,
     read_plan_touch_set,
@@ -263,6 +264,11 @@ from sandbox_executor.flow.stages.touch_set_guard import (
     touch_set_violation,
     touch_set_violation_result,
 )
+from sandbox_executor.flow.worktree_checkpoints import (
+    WorktreeCheckpoint,
+    read_worktree_checkpoint,
+    worktree_checkpoints,
+)
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
@@ -294,7 +300,11 @@ __all__ = [
     "_SUMMARY_STATUS_WORDS",
     "AdmissionConflict",
     "AdmissionDecision",
+    "AdmissionLockError",
+    "AdmissionRecord",
     "AdmissionUnavailable",
+    "BlockedBy",
+    "BlockedWaiter",
     "CalibrationSyncError",
     "CiWaitPolicy",
     "CiWaitResult",
@@ -316,6 +326,7 @@ __all__ = [
     "SalvageResult",
     "StageResult",
     "StageStatus",
+    "WorktreeCheckpoint",
     "_append_ledger_row",
     "_append_only_union",
     "_append_superseding_execution_row",
@@ -393,7 +404,12 @@ __all__ = [
     "_warn_ledger_failure",
     "_worst_severity",
     "_write_resolved_ledger",
+    "admission_lock",
+    "admission_lock_path",
     "admission_stage_failure",
+    "admitted_record",
+    "blocked_record",
+    "blocker_is_clear",
     "build_pr_review_consensus_report",
     "build_review_id",
     "check_admission",
@@ -401,6 +417,7 @@ __all__ = [
     "check_pr_mergeability",
     "choose_merge_flag",
     "create_or_update_pr",
+    "decide_admission",
     "describe_ci_outcome",
     "discard_empty_calibrated_branch",
     "discover_in_flight_flows",
@@ -424,11 +441,14 @@ __all__ = [
     "is_terminal_verdict",
     "leftover_paths",
     "load_checkpoint",
+    "local_blocked_waiters",
     "local_in_flight_flows",
     "lookup_merge_flag",
     "migrate_checkpoint_data",
     "new_local_child_branches",
     "next_poll_interval",
+    "older_ready_waiter",
+    "older_waiter_flows",
     "open_flow_pull_requests",
     "parse_metrics",
     "pending_check_names",
@@ -441,13 +461,16 @@ __all__ = [
     "push_branch",
     "push_commit",
     "read_plan_touch_set",
+    "read_worktree_checkpoint",
     "rebuild_calibrated_branch",
     "reconcile_jsonl_ledger_conflict",
     "reconcile_ledger_file",
+    "record_admission",
     "record_review_action",
     "record_starting_branch",
     "recorded_test_pass_rate",
     "redact_agent_secrets",
+    "refusal",
     "remote_error",
     "render_reviewer_summary_line",
     "report_staleness",
@@ -471,6 +494,7 @@ __all__ = [
     "run_review_stage",
     "salvage_for_resume",
     "salvage_leftovers",
+    "save_admission",
     "save_checkpoint",
     "settle_pending_ci",
     "stale_calibrated_refs",
@@ -481,6 +505,9 @@ __all__ = [
     "touch_set_replan_feedback",
     "touch_set_violation",
     "touch_set_violation_result",
+    "utc_now",
     "validate_intent_questions",
     "wait_for_pending_ci",
+    "waiter_key",
+    "worktree_checkpoints",
 ]

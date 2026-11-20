@@ -23,6 +23,15 @@ from sandbox_executor.turns import TurnResult
 from tests.flow.lookup_patch import patch_lookup_sites
 from tests.leak_assertions import assert_no_fragment, make_gh_probe
 from tests.review_fakes import install_fake_reviewers
+from tests.review_loop_stubs import (  # noqa: F401  (_CLEAN_MERGE and _ledger are re-exported for other test modules)
+    _CLEAN_MERGE,
+    _GREEN_CI,
+    EXEC_TARGET,
+    _ensemble_ctx,
+    _ledger,
+    _LoopStubs,
+    _rows,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -1180,71 +1189,9 @@ def test_mergeability_probe_is_bounded_by_a_subprocess_timeout(tmp_path):
 
 # --- Real reviewer ensemble wiring (fakes only: no runner, gh, Docker or remote) ------------------------------------
 
-EXEC_TARGET = "I-100-intent/P-200-plan/E-300-exec/_"
-_CLEAN_MERGE = {"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE"}
-_GREEN_CI = {"all_passed": True, "passed": 1, "failed": 0, "pending": 0, "total": 1, "source": "github_cli"}
-
-
-def _ensemble_ctx(tmp_path: Path, **kwargs):
-    from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
-
-    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True, exist_ok=True)
-    ctx = FlowContext(
-        repo_dir=str(tmp_path),
-        execution_branch=EXEC_TARGET,
-        agent="fake-agent",
-        model="fake-model",
-        token_reduce=False,
-        **kwargs,
-    )
-    ctx.stage_results["execute"] = StageResult(
-        stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 1.0, "exit_code": 0}
-    )
-    return ctx
-
-
-def _ledger(tmp_path: Path) -> list[dict]:
-    ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
-    return [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()] if ledger.exists() else []
-
-
-def _rows(tmp_path: Path, prefix: str) -> list[dict]:
-    return [r for r in _ledger(tmp_path) if str(r.get("action_id", "")).startswith(prefix + "-")]
-
 
 def _reviewer_rows(tmp_path: Path) -> list[dict]:
     return [r for r in _rows(tmp_path, "ACT-REV") if "review_reviewer_index" in r]
-
-
-class _LoopStubs:
-    """Patch mergeability, CI, the empty-diff guard, the reviewed commit and posting; ``post`` is the posting mock."""
-
-    def __init__(self, merge=None, ci=None):
-        self.merge = dict(merge or _CLEAN_MERGE)
-        self.ci = dict(ci or _GREEN_CI)
-        self._patches = []
-        self.post = MagicMock(return_value={"dual_posted": True, "official_review": {"success": True}})
-
-    def __enter__(self):
-        from sandbox_executor.review_target import DiffVerdict
-
-        self._patches = [
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
-            patch(
-                "sandbox_executor.flow.review.loop.check_pr_mergeability", side_effect=lambda *a, **k: dict(self.merge)
-            ),
-            patch("sandbox_executor.flow.review.loop.probe_ci_checks", side_effect=lambda *a, **k: dict(self.ci)),
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", self.post),
-            patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc1234"),
-            patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
-        ]
-        for p in self._patches:
-            p.start()
-        return self
-
-    def __exit__(self, *exc):
-        for p in reversed(self._patches):
-            p.stop()
 
 
 def _loop(tmp_path: Path, ensemble, *, size: int = 3, merge=None, ci=None, **ctx_kwargs):

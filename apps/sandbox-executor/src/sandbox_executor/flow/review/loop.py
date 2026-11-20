@@ -772,8 +772,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 mergeability_probe=check_pr_mergeability,
             ),
         )
-        if post_error:
-            consensus_reached, consensus_status, approval_score = False, "post_failed", 0.0
+        if post_error:  # A conflict-gate block is not a posting failure: the approval is re-earned on the merged head.
+            status = "conflict_gate" if "conflict_gate" in posting_res else "post_failed"
+            consensus_reached, consensus_status, approval_score = False, status, 0.0
     else:
         log_skipped_post(context, review_target, decision)
 

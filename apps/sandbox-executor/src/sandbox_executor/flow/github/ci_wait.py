@@ -101,7 +101,7 @@ def _log_transitions(context: FlowContext, before: dict[str, Any], after: dict[s
 
 
 def _log_summary(context: FlowContext, ci_status: dict[str, Any], result: CiWaitResult) -> None:
-    """The one closing line: the settled counts, or the checks still pending when the budget was spent."""
+    """The one closing line: the final counts (pending ones too), or the pending checks once the budget is spent."""
     if result.exhausted:
         pending = int(ci_status.get("pending", 0) or 0)
         names = ", ".join(result.pending_checks) or "unnamed"
@@ -111,10 +111,13 @@ def _log_summary(context: FlowContext, ci_status: dict[str, Any], result: CiWait
         )
         return
     passed, failed = int(ci_status.get("passed", 0) or 0), int(ci_status.get("failed", 0) or 0)
-    other = max(0, int(ci_status.get("total", 0) or 0) - passed - failed - int(ci_status.get("pending", 0) or 0))
+    pending = int(ci_status.get("pending", 0) or 0)
+    other = max(0, int(ci_status.get("total", 0) or 0) - passed - failed - pending)
+    # Pending checks remain only when the wait stopped early on a failure (stop_on_failure).
+    ending, still = ("stopped on a failure", f", {pending} still pending") if pending else ("settled", "")
     context.log(
-        f"[Review Loop] CI wait settled after {result.waited_seconds:g}s: "
-        f"{passed} passed, {failed} failed, {other} other."
+        f"[Review Loop] CI wait {ending} after {result.waited_seconds:g}s: "
+        f"{passed} passed, {failed} failed{still}, {other} other."
     )
 
 

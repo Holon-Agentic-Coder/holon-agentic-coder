@@ -17,9 +17,9 @@ from sandbox_executor.flow.review.posting import PostRequest, post_review_consen
 from sandbox_executor.flow.stages import calibrate
 
 from tests.flow.helpers import _git
+from tests.ledger_conflict_repos import BRANCH, LEDGER, build_conflicting_repos, refuse_test_runs
 from tests.review_fakes import FakeEnsemble, clean_reviewer
-from tests.test_ledger_fast_conflict import BRANCH, LEDGER, build_conflicting_repos, refuse_test_runs
-from tests.test_review_loop import _CLEAN_MERGE, EXEC_TARGET, _ensemble_ctx, _LoopStubs, _rows
+from tests.review_loop_stubs import _CLEAN_MERGE, EXEC_TARGET, _ensemble_ctx, _LoopStubs, _rows
 
 CONFLICTING = {"mergeable": "CONFLICTING", "merge_state_status": "DIRTY", "is_dirty": True}
 DIRTY = {"mergeable": "UNKNOWN", "merge_state_status": "DIRTY", "is_dirty": True}
@@ -32,9 +32,13 @@ class _RecordingMerge:
     def __init__(self, outcome: conflict_gate._MergeOutcome) -> None:
         self.outcome = outcome
         self.calls: list[tuple[str, str, str]] = []
+        self.trailers = ""
 
-    def __call__(self, repo_dir: str, branch: str, target_branch: str) -> conflict_gate._MergeOutcome:
+    def __call__(
+        self, repo_dir: str, branch: str, target_branch: str, trailers: str = ""
+    ) -> conflict_gate._MergeOutcome:
         self.calls.append((repo_dir, branch, target_branch))
+        self.trailers = trailers
         return self.outcome
 
 
@@ -77,7 +81,7 @@ def test_loop_never_posts_an_approval_when_the_head_turns_conflicting_before_the
     stubs.post.assert_not_called()
     assert merge.calls == [(str(tmp_path), EXEC_TARGET, "main")]
     assert res["consensus"]["approved"] is False
-    assert res["consensus"]["status"] == "post_failed"
+    assert res["consensus"]["status"] == "conflict_gate"
     assert not _rows(tmp_path, "ACT-POST")
     (gate_row,) = _rows(tmp_path, "ACT-GATE")
     assert "code conflicts with main in: src/app.py" in gate_row["error_context"]
@@ -164,5 +168,16 @@ def test_ledger_only_conflict_is_merged_and_pushed_but_the_approval_is_not_poste
         json.loads(line)["execution_id"] for line in _git(origin, "show", f"refs/heads/{BRANCH}:{LEDGER}").splitlines()
     ]
     assert ids == ["E-base", "E-main", "E-early", "E-late"]
+    message = _git(origin, "log", "-1", "--format=%B", f"refs/heads/{BRANCH}")
+    assert "Action-Origin: pr_review" in message and "Review-Iteration: 1" in message
     rows = [json.loads(line) for line in exec_file.read_text(encoding="utf-8").splitlines()]
     assert [row["action_id"].split("-")[1] for row in rows] == ["GATE"]
+
+
+def test_the_gate_refuses_to_merge_into_a_protected_branch_or_after_a_failed_fetch(tmp_path):
+    protected = conflict_gate._merge_and_push(str(tmp_path), "main", "feature")
+    assert (protected.merged, protected.error) == (False, "refusing to push to protected branch 'main'")
+
+    unfetched = conflict_gate._merge_and_push(str(tmp_path), "feature", "main")
+    assert unfetched.merged is False
+    assert unfetched.error.startswith("fetching 'main' and 'feature' failed: ")

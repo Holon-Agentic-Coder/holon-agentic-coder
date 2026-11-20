@@ -153,7 +153,7 @@ def post_review_consensus(
             request.review_target,
             proxy_env=request.proxy_env,
         )
-        blocked = _approved_post_gate(context, str(exec_file), request.review_target, request.consensus_data, probe)
+        blocked = _approved_post_gate(context, str(exec_file), request, probe)
         if blocked:
             context.log(f"[Review Loop] Not posting the approved consensus: {blocked[0]}")
             return blocked

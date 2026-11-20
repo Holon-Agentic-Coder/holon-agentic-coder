@@ -457,6 +457,20 @@ def test_wait_past_its_deadline_logs_one_start_line_and_one_budget_summary_namin
     ]
 
 
+def test_wait_stopped_on_a_failure_reports_the_checks_still_pending():
+    fake = FakeTime()
+    context = RecordingContext()
+    start = {"source": "github_cli", "pending": 3, "failed": 0, "passed": 0, "total": 3}
+    probes = [dict(start, pending=2, failed=1)]
+    policy = CiWaitPolicy(1800.0, 15.0, clock=fake.clock, sleep=fake.sleep)
+    wait_for_pending_ci(context, MagicMock(side_effect=probes), start, policy)
+
+    assert (
+        context.lines[-1]
+        == "[Review Loop] CI wait stopped on a failure after 15s: 0 passed, 1 failed, 2 still pending, 0 other."
+    )
+
+
 def test_wait_without_check_names_logs_the_pending_count_change():
     fake = FakeTime()
     context = RecordingContext()

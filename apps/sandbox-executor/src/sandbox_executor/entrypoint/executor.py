@@ -1354,9 +1354,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 agent_output_text, agent_output_truncated, _dropped = prepare_agent_output_block(combined, max_bytes)
                 agent_output_bytes = len(agent_output_text.encode("utf-8"))
             except Exception as e:
-                print(
-                    f"Warning: Failed to capture/sanitise agent output: {redact_agent_secrets(str(e))}", file=sys.stderr
-                )
+                print(f"Warning: Failed to capture agent output: {redact_agent_secrets(str(e))}", file=sys.stderr)
                 agent_output_text = ""
                 agent_output_truncated = False
                 agent_output_bytes = 0
@@ -1469,9 +1467,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             except LedgerRewriteError:
                 raise
             except Exception as e:
-                print(
-                    f"Warning: Failed to write execution ledger entry: {redact_agent_secrets(str(e))}", file=sys.stderr
-                )
+                print(f"Warning: Failed to write execution ledger row: {redact_agent_secrets(str(e))}", file=sys.stderr)
 
             if exec_status == "success":
                 commit_msg = f"execute: {exec_id} completed for plan {plan_branch}"

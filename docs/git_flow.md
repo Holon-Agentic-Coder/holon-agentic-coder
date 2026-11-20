@@ -268,7 +268,7 @@ moved once by `scripts/migrate_plan_layout.py`; a plan file that no branch could
 
 ### 2.7 The 5-Stage Holon Flow Lifecycle
 
-The evolution pipeline traverses five deterministic stages, representing a single continuous provenance lifecycle:
+The five deterministic stages form one provenance lifecycle ([Stage 3 admission](touch_set.md#admission-state)):
 
 | Stage              | Name                  | CLI Command                            | Artifacts & Outputs                                                                       |
 | :----------------- | :-------------------- | :------------------------------------- | :---------------------------------------------------------------------------------------- |
@@ -277,11 +277,6 @@ The evolution pipeline traverses five deterministic stages, representing a singl
 | **3. Execute**     | Sandbox Execution     | `holon execute <plan_branch>`          | Execution branch `I-.../P-.../E-.../_` + `executions.jsonl`                               |
 | **4. Review Loop** | PR Review Loop        | `holon review-loop <execution_branch>` | PR raised + sandboxed reviewer ensemble (unanimity) + micro-actions in `executions.jsonl` |
 | **5. Calibrate**   | Calibration Analysis  | `holon calibrate <execution_branch>`   | `/calibrated` branch + `plans/I-.../P-*_calibration.md` (included in PR diff)             |
-
-Before Stage 3 dispatches, `holon flow` runs touch-set admission under a per-repository lock and records the outcome in
-the flow checkpoint's top-level `admission` object: `blocked` (with `blocked_since` and the `blocked_by` pull requests
-or local flows to watch) or `admitted`. A blocked flow is not in flight, so it blocks no other flow, and the oldest
-waiter is admitted first. See "Admission state" in `docs/touch_set.md` for the fields and states.
 
 #### Target Worktree and the Default Branch
 

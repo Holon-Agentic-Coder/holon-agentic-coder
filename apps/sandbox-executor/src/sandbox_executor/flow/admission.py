@@ -96,7 +96,7 @@ def admission_stage_failure(context: FlowContext, start_time: str) -> StageResul
     """Run admission for Stage 3: ``None`` to dispatch, or the failed result that refuses it before any dispatch.
 
     A dry run only logs the decision. An override is recorded before dispatch, once per plan; if that row cannot be
-    written the run is refused, so no overlapping execution goes unrecorded.
+    written the run is refused and the previous state put back (none for a never-admitted flow: in flight, see docs).
     """
     previous = context.admission
     decision = check_admission(context)

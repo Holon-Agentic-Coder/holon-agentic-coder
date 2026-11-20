@@ -3,9 +3,9 @@
 A flow that finds no overlap still defers to a blocked waiter (:class:`flow.in_flight.BlockedWaiter`) whose declared
 touch set overlaps its own, whose ``(blocked_since, plan_branch)`` key is strictly smaller than its own (a flow never
 refused uses "now", so every waiter is older) and whose ``blocked_by`` entries are all clear: a pull request no longer
-open, a local flow neither in flight nor waiting. An entry naming this flow itself is clear unless this flow is
-admitted (it is not running while it re-checks); one naming a pull request or another flow of this lineage is never
-clear, since discovery does not list them. Every deferral points at a strictly older key, a total order, so the
+open, a local flow neither in flight nor waiting. An entry naming this flow itself is clear (an admitted flow never
+defers, so this one is not running while it re-checks); one naming a pull request or another flow of this lineage is
+never clear, since discovery does not list them. Every deferral points at a strictly older key, a total order, so the
 waits-for graph stays acyclic.
 """
 
@@ -45,12 +45,11 @@ def older_ready_waiter(
     own: TouchSet,
     flows: list[InFlightFlow],
     waiters: list[BlockedWaiter],
-    own_admitted: bool = False,
 ) -> BlockedWaiter | None:
     """The oldest overlapping waiter older than ``own_key`` (``(blocked_since or now, plan_branch)``) that is ready."""
     own_plan_branch = own_key[1]
     in_flight = {flow.plan_branch for flow in flows}
-    busy = in_flight | {waiter.plan_branch for waiter in waiters} | ({own_plan_branch} if own_admitted else set())
+    busy = in_flight | {waiter.plan_branch for waiter in waiters}
     open_numbers = {flow.number for flow in flows if flow.number is not None}
     ready = [
         waiter
@@ -71,11 +70,12 @@ def older_waiter_flows(
     flows: list[InFlightFlow],
     waiters: list[BlockedWaiter],
 ) -> list[InFlightFlow]:
-    """The older ready waiter this flow (its ``admission`` object and plan branch) defers to, as a local flow."""
+    """The older ready waiter this flow (its ``admission`` object and plan branch) defers to; none once admitted."""
     record = AdmissionRecord.from_dict(admission)
+    if record is not None and record.state == ADMISSION_ADMITTED:  # already in flight (a resume): it never defers
+        return []
     since = record.blocked_since if record is not None and record.blocked else None
-    own_admitted = record is not None and record.state == ADMISSION_ADMITTED
-    waiter = older_ready_waiter((since or admission_state.utc_now(), plan_branch), own, flows, waiters, own_admitted)
+    waiter = older_ready_waiter((since or admission_state.utc_now(), plan_branch), own, flows, waiters)
     if waiter is None:
         return []
     since = waiter.record.blocked_since

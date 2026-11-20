@@ -95,7 +95,9 @@ under `context.admission`). It is the machine-readable interface for operators: 
   `{"state": "admitted", "override": true, "override_conflicts": [...]}` (the `{flow, files}` conflicts it overrode, as
   in the `admission_override` row). If that row cannot be written the run is refused and the previous state is put back.
 - **No field:** a checkpoint written before the admission state existed loads with no `admission` object and keeps the
-  older rule (at execute or review it counts as in flight).
+  older rule (at execute or review it counts as in flight). So does a flow never admitted whose refusal recorded nothing
+  (no overlap) or whose failed override write restored no field: until it re-runs admission or leaves execute, other
+  flows' discovery counts it as in flight, which can only refuse more (fail closed), never admit an overlap.
 
 A blocked flow is not in flight: it blocks no other flow, so two refused flows that overlap no longer list each other
 forever. Every `blocked_by` entry therefore names an open pull request, an admitted (or older) local flow, or an older
@@ -107,9 +109,10 @@ blocked now) and whose own `blocked_by` entries have all cleared (no longer an o
 in flight nor waiting). It then records itself blocked by that flow as a `local_flow` entry, and the refusal names "an
 older waiting flow on branch ... (worktree ..., blocked since ...)". So when a pull request merges and every flow
 waiting on it re-checks, the one blocked longest is admitted first and the others wait for it. A waiter's entry naming
-the checking flow itself is clear unless that flow is admitted; one naming another pull request or flow of the checking
-flow's own lineage is never clear. An abandoned waiter whose blockers have cleared holds newer overlapping flows back
-until its plan branch is deleted (which drops its checkpoint from discovery) or a flow is run with `--allow-overlap`.
+the checking flow itself is clear (an admitted flow, resuming, defers to no waiter); one naming another pull request or
+flow of the checking flow's own lineage is never clear. An abandoned waiter whose blockers have cleared holds newer
+overlapping flows back until its plan branch is deleted (which drops its checkpoint from discovery) or a flow is run
+with `--allow-overlap`.
 
 ## `--allow-overlap`
 

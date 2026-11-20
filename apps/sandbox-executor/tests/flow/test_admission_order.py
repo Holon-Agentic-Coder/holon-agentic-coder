@@ -10,7 +10,12 @@ from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStat
 from sandbox_executor.flow.admission import check_admission
 from sandbox_executor.flow.admission_order import blocker_is_clear, older_ready_waiter
 from sandbox_executor.flow.admission_state import AdmissionRecord, BlockedBy
-from sandbox_executor.flow.checkpoint import get_default_checkpoint_path, load_checkpoint, save_checkpoint
+from sandbox_executor.flow.checkpoint import (
+    get_default_checkpoint_path,
+    load_checkpoint,
+    save_admission,
+    save_checkpoint,
+)
 from sandbox_executor.flow.in_flight import BlockedWaiter, InFlightFlow
 from sandbox_executor.touch_set import TouchSet, TouchSetEntry
 
@@ -84,6 +89,20 @@ def test_older_flow_retrying_first_is_admitted_and_blocks_the_newer(two_waiters)
     assert newer_state["state"] == "blocked" and _local_blockers(newer_state) == [("local_flow", OLDER_PLAN)]
 
 
+def _reload(context: FlowContext) -> FlowContext:
+    return load_checkpoint(get_default_checkpoint_path(context.target_worktree, context.intent_data["slug"])).context
+
+
+def test_an_admitted_flow_resuming_stage_3_does_not_defer_to_a_ready_older_waiter(two_waiters):
+    older, newer = two_waiters
+    waiting = _reload(older).admission
+    waiting["blocked_by"] = [entry for entry in waiting["blocked_by"] if entry["kind"] == "pull_request"]
+    assert save_admission(_reload(older), waiting) is None  # the older flow waits on PR #7 alone
+    assert save_admission(_reload(newer), {"state": "admitted"}) is None  # admitted earlier, under --allow-overlap
+    # PR #7 merged, so the older waiter is ready, yet the admitted flow resuming Stage 3 does not defer to it
+    assert _retry(newer, MERGED) == {"state": "admitted"}
+
+
 def _waiter(plan_branch: str, since: str, *blocked_by: BlockedBy) -> BlockedWaiter:
     record = AdmissionRecord("blocked", blocked_since=since, blocked_by=blocked_by)
     return BlockedWaiter(plan_branch, "/w", TouchSet((TouchSetEntry("src/"),)), record)
@@ -108,7 +127,6 @@ def test_a_waiter_still_blocked_or_waiting_on_this_flow_is_not_ready():
     assert older_ready_waiter(own_key, own, [], [_waiter(OLDER_PLAN, since, by_own_pr)]) is None
     waiting_on_us = _waiter(OLDER_PLAN, since, by_own_flow)
     assert older_ready_waiter(own_key, own, [], [waiting_on_us]) is waiting_on_us
-    assert older_ready_waiter(own_key, own, [], [waiting_on_us], own_admitted=True) is None
     assert older_ready_waiter(own_key, own, [], [_waiter(OLDER_PLAN, "2026-11-20T10:00:00.000Z", by_pr)]) is None
     oldest = _waiter(NEWER_PLAN, "2026-11-20T00:30:00.000Z", by_pr)
     assert older_ready_waiter(own_key, own, [], [_waiter(OLDER_PLAN, since, by_pr), oldest]) is oldest

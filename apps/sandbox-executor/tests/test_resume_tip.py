@@ -17,9 +17,18 @@ import pytest
 from sandbox_executor.entrypoint import executor
 from sandbox_executor.entrypoint.execution_workspace import resolve_partial_head
 from sandbox_executor.entrypoint.partial_resume import RESUMED, merge_plan_tip, start_execution_branch
-from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, admission, run_execute_stage
+from sandbox_executor.flow import (
+    FlowContext,
+    FlowStage,
+    StageResult,
+    StageStatus,
+    admission,
+    plan_refresh_stage_failure,
+    run_execute_stage,
+)
 from sandbox_executor.flow.admission import AdmissionDecision
 from sandbox_executor.git import GitRepository
+from sandbox_executor.plan_paths import REFRESH_MERGE_PREFIX
 
 INTENT = "I-1-x/_"
 PREFIX = "I-1-x/P-2-claude-agent-claude-opus-5-5"
@@ -137,6 +146,40 @@ def test_a_partial_head_forked_on_the_intent_branch_is_refused(host: Path) -> No
     plan_tip = git(host, "rev-parse", f"refs/remotes/origin/{PLAN}")
     start = resolve_partial_head(GitRepository(host), FAILED, plan_tip, PREFIX)
     assert start.head is None and "forked off the plan branch history" in start.reason
+
+
+def move_main(repo: Path) -> None:
+    git(repo, "checkout", "-q", "main")
+    commit_file(repo, "docs/main.md", "merged while the flow waited\n", "overlapping change")
+    git(repo, "push", "-q", "origin", "main")
+
+
+def test_partial_work_forked_before_a_refresh_merge_resumes(host: Path) -> None:
+    move_main(host)
+    waited = {"state": "admitted", "waited_since": "2026-11-20T01:00:00.000Z"}
+    ctx = FlowContext(target_worktree=str(host), plan_branch=PLAN, intent_branch=INTENT, admission=waited)
+    assert plan_refresh_stage_failure(ctx, "2026-11-20T02:00:00Z") is None
+    plan_tip = git(host, "rev-parse", f"refs/remotes/origin/{PLAN}")
+    assert git(host, "log", "-1", "--format=%s", f"{plan_tip}~1").startswith(REFRESH_MERGE_PREFIX)
+
+    assert resume(host) == recorded_head(host)
+    git(host, "merge-base", "--is-ancestor", plan_tip, NEW_EXEC)  # raises unless it descends from today's plan tip
+    assert "PARTIAL = 2" in (host / "src/app.py").read_text(encoding="utf-8")
+    assert (host / "docs/main.md").exists()
+
+
+@pytest.mark.parametrize("subject", [f"{REFRESH_MERGE_PREFIX}P-2 onto origin/main", "Merge main into the plan"])
+def test_a_merge_that_is_not_a_clean_refresh_is_refused(host: Path, subject: str) -> None:
+    move_main(host)
+    git(host, "checkout", "-q", PLAN)
+    git(host, "merge", "-q", "--no-ff", "--no-commit", "main")
+    if subject.startswith(REFRESH_MERGE_PREFIX):  # a forged refresh message on a merge that also edits the plan
+        commit_file(host, "src/extra.py", "EXTRA = 1\n", subject)
+    else:
+        git(host, "commit", "-q", "-m", subject)
+    git(host, "push", "-q", "origin", PLAN)
+    start = resolve_partial_head(GitRepository(host), FAILED, git(host, "rev-parse", "HEAD"), PREFIX)
+    assert start.head is None and "the plan branch changed more than its ledgers" in start.reason
 
 
 def test_resume_starts_from_a_merge_commit_on_the_branch_tip(host: Path) -> None:

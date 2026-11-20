@@ -128,6 +128,7 @@ from sandbox_executor.flow.github.ci_wait import (
     settle_pending_ci,
     wait_for_pending_ci,
 )
+from sandbox_executor.flow.github.merge import BranchMerge, merge_branch_detailed
 from sandbox_executor.flow.github.merge_method import choose_merge_flag, lookup_merge_flag
 from sandbox_executor.flow.github.pr import (
     _resolve_commit_ref,
@@ -185,6 +186,16 @@ from sandbox_executor.flow.partial_salvage import (
     salvage_leftovers,
 )
 from sandbox_executor.flow.pipeline import PipelineEngine, run_flow_pipeline
+from sandbox_executor.flow.plan_refresh import (
+    PLAN_REFRESH_KIND,
+    PlanRefresh,
+    plan_refresh_stage_failure,
+    record_plan_refresh,
+    refresh_already_recorded,
+    refresh_due,
+    refresh_payload,
+    refresh_plan_branch,
+)
 from sandbox_executor.flow.review.adjudication import _augment_pr_text_with_rejected, _filter_adjudicated_findings
 from sandbox_executor.flow.review.carried_findings import (
     CarriedPass,
@@ -302,6 +313,7 @@ __all__ = [
     "FAILED_EXECUTION_STATUSES",
     "HOST_REVIEW_REFUSAL",
     "LEDGER_REL_PATHS",
+    "PLAN_REFRESH_KIND",
     "POSTING_ERROR_CONTEXT_MAX_CHARS",
     "REVIEW_GIT_ENV",
     "SKIP_PUSH_DISPATCH_ERROR",
@@ -319,6 +331,7 @@ __all__ = [
     "AdmissionUnavailable",
     "BlockedBy",
     "BlockedWaiter",
+    "BranchMerge",
     "CalibrationSyncError",
     "CarriedPass",
     "CiWaitPolicy",
@@ -333,6 +346,7 @@ __all__ = [
     "InFlightFlow",
     "MigrationTransform",
     "PipelineEngine",
+    "PlanRefresh",
     "PrefixSide",
     "RerunSeams",
     "ResolverInput",
@@ -463,6 +477,7 @@ __all__ = [
     "local_blocked_waiters",
     "local_in_flight_flows",
     "lookup_merge_flag",
+    "merge_branch_detailed",
     "merge_findings",
     "migrate_checkpoint_data",
     "new_local_child_branches",
@@ -474,6 +489,7 @@ __all__ = [
     "override_already_recorded",
     "parse_metrics",
     "pending_check_names",
+    "plan_refresh_stage_failure",
     "post_pr_review_consensus",
     "post_stale_signal",
     "prepare_calibrated_branch",
@@ -489,10 +505,15 @@ __all__ = [
     "reconcile_jsonl_ledger_conflict",
     "reconcile_ledger_file",
     "record_admission",
+    "record_plan_refresh",
     "record_review_action",
     "record_starting_branch",
     "recorded_test_pass_rate",
     "redact_agent_secrets",
+    "refresh_already_recorded",
+    "refresh_due",
+    "refresh_payload",
+    "refresh_plan_branch",
     "refusal",
     "remote_error",
     "render_reviewer_summary_line",

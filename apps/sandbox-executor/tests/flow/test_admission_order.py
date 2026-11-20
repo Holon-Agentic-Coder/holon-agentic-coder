@@ -77,14 +77,14 @@ def test_newer_flow_retrying_first_defers_to_the_older_waiter(two_waiters):
     assert newer_state["state"] == "blocked" and _local_blockers(newer_state) == [("local_flow", OLDER_PLAN)]
     assert newer_state["blocked_since"] == "2026-11-20T01:01:00.000Z"  # kept from its first refusal
     assert Path(newer_state["blocked_by"][0]["worktree"]).resolve() == Path(older.target_worktree).resolve()
-    assert _retry(older, MERGED) == {"state": "admitted"}
+    assert _retry(older, MERGED) == {"state": "admitted", "waited_since": "2026-11-20T01:00:00.000Z"}
     again = _retry(newer, MERGED)
     assert again["state"] == "blocked" and _local_blockers(again) == [("local_flow", OLDER_PLAN)]
 
 
 def test_older_flow_retrying_first_is_admitted_and_blocks_the_newer(two_waiters):
     older, newer = two_waiters
-    assert _retry(older, MERGED) == {"state": "admitted"}
+    assert _retry(older, MERGED) == {"state": "admitted", "waited_since": "2026-11-20T01:00:00.000Z"}
     newer_state = _retry(newer, MERGED)
     assert newer_state["state"] == "blocked" and _local_blockers(newer_state) == [("local_flow", OLDER_PLAN)]
 

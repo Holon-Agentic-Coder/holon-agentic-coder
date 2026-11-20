@@ -35,6 +35,7 @@ from scripts.ci_durations_stats import (
     rolling_medians,
     slowest_vs_baseline,
 )
+from tests.test_workflow_triggers import parse_triggers
 
 REPO = "acme/widgets"
 REPO_ID = 42
@@ -357,6 +358,7 @@ def test_ceilings_are_read_from_the_committed_workflows() -> None:
         ("test-stress.yml", "workspace-survival"): 600,
         ("test-stress.yml", "Workspace survival"): 600,
         ("test-unit.yml", "unit"): 600,
+        ("ci-durations.yml", "report"): 600,
     }
     assert {key: ceilings.get(key) for key in expected} == expected
     assert ceiling_for(point(1, 1.0), ceilings) == 600
@@ -510,3 +512,23 @@ def test_the_summary_says_when_no_job_has_a_baseline(tmp_path: Path, monkeypatch
 def test_days_must_be_positive(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", SECRET)
     assert run_cli(tmp_path, recorded_api(), "--days", "0") == 2
+
+
+def test_the_workflow_is_read_only_and_runs_on_schedule_and_dispatch() -> None:
+    text = (workflows_dir() / "ci-durations.yml").read_text(encoding="utf-8")
+    triggers = parse_triggers(text)
+    assert set(triggers) == {"schedule", "workflow_dispatch"}
+    block = re.search(r"^permissions:\n((?:  .*\n)+)", text, re.MULTILINE)
+    assert block is not None
+    assert sorted(line.strip() for line in block.group(1).splitlines()) == ["actions: read", "contents: read"]
+    assert text.count("permissions:") == 1
+    assert "write" not in re.sub(r"#.*", "", text)
+
+
+def test_the_workflow_never_interpolates_an_input_into_a_shell_line() -> None:
+    text = (workflows_dir() / "ci-durations.yml").read_text(encoding="utf-8")
+    for line in text.splitlines():
+        if line.strip().startswith("run:"):
+            assert "${{" not in line, line
+    assert "python3 -m scripts.ci_durations" in text
+    assert "actions/upload-artifact" in text and "name: ci-durations" in text

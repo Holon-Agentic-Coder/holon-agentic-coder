@@ -14,6 +14,7 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, S
 from sandbox_executor.flow.test_evidence import TEST_MEASUREMENT_KEYS as TEST_MEASUREMENT_KEYS
 from sandbox_executor.flow.test_evidence import _effective_exit_code, recorded_test_pass_rate
 from sandbox_executor.flow.test_evidence import _recorded_test_fields as _recorded_test_fields
+from sandbox_executor.module_budget_guard import module_budget_flag
 
 
 def _test_evidence(exec_result: StageResult | None) -> tuple[float | None, int]:
@@ -46,7 +47,9 @@ def _dispatch_role(
     """Dispatch one role agent through the same function the per-stage commands use.
 
     Non-None ``extra`` keywords are forwarded to the dispatcher; None values are dropped so injected
-    dispatchers without those parameters keep working unchanged.
+    dispatchers without those parameters keep working unchanged. The container sees
+    ``HOLON_ALLOW_MODULE_BUDGET_CHANGE=1`` (forwarded with the ``HOLON_`` variables) only when the intent carries
+    ``module_budget_change``; an inherited value is withheld otherwise.
     """
     dispatcher = _get_dispatcher(context)
     context.log(f"Dispatching {role} agent (runner={context.agent}, model={context.model}).")
@@ -59,15 +62,8 @@ def _dispatch_role(
     if result_file is not None:
         kwargs["result_file"] = result_file
     kwargs.update({key: value for key, value in extra.items() if value is not None})
-    return int(
-        dispatcher(
-            role,
-            context.agent,
-            context.model,
-            positional_args,
-            **kwargs,
-        )
-    )
+    with module_budget_flag(context.intent_data):
+        return int(dispatcher(role, context.agent, context.model, positional_args, **kwargs))
 
 
 def _stage_failure(context: FlowContext, stage: FlowStage, start_time: str, error: str, **payload: Any) -> StageResult:

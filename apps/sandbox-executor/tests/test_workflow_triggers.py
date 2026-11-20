@@ -216,3 +216,12 @@ jobs: {}
 )
 def test_parse_triggers_reads_on_block(text: str, expected: Triggers) -> None:
     assert parse_triggers(text) == expected
+
+
+def test_the_hygiene_job_checks_module_budgets_against_main_behind_the_maintainer_label():
+    """The freeze needs ``git merge-base HEAD origin/main``: a shallow checkout would skip the comparison silently."""
+    text = (_workflows_dir() / "test-hygiene.yml").read_text(encoding="utf-8")
+    assert re.search(r"^\s+fetch-depth: 0\s*$", text, re.MULTILINE)
+    assert "uv run python scripts/check_module_budgets.py" in text
+    assert "contains(github.event.pull_request.labels.*.name, 'module-budget-change')" in text
+    assert "export HOLON_ALLOW_MODULE_BUDGET_CHANGE=1" in text

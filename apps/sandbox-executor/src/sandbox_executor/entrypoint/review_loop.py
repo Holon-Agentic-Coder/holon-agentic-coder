@@ -55,6 +55,12 @@ from sandbox_executor.flow import (
     run_review_loop,
 )
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
+from sandbox_executor.module_budget_guard import (
+    MODULE_BUDGET_CONFIG,
+    module_budget_change_authorised,
+    refusal_message,
+    with_module_budget_flag,
+)
 from sandbox_executor.plan_paths import is_row_of_plan, plan_branch_of
 from sandbox_executor.redaction import redact_agent_secrets, redact_command
 from sandbox_executor.ref_names import INTENT_SUFFIX
@@ -400,6 +406,8 @@ def _build_resolver_prompt(
         "A `uv.lock` change that no `pyproject.toml` dependency or `requires-python` change explains is a defect: "
         "revert it with `git checkout <base> -- uv.lock`, run `uv` only with `UV_FROZEN=1`, and never "
         "commit an incidental rewrite.\n"
+        "A module over its line limit is fixed by splitting it into smaller modules; never edit the frozen module "
+        f"budget configuration (`{MODULE_BUDGET_CONFIG}`): the harness reverts any unauthorised change to it.\n"
         "The workspace is the shared flow worktree, so never move HEAD in it: no `git checkout <commit-or-branch>`, "
         "`git switch`, `git reset --hard`, `git stash` or `gh pr checkout` (restoring one file with "
         "`git checkout <rev> -- <path>` is fine); read other revisions with `git show <rev>:<path>`, `git diff` or "
@@ -471,6 +479,7 @@ class CommitOptions:
 
     dry_run: bool = False
     pre_resolver_head: str | None = None
+    intent_data: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
 def _commit_resolution(
@@ -490,12 +499,13 @@ def _commit_resolution(
         _assert_safe_git_args(reset_cmd)
         run_cmd(reset_cmd, cwd=repo_dir, check=True)
     initial_head = pre_resolver_head or current_head
+    budget_refusal = None if opts.dry_run else _restore_budget_config(repo_dir, opts.intent_data)
     status_proc = run_cmd(["git", "status", "--porcelain", *_RESOLVER_PATHSPEC], cwd=repo_dir, check=False)
     has_worktree_changes = bool((status_proc.stdout or "").strip())
     applied_items = [d for d in dispositions if d.disposition == "applied"]
 
     if not applied_items or not has_worktree_changes:
-        return dispositions, initial_head, False, False, None
+        return dispositions, initial_head, False, False, budget_refusal
 
     if opts.dry_run:
         return dispositions, initial_head, False, False, None
@@ -532,6 +542,55 @@ def _commit_resolution(
     return updated, new_head, True, True, None
 
 
+def _intent_row(repo_dir: str, head_branch: str) -> dict[str, Any]:
+    """Return the last ``intents.jsonl`` row whose branch is ``head_branch`` or a ``/``-bounded prefix of it, or {}."""
+    intent_data: dict[str, Any] = {}
+    intents_path = os.path.join(repo_dir, "holon-knowledge/ledger/intents.jsonl")
+    if not os.path.exists(intents_path):
+        return intent_data
+    try:
+        with open(intents_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        d = json.loads(line)
+                        b = d.get("branch", "")
+                        if b and (head_branch == b or head_branch.startswith(f"{b}/")):
+                            intent_data = d
+                    except json.JSONDecodeError:
+                        continue
+    except Exception as exc:
+        logger.debug("Non-fatal error reading intents ledger: %s", exc)
+    return intent_data
+
+
+def _restore_budget_config(repo_dir: str, intent_data: dict[str, Any]) -> str | None:
+    """Undo an unauthorised change to the frozen module budget configuration; return the refusal, or ``None``.
+
+    Only the one configuration path is restored from ``HEAD`` (removed when ``HEAD`` has none); every other change of
+    the resolver stays in the working tree.
+    """
+    if module_budget_change_authorised(intent_data):
+        return None
+    status = run_cmd(["git", "status", "--porcelain", "--", MODULE_BUDGET_CONFIG], cwd=repo_dir, check=False)
+    if not (status.stdout or "").strip():
+        return None
+    tracked = run_cmd(["git", "cat-file", "-e", f"HEAD:{MODULE_BUDGET_CONFIG}"], cwd=repo_dir, check=False)
+    if tracked.returncode == 0:
+        restore = ["git", "restore", "--source=HEAD", "--staged", "--worktree", "--", MODULE_BUDGET_CONFIG]
+        run_cmd(restore, cwd=repo_dir, check=True)
+    else:
+        run_cmd(
+            ["git", "rm", "-q", "--cached", "--ignore-unmatch", "--", MODULE_BUDGET_CONFIG], cwd=repo_dir, check=True
+        )
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(os.path.join(repo_dir, MODULE_BUDGET_CONFIG))
+    refusal = refusal_message()
+    _log_stderr(f"Resolver: {refusal}")
+    return refusal
+
+
 def _run_resolver_mode(
     args: argparse.Namespace,
     repo_dir: str,
@@ -547,6 +606,8 @@ def _run_resolver_mode(
     output_tail = ""
     raw_dispositions: list[dict[str, Any]] = []
     pre_resolver_head = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
+    intent_data = _intent_row(repo_dir, head_branch)
+    with_module_budget_flag(os.environ, intent_data)
     if findings and not args.dry_run:
         prompt = _build_resolver_prompt(repo_dir, head_branch, args.iteration, findings, dispositions_path)
         prompt += previous_failure_section(repo_dir, pre_resolver_head)
@@ -578,6 +639,7 @@ def _run_resolver_mode(
                 CommitOptions(
                     dry_run=args.dry_run,
                     pre_resolver_head=pre_resolver_head,
+                    intent_data=intent_data,
                 ),
                 pre_resolver_head=pre_resolver_head,
             )
@@ -766,25 +828,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         return
 
     # Read intent and plan metadata from ledger if available
-    intent_data: dict[str, Any] = {}
+    intent_data = _intent_row(repo_dir, head_branch)
+    with_module_budget_flag(os.environ, intent_data)
     plan_branch: str | None = None
-
-    intents_path = os.path.join(repo_dir, "holon-knowledge/ledger/intents.jsonl")
-    if os.path.exists(intents_path):
-        try:
-            with open(intents_path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            d = json.loads(line)
-                            b = d.get("branch", "")
-                            if b and b in head_branch:
-                                intent_data = d
-                        except json.JSONDecodeError:
-                            continue
-        except Exception as exc:
-            logger.debug("Non-fatal error reading intents ledger: %s", exc)
 
     plans_path = os.path.join(repo_dir, "holon-knowledge/ledger/plans.jsonl")
     if os.path.exists(plans_path):

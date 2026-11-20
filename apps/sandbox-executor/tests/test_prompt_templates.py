@@ -314,3 +314,34 @@ def test_review_loop_template_and_resolver_prompt_keep_the_shared_worktree_on_it
         assert SHARED_WORKTREE_RULE in text
         assert "`gh pr checkout`" in text
         assert "`git show <rev>:<path>`" in text
+
+
+BUDGET_CONFIG_PATH = "`holon-config/hygiene/module_budgets.json`"
+
+
+@pytest.mark.parametrize(
+    ("render", "phrases"),
+    [
+        (rendered_planner, ("is split into smaller modules", "the module budget configuration is frozen")),
+        (rendered_executor, ("split the module into smaller modules", "never edit the frozen module budget")),
+        (
+            lambda: (REPO_ROOT / "holon-config" / "prompts" / "review_loop.template.md").read_text("utf-8"),
+            ("fixed by splitting it into smaller modules", "as a critical finding", "the resolver never edits it"),
+        ),
+    ],
+    ids=["planner", "executor", "review-loop"],
+)
+def test_templates_say_split_the_module_and_never_change_the_budget(render: Callable[[], str], phrases) -> None:
+    text = normalised(render())
+    assert BUDGET_CONFIG_PATH in text
+    assert "`module_budget_change`" in text
+    missing = [phrase for phrase in phrases if phrase not in text]
+    assert missing == [], f"module budget rule phrases missing: {missing}"
+
+
+def test_resolver_prompt_says_split_and_never_edit_the_budget() -> None:
+    from sandbox_executor.entrypoint.review_loop import _build_resolver_prompt
+
+    text = normalised(_build_resolver_prompt("/r", "head", 1, [], "/d.json"))
+    assert "splitting it into smaller modules" in text
+    assert BUDGET_CONFIG_PATH in text

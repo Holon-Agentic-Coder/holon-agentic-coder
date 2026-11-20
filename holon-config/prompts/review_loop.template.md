@@ -47,6 +47,10 @@ consensus model and post one short consensus review built only from what the rev
     file with `git checkout <rev> -- <path>` is fine). Read other revisions with `git show <rev>:<path>`,
     `git diff <a>..<b>` or `git log`; for a full tree, run `git worktree add --detach tmp/review/<name> <rev>` and
     remove that worktree afterwards.
+14. **Module budgets are frozen**: a module over its line limit is fixed by splitting it into smaller modules, never by
+    editing the module budget configuration (`holon-config/hygiene/module_budgets.json`). Reviewers raise any change to
+    that configuration as a Critical finding unless the intent carries `module_budget_change` quoting the maintainer's
+    instruction; the resolver never edits it.
 
 Review commits carry these RFC 2822 trailers:
 

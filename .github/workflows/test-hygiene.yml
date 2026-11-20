@@ -31,6 +31,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: true
+          # Full history, so the module budget check finds the merge base with origin/main.
+          fetch-depth: 0
 
       - name: CI Timing Gate (Start)
         uses: ./.github/actions/ci-timing-gate
@@ -62,6 +64,14 @@ jobs:
 
       - name: Check formatting with Ruff
         run: uv run ruff format --check .
+
+      - name: Check module budgets
+        env:
+          # The budget configuration is frozen: only the maintainer's module-budget-change label authorises a change.
+          MODULE_BUDGET_CHANGE_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'module-budget-change') }}
+        run: |
+          if [ "$MODULE_BUDGET_CHANGE_LABEL" = "true" ]; then export HOLON_ALLOW_MODULE_BUDGET_CHANGE=1; fi
+          uv run python scripts/check_module_budgets.py
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

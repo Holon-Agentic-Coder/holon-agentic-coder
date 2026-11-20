@@ -32,6 +32,7 @@ from sandbox_executor.ledger import (
     build_plan_id,
     validate_ledger_file_unique_ids,
 )
+from sandbox_executor.module_budget_guard import module_budget_change_authorised, refusal_message, without_budget_config
 from sandbox_executor.plan_attempt import clear_failure_detail, discard_untracked_plan_file, write_failure_detail
 from sandbox_executor.plan_paths import plan_file_rel
 from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
@@ -276,10 +277,12 @@ def _plan_decision_fields(plan_entry: dict, plan_md_path: str, intent_data: dict
     return should_decompose(plan_entry, plan_content, intent_data).to_plan_fields()
 
 
-def _touch_set_field(plan_md_path: str) -> dict:
+def _touch_set_field(plan_md_path: str, intent_data: Mapping | None = None) -> dict:
     """Return the ``touch_set`` field for the plan row: the parsed ``## Touch Set`` section, or ``None``.
 
-    Advisory only: a missing section or a parse error records ``None`` and never fails the plan.
+    Advisory only: a missing section or a parse error records ``None`` and never fails the plan. The frozen module
+    budget configuration is dropped from the set unless the intent carries ``module_budget_change``, so it never
+    serialises Stage 3 admission (Stage 3 refuses a change to it anyway).
     """
     try:
         with open(plan_md_path, encoding="utf-8") as f:
@@ -290,6 +293,10 @@ def _touch_set_field(plan_md_path: str) -> dict:
     if touch_set is None:
         print("Warning: the plan has no '## Touch Set' section; recording touch_set as null.", file=sys.stderr)
         return {"touch_set": None}
+    if not module_budget_change_authorised(intent_data):
+        touch_set, removed = without_budget_config(touch_set)
+        if removed:
+            print(f"Warning: dropped from the touch set. {refusal_message(removed)}", file=sys.stderr)
     return {"touch_set": touch_set.to_row()}
 
 
@@ -611,7 +618,7 @@ Include metrics in this format:
     except Exception as e:
         print(f"Warning: Failed to converge prettier on {plan_md_rel}: {e}", file=sys.stderr)
     plan_entry.update(_plan_decision_fields(plan_entry, plan_md_path, intent_data))
-    plan_entry.update(_touch_set_field(plan_md_path))
+    plan_entry.update(_touch_set_field(plan_md_path, intent_data))
 
     plans_ledger_dir = os.path.join(repo_dir, "holon-knowledge/ledger")
     os.makedirs(plans_ledger_dir, exist_ok=True)

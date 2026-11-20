@@ -16,7 +16,9 @@ LIKELY_SUCCESS_TRIALS = 10
 PROVEN_SUCCESS_TRIALS = 22
 
 
-def _append_ledger(ledger_path: Path, fingerprint: str, verdict: str, count: int) -> None:
+def _append_ledger(
+    ledger_path: Path, fingerprint: str, verdict: str, count: int, action_origin: str | None = None
+) -> None:
     """Append ``count`` action rows with the given verdict for one context fingerprint."""
     offset = len(ledger_path.read_text(encoding="utf-8").splitlines())
     with open(ledger_path, "a", encoding="utf-8") as f:
@@ -29,6 +31,8 @@ def _append_ledger(ledger_path: Path, fingerprint: str, verdict: str, count: int
                 "verdict": verdict,
                 "error_context": "RuntimeError: boom" if verdict == "failure" else "",
             }
+            if action_origin:
+                row["action_origin"] = action_origin
             f.write(json.dumps(row) + "\n")
 
 
@@ -42,9 +46,9 @@ class _Workspace:
         self.kb_dir = str(tmp_path / "holon-knowledge" / "kb")
         self.wb_dir = str(tmp_path / "holon-knowledge" / "wisdom")
 
-    def seed(self, fingerprint: str, verdict: str, count: int) -> None:
+    def seed(self, fingerprint: str, verdict: str, count: int, action_origin: str | None = None) -> None:
         """Append ledger rows and sync them into the index."""
-        _append_ledger(self.ledger, fingerprint, verdict, count)
+        _append_ledger(self.ledger, fingerprint, verdict, count, action_origin)
         self.db.sync_ledger(str(self.ledger))
 
     def promote(self, dry_run: bool = False) -> list[dict]:
@@ -196,3 +200,19 @@ def test_proven_fail_veto_records_later_reproductions(tmp_path: Path) -> None:
     vetoes = {row["context_fingerprint"]: row for row in wisdom.list_vetoes(index_db=ws.db)}
     assert vetoes["reprod01_fp"]["state"] == "proven-fail"
     assert vetoes["reprod01_fp"]["reproduction_count"] == 5
+
+
+def test_sibling_signatures_of_one_fingerprint_settle(tmp_path: Path) -> None:
+    """Signatures sharing a fingerprint's veto row stop re-evaluating once it holds the highest count."""
+    ws = _Workspace(tmp_path)
+    ws.seed("sibling1_fp", "failure", 3)
+    ws.seed("sibling1_fp", "failure", 4, action_origin="review_fix")
+    assert _ids(ws.promote()) == ["KB-failure-sibling1"]
+    ws.promote()
+
+    real_evaluate = wisdom.evaluate_action_promotion
+    with patch("sandbox_executor.knowledge.wisdom.evaluate_action_promotion", wraps=real_evaluate) as spy:
+        assert ws.promote() == []
+    assert spy.call_count == 0
+    vetoes = {row["context_fingerprint"]: row for row in wisdom.list_vetoes(index_db=ws.db)}
+    assert vetoes["sibling1_fp"]["reproduction_count"] == 4

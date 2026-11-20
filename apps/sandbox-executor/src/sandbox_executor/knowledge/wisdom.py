@@ -179,7 +179,9 @@ def _already_promoted(conn: Any, sig: Any, kb_dir: str, wb_dir: str) -> bool:
     already holds its proven-fail (or operator-lifted) veto row: evaluation is the only writer of
     ``active_vetoes``, so a fresh index or a still-escalating veto is evaluated again, and a later success
     is evaluated so the veto is lifted. A proven-fail veto whose ``reproduction_count`` lags the signature's
-    ``failure_count`` is evaluated again so later reproductions reach the veto row. A success candidate is
+    ``failure_count`` is evaluated again so later reproductions reach the veto row; the veto row is shared by
+    every signature of the fingerprint, so it is current once it holds at least this signature's count and
+    sibling signatures do not overwrite each other's count on every pass. A success candidate is
     terminal once both its pattern and its heuristic exist, so a pattern-only candidate stays eligible to
     ascend to a heuristic.
     """
@@ -194,7 +196,7 @@ def _already_promoted(conn: Any, sig: Any, kb_dir: str, wb_dir: str) -> bool:
             return False
         if veto["state"] == "lifted":
             return True
-        return veto["state"] == "proven-fail" and veto["reproduction_count"] == sig["failure_count"]
+        return veto["state"] == "proven-fail" and veto["reproduction_count"] >= sig["failure_count"]
     pattern_path = os.path.join(kb_dir, "patterns", f"KB-pattern-{fp8}.json")
     heuristic_path = os.path.join(wb_dir, "heuristics", f"WB-heuristic-{fp8}.json")
     return os.path.exists(pattern_path) and os.path.exists(heuristic_path)

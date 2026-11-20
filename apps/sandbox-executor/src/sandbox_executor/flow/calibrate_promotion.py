@@ -8,7 +8,7 @@ import os
 from sandbox_executor.calibration import calibration_commit_env
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.git import run_git
-from sandbox_executor.knowledge import CredentialRedactor
+from sandbox_executor.redaction import redact_agent_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -61,14 +61,11 @@ def _commit_stage5_promoted_artifacts(context: FlowContext, repo_dir: str, promo
         if commit_res.returncode != 0:
             combined_output = (commit_res.stdout + " " + commit_res.stderr).lower()
             if "nothing to commit" not in combined_output:
-                detail = CredentialRedactor.redact_text(commit_res.stderr.strip())
+                detail = redact_agent_secrets(commit_res.stderr.strip())
                 msg = f"Warning: committing Stage 5 promoted knowledge/wisdom artifacts failed: {detail}"
                 logger.warning(msg)
                 context.log(msg)
     except Exception as e:
-        msg = (
-            f"Warning: committing Stage 5 promoted knowledge/wisdom artifacts failed: "
-            f"{CredentialRedactor.redact_text(str(e))}"
-        )
+        msg = f"Warning: committing Stage 5 promoted knowledge/wisdom artifacts failed: {redact_agent_secrets(str(e))}"
         logger.warning(msg)
         context.log(msg)

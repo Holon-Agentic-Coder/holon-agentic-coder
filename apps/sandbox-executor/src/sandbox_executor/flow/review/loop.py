@@ -769,12 +769,11 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 reviewers=reviewers,
                 title=resolve_report_title(context.intent_data, resolved_target, review_target),
                 iteration=iteration,
+                mergeability_probe=check_pr_mergeability,
             ),
         )
         if post_error:
-            consensus_reached = False
-            consensus_status = "post_failed"
-            approval_score = 0.0
+            consensus_reached, consensus_status, approval_score = False, "post_failed", 0.0
     else:
         log_skipped_post(context, review_target, decision)
 

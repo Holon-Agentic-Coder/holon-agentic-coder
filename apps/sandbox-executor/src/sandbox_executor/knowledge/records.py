@@ -12,6 +12,7 @@ from typing import Any, ClassVar
 
 from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, sync_ledger_incremental
 from sandbox_executor.ledger import atomic_ledger_append, generate_action_id
+from sandbox_executor.redaction import redact_credential_shapes
 
 logger = logging.getLogger(__name__)
 
@@ -116,13 +117,18 @@ class CredentialRedactor:
 
     @classmethod
     def redact_text(cls, text: str) -> str:
-        """Apply all credential redaction regexes to a string."""
+        """Apply all credential redaction regexes to a string, then the shared token-anchored sweep.
+
+        The chained :func:`~sandbox_executor.redaction.redact_credential_shapes` closes the shapes the older patterns
+        miss (``gho_``/``ghu_``/``ghs_``/``ghr_``, ``ghp_`` of any length, short ``sk-ant-`` keys, URL userinfo and the
+        literal values of the environment credentials) without capping the input.
+        """
         if not text:
             return text
         result = text
         for pattern, replacement in cls._PATTERNS:
             result = pattern.sub(replacement, result)
-        return result
+        return redact_credential_shapes(result)
 
     @classmethod
     def redact_structure(cls, data: Any) -> Any:

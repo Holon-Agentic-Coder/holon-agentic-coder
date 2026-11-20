@@ -12,8 +12,8 @@ from typing import Any
 
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.git import EMPTY_DIFF_FAILURE_REASON
-from sandbox_executor.knowledge import CredentialRedactor
 from sandbox_executor.ledger import ActionRecord, generate_action_id, try_append_action_record
+from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_ensemble import ReviewerResult, ReviewerStatus, ReviewerVerdict
 from sandbox_executor.review_report import (
     finding_signature,
@@ -57,7 +57,7 @@ def _refused_review_result(review_target: str, last_iteration: int, label_budget
 
 
 def _bounded_error_context(detail: str) -> str:
-    """Redact ``detail`` with the canonical ``CredentialRedactor``, then cap its length.
+    """Redact ``detail`` with the canonical ``redact_agent_secrets``, then cap its length.
 
     Redaction runs before truncation so a secret cut at the boundary cannot slip past the
     redaction patterns. Used for every Stage 4 / Stage 5 ``error_context`` that can carry
@@ -69,7 +69,7 @@ def _bounded_error_context(detail: str) -> str:
     Returns:
         The redacted detail, at most ``POSTING_ERROR_CONTEXT_MAX_CHARS`` characters long.
     """
-    detail = CredentialRedactor.redact_text(detail)
+    detail = redact_agent_secrets(detail)
     if len(detail) > POSTING_ERROR_CONTEXT_MAX_CHARS:
         detail = detail[: POSTING_ERROR_CONTEXT_MAX_CHARS - 3] + "..."
     return detail
@@ -81,7 +81,7 @@ def _posting_failure_context(posting_res: dict[str, Any]) -> str:
     ``post_pr_review_consensus()`` reports failures through its return value rather than by
     raising, so the detail is collected from ``error``, ``diagnostics`` and the ``output`` of
     each unsuccessful posting step. The text is redacted with the canonical
-    ``CredentialRedactor`` before it is truncated, so a partially cut secret cannot slip past
+    ``redact_agent_secrets`` before it is truncated, so a partially cut secret cannot slip past
     the redaction patterns.
 
     Args:

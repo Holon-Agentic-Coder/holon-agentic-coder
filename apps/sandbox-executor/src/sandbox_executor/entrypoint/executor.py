@@ -80,7 +80,7 @@ from sandbox_executor.redaction import SECRET_FLAGS as SECRET_FLAGS
 from sandbox_executor.redaction import _is_secret_flag as _is_secret_flag
 from sandbox_executor.redaction import redact_agent_secrets as redact_agent_secrets
 from sandbox_executor.redaction import redact_args as redact_args
-from sandbox_executor.redaction import redact_command_args
+from sandbox_executor.redaction import redact_command_args, redact_then_truncate
 from sandbox_executor.redaction import redact_env_literals as redact_env_literals
 from sandbox_executor.redaction import redact_text as redact_text
 from sandbox_executor.turns import AuthoringOutcome, record_budget_failure, run_turn, supervise_authoring_turn
@@ -627,7 +627,7 @@ def _repair_git_repo(  # noqa: C901
         if res.returncode != 0:
             err_msg = (res.stderr or res.stdout).strip()
             print(
-                f"Warning: unable to write safe.directory to local git config ({err_msg}); "
+                f"Warning: unable to write safe.directory to local git config ({redact_agent_secrets(err_msg)}); "
                 f"falling back to per-invocation -c safe.directory",
                 file=sys.stderr,
             )
@@ -702,7 +702,7 @@ def _entrypoint_git_runner(repo_dir: str) -> Callable[[list[str]], str]:
     def _run(args: list[str]) -> str:
         res = repo.run(args, check=False)
         if res.returncode != 0:
-            raise RuntimeError(f"git {' '.join(args[:2])} failed: {redact_text((res.stderr or '').strip())}")
+            raise RuntimeError(f"git {' '.join(args[:2])} failed: {redact_agent_secrets((res.stderr or '').strip())}")
         return res.stdout if isinstance(res.stdout, str) else ""
 
     return _run
@@ -861,7 +861,7 @@ def _reconcile_conflicted_merge(repo: GitRepository, repo_dir: str, target_ref: 
         raise
     except Exception as exc:
         repo.merge_abort()
-        return False, f"Exception during ledger reconciliation merge: {exc}"
+        return False, f"Exception during ledger reconciliation merge: {redact_agent_secrets(str(exc))}"
 
 
 def build_execution_prompt(  # noqa: PLR0913
@@ -1275,7 +1275,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 except LedgerRewriteError:
                     raise
                 except Exception as e:
-                    print(f"Warning: Failed to record budget failure: {e}", file=sys.stderr)
+                    print(f"Warning: Failed to record budget failure: {redact_agent_secrets(str(e))}", file=sys.stderr)
 
             action_origin = (
                 os.getenv("HOLON_ACTION_ORIGIN")
@@ -1328,9 +1328,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                             labels=["agent", agent_name, "execution"],
                             target=f"{agent_name}:{model_name}",
                             outcome="success" if exec_status == "success" else "failure",
-                            error_context=(
-                                redact_text(res.stderr[:500]) if res.returncode != 0 and res.stderr else None
-                            ),
+                            error_context=(redact_then_truncate(res.stderr, 500) if res.returncode != 0 else None),
                             action_origin=action_origin,
                             review_severity=review_severity,
                             review_iteration=review_iteration,
@@ -1356,7 +1354,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 agent_output_text, agent_output_truncated, _dropped = prepare_agent_output_block(combined, max_bytes)
                 agent_output_bytes = len(agent_output_text.encode("utf-8"))
             except Exception as e:
-                print(f"Warning: Failed to capture/sanitise agent output: {e}", file=sys.stderr)
+                print(
+                    f"Warning: Failed to capture/sanitise agent output: {redact_agent_secrets(str(e))}", file=sys.stderr
+                )
                 agent_output_text = ""
                 agent_output_truncated = False
                 agent_output_bytes = 0
@@ -1395,7 +1395,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     failure_reason = "diff_unverified"
                     summary = (
                         f"Could not verify the execution diff against {plan_branch}; treating it as a failure: "
-                        f"{redact_text(str(e))}"
+                        f"{redact_agent_secrets(str(e))}"
                     )
                 else:
                     if not effective:
@@ -1432,7 +1432,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             except LedgerRewriteError:
                 raise
             except Exception as e:
-                print(f"Warning: Prettier formatting failed: {e}", file=sys.stderr)
+                print(f"Warning: Prettier formatting failed: {redact_agent_secrets(str(e))}", file=sys.stderr)
 
             # Salvage on failure, in two commits: first the agent's code changes ("partial work (failed)"), then the
             # notes and the ledger row ("failed for plan"), so a failed execution never loses its code.
@@ -1469,7 +1469,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             except LedgerRewriteError:
                 raise
             except Exception as e:
-                print(f"Warning: Failed to write execution ledger entry: {e}", file=sys.stderr)
+                print(
+                    f"Warning: Failed to write execution ledger entry: {redact_agent_secrets(str(e))}", file=sys.stderr
+                )
 
             if exec_status == "success":
                 commit_msg = f"execute: {exec_id} completed for plan {plan_branch}"
@@ -1518,7 +1520,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             # Log staged changes to provide visibility
             status_output = repo.run(["status", "--short"], check=False)
             print("Current git repository status:")
-            print(redact_text(status_output.stdout))
+            print(redact_agent_secrets(status_output.stdout))
 
         # Set once the execution branch carries its commit; the host pushes it after this container returns.
         branch_recorded = False

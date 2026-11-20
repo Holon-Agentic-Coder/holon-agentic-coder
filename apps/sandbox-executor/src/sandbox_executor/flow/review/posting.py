@@ -7,6 +7,7 @@ failed verdict (a crashed, timed-out or stalled reviewer turn) even when it land
 
 from __future__ import annotations
 
+import functools
 import logging
 import time
 from collections.abc import Callable
@@ -16,9 +17,11 @@ from pathlib import Path
 from typing import Any
 
 from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.flow.github.pr import check_pr_mergeability
+from sandbox_executor.flow.review.conflict_gate import MergeabilityProbe, _approved_post_gate
 from sandbox_executor.flow.review.records import _posting_failure_context, record_review_action
-from sandbox_executor.knowledge import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id
+from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_ensemble import ConsensusVerdict, ReviewerResult, ReviewerStatus
 
 logger = logging.getLogger(__name__)
@@ -87,6 +90,7 @@ class PostRequest:
     reviewers: Any
     title: str
     iteration: int
+    mergeability_probe: MergeabilityProbe | None = None  # The loop's probe; defaults to check_pr_mergeability.
 
 
 def _attempt_post(post_fn: Callable[..., dict[str, Any]], context: FlowContext, request: PostRequest) -> dict[str, Any]:
@@ -101,7 +105,7 @@ def _attempt_post(post_fn: Callable[..., dict[str, Any]], context: FlowContext, 
             title=request.title,
         )
     except Exception as exc:
-        safe_error = CredentialRedactor.redact_text(str(exc))
+        safe_error = redact_agent_secrets(str(exc))
         logger.warning("Posting review consensus for %s failed: %s", request.review_target, safe_error)
         context.log(f"Warning: Posting review consensus for '{request.review_target}' failed: {safe_error}")
         return {"error": safe_error}
@@ -137,7 +141,22 @@ def _posting_action_record(request: PostRequest, posting_res: dict[str, Any]) ->
 def post_review_consensus(
     post_fn: Callable[..., dict[str, Any]], context: FlowContext, exec_file: str | Path, request: PostRequest
 ) -> tuple[str | None, dict[str, Any]]:
-    """Post the consensus review and record ACT-POST; return the fail-closed error (None on success) and the result."""
+    """Post the consensus review and record ACT-POST; return the fail-closed error (None on success) and the result.
+
+    An approved consensus first passes the conflict gate: a head the probe reports ``CONFLICTING`` or ``DIRTY`` is
+    never approved; the gate merges the target branch, and the approval has to be re-earned on the new head.
+    """
+    if request.consensus_data.get("approved"):
+        probe = functools.partial(
+            request.mergeability_probe or check_pr_mergeability,
+            str(request.repo_dir),
+            request.review_target,
+            proxy_env=request.proxy_env,
+        )
+        blocked = _approved_post_gate(context, str(exec_file), request.review_target, request.consensus_data, probe)
+        if blocked:
+            context.log(f"[Review Loop] Not posting the approved consensus: {blocked[0]}")
+            return blocked
     posting_res = _attempt_post(post_fn, context, request)
     record, posted = _posting_action_record(request, posting_res)
     record_review_action(context, exec_file, record)

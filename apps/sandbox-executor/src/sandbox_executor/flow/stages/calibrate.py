@@ -30,6 +30,7 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, S
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.ci_final_head import check_final_head_ci, format_final_head_ci, not_pushed_record
 from sandbox_executor.flow.github.ci_reverify import RED, blocked_error, reverify_and_report
+from sandbox_executor.flow.review.conflict_gate import _stage5_conflict_gate
 from sandbox_executor.flow.review.records import _bounded_error_context
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.execute import _warn_ledger_failure
@@ -37,12 +38,12 @@ from sandbox_executor.flow.stages.review import _checkout_execution_branch
 from sandbox_executor.git import run_git
 from sandbox_executor.knowledge import (
     ActionIndexDatabase,
-    CredentialRedactor,
     promote_pending_candidates,
     reconcile_records,
 )
 from sandbox_executor.ledger import LedgerRewriteError
 from sandbox_executor.plan_paths import calibration_report_for_branch, legacy_calibration_report_rel, split_plan_branch
+from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.ref_names import calibration_branch
 
 logger = logging.getLogger(__name__)
@@ -80,20 +81,20 @@ def _commit_stage5_reconciliation(context: FlowContext, repo_dir: str) -> None:
         if commit_res.returncode != 0:
             combined_output = (commit_res.stdout + " " + commit_res.stderr).lower()
             if "nothing to commit" not in combined_output:
-                detail = CredentialRedactor.redact_text(commit_res.stderr.strip())
+                detail = redact_agent_secrets(commit_res.stderr.strip())
                 msg = f"Warning: committing Stage 5 reconciliation rows failed: {detail}"
                 logger.warning(msg)
                 context.log(msg)
     except Exception as e:
-        msg = f"Warning: committing Stage 5 reconciliation rows failed: {CredentialRedactor.redact_text(str(e))}"
+        msg = f"Warning: committing Stage 5 reconciliation rows failed: {redact_agent_secrets(str(e))}"
         logger.warning(msg)
         context.log(msg)
 
 
 def run_calibrate_stage(context: FlowContext) -> StageResult:
-    """Execute Stage 5, then return the host worktree to the branch the flow started on."""
+    """Execute Stage 5 unless the conflict gate refuses the head, then return the worktree to its starting branch."""
     try:
-        return _calibrate_execution_branch(context)
+        return _stage5_conflict_gate(context) or _calibrate_execution_branch(context)
     finally:
         restore_starting_branch(context)
 
@@ -162,13 +163,12 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
             FlowStage.CALIBRATE,
             start_time,
             "Calibrate stage failed: the calibration report did not pass the repository Prettier check, "
-            f"so nothing was committed or pushed. {e}",
+            f"so nothing was committed or pushed. {redact_agent_secrets(str(e))}",
         )
     except Exception as e:
         discard_empty_calibrated_branch(context, calibrated_created)
         context.log(
-            f"Calibration run encountered exception: {CredentialRedactor.redact_text(str(e))}. "
-            "Generating fallback report."
+            f"Calibration run encountered exception: {redact_agent_secrets(str(e))}. Generating fallback report."
         )
         plan_id = split_plan_branch(context.execution_branch)[1] or "P-unknown"
         # Beside the plan file (plans/{intent}/...); a branch naming no plan falls back to the flat legacy location.
@@ -182,7 +182,7 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:  # noqa: C
         try:
             format_calibration_report(report_rel, repo_dir)
         except Exception as fmt_exc:
-            fmt_detail = CredentialRedactor.redact_text(str(fmt_exc))
+            fmt_detail = redact_agent_secrets(str(fmt_exc))
             context.log(f"Warning: Prettier formatting failed for fallback {report_rel}: {fmt_detail}")
         report_dict = {
             "plan_id": plan_id,

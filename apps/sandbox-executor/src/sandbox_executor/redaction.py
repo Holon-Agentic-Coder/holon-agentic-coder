@@ -287,9 +287,8 @@ SECRET_FLAGS = {
     "--auth",
 }
 
-# Environment variables whose literal values `redact_env_literals` sweeps by default (the ledger and
-# agent-output path).
-DEFAULT_ENV_LITERAL_NAMES: tuple[str, ...] = (
+# Environment variables that hold a credential themselves.
+_CREDENTIAL_ENV_NAMES: tuple[str, ...] = (
     "GITHUB_TOKEN",
     "GH_TOKEN",
     "HOLON_AGENT_KEY",
@@ -297,9 +296,17 @@ DEFAULT_ENV_LITERAL_NAMES: tuple[str, ...] = (
     "ANTHROPIC_API_KEY",
 )
 
+# Environment variables whose literal values `redact_env_literals` sweeps by default (the ledger and
+# agent-output path). HOLON_AGENT_SETTINGS can carry CLAUDE_CODE_OAUTH_TOKEN inside its JSON, so its whole value is
+# swept here; it is not a credential name for `is_secret_env_name` (a plain settings path is not secret), and
+# `redact_command` masks a credential-bearing `--settings` value on its own.
+DEFAULT_ENV_LITERAL_NAMES: tuple[str, ...] = (*_CREDENTIAL_ENV_NAMES, "HOLON_AGENT_SETTINGS")
+
 # Variable NAMES, not patterns, whose literal values are also swept from echoed commands. The mitmweb
 # dashboard password is forwarded to the container under a name the key regex cannot recognise.
-COMMAND_ECHO_ENV_NAMES: tuple[str, ...] = (*DEFAULT_ENV_LITERAL_NAMES, "HOLON_MITM_WEB_PASSWORD")
+COMMAND_ECHO_ENV_NAMES: tuple[str, ...] = (*_CREDENTIAL_ENV_NAMES, "HOLON_MITM_WEB_PASSWORD")
+
+TRUNCATION_MARKER = "..."
 
 
 def redact_text(text: str) -> str:
@@ -478,6 +485,44 @@ def redact_agent_secrets(text: str) -> str:
     s = redact_text(text)
     s = _PROVIDER_TOKEN_RE.sub("*******", s)
     return redact_env_literals(s)
+
+
+def redact_credential_shapes(text: str) -> str:
+    """Mask URL userinfo, provider token shapes and literal env credential values, with no input cap.
+
+    The token-anchored subset of `redact_agent_secrets`: it skips the key-name regex and its input cap, so it is safe
+    on large text (a patch, a whole test log) whose middle `redact_text` would drop.
+
+    Args:
+        text: Input string potentially containing credentials.
+
+    Returns:
+        The text with each match replaced by `REDACTION_MARKER`.
+    """
+    if not text:
+        return text
+    return redact_env_literals(_PROVIDER_TOKEN_RE.sub(REDACTION_MARKER, _mask_url_userinfo(text)))
+
+
+def redact_then_truncate(text: str | None, limit: int) -> str | None:
+    """Redact the whole text with `redact_agent_secrets`, then bound it to `limit` characters.
+
+    Redacting first is what keeps a credential that straddles the cut out of the result: truncating first would leave
+    a token prefix too short for the provider-token sweep. A cut result ends with `TRUNCATION_MARKER`.
+
+    Args:
+        text: Subprocess or exception text, possibly carrying credentials.
+        limit: The maximum length of the returned text, marker included.
+
+    Returns:
+        The redacted, bounded text, or None for empty input.
+    """
+    if not text:
+        return None
+    clean = redact_agent_secrets(text)
+    if len(clean) <= limit:
+        return clean
+    return clean[: max(0, limit - len(TRUNCATION_MARKER))] + TRUNCATION_MARKER
 
 
 def redact_url_value(value: str) -> str:

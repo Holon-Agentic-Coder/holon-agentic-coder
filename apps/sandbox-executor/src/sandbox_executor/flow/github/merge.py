@@ -156,17 +156,33 @@ def _commit_env() -> dict[str, str]:
     return env
 
 
-def _merge_in_worktree(worktree: str, source_ref: str, message: str) -> str | None:
-    """Merge ``source_ref`` into the worktree's HEAD with a merge commit; return why it failed, or None."""
+def _merge_in_worktree(worktree: str, source_ref: str, message: str) -> tuple[str | None, tuple[str, ...]]:
+    """Merge ``source_ref`` into the worktree's HEAD with a merge commit; return why it failed (or None) and the
+    paths left unmerged, read before the merge is aborted."""
     merge = run_git(["merge", "--no-ff", "-m", message, source_ref], cwd=worktree, check=False, env=_commit_env())
     if merge.returncode == 0:
-        return None
+        return None, ()
+    unmerged = run_git(["diff", "--name-only", "--diff-filter=U"], cwd=worktree, check=False).stdout or ""
+    conflicts = tuple(sorted(path for path in unmerged.splitlines() if path))
     if resolve_ledger_only_conflicts(worktree):
         commit = run_git(["commit", "--no-edit"], cwd=worktree, check=False, env=_commit_env())
         if commit.returncode == 0:
-            return None
+            return None, ()
     run_git(["merge", "--abort"], cwd=worktree, check=False)
-    return f"merging '{source_ref}' conflicts outside holon-knowledge/ledger/*.jsonl or is not a pure ledger append"
+    files = f" in {', '.join(conflicts)}" if conflicts else ""
+    scope = "outside holon-knowledge/ledger/*.jsonl or not a pure ledger append"
+    return f"merging '{source_ref}' conflicts{files} ({scope})", conflicts
+
+
+@dataclass(frozen=True)
+class BranchMerge:
+    """Outcome of :func:`merge_branch_detailed`: the target's tip on origin (None on failure), why it failed, the
+    conflicting paths of an aborted merge and the source commit that was merged (or already contained)."""
+
+    target_sha: str | None
+    reason: str = ""
+    conflicts: tuple[str, ...] = ()
+    source_sha: str | None = None
 
 
 def merge_into_branch(
@@ -177,37 +193,59 @@ def merge_into_branch(
     A ``target_branch`` that is empty, ``main``, ``master`` or ``default_branch`` is refused before anything is
     fetched or pushed. Both branches are fetched first. When the source is already an ancestor of the target nothing
     is written. Ledger-only conflicts are resolved with :mod:`sandbox_executor.flow.ledger_interleave`; any other
-    conflict aborts the merge and nothing is pushed. The operator's checkout is never touched.
+    conflict aborts the merge, names the conflicting files and nothing is pushed. The operator's checkout is never
+    touched.
 
     Returns:
         tuple[str | None, str]: ``(target_sha, "")`` with the target's tip on origin after the merge, or
         ``(None, reason)`` when it could not be merged or pushed.
     """
-    target = _bare_branch(target_branch)
-    if not target or target in PROTECTED_BRANCHES or target == _bare_branch(default_branch):
-        return None, f"refusing to push to '{target}': it is empty, main, master or the repository default branch"
+    merged = merge_branch_detailed(repo_dir, source_branch, target_branch, message, default_branch)
+    return merged.target_sha, merged.reason
+
+
+def _fetched_tips(repo_dir: str, source_branch: str, target_branch: str) -> tuple[tuple[str, str], str]:
+    """Fetch both branches and return ``((target_sha, source_sha), "")``, or ``(("", ""), reason)`` on failure."""
     fetch_error = _fetch_refspecs_error(
         repo_dir, [f"+refs/heads/{b}:refs/remotes/origin/{b}" for b in (source_branch, target_branch)]
     )
     if fetch_error:
-        return None, f"fetching '{source_branch}' and '{target_branch}' failed: {fetch_error}"
+        return ("", ""), f"fetching '{source_branch}' and '{target_branch}' failed: {fetch_error}"
+    refs = [f"refs/remotes/origin/{target_branch}", f"refs/remotes/origin/{source_branch}"]
+    tips = run_git(["rev-parse", *refs], cwd=repo_dir, check=False).stdout.split()
+    if len(tips) != 2:
+        return ("", ""), f"'{source_branch}' or '{target_branch}' does not resolve after the fetch"
+    return (tips[0], tips[1]), ""
+
+
+def merge_branch_detailed(
+    repo_dir: str, source_branch: str, target_branch: str, message: str, default_branch: str | None = None
+) -> BranchMerge:
+    """:func:`merge_into_branch` with its conflicting paths and the merged source commit (see :class:`BranchMerge`)."""
+    target = _bare_branch(target_branch)
+    if not target or target in PROTECTED_BRANCHES or target == _bare_branch(default_branch):
+        reason = f"refusing to push to '{target}': it is empty, main, master or the repository default branch"
+        return BranchMerge(None, reason)
     source_ref, target_ref = f"refs/remotes/origin/{source_branch}", f"refs/remotes/origin/{target_branch}"
-    target_sha = run_git(["rev-parse", target_ref], cwd=repo_dir, check=False).stdout.strip()
-    if run_git(["merge-base", "--is-ancestor", source_ref, target_ref], cwd=repo_dir, check=False).returncode == 0:
-        return target_sha, ""
+    tips, fetch_error = _fetched_tips(repo_dir, source_branch, target_branch)
+    if fetch_error:
+        return BranchMerge(None, fetch_error)
+    target_sha, source_sha = tips
+    if run_git(["merge-base", "--is-ancestor", source_sha, target_sha], cwd=repo_dir, check=False).returncode == 0:
+        return BranchMerge(target_sha, source_sha=source_sha)
     tmp_root = tempfile.mkdtemp(prefix="holon-flow-merge-")
     worktree = os.path.join(tmp_root, "worktree")
     try:
         run_git(["worktree", "add", "--detach", worktree, target_ref], cwd=repo_dir)
-        reason = _merge_in_worktree(worktree, source_ref, message)
+        reason, conflicts = _merge_in_worktree(worktree, source_ref, message)
         if reason:
-            return None, reason
-        pushed_sha = run_git(["rev-parse", "HEAD"], cwd=worktree).stdout.strip()
+            return BranchMerge(None, reason, conflicts)
+        pushed_sha, merged_sha = run_git(["rev-parse", "HEAD", "HEAD^2"], cwd=worktree).stdout.split()
         run_git(["push", "origin", f"HEAD:refs/heads/{target_branch}"], cwd=worktree, timeout=300)
         run_git(["update-ref", target_ref, pushed_sha], cwd=repo_dir, check=False)
-        return pushed_sha, ""
+        return BranchMerge(pushed_sha, source_sha=merged_sha)
     except (RuntimeError, TimeoutError, OSError) as exc:
-        return None, redact_agent_secrets(str(exc))
+        return BranchMerge(None, redact_agent_secrets(str(exc)))
     finally:
         run_git(["worktree", "remove", "--force", worktree], cwd=repo_dir, check=False)
         run_git(["worktree", "prune"], cwd=repo_dir, check=False)

@@ -74,15 +74,17 @@ with a stated reason. A resolver pass that fails (a non-zero exit, a usage or se
 output, or an exception) carries no dispositions at all: the container entrypoint checks the turn's exit code before
 reading any dispositions file it left, and treats a clean exit without one as "no usable output". The loop then halts
 and writes no `ACT-RES` adjudication row for the pass (the tests-failed rejected-attempt row is unchanged). The loop
-result returns the findings still open as `open_findings`, on every exit.
+result returns the findings still open as `open_findings`, on every exit except a dry run, which decides nothing and
+leaves the carried findings as they were.
 
 The engine stores `open_findings` in `FlowContext.carried_review_findings`, which the checkpoint saved after Stage 4
 persists. A `--from-stage review` resume sends those carried findings to the resolver before any new reviewer iteration
-(labelled with the halted pass's iteration); if that pass fails again, no iteration starts. Later resolver passes
-receive the carried findings still open merged with the fresh ones, de-duplicated by signature. While any carried
-finding has no disposition, an `APPROVED` ensemble verdict is turned into `CHANGES_REQUESTED`, the consensus blockers
-and the summary's halt reasons name the findings, and nothing is posted. The logic lives in
-`flow/review/carried_findings.py`.
+(labelled with the halted pass's iteration); if that pass fails again, no iteration starts, and a rejected attempt is
+recorded as on any failed pass. A carried fix applied without a push is recorded with the loop's pending dispositions
+and does not block approval. Later resolver passes receive the carried findings still open merged with the fresh ones,
+de-duplicated by signature. While any carried finding has no disposition, an `APPROVED` ensemble verdict is turned into
+`CHANGES_REQUESTED`, the consensus blockers and the summary's halt reasons name the findings, and nothing is posted. The
+logic lives in `flow/review/carried_findings.py`.
 
 ## When the review is posted
 

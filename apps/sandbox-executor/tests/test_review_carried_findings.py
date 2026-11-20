@@ -214,3 +214,50 @@ def test_resume_whose_resolver_fails_again_starts_no_review_iteration(tmp_path: 
     assert "session limit" in res["resolver_error"]
     assert _res_rows(tmp_path) == []
     assert [f["id"] for f in ctx.carried_review_findings] == ["R1-F1", "R1-F2"]
+
+
+def test_resume_with_an_unpushed_applied_fix_records_it_and_approves(tmp_path: Path, halted_checkpoint: str):
+    log: list[str] = []
+    dispositions = [
+        {"id": "R1-F1", "disposition": "applied"},
+        {"id": "R1-F2", "disposition": "rejected", "rejection_reason": "inaccurate"},
+    ]
+
+    ctx, res = _resume(halted_checkpoint, log, _resolved(dispositions, ""))
+
+    assert log == ["resolver:R1-F1,R1-F2", "ensemble"]
+    assert res["consensus"]["approved"] is True
+    rows = {r["review_finding_ids"][0]: r["review_disposition"] for r in _res_rows(tmp_path)}
+    assert rows == {"R1-F1": "applied", "R1-F2": "rejected"}
+    assert ctx.carried_review_findings == []
+
+
+def test_a_failed_carried_pass_records_its_rejected_attempt(tmp_path: Path, halted_checkpoint: str):
+    def tests_failed(_findings: list[dict]) -> tuple[int, dict]:
+        return 1, {
+            "resolver": True,
+            "dispositions": [],
+            "error": "pre-push tests failed",
+            "exit_code": 1,
+            "failed_tests": ["tests/test_x.py::test_y"],
+            "test_summary": "1 failed",
+        }
+
+    with patch("sandbox_executor.flow.review.loop._record_rejected_attempt") as record:
+        _ctx, res = _resume(halted_checkpoint, [], tests_failed)
+
+    assert res["resolver_error"]
+    record.assert_called_once()
+
+
+def test_a_dry_run_keeps_the_carried_findings_unchanged(tmp_path: Path, halted_checkpoint: str):
+    ctx = load_checkpoint(halted_checkpoint).context
+    ctx.dry_run = True
+    log: list[str] = []
+    ctx.dispatcher = _dispatcher(log, False, _session_limit)
+
+    res = _engine_pass(ctx)
+
+    assert "open_findings" not in res
+    assert log == []
+    assert [f["id"] for f in ctx.carried_review_findings] == ["R1-F1", "R1-F2"]

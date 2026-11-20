@@ -329,8 +329,12 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     carried_block = ""  # Why approval was refused while a carried finding had no disposition.
     if carried_rows and resolver_enabled and resolved_target is not None and not effective_dry_run:
         carried_pass = CarriedPass(context, resolved_target, max(1, first_label - 1), run_resolver_fn, recorder)
-        carried_outcome, carried_rows = resolve_carried_first(carried_rows, finding_action_ids, carried_pass)
+        carried_outcome, carried_rows, pending_dispositions = resolve_carried_first(
+            carried_rows, finding_action_ids, carried_pass
+        )
         resolver_error = _bounded_error_context(carried_outcome.error) if carried_outcome.error else None
+        if carried_outcome.error:
+            _record_rejected_attempt(context, exec_file, review_target, carried_pass.iteration, carried_outcome)
         if carried_outcome.pushed and carried_outcome.head_sha:
             resolved_target = dataclasses.replace(resolved_target, head_sha=carried_outcome.head_sha)
 
@@ -522,8 +526,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             break
 
         # 8. Termination and Resolver Pass
-        if ensemble_verdict is ConsensusVerdict.APPROVED and carried_rows:
-            carried_block = carried_blocker(carried_rows)
+        # A carried fix applied but not yet pushed is recorded with the pending dispositions; it blocks nothing.
+        if ensemble_verdict is ConsensusVerdict.APPROVED and undisposed(carried_rows, pending_dispositions):
+            carried_block = carried_blocker(undisposed(carried_rows, pending_dispositions))
             blockers.append(carried_block)
             ensemble_verdict = ConsensusVerdict.CHANGES_REQUESTED
             context.log(f"[Review Loop] Consensus blocked at iteration {iteration}: {carried_block}.")
@@ -894,8 +899,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "consensus_blockers": list(blockers),
         "resolver_error": resolver_error,
         "calibration_freshness": calibration_freshness,
-        "open_findings": serialize_open(remaining_findings, finding_action_ids),
     }
+    if not effective_dry_run:  # A dry run decides nothing, so the checkpointed carried findings stay as they were.
+        loop_result["open_findings"] = serialize_open(remaining_findings, finding_action_ids)
     if pr_refusal_error or infra_error or post_error or resolver_error:
         loop_result["error"] = pr_refusal_error or infra_error or post_error or f"resolver failed: {resolver_error}"
     return loop_result

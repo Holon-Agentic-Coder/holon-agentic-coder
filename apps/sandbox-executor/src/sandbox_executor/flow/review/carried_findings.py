@@ -118,11 +118,12 @@ class CarriedPass:
 
 def resolve_carried_first(
     carried: Sequence[FindingRow], action_ids: Mapping[str, str], run: CarriedPass
-) -> tuple[ResolverOutcome, list[FindingRow]]:
-    """Run one resolver pass on the carried findings before any reviewer; return ``(outcome, still_open_rows)``.
+) -> tuple[ResolverOutcome, list[FindingRow], tuple[FindingDisposition, ...]]:
+    """Run one resolver pass on the carried findings before any reviewer; return ``(outcome, open_rows, pending)``.
 
     A failed pass writes nothing and leaves every row open. Otherwise its rejections, and its applied fixes once the
-    head moved, are recorded as ACT-RES rows; every other row stays open.
+    head moved, are recorded as ACT-RES rows; every other row stays open. An applied fix without a push is also returned
+    as ``pending`` for the loop to record later, as it does for its own unpushed fixes; it does not block approval.
     """
     run.context.log(
         f"[Review Loop] Resolving {len(carried)} carried finding(s) from an earlier iteration before reviewing."
@@ -133,9 +134,10 @@ def resolve_carried_first(
         run.context.log(
             f"[Review Loop] Carried-finding resolver pass failed, no review iteration starts: {outcome.error}"
         )
-        return outcome, list(carried)
+        return outcome, list(carried), ()
     decided = [
         d for d in outcome.dispositions if d.disposition == REJECTED or (outcome.pushed and d.disposition in _DECIDED)
     ]
+    pending = () if outcome.pushed else tuple(d for d in outcome.dispositions if d.disposition == "applied")
     run.recorder.record(run.iteration, decided)
-    return outcome, undisposed(carried, run.recorder.all_dispositions)
+    return outcome, undisposed(carried, run.recorder.all_dispositions), pending

@@ -20,7 +20,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     parser.add_argument(
         "--pending",
         action="store_true",
-        help="Promote all qualified pending candidates.",
+        help="Promote all qualified pending candidates; already-promoted candidates are skipped.",
     )
     parser.add_argument(
         "--dry-run",
@@ -48,8 +48,8 @@ def run(args: argparse.Namespace) -> int:
         min_trials=args.min_trials,
         dry_run=args.dry_run,
     )
-    mode = "Dry-run: candidate" if args.dry_run else "Promoted"
-    print(f"{mode} knowledge items: {len(promoted)}")
+    label = "Dry-run: newly promotable knowledge items" if args.dry_run else "Newly promoted knowledge items"
+    print(f"{label}: {len(promoted)}")
     for item in promoted:
         item_id = item.get("kb_id") or item.get("wb_id")
         item_type = item.get("kb_type") or item.get("wb_type")

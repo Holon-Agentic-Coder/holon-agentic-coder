@@ -26,6 +26,7 @@ from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.knowledge import ConsultEngine
 from sandbox_executor.ledger import build_plan_id
 from sandbox_executor.naming import MissingTickerError, model_code, ticker_for
+from sandbox_executor.plan_attempt import settle_failed_plan_attempt, snapshot_plan_attempt
 from sandbox_executor.plan_paths import is_row_of_plan, plan_file_rel, recorded_plan_file
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
     if replan_feedback:
         # Forwarded into the planner container like every HOLON_* variable; never written to a ledger.
         os.environ[ENV_REPLAN_FEEDBACK] = replan_feedback
+    attempt_before = snapshot_plan_attempt(repo_dir, context.intent_branch)
     try:
         exit_code = _dispatch_role(context, "planner", [context.intent_branch, context.agent, context.model])
     finally:
@@ -129,8 +131,11 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
     # The host pushes every plan branch the container committed, a failed planner's salvage commit included.
     push_error = remote_error(publish_new_child_branches, repo_dir, intent_prefix, "P", existing_plans)
     if exit_code != 0:
+        # A failed attempt leaves no untracked plan file, and its own failure detail (an API error) names the cause.
+        detail = settle_failed_plan_attempt(repo_dir, context.intent_branch, attempt_before)
+        cause = f"Plan stage failed: {detail}" if detail else no_plan_error
         return _stage_failure(
-            context, FlowStage.PLAN, start_time, f"{no_plan_error} (planner agent exited with code {exit_code})"
+            context, FlowStage.PLAN, start_time, f"{cause} (planner agent exited with code {exit_code})"
         )
     if push_error is not None:
         return _stage_failure(context, FlowStage.PLAN, start_time, f"Plan stage failed: {push_error}")

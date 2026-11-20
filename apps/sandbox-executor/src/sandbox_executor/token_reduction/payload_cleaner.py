@@ -7,6 +7,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from sandbox_executor.token_reduction.cache_control import cache_slots, count_cache_controls, inject_cache_controls
+
 logger = logging.getLogger(__name__)
 
 _RECENT_TURNS_TO_KEEP = 6
@@ -310,95 +312,16 @@ class JSONContextCleaner:
                 merged.append(copy.deepcopy(msg))
         return merged
 
-    def _count_existing_cache_controls(self, payload: dict[str, Any]) -> int:  # noqa: C901, PLR0912
-        count = 0
+    def _count_existing_cache_controls(self, payload: dict[str, Any]) -> int:
+        return count_cache_controls(cache_slots(payload))
 
-        system = payload.get("system")
-        if isinstance(system, list):
-            for block in system:
-                if isinstance(block, dict) and "cache_control" in block:
-                    count += 1
-        elif isinstance(system, dict) and "cache_control" in system:
-            count += 1
-
-        tools = payload.get("tools")
-        if isinstance(tools, list):
-            for tool in tools:
-                if isinstance(tool, dict) and "cache_control" in tool:
-                    count += 1
-
-        messages = payload.get("messages")
-        if isinstance(messages, list):
-            for msg in messages:
-                if isinstance(msg, dict):
-                    if "cache_control" in msg:
-                        count += 1
-                    content = msg.get("content")
-                    if isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and "cache_control" in block:
-                                count += 1
-                    elif isinstance(content, dict) and "cache_control" in content:
-                        count += 1
-
-        return count
-
-    def _inject_anthropic_cache_control(  # noqa: C901, PLR0912
+    def _inject_anthropic_cache_control(
         self, payload: dict[str, Any], stats: dict[str, int] | None = None
     ) -> dict[str, Any]:
-        existing_count = self._count_existing_cache_controls(payload)
-        max_allowed = 4
-        budget = max_allowed - existing_count
-        if budget <= 0:
-            return payload
-
-        injected = 0
-        # Inject cache_control on system prompt block
-        system = payload.get("system")
-        if isinstance(system, list) and len(system) > 0:
-            last_sys = system[-1]
-            if isinstance(last_sys, dict) and "cache_control" not in last_sys:
-                last_sys["cache_control"] = {"type": "ephemeral"}
-                budget -= 1
-                injected += 1
-        elif isinstance(system, str):
-            payload["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
-            budget -= 1
-            injected += 1
-
-        # Inject cache_control on tools definition if present
-        if budget > 0:
-            tools = payload.get("tools")
-            if isinstance(tools, list) and len(tools) > 0:
-                last_tool = tools[-1]
-                if isinstance(last_tool, dict) and "cache_control" not in last_tool:
-                    last_tool["cache_control"] = {"type": "ephemeral"}
-                    budget -= 1
-                    injected += 1
-
-        # Inject cache_control on recent messages history turn
-        if budget > 0:
-            messages = payload.get("messages", [])
-            if isinstance(messages, list) and len(messages) >= 2:
-                target_msg = messages[-2]
-                if isinstance(target_msg, dict):
-                    content = target_msg.get("content")
-                    if isinstance(content, list) and len(content) > 0:
-                        last_block = content[-1]
-                        if isinstance(last_block, dict) and "cache_control" not in last_block:
-                            last_block["cache_control"] = {"type": "ephemeral"}
-                            budget -= 1
-                            injected += 1
-                    elif isinstance(content, str):
-                        target_msg["content"] = [
-                            {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
-                        ]
-                        budget -= 1
-                        injected += 1
-
+        """Add TTL-consistent cache breakpoints within the block limit; existing blocks stay untouched."""
+        injected = inject_cache_controls(payload)
         if stats is not None:
             stats["cache_control_injected"] += injected
-
         return payload
 
     def _clean_openai(  # noqa: C901, PLR0912

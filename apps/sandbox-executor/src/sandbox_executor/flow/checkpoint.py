@@ -5,9 +5,6 @@ A checkpoint lets ``holon flow --resume`` continue from the last completed stage
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -15,6 +12,7 @@ from typing import Any
 
 from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL
 from sandbox_executor.flow.checkpoint_discovery import _checkpoint_names, get_default_checkpoint_path
+from sandbox_executor.flow.checkpoint_store import CheckpointStore, FileCheckpointStore
 from sandbox_executor.flow.constants import CURRENT_CONTEXT_SCHEMA_VERSION
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageStatus
 
@@ -154,13 +152,33 @@ class FlowCheckpoint:
             timestamp=data.get("timestamp", ""),
         )
 
+    def save(self, store: CheckpointStore | None = None, filepath: str | None = None) -> str:
+        """Persist checkpoint via store (default: FileCheckpointStore) and return the path."""
+        active_store = store or FileCheckpointStore()
+        return active_store.save(self, filepath)
 
-def save_checkpoint(context: FlowContext, filepath: str | None = None) -> str:
+    @classmethod
+    def load(cls, filepath: str, store: CheckpointStore | None = None) -> FlowCheckpoint:
+        """Load checkpoint via store (default: FileCheckpointStore)."""
+        active_store = store or FileCheckpointStore()
+        data = active_store.load(filepath)
+        return cls.from_dict(data)
+
+    @classmethod
+    def default_path(cls, target_worktree: str, slug: str) -> str:
+        """Derive the canonical checkpoint path for a target worktree and slug."""
+        return get_default_checkpoint_path(target_worktree, slug)
+
+    def migrate(self, target_version: int = CURRENT_CHECKPOINT_SCHEMA_VERSION) -> FlowCheckpoint:
+        """Migrate checkpoint to target schema version."""
+        migrated_data = migrate_checkpoint_data(self.to_dict(), target_version=target_version)
+        return FlowCheckpoint.from_dict(migrated_data)
+
+
+def save_checkpoint(context: FlowContext, filepath: str | None = None, store: CheckpointStore | None = None) -> str:
     """Atomically save flow context checkpoint to disk using temporary file replacement."""
     slug, key = _checkpoint_names(context.intent_data)
     target_path = filepath or get_default_checkpoint_path(context.target_worktree, key)
-    target_dir = os.path.dirname(os.path.abspath(target_path))
-    os.makedirs(target_dir, exist_ok=True)
 
     completed = [
         stage_name
@@ -179,16 +197,7 @@ def save_checkpoint(context: FlowContext, filepath: str | None = None) -> str:
         completed_stages=completed,
         context=context,
     )
-
-    data = checkpoint.to_dict()
-    # Atomic write pattern: write to NamedTemporaryFile in same dir, then replace
-    with tempfile.NamedTemporaryFile("w", dir=target_dir, delete=False, encoding="utf-8") as tf:
-        json.dump(data, tf, indent=2)
-        temp_name = tf.name
-
-    os.replace(temp_name, target_path)
-    context.log(f"Checkpoint saved to {target_path}")
-    return target_path
+    return checkpoint.save(store=store, filepath=target_path)
 
 
 def save_admission(context: FlowContext, admission: dict[str, Any] | None) -> str | None:
@@ -203,10 +212,6 @@ def save_admission(context: FlowContext, admission: dict[str, Any] | None) -> st
     return None
 
 
-def load_checkpoint(filepath: str) -> FlowCheckpoint:
+def load_checkpoint(filepath: str, store: CheckpointStore | None = None) -> FlowCheckpoint:
     """Load a flow checkpoint from disk."""
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"Checkpoint file '{filepath}' does not exist.")
-    with open(filepath, encoding="utf-8") as f:
-        data = json.load(f)
-    return FlowCheckpoint.from_dict(data)
+    return FlowCheckpoint.load(filepath, store=store)

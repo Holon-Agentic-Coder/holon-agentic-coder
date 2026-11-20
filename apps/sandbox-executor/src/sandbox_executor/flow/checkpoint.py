@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -15,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL
+from sandbox_executor.flow.checkpoint_discovery import _checkpoint_names, get_default_checkpoint_path
 from sandbox_executor.flow.constants import CURRENT_CONTEXT_SCHEMA_VERSION
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageStatus
 
@@ -155,25 +155,9 @@ class FlowCheckpoint:
         )
 
 
-def get_default_checkpoint_path(target_worktree: str, slug: str) -> str:
-    """Derive the canonical checkpoint file path for an intent slug."""
-    clean_slug = re.sub(r"[^a-zA-Z0-9_-]", "-", slug).strip("-") or "default"
-    return os.path.join(target_worktree, ".holon", "flow", f"checkpoint-{clean_slug}.json")
-
-
 def save_checkpoint(context: FlowContext, filepath: str | None = None) -> str:
     """Atomically save flow context checkpoint to disk using temporary file replacement."""
-    slug = context.intent_data.get("slug")
-    if not slug and context.intent_data.get("branch"):
-        slug = context.intent_data["branch"].replace("I-", "").split("-", 2)[-1]
-    if not slug:
-        slug = "default"
-    # A sub-intent's slug can repeat its parent's or a sibling's, so its checkpoint is keyed on its unique branch.
-    key = (
-        str(context.intent_data["branch"]).removesuffix("/_")
-        if context.intent_data.get("parent_intent_id") and context.intent_data.get("branch")
-        else slug
-    )
+    slug, key = _checkpoint_names(context.intent_data)
     target_path = filepath or get_default_checkpoint_path(context.target_worktree, key)
     target_dir = os.path.dirname(os.path.abspath(target_path))
     os.makedirs(target_dir, exist_ok=True)

@@ -53,26 +53,69 @@ class CiWaitResult:
         }
 
 
+def _is_pending(check: dict[str, Any]) -> bool:
+    """True for a check whose bucket is ``pending`` or whose state is queued or running."""
+    return str(check.get("bucket") or "").lower() == "pending" or str(check.get("state") or "").upper() in (
+        "IN_PROGRESS",
+        "QUEUED",
+        "PENDING",
+    )
+
+
+def _named_checks(ci_status: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """``(name, check)`` for every named check of a CI probe, in probe order."""
+    checks = [c for c in ci_status.get("checks") or [] if isinstance(c, dict)]
+    return [(name, c) for c in checks if (name := str(c.get("name") or "").strip())]
+
+
 def pending_check_names(ci_status: dict[str, Any]) -> tuple[str, ...]:
     """Names of the checks of a CI probe that are still pending."""
-    names: list[str] = []
-    for check in ci_status.get("checks") or []:
-        if not isinstance(check, dict):
-            continue
-        pending = str(check.get("bucket") or "").lower() == "pending" or str(check.get("state") or "").upper() in (
-            "IN_PROGRESS",
-            "QUEUED",
-            "PENDING",
-        )
-        name = str(check.get("name") or "").strip()
-        if pending and name and name not in names:
-            names.append(name)
-    return tuple(names)
+    return tuple(dict.fromkeys(name for name, check in _named_checks(ci_status) if _is_pending(check)))
+
+
+def _check_conclusions(ci_status: dict[str, Any]) -> dict[str, str]:
+    """Each named check's conclusion: its bucket (``pass``, ``fail``, ``skipping``, ``cancel``), else its state."""
+    return {
+        name: str(check.get("bucket") or "").lower() or str(check.get("state") or "").upper() or "unknown"
+        for name, check in _named_checks(ci_status)
+    }
 
 
 def is_pending_only(ci_status: dict[str, Any]) -> bool:
     """True when checks are still running and none has failed: not a failure and never ``all_passed``."""
     return ci_status.get("pending", 0) > 0 and ci_status.get("failed", 0) == 0
+
+
+def _log_transitions(context: FlowContext, before: dict[str, Any], after: dict[str, Any]) -> None:
+    """One line per check that left the pending set; nothing when no check changed state."""
+    pending_before, pending_after = pending_check_names(before), pending_check_names(after)
+    remaining = int(after.get("pending", 0) or 0)
+    finished = [name for name in pending_before if name not in pending_after]
+    conclusions = _check_conclusions(after)
+    for name in finished:
+        conclusion = conclusions.get(name, "unknown")
+        context.log(f"[Review Loop] CI check '{name}' finished: {conclusion} ({remaining} pending).")
+    previous = int(before.get("pending", 0) or 0)
+    if not finished and remaining != previous:
+        context.log(f"[Review Loop] CI checks pending: {previous} -> {remaining}.")
+
+
+def _log_summary(context: FlowContext, ci_status: dict[str, Any], result: CiWaitResult) -> None:
+    """The one closing line: the settled counts, or the checks still pending when the budget was spent."""
+    if result.exhausted:
+        pending = int(ci_status.get("pending", 0) or 0)
+        names = ", ".join(result.pending_checks) or "unnamed"
+        context.log(
+            f"[Review Loop] CI wait budget of {result.budget_seconds:g}s spent: "
+            f"{pending} check(s) still pending ({names})."
+        )
+        return
+    passed, failed = int(ci_status.get("passed", 0) or 0), int(ci_status.get("failed", 0) or 0)
+    other = max(0, int(ci_status.get("total", 0) or 0) - passed - failed - int(ci_status.get("pending", 0) or 0))
+    context.log(
+        f"[Review Loop] CI wait settled after {result.waited_seconds:g}s: "
+        f"{passed} passed, {failed} failed, {other} other."
+    )
 
 
 def wait_for_pending_ci(
@@ -87,24 +130,33 @@ def wait_for_pending_ci(
     Polls back off from ``poll_interval``, doubling up to the ceiling, and the wait ends as soon as nothing is pending
     or, with ``stop_on_failure``, any check has failed (the outcome is then already a CI failure, so waiting on the
     rest buys nothing). Checks still pending when the budget is spent are returned as they are: never ``all_passed``,
-    never a failure.
+    never a failure. The log carries one start line, one line per check that finishes, nothing for a poll where
+    nothing changed, and one closing summary.
     """
     start = policy.clock()
     deadline = start + max(0.0, policy.budget_seconds)
     interval = policy.poll_interval if policy.poll_interval > 0 else CI_REGISTRATION_POLL_SECONDS
     exhausted = False
+    tracking = ci_status.get("pending", 0) > 0
+    if tracking:
+        context.log(
+            f"[Review Loop] Tracking {int(ci_status.get('total', 0) or 0)} GitHub CI check(s): "
+            f"{ci_status['pending']} pending (budget {policy.budget_seconds:g}s)."
+        )
     while ci_status.get("pending", 0) > 0 and not (stop_on_failure and ci_status.get("failed", 0) > 0):
         remaining = deadline - policy.clock()
         if remaining <= 0:
             exhausted = True
-            context.log(f"[Review Loop] {ci_status['pending']} GitHub CI check(s) still pending after the CI wait.")
             break
-        context.log(f"[Review Loop] Waiting for {ci_status['pending']} pending GitHub CI check(s)...")
         policy.sleep(min(interval, remaining))
         interval = next_poll_interval(interval, policy.ceiling)
-        ci_status = probe()
+        previous, ci_status = ci_status, probe()
+        _log_transitions(context, previous, ci_status)
     waited = max(0.0, policy.clock() - start)
-    return ci_status, CiWaitResult(exhausted, waited, policy.budget_seconds, pending_check_names(ci_status))
+    result = CiWaitResult(exhausted, waited, policy.budget_seconds, pending_check_names(ci_status))
+    if tracking:
+        _log_summary(context, ci_status, result)
+    return ci_status, result
 
 
 def settle_pending_ci(

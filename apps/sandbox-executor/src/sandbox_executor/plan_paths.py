@@ -21,6 +21,10 @@ LEGACY_DIR = f"{PLANS_DIR}/legacy"
 CALIBRATION_REPORT_SUFFIX = "_calibration.md"
 PLAN_FILE_SUFFIX = ".md"
 
+# Subject prefix of the merge commit with which Stage 3 refreshes a plan branch onto its target after an admission wait
+# (flow/plan_refresh.py); a resumed execution's lineage check (entrypoint/partial_resume.py) recognises it.
+REFRESH_MERGE_PREFIX = "execute: refresh plan "
+
 # A plan file, flat (legacy), under plans/legacy/, or nested under its parent's ``I-``/``P-`` branch directories (so
 # no ``..`` or foreign directory can ever match).
 PLAN_FILE_PATTERN = r"plans/(?:(?:legacy|[IP]-[^/]+)/)*P-[^/]+\.md"

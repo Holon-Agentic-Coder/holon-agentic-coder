@@ -39,6 +39,38 @@ def test_touch_set_field_never_fails_the_plan(tmp_path, capsys):
     assert "could not parse the plan's touch set" in capsys.readouterr().err
 
 
+BUDGET_PLAN = "## Touch Set\n\n- `src/a.py`\n- `holon-config/hygiene/module_budgets.json`\n- `holon-config/`\n"
+
+
+def test_touch_set_field_drops_the_budget_configuration_without_authorisation(tmp_path, capsys):
+    plan = tmp_path / "P-1.md"
+    plan.write_text(BUDGET_PLAN, encoding="utf-8")
+    assert planner._touch_set_field(str(plan), {"branch": "I-1-x"}) == {
+        "touch_set": [{"path": "src/a.py"}, {"path": "holon-config/"}]
+    }
+    assert "holon-config/hygiene/module_budgets.json" in capsys.readouterr().err
+
+
+def test_touch_set_field_keeps_the_budget_configuration_when_the_intent_quotes_the_maintainer(tmp_path, capsys):
+    plan = tmp_path / "P-1.md"
+    plan.write_text(BUDGET_PLAN, encoding="utf-8")
+    intent = {"module_budget_change": "Maintainer: raise pipeline.py to 440 lines."}
+    assert planner._touch_set_field(str(plan), intent) == {
+        "touch_set": [
+            {"path": "src/a.py"},
+            {"path": "holon-config/hygiene/module_budgets.json"},
+            {"path": "holon-config/"},
+        ]
+    }
+    assert capsys.readouterr().err == ""
+
+
+def test_touch_set_field_without_the_section_stays_null_without_authorisation(tmp_path):
+    plan = tmp_path / "P-1.md"
+    plan.write_text("# Plan\n\n## Step 1: x\n", encoding="utf-8")
+    assert planner._touch_set_field(str(plan), {}) == {"touch_set": None}
+
+
 @pytest.mark.parametrize(
     "module", ["sandbox_executor.entrypoint.planner", "sandbox_executor.calibration", "sandbox_executor.touch_set"]
 )

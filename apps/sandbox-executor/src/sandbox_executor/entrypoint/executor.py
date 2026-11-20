@@ -54,12 +54,12 @@ from sandbox_executor.entrypoint.execution_workspace import (
 from sandbox_executor.entrypoint.executor_test_run import measure_executor_tests
 from sandbox_executor.entrypoint.sync_conflict import SyncConflictMessage, record_sync_failure
 from sandbox_executor.entrypoint.sync_conflict import superseding_failure_row as superseding_failure_row
+from sandbox_executor.entrypoint.taken_ids import taken_child_ids
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
     ActionRecord,
     LedgerRewriteError,
-    _sanitize_model_name,
     append_action_record,
     atomic_ledger_append,
     build_execution_id,
@@ -68,6 +68,7 @@ from sandbox_executor.ledger import (
     generate_action_id,
     suppress_ledger_failures,
 )
+from sandbox_executor.plan_paths import is_row_of_plan, recorded_plan_file
 
 # The redactors live in the shared module; they are re-exported here so existing importers of
 # `sandbox_executor.entrypoint.executor` keep working unchanged.
@@ -80,7 +81,6 @@ from sandbox_executor.redaction import redact_args as redact_args
 from sandbox_executor.redaction import redact_command_args
 from sandbox_executor.redaction import redact_env_literals as redact_env_literals
 from sandbox_executor.redaction import redact_text as redact_text
-from sandbox_executor.ref_names import original_labels
 from sandbox_executor.turns import AuthoringOutcome, record_budget_failure, run_turn, supervise_authoring_turn
 
 _MAX_PRINT_LEN: int = 5000
@@ -1060,8 +1060,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         mounted_plan_tip = validate_mounted_workspace(repo, repo_dir, plan_branch)
 
         exec_seq = int(time.time())
-        safe_agent, safe_model = _sanitize_string(agent_name, "unknown-agent"), _sanitize_model_name(model_name)
-        exec_id = build_execution_id(exec_seq, plan_branch_prefix, safe_agent, safe_model)
+        exec_id = build_execution_id(
+            exec_seq, plan_branch_prefix, agent_name, model_name, taken=taken_child_ids(repo, plan_branch_prefix, "E")
+        )
         exec_branch = f"{plan_branch_prefix}/{exec_id}/_"
 
         # Plan branch tip: the base the empty-diff guard compares the agent's work against, even on a resume.
@@ -1097,11 +1098,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         continue
                     try:
                         data = json.loads(line)
-                        plan_id = data.get("plan_id")
-                        if isinstance(plan_id, str) and (
-                            plan_branch_prefix.split("/")[-1] == plan_id or plan_branch_prefix.endswith("/" + plan_id)
-                        ):
-                            # The newest matching row wins, so a superseding row the flow back-filled is read.
+                        # Keyed on the intent and the plan id together; the newest matching row wins, so a
+                        # superseding row the flow back-filled is read.
+                        if is_row_of_plan(data, plan_branch_prefix):
                             plan_data = data
                     except Exception as e:
                         print(f"Warning: skipping line {line_no} in plans.jsonl: {e}", file=sys.stderr)
@@ -1117,7 +1116,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
         # Load plan markdown content if available
         plan_content = ""
-        plan_file_rel = plan_data.get("plan_file")
+        plan_file_rel = recorded_plan_file(plan_data.get("plan_file"), plan_branch_prefix)
         if plan_file_rel and os.path.exists(os.path.join(repo_dir, plan_file_rel)):
             with open(os.path.join(repo_dir, plan_file_rel)) as f:
                 plan_content = f.read()
@@ -1162,7 +1161,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "agent": agent_name,
                 "agent_version": runner.get_version(),
                 "model": model_name,
-                **original_labels(exec_id, safe_agent, safe_model),
                 "status": decision.decision,
                 "entropy": decision.entropy,
                 "entropy_budget": decision.entropy_budget,
@@ -1449,7 +1447,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "agent": agent_name,
                 "agent_version": runner.get_version(),
                 "model": model_name,
-                **original_labels(exec_id, safe_agent, safe_model),
                 "status": exec_status,
                 "summary": summary,
                 "created_at": timestamp_str,

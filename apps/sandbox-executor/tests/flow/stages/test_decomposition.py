@@ -560,7 +560,7 @@ class TestEntropyBudgetHandoffInFlow:
         ctx.plan_branch, site = "I-1-parent/P-2-agent-model/_", "sandbox_executor.flow.stages.plan_decision"
         with (
             patch(f"{site}._resolve_branch_ref", return_value="refs/remotes/origin/plan"),
-            patch(f"{site}._read_ledger_rows", return_value=rows),
+            patch(f"{site}._read_ledger_rows", return_value=[{"intent_branch": "I-1-parent/_", **row} for row in rows]),
             patch(f"{site}._git_show_text", side_effect=lambda _repo, _ref, path: files.get(path)),
             patch(f"{site}._backfill_plan_row", return_value=None),  # The write is covered in test_plan_decision.py.
         ):
@@ -574,10 +574,10 @@ class TestEntropyBudgetHandoffInFlow:
         decision = self._decide(rows, {"plans/P-2-agent-model.md": "# Plan\n"})
         assert (decision.decision, decision.entropy) == ("execute", 2.0)
 
-    @pytest.mark.parametrize("plan_file", ["plans/P-x/nested.md", "plans/P-x/../../README.md"])
+    @pytest.mark.parametrize("plan_file", ["plans/P-x/nested.md", "plans/P-x/../../README.md", "plans/../P-2.md"])
     def test_budget_precheck_ignores_a_plan_file_below_a_subdirectory_of_plans(self, plan_file):
         rows = [{"plan_id": "P-2-agent-model", "entropy": 9.0, "plan_file": plan_file}]
-        files = {"plans/P-2-agent-model.md": "# Plan\n" + SUB_INTENT_LIST, plan_file: "# Plan\n"}
+        files = {"plans/I-1-parent/P-2-agent-model.md": "# Plan\n" + SUB_INTENT_LIST, plan_file: "# Plan\n"}
         assert self._decide(rows, files).decision == "decomposed"
 
     def test_budget_precheck_with_a_missing_plan_file_judges_the_row_alone(self):
@@ -587,7 +587,7 @@ class TestEntropyBudgetHandoffInFlow:
 
     def test_budget_precheck_ignores_a_plan_file_outside_plans(self):
         rows = [{"plan_id": "P-2-agent-model", "entropy": 9.0, "plan_file": "README.md"}]
-        files = {"plans/P-2-agent-model.md": "# Plan\n" + SUB_INTENT_LIST, "README.md": "# Readme\n"}
+        files = {"plans/I-1-parent/P-2-agent-model.md": "# Plan\n" + SUB_INTENT_LIST, "README.md": "# Readme\n"}
         decision = self._decide(rows, files)
         assert decision.decision == "decomposed"
         assert [i["goal"] for i in decision.sub_intents] == ["Add the parser", "Add the CLI flag"]
@@ -850,7 +850,7 @@ class TestEntropyBudgetHandoffInFlow:
         ]
         files = {"plans/P-2-agent-model.md": "# Plan\n", "plans/P-3-agent-model.md": "# Plan\n"}
         assert self._decide(rows, files).decision == "execute"
-        assert self._decide(rows[1:], files) is None
+        assert self._decide(rows[1:], files) is self._decide([{**rows[0], "intent_branch": "I-9-x/_"}], files) is None
 
     def test_budget_precheck_reads_the_recorded_plan_file_and_the_intent_budget(self):
         rows = [{"plan_id": "P-2-agent-model", "entropy": 9.0, "plan_file": "plans/P-2-agent-model-v2.md"}]

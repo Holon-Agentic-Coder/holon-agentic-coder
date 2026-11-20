@@ -105,7 +105,7 @@ def _commit_leftovers(repo_dir: str, plan_branch: str, exec_id: str, files: list
 
 def _salvage_row(context: FlowContext, branch: str, exec_id: str, sha: str, file_count: int) -> dict[str, Any]:
     local = _read_ledger_rows(context.target_worktree, f"refs/remotes/origin/{branch}", "executions.jsonl")
-    prior = _latest_execution_summary(local, exec_id) or {}
+    prior = _latest_execution_summary(local, exec_id, branch) or {}
     try:
         revision = int(prior.get("ledger_revision") or 0) + 1
     except (TypeError, ValueError):
@@ -154,7 +154,7 @@ def _unrecorded_salvage_commit(repo_dir: str, branch: str, exec_id: str) -> tupl
         return None
     sha, committed_at = parts[:2]
     recorded = _latest_execution_summary(
-        _read_ledger_rows(repo_dir, f"refs/remotes/origin/{branch}", "executions.jsonl"), exec_id
+        _read_ledger_rows(repo_dir, f"refs/remotes/origin/{branch}", "executions.jsonl"), exec_id, branch
     )
     try:
         if recorded and datetime.fromisoformat(recorded["created_at"]) > datetime.fromisoformat(committed_at):

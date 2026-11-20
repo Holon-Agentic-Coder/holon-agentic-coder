@@ -25,6 +25,7 @@ PLANNER_KEYS = {
     "parent_intent_id",
     "description",
     "plan_id",
+    "plan_file",
     "date",
     "intent_json",
     "safe_model",

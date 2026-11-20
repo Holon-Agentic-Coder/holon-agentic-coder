@@ -25,6 +25,7 @@ from sandbox_executor.flow.context import FlowStage
 from sandbox_executor.flow.git_refs import _read_ledger_rows, _resolve_branch_ref
 from sandbox_executor.flow.github import merge
 from sandbox_executor.git import is_metadata_path, run_git
+from sandbox_executor.plan_paths import is_row_of_plan
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.ref_names import INTENT_SUFFIX
 from sandbox_executor.touch_set import TouchSet, normalise_touch_path
@@ -68,8 +69,7 @@ def read_plan_touch_set(repo_dir: str, plan_branch: str) -> TouchSet | None:
     plan_ref = _resolve_branch_ref(repo_dir, plan_branch)
     if not plan_ref:
         return None
-    plan_id = plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
-    rows = [row for row in _read_ledger_rows(repo_dir, plan_ref, "plans.jsonl") if row.get("plan_id") == plan_id]
+    rows = [row for row in _read_ledger_rows(repo_dir, plan_ref, "plans.jsonl") if is_row_of_plan(row, plan_branch)]
     return TouchSet.from_row(rows[-1].get("touch_set")) if rows else None
 
 

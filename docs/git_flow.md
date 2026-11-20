@@ -51,12 +51,13 @@ This document defines the **Git branching, rebasing, and merging discipline** fo
 ### 1.5 ID Generation
 
 - Root intent, sub-intent, plan and execution IDs are generated using the current Unix timestamp.
-- Every ID (`I-`, `P-` and `E-`) is unique across the whole project: the timestamp plus the slug (intents), the agent
-  and model (plans) or the action slug (executions). Ledgers key records on the bare ID, so a sub-intent's nested branch
-  path only places it in the tree (section 2.2); it does not scope the ID.
+- An intent ID is the timestamp plus the slug. A plan or execution ID is the timestamp plus the runner's ticker and the
+  model code (section 2.5.2), so it is unique only under its parent: a plan is always keyed by its intent and plan ID
+  together (plan file, calibration report, `plans.jsonl` lookups and the duplicate check), and an execution by its full
+  `I-.../P-.../E-...` path.
 - Siblings under one deciding node always have different slugs, so their intent IDs (timestamp plus slug) cannot
   collide, even when they are created in the same second.
-- Example: `I-1771422315-example-intent`, `P-1771422316-claude-code-claude-sonnet-4.6`, `E-1771422317-example-action`
+- Example: `I-1771422315-example-intent`, `P-1771422316-CLA-CS4.6`, `E-1771422317-CLA-CS4.6`
 
 ---
 
@@ -87,15 +88,15 @@ spawned the sub-intent; nesting under the deciding node records it in the branch
 | Split decided by     | Sub-intent branch                                                                                                        |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | The intent stage     | `I-{timestamp}-{slug}/I-{timestamp}-{slug}/_`                                                                            |
-| A plan (in practice) | `I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/I-{timestamp}-{slug}/_`                                        |
-| An execution         | `I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/E-{timestamp}-{action-slug}/I-{timestamp}-{slug}/_`            |
+| A plan (in practice) | `I-{timestamp}-{slug}/P-{timestamp}-{ticker}-{model code}/I-{timestamp}-{slug}/_`                                        |
+| An execution         | `I-{timestamp}-{slug}/P-{timestamp}-{ticker}-{model code}/E-{timestamp}-{ticker}-{model code}/I-{timestamp}-{slug}/_`    |
 | A review             | The reviewed plan's node or the reviewed execution's node (either is acceptable; a review has no branch node of its own) |
 
 In practice, splits are decided by a plan: the planner writes a `## Sub-intent list` in its plan, the executor records
 it, and the flow runs each item as a sub-intent nested under that plan. Example:
 
 ```
-I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
+I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890392-improve-estimators/_
 ```
 
 For illustration of the general rule only, the same sub-intent would be named as follows had the split been decided at
@@ -103,14 +104,14 @@ the intent stage or during execution:
 
 ```
 I-1771890389-refactor-metrics/I-1771890392-improve-estimators/_
-I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/E-1771890391-init-project/I-1771890392-improve-estimators/_
+I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/E-1771890391-CLA-CS4.6/I-1771890392-improve-estimators/_
 ```
 
 The sub-intent's own plan and execution branches continue below its node:
 
 ```
-I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/_
-I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/E-1771890399-add-estimators/_
+I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890392-improve-estimators/P-1771890398-CLA-CO4.6/_
+I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890392-improve-estimators/P-1771890398-CLA-CO4.6/E-1771890399-CLA-CO4.6/_
 ```
 
 Whichever node decided the split, the sub-intent branch is cut from the deciding node's branch and merges back into it
@@ -137,9 +138,9 @@ description.
 {
   "intent_id": "I-1771890392-improve-estimators",
   "parent_intent_id": "I-1771890389-refactor-metrics",
-  "deciding_branch": "I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_",
-  "parent_plan_id": "P-1771890390-claude-code-claude-sonnet-4.6",
-  "target_branch": "I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_"
+  "deciding_branch": "I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_",
+  "parent_plan_id": "P-1771890390-CLA-CS4.6",
+  "target_branch": "I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_"
 }
 ```
 
@@ -151,13 +152,13 @@ description.
 Deeper nesting repeats the pattern. For plan-decided splits:
 
 ```
-I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/I-{timestamp}-{slug}/_
+I-{timestamp}-{slug}/P-{timestamp}-{ticker}-{model code}/I-{timestamp}-{slug}/P-{timestamp}-{ticker}-{model code}/I-{timestamp}-{slug}/_
 ```
 
 Example:
 
 ```
-I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890400-p-success/_
+I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890392-improve-estimators/P-1771890398-CLA-CO4.6/I-1771890400-p-success/_
 ```
 
 **Pattern:** Each level appends the deciding node and the sub-intent to the path, creating a filesystem-like hierarchy.
@@ -168,13 +169,13 @@ Plan branches are created as siblings to the `/_` node within the same intent di
 to allow for multiple competing proposals.
 
 ```
-I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/_
+I-{timestamp}-{slug}/P-{timestamp}-{ticker}-{model code}/_
 ```
 
 Example:
 
 ```
-I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_
 ```
 
 ### 2.5 Execution Branch (Action)
@@ -183,13 +184,13 @@ Execution branches are branched off a specific plan, appending the action slug t
 lineage from intent to proposal to implementation.
 
 ```
-I-{timestamp}-{slug}/P-{timestamp}-{hex}-{agent}-{model}/E-{timestamp}-{action-slug}/_
+I-{timestamp}-{slug}/P-{timestamp}-{ticker}-{model code}/E-{timestamp}-{ticker}-{model code}/_
 ```
 
 Example:
 
 ```
-I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/E-1771890391-init-project/_
+I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/E-1771890391-CLA-CS4.6/_
 ```
 
 ### 2.5.1 Branch Name Length Limit
@@ -205,24 +206,61 @@ every decomposed child intent, plan and execution branch at any depth.
   must be at most 255.
 - **A name that fits is unchanged.** No existing branch, checkpoint or ledger row changes.
 - **Shortening order:** when a name is over the limit, only the parts the engine controls are cut, in this order: the
-  child slug, then the agent and model labels inside the nested plan and execution segments, then the root intent slug.
-  A cut part keeps a prefix of its original text and ends in a 6-character hexadecimal digest (`sha256`, first six
+  child slug, then the root intent slug. Plan and execution segments are short (section 2.5.2) and never shortened. A
+  cut part keeps a prefix of its original text and ends in a 6-character hexadecimal digest (`sha256`, first six
   characters) of the full original text, so two different long inputs never collide and the same input always gives the
   same name. A part is cut only as far as needed and never below the digest alone.
-- **Never touched:** timestamps, the 8-character identifiers and the `--{n}-` child markers.
+- **Never touched:** timestamps, tickers, model codes and the `--{n}-` child markers.
 - **Room for what comes next:** an intent branch is measured with room left for one plan and one execution segment below
-  it, whose labels are at their shortest, because those labels are only known (and shortened) when the plan and
-  execution are created. A plan is measured with room for the execution below it.
+  it, using the real ticker and model code of the configured runner and model (a reserved length when they are not known
+  yet). A plan is measured with room for the execution below it.
+- **Slug limit:** a slug is at most 32 characters, for a root intent and for each child intent. A root slug supplied in
+  the intent file that is longer is rejected when the intent is opened, before any branch exists, with a message giving
+  the limit and the length; a slug the engine derives (from a description or a sub-intent title) is cut to 32 characters
+  at a word boundary. A root intent and two levels of nested child intents, each with a 32-character slug, fit the limit
+  (including `refs/heads/` and `/calibrated`) with no shortening; deeper nesting falls back to the slug shortening above
+  and the length check.
 - **Resume:** a resumed flow keeps the names it already created. The recorded `branch` (intent), the checkpoint and the
   per-child progress entries are used as they are and the shortening rule is never re-run on them.
 - **Ledger:** the original text stays recoverable. An intent row records `original_slug` only when its slug was
-  shortened; plan and execution rows already record the unshortened `agent` and `model`, and add `original_agent` and
-  `original_model` only when the labels in the identifier were shortened. Rows for names that fit are unchanged.
+  shortened. Plan and execution rows record the full `agent` and `model`; the ticker and model code appear only in
+  names. Older rows may still carry `original_agent` and `original_model` from the retired label shortening; readers
+  accept them.
 - **Failure:** if a name cannot fit even after shortening, Stage 1 fails before any branch exists, naming the limit, the
   computed length and the segment that cannot be shortened (for example
   `the segment that cannot be shortened is 'parent'`). If a push is still rejected for ref length, the host push fails
   with `ref too long: branch <name> (<n> characters)`. A child branch name that cannot fit at Stage 3 fails that stage
   with the same named limit rather than raising.
+
+### 2.5.2 Plan and Execution Names
+
+A new plan is `P-{epoch}-{ticker}-{model code}` and a new execution `E-{epoch}-{ticker}-{model code}`, with no hex, for
+example `I-1794567515-sleepfix/P-1794567531-CLA-CS5.5/E-1794567598-CLA-CS5.5/calibrated`.
+
+- **Ticker:** each runner that may run a flow declares a ticker of exactly three uppercase letters beside its definition
+  in `agent_defaults.py`: `claude-agent` is `CLA`, `antigravity-agent` is `ANA` and `pi-agent` is `PIA`. A ticker is
+  never reassigned or reused, and a test fails when two runners share one. A runner with no ticker is rejected by
+  `holon doctor` and when an intent is opened, before any branch is created, with a message naming the runner; there is
+  no fallback.
+- **Model code:** derived from the model name by a pure rule (`sandbox_executor/naming.py`, no table): anything before a
+  `/` is dropped, each word contributes its first letter in upper case, version numbers are kept and joined with a dot,
+  and every character invalid in a git ref is removed. `claude-sonnet-5-5` is `CS5.5`, `claude-fable-5` is `CF5`,
+  `gemini-3.8-flash-medium` is `G3.8FM`, `gpt-5-codex` is `G5C` and `anthropic/claude-opus-5-5` is `CO5.5`.
+- **Same parent, same second:** two plans or executions that would get the same name under the same parent never
+  overwrite each other: the second gets a deterministic `-2` (up to `-9`) variant, and fails clearly once those are
+  taken. Two intents planned in the same second by the same runner and model may share a plan ID; they never collide,
+  because every plan is keyed by its intent (its plan file, its calibration report and its `plans.jsonl` row), and every
+  execution by its full path.
+- **Older generations stay valid:** `P-{epoch}-{agent}-{model}` and `P-{epoch}-{hex}-{agent}-{model}` (and the same for
+  `E-`) are still parsed, found and calibrated everywhere. No existing ID is renamed, because existing IDs match the
+  head branch names of the pull requests that carried them.
+
+**Plan files follow the branch name.** The plan on `{parent}/{plan id}/_` lives at `plans/{parent}/{plan id}.md` and its
+calibration report beside it at `plans/{parent}/{plan id}_calibration.md`, mirroring the full nesting: a root intent
+(`plans/I-.../P-....md`), a child intent (`plans/I-...--{index}-{slug}/P-....md`) and a plan nested under another plan
+(`plans/I-.../P-.../P-....md`). `sandbox_executor/plan_paths.py` owns the layout. Plans created before this layout were
+moved once by `scripts/migrate_plan_layout.py`; a plan file that no branch could be found for lives under
+`plans/legacy/`.
 
 ### 2.6 Hierarchy Summary
 
@@ -235,10 +273,10 @@ The evolution pipeline traverses five deterministic stages, representing a singl
 | Stage              | Name                  | CLI Command                            | Artifacts & Outputs                                                                       |
 | :----------------- | :-------------------- | :------------------------------------- | :---------------------------------------------------------------------------------------- |
 | **1. Intent**      | Intent Initialisation | `holon intent <intent.json>`           | Intent branch `I-.../_` + `holon-knowledge/ledger/intents.jsonl`                          |
-| **2. Plan**        | Plan Generation       | `holon plan <intent_branch>`           | Plan branch `I-.../P-.../_` + `plans/P-*.md` + `plans.jsonl`                              |
+| **2. Plan**        | Plan Generation       | `holon plan <intent_branch>`           | Plan branch `I-.../P-.../_` + `plans/I-.../P-*.md` + `plans.jsonl`                        |
 | **3. Execute**     | Sandbox Execution     | `holon execute <plan_branch>`          | Execution branch `I-.../P-.../E-.../_` + `executions.jsonl`                               |
 | **4. Review Loop** | PR Review Loop        | `holon review-loop <execution_branch>` | PR raised + sandboxed reviewer ensemble (unanimity) + micro-actions in `executions.jsonl` |
-| **5. Calibrate**   | Calibration Analysis  | `holon calibrate <execution_branch>`   | `/calibrated` branch + `plans/P-*_calibration.md` (included in PR diff)                   |
+| **5. Calibrate**   | Calibration Analysis  | `holon calibrate <execution_branch>`   | `/calibrated` branch + `plans/I-.../P-*_calibration.md` (included in PR diff)             |
 
 #### Target Worktree and the Default Branch
 
@@ -362,8 +400,8 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
 
 The guarantee has five deliberate limits:
 
-- **No fabricated plans.** If no planner agent produced `plans/P-*.md` on a plan branch under the intent branch, Stage 2
-  fails; the flow never writes a plan from a template.
+- **No fabricated plans.** If no planner agent produced `plans/I-.../P-*.md` on a plan branch under the intent branch,
+  Stage 2 fails; the flow never writes a plan from a template.
 - **Empty executions fail.** An execution branch with no changes outside `holon-knowledge/ledger/`, `plans/` and
   `executions/` relative to its plan branch (content merged in from the target branch does not count) is recorded as
   `status: "failed"` (`failure_reason: "empty_diff"`, no `test_pass_rate`), Stage 3 fails and no PR is created or
@@ -564,16 +602,16 @@ under the flow equivalence guarantee).
 **Before execution:**
 
 ```bash
-$ git checkout I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/_
+$ git checkout I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890392-improve-estimators/_
 $ git fetch origin
-$ git rebase origin/I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+$ git rebase origin/I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_
 ```
 
 **After execution:**
 
 ```bash
 $ git fetch origin
-$ git rebase origin/I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+$ git rebase origin/I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_
 ```
 
 ### 3.3 Conflict Handling
@@ -616,10 +654,10 @@ inside it (the plan or execution that decided its own sub-intents), which its PR
 
 ```bash
 # Sub-intent completes: the agent merges it into the deciding plan branch
-$ git checkout I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
-$ git merge --no-ff I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
+$ git checkout I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_
+$ git merge --no-ff I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890394-add-logging/_
 # Automatic for every sub-intent, no human review
-$ git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+$ git push origin I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_
 ```
 
 **Ledger event:**
@@ -629,8 +667,8 @@ $ git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-
   "event_type": "git_merge_attempted",
   "payload": {
     "intent_id": "I-1771890394-add-logging",
-    "from_branch": "I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_",
-    "to_branch": "I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_",
+    "from_branch": "I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890394-add-logging/_",
+    "to_branch": "I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_",
     "status": "success",
     "merge_type": "automatic_sub_intent",
     "human_review_required": false
@@ -669,7 +707,7 @@ $ holon review approve I-1771890389-refactor-metrics
 # System merges
 $ git checkout main
 # The root PR carries the deciding plan branch, into which every sub-intent merged
-$ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+$ git merge I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_
 $ git push origin main
 ```
 
@@ -794,11 +832,11 @@ $ git checkout main
 $ git checkout -b I-1771890389-refactor-metrics/_
 
 # Deciding plan: cut from the root intent branch and pushed, so sub-intents can be cut from it
-$ git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_ I-1771890389-refactor-metrics/_
-$ git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+$ git checkout -b I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_ I-1771890389-refactor-metrics/_
+$ git push origin I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_
 
 # Sub-intent: nested under the plan that decided the split, cut from that plan branch, which it targets
-$ git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_ origin/I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+$ git checkout -b I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890394-add-logging/_ origin/I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_
 ```
 
 ### 7.2 Execution
@@ -811,7 +849,7 @@ $ git checkout -b I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-
 ### 7.3 Rebase (Post-Execution)
 
 ```bash
-$ git rebase origin/I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+$ git rebase origin/I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_
 ```
 
 ### 7.4 Merge (Automatic for Sub-Intents)
@@ -821,9 +859,9 @@ is a leaf or a nested parent (section 4.1).
 
 ```bash
 # The sub-intent branch merges automatically into the deciding plan branch
-$ git checkout I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
-$ git merge --no-ff I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
-$ git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+$ git checkout I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_
+$ git merge --no-ff I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890394-add-logging/_
+$ git push origin I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_
 ```
 
 ### 7.5 Promotion (Human Review for Root Intents)
@@ -832,7 +870,7 @@ $ git push origin I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-
 $ holon review approve I-1771890389-refactor-metrics
 $ git checkout main
 # The root PR carries the deciding plan branch, into which every sub-intent merged
-$ git merge I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+$ git merge I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_
 $ git push origin main
 ```
 
@@ -840,8 +878,8 @@ $ git push origin main
 
 ```bash
 # Delete merged branches
-$ git branch -d I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_
-$ git branch -d I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_
+$ git branch -d I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890394-add-logging/_
+$ git branch -d I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_
 $ git branch -d I-1771890389-refactor-metrics/_
 ```
 
@@ -855,9 +893,9 @@ Intent Hierarchy (each split decided by a plan):
 
 ```
 I-1771890389-refactor-metrics (root)
-└── P-1771890390-claude-code-claude-sonnet-4.6 (plan, decided the split)
+└── P-1771890390-CLA-CS4.6 (plan, decided the split)
     ├── I-1771890392-improve-estimators (sub-intent)
-    │   └── P-1771890398-claude-code-claude-opus-4.6 (plan, decided the split)
+    │   └── P-1771890398-CLA-CO4.6 (plan, decided the split)
     │       ├── I-1771890400-p-success (sub-sub-intent)
     │       ├── I-1771890401-entropy (sub-sub-intent)
     │       └── I-1771890402-impact (sub-sub-intent)
@@ -871,11 +909,11 @@ Git branch structure:
 main
 └── I-1771890389-refactor-metrics
     ├── _
-    ├── P-1771890390-claude-code-claude-sonnet-4.6
+    ├── P-1771890390-CLA-CS4.6
     │   ├── _
     │   ├── I-1771890392-improve-estimators
     │   │   ├── _
-    │   │   └── P-1771890398-claude-code-claude-opus-4.6
+    │   │   └── P-1771890398-CLA-CO4.6
     │   │       ├── _
     │   │       ├── I-1771890400-p-success
     │   │       │   └── _
@@ -887,14 +925,14 @@ main
     │   │   └── _
     │   └── I-1771890395-add-tests
     │       └── _
-    └── P-1771890397-gemini-cli-gemini-3.6-flash
+    └── P-1771890397-ANA-G3.6F
         ├── _
-        └── E-1771890403-init-project
+        └── E-1771890403-CLA-CS4.6
             └── _
 ```
 
-`P-1771890397-gemini-cli-gemini-3.6-flash` is a competing plan for the same root intent; the sub-intents sit under
-`P-1771890390-claude-code-claude-sonnet-4.6`, the plan whose `## Sub-intent list` created them.
+`P-1771890397-ANA-G3.6F` is a competing plan for the same root intent; the sub-intents sit under
+`P-1771890390-CLA-CS4.6`, the plan whose `## Sub-intent list` created them.
 
 ### Merge Flow
 
@@ -902,28 +940,25 @@ Sub-intents merge into the deciding plan branch, not the parent intent branch. E
 merged automatically by the agent.
 
 1. **Depth 2 → deciding plan inside the sub-intent** (automatic):
-   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890400-p-success/_`
-     →
-     `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/_`
-   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890401-entropy/_`
-     →
-     `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/_`
-   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/I-1771890402-impact/_`
-     →
-     `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/_`
+   - `I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890392-improve-estimators/P-1771890398-CLA-CO4.6/I-1771890400-p-success/_`
+     → `I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890392-improve-estimators/P-1771890398-CLA-CO4.6/_`
+   - `I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890392-improve-estimators/P-1771890398-CLA-CO4.6/I-1771890401-entropy/_`
+     → `I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890392-improve-estimators/P-1771890398-CLA-CO4.6/_`
+   - `I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890392-improve-estimators/P-1771890398-CLA-CO4.6/I-1771890402-impact/_`
+     → `I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890392-improve-estimators/P-1771890398-CLA-CO4.6/_`
 
 2. **Depth 1 → root's deciding plan** (automatic):
-   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890394-add-logging/_` →
-     `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_` (leaf sub-intent)
-   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890395-add-tests/_` →
-     `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_` (leaf sub-intent)
-   - `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/I-1771890392-improve-estimators/P-1771890398-claude-code-claude-opus-4.6/_`
+   - `I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890394-add-logging/_` →
+     `I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_` (leaf sub-intent)
+   - `I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890395-add-tests/_` →
+     `I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_` (leaf sub-intent)
+   - `I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/I-1771890392-improve-estimators/P-1771890398-CLA-CO4.6/_`
      (the nested parent's PR, carrying the deciding plan branch inside it) →
-     `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_` (nested parent, after step 1)
+     `I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_` (nested parent, after step 1)
 
 3. **Root → Main** (human review, the only human step):
-   - The root intent's PR, carrying the combined diff of
-     `I-1771890389-refactor-metrics/P-1771890390-claude-code-claude-sonnet-4.6/_`, → `main` (after human approval)
+   - The root intent's PR, carrying the combined diff of `I-1771890389-refactor-metrics/P-1771890390-CLA-CS4.6/_`, →
+     `main` (after human approval)
 
 ---
 

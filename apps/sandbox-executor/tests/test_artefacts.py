@@ -211,7 +211,7 @@ class TestArtefacts(unittest.TestCase):
         """
         paths = [
             p
-            for p in glob.glob(str(REPO_ROOT / "plans" / "P-*.md"))
+            for p in glob.glob(str(REPO_ROOT / "plans" / "**" / "P-*.md"), recursive=True)
             if not p.endswith("_calibration.md") and os.path.getsize(p) >= PLAN_SPEC.size_floor
         ]
         if not paths:

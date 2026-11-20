@@ -244,7 +244,7 @@ class TestFlowStages:
             res = run_calibrate_stage(ctx)
 
         assert res.status == StageStatus.SUCCESS
-        mock_format.assert_called_once_with("plans/P-200-plan_calibration.md", str(tmp_path))
+        mock_format.assert_called_once_with("plans/I-100-intent/P-200-plan_calibration.md", str(tmp_path))
 
     def test_stage5_calibrate_fallback_appends_uncommitted_failure_act_cal(self, tmp_path):
         """A failed calibration run appends an ACT-CAL failure row that stays uncommitted, as documented."""
@@ -286,7 +286,7 @@ class TestFlowStages:
         assert cal_rows[0]["outcome"] == "failure"
         assert "calibration failed" in cal_rows[0]["error_context"]
         assert cal_rows[0]["action"] == "Calibration failed for plan P-200-plan; fallback report written"
-        assert cal_rows[0]["calibration_report_path"] == "plans/P-200-plan_calibration.md"
+        assert cal_rows[0]["calibration_report_path"] == "plans/I-100-intent/P-200-plan_calibration.md"
 
         # Nothing is committed on the fallback path: the row and report remain working-tree changes.
         # The worktree is returned to the branch it started on, carrying the uncommitted changes.
@@ -296,7 +296,7 @@ class TestFlowStages:
         assert git("branch", "--list", "*calibrated").strip() == ""
         status = git("status", "--porcelain", "--untracked-files=all")
         assert "holon-knowledge/ledger/executions.jsonl" in status
-        assert "plans/P-200-plan_calibration.md" in status
+        assert "plans/I-100-intent/P-200-plan_calibration.md" in status
 
     @pytest.mark.parametrize("scenario", ["raises_after_checkout", "rerun_on_calibrated"])
     def test_stage5_calibrate_failure_on_calibrated_branch_commits_nothing(self, tmp_path, scenario):
@@ -351,7 +351,7 @@ class TestFlowStages:
         assert git("show", f"{calibrated_branch}:holon-knowledge/ledger/executions.jsonl") == ""
         status = git("status", "--porcelain", "--untracked-files=all")
         assert "holon-knowledge/ledger/executions.jsonl" in status
-        assert "plans/P-200-plan_calibration.md" in status
+        assert "plans/I-100-intent/P-200-plan_calibration.md" in status
         assert any("left uncommitted" in line and "calibration failed" in line for line in ctx.logs)
 
     def test_stage5_calibrate_fallback_records_original_error_when_prettier_fails(self, tmp_path):
@@ -490,8 +490,8 @@ class TestFlowStages:
 
         ctx = self._stage5_push_context(tmp_path)
         error = CalibrationFormatError(
-            "Calibration report plans/P-200-plan_calibration.md failed the repository Prettier check "
-            "(check exited 1); reproduce with: npx prettier --check plans/P-200-plan_calibration.md"
+            "Calibration report plans/I-100-intent/P-200-plan_calibration.md failed the repository Prettier check "
+            "(check exited 1); reproduce with: npx prettier --check plans/I-100-intent/P-200-plan_calibration.md"
         )
         with (
             patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
@@ -512,7 +512,7 @@ class TestFlowStages:
         assert res.status == StageStatus.FAILED
         assert "Prettier check" in res.error
         assert "nothing was committed or pushed" in res.error
-        assert "plans/P-200-plan_calibration.md" in res.error
+        assert "plans/I-100-intent/P-200-plan_calibration.md" in res.error
         assert ctx.stage_results["calibrate"] is res
         git_verbs = [call.args[0][0] for call in mock_git.call_args_list]
         assert not {"push", "merge", "commit", "add"} & set(git_verbs)

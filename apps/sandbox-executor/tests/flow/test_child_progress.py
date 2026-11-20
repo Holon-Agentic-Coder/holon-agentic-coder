@@ -219,9 +219,18 @@ def test_a_failed_origin_fetch_marks_the_entry_for_resume(tmp_path):
     assert next_child_action(progress[0]) == "resume"
 
 
-def test_initial_progress_records_original_of_shortened_child_slug() -> None:
+def test_initial_progress_cuts_a_long_child_slug_to_the_limit_at_a_word_boundary() -> None:
     long_slug = "very-long-slug-" * 20
-    shortened, untouched = initial_progress([{"slug": long_slug}, {"slug": "x"}], PLAN)
-    assert shortened["original_slug"] == long_slug.strip("-")
-    assert long_slug.strip("-") not in shortened["intent_branch"]
+    cut, untouched = initial_progress([{"slug": long_slug}, {"slug": "x"}], PLAN)
+    assert cut["intent_branch"] == f"{PLAN.removesuffix('/_')}--1-very-long-slug-very-long-slug/_"
+    assert cut["original_slug"] is None and untouched["original_slug"] is None
+
+
+def test_initial_progress_records_original_of_shortened_child_slug() -> None:
+    # Below a deep parent the 32-character slug still leaves no room for a plan and execution, so it is shortened.
+    deep_plan = f"I-1-{'a' * 130}/P-2-CLA-CS5.5/_"
+    slug = "b" * 32
+    shortened, untouched = initial_progress([{"slug": slug}, {"slug": "x"}], deep_plan)
+    assert shortened["original_slug"] == slug
+    assert slug not in shortened["intent_branch"]
     assert untouched["original_slug"] is None

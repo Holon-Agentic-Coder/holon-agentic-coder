@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from sandbox_executor.calibration import extract_branch_components, parse_evaluated_commit_sha, read_git_file
+from sandbox_executor.calibration import parse_evaluated_commit_sha, read_git_file
 from sandbox_executor.flow.calibrate_rebuild import is_ancestor, is_calibration_commit
 from sandbox_executor.flow.context import FlowContext, StageResult, StageStatus
 from sandbox_executor.flow.github.approval_invalidation import (
@@ -31,6 +31,7 @@ from sandbox_executor.flow.github.ci_failure_detail import short_sha
 from sandbox_executor.flow.github.ci_reverify import rerun_note
 from sandbox_executor.flow.host_remote import DEFAULT_REMOTE, HostRemoteError, fetch_base
 from sandbox_executor.git import run_git
+from sandbox_executor.plan_paths import calibration_report_candidates, split_plan_branch
 
 logger = logging.getLogger(__name__)
 
@@ -125,14 +126,15 @@ def report_staleness(context: FlowContext, seams: RerunSeams | None = None) -> H
     branch = context.execution_branch
     if context.dry_run or not branch:
         return HeadMoveCheck(False, reason="dry run or no execution branch")
-    plan_id = extract_branch_components(branch).get("plan_id")
+    parent, plan_id = split_plan_branch(branch)
     if not plan_id:
         return HeadMoveCheck(False, reason=f"no plan id in '{branch}'")
     current = (seams.head_resolver or _origin_head)(context)
     if not current:
         return HeadMoveCheck(False, reason=f"the head of '{branch}' could not be resolved")
-    report_rel = f"plans/{plan_id}_calibration.md"
-    content = (seams.report_reader or _report_content)(context, report_rel)
+    reader, candidates = seams.report_reader or _report_content, calibration_report_candidates(parent, plan_id)
+    found = ((rel, text) for rel in candidates if (text := reader(context, rel)) is not None)
+    report_rel, content = next(found, (candidates[0], None))  # nested report first, then flat
     if content is None:
         return HeadMoveCheck(False, current_head=current, reason=f"no calibration report at {report_rel}")
     evaluated = parse_evaluated_commit_sha(content)

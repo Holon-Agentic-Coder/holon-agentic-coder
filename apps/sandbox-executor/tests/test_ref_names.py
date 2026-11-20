@@ -1,4 +1,4 @@
-"""Branch-name limit, boundaries, deterministic shortening and the wiring around the single builder."""
+"""Branch-name limit, boundaries, deterministic slug shortening and the new short stage segments."""
 
 from __future__ import annotations
 
@@ -12,30 +12,34 @@ from sandbox_executor.budgets import MAX_SUB_INTENT_DEPTH
 from sandbox_executor.flow.context import FlowContext, StageStatus
 from sandbox_executor.flow.stages.intent import run_intent_stage
 from sandbox_executor.ledger import build_execution_id, build_plan_id
+from sandbox_executor.naming import model_code, ticker_for
 from sandbox_executor.ref_names import (
     CALIBRATION_SUFFIX,
     MAX_BRANCH_LENGTH,
     MAX_REF_LENGTH,
+    MAX_SLUG_LENGTH,
     REF_PREFIX,
     RefTooLongError,
+    SlugTooLongError,
     calibration_branch,
     ensure_chain_fits,
+    ensure_stage_segment_fits,
     fit_child_intent_branch,
-    fit_execution_id,
     fit_parts,
-    fit_plan_id,
     fit_root_intent_branch,
     measured_length,
     named_push_rejection,
-    original_labels,
     resolve_root_intent_branch,
+    root_intent_slug,
     shorten_text,
+    stage_segment_length,
+    truncate_derived_slug,
+    validate_supplied_slug,
 )
 
 AGENT = "claude-agent"
 MODEL = "claude-sonnet-5-5"
-SLUG_56 = "a-fifty-six-character-slug-for-the-decomposed-refcap-run"
-DIS = "abdc9b6d"
+SLUG_32 = "a-thirtytwo-character-slug-here1"
 SEQ = 1794391544
 
 
@@ -49,6 +53,7 @@ def test_limit_constants_record_the_measured_service_limit():
     assert MAX_REF_LENGTH == 255
     assert MAX_BRANCH_LENGTH == MAX_REF_LENGTH - len(REF_PREFIX) == 244
     assert len(CALIBRATION_SUFFIX) - len("/_") == 9
+    assert MAX_SLUG_LENGTH == 32
 
 
 @pytest.mark.parametrize("without_prefix", [243, 244, 245])
@@ -74,8 +79,6 @@ def test_boundary_with_prefix(with_prefix):
 
 def test_a_name_that_fits_is_unchanged():
     assert fit_root_intent_branch(SEQ, "short").name == f"I-{SEQ}-short"
-    plan = fit_plan_id(f"I-{SEQ}-short", SEQ, DIS, AGENT, MODEL)
-    assert plan.name == f"P-{SEQ}-{DIS}-{AGENT}-{MODEL}" and plan.originals == {}
     assert fit_child_intent_branch("I-1-root/P-2-x/_", 1, "kid").name == "I-1-root/P-2-x--1-kid"
 
 
@@ -99,53 +102,68 @@ def test_shorten_text_never_goes_below_digest_only_length():
     assert shorten_text("short", 10) == "short"
 
 
-def _names_below(parent: str, depth: int, agent: str, model: str) -> list[str]:
-    """Every plan, execution and child intent name from ``parent`` down to ``depth`` child levels."""
-    plan_branch = f"{parent}/{fit_plan_id(parent, SEQ, DIS, agent, model).name}"
-    execution = f"{plan_branch}/{fit_execution_id(plan_branch, SEQ, DIS, agent, model).name}"
-    names = [plan_branch, execution]
-    if depth:
-        child = fit_child_intent_branch(plan_branch, depth, SLUG_56).name
-        names += [child, *_names_below(child, depth - 1, agent, model)]
-    return names
+def test_stage_segment_length_matches_a_real_new_format_segment():
+    plan_id = build_plan_id(SEQ, f"I-{SEQ}-short", AGENT, MODEL)
+    assert len(f"/{plan_id}") == stage_segment_length(len(model_code(MODEL)))
 
 
-def test_the_failing_decomposed_case_fits_at_every_depth():
-    root = fit_root_intent_branch(SEQ, SLUG_56).name
-    for index in range(1, 5):
-        plan_branch = f"{root}/{fit_plan_id(root, SEQ, DIS, AGENT, MODEL).name}"
-        child = fit_child_intent_branch(plan_branch, index, SLUG_56).name
-        for name in (root, plan_branch, child, *_names_below(child, 0, AGENT, MODEL)):
-            assert measured_length(name) <= MAX_REF_LENGTH
-            assert len(REF_PREFIX + name + "/_") <= MAX_REF_LENGTH
+def test_ledger_builders_compose_short_hexless_names():
+    plan_id = build_plan_id(SEQ, f"I-{SEQ}-short/_", AGENT, MODEL)
+    assert plan_id == f"P-{SEQ}-CLA-CS5.5"
+    execution_id = build_execution_id(SEQ, f"I-{SEQ}-short/{plan_id}/_", AGENT, MODEL)
+    assert execution_id == f"E-{SEQ}-CLA-CS5.5"
+    assert not re.search(r"-[0-9a-f]{8}-", plan_id + execution_id)
+
+
+def test_two_levels_of_32_character_nesting_fit_without_shortening():
+    """The acceptance arithmetic: a root and two nested child intents, each with a 32-character slug, fit 255."""
+    root = fit_root_intent_branch(SEQ, SLUG_32)
+    assert root.originals == {} and root.name == f"I-{SEQ}-{SLUG_32}"
+    branch = root.name
+    for index in (1, 2):
+        plan_id = build_plan_id(SEQ, branch, AGENT, MODEL)
+        plan_branch = f"{branch}/{plan_id}"
+        child = fit_child_intent_branch(plan_branch, index, SLUG_32)
+        assert child.originals == {}, f"level {index} was shortened"
+        branch = child.name
+    plan_id = build_plan_id(SEQ, branch, AGENT, MODEL)
+    execution_id = build_execution_id(SEQ, f"{branch}/{plan_id}", AGENT, MODEL)
+    calibrated = f"{branch}/{plan_id}/{execution_id}{CALIBRATION_SUFFIX}"
+    assert len(REF_PREFIX) + len(calibrated) <= MAX_REF_LENGTH
+
+
+def test_deeper_nesting_falls_back_to_slug_shortening_and_the_length_check():
+    # A long derived slug still goes through the kept shortening path rather than overflowing the ref.
+    deep_parent = f"I-{SEQ}-{SLUG_32}/P-{SEQ}-CLA-CS5.5"
+    child = fit_child_intent_branch(deep_parent, 1, "slug-" * 40)
+    assert "child slug" in child.originals and measured_length(child.name) <= MAX_REF_LENGTH
+    # Beyond what shortening can absorb, the kept length check engages instead of producing an over-limit name.
+    guarded = False
+    branch = fit_root_intent_branch(SEQ, SLUG_32).name
+    for index in range(1, 12):
+        try:
+            plan_id = build_plan_id(SEQ, branch, AGENT, MODEL)
+            branch = fit_child_intent_branch(f"{branch}/{plan_id}", index, SLUG_32).name
+        except RefTooLongError:
+            guarded = True
+            break
+        assert measured_length(branch) <= MAX_REF_LENGTH
+    assert guarded, "the length check never engaged at depth"
 
 
 def test_depth_three_children_fit_at_every_level():
-    names = _names_below("I-1-root", MAX_SUB_INTENT_DEPTH, "agent", "model")
-    assert len(names) == 2 * (MAX_SUB_INTENT_DEPTH + 1) + MAX_SUB_INTENT_DEPTH
-    assert all(measured_length(name) <= MAX_REF_LENGTH for name in names)
-
-
-def test_labels_are_shortened_before_the_root_slug_and_originals_are_reported():
-    parent = "I-1-" + "r" * 150
-    plan = fit_plan_id(parent, SEQ, DIS, "agent-" + "a" * 60, "model-" + "m" * 60)
-    assert plan.originals.keys() <= {"agent", "model"} and plan.originals
-    assert original_labels(plan.name, "a", "b") == {"original_agent": "a", "original_model": "b"}
-    assert original_labels(f"P-1-{DIS}-{AGENT}-{MODEL}", AGENT, MODEL) == {}
-
-
-def test_ledger_builders_route_through_the_fitting_builders():
-    parent = "I-1-" + "r" * 140
-    plan_id = build_plan_id(SEQ, parent, "a" * 60, "m" * 60, disambiguator=DIS)
-    assert measured_length(f"{parent}/{plan_id}") <= MAX_REF_LENGTH
-    execution_id = build_execution_id(SEQ, f"{parent}/{plan_id}", "a" * 60, "m" * 60, disambiguator=DIS)
-    assert measured_length(f"{parent}/{plan_id}/{execution_id}") <= MAX_REF_LENGTH
-    assert build_plan_id(SEQ, "I-1-x/_", AGENT, MODEL, disambiguator=DIS) == f"P-{SEQ}-{DIS}-{AGENT}-{MODEL}"
+    branch = "I-1-root"
+    for index in range(1, MAX_SUB_INTENT_DEPTH + 1):
+        plan_id = build_plan_id(SEQ, branch, AGENT, MODEL)
+        execution_id = build_execution_id(SEQ, f"{branch}/{plan_id}", AGENT, MODEL)
+        assert measured_length(f"{branch}/{plan_id}/{execution_id}") <= MAX_REF_LENGTH
+        branch = fit_child_intent_branch(f"{branch}/{plan_id}", index, SLUG_32).name
+        assert measured_length(branch) <= MAX_REF_LENGTH
 
 
 def test_an_impossible_name_raises_with_limit_length_and_segment():
     with pytest.raises(RefTooLongError) as caught:
-        fit_plan_id("I-1-" + "p" * 300, SEQ, DIS, AGENT, MODEL)
+        ensure_stage_segment_fits("I-1-" + "p" * 300, f"P-{SEQ}-CLA-CS5.5")
     assert caught.value.limit == MAX_REF_LENGTH
     assert caught.value.length > MAX_REF_LENGTH
     assert caught.value.segment == "parent"
@@ -153,7 +171,8 @@ def test_an_impossible_name_raises_with_limit_length_and_segment():
 
 
 def test_ensure_chain_fits_accepts_a_normal_intent_and_rejects_an_oversized_one():
-    ensure_chain_fits(f"I-{SEQ}-{SLUG_56}", AGENT, MODEL)
+    ensure_chain_fits(f"I-{SEQ}-{SLUG_32}", AGENT, MODEL)
+    ensure_chain_fits(f"I-{SEQ}-{SLUG_32}", "", "")
     with pytest.raises(RefTooLongError):
         ensure_chain_fits("I-1-" + "p" * 240, AGENT, MODEL)
 
@@ -163,20 +182,26 @@ def test_calibration_branch_replaces_the_suffix_without_stripping_characters():
 
 
 def test_a_recorded_branch_is_kept_when_the_rule_changes():
-    data = {"branch": f"I-1-{SLUG_56}/_"}
+    data = {"branch": f"I-1-{SLUG_32}/_"}
     with patch("sandbox_executor.ref_names.fit_root_intent_branch", side_effect=AssertionError("recomputed")):
-        assert resolve_root_intent_branch(data, SLUG_56, 99, AGENT, MODEL) == f"I-1-{SLUG_56}"
+        assert resolve_root_intent_branch(data, SLUG_32, 99, AGENT, MODEL) == f"I-1-{SLUG_32}"
     assert "original_slug" not in data
 
 
-def test_resolving_a_long_root_slug_records_the_original_slug():
-    data: dict[str, str] = {}
-    slug = "s" * 400
-    branch = resolve_root_intent_branch(data, slug, SEQ, AGENT, MODEL)
-    assert data["original_slug"] == slug and branch == f"I-{SEQ}-{data['slug']}"
-    short: dict[str, str] = {}
-    resolve_root_intent_branch(short, "ok", SEQ, AGENT, MODEL)
-    assert short == {"slug": "ok"}
+def test_supplied_slug_over_the_limit_is_rejected_with_limit_and_length():
+    long_slug = "s" * 40
+    with pytest.raises(SlugTooLongError) as caught:
+        validate_supplied_slug(long_slug)
+    assert "32" in str(caught.value) and "40" in str(caught.value)
+    assert validate_supplied_slug(SLUG_32) == SLUG_32
+
+
+def test_derived_slug_is_cut_at_a_word_boundary():
+    assert truncate_derived_slug("short-slug") == "short-slug"
+    cut = truncate_derived_slug("alpha-beta-gamma-delta-epsilon-zeta-eta-theta")
+    assert len(cut) <= MAX_SLUG_LENGTH
+    assert cut == "alpha-beta-gamma-delta-epsilon"
+    assert len(truncate_derived_slug("x" * 80)) == MAX_SLUG_LENGTH
 
 
 def test_stage_one_fails_before_any_branch_exists(tmp_path):
@@ -187,9 +212,38 @@ def test_stage_one_fails_before_any_branch_exists(tmp_path):
     )
     result = run_intent_stage(ctx)
     assert result.status == StageStatus.FAILED
-    assert "255" in result.error and "parent" in result.error and "characters" in result.error
+    assert "255" in result.error and "characters" in result.error
     assert not ctx.intent_branch
     assert not (tmp_path / ".git").exists()
+
+
+def test_stage_one_rejects_a_supplied_root_slug_over_the_limit_before_any_branch_exists(tmp_path):
+    long_slug = "a-supplied-slug-that-is-far-too-long-for-a-branch"
+    intent = {"goal": "g", "slug": long_slug}
+    ctx = FlowContext(target_worktree=str(tmp_path), dry_run=True, agent=AGENT, model=MODEL, intent_data=intent)
+    result = run_intent_stage(ctx)
+    assert result.status == StageStatus.FAILED
+    assert f"at most {MAX_SLUG_LENGTH} characters" in result.error and f"{len(long_slug)} characters" in result.error
+    assert not ctx.intent_branch
+    assert not (tmp_path / ".git").exists()
+
+
+def test_stage_one_cuts_a_slug_derived_from_the_goal_at_a_word_boundary(tmp_path):
+    goal = "Rework the calibration report so it names every plan and execution it covers"
+    ctx = FlowContext(target_worktree=str(tmp_path), dry_run=True, agent=AGENT, model=MODEL, intent_data={"goal": goal})
+    result = run_intent_stage(ctx)
+    assert result.status == StageStatus.SUCCESS, result.error
+    slug = ctx.intent_data["slug"]
+    assert slug == "rework-the-calibration-report-so" and len(slug) <= MAX_SLUG_LENGTH
+
+
+def test_root_intent_slug_keeps_an_accepted_recorded_branch_and_sanitises_a_supplied_slug():
+    assert root_intent_slug({"slug": "Fix The Thing!"}, "ignored") == "fix-the-thing"
+    # On resume the recorded branch was accepted when the intent was opened; an older long slug is not re-judged.
+    recorded = {"slug": "s" * 40, "branch": f"I-1-{'s' * 40}"}
+    assert root_intent_slug(recorded, "ignored") == "s" * 40
+    with pytest.raises(SlugTooLongError):
+        root_intent_slug({"slug": "s" * 33}, "ignored")
 
 
 def test_push_rejection_is_named_and_other_output_passes_through():
@@ -238,12 +292,11 @@ def test_no_other_module_builds_a_branch_with_a_literal_suffix():
     assert offenders == []
 
 
-@pytest.mark.parametrize("slug_length", [60, 70, 100])
-def test_root_slug_that_fits_alone_is_unchanged_through_the_real_builder(slug_length):
-    slug = "s" * slug_length
+def test_root_slug_at_the_limit_passes_unchanged_through_the_real_builder():
     data: dict[str, str] = {}
-    branch = resolve_root_intent_branch(data, slug, SEQ, AGENT, MODEL)
-    assert branch == f"I-{SEQ}-{slug}" and data == {"slug": slug}
+    branch = resolve_root_intent_branch(data, SLUG_32, SEQ, AGENT, MODEL)
+    assert branch == f"I-{SEQ}-{SLUG_32}" and data == {"slug": SLUG_32}
+    assert ticker_for(AGENT) == "CLA"
 
 
 def test_root_name_is_shortened_only_when_it_exceeds_the_limit_or_leaves_no_room_below():

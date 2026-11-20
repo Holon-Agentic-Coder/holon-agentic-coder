@@ -2,6 +2,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import tempfile
 import unittest
 import uuid
@@ -537,7 +538,7 @@ class TestPlannerMain(unittest.TestCase):
         h = self.harness([write_file(VALID_PLAN)])
         prompt = h.turn_prompts[0]
         self.assertIn("WRITE PROTOCOL", prompt)
-        self.assertIn("plans/P-", prompt)
+        self.assertIn("plans/I-12345/P-", prompt)
         self.assertNotIn("Output the complete markdown plan directly", prompt)
 
     def test_truncated_final_message_after_valid_plan_file_still_commits(self):
@@ -627,34 +628,37 @@ class TestPlannerMain(unittest.TestCase):
     def test_stdout_fallback_logs_warning(self):
         h = self.harness([stdout_only(f"Here is the plan:\n```markdown\n{VALID_PLAN}\n```\n")])
         self.assertEqual(h.exit_code, 0, h.stderr)
-        self.assertIn("WARNING: agent did not write plans/P-", h.stderr)
+        self.assertIn("WARNING: agent did not write plans/I-12345/P-", h.stderr)
         self.assertIn("falling back", h.stderr)
         self.assertEqual(len(h.ledger_lines("plans.jsonl")), 1)
 
-    def test_model_name_is_sanitised_in_branch(self):
+    def test_model_code_is_carried_in_branch(self):
         test_cases = [
-            ("gemini/3.5-flash (Medium) [Special]*?", "gemini_3.5-flash-Medium-Special"),
-            ("gemini..3.5", "gemini.3.5"),
-            (".gemini.pro.", "gemini.pro"),
-            ("gemini 3.5  flash", "gemini-3.5-flash"),
-            ("gemini\t3.5\nflash", "gemini-3.5-flash"),
-            ("a" * 70, "a" * 64),
-            ("a" * 63 + "-extra", "a" * 63),
-            ("*?($", "unknown-model"),
+            ("gemini-3.8-flash-medium", "G3.8FM"),
+            ("claude-sonnet-5-5", "CS5.5"),
+            ("anthropic/claude-opus-5-5", "CO5.5"),
+            ("gemini/3.5-flash (Medium) [Special]*?", "3.5F"),
+            ("gemini..3.5", "G"),
+            ("a" * 63 + "-extra", "AE"),
         ]
-        for model_name, expected_safe_model in test_cases:
+        for model_name, expected_code in test_cases:
             with self.subTest(model_name=model_name):
                 h = self.harness([write_file(VALID_PLAN)], model=model_name)
                 checkout_cmds = [" ".join(c) for c in h.git_cmds if c[:3] == ["git", "checkout", "-B"]]
                 self.assertTrue(checkout_cmds, f"No 'git checkout -B' command found in: {h.git_cmds}")
-                self.assertIn(expected_safe_model, checkout_cmds[0])
+                self.assertRegex(checkout_cmds[0], rf"I-12345/P-\d+-PIA-{re.escape(expected_code)}/_")
+
+    def test_a_model_name_with_no_derivable_code_fails_clearly(self):
+        h = self.harness([write_file(VALID_PLAN)], model="*?($")
+        self.assertEqual(h.exit_code, 1)
+        self.assertIn("empty model code", h.stderr)
 
     def test_converges_prettier_on_plan_file(self):
         h = self.harness([write_file(VALID_PLAN)])
         h.mock_converge.assert_called_once()
         call_files = h.mock_converge.call_args[0][0]
         self.assertEqual(len(call_files), 1)
-        self.assertTrue(call_files[0].startswith("plans/P-") and call_files[0].endswith(".md"))
+        self.assertTrue(call_files[0].startswith("plans/I-12345/P-") and call_files[0].endswith(".md"))
         self.assertEqual(h.mock_converge.call_args[1].get("repo_dir"), h.repo_dir)
 
     def committed_plan(self, h):
@@ -739,7 +743,7 @@ class TestPlannerMain(unittest.TestCase):
         # The salvaged partial plan and the ledger record are committed together so neither is lost with the sandbox.
         add_cmds = [c for c in h.git_cmds if c[:2] == ["git", "add"]]
         self.assertTrue(any("holon-knowledge/ledger/executions.jsonl" in c for c in add_cmds))
-        self.assertTrue(any(any(arg.startswith("plans/P-") for arg in c) for c in add_cmds))
+        self.assertTrue(any(any(arg.startswith("plans/I-12345/P-") for arg in c) for c in add_cmds))
         self.assertTrue(h.committed())
         self.assertIn("plan: failed", h.stdout)
         self.assertIn("resume did not recover", record["action"])

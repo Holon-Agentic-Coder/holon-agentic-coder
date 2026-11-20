@@ -107,7 +107,8 @@ both strict workspace isolation and cross-project knowledge sharing:
 - **Project-Specific Knowledge & State (`holon-knowledge/`):**
   - `ledger/`: The forensic timeline containing all intent creations, planning variants, decision traces, and outcome
     records for this specific codebase.
-  - `plans/`: The generated plan variants saved as Markdown reports.
+  - `plans/`: The generated plan variants saved as Markdown reports, one directory per intent branch
+    (`plans/{intent}/{plan id}.md`, with the calibration report beside it; see [Git Flow](git_flow.md) section 2.5.2).
   - `kb/` (Knowledge Base): Curated rules, tactics, internal API structures, and coding patterns specific to this
     project, extracted by the Curator Agent.
 - **User/Developer-Specific Knowledge (`~/.config/holon/user/`):**

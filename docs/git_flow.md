@@ -278,6 +278,40 @@ The five deterministic stages form one provenance lifecycle ([Stage 3 admission]
 | **4. Review Loop** | PR Review Loop        | `holon review-loop <execution_branch>` | PR raised + sandboxed reviewer ensemble (unanimity) + micro-actions in `executions.jsonl` |
 | **5. Calibrate**   | Calibration Analysis  | `holon calibrate <execution_branch>`   | `/calibrated` branch + `plans/I-.../P-*_calibration.md` (included in PR diff)             |
 
+#### Plan Refresh After an Admission Wait
+
+A flow refused at Stage 3 admission waits until the overlap clears, but its plan branch was cut from the target branch
+before the overlapping change merged. Executing from that tip would write code against files that no longer exist on the
+target and end in a Stage 4 merge conflict with exactly the change it waited for. So Stage 3 refreshes the plan branch
+after admission and before the execution branch is cut and the executor is dispatched (`flow/plan_refresh.py`):
+
+- **Trigger.** The checkpoint's admission object is `admitted` with `waited_since` set (the earlier refusal's
+  `blocked_since`) and no `refreshed_to` ([Admission state](touch_set.md#admission-state)). A flow admitted on its first
+  check has no `waited_since` and its plan branch is never touched; neither is an `--allow-overlap` admission that never
+  waited.
+- **Merge, never rebase.** The host fetches `origin/<target>` and the plan branch and merges the target into the plan
+  branch with a merge commit (`execute: refresh plan <plan_id> onto origin/<target> after the admission wait`) in a
+  temporary worktree, then pushes the plan branch without force and fast-forwards the local plan branch. The operator's
+  checkout is not touched, no history is rewritten and nothing is written to the target branch. When the plan branch
+  already contains the target, no merge commit is made.
+- **Ledger conflicts are mechanical.** Conflicts confined to `holon-knowledge/ledger/*.jsonl` are resolved by keeping
+  the merge-base rows as a byte-identical prefix and interleaving the appended rows by `created_at`.
+- **Any other conflict stops Stage 3 before dispatch.** The merge is aborted, nothing is pushed and no executor runs.
+  The failure names the conflicting files (payload `plan_refresh_conflicts`, `dispatched: false`). The admission object
+  keeps `waited_since` without `refreshed_to`, so after merging `origin/<target>` into the plan branch by hand (merge,
+  do not rebase) a resume retries the refresh, which is then a no-op, and dispatches.
+- **Recorded once.** A refresh appends one `plan_refresh` row to the plan branch's `executions.jsonl` (`entry_type` and
+  `kind` `"plan_refresh"`, `plan_id`, `plan_branch`, `intent_id`, `target_branch`, `refreshed_to` (the target commit
+  merged in), `merge_commit` (`null` when none was needed), `waited_since`, `recorded_by: "flow"`, `created_at`), which
+  every execution branch cut afterwards inherits, then records `refreshed_to` in the checkpoint's admission object. The
+  Stage 3 payload carries it as `plan_refreshed_to`. A re-run finds the row for the same commit and adds none.
+- **Resumed partial work survives.** A refresh merge on the plan branch's first-parent history counts as engine-owned
+  for a resumed execution ([Where a Resumed Execution Starts](#132b-where-a-resumed-execution-starts)).
+- **Dry run.** A dry run only logs that the plan branch would be refreshed.
+
+A refresh can bring a semantic (non-textual) break from the target into the plan; the execution then works against the
+current target, and tests and review catch it as they catch any break on the target.
+
 #### Target Worktree and the Default Branch
 
 `holon flow` runs host git operations (checkouts, commits, pushes) in its target worktree, so it never uses a worktree
@@ -1132,10 +1166,12 @@ push that already carries its salvage row.
   resume under the same override adds no commit to the plan branch.
 - **Partial work from an earlier plan tip is kept.** A recorded `partial_head` qualifies when it descends from the
   current plan tip, or when its fork point lies on the plan branch's first-parent history after the intent branch tip
-  and the plan branch changed only `holon-knowledge/ledger/*.jsonl` since. The executor then merges the current plan tip
-  into the new execution branch (ledger conflicts are reconciled with the plan side as byte prefix), so the branch
-  always descends from today's plan tip. Any other merge conflict aborts the merge and the execution starts from the
-  plan tip, with the reason logged.
+  and every first-parent commit of the plan branch since changed only `holon-knowledge/ledger/*.jsonl` or is a Stage 3
+  refresh merge ([Plan Refresh After an Admission Wait](#plan-refresh-after-an-admission-wait)): a two-parent commit
+  with the refresh subject whose tree, outside the ledgers, is exactly the merge of its parents, so a hand-made commit
+  that copies the subject is still refused. The executor then merges the current plan tip into the new execution branch
+  (ledger conflicts are reconciled with the plan side as byte prefix), so the branch always descends from today's plan
+  tip. Any other merge conflict aborts the merge and the execution starts from the plan tip, with the reason logged.
 - **The branch tip is preferred.** When the failed execution branch's tip strictly descends from the recorded
   `partial_head`, adds more than the failure commit's ledgers and notes, and passes the same lineage rule (a merge of
   `origin/main` to settle a sync conflict, for example), the resume starts from the tip; no hand-written ledger row is

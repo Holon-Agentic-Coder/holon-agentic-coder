@@ -521,6 +521,7 @@ Rules that keep the package healthy:
   `tests/flow/lookup_patch.py` `patch_lookup_sites` when there is more than one, so they share one mock.
   `tests/flow/test_patch_targets.py` rejects package-level patch targets. The only exception is a name that a caller
   outside the package imports from `sandbox_executor.flow` inside a function body.
+
 #### Module line budgets
 
 The settings live in `holon-config/hygiene/module_budgets.json`, with exactly three keys:

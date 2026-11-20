@@ -255,11 +255,10 @@ from sandbox_executor.flow.stages.decomposition import (
     _sub_intent_depth_error,
     format_decomposition_summary,
 )
+from sandbox_executor.flow.partial_head import FAILED_EXECUTION_STATUSES, failed_partial_head
 from sandbox_executor.flow.stages.execute import (
-    FAILED_EXECUTION_STATUSES,
     _resumable_partial_branch,
     _warn_ledger_failure,
-    failed_partial_head,
     run_execute_stage,
 )
 from sandbox_executor.flow.stages.intent import _reused_intent_conflict, run_intent_stage

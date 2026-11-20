@@ -251,19 +251,45 @@ def test_a_conflict_merge_starts_from_a_clean_tree_with_pending_rows_committed_a
     assert ids == ["E-base", "E-main", "E-early", "E-late", "E-pending"]
 
 
-def test_pending_rows_that_cannot_be_pushed_block_the_gate_without_merging(tmp_path, monkeypatch):
+def _unpushable_rows_repos(tmp_path: Path) -> tuple[Path, Path]:
+    """The pending-rows repos with the local branch behind origin, so a ledger commit cannot fast-forward."""
     origin, work = _pending_rows_repos(tmp_path)
     _git(work, "stash", "-q")
-    _git(work, "reset", "-q", "--hard", "HEAD~1")  # Behind origin: the ledger commit cannot fast-forward.
+    _git(work, "reset", "-q", "--hard", "HEAD~1")
     _git(work, "stash", "pop", "-q")
+    return origin, work
+
+
+def test_pending_rows_that_cannot_be_pushed_block_the_gate_without_merging(tmp_path, monkeypatch):
+    origin, work = _unpushable_rows_repos(tmp_path)
     before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
     merge = _RecordingMerge(CODE_CONFLICT)
     monkeypatch.setattr(conflict_gate, "_merge_and_push", merge)
     ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
 
-    gate = conflict_gate._gate_conflicting_head(ctx, BRANCH, "main", CONFLICTING, "Action-Origin: pr_review")
+    gate = conflict_gate._gate_conflicting_head(
+        ctx, BRANCH, "main", CONFLICTING, conflict_gate._GateMerge("Action-Origin: pr_review")
+    )
 
     assert gate.blocked_reason == conflict_gate.UNPUSHED_ROWS_REASON
     assert merge.calls == []
     assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") == before
     assert _git(work, "status", "--porcelain") == ""  # The rows are safe in the local commit.
+
+
+def test_stage5_rows_whose_push_was_rejected_block_the_merge(tmp_path, monkeypatch):
+    origin, work = _unpushable_rows_repos(tmp_path)
+    before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
+    merge = _RecordingMerge(CODE_CONFLICT)
+    monkeypatch.setattr(conflict_gate, "_merge_and_push", merge)
+    monkeypatch.setattr(conflict_gate.stage_conflicts, "check_pr_mergeability", lambda *a, **k: dict(CONFLICTING))
+    ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False, review_iterations_done=2)
+
+    result = conflict_gate._stage5_conflict_gate(ctx)
+
+    assert result is not None and result.status is StageStatus.FAILED
+    assert conflict_gate.UNPUSHED_ROWS_REASON in result.error
+    assert merge.calls == []
+    assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") == before
+    message = _git(work, "log", "-1", "--format=%B")
+    assert "(before Stage 5)" in message and "Review-Iteration: 2" in message

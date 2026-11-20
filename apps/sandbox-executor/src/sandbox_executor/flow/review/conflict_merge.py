@@ -15,6 +15,7 @@ from sandbox_executor.flow.git_refs import _fetch_refspecs_error
 from sandbox_executor.flow.github.merge import PROTECTED_BRANCHES, _bare_branch
 from sandbox_executor.flow.host_remote import push_commit
 from sandbox_executor.flow.ledger_reconcile import reconcile_ledger_file
+from sandbox_executor.flow.review.git_identity import REVIEW_GIT_ENV
 from sandbox_executor.git import run_git
 from sandbox_executor.ledger import LedgerRewriteError
 from sandbox_executor.redaction import redact_agent_secrets
@@ -41,8 +42,6 @@ def _merge_target_ledger_only(worktree: str, target_ref: str, message: str) -> _
     The ledgers are resolved with the target side (``theirs`` in a merge) as the byte prefix. No test command runs.
     The merge commit carries ``message`` (with its provenance trailers) whether or not a ledger conflict was resolved.
     """
-    from sandbox_executor.flow.stages.review import REVIEW_GIT_ENV  # Lazy: stages.review imports the review loop.
-
     env = {**os.environ, **REVIEW_GIT_ENV}
     merge = run_git(["merge", "--no-ff", "-m", message, target_ref], cwd=worktree, check=False, env=env)
     if merge.returncode == 0:

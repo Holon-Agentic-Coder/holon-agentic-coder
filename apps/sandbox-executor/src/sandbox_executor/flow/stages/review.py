@@ -30,14 +30,6 @@ from sandbox_executor.worktree_head import ReattachStatus, reattach_branch, rest
 logger = logging.getLogger(__name__)
 
 
-REVIEW_GIT_ENV: dict[str, str] = {
-    "GIT_AUTHOR_NAME": "Holon Review Loop Agent",
-    "GIT_AUTHOR_EMAIL": "review-loop-agent@holon-agentic-coder.com",
-    "GIT_COMMITTER_NAME": "Holon Review Loop Agent",
-    "GIT_COMMITTER_EMAIL": "review-loop-agent@holon-agentic-coder.com",
-}
-
-
 TESTS_NOT_MEASURED_ERROR = (
     "Autonomous review consensus failed: test results not measured: no recorded Stage 3 test result and no CI checks."
 )

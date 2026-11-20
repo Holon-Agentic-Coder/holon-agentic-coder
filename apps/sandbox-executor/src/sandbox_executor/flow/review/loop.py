@@ -324,7 +324,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         context.log("[Review Loop] Halting review loop without consensus: the empty-diff guard refused the PR.")
 
     while pr_refusal_error is None and infra_error is None and resolver_error is None and iteration < last_label:
-        last_commit = None if effective_dry_run else _commit_pending_ledger_rows(context, iteration)  # Previous rows.
+        # The previous iteration's rows; the first boundary precedes any numbered iteration.
+        boundary = "" if iteration >= 1 else f"before iteration {iteration + 1}"
+        last_commit = None if effective_dry_run else _commit_pending_ledger_rows(context, iteration, boundary)
         resolved_target, prev_head_sha = _advance_past_ledger_commit(resolved_target, prev_head_sha, last_commit)
         iteration += 1
         context.log(f"[Review Loop] Starting review iteration {iteration}/{last_label} for target '{review_target}'.")

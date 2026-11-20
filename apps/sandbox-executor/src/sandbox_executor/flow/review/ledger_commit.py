@@ -24,6 +24,7 @@ from sandbox_executor.entrypoint.execution_workspace import workspace_mounted
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.github.merge import PROTECTED_BRANCHES, _bare_branch
 from sandbox_executor.flow.host_remote import HostRemoteError, push_commit
+from sandbox_executor.flow.review.git_identity import REVIEW_GIT_ENV
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_target import ReviewTarget
@@ -82,8 +83,6 @@ def _commit_ledger_rows(
     Raises:
         RuntimeError: If ``git add`` or ``git commit`` fails.
     """
-    from sandbox_executor.flow.stages.review import REVIEW_GIT_ENV  # Lazy: stages.review imports the review loop.
-
     pending = _pending_ledger_paths(repo_dir)
     if not pending:
         return None

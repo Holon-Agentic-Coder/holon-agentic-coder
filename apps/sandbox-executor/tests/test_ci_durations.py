@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.ci_durations import main
 from scripts.ci_durations_api import ApiClient, list_runs
 from scripts.ci_durations_collect import (
     JobDuration,
@@ -425,3 +426,87 @@ def test_annotate_adds_the_baseline_and_the_ceiling() -> None:
     data = annotate(rows, rolling_medians(rows), {("test-unit.yml", "unit"): 600})
     assert data[5]["baseline_median"] == 10.0 and data[5]["ceiling"] == 600
     assert data[0]["baseline_median"] is None
+
+
+NOW = datetime(2026, 11, 20, 12, tzinfo=UTC)
+SECRET = "tok-secret-123"
+
+
+def main_history_api() -> FakeOpener:
+    """Serve six main pushes of test-unit (the last one 300 s against 100 s before) plus the PR and fork runs."""
+    opener = recorded_api()
+    history = [run(100 + day, created_at=started(day)) for day in range(1, 7)]
+    runs = [*history, PR_RUN, FORK_RUN]
+    opener.responses[f"{RUNS_QUERY}&page=1"] = {"total_count": len(runs), "workflow_runs": runs}
+    for day in range(1, 7):
+        stop = datetime(2026, 11, day, 10, tzinfo=UTC).timestamp() + (300 if day == 6 else 100)
+        completed = datetime.fromtimestamp(stop, UTC).isoformat().replace("+00:00", "Z")
+        jobs = [job(1000 + day, created_at=started(day), started_at=started(day), completed_at=completed)]
+        opener.responses[f"runs/{100 + day}/jobs?filter=all&per_page=100&page=1"] = {"jobs": jobs}
+    return opener
+
+
+def run_cli(tmp_path: Path, opener: FakeOpener, *extra: str) -> int:
+    args = ["--repo", REPO, "--out-dir", str(tmp_path / "out"), "--summary", str(tmp_path / "summary.md")]
+    return main([*args, "--workflows-dir", str(workflows_dir()), "--window", "5", *extra], opener=opener, now=NOW)
+
+
+def test_the_cli_writes_the_json_the_html_and_the_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", SECRET)
+    opener = main_history_api()
+    assert run_cli(tmp_path, opener) == 0
+    data = json.loads((tmp_path / "out" / "ci-durations.json").read_text(encoding="utf-8"))
+    assert data["schema_version"] == 1 and data["since"] == "2026-10-21" and data["days"] == 30
+    assert data["run_count"] == 8
+    latest = next(row for row in data["rows"] if row["run_id"] == 106)
+    assert latest["duration_seconds"] == 300.0 and latest["baseline_median"] == 100.0 and latest["ceiling"] == 600
+    fields = {k: v for k, v in latest.items() if k not in ("is_rerun", "job_key", "baseline_median", "ceiling")}
+    assert JobDuration(**fields).run_url.endswith("/actions/runs/106/job/1006")
+    assert (tmp_path / "out" / "ci-durations.html").read_text(encoding="utf-8").startswith("<!doctype html>")
+    summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert "| Test - Unit / unit | ubuntu-latest | 300 s | 100 s | +200 s | 3.00x | 600 s |" in summary
+    assert all(url.startswith(API) for url in opener.urls)
+
+
+def test_the_token_never_reaches_an_output(tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", SECRET)
+    opener = main_history_api()
+    opener.responses["runs/2/jobs?filter=all&per_page=100&page=1"] = urllib.error.URLError("refused")
+    assert run_cli(tmp_path, opener) == 0
+    captured = capsys.readouterr()
+    assert "::warning::Could not read the jobs of run 2" in captured.out
+    for text in (
+        (tmp_path / "out" / "ci-durations.json").read_text(encoding="utf-8"),
+        (tmp_path / "out" / "ci-durations.html").read_text(encoding="utf-8"),
+        (tmp_path / "summary.md").read_text(encoding="utf-8"),
+        captured.out,
+        captured.err,
+    ):
+        assert SECRET not in text
+
+
+def test_a_missing_token_exits_2_and_writes_nothing(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    opener = main_history_api()
+    assert run_cli(tmp_path, opener) == 2
+    assert "::error::GITHUB_TOKEN" in capsys.readouterr().out
+    assert not (tmp_path / "out").exists() and not (tmp_path / "summary.md").exists()
+    assert opener.urls == []
+
+
+def test_a_failed_run_listing_exits_1_and_writes_nothing(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", SECRET)
+    assert run_cli(tmp_path, FakeOpener({})) == 1
+    assert "::error::Could not list the workflow runs" in capsys.readouterr().out
+    assert not (tmp_path / "out").exists()
+
+
+def test_the_summary_says_when_no_job_has_a_baseline(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", SECRET)
+    assert run_cli(tmp_path, recorded_api()) == 0
+    assert "No job has a baseline yet." in (tmp_path / "summary.md").read_text(encoding="utf-8")
+
+
+def test_days_must_be_positive(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", SECRET)
+    assert run_cli(tmp_path, recorded_api(), "--days", "0") == 2

@@ -18,6 +18,7 @@ from tests.hermetic_fixtures import (
     describe_index_changes,
     knowledge_index_snapshot,
 )
+from tests.holon_dir_guard import fail_on_holon_dir_changes, guarded_roots, snapshot_roots
 from tests.worktree_fixtures import init_feature_worktree
 
 # Ambient variables that can carry a live credential or change which code path a test exercises.
@@ -187,6 +188,34 @@ def checkout_knowledge_index_guard() -> Iterator[None]:
             + " -- pin repo_dir and the working directory to tmp_path to fix this.",
             pytrace=False,
         )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def holon_dir_session_guard() -> Iterator[tuple[str, ...]]:
+    """Fail the session if anything under the checkout's ``.holon/`` was created, modified or deleted during it.
+
+    Guards the repository root and, when pytest started in a subdirectory of it, that directory too; the starting
+    directory is read before any test changes it. Files that existed before the session (a live flow's checkpoint)
+    only fail it if they change. Under xdist each worker runs this fixture, so the worker that wrote the file reports
+    it. Yields the guarded roots.
+    """
+    roots = guarded_roots(REPO_ROOT, os.getcwd())
+    before = snapshot_roots(roots)
+    yield roots
+    fail_on_holon_dir_changes(roots, before, "The test session")
+
+
+@pytest.fixture(autouse=True)
+def checkout_holon_dir_guard(holon_dir_session_guard: tuple[str, ...]) -> Iterator[None]:
+    """Fail any test that creates, modifies or deletes a file under the checkout's ``.holon/`` (a flow checkpoint).
+
+    A test that saves a flow checkpoint must pin ``repo_dir``/``target_worktree`` or the working directory to
+    ``tmp_path``. Under xdist, or while a ``holon flow`` writes the same checkout, a write by another worker or process
+    can fail an unrelated test; re-run it in isolation to confirm attribution.
+    """
+    before = snapshot_roots(holon_dir_session_guard)
+    yield
+    fail_on_holon_dir_changes(holon_dir_session_guard, before, "Test")
 
 
 _CHECKOUT_LEDGERS = ("intents.jsonl", "plans.jsonl", "executions.jsonl")

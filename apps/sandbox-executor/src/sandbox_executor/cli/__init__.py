@@ -348,9 +348,6 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:  # noqa: C901
         "codex": [
             (os.path.join(home, ".codex"), "/home/holon/.codex"),
         ],
-        "gemini": [
-            (os.path.join(home, ".config/gcloud"), "/home/holon/.config/gcloud"),
-        ],
     }
 
     norm_agent_id = local_llm.normalize_agent_id(agent_id)

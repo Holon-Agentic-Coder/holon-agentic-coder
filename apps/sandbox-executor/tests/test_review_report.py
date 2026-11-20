@@ -210,7 +210,7 @@ def test_evaluation_paragraph_names_commit_base_counts_ci_and_mergeability():
     body = _report(changes_reviewers(), title="Widget fix")
     paragraph = body.split("\n\n")[1]
 
-    assert paragraph.startswith("Reviewed Widget fix ([acme/widgets#42](https://github.com/acme/widgets/pull/42))")
+    assert paragraph.startswith("Reviewed [Widget fix](https://github.com/acme/widgets/pull/42) at")
     assert f"`{COMMIT}`" in paragraph and "against `main`" in paragraph
     assert "0 critical, 1 important and 1 nit findings" in paragraph
     assert "CI passing" in paragraph and "mergeability CLEAN" in paragraph
@@ -592,12 +592,18 @@ def test_report_has_no_commit_derived_reviewer_ids_or_fabricated_sections():
             "Intent title",
         ),
         ({}, ReviewTarget("42", "feat/x", "sha", pr_number=42, title="PR title"), "PR title"),
+        (
+            {"slug": "intent-slug"},
+            ReviewTarget("42", "feat/x", "sha", pr_number=42, title="PR title"),
+            "intent-slug",
+        ),
+        ({"title": "Intent title", "slug": "intent-slug"}, None, "Intent title"),
         ({"title": "  "}, ReviewTarget("42", "feat/x", "sha", pr_number=42), "PR #42"),
         ({}, ReviewTarget("feat/x", "feat/x", "sha"), "feat/x"),
         (None, None, "feat/raw"),
     ],
 )
-def test_title_is_intent_then_pr_title_then_pr_number_or_branch(intent, target, expected):
+def test_title_is_intent_title_then_slug_then_pr_title_then_pr_number_or_branch(intent, target, expected):
     title = resolve_report_title(intent, target, "feat/raw")
 
     assert title == expected
@@ -605,8 +611,54 @@ def test_title_is_intent_then_pr_title_then_pr_number_or_branch(intent, target, 
 
 
 def test_report_uses_the_resolved_title_and_falls_back_to_the_target_without_one():
-    assert "\n\nReviewed PR title ([acme/widgets#42]" in _report([], title="PR title")
-    assert "\n\nReviewed 42 ([acme/widgets#42]" in _report([])
+    assert "\n\nReviewed [PR title](https://github.com/acme/widgets/pull/42) at" in _report([], title="PR title")
+    assert "\n\nReviewed [acme/widgets#42](https://github.com/acme/widgets/pull/42) at" in _report([])
+
+
+HIERARCHICAL_REF = "/".join(["I-1795167569-" + "x" * 40, "P-1795167586-" + "y" * 40, "E-1795178363-CLA-CO5.5", "_"])
+
+
+def test_evaluation_names_a_long_hierarchical_ref_at_most_once_and_uses_the_intent_slug():
+    assert len(HIERARCHICAL_REF) >= 120
+    pr_url = "https://github.com/acme/widgets/pull/42"
+    consensus = _consensus(intent_data={"slug": "review-report-ci-log-redaction"}, pr_url=pr_url, pr_number=42)
+    body = build_pr_review_consensus_report("/nonexistent", HIERARCHICAL_REF, consensus, [])
+    paragraph = body.split("\n\n")[1]
+
+    assert paragraph.count(HIERARCHICAL_REF) <= 1
+    assert paragraph.startswith(f"Reviewed [review-report-ci-log-redaction]({pr_url}) at")
+
+
+def test_evaluation_without_a_label_names_a_branch_link_once():
+    body = build_pr_review_consensus_report("/nonexistent", "feat/raw", _consensus(), [])
+    paragraph = body.split("\n\n")[1]
+
+    assert paragraph.startswith("Reviewed `feat/raw` at")
+    assert paragraph.count("feat/raw") == 1
+
+
+def test_evaluation_shows_an_eight_character_commit():
+    full_sha = "".join(f"{n:x}" for n in range(16)) * 2 + "abcdef12"
+    assert len(full_sha) == 40
+    paragraph = _report([], target_commit=full_sha).split("\n\n")[1]
+
+    assert f"at `{full_sha[:8]}` against" in paragraph
+    assert full_sha[:9] not in paragraph
+
+
+def test_evaluation_keeps_a_non_hex_commit_and_asks_git_for_eight_characters(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    calls = []
+
+    def fake_git(args, cwd=None, check=False):
+        calls.append(args)
+        return subprocess.CompletedProcess(["git", *args], 1, stdout="", stderr="")
+
+    monkeypatch.setattr(review_report, "run_git", fake_git)
+    body = build_pr_review_consensus_report(str(tmp_path), "42", _consensus(target_commit="HEAD"), [])
+
+    assert "at `HEAD` against" in body
+    assert ["rev-parse", "--short=8", "HEAD"] in calls
 
 
 @pytest.mark.parametrize("target", ["42", "feat/raw"])

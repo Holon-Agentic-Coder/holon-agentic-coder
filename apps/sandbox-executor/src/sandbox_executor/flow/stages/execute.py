@@ -37,7 +37,7 @@ from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
 from sandbox_executor.flow.stages.touch_set_guard import superseding_failure_row, touch_set_violation_result
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.git import EMPTY_DIFF_FAILURE_REASON, EMPTY_DIFF_STATUS, changed_paths, empty_diff_summary
-from sandbox_executor.knowledge import ActionIndexDatabase, CredentialRedactor, compute_context_fingerprint
+from sandbox_executor.knowledge import ActionIndexDatabase, compute_context_fingerprint
 from sandbox_executor.ledger import build_execution_id
 from sandbox_executor.naming import MissingTickerError, model_code, ticker_for
 from sandbox_executor.redaction import redact_agent_secrets
@@ -422,10 +422,10 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
 def _warn_ledger_failure(context: FlowContext, label: str, ledger_path: str, exc: BaseException) -> None:
     """Report a non-fatal ledger failure at WARNING level and in the operator-facing context log.
 
-    The exception text is passed through the canonical ``CredentialRedactor`` first, so a
+    The exception text is passed through the canonical ``redact_agent_secrets`` first, so a
     secret carried in the failure detail never reaches either log.
     """
-    detail = CredentialRedactor.redact_text(str(exc))
+    detail = redact_agent_secrets(str(exc))
     message = f"Ledger append failed ({label}) for {ledger_path}: {type(exc).__name__}: {detail}"
     logger.warning(message)
     context.log(f"Warning: {message}")

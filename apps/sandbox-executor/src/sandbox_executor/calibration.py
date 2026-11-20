@@ -41,7 +41,6 @@ from sandbox_executor.calibration_outcome import is_converged_record, latest_sum
 from sandbox_executor.calibration_touch_set import touch_set_metrics, touch_set_report_lines
 from sandbox_executor.git import METADATA_PATH_PREFIXES as METADATA_PATH_PREFIXES
 from sandbox_executor.git import is_metadata_path, run_git
-from sandbox_executor.knowledge.records import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
 from sandbox_executor.plan_paths import (
     calibration_report_for_branch,
@@ -51,6 +50,7 @@ from sandbox_executor.plan_paths import (
     plan_file_for_branch,
     split_plan_branch,
 )
+from sandbox_executor.redaction import redact_agent_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -1463,7 +1463,7 @@ def format_calibration_report(report_rel: str, target_worktree: str) -> None:
     if reason is None:
         logger.info("Calibration report %s passes the repository Prettier check", report_rel)
         return
-    detail = CredentialRedactor.redact_text(reason)
+    detail = redact_agent_secrets(reason)
     raise CalibrationFormatError(
         f"Calibration report {report_rel} failed the repository Prettier check ({detail}); "
         f"reproduce with: npx prettier --check {report_rel}"
@@ -1607,7 +1607,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
                 check=False,
             )
         except Exception as e:
-            detail = CredentialRedactor.redact_text(str(e))
+            detail = redact_agent_secrets(str(e))
             logger.warning("Git commit of calibration report %s failed: %s", report_rel, detail)
             raise CalibrationCommitError(f"Git commit of calibration report {report_rel} failed: {detail}") from e
         if commit_res.returncode != 0:
@@ -1615,7 +1615,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
             if "nothing to commit" in combined_output:
                 logger.info("Nothing to commit for calibration report on %s", report.calibrated_branch)
             else:
-                detail = CredentialRedactor.redact_text(commit_res.stderr.strip() or commit_res.stdout.strip())
+                detail = redact_agent_secrets(commit_res.stderr.strip() or commit_res.stdout.strip())
                 logger.warning("Git commit of calibration report %s failed: %s", report_rel, detail)
                 raise CalibrationCommitError(
                     f"Git commit of calibration report {report_rel} failed (exit {commit_res.returncode}): {detail}"

@@ -454,3 +454,38 @@ def test_claude_credential_variable_values_are_swept_from_echoes(monkeypatch) ->
         monkeypatch.setenv(name, value)
         assert_no_fragment(redact_command(["echo", f"value {value}"]), value)
         assert redaction.is_secret_env_name(name)
+
+
+def test_redact_then_truncate_masks_a_token_straddling_the_cut() -> None:
+    probe = make_gh_probe() + "0" * 4
+    text = "e" * 490 + probe + " tail"
+
+    bounded = redaction.redact_then_truncate(text, 500)
+
+    assert bounded is not None and len(bounded) <= 500
+    assert bounded.endswith(redaction.TRUNCATION_MARKER)
+    assert_no_fragment(bounded, probe[3:])
+    # The old order: a cut prefix is too short for the provider sweep and leaks a fragment.
+    assert probe[:10] in redaction.redact_text(text[:500])
+
+
+def test_redact_then_truncate_keeps_short_text_and_maps_empty_to_none() -> None:
+    assert redaction.redact_then_truncate("plain failure", 500) == "plain failure"
+    assert redaction.redact_then_truncate("", 500) is None
+    assert redaction.redact_then_truncate(None, 500) is None
+
+
+@pytest.mark.parametrize("name", ["GITHUB_TOKEN", "HOLON_AGENT_SETTINGS"])
+def test_redact_agent_secrets_masks_literal_env_values(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    value = make_probe(name.lower())
+    monkeypatch.setenv(name, value)
+
+    masked = redact_agent_secrets(f"agent said: {value} and stopped")
+
+    assert_no_fragment(masked, value)
+    assert "agent said:" in masked
+
+
+def test_holon_agent_settings_stays_out_of_the_command_echo_names() -> None:
+    assert "HOLON_AGENT_SETTINGS" in redaction.DEFAULT_ENV_LITERAL_NAMES
+    assert "HOLON_AGENT_SETTINGS" not in COMMAND_ECHO_ENV_NAMES

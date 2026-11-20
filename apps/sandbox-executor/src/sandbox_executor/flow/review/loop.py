@@ -769,12 +769,12 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 reviewers=reviewers,
                 title=resolve_report_title(context.intent_data, resolved_target, review_target),
                 iteration=iteration,
+                mergeability_probe=check_pr_mergeability,
             ),
         )
-        if post_error:
-            consensus_reached = False
-            consensus_status = "post_failed"
-            approval_score = 0.0
+        if post_error:  # A conflict-gate block is not a posting failure: the approval is re-earned on the merged head.
+            status = "conflict_gate" if "conflict_gate" in posting_res else "post_failed"
+            consensus_reached, consensus_status, approval_score = False, status, 0.0
     else:
         log_skipped_post(context, review_target, decision)
 
@@ -789,8 +789,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         halt_reasons.append(f"resolver failed: {resolver_error}")
     if carried_block:
         halt_reasons.append(carried_block)
-    if post_error:
-        halt_reasons.append("consensus post failed")
+    if post_error:  # The conflict gate's post_error already reads "conflict gate: <reason>".
+        halt_reasons.append(post_error if consensus_status == "conflict_gate" else "consensus post failed")
     if tests_not_measured:
         halt_reasons.append("test results not measured")
     not_approved = not_approved_verdicts(reviewers)

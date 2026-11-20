@@ -199,3 +199,38 @@ def test_claude_api_key_detection_uses_the_secrets_file_not_holon_agent_key(tmp_
     secrets.write_text("fake-claude-value\n", encoding="utf-8")
     secrets.chmod(0o600)
     assert agent_defaults._detect_api_key_present("claude", {}) is True
+
+
+def test_gemini_runner_rejection_points_to_antigravity():
+    for name in ("gemini", "gemini-agent"):
+        with pytest.raises(UnmappedAgentRunnerError) as exc_info:
+            resolve_agent_runner(name, {})
+        msg = str(exc_info.value)
+        assert "antigravity-agent" in msg
+        assert "gemini-agent" in msg
+
+    with pytest.raises(UnmappedAgentRunnerError) as exc_info:
+        resolve_agent_runner(None, {"HOLON_AGENT": "gemini"})
+    msg = str(exc_info.value)
+    assert "antigravity-agent" in msg
+    assert "gemini-agent" in msg
+
+
+def test_antigravity_gemini_models_and_local_model_preserved():
+    runners_with_caps = {cap.runner for cap in agent_defaults.RUNNER_CAPABILITIES}
+    assert "antigravity-agent" in runners_with_caps
+    assert "local-model" in runners_with_caps
+    assert "gemini-agent" not in runners_with_caps
+
+    agy_models = [
+        cap.canonical_model for cap in agent_defaults.RUNNER_CAPABILITIES if cap.runner == "antigravity-agent"
+    ]
+    assert "gemini-3.8-flash" in agy_models
+    assert "gemini-3.8-flash-medium" in agy_models
+    assert "gemini-3.8-flash-high" in agy_models
+
+    assert agent_defaults.is_valid_model_for_runner("antigravity-agent", "gemini-3.8-flash-medium") is True
+    assert agent_defaults.is_valid_model_for_runner("antigravity-agent", "gemini-3.8-flash-medium-low") is True
+    assert agent_defaults.is_valid_model_for_runner("antigravity-agent", "gemini-3.8-flash-medium-high") is True
+    assert agent_defaults.is_supported_runner_model("antigravity-agent", "gemini-3.8-flash-medium") is True
+

@@ -168,7 +168,10 @@ def _advance_past_ledger_commit(
 
 
 def _close_review_stage(context: FlowContext, on_branch: list[str], restore: Callable[..., object]) -> None:
-    """Stage 4's exit: commit rows still pending on the execution branch, then hand the worktree back (``restore``)."""
+    """Stage 4's exit: hand the worktree back on the execution branch (``restore``), then commit rows still pending.
+
+    Restoring first re-attaches a HEAD the loop left detached at the tip, so its rows are committed, not skipped.
+    """
     if on_branch:
-        _commit_pending_ledger_rows(context, context.review_iterations_done, "stage 4 exit")
         restore(context.target_worktree, on_branch[0], "Stage 4 review loop", context.log, run_git)
+        _commit_pending_ledger_rows(context, context.review_iterations_done, "stage 4 exit")

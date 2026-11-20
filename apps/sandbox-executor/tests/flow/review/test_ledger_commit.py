@@ -10,6 +10,7 @@ from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.flow import FlowContext
 from sandbox_executor.flow.review import ledger_commit
 from sandbox_executor.review_target import ReviewTarget
+from sandbox_executor.worktree_head import restore_branch
 
 from tests.flow.helpers import _git
 from tests.review_flow_repo import LEDGER, added_rows, append_row, build_flow_worktree, changed_paths
@@ -183,3 +184,17 @@ def test_a_ledger_commit_on_an_earlier_unpushed_ledger_commit_pushes_both(tmp_pa
 
     assert commit is not None and commit.pushed
     assert _origin_tip(origin) == commit.sha
+
+
+def test_stage_4_exit_reattaches_a_detached_head_before_committing_the_rows(tmp_path):
+    origin, work = build_flow_worktree(tmp_path)
+    append_row(work, {"execution_id": "E-row"})
+    _git(work, "checkout", "-q", "--detach")
+    context = _context(work)
+
+    ledger_commit._close_review_stage(context, [EXEC_TARGET], restore_branch)
+
+    assert _git(work, "rev-parse", "--abbrev-ref", "HEAD") == EXEC_TARGET
+    assert _git(work, "status", "--porcelain") == ""
+    assert [row["execution_id"] for row in added_rows(work)] == ["E-row"]
+    assert _origin_tip(origin) == _git(work, "rev-parse", "HEAD")

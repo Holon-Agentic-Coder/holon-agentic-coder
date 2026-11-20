@@ -183,3 +183,16 @@ def test_repeated_veto_still_escalates_to_proven_fail(tmp_path: Path) -> None:
     vetoes = {row["context_fingerprint"]: row for row in wisdom.list_vetoes(index_db=ws.db)}
     assert vetoes["escal001_fp"]["state"] == "proven-fail"
     assert vetoes["escal001_fp"]["reproduction_count"] == 3
+
+
+def test_proven_fail_veto_records_later_reproductions(tmp_path: Path) -> None:
+    """A proven-fail veto is re-evaluated when new failures arrive so its reproduction count stays current."""
+    ws = _Workspace(tmp_path)
+    ws.seed("reprod01_fp", "failure", 3)
+    assert _ids(ws.promote()) == ["KB-failure-reprod01"]
+
+    ws.seed("reprod01_fp", "failure", 2)
+    assert ws.promote() == []
+    vetoes = {row["context_fingerprint"]: row for row in wisdom.list_vetoes(index_db=ws.db)}
+    assert vetoes["reprod01_fp"]["state"] == "proven-fail"
+    assert vetoes["reprod01_fp"]["reproduction_count"] == 5

@@ -172,21 +172,29 @@ def persist_wb_rule(rule_data: dict[str, Any], wb_dir: str = DEFAULT_WB_DIR) -> 
     return out_file
 
 
-def _already_promoted(conn: Any, context_fingerprint: str, success_count: int, kb_dir: str, wb_dir: str) -> bool:
+def _already_promoted(conn: Any, sig: Any, kb_dir: str, wb_dir: str) -> bool:
     """Return True when the candidate's terminal promotion artefacts already exist.
 
     A failure mode is terminal only while the fingerprint has no success, its KB file exists and the index
     already holds its proven-fail (or operator-lifted) veto row: evaluation is the only writer of
     ``active_vetoes``, so a fresh index or a still-escalating veto is evaluated again, and a later success
-    is evaluated so the veto is lifted. A success candidate is terminal once both its pattern and its
-    heuristic exist, so a pattern-only candidate stays eligible to ascend to a heuristic.
+    is evaluated so the veto is lifted. A proven-fail veto whose ``reproduction_count`` lags the signature's
+    ``failure_count`` is evaluated again so later reproductions reach the veto row. A success candidate is
+    terminal once both its pattern and its heuristic exist, so a pattern-only candidate stays eligible to
+    ascend to a heuristic.
     """
+    context_fingerprint = sig["context_fingerprint"]
     fp8 = context_fingerprint[:8]
-    if success_count == 0 and os.path.exists(os.path.join(kb_dir, "failure_modes", f"KB-failure-{fp8}.json")):
+    if sig["success_count"] == 0 and os.path.exists(os.path.join(kb_dir, "failure_modes", f"KB-failure-{fp8}.json")):
         veto = conn.execute(
-            "SELECT state FROM active_vetoes WHERE context_fingerprint = ?;", (context_fingerprint,)
+            "SELECT state, reproduction_count FROM active_vetoes WHERE context_fingerprint = ?;",
+            (context_fingerprint,),
         ).fetchone()
-        return veto is not None and veto["state"] in ("proven-fail", "lifted")
+        if veto is None:
+            return False
+        if veto["state"] == "lifted":
+            return True
+        return veto["state"] == "proven-fail" and veto["reproduction_count"] == sig["failure_count"]
     pattern_path = os.path.join(kb_dir, "patterns", f"KB-pattern-{fp8}.json")
     heuristic_path = os.path.join(wb_dir, "heuristics", f"WB-heuristic-{fp8}.json")
     return os.path.exists(pattern_path) and os.path.exists(heuristic_path)
@@ -330,7 +338,7 @@ def promote_pending_candidates(
         signatures = cur.fetchall()
 
         for sig in signatures:
-            if _already_promoted(conn, sig["context_fingerprint"], sig["success_count"], kb_dir, wb_dir):
+            if _already_promoted(conn, sig, kb_dir, wb_dir):
                 continue
             sig_hash = sig["signature_hash"]
             eval_res = evaluate_action_promotion(sig_hash, index_db=db)

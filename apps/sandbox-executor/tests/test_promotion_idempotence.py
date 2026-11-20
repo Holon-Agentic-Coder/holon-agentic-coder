@@ -216,3 +216,16 @@ def test_sibling_signatures_of_one_fingerprint_settle(tmp_path: Path) -> None:
     assert spy.call_count == 0
     vetoes = {row["context_fingerprint"]: row for row in wisdom.list_vetoes(index_db=ws.db)}
     assert vetoes["sibling1_fp"]["reproduction_count"] == 4
+
+
+def test_dry_run_counts_a_sibling_fingerprint_once(tmp_path: Path) -> None:
+    """Sibling signatures of one fingerprint yield one dry-run item, matching what the real run writes."""
+    ws = _Workspace(tmp_path)
+    ws.seed("sibling2_fp", "failure", 3)
+    ws.seed("sibling2_fp", "failure", 4, action_origin="review_fix")
+
+    dry = ws.promote(dry_run=True)
+    assert ws.snapshot() == {}
+    real = ws.promote()
+
+    assert _ids(dry) == _ids(real) == ["KB-failure-sibling2"]

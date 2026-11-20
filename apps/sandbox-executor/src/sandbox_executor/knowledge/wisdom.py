@@ -325,6 +325,7 @@ def promote_pending_candidates(
     conn = db.get_connection()
 
     promoted_items: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
 
     try:
         cur = conn.cursor()
@@ -357,12 +358,19 @@ def promote_pending_candidates(
             )
             records = cur.fetchall()
 
+            # Sibling signatures share a fingerprint's ids; a dry run writes nothing, so drop repeats here
             failure_item = _promote_failure_candidate(eval_res, records, kb_dir, dry_run)
+            if failure_item and failure_item["kb_id"] in seen_ids:
+                failure_item = None
             if failure_item:
+                seen_ids.add(failure_item["kb_id"])
                 promoted_items.append(failure_item)
             else:
-                success_items = _promote_success_candidate(eval_res, records, kb_dir, wb_dir, dry_run)
-                promoted_items.extend(success_items)
+                for item in _promote_success_candidate(eval_res, records, kb_dir, wb_dir, dry_run):
+                    item_id = str(item.get("kb_id") or item.get("wb_id"))
+                    if item_id not in seen_ids:
+                        seen_ids.add(item_id)
+                        promoted_items.append(item)
 
         return promoted_items
     finally:

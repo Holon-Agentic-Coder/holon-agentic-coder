@@ -1,0 +1,285 @@
+"""Hermetic tests for the CI duration report's collection, statistics, entry point and workflow.
+
+Every API response is a recorded-shape payload served by ``FakeOpener``, which also asserts that no request leaves
+``https://api.github.com/repos/<repo>/actions/``; nothing here reaches the network.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import urllib.error
+import urllib.request
+from datetime import UTC, date, datetime
+from pathlib import Path
+
+import pytest
+
+from scripts.ci_durations_api import ApiClient, list_runs
+from scripts.ci_durations_collect import (
+    JobDuration,
+    classify_ref,
+    collect,
+    job_key,
+    normalise_job,
+    pr_number,
+    runner_os,
+    seconds_between,
+)
+
+REPO = "acme/widgets"
+REPO_ID = 42
+API = f"https://api.github.com/repos/{REPO}/actions/"
+SINCE = date(2026, 10, 21)
+RUNS_QUERY = "runs?created=%3E%3D2026-10-21&per_page=100"
+SHA_MAIN = "a" * 40
+SHA_PR = "b" * 40
+SHA_FORK = "c" * 40
+
+
+class FakeOpener:
+    """Serve recorded payloads keyed by URL suffix, record every URL and refuse anything outside the actions API."""
+
+    def __init__(self, responses: dict[str, object]) -> None:
+        self.responses = responses
+        self.urls: list[str] = []
+        self.auth: list[str | None] = []
+
+    def __call__(self, request: urllib.request.Request) -> bytes:
+        url = request.full_url
+        assert url.startswith(API), f"request outside the actions API: {url}"
+        self.urls.append(url)
+        self.auth.append(request.unredirected_hdrs.get("Authorization"))
+        payload = self.responses.get(url.removeprefix(API))
+        if payload is None:
+            raise urllib.error.URLError(f"no recorded response for {url}")
+        if isinstance(payload, Exception):
+            raise payload
+        return json.dumps(payload).encode()
+
+
+def run(run_id: int, **overrides: object) -> dict[str, object]:
+    """Return a recorded-shape ``actions/runs`` entry: a completed push to main of ``test-unit.yml``."""
+    base: dict[str, object] = {
+        "id": run_id,
+        "name": "Test - Unit",
+        "path": ".github/workflows/test-unit.yml",
+        "event": "push",
+        "status": "completed",
+        "conclusion": "success",
+        "head_branch": "main",
+        "head_sha": SHA_MAIN,
+        "run_attempt": 1,
+        "created_at": "2026-11-01T10:00:00Z",
+        "pull_requests": [],
+        "repository": {"id": REPO_ID, "full_name": REPO},
+    }
+    return {**base, **overrides}
+
+
+def job(job_id: int, **overrides: object) -> dict[str, object]:
+    """Return a recorded-shape ``runs/{id}/jobs`` entry: a successful 200 s unit job that queued for 30 s."""
+    base: dict[str, object] = {
+        "id": job_id,
+        "name": "unit (ubuntu-latest)",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "created_at": "2026-11-01T10:00:00Z",
+        "started_at": "2026-11-01T10:00:30Z",
+        "completed_at": "2026-11-01T10:03:50Z",
+        "labels": ["ubuntu-latest"],
+        "runner_name": "GitHub Actions 7",
+        "html_url": f"https://github.com/{REPO}/actions/runs/1/job/{job_id}",
+    }
+    return {**base, **overrides}
+
+
+def pull(number: int, repo_id: int = REPO_ID) -> dict[str, object]:
+    """Return a ``pull_requests`` entry whose base repository has ``repo_id``."""
+    return {
+        "number": number,
+        "base": {"ref": "main", "repo": {"id": repo_id, "url": f"https://api.github.com/r/{repo_id}"}},
+    }
+
+
+PR_RUN = run(2, event="pull_request", head_branch="feature/x", head_sha=SHA_PR, pull_requests=[pull(7)])
+FORK_RUN = run(3, event="pull_request", head_branch="patch-1", head_sha=SHA_FORK, pull_requests=[])
+JOBS = {
+    1: [job(11)],
+    2: [
+        job(21, conclusion="failure"),
+        job(22, run_attempt=2, started_at="2026-11-01T10:10:00Z", completed_at="2026-11-01T10:13:00Z"),
+    ],
+    3: [
+        job(31, conclusion="cancelled", started_at=None, completed_at="2026-11-01T10:01:00Z"),
+        job(32, conclusion="skipped"),
+        job(33, conclusion="cancelled", completed_at="2026-11-01T10:01:30Z"),
+    ],
+}
+
+
+def client(opener: FakeOpener) -> ApiClient:
+    return ApiClient(repo=REPO, token="tok-secret-123", opener=opener)
+
+
+def recorded_api(runs: list[dict[str, object]] | None = None) -> FakeOpener:
+    """Return an opener serving one page of runs, an empty second page, and the jobs of runs 1 to 3."""
+    runs = runs if runs is not None else [run(1), PR_RUN, FORK_RUN]
+    responses: dict[str, object] = {
+        f"{RUNS_QUERY}&page=1": {"total_count": len(runs), "workflow_runs": runs},
+        f"{RUNS_QUERY}&page=2": {"total_count": len(runs), "workflow_runs": []},
+    }
+    for run_id, jobs in JOBS.items():
+        responses[f"runs/{run_id}/jobs?filter=all&per_page=100&page=1"] = {"total_count": len(jobs), "jobs": jobs}
+    return FakeOpener(responses)
+
+
+def collected() -> dict[int, JobDuration]:
+    rows = collect(client(recorded_api()), SINCE, 500).rows
+    return {int(row.run_url.rsplit("/", 1)[1]): row for row in rows}
+
+
+def test_durations_and_queue_times_are_computed_from_the_job_stamps() -> None:
+    rows = collected()
+    assert rows[11].duration_seconds == 200.0
+    assert rows[11].queue_seconds == 30.0
+    assert rows[22].duration_seconds == 180.0
+    assert rows[22].queue_seconds == 600.0
+    assert seconds_between("2026-11-01T10:00:30Z", "2026-11-01T10:00:00Z") == 0.0
+
+
+def test_reruns_are_marked_only_from_attempt_two() -> None:
+    rows = collected()
+    assert rows[22].is_rerun and rows[22].run_attempt == 2
+    assert not rows[21].is_rerun
+    assert rows[22].to_json()["is_rerun"] is True
+
+
+def test_pull_request_numbers_and_links_are_attached() -> None:
+    rows = collected()
+    assert rows[21].pr_number == 7
+    assert rows[21].pr_url == f"https://github.com/{REPO}/pull/7"
+    assert rows[21].commit_url == f"https://github.com/{REPO}/commit/{SHA_PR}"
+    assert rows[21].run_url == f"https://github.com/{REPO}/actions/runs/2/job/21"
+    assert rows[21].ref_class == "pr"
+    assert rows[11].ref_class == "main" and rows[11].pr_url is None
+    assert rows[11].commit_url == f"https://github.com/{REPO}/commit/{SHA_MAIN}"
+
+
+def test_a_fork_pull_request_has_no_number_but_is_still_a_pr_point() -> None:
+    rows = collected()
+    assert rows[33].pr_number is None and rows[33].pr_url is None
+    assert rows[33].ref_class == "pr" and rows[33].branch == "patch-1"
+
+
+def test_skipped_and_never_started_jobs_are_dropped_and_cancelled_jobs_kept() -> None:
+    rows = collected()
+    assert set(rows) == {11, 21, 22, 33}
+    assert rows[33].conclusion == "cancelled"
+    assert rows[21].conclusion == "failure"
+
+
+def test_a_pull_request_of_another_repository_is_not_attributed() -> None:
+    assert pr_number(run(9, pull_requests=[pull(5, repo_id=99), pull(8)]), REPO) == 8
+    assert pr_number(run(9, pull_requests=[{"number": 4}]), REPO) == 4
+    assert pr_number(run(9, pull_requests=[{"number": 4, "base": {"repo": {"url": "x/repos/o/other"}}}]), REPO) is None
+
+
+@pytest.mark.parametrize(
+    ("event", "branch", "number", "expected"),
+    [
+        ("push", "main", None, "main"),
+        ("pull_request", "main", None, "pr"),
+        ("push", "feature", 3, "pr"),
+        ("workflow_dispatch", "main", None, "other"),
+        ("schedule", "main", None, "other"),
+    ],
+)
+def test_classify_ref(event: str, branch: str, number: int | None, expected: str) -> None:
+    assert classify_ref({"event": event, "head_branch": branch}, number) == expected
+
+
+def test_runner_os_falls_back_from_labels_to_the_matrix_suffix_then_the_runner_name() -> None:
+    assert runner_os({"labels": ["macos-latest"], "name": "unit (ubuntu-latest)"}) == "macos-latest"
+    assert runner_os({"labels": [], "name": "unit (ubuntu-latest, 120)"}) == "ubuntu-latest"
+    assert runner_os({"labels": [], "name": "build", "runner_name": "self-1"}) == "self-1"
+    assert runner_os({"name": "build"}) == "unknown"
+    assert job_key("Workspace survival (ubuntu-latest)") == "Workspace survival"
+
+
+def test_normalise_job_drops_a_job_that_is_still_running() -> None:
+    running = job(1, status="in_progress", conclusion=None, completed_at=None)
+    assert normalise_job(client(recorded_api()), run(1), running) is None
+
+
+def test_pagination_reads_every_page_and_excludes_the_report_and_unfinished_runs() -> None:
+    page_one = [run(i) for i in range(1, 101)]
+    page_two = [
+        run(101),
+        run(102, path=".github/workflows/ci-durations.yml"),
+        run(103, status="in_progress"),
+    ]
+    opener = FakeOpener(
+        {
+            f"{RUNS_QUERY}&page=1": {"total_count": 103, "workflow_runs": page_one},
+            f"{RUNS_QUERY}&page=2": {"total_count": 103, "workflow_runs": page_two},
+            f"{RUNS_QUERY}&page=3": {"total_count": 103, "workflow_runs": []},
+        }
+    )
+    runs, truncated = list_runs(client(opener), SINCE, 500)
+    assert [r["id"] for r in runs] == list(range(1, 102))
+    assert not truncated
+    assert len(opener.urls) == 3
+
+
+def test_max_runs_truncates_the_listing_and_collect_warns() -> None:
+    opener = recorded_api([run(1), PR_RUN, FORK_RUN])
+    opener.responses[f"{RUNS_QUERY}&page=1"] = {"total_count": 3, "workflow_runs": [run(1), PR_RUN, FORK_RUN]}
+    result = collect(client(opener), SINCE, 2)
+    assert result.run_count == 2
+    assert any("truncated" in warning for warning in result.warnings)
+
+
+def test_a_failed_job_listing_becomes_a_warning_naming_the_run() -> None:
+    opener = recorded_api()
+    opener.responses["runs/2/jobs?filter=all&per_page=100&page=1"] = urllib.error.HTTPError(
+        "u", 502, "Bad Gateway", None, None
+    )
+    result = collect(client(opener), SINCE, 500)
+    assert {row.run_id for row in result.rows} == {1, 3}
+    assert result.warnings == ["::warning::Could not read the jobs of run 2 (HTTPError)."]
+
+
+def test_a_failed_run_listing_is_not_hidden() -> None:
+    with pytest.raises(urllib.error.URLError):
+        collect(client(FakeOpener({})), SINCE, 500)
+
+
+def test_every_request_stays_on_the_actions_api_with_the_token_unredirected() -> None:
+    opener = recorded_api()
+    collect(client(opener), SINCE, 500)
+    assert all(url.startswith(API) for url in opener.urls)
+    assert set(opener.auth) == {"Bearer tok-secret-123"}
+    assert "tok-secret-123" not in repr(client(opener))
+
+
+def started(day: int) -> str:
+    return datetime(2026, 11, day, 10, tzinfo=UTC).isoformat().replace("+00:00", "Z")
+
+
+def test_job_records_round_trip_through_json() -> None:
+    row = collected()[22]
+    data = json.loads(json.dumps(row.to_json()))
+    fields = {key: value for key, value in data.items() if key not in ("is_rerun", "job_key")}
+    assert JobDuration(**fields) == row
+    assert data["job_key"] == "unit"
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT[\d:]+Z", data["started_at"])
+    assert started(2) == "2026-11-02T10:00:00Z"
+
+
+def workflows_dir() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / ".github" / "workflows").is_dir():
+            return parent / ".github" / "workflows"
+    raise AssertionError("no .github/workflows directory above the test module")

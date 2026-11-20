@@ -10,7 +10,7 @@ refusal as ``overridden``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sandbox_executor.flow.admission_order import older_waiter_flows
@@ -36,6 +36,7 @@ class AdmissionConflict:
 
     label: str
     files: tuple[str, ...]
+    paths: tuple[str, ...] = field(default=(), compare=False)  # plain overlapping entries, for ``blocked_by``
 
     def to_dict(self) -> dict[str, Any]:
         """Payload and ledger shape."""
@@ -58,12 +59,11 @@ class AdmissionDecision:
 
 
 def _conflict(own: TouchSet, flow: InFlightFlow) -> AdmissionConflict | None:
-    files = list(files_in_set(own, list(flow.changed_files))) if flow.changed_files is not None else []
-    if flow.declared is not None:
-        pairs = overlapping_entries(own, flow.declared)
-        files.extend(mine if mine == theirs else f"{mine} (its entry {theirs})" for mine, theirs in pairs)
-    unique = tuple(dict.fromkeys(files))
-    return AdmissionConflict(flow.label, unique) if unique else None
+    real = list(files_in_set(own, list(flow.changed_files))) if flow.changed_files is not None else []
+    pairs = overlapping_entries(own, flow.declared) if flow.declared is not None else []
+    labelled = (mine if mine == theirs else f"{mine} (its entry {theirs})" for mine, theirs in pairs)
+    files, paths = tuple(dict.fromkeys([*real, *labelled])), tuple(dict.fromkeys([*real, *(m for m, _t in pairs)]))
+    return AdmissionConflict(flow.label, files, paths) if files else None
 
 
 def refusal(
@@ -107,5 +107,5 @@ def decide_admission(context: FlowContext, run_gh: GhRunner | None, run_git: Git
     if not pairs:
         return AdmissionDecision(admitted=True)
     conflicts = tuple(conflict for _flow, conflict in pairs)
-    blocked_by = tuple(BlockedBy(f.kind, c.files, f.number, f.head, f.plan_branch, f.worktree) for f, c in pairs)
+    blocked_by = tuple(BlockedBy(f.kind, c.paths, f.number, f.head, f.plan_branch, f.worktree) for f, c in pairs)
     return refusal(context, conflicts=conflicts, blocked_by=blocked_by)

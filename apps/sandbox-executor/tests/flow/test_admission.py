@@ -58,6 +58,7 @@ def test_overlap_with_a_declared_set_is_refused_and_named(own_plan):
     assert [(c.label, c.files) for c in decision.conflicts] == [
         (f"pull request #7 (branch {OTHER_HEAD})", ("src/app.py (its entry src/)",))
     ]
+    assert [entry.files for entry in decision.blocked_by] == [("src/app.py",)]
     message = format_refusal(decision)
     assert message.startswith("Stage 3 refused: the touch set overlaps pull request #7")
     assert OTHER_HEAD in message and "src/app.py" in message and "--allow-overlap" in message

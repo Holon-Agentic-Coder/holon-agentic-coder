@@ -72,7 +72,7 @@ def _push_resolver_head(
 ) -> tuple[bool, str | None]:
     """Fast-forward push the resolver's moved head from the host; return ``(pushed, error)``.
 
-    Not after a failed pass, under ``skip_push`` or on a budget refusal."""
+    Not after a failed pass, under ``skip_push``, when the head did not move or on a budget refusal."""
     if container_error or context.skip_push or not head_sha or head_sha == target.head_sha or not target.head_branch:
         return False, None
     refusal = budget_push_refusal(context.target_worktree, target.head_sha, head_sha, context.intent_data)

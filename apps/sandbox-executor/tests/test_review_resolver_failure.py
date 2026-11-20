@@ -25,7 +25,7 @@ from sandbox_executor.resolver_result import (
     read_container_resolver_result,
     resolver_error_text,
 )
-from sandbox_executor.review_ensemble import ConsensusVerdict, ReviewerVerdict, serialize_review_outcome
+from sandbox_executor.review_ensemble import ConsensusVerdict, ReviewerResult, ReviewerVerdict, serialize_review_outcome
 from sandbox_executor.review_report import FindingRow
 from sandbox_executor.review_target import ReviewTarget
 
@@ -497,3 +497,161 @@ def test_failed_host_push_names_the_operation_branch_and_remote_without_credenti
     assert outcome.error is not None
     assert outcome.error.startswith("Resolver push failed: host push of 'feature' through remote 'origin' failed: ")
     assert "SECRET" not in outcome.error
+
+
+# --- a rejection without a stated reason never reaches the ledger --------------------------------------------------
+
+
+@pytest.mark.parametrize("reason", [None, "", "unspecified"])
+def test_recorder_refuses_a_hand_built_rejection_without_a_reason(tmp_path: Path, reason: str | None) -> None:
+    from sandbox_executor.flow.review.resolver import DispositionRecorder
+    from sandbox_executor.review_report import FindingDisposition
+
+    ctx = _ensemble_ctx(tmp_path)
+    exec_file = str(tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl")
+    recorder = DispositionRecorder(ctx, exec_file, EXEC_TARGET, {}, set(), [])
+    disp = FindingDisposition("R1-F1", "nit", "src/app.py", 3, "A nit.", "Fix it.", "rejected", reason)
+
+    recorder.record(3, [disp])
+
+    assert _rows(tmp_path, "ACT-RES") == []
+    assert recorder.recorded_keys == set()
+
+
+# --- a container resolver turn without usable output is a failed turn ----------------------------------------------
+
+
+def _resolver_turn(
+    tmp_path: Path, returncode: int, stdout: str = "", file_payload: object | None = None, breach: object = None
+) -> list:
+    """Run ``_run_resolver_agent`` with a fake turn exiting ``returncode`` that may leave a dispositions file."""
+    from sandbox_executor.entrypoint.review_loop import _run_resolver_agent
+    from sandbox_executor.turns import TurnResult
+
+    dispositions_path = tmp_path / "iter-3" / "dispositions.json"
+
+    class _Runner:
+        def build_command(self, prompt: str, model: str) -> list[str]:
+            return ["fake-agent", prompt]
+
+    def fake_run_turn(cmd: list[str], cwd: str | None = None) -> TurnResult:
+        if file_payload is not None:
+            dispositions_path.write_text(json.dumps(file_payload), encoding="utf-8")
+        return TurnResult(returncode=returncode, stdout=stdout, breach=breach)
+
+    with (
+        patch("sandbox_executor.entrypoint.review_loop.get_runner", return_value=_Runner()),
+        patch("sandbox_executor.entrypoint.review_loop.run_turn", side_effect=fake_run_turn),
+    ):
+        return _run_resolver_agent(str(tmp_path), "fake-agent", "m", "prompt", str(dispositions_path))
+
+
+def test_a_resolver_turn_on_a_session_limit_fails_and_names_the_usage_limit(tmp_path: Path) -> None:
+    from sandbox_executor.entrypoint.review_loop import ResolverTurnError
+
+    with pytest.raises(ResolverTurnError, match="usage limit reached") as caught:
+        _resolver_turn(tmp_path, 1, stdout="You've hit your session limit")
+
+    assert "session limit" in caught.value.output_tail
+
+
+def test_a_non_zero_resolver_turn_ignores_the_dispositions_file_it_left(tmp_path: Path) -> None:
+    from sandbox_executor.entrypoint.review_loop import ResolverTurnError
+
+    left = [{"id": "R1-F1", "disposition": "rejected", "rejection_reason": "inaccurate"}]
+    with pytest.raises(ResolverTurnError, match="exited with code 1"):
+        _resolver_turn(tmp_path, 1, file_payload=left)
+
+
+def test_a_clean_resolver_turn_without_a_dispositions_file_has_no_usable_output(tmp_path: Path) -> None:
+    from sandbox_executor.entrypoint.review_loop import ResolverTurnError
+
+    with pytest.raises(ResolverTurnError, match="no usable output"):
+        _resolver_turn(tmp_path, 0)
+
+
+def test_a_timed_out_resolver_turn_that_exits_zero_ignores_the_dispositions_it_left(tmp_path: Path) -> None:
+    from sandbox_executor.budgets import BudgetBreach
+    from sandbox_executor.entrypoint.review_loop import ResolverTurnError
+
+    left = [{"id": "R1-F1", "disposition": "rejected", "rejection_reason": "inaccurate"}]
+    breach = BudgetBreach("review", "turn", 600.0, 601.0)
+    with pytest.raises(ResolverTurnError, match="timed out"):
+        _resolver_turn(tmp_path, 0, file_payload=left, breach=breach)
+
+
+def test_a_clean_resolver_turn_returns_the_dispositions_it_wrote(tmp_path: Path) -> None:
+    written = [{"id": "R1-F1", "disposition": "applied"}]
+
+    assert _resolver_turn(tmp_path, 0, file_payload={"dispositions": written}) == written
+
+
+# --- the PR #203 incident: a resolver on a usage limit leaves its findings open and writes no ACT-RES row ----------
+
+SESSION_LIMIT = "You've hit your session limit"
+
+
+def _two_nit_reviewer() -> ReviewerResult:
+    """Reviewer 1 of iteration 3 on PR #203: two nits in flow/calibrate_rerun.py."""
+    from sandbox_executor.review_ensemble import ParsedTrailer, ReviewCounts, ReviewFinding
+
+    nits = (
+        ReviewFinding("nit", "flow/calibrate_rerun.py", 40, "approval_pr_number resolves outside the try"),
+        ReviewFinding("nit", "flow/calibrate_rerun.py", 90, "the refreshed StageResult is not stored back"),
+    )
+    parsed = ParsedTrailer(ReviewerVerdict.CHANGES_REQUESTED, ReviewCounts(nit=2), nits)
+    return ReviewerResult.completed(1, "fake-agent", "fake-model", "r1.md", "report", parsed)
+
+
+def _adjudication_rows(tmp_path: Path) -> list[dict]:
+    return [r for r in _rows(tmp_path, "ACT-RES") if r.get("review_finding_ids")]
+
+
+def _incident_loop(tmp_path: Path, resolver) -> dict:
+    ensemble = FakeEnsemble([_two_nit_reviewer(), clean_reviewer(2), clean_reviewer(3)])
+    with _LoopStubs():
+        return run_review_loop(
+            _ensemble_ctx(tmp_path),
+            target=EXEC_TARGET,
+            max_iterations=3,
+            ensemble_size=3,
+            run_ensemble_fn=ensemble,
+            run_resolver_fn=resolver,
+        )
+
+
+@pytest.mark.usefixtures("in_simulated_sandbox")
+def test_incident_resolver_on_a_usage_limit_leaves_both_nits_open_and_writes_no_adjudication(tmp_path: Path) -> None:
+    def usage_limited(target, iteration, findings, action_ids, rejected_findings):
+        return {"dispositions": [], "exit_code": 1, "error": SESSION_LIMIT, "output_tail": SESSION_LIMIT}
+
+    res = _incident_loop(tmp_path, usage_limited)
+
+    assert "session limit" in res["resolver_error"]
+    assert _adjudication_rows(tmp_path) == []
+    assert [f["id"] for f in res["open_findings"]] == ["R1-F1", "R1-F2"]
+    assert all(f["path"] == "flow/calibrate_rerun.py" for f in res["open_findings"])
+    assert res["consensus"]["approved"] is False
+
+
+@pytest.mark.usefixtures("in_simulated_sandbox")
+def test_incident_resolver_that_raises_leaves_both_nits_open_and_writes_no_adjudication(tmp_path: Path) -> None:
+    def raising(target, iteration, findings, action_ids, rejected_findings):
+        raise RuntimeError(SESSION_LIMIT)
+
+    res = _incident_loop(tmp_path, raising)
+
+    assert "session limit" in res["resolver_error"]
+    assert _adjudication_rows(tmp_path) == []
+    assert [f["id"] for f in res["open_findings"]] == ["R1-F1", "R1-F2"]
+    assert res["consensus"]["approved"] is False
+
+
+def test_host_dispatched_resolver_exiting_one_writes_no_adjudication_row(tmp_path: Path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    res = _run_host_loop(tmp_path, monkeypatch, _resolve_dispatcher(1, None, calls))
+
+    assert res["resolver_error"]
+    assert _adjudication_rows(tmp_path) == []
+    assert [f["id"] for f in res["open_findings"]] == ["R1-F1"]

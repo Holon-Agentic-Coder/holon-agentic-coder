@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 from sandbox_executor.flow import run_review_loop
-from sandbox_executor.resolver_evidence import names_checked_code
+from sandbox_executor.resolver_evidence import default_disposition, names_checked_code, require_rejection_reason
 from sandbox_executor.review_report import (
     FindingRow,
     deserialize_finding_dispositions,
@@ -60,16 +60,43 @@ def test_a_nit_rejected_as_out_of_scope_stays_rejected():
     assert (disp.disposition, disp.rejection_reason) == ("rejected", "out of scope")
 
 
-def test_an_unknown_reason_is_unspecified_never_out_of_scope():
-    assert _settle("nit", disposition="rejected", rejection_reason="meh").rejection_reason == "unspecified"
-    assert _settle("nit", disposition="rejected").rejection_reason == "unspecified"
+def test_an_unknown_or_missing_reason_is_refused_and_the_nit_stays_open():
+    unknown = _settle("nit", disposition="rejected", rejection_reason="meh")
+    for disp in (unknown, _settle("nit", disposition="rejected")):
+        assert (disp.disposition, disp.rejection_reason) == ("open", None)
+        assert disp.evidence == "refused rejection (no reason)"
 
 
-@pytest.mark.parametrize(("severity", "expected"), [("critical", "open"), ("important", "open"), ("nit", "rejected")])
-def test_a_finding_the_resolver_skipped_is_open_for_important_and_higher(severity, expected):
+@pytest.mark.parametrize("severity", ["critical", "important", "nit"])
+def test_a_rejection_with_the_reason_unspecified_is_refused_at_every_severity(severity):
+    disp = _settle(severity, disposition="rejected", rejection_reason="unspecified", evidence="src/x.py:42")
+
+    assert (disp.disposition, disp.rejection_reason) == ("open", None)
+    assert disp.evidence == "refused rejection (no reason): src/x.py:42"
+
+
+def test_a_nit_rejected_as_inaccurate_stays_rejected():
+    disp = _settle("nit", disposition="rejected", rejection_reason="inaccurate")
+
+    assert (disp.disposition, disp.rejection_reason) == ("rejected", "inaccurate")
+
+
+@pytest.mark.parametrize("severity", ["critical", "important", "nit"])
+def test_a_finding_the_resolver_skipped_stays_open_at_every_severity(severity):
     (disp,) = deserialize_finding_dispositions([], [_row(severity)])
 
-    assert disp.disposition == expected
+    assert disp.disposition == "open"
+    assert default_disposition(severity) == "open"
+
+
+@pytest.mark.parametrize("reason", [None, "", "  ", "unspecified", "UNSPECIFIED"])
+def test_require_rejection_reason_refuses_an_empty_or_unspecified_reason(reason):
+    with pytest.raises(ValueError, match="stated reason"):
+        require_rejection_reason(reason)
+
+
+def test_require_rejection_reason_returns_a_stated_reason():
+    assert require_rejection_reason("inaccurate") == "inaccurate"
 
 
 def test_the_resolver_cannot_downgrade_a_critical_to_escape_the_rule():

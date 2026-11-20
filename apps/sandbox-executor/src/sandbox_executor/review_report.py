@@ -427,7 +427,8 @@ def serialize_finding_disposition(item: FindingDisposition) -> dict[str, Any]:
 def _normalise_rejection_reason(raw_reason: Any) -> str:
     """Validate and normalise a one-line rejection reason; an unknown or missing one is ``unspecified``.
 
-    It used to default to ``out of scope``, which made a skipped or failed adjudication read as a deliberate rejection.
+    ``unspecified`` is only a marker: ``settle_rejection`` refuses it, so the finding stays open. It used to default to
+    ``out of scope``, which made a skipped or failed adjudication read as a deliberate rejection.
     """
     clean = _inline(raw_reason, MAX_REASON_CHARS)
     low = clean.lower()

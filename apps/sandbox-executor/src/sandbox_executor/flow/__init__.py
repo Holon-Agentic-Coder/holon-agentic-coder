@@ -81,6 +81,11 @@ from sandbox_executor.flow.dispatch import (
     _test_evidence,
     recorded_test_pass_rate,
 )
+from sandbox_executor.flow.execution_publish import (
+    publish_execution_branches,
+    publish_recorded_executions,
+    publish_with_first_row,
+)
 from sandbox_executor.flow.git_refs import (
     EXECUTOR_GIT_ENV,
     _append_ledger_row,
@@ -439,7 +444,10 @@ __all__ = [
     "prepare_calibrated_branch",
     "probe_ci_checks",
     "publish_calibration",
+    "publish_execution_branches",
     "publish_new_child_branches",
+    "publish_recorded_executions",
+    "publish_with_first_row",
     "push_branch",
     "push_commit",
     "read_plan_touch_set",

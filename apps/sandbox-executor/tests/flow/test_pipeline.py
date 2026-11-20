@@ -832,7 +832,7 @@ class TestStageBudgets:
             patch.dict(os.environ, env),
             patch("sandbox_executor.flow.stages.execute.check_and_resolve_stage_conflicts"),
             patch("sandbox_executor.flow.stages.execute.fetch_base"),
-            patch("sandbox_executor.flow.stages.execute.publish_new_child_branches", return_value=[]),
+            patch("sandbox_executor.flow.stages.execute.publish_execution_branches", return_value=None),
             patch("sandbox_executor.flow.stages.execute._snapshot_child_branches", return_value=set()),
             patch("sandbox_executor.cli.run_docker_container", side_effect=fake_container),
             patch("sandbox_executor.flow.stages.execute._fetch_branch_prefix_error", return_value=None),

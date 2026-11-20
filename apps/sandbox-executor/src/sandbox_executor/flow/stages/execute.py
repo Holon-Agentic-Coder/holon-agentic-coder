@@ -16,6 +16,7 @@ from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 from sandbox_executor.flow.admission import admission_stage_failure
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _dispatch_role, _recorded_test_fields, _stage_failure
+from sandbox_executor.flow.execution_publish import publish_execution_branches
 from sandbox_executor.flow.git_refs import (
     _append_superseding_execution_row,
     _discover_child_branch,
@@ -26,7 +27,7 @@ from sandbox_executor.flow.git_refs import (
     _snapshot_child_branches,
     _track_local_branch,
 )
-from sandbox_executor.flow.host_remote import fetch_base, publish_new_child_branches, remote_error
+from sandbox_executor.flow.host_remote import fetch_base, remote_error
 from sandbox_executor.flow.partial_salvage import salvage_for_resume
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.decomposition import _run_decomposed_plan, _sub_intent_depth_error
@@ -215,9 +216,9 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         else:
             context.log("Stage 3 resume: no failed execution branch carries partial work; starting from the plan tip.")
     exit_code = _dispatch_role(context, "executor", executor_args)
-    # The container only commits. The host pushes every execution branch it committed, a failed one included, so the
-    # failure row and any partial work reach origin for a resume.
-    push_error = remote_error(publish_new_child_branches, repo_dir, plan_prefix, "E", existing_executions)
+    # The container only commits. The host pushes each execution branch it committed that carries its ledger row, a
+    # failed one included, so the failure row and any partial work reach origin for a resume; a row-less one stays.
+    push_error = publish_execution_branches(context, plan_prefix, existing_executions)
     # The executor exits OVER_BUDGET_EXIT_CODE only once its over_budget row is committed; that row decides.
     if exit_code not in (0, OVER_BUDGET_EXIT_CODE):
         return _stage_failure(

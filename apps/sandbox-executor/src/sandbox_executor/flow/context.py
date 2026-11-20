@@ -170,6 +170,8 @@ class FlowContext:
     mitm_web: bool = False
     # --allow-overlap: Stage 3 admission admits a plan that overlaps a flow in flight and records the override.
     allow_overlap: bool = False
+    # Stage 3 admission object (admission_state.AdmissionRecord.to_dict()); None until Stage 3 admission runs.
+    admission: dict[str, Any] | None = None
     stage_results: dict[str, StageResult] = field(default_factory=dict)
     logs: list[str] = field(default_factory=list)
     schema_version: int = CURRENT_CONTEXT_SCHEMA_VERSION
@@ -226,6 +228,7 @@ class FlowContext:
             "review_ensemble_size": self.review_ensemble_size,
             "mitm_web": self.mitm_web,
             "allow_overlap": self.allow_overlap,
+            "admission": self.admission,
             "replan_attempts": self.replan_attempts,
             "review_iterations_done": self.review_iterations_done,
             "stage_results": {k: v.to_dict() for k, v in self.stage_results.items()},
@@ -265,6 +268,7 @@ class FlowContext:
             review_ensemble_size=int(data.get("review_ensemble_size") or DEFAULT_ENSEMBLE_SIZE),
             mitm_web=data.get("mitm_web", False),
             allow_overlap=bool(data.get("allow_overlap", False)),
+            admission=data.get("admission"),
             replan_attempts=int(data.get("replan_attempts") or 0),
             review_iterations_done=int(data.get("review_iterations_done") or 0),
             stage_results=parsed_results,

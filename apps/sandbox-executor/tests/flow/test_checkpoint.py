@@ -1,9 +1,13 @@
 """Tests for checkpointed resumption from a stage and for engine error handling."""
 
+import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from sandbox_executor.flow import FlowContext, FlowStage, PipelineEngine, StageResult, StageStatus, run_review_stage
+from sandbox_executor.flow.admission_state import AdmissionRecord, BlockedBy, admitted_record, blocked_record
+from sandbox_executor.flow.checkpoint import load_checkpoint, save_checkpoint
 
 
 class TestFlowResumptionAndErrorHandling:
@@ -166,3 +170,70 @@ class TestFlowResumptionAndErrorHandling:
         assert results["review"].status == StageStatus.HALTED_FOR_HUMAN
         assert results["calibrate"].status == StageStatus.SKIPPED
         assert results["calibrate"].payload.get("skipped_by_flag") is True
+
+
+BLOCKED = blocked_record(
+    None,
+    (
+        BlockedBy("pull_request", ("src/app.py",), number=7, branch="I-2-o/P-3-x/E-4-y/_"),
+        BlockedBy("local_flow", ("docs/",), plan_branch="I-5-l/P-6-z/_", worktree="/w/second"),
+    ),
+    "2026-11-20T01:00:00.000Z",
+)
+
+
+@pytest.mark.parametrize(
+    "record", [BLOCKED, admitted_record(), admitted_record([{"flow": "pull request #7", "files": ["src/app.py"]}])]
+)
+def test_checkpoint_round_trips_the_admission_record(tmp_path, record):
+    context = FlowContext(target_worktree=str(tmp_path), intent_data={"slug": "adm"}, admission=record.to_dict())
+    path = save_checkpoint(context)
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    assert data["admission"] == record.to_dict()  # the operator-facing top-level object
+    assert AdmissionRecord.from_dict(load_checkpoint(path).context.admission) == record
+
+
+def test_admission_record_shapes():
+    assert BLOCKED.to_dict() == {
+        "state": "blocked",
+        "blocked_since": "2026-11-20T01:00:00.000Z",
+        "blocked_by": [
+            {"kind": "pull_request", "number": 7, "branch": "I-2-o/P-3-x/E-4-y/_", "files": ["src/app.py"]},
+            {"kind": "local_flow", "plan_branch": "I-5-l/P-6-z/_", "worktree": "/w/second", "files": ["docs/"]},
+        ],
+    }
+    assert admitted_record().to_dict() == {"state": "admitted"}
+    assert admitted_record([]).to_dict() == {"state": "admitted", "override": True, "override_conflicts": []}
+
+
+def test_checkpoint_without_admission_still_loads(tmp_path):
+    context = FlowContext(target_worktree=str(tmp_path), intent_data={"slug": "old"})
+    path = save_checkpoint(context)
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data["context"].pop("admission")
+    assert "admission" not in data
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle)
+    assert load_checkpoint(path).context.admission is None
+
+
+def test_top_level_admission_is_read_when_the_context_lacks_it(tmp_path):
+    path = save_checkpoint(FlowContext(target_worktree=str(tmp_path), intent_data={"slug": "top"}))
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data["admission"] = {"state": "admitted"}
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle)
+    assert load_checkpoint(path).context.admission == {"state": "admitted"}
+
+
+@pytest.mark.parametrize("value", [None, "blocked", [], {"state": "waiting"}, {"blocked_by": []}])
+def test_unknown_admission_values_parse_as_none(value):
+    assert AdmissionRecord.from_dict(value) is None
+
+
+def test_blocked_record_keeps_the_first_blocked_since_and_replaces_blocked_by():
+    newer = (BlockedBy("pull_request", ("lib/",), number=9, branch="b"),)
+    again = blocked_record(BLOCKED, newer, "2026-11-20T02:00:00.000Z")
+    assert again.blocked_since == "2026-11-20T01:00:00.000Z" and again.blocked_by == newer
+    fresh = blocked_record(admitted_record(), newer, "2026-11-20T02:00:00.000Z")
+    assert fresh.blocked_since == "2026-11-20T02:00:00.000Z"

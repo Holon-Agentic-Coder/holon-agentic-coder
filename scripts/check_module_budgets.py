@@ -146,7 +146,10 @@ def _override_changes(base: dict[str, Any], head: dict[str, Any]) -> list[str]:
     changes = [f"override added: {path} ({head[path]})" for path in head if path not in base]
     changes += [f"override removed: {path} ({base[path]})" for path in base if path not in head]
     for path in (path for path in head if path in base and head[path] != base[path]):
-        verb = "raised" if isinstance(head[path], int) and head[path] > base[path] else "lowered"
+        if not isinstance(head[path], int) or not isinstance(base[path], int):
+            verb = "changed"
+        else:
+            verb = "raised" if head[path] > base[path] else "lowered"
         changes.append(f"override {verb}: {path} ({base[path]} -> {head[path]})")
     return changes
 

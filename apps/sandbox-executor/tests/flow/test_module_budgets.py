@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.check_module_budgets import ALLOW_CHANGE_ENV, DEFAULT_CONFIG, main
+from scripts.check_module_budgets import ALLOW_CHANGE_ENV, DEFAULT_CONFIG, describe_change, main
 
 PACKAGE = "src/pkg"
 BASE_CONFIG = {"default_max_lines": 10, "packages": [PACKAGE], "overrides": {f"{PACKAGE}/big.py": 20}}
@@ -140,6 +140,12 @@ CHANGES = {
     "delete": ({"default_max_lines": 15, "overrides": {}}, "override removed"),
     "default": ({"default_max_lines": 11}, "default_max_lines 10 -> 11"),
 }
+
+
+def test_an_override_change_from_a_non_integer_base_limit_is_reported_as_changed():
+    base = json.dumps({"overrides": {"a.py": "20"}})
+    head = json.dumps({"overrides": {"a.py": 25}})
+    assert describe_change(base, head) == ["override changed: a.py (20 -> 25)"]
 
 
 @pytest.mark.parametrize("change", sorted(CHANGES))

@@ -9,9 +9,12 @@ from pathlib import Path
 import pytest
 from sandbox_executor.flow import FlowContext
 from sandbox_executor.flow.dispatch import _dispatch_role
-from sandbox_executor.flow.host_remote import _budget_push_refusal
 from sandbox_executor.flow.review import resolver
-from sandbox_executor.module_budget_guard import ALLOW_MODULE_BUDGET_CHANGE_ENV, MODULE_BUDGET_CONFIG
+from sandbox_executor.module_budget_guard import (
+    ALLOW_MODULE_BUDGET_CHANGE_ENV,
+    MODULE_BUDGET_CONFIG,
+    budget_push_refusal,
+)
 from sandbox_executor.review_target import ReviewTarget
 
 from tests.flow.helpers import _configure_identity, _git
@@ -73,9 +76,9 @@ def test_a_head_that_leaves_the_config_alone_is_pushed(repo: Path, pushes):
 
 def test_the_refusal_fails_closed_and_ignores_non_object_ids(repo: Path):
     base = _git(repo, "rev-parse", "HEAD")
-    assert _budget_push_refusal(str(repo), base, "--receive-pack=touch /tmp/x", {}) is None
+    assert budget_push_refusal(str(repo), base, "--receive-pack=touch /tmp/x", {}) is None
     missing = "0" * 40
-    assert "could not list the files changed" in str(_budget_push_refusal(str(repo), base, missing, {}))
+    assert "could not list the files changed" in str(budget_push_refusal(str(repo), base, missing, {}))
 
 
 @pytest.mark.parametrize(("intent_data", "expected"), [({}, None), (AUTHORISED, "1")])

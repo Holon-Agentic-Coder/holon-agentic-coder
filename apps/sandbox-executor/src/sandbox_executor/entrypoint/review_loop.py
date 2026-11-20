@@ -543,7 +543,7 @@ def _commit_resolution(
 
 
 def _intent_row(repo_dir: str, head_branch: str) -> dict[str, Any]:
-    """Return the last ``intents.jsonl`` row whose branch ``head_branch`` contains, or an empty dict."""
+    """Return the last ``intents.jsonl`` row whose branch is ``head_branch`` or a ``/``-bounded prefix of it, or {}."""
     intent_data: dict[str, Any] = {}
     intents_path = os.path.join(repo_dir, "holon-knowledge/ledger/intents.jsonl")
     if not os.path.exists(intents_path):
@@ -556,7 +556,7 @@ def _intent_row(repo_dir: str, head_branch: str) -> dict[str, Any]:
                     try:
                         d = json.loads(line)
                         b = d.get("branch", "")
-                        if b and b in head_branch:
+                        if b and (head_branch == b or head_branch.startswith(f"{b}/")):
                             intent_data = d
                     except json.JSONDecodeError:
                         continue

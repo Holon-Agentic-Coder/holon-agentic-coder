@@ -19,10 +19,11 @@ from typing import Any
 from sandbox_executor.agent_defaults import FALLBACK_AGENT
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.dispatch import _dispatch_role
-from sandbox_executor.flow.host_remote import _budget_push_refusal, push_commit, remote_error
+from sandbox_executor.flow.host_remote import push_commit, remote_error
 from sandbox_executor.flow.review.ensemble import _ENGINE_PASSES_PER_DISPATCH
 from sandbox_executor.flow.review.records import _bounded_error_context, record_review_action
 from sandbox_executor.ledger import generate_action_id
+from sandbox_executor.module_budget_guard import budget_push_refusal
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.resolver_evidence import OPEN, REJECTED, require_rejection_reason
 from sandbox_executor.resolver_result import (
@@ -69,13 +70,12 @@ class ResolverInput:
 def _push_resolver_head(
     context: FlowContext, target: ReviewTarget, head_sha: str, container_error: str | None
 ) -> tuple[bool, str | None]:
-    """Push the resolver's container head from the host, fast-forward only; return ``(pushed, error)``.
+    """Fast-forward push the resolver's moved head from the host; return ``(pushed, error)``.
 
-    Nothing is pushed after a failed pass, under ``skip_push``, when the head did not move or on a budget refusal.
-    """
+    Not after a failed pass, under ``skip_push`` or on a budget refusal."""
     if container_error or context.skip_push or not head_sha or head_sha == target.head_sha or not target.head_branch:
         return False, None
-    refusal = _budget_push_refusal(context.target_worktree, target.head_sha, head_sha, context.intent_data)
+    refusal = budget_push_refusal(context.target_worktree, target.head_sha, head_sha, context.intent_data)
     error = refusal or remote_error(push_commit, context.target_worktree, head_sha, target.head_branch)
     return error is None, None if error is None else f"Resolver push failed: {error}"
 

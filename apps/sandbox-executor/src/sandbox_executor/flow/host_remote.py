@@ -9,13 +9,11 @@ stripped.
 
 from __future__ import annotations
 
-import os
 import re
 from collections.abc import Callable
 from typing import Any
 
 from sandbox_executor.git import run_git
-from sandbox_executor.module_budget_guard import budget_config_changes, module_budget_change_authorised, refusal_message
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.ref_names import named_push_rejection
 
@@ -101,24 +99,6 @@ def push_commit(repo_dir: str, source: str, branch: str, remote: str = DEFAULT_R
         detail = (res.stderr or "").strip() if isinstance(res.stderr, str) else ""
         detail = detail or f"git push exited with code {res.returncode}"
         raise HostRemoteError("push", branch, remote, named_push_rejection(branch, detail))
-
-
-def _budget_push_refusal(repo_dir: str, base_sha: str, head_sha: str, intent_data: dict[str, Any]) -> str | None:
-    """Why a head whose diff from ``base_sha`` changes the frozen module budget configuration may not be pushed.
-
-    ``None`` when the intent authorises the change, the diff leaves the configuration alone, or there is nothing to
-    diff: a head that is not a full object id, or a directory that is not a git worktree (``push_commit`` refuses or
-    fails on those itself). Fails closed when a worktree cannot list the diff.
-    """
-    if module_budget_change_authorised(intent_data) or not (_OBJECT_ID.match(head_sha) and _OBJECT_ID.match(base_sha)):
-        return None
-    if not os.path.exists(os.path.join(repo_dir, ".git")):
-        return None
-    res = run_git(["diff", "--name-only", base_sha, head_sha, "--"], cwd=repo_dir, check=False)
-    if res.returncode != 0 or not isinstance(res.stdout, str):
-        return f"refusing to push: could not list the files changed since {base_sha[:12]}"
-    paths = budget_config_changes(res.stdout.splitlines())
-    return f"refusing to push. {refusal_message(paths)}" if paths else None
 
 
 def push_branch(repo_dir: str, branch: str, remote: str = DEFAULT_REMOTE) -> None:

@@ -22,6 +22,13 @@ from tests.flow.fake_gh import FakeGitHub
 APPROVED = {"approved": True, "score": 1.0, "iterations": 1, "status": "approved"}
 
 
+def parent_ctx(tmp_path: Path) -> FlowContext:
+    """A parent intent's context whose worktree is ``tmp_path``, so the stage never writes the real ``.holon/``."""
+    return FlowContext(
+        repo_dir=str(tmp_path), token_reduce=False, intent_data={"slug": "parent", "goal": "Change the application"}
+    )
+
+
 def halted_review(number: int | None, url: str | None) -> StageResult:
     """The Stage 4 result at a consensus halt, with the PR recorded under ``payload["pr"]`` as the real stage does."""
     pr = {"attempted": True, "success": True, "action": "create", "pr_number": number, "output": url or ""}

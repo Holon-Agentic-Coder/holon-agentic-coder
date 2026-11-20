@@ -300,3 +300,17 @@ def test_resolver_prompt_treats_stray_lock_changes_as_a_defect() -> None:
 def test_executor_template_and_scaffold_treat_stray_lock_changes_as_a_defect() -> None:
     assert LOCK_DEFECT_PHRASE in normalised(rendered_executor())
     assert LOCK_DEFECT_PHRASE in normalised(EXECUTOR_TEMPLATE)
+
+
+SHARED_WORKTREE_RULE = "the workspace is the shared flow worktree, so never move head in it"
+
+
+def test_review_loop_template_and_resolver_prompt_keep_the_shared_worktree_on_its_branch() -> None:
+    from sandbox_executor.entrypoint.review_loop import _build_resolver_prompt
+
+    template = normalised((REPO_ROOT / "holon-config" / "prompts" / "review_loop.template.md").read_text("utf-8"))
+    resolver = normalised(_build_resolver_prompt("/r", "head", 1, [], "/d.json"))
+    for text in (template, resolver):
+        assert SHARED_WORKTREE_RULE in text
+        assert "`gh pr checkout`" in text
+        assert "`git show <rev>:<path>`" in text

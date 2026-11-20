@@ -725,6 +725,10 @@ class FakeGitCommands:
             return subprocess.CompletedProcess(args, 128, stdout="", stderr=f"fatal: {verb} failed")
         if verb == "remote" and args[2:4] == ["get-url", "origin"]:
             return subprocess.CompletedProcess(args, 0, stdout=f"{self._origin_url}\n", stderr="")
+        if verb == "symbolic-ref" and args[-1].startswith("refs/heads/"):
+            # The re-attach of a HEAD detached at the branch tip ('git symbolic-ref ... HEAD refs/heads/<b>').
+            self._branch = args[-1].removeprefix("refs/heads/")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         if verb == "symbolic-ref":
             return subprocess.CompletedProcess(args, 0 if self._branch else 1, stdout=f"{self._branch}\n", stderr="")
         if verb == "rev-parse" and any("HEAD" in a for a in args):
@@ -846,15 +850,36 @@ def test_mounted_worktree_on_another_branch_is_refused(tmp_path, capsys):
     assert "checked-out branch 'feature/other' does not match target 'feature/y'" in err
 
 
-def test_detached_mounted_head_is_refused_for_a_branch_target(tmp_path, capsys):
-    fake_git = FakeGitCommands()
+def test_mounted_head_detached_away_from_the_branch_tip_is_refused_for_a_branch_target(tmp_path, capsys):
+    elsewhere = "e" * 40
+    # HEAD is detached at another commit; refs/heads/feature/y still points at PR_HEAD_SHA.
+    fake_git = FakeGitCommands(heads=[elsewhere])
 
     code, mock_loop, _post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
 
     assert code == 1
     mock_loop.assert_not_called()
-    err = capsys.readouterr().err
-    assert "mounted workspace is on a detached HEAD; check out branch 'feature/y'" in err
+    err = " ".join(capsys.readouterr().err.split())
+    assert "mounted workspace is on a detached HEAD" in err
+    assert f"detached at {elsewhere[:12]}, not at the tip {PR_HEAD_SHA[:12]} of 'feature/y'" in err
+    assert "Check out 'feature/y' by hand" in err
+    assert not any(c[1] == "symbolic-ref" and c[-1].startswith("refs/heads/") for c in fake_git.calls)
+
+
+def test_mounted_head_detached_at_the_branch_tip_is_reattached_and_reviewed(tmp_path, capsys):
+    # HEAD is detached at PR_HEAD_SHA, which is also what refs/heads/feature/y points at.
+    fake_git = FakeGitCommands()
+
+    code, mock_loop, _post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
+
+    assert code == 0
+    mock_loop.assert_called_once()
+    assert mock_loop.call_args.kwargs["context"].execution_branch == "feature/y"
+    assert ["git", "symbolic-ref", "-m", "holon: re-attach feature/y at its tip", "HEAD", "refs/heads/feature/y"] in (
+        fake_git.calls
+    )
+    assert "re-attached 'feature/y'" in capsys.readouterr().err
+    assert not any(c[1] in _DESTRUCTIVE_GIT_VERBS for c in fake_git.calls), fake_git.calls
 
 
 def test_detached_mounted_head_at_the_pr_head_is_accepted_for_a_pr_target(tmp_path):

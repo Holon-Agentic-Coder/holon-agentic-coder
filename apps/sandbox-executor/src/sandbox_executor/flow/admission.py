@@ -1,13 +1,13 @@
 """Stage 3 admission: refuse to dispatch an executor whose plan's touch set overlaps a flow in flight.
 
 Before any execution branch, container or token is spent, :mod:`flow.admission_decision` compares the active plan's
-touch set with every flow in flight (a plan without a touch set, or a discovery that could not run, is refused too:
-fail closed). Outside a dry run the check holds the repository's admission lock (:mod:`flow.admission_lock`) from
-discovery until the admission state (:mod:`flow.admission_state`) is written to this flow's checkpoint, so two
-overlapping flows on one host are never admitted together: an overlap refusal records ``blocked``, an admission
-``admitted``. ``--allow-overlap`` (``FlowContext.allow_overlap``) admits the run anyway and appends one
-``admission_override`` row to the plan branch's ``executions.jsonl`` once per plan (``flow.admission_record``);
-refusal never closes, merges or edits another flow.
+touch set with every flow in flight (a plan without a touch set, or a discovery that could not run, is refused too: fail
+closed). Outside a dry run the check holds the repository's admission lock (:mod:`flow.admission_lock`) from discovery
+until the admission state (:mod:`flow.admission_state`) is written to this flow's checkpoint, so two overlapping flows
+on one host are never admitted together: an overlap refusal records ``blocked``, an admission ``admitted``.
+``--allow-overlap`` (``FlowContext.allow_overlap``) admits a refused run anyway (never one whose lock or state write
+failed: discovery could not see it) and appends one ``admission_override`` row to the plan branch's ``executions.jsonl``
+once per plan (``flow.admission_record``); refusal never closes, merges or edits another flow.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from sandbox_executor.flow import admission_state
-from sandbox_executor.flow.admission_decision import AdmissionDecision, decide_admission, refusal
+from sandbox_executor.flow.admission_decision import AdmissionDecision, decide_admission
 from sandbox_executor.flow.admission_lock import AdmissionLockError, admission_lock
 from sandbox_executor.flow.admission_record import ADMISSION_OVERRIDE_KIND, override_already_recorded
 from sandbox_executor.flow.admission_state import AdmissionRecord, admitted_record, blocked_record
@@ -31,7 +31,7 @@ def record_admission(context: FlowContext, decision: AdmissionDecision) -> Admis
     """Write the decision's admission state into this flow's checkpoint (the path other worktrees' discovery reads).
 
     An admission records ``admitted`` (with the override and its conflicts under ``--allow-overlap``), an overlap
-    refusal ``blocked``; any other refusal records nothing. A write failure refuses fail-closed.
+    refusal ``blocked``; any other refusal records nothing. A write failure refuses, even under ``--allow-overlap``.
     """
     if decision.admitted:
         overridden = [conflict.to_dict() for conflict in decision.conflicts] if decision.overridden else None
@@ -41,8 +41,9 @@ def record_admission(context: FlowContext, decision: AdmissionDecision) -> Admis
         record = blocked_record(previous, decision.blocked_by, admission_state.utc_now())
     else:
         return decision
-    error = save_admission(context, record.to_dict())
-    return decision if error is None else refusal(context, reason=f"the admission state could not be recorded: {error}")
+    if (error := save_admission(context, record.to_dict())) is None:
+        return decision
+    return AdmissionDecision(False, reason=f"the admission state could not be recorded: {error}")  # unrecorded: hidden
 
 
 def check_admission(
@@ -50,16 +51,15 @@ def check_admission(
 ) -> AdmissionDecision:
     """Compare the active plan's touch set with every flow in flight and decide whether Stage 3 may dispatch.
 
-    Outside a dry run the decision is made and recorded under the repository's admission lock; a dry run neither
-    takes the lock nor writes anything.
+    Outside a dry run it is made and recorded under the repository's admission lock; a dry run takes and writes nothing.
     """
     if context.dry_run:
         return decide_admission(context, run_gh, run_git)
     try:
-        with admission_lock(context.target_worktree):
+        with admission_lock(context.target_worktree, run_git):
             return record_admission(context, decide_admission(context, run_gh, run_git))
-    except AdmissionLockError as exc:
-        return refusal(context, reason=f"the admission lock could not be taken: {exc}")
+    except AdmissionLockError as exc:  # even under --allow-overlap: an admission must be recorded under the lock
+        return AdmissionDecision(False, reason=f"the admission lock could not be taken: {exc}")
 
 
 def format_refusal(decision: AdmissionDecision) -> str:

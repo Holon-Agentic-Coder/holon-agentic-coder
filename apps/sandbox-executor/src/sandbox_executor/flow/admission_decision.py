@@ -21,10 +21,11 @@ from sandbox_executor.flow.in_flight import (
     AdmissionUnavailable,
     GitRunner,
     InFlightFlow,
-    _root_intent,
     discover_in_flight_flows,
     local_blocked_waiters,
+    other_checkpoints,
     read_plan_touch_set,
+    root_intent,
 )
 from sandbox_executor.touch_set import TouchSet, files_in_set, overlapping_entries
 
@@ -75,10 +76,6 @@ def refusal(
     return AdmissionDecision(context.allow_overlap, conflicts, reason, context.allow_overlap, blocked_by)
 
 
-def _blocked_by(flow: InFlightFlow, conflict: AdmissionConflict) -> BlockedBy:
-    return BlockedBy(flow.kind, conflict.files, flow.number, flow.head, flow.plan_branch, flow.worktree)
-
-
 def _conflict_pairs(own: TouchSet, flows: list[InFlightFlow]) -> list[tuple[InFlightFlow, AdmissionConflict]]:
     return [(flow, conflict) for flow in flows if (conflict := _conflict(own, flow)) is not None]
 
@@ -98,15 +95,17 @@ def decide_admission(context: FlowContext, run_gh: GhRunner | None, run_git: Git
     if own is None:
         return refusal(context, reason=_no_touch_set_reason(plan_branch))
     own_branch = context.intent_branch or plan_branch
-    flows = discover_in_flight_flows(context.target_worktree, own_branch, run_gh, run_git)
+    checkpoints = other_checkpoints(context.target_worktree, root_intent(own_branch), run_git)  # read once
+    if isinstance(checkpoints, AdmissionUnavailable):
+        return refusal(context, reason=f"the flows in flight could not be discovered: {checkpoints.reason}")
+    flows = discover_in_flight_flows(context.target_worktree, own_branch, run_gh, checkpoints=checkpoints)
     if isinstance(flows, AdmissionUnavailable):
         return refusal(context, reason=f"the flows in flight could not be discovered: {flows.reason}")
-    waiters = local_blocked_waiters(context.target_worktree, _root_intent(own_branch), run_git)
-    if isinstance(waiters, AdmissionUnavailable):
-        return refusal(context, reason=f"the flows in flight could not be discovered: {waiters.reason}")
+    waiters = local_blocked_waiters(context.target_worktree, checkpoints)
     pairs = _conflict_pairs(own, flows)
     pairs = pairs or _conflict_pairs(own, older_waiter_flows(context.admission, plan_branch, own, flows, waiters))
     if not pairs:
         return AdmissionDecision(admitted=True)
     conflicts = tuple(conflict for _flow, conflict in pairs)
-    return refusal(context, conflicts=conflicts, blocked_by=tuple(_blocked_by(*pair) for pair in pairs))
+    blocked_by = tuple(BlockedBy(f.kind, c.files, f.number, f.head, f.plan_branch, f.worktree) for f, c in pairs)
+    return refusal(context, conflicts=conflicts, blocked_by=blocked_by)

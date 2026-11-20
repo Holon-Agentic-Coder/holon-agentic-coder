@@ -1,7 +1,6 @@
 """Holon Flow data model: the lifecycle stages, stage statuses, stage results and the flow context.
 
-``FlowContext`` carries the run configuration and every stage result between stages, and is what a
-checkpoint serialises.
+``FlowContext`` carries the run configuration and every stage result between stages; a checkpoint serialises it.
 """
 
 from __future__ import annotations
@@ -183,6 +182,7 @@ class FlowContext:
     carried_review_findings: list[dict[str, Any]] = field(default_factory=list)
     # Role-agent dispatcher for Stages 1-3; None means cli.dispatch_role_agent. Never checkpointed.
     dispatcher: Callable[..., int] | None = field(default=None, repr=False, compare=False)
+    checkpoint_path: str | None = field(default=None, repr=False)  # The engine's --checkpoint path; never checkpointed.
 
     @property
     def repo_dir(self) -> str:

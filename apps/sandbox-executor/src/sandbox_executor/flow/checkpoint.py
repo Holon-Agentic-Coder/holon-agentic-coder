@@ -208,11 +208,11 @@ def save_checkpoint(context: FlowContext, filepath: str | None = None) -> str:
 
 
 def save_admission(context: FlowContext, admission: dict[str, Any] | None) -> str | None:
-    """Set the Stage 3 ``admission`` object and save the checkpoint at its default path (where other worktrees'
-    discovery reads it); the error text on failure, when the context keeps its previous object."""
+    """Set the Stage 3 ``admission`` object and save the checkpoint at the engine's path (``context.checkpoint_path``,
+    else the default one other worktrees' discovery reads); the error text on failure, keeping the previous object."""
     previous, context.admission = context.admission, admission
     try:
-        save_checkpoint(context)
+        save_checkpoint(context, context.checkpoint_path)
     except OSError as exc:
         context.admission = previous
         return str(exc)

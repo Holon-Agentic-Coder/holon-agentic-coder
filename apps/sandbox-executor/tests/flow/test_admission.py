@@ -20,6 +20,7 @@ from sandbox_executor.flow import (
 from sandbox_executor.flow.admission import AdmissionDecision, check_admission, format_refusal
 from sandbox_executor.flow.checkpoint import get_default_checkpoint_path, save_checkpoint
 from sandbox_executor.flow.git_refs import _latest_execution_summary
+from sandbox_executor.flow.pipeline import PipelineEngine
 from sandbox_executor.flow.stages import touch_set_guard
 from sandbox_executor.ledger import query_ledger
 
@@ -263,6 +264,44 @@ def test_a_lock_that_cannot_be_taken_fails_closed(tmp_path):
     context = FlowContext(target_worktree=str(tmp_path), plan_branch=OWN_PLAN, token_reduce=False)
     decision = check_admission(context, FakeGh([], {}), no_worktrees)
     assert not decision.admitted and "admission lock could not be taken" in str(decision.reason)
+
+
+def test_a_lock_failure_refuses_even_under_allow_overlap(tmp_path):
+    context = FlowContext(target_worktree=str(tmp_path), plan_branch=OWN_PLAN, token_reduce=False, allow_overlap=True)
+    decision = check_admission(context, FakeGh([], {}), no_worktrees)
+    assert not decision.admitted and not decision.overridden
+
+
+def test_an_unsaved_admission_state_refuses_even_under_allow_overlap(own_plan, monkeypatch):
+    """A blocked checkpoint that cannot be replaced would hide the overriding run from discovery: refuse it."""
+    monkeypatch.setattr(admission, "save_admission", lambda context, record: "disk full")
+    context = own_context(own_plan, allow_overlap=True)
+    decision = check_admission(context, other_pr(["src/app.py"]), no_worktrees)
+    assert not decision.admitted and not decision.overridden
+    assert decision.reason == "the admission state could not be recorded: disk full"
+    _use_real_check(monkeypatch, other_pr(["src/app.py"]))
+    result = admission.admission_stage_failure(context, "2026-11-14T00:00:00Z")
+    assert result is not None and result.status == StageStatus.FAILED and result.payload["dispatched"] is False
+
+
+def test_the_lock_uses_the_injected_git_runner(own_plan):
+    calls: list[list[str]] = []
+
+    def recording_git(args, cwd):
+        calls.append(args)
+        return no_worktrees(args, cwd)
+
+    check_admission(own_context(own_plan), other_pr(["lib/x.py"]), recording_git)
+    assert ["rev-parse", "--git-common-dir"] in calls
+
+
+def test_admission_state_is_saved_at_the_engines_checkpoint_path(own_plan, tmp_path):
+    custom = tmp_path / "custom-checkpoint.json"
+    context = own_context(own_plan)
+    PipelineEngine(context, checkpoint_path=str(custom))  # the engine hands its --checkpoint path to the context
+    assert check_admission(context, other_pr(["src/app.py"]), no_worktrees).blocked_by
+    assert json.loads(custom.read_text(encoding="utf-8"))["context"]["admission"]["state"] == "blocked"
+    assert _admission(own_plan) is None  # no frozen copy at the default path
 
 
 def test_dry_run_writes_no_admission_state(own_plan, monkeypatch):

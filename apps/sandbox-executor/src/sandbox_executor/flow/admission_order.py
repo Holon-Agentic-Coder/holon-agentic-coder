@@ -20,7 +20,7 @@ from sandbox_executor.flow.admission_state import (
     AdmissionRecord,
     BlockedBy,
 )
-from sandbox_executor.flow.in_flight import BlockedWaiter, InFlightFlow, _root_intent
+from sandbox_executor.flow.in_flight import BlockedWaiter, InFlightFlow, root_intent
 from sandbox_executor.touch_set import TouchSet, overlapping_entries
 
 
@@ -31,11 +31,11 @@ def waiter_key(waiter: BlockedWaiter) -> tuple[str, str]:
 
 def blocker_is_clear(entry: BlockedBy, open_numbers: set[int], busy: set[str], own_plan_branch: str) -> bool:
     """Whether a waiter's ``blocked_by`` entry no longer holds it back; ``busy``: plan branches in flight or waiting."""
-    own_root = _root_intent(own_plan_branch)
+    own_root = root_intent(own_plan_branch)
     if entry.kind == BLOCKED_BY_PULL_REQUEST:
-        return _root_intent(entry.branch or "") != own_root and entry.number not in open_numbers
+        return root_intent(entry.branch or "") != own_root and entry.number not in open_numbers
     plan_branch = entry.plan_branch or ""
-    if plan_branch != own_plan_branch and _root_intent(plan_branch) == own_root:
+    if plan_branch != own_plan_branch and root_intent(plan_branch) == own_root:
         return False
     return plan_branch not in busy
 

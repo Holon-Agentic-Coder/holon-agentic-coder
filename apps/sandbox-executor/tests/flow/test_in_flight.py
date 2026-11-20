@@ -14,6 +14,7 @@ from sandbox_executor.flow.in_flight import (
     local_blocked_waiters,
     local_in_flight_flows,
     open_flow_pull_requests,
+    other_checkpoints,
     read_plan_touch_set,
 )
 from sandbox_executor.touch_set import TouchSet, TouchSetEntry
@@ -110,7 +111,7 @@ def test_git_failure_returns_admission_unavailable(flow_repos):
     def failing_git(args, cwd):
         return subprocess.CompletedProcess(["git", *args], 128, "", "fatal: not a git repository")
 
-    result = local_in_flight_flows(str(host), "I-100-own", failing_git)
+    result = other_checkpoints(str(host), "I-100-own", failing_git)
     assert isinstance(result, AdmissionUnavailable) and "git worktree list" in result.reason
 
 
@@ -134,8 +135,9 @@ def test_local_checkpoints_keep_live_flows_only(flow_repos, tmp_path):
     (second / ".holon" / "flow" / "checkpoint-list.json").write_text("[]", encoding="utf-8")
     write_checkpoint(host, OTHER_PLAN, executing, "this-worktree")  # this run's own worktree is never read
 
-    flows = local_in_flight_flows(str(host), "I-100-own")
-    assert not isinstance(flows, AdmissionUnavailable)
+    checkpoints = other_checkpoints(str(host), "I-100-own")
+    assert not isinstance(checkpoints, AdmissionUnavailable)
+    flows = local_in_flight_flows(str(host), checkpoints)
     assert [(flow.plan_branch, flow.label) for flow in flows] == [
         (OTHER_PLAN, f"local flow on branch {OTHER_PLAN} (worktree {second})")
     ]
@@ -182,13 +184,13 @@ def test_a_blocked_checkpoint_is_not_in_flight_but_is_a_waiter(flow_repos, tmp_p
     write_checkpoint(second, THIRD_PLAN, executing, "admitted", {"state": "admitted"})
     write_checkpoint(second, FOURTH_PLAN, executing, "older-flow")  # no admission field: still in flight
 
-    flows = local_in_flight_flows(str(host), "I-100-own")
-    assert not isinstance(flows, AdmissionUnavailable)
+    checkpoints = other_checkpoints(str(host), "I-100-own")
+    assert not isinstance(checkpoints, AdmissionUnavailable)
+    flows = local_in_flight_flows(str(host), checkpoints)
     assert sorted(flow.plan_branch for flow in flows) == sorted([THIRD_PLAN, FOURTH_PLAN])
     assert {(flow.kind, flow.worktree) for flow in flows} == {("local_flow", str(second))}
 
-    waiters = local_blocked_waiters(str(host), "I-100-own")
-    assert not isinstance(waiters, AdmissionUnavailable)
+    waiters = local_blocked_waiters(str(host), checkpoints)
     assert [(w.plan_branch, w.worktree, w.record.blocked_since) for w in waiters] == [
         (OTHER_PLAN, str(second), "2026-11-20T01:00:00.000Z")
     ]

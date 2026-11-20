@@ -97,7 +97,7 @@ def _plan_branch_of_head(head: str) -> str | None:
     return match.group("plan") + INTENT_SUFFIX if match else None
 
 
-def _root_intent(branch: str) -> str:
+def root_intent(branch: str) -> str:
     return branch.split("/", 1)[0].split("--", 1)[0]
 
 
@@ -143,7 +143,7 @@ def open_flow_pull_requests(
         (pr, head, plan_branch)
         for pr in listed
         if (plan_branch := _plan_branch_of_head(head := str(pr.get("headRefName") or ""))) is not None
-        and _root_intent(head) != own_root
+        and root_intent(head) != own_root
     ]
     if len(others) > MAX_OPEN_PULL_REQUESTS:
         return AdmissionUnavailable(f"more than {MAX_OPEN_PULL_REQUESTS} open flow pull requests; not all compared")
@@ -170,8 +170,8 @@ def _other_worktrees(repo_dir: str, run_git: GitRunner) -> list[str] | Admission
     return [path for path in paths if os.path.realpath(path) != own]
 
 
-def _other_checkpoints(
-    repo_dir: str, own_root: str, run_git: GitRunner | None
+def other_checkpoints(
+    repo_dir: str, own_root: str, run_git: GitRunner | None = None
 ) -> list[WorktreeCheckpoint] | AdmissionUnavailable:
     """Checkpoints at execute or review in other worktrees, outside ``own_root``, whose plan branch still resolves."""
     worktrees = _other_worktrees(repo_dir, run_git or _host_git)
@@ -182,18 +182,13 @@ def _other_checkpoints(
         for worktree in worktrees
         for checkpoint in worktree_checkpoints(worktree)
         if checkpoint.in_flight_stage
-        and _root_intent(checkpoint.plan_branch) != own_root
+        and root_intent(checkpoint.plan_branch) != own_root
         and _resolve_branch_ref(repo_dir, checkpoint.plan_branch) is not None  # a deleted plan branch is stale
     ]
 
 
-def local_in_flight_flows(
-    repo_dir: str, own_root: str, run_git: GitRunner | None = None
-) -> list[InFlightFlow] | AdmissionUnavailable:
-    """Flows whose checkpoint in another worktree is at execute or review, not blocked, with a live plan branch."""
-    checkpoints = _other_checkpoints(repo_dir, own_root, run_git)
-    if isinstance(checkpoints, AdmissionUnavailable):
-        return checkpoints
+def local_in_flight_flows(repo_dir: str, checkpoints: list[WorktreeCheckpoint]) -> list[InFlightFlow]:
+    """Flows of ``checkpoints`` (:func:`other_checkpoints`) that are not blocked: in flight whatever their stage."""
     return [
         InFlightFlow(
             f"local flow on branch {checkpoint.plan_branch} (worktree {checkpoint.worktree})",
@@ -206,13 +201,8 @@ def local_in_flight_flows(
     ]
 
 
-def local_blocked_waiters(
-    repo_dir: str, own_root: str, run_git: GitRunner | None = None
-) -> list[BlockedWaiter] | AdmissionUnavailable:
-    """Flows whose checkpoint in another worktree records a ``blocked`` admission state, with a live plan branch."""
-    checkpoints = _other_checkpoints(repo_dir, own_root, run_git)
-    if isinstance(checkpoints, AdmissionUnavailable):
-        return checkpoints
+def local_blocked_waiters(repo_dir: str, checkpoints: list[WorktreeCheckpoint]) -> list[BlockedWaiter]:
+    """Flows of ``checkpoints`` (:func:`other_checkpoints`) whose checkpoint records a ``blocked`` admission state."""
     return [
         BlockedWaiter(c.plan_branch, c.worktree, read_plan_touch_set(repo_dir, c.plan_branch), c.record)
         for c in checkpoints
@@ -221,18 +211,23 @@ def local_blocked_waiters(
 
 
 def discover_in_flight_flows(
-    repo_dir: str, own_branch: str, run_gh: merge.GhRunner | None = None, run_git: GitRunner | None = None
+    repo_dir: str,
+    own_branch: str,
+    run_gh: merge.GhRunner | None = None,
+    run_git: GitRunner | None = None,
+    checkpoints: list[WorktreeCheckpoint] | None = None,
 ) -> list[InFlightFlow] | AdmissionUnavailable:
-    """Open flow pull requests, then local flows without one, excluding the lineage of ``own_branch``'s root intent."""
-    own_root = _root_intent(own_branch)
+    """Open flow pull requests, then local flows without one, excluding the lineage of ``own_branch``'s root intent;
+    ``checkpoints`` are :func:`other_checkpoints` already read for this check (``run_git`` reads them otherwise)."""
+    own_root = root_intent(own_branch)
     pull_requests = open_flow_pull_requests(repo_dir, own_root, run_gh)
     if isinstance(pull_requests, AdmissionUnavailable):
         return pull_requests
-    local = local_in_flight_flows(repo_dir, own_root, run_git)
-    if isinstance(local, AdmissionUnavailable):
-        return local
+    checkpoints = other_checkpoints(repo_dir, own_root, run_git) if checkpoints is None else checkpoints
+    if isinstance(checkpoints, AdmissionUnavailable):
+        return checkpoints
     flows = list(pull_requests)
-    for flow in local:
+    for flow in local_in_flight_flows(repo_dir, checkpoints):
         if flow.plan_branch not in {known.plan_branch for known in flows}:
             flows.append(flow)
     return flows

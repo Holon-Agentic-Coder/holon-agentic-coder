@@ -10,8 +10,7 @@ is equivalent to invoking the stages by hand; the flow orchestrates and validate
    whose diff against the plan branch is empty outside holon-knowledge/ledger/, plans/ and executions/.
 4. Stage 4 (Review Loop): Autonomous review loop evaluating diffs and test results, strictly enforcing
    the human-only PR merge rule by halting at consensus approval without merging to main.
-5. Stage 5 (Post-Execution Calibration): Run the post-execution calibration engine on the execution branch,
-   producing calibration analysis report on the /calibrated branch.
+5. Stage 5 (Post-Execution Calibration): Calibrate the execution branch, reporting on its /calibrated branch.
 
 The engine is split into focused modules; see docs/architecture.md (Flow engine module map).
 """
@@ -155,7 +154,9 @@ from sandbox_executor.flow.in_flight import (
     local_blocked_waiters,
     local_in_flight_flows,
     open_flow_pull_requests,
+    other_checkpoints,
     read_plan_touch_set,
+    root_intent,
 )
 from sandbox_executor.flow.intent_questions import validate_intent_questions
 from sandbox_executor.flow.ledger_reconcile import (
@@ -238,10 +239,7 @@ from sandbox_executor.flow.review.resolver import (
     _lookup_introducing_action_id,
 )
 from sandbox_executor.flow.review.verdict import review_loop_approved, review_summary_lines
-from sandbox_executor.flow.review.workspace import (
-    HOST_REVIEW_REFUSAL,
-    reviewers_sandboxed,
-)
+from sandbox_executor.flow.review.workspace import HOST_REVIEW_REFUSAL, reviewers_sandboxed
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages import children as _children
 from sandbox_executor.flow.stages.calibrate import (
@@ -472,6 +470,7 @@ __all__ = [
     "older_ready_waiter",
     "older_waiter_flows",
     "open_flow_pull_requests",
+    "other_checkpoints",
     "override_already_recorded",
     "parse_metrics",
     "pending_check_names",
@@ -508,6 +507,7 @@ __all__ = [
     "review_loop_approved",
     "review_summary_lines",
     "reviewers_sandboxed",
+    "root_intent",
     "run_calibrate_stage",
     "run_execute_stage",
     "run_flow_pipeline",

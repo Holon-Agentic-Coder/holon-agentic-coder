@@ -633,4 +633,7 @@ def make_plan_branch(host: Path, plan_branch: str, touch_set: list[dict[str, Any
 
 
 def no_worktrees(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+    """A git runner listing no other worktree; anything else (the admission lock's ``rev-parse``) runs real git."""
+    if args[:2] != ["worktree", "list"]:
+        return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
     return subprocess.CompletedProcess(["git", *args], 0, f"worktree {cwd}\n", "")

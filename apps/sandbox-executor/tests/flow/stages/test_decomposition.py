@@ -544,6 +544,7 @@ class TestEntropyBudgetHandoffInFlow:
             "review_iterations_done": 0,  # A child intent runs its own Stage 4, so its review count starts afresh.
             "admission": None,  # A child intent runs its own Stage 3 admission.
             "carried_review_findings": [],  # The parent's open findings belong to the parent's review.
+            "checkpoint_path": None,  # A child intent checkpoints at its own default path.
         }
         defaults = FlowContext(token_reduce=False)
         for name, value in parent_values.items():

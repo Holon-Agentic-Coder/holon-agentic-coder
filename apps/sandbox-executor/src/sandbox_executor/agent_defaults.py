@@ -211,6 +211,9 @@ def is_valid_model_for_runner(agent: str, model: str) -> bool:
     return False
 
 
+is_supported_runner_model = is_valid_model_for_runner
+
+
 def _coordinate_gemini_effort(canonical: str, effort: str | None) -> tuple[str, str | None]:
     effort_suffixes = ("-low", "-medium", "-high")
     eff = effort.strip().lower() if effort and effort.strip() else None

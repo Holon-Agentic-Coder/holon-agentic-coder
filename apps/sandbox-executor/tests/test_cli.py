@@ -139,7 +139,7 @@ class TestHolonCLI(unittest.TestCase):
 
     def test_all_agent_session_mounts_are_read_only(self):
         """Iterate across all supported agents and verify any -v directory mounts contain :ro."""
-        agents = ["antigravity", "antigravity-agent", "claude", "codex", "pi", "gemini"]
+        agents = ["antigravity", "antigravity-agent", "claude", "codex", "pi"]
         with patch("os.path.exists", return_value=True):
             for agent in agents:
                 mounts = get_agent_session_mounts(agent)

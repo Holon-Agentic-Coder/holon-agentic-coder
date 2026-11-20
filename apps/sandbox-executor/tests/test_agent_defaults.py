@@ -199,3 +199,41 @@ def test_claude_api_key_detection_uses_the_secrets_file_not_holon_agent_key(tmp_
     secrets.write_text("fake-claude-value\n", encoding="utf-8")
     secrets.chmod(0o600)
     assert agent_defaults._detect_api_key_present("claude", {}) is True
+
+
+def test_gemini_runner_resolution_rejected_with_antigravity_guidance():
+    for flag_val in ("gemini", "gemini-agent"):
+        with pytest.raises(UnmappedAgentRunnerError) as exc_info:
+            resolve_agent_runner(flag_val, {})
+        msg = str(exc_info.value)
+        assert "antigravity-agent" in msg
+        assert "removed" in msg
+
+    for env_val in ("gemini", "gemini-agent"):
+        with pytest.raises(UnmappedAgentRunnerError) as exc_info:
+            resolve_agent_runner(None, {"HOLON_AGENT": env_val})
+        msg = str(exc_info.value)
+        assert "antigravity-agent" in msg
+        assert "removed" in msg
+
+
+def test_runner_capabilities_preserves_antigravity_gemini_and_local_model():
+    from sandbox_executor.agent_defaults import RUNNER_CAPABILITIES, is_supported_runner_model
+
+    # Ensure gemini-agent is not present in RUNNER_CAPABILITIES
+    assert not any(cap.runner == "gemini-agent" for cap in RUNNER_CAPABILITIES)
+
+    # Ensure local-model placeholder is present
+    assert any(cap.runner == "local-model" for cap in RUNNER_CAPABILITIES)
+
+    # Ensure antigravity-agent has gemini-3.8-flash, gemini-3.8-flash-medium, gemini-3.8-flash-high
+    agy_models = {cap.canonical_model for cap in RUNNER_CAPABILITIES if cap.runner == "antigravity-agent"}
+    assert "gemini-3.8-flash" in agy_models
+    assert "gemini-3.8-flash-medium" in agy_models
+    assert "gemini-3.8-flash-high" in agy_models
+
+    # Verify is_supported_runner_model with canonical model and effort suffixes
+    assert is_supported_runner_model("antigravity-agent", "gemini-3.8-flash-medium") is True
+    assert is_supported_runner_model("antigravity-agent", "gemini-3.8-flash-medium-low") is True
+    assert is_supported_runner_model("antigravity-agent", "gemini-3.8-flash-medium-high") is True
+

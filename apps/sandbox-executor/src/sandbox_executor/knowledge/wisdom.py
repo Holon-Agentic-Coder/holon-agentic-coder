@@ -172,14 +172,15 @@ def persist_wb_rule(rule_data: dict[str, Any], wb_dir: str = DEFAULT_WB_DIR) -> 
     return out_file
 
 
-def _already_promoted(context_fingerprint: str, kb_dir: str, wb_dir: str) -> bool:
+def _already_promoted(context_fingerprint: str, success_count: int, kb_dir: str, wb_dir: str) -> bool:
     """Return True when the candidate's terminal promotion artefacts already exist on disk.
 
-    A failure mode is terminal on its own; a success candidate is terminal once both its pattern and its
-    heuristic exist, so a pattern-only candidate stays eligible to ascend to a heuristic.
+    A failure mode is terminal while the fingerprint has no success (a later success is still evaluated,
+    which lifts its veto); a success candidate is terminal once both its pattern and its heuristic exist,
+    so a pattern-only candidate stays eligible to ascend to a heuristic.
     """
     fp8 = context_fingerprint[:8]
-    if os.path.exists(os.path.join(kb_dir, "failure_modes", f"KB-failure-{fp8}.json")):
+    if success_count == 0 and os.path.exists(os.path.join(kb_dir, "failure_modes", f"KB-failure-{fp8}.json")):
         return True
     pattern_path = os.path.join(kb_dir, "patterns", f"KB-pattern-{fp8}.json")
     heuristic_path = os.path.join(wb_dir, "heuristics", f"WB-heuristic-{fp8}.json")
@@ -302,8 +303,8 @@ def promote_pending_candidates(
 
     Returns only the items this call newly promoted (in a dry run, the items it would newly write), so a
     second call against an unchanged index returns ``[]``. Candidates whose terminal artefacts already
-    exist are skipped before evaluation. A recorded failure mode is terminal: that fingerprint is no
-    longer evaluated for success promotion (a veto is lifted with ``lift_veto``, not by promotion).
+    exist are skipped before evaluation. A recorded failure mode is terminal until the fingerprint
+    records a success, which is still evaluated so its veto is lifted.
     """
     db = index_db or ActionIndexDatabase(DEFAULT_PROJECT_DB_PATH)
     conn = db.get_connection()
@@ -324,7 +325,7 @@ def promote_pending_candidates(
         signatures = cur.fetchall()
 
         for sig in signatures:
-            if _already_promoted(sig["context_fingerprint"], kb_dir, wb_dir):
+            if _already_promoted(sig["context_fingerprint"], sig["success_count"], kb_dir, wb_dir):
                 continue
             sig_hash = sig["signature_hash"]
             eval_res = evaluate_action_promotion(sig_hash, index_db=db)

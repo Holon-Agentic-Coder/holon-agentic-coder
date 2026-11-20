@@ -121,6 +121,26 @@ on every push, and both are machine-enforced:
 Markers are declared in `pyproject.toml` and pytest runs with `--strict-markers`, so an unregistered or misspelled
 marker fails the run instead of quietly escaping every `-m` selection.
 
+### Rule 6: Pin the Flow Worktree Before Anything Saves a Checkpoint
+
+`FlowContext.target_worktree` defaults to `"."` (the CLI's `--target-worktree .` contract), so a flow checkpoint lands
+in `<cwd>/.holon/flow/checkpoint-<slug>.json`. Pytest runs from the repository root, and a flow running the suite in its
+own worktree keeps its live checkpoint there. A test that runs the pipeline, Stage 3 admission or the children stage
+must therefore build its context with `repo_dir=str(tmp_path)` (or `target_worktree`), or `monkeypatch.chdir(tmp_path)`
+first.
+
+Two autouse guards in `tests/conftest.py` enforce this, with their helpers in `tests/holon_dir_guard.py`:
+
+- `checkout_holon_dir_guard` fails any test that creates, modifies or deletes a file under the checkout's `.holon/`,
+  naming the paths. Under xdist every worker shares the checkout, so one write can fail unrelated tests on other
+  workers; re-run the reported modules with `-p no:xdist` to find the test that wrote it.
+- `holon_dir_session_guard` compares a snapshot taken at session start with one at session end and fails the session, so
+  the run exits non-zero even when attribution is unclear. It guards the repository root and, when pytest starts in a
+  subdirectory of the repository (for example `apps/sandbox-executor/`), that directory as well.
+
+Files that existed before the session, such as a live flow's own checkpoint, only fail the guards if they change.
+`tests/test_holon_dir_guard.py` proves the session guard fails a child session that writes under its `.holon/`.
+
 ---
 
 ## 3. Sandbox Safety Rail

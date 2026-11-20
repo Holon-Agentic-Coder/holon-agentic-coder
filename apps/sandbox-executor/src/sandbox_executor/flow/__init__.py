@@ -1,17 +1,6 @@
 """Holon Flow Orchestration Pipeline Engine.
 
-Automates the complete 5-stage Holon Flow lifecycle. Stages 1-3 dispatch the same containerised role
-agents as 'holon intent', 'holon plan' and 'holon execute' (via cli.dispatch_role_agent), so a flow run
-is equivalent to invoking the stages by hand; the flow orchestrates and validates but never authors content:
-1. Stage 1 (Intent Creation): Validate intent payload, dispatch the intent-creator agent, verify its branch.
-2. Stage 2 (Plan Generation): Dispatch the planner agent and adopt the plan branch and plans/P-*.md it pushed;
-   fail (never fabricate a plan) when no planner produced one.
-3. Stage 3 (Plan Execution): Dispatch the executor agent, adopt its execution branch, and fail an execution
-   whose diff against the plan branch is empty outside holon-knowledge/ledger/, plans/ and executions/.
-4. Stage 4 (Review Loop): Autonomous review loop evaluating diffs and test results, strictly enforcing
-   the human-only PR merge rule by halting at consensus approval without merging to main.
-5. Stage 5 (Post-Execution Calibration): Calibrate the execution branch, reporting on its /calibrated branch.
-
+Automates the complete 5-stage Holon Flow lifecycle (Stages 1-5).
 The engine is split into focused modules; see docs/architecture.md (Flow engine module map).
 """
 
@@ -62,6 +51,7 @@ from sandbox_executor.flow.checkpoint import (
     save_admission,
     save_checkpoint,
 )
+from sandbox_executor.flow.checkpoint_store import CheckpointStore, FileCheckpointStore
 from sandbox_executor.flow.child_progress import _child_intent_branch, _sub_intent_depth
 from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS, CURRENT_CONTEXT_SCHEMA_VERSION
 from sandbox_executor.flow.context import (
@@ -334,10 +324,12 @@ __all__ = [
     "BranchMerge",
     "CalibrationSyncError",
     "CarriedPass",
+    "CheckpointStore",
     "CiWaitPolicy",
     "CiWaitResult",
     "ConflictResolutionError",
     "DispositionRecorder",
+    "FileCheckpointStore",
     "FlowCheckpoint",
     "FlowContext",
     "FlowStage",

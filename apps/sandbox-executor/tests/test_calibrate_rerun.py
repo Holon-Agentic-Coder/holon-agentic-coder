@@ -409,3 +409,46 @@ def test_the_pipeline_passes_the_stage5_result_through_the_rerun_trigger(tmp_pat
     trigger.assert_called_once()
     assert trigger.call_args.args[1] is stage_result
     assert ctx.stage_results["calibrate"] is refreshed  # the checkpoint sees the refreshed result
+
+
+# --- PR #203 nits: the comment poster never raises; the gate stores the refreshed Stage 5 result -------------------
+
+
+def test_marked_comment_never_raises_on_a_malformed_review_payload(tmp_path: Path) -> None:
+    from sandbox_executor.flow.calibrate_rerun import post_stale_signal
+
+    ctx = FlowContext(target_worktree=str(tmp_path), execution_branch=EXEC, agent="a", model="m")
+    # A non-dict consensus makes approval_pr_number raise AttributeError ('str' has no attribute 'get').
+    ctx.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW, status=StageStatus.HALTED_FOR_HUMAN, payload={"consensus": "approved"}
+    )
+    seams, posted = recording_seams()
+
+    signal = post_stale_signal(ctx, HeadMoveCheck(True, "a" * 40, "b" * 40, "moved"), seams, pr_number=None)
+
+    assert signal == {"posted": False, "reason": "comment posting failed"}
+    assert posted == []
+
+
+def test_the_review_gate_stores_the_refreshed_stage5_result_for_the_checkpoint(tmp_path: Path) -> None:
+    from sandbox_executor.flow import load_checkpoint, save_checkpoint
+
+    ctx = FlowContext(target_worktree=str(tmp_path), execution_branch=EXEC, agent="a", model="m")
+    superseded, final = "a" * 40, "b" * 40
+    ctx.stage_results["calibrate"] = StageResult(
+        stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS, payload={"calibrated_head": superseded}
+    )
+
+    def rerun(_ctx: FlowContext) -> StageResult:
+        return StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS, payload={"calibrated_head": final})
+
+    moved = HeadMoveCheck(True, superseded, final, "a resolver push")
+    checks = [moved, moved, HeadMoveCheck(False, final, final)]
+    seams, _ = recording_seams()
+    with patch("sandbox_executor.flow.calibrate_rerun.report_staleness", side_effect=checks):
+        record = review_calibration_freshness(ctx, "7", run_stage=rerun, seams=seams)
+
+    assert (record["rerun"], record["rerun_status"]) == (True, "success")
+    assert ctx.stage_results["calibrate"].payload["calibrated_head"] == final
+    saved = load_checkpoint(save_checkpoint(ctx, str(tmp_path / "checkpoint.json")))
+    assert saved.context.stage_results["calibrate"].payload["calibrated_head"] == final

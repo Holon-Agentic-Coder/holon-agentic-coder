@@ -603,7 +603,7 @@ class TestEntropyBudgetHandoffInFlow:
         execute_body = source.split("def run_execute_stage(", 1)[1].split("\ndef ", 1)[0]
         assert "HALTED_FOR_HUMAN" not in execute_body
         assert source.count("status=StageStatus.HALTED_FOR_HUMAN") == 1
-        review_body = source.split("def run_review_stage(", 1)[1].split("\ndef ", 1)[0]
+        review_body = source.split("def _run_review_stage_body(", 1)[1].split("\ndef ", 1)[0]
         assert "status=StageStatus.HALTED_FOR_HUMAN" in review_body
 
     def test_child_branch_that_cannot_fit_fails_stage_three_with_the_named_limit(self):

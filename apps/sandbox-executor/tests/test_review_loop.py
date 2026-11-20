@@ -726,6 +726,9 @@ class FakeGitCommands:
         if verb == "remote" and args[2:4] == ["get-url", "origin"]:
             return subprocess.CompletedProcess(args, 0, stdout=f"{self._origin_url}\n", stderr="")
         if verb == "symbolic-ref":
+            if args[-1].startswith("refs/heads/"):
+                # The re-attach of a HEAD detached at the branch tip ('git symbolic-ref ... HEAD refs/heads/<b>').
+                self._branch = args[-1].removeprefix("refs/heads/")
             return subprocess.CompletedProcess(args, 0 if self._branch else 1, stdout=f"{self._branch}\n", stderr="")
         if verb == "rev-parse" and any("HEAD" in a for a in args):
             head = self._heads.pop(0) if len(self._heads) > 1 else self._heads[0]
@@ -844,17 +847,6 @@ def test_mounted_worktree_on_another_branch_is_refused(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "Review preparation failed (validate)" in err
     assert "checked-out branch 'feature/other' does not match target 'feature/y'" in err
-
-
-def test_detached_mounted_head_is_refused_for_a_branch_target(tmp_path, capsys):
-    fake_git = FakeGitCommands()
-
-    code, mock_loop, _post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
-
-    assert code == 1
-    mock_loop.assert_not_called()
-    err = capsys.readouterr().err
-    assert "mounted workspace is on a detached HEAD; check out branch 'feature/y'" in err
 
 
 def test_detached_mounted_head_at_the_pr_head_is_accepted_for_a_pr_target(tmp_path):

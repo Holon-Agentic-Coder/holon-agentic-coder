@@ -42,6 +42,11 @@ consensus model and post one short consensus review built only from what the rev
 12. **Lockfile churn is a defect**: a `uv.lock` change that no `pyproject.toml` dependency or `requires-python` change
     explains is a defect; reviewers raise it as an Important finding and the resolver reverts it with
     `git checkout {target_branch} -- uv.lock`, never re-runs `uv` unfrozen, and never commits an incidental rewrite.
+13. **Shared worktree stays on its branch**: the workspace is the shared flow worktree, so never move HEAD in it: no
+    `git checkout <commit-or-branch>`, `git switch`, `git reset --hard`, `git stash` or `gh pr checkout` (restoring one
+    file with `git checkout <rev> -- <path>` is fine). Read other revisions with `git show <rev>:<path>`,
+    `git diff <a>..<b>` or `git log`; for a full tree, run `git worktree add --detach tmp/review/<name> <rev>` and
+    remove that worktree afterwards.
 
 Review commits carry these RFC 2822 trailers:
 

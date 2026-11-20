@@ -75,6 +75,7 @@ from sandbox_executor.review_target import (
     resolve_review_target,
 )
 from sandbox_executor.turns import run_turn
+from sandbox_executor.worktree_head import ReattachStatus, head_guard, reattach_branch
 
 logger = logging.getLogger("holon.entrypoint.review_loop")
 
@@ -105,6 +106,17 @@ def run_cmd(
             print(f"Stderr:\n{redact_agent_secrets(result.stderr)}", file=sys.stderr)
         sys.exit(result.returncode)
     return result
+
+
+def _run_git_cmd(
+    args: list[str], cwd: str | None = None, check: bool = False, **_: Any
+) -> subprocess.CompletedProcess[str]:
+    """Adapt ``run_cmd`` to ``run_git``'s convention (no leading ``git``) for the worktree_head helpers."""
+    return run_cmd(["git", *args], cwd=cwd, check=check)
+
+
+def _log_stderr(message: str) -> None:
+    print(message, file=sys.stderr)
 
 
 class ReviewPreparationError(RuntimeError):
@@ -139,12 +151,14 @@ def _checked(args: list[str], repo_dir: str, stage: str) -> subprocess.Completed
 
 
 def _validate_mounted_workspace(repo_dir: str, target: ReviewTarget) -> ReviewTarget:
-    """Validate that ``repo_dir`` is the host worktree checked out at the review head; never modify it.
+    """Validate that ``repo_dir`` is the host worktree checked out at the review head.
 
-    HEAD must be a readable commit, on ``target.head_branch`` when a branch is checked out (a branch target
-    refuses a detached HEAD), and equal to ``target.head_sha`` when the target resolved one (a PR head): a stale
-    worktree is never reviewed under the PR head's label. A branch target's head SHA is the mounted HEAD. Zero
-    destructive operations: no clone, fetch, reset or wipe.
+    HEAD must be a readable commit, on ``target.head_branch`` when a branch is checked out, and equal to
+    ``target.head_sha`` when the target resolved one (a PR head): a stale worktree is never reviewed under the PR
+    head's label. A branch target's head SHA is the mounted HEAD. A branch target whose HEAD is detached exactly at the
+    branch tip is re-attached (``git symbolic-ref``, the one documented change to ``HEAD``; the index and the tree,
+    uncommitted ledger rows included, are untouched); a HEAD detached anywhere else is refused. No clone, fetch,
+    reset, wipe or tree change.
     """
     if not os.path.exists(repo_dir) or not os.path.isdir(repo_dir):
         raise ReviewPreparationError("validate", f"workspace directory '{repo_dir}' does not exist")
@@ -163,10 +177,11 @@ def _validate_mounted_workspace(repo_dir: str, target: ReviewTarget) -> ReviewTa
         branch_proc = run_cmd(["git", "symbolic-ref", "--short", "-q", "HEAD"], cwd=repo_dir, check=False)
         current_branch = branch_proc.stdout.strip() if branch_proc.returncode == 0 else ""
         if not current_branch and not target.is_pr:
-            raise ReviewPreparationError(
-                "validate",
-                f"mounted workspace is on a detached HEAD; check out branch '{target.head_branch}' to review it",
-            )
+            outcome = reattach_branch(repo_dir, target.head_branch, run=_run_git_cmd)
+            if outcome.status is not ReattachStatus.REATTACHED:
+                raise ReviewPreparationError("validate", f"mounted workspace is on a detached HEAD: {outcome.message}")
+            print(outcome.message, file=sys.stderr)
+            current_branch = target.head_branch
         if current_branch and current_branch != target.head_branch:
             raise ReviewPreparationError(
                 "validate",
@@ -385,6 +400,10 @@ def _build_resolver_prompt(
         "A `uv.lock` change that no `pyproject.toml` dependency or `requires-python` change explains is a defect: "
         "revert it with `git checkout <base> -- uv.lock`, run `uv` only with `UV_FROZEN=1`, and never "
         "commit an incidental rewrite.\n"
+        "The workspace is the shared flow worktree, so never move HEAD in it: no `git checkout <commit-or-branch>`, "
+        "`git switch`, `git reset --hard`, `git stash` or `gh pr checkout` (restoring one file with "
+        "`git checkout <rev> -- <path>` is fine); read other revisions with `git show <rev>:<path>`, `git diff` or "
+        "`git log`.\n"
         "Never force-push or rewrite git history. Do not run git commit or git push yourself; leave your edits "
         "in the working tree so the harness can verify, attach review trailers, commit, and push. "
         f"Write the JSON list of dispositions to `{dispositions_path}` "
@@ -531,8 +550,10 @@ def _run_resolver_mode(
     if findings and not args.dry_run:
         prompt = _build_resolver_prompt(repo_dir, head_branch, args.iteration, findings, dispositions_path)
         prompt += previous_failure_section(repo_dir, pre_resolver_head)
+        label = f"resolver turn (iteration {args.iteration})"
         try:
-            raw_dispositions = _run_resolver_agent(repo_dir, agent_name, model_name, prompt, dispositions_path)
+            with head_guard(repo_dir, head_branch, label, _log_stderr, run=_run_git_cmd) as guard:
+                raw_dispositions = _run_resolver_agent(repo_dir, agent_name, model_name, prompt, dispositions_path)
         except Exception as exc:
             error = f"Resolver turn failed: {_bounded_error_context(str(exc))}"
             output_tail = getattr(exc, "output_tail", "")
@@ -540,6 +561,8 @@ def _run_resolver_mode(
             if os.path.exists(dispositions_path):
                 with contextlib.suppress(OSError):
                     os.remove(dispositions_path)
+        if error is None and guard.refused and guard.outcome:  # a commit off the branch would never be pushed
+            error = f"Resolver turn moved HEAD off '{head_branch}': {guard.outcome.message}"
 
     dispositions = deserialize_finding_dispositions(raw_dispositions, findings, action_ids)
     head_sha = pre_resolver_head
@@ -794,17 +817,21 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         mitm_web=args.mitm_web,
     )
 
-    loop_res = run_review_loop(
-        context=context,
-        target=loop_target,
-        max_iterations=args.max_iterations,
-        ensemble_size=args.ensemble_size,
-        auto_pr=args.auto_pr,
-        dry_run=args.dry_run,
-        skip_post=args.skip_post,
-        first_iteration=args.iteration,
-        ledger_file=_SCRATCH_LEDGER if args.result_file else None,
-    )
+    # A reviewer turn runs in the mounted worktree; the guard names and repairs one that leaves HEAD off the branch.
+    with head_guard(
+        repo_dir, head_branch, f"reviewer ensemble (iteration {args.iteration})", _log_stderr, _run_git_cmd
+    ):
+        loop_res = run_review_loop(
+            context=context,
+            target=loop_target,
+            max_iterations=args.max_iterations,
+            ensemble_size=args.ensemble_size,
+            auto_pr=args.auto_pr,
+            dry_run=args.dry_run,
+            skip_post=args.skip_post,
+            first_iteration=args.iteration,
+            ledger_file=_SCRATCH_LEDGER if args.result_file else None,
+        )
 
     if args.result_file:
         try:

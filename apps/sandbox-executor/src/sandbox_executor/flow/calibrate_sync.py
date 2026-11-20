@@ -128,6 +128,9 @@ def discard_empty_calibrated_branch(context: FlowContext, created: bool) -> None
 def record_starting_branch(context: FlowContext, run=None) -> None:
     """Remember the branch (or detached SHA) HEAD was on before the flow moved it; set once, never overwritten.
 
+    A HEAD detached exactly at the execution branch tip is recorded as that branch, so the pipeline exit restores the
+    branch instead of running 'checkout --detach' at its tip again.
+
     ``run`` is the caller's git runner, so a stage whose tests replace its runner never spawns a real git process here.
     """
     if context.dry_run or context.starting_branch:
@@ -139,7 +142,9 @@ def record_starting_branch(context: FlowContext, run=None) -> None:
         context.starting_branch = head.stdout.strip()
         return
     sha = _rev(repo_dir, "HEAD", git)
-    if sha:
+    if sha and context.execution_branch and sha == _rev(repo_dir, f"refs/heads/{context.execution_branch}", git):
+        context.starting_branch = context.execution_branch  # detached at its tip: never re-detach on exit
+    elif sha:
         context.starting_branch = sha
         context.starting_detached = True
 

@@ -24,6 +24,7 @@ from sandbox_executor.git_revisions import qualify_branch_revision, revision_arg
 from sandbox_executor.knowledge import ConsultEngine
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_ensemble import ConsensusVerdict
+from sandbox_executor.worktree_head import ReattachStatus, reattach_branch, restore_branch
 
 logger = logging.getLogger(__name__)
 
@@ -48,17 +49,16 @@ def _checkout_execution_branch(context: FlowContext) -> str | None:
     wherever 'holon flow' started. Stage 4 appends its review ledger rows to the checkout and Stage 5 writes the
     calibration report and reconciles 'executions.jsonl' in it, as 'holon review-loop' and 'holon calibrate' do
     when run on the branch. Both stages call this so that a '--skip-review' run, or a resume entering at Stage 5,
-    never writes into the operator's branch. A plain 'git checkout' carries non-conflicting local changes over
-    and refuses conflicting ones, so nothing is ever discarded.
+    never writes into the operator's branch. A HEAD detached at the branch tip is re-attached in place; otherwise a
+    plain 'git checkout' carries non-conflicting local changes over and refuses conflicting ones, so nothing is ever
+    discarded.
 
     Returns:
         None when HEAD is (now) on the execution branch, otherwise the redacted reason the checkout failed.
     """
     record_starting_branch(context, run_git)
     repo_dir = context.target_worktree
-    current = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir, check=False)
-    current_branch = current.stdout.strip() if current.returncode == 0 and isinstance(current.stdout, str) else ""
-    if current_branch == context.execution_branch:
+    if reattach_branch(repo_dir, context.execution_branch, run_git).status is not ReattachStatus.REFUSED:
         return None
     co_res = run_git(["checkout", context.execution_branch], cwd=repo_dir, check=False)
     if co_res.returncode == 0:
@@ -67,7 +67,17 @@ def _checkout_execution_branch(context: FlowContext) -> str | None:
     return redact_agent_secrets(stderr) or f"exit code {co_res.returncode}"
 
 
-def run_review_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0912, PLR0915
+def run_review_stage(context: FlowContext) -> StageResult:
+    """Execute Stage 4 and hand the worktree back on the execution branch on every exit, a raise included."""
+    if context.dry_run or not context.execution_branch:
+        return _run_review_stage_body(context)
+    try:
+        return _run_review_stage_body(context)
+    finally:
+        restore_branch(context.target_worktree, context.execution_branch, "Stage 4 review loop", context.log, run_git)
+
+
+def _run_review_stage_body(context: FlowContext) -> StageResult:  # noqa: C901, PLR0912, PLR0915
     """Execute Stage 4: Review Loop.
 
     Evaluates diffs, test logs, and safety invariants. Enforces the human-only PR merge rule:

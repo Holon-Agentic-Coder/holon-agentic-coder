@@ -81,6 +81,7 @@ from sandbox_executor.flow.review.resolver import (
     _lookup_introducing_action_id,
 )
 from sandbox_executor.flow.review.verdict import (
+    _loop_status,
     consensus_blockers,
     decide_returned_consensus,
     not_approved_verdicts,
@@ -117,27 +118,6 @@ from sandbox_executor.review_report import (
 from sandbox_executor.review_target import DiffVerdict, ReviewTarget, classify_review_diff
 
 logger = logging.getLogger(__name__)
-
-
-def _loop_status(
-    consensus_reached: bool,
-    verdict: ConsensusVerdict | None,
-    failed: bool,
-    is_dirty: bool,
-    tests_not_measured: bool,
-) -> str:
-    """Map the loop outcome to its consensus status."""
-    if consensus_reached:
-        return "approved"
-    if failed or verdict is ConsensusVerdict.FAILED:
-        return "failed"
-    if is_dirty:
-        return "conflicted_dirty"
-    if tests_not_measured:
-        return "not_measured"
-    if verdict is ConsensusVerdict.CHANGES_REQUESTED:
-        return "changes_requested"
-    return "rejected"
 
 
 def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915

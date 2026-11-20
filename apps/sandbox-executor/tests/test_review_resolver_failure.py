@@ -25,7 +25,7 @@ from sandbox_executor.resolver_result import (
     read_container_resolver_result,
     resolver_error_text,
 )
-from sandbox_executor.review_ensemble import ConsensusVerdict, ReviewerVerdict, serialize_review_outcome
+from sandbox_executor.review_ensemble import ConsensusVerdict, ReviewerResult, ReviewerVerdict, serialize_review_outcome
 from sandbox_executor.review_report import FindingRow
 from sandbox_executor.review_target import ReviewTarget
 
@@ -572,3 +572,74 @@ def test_a_clean_resolver_turn_returns_the_dispositions_it_wrote(tmp_path: Path)
     written = [{"id": "R1-F1", "disposition": "applied"}]
 
     assert _resolver_turn(tmp_path, 0, file_payload={"dispositions": written}) == written
+
+
+# --- the PR #203 incident: a resolver on a usage limit leaves its findings open and writes no ACT-RES row ----------
+
+SESSION_LIMIT = "You've hit your session limit"
+
+
+def _two_nit_reviewer() -> ReviewerResult:
+    """Reviewer 1 of iteration 3 on PR #203: two nits in flow/calibrate_rerun.py."""
+    from sandbox_executor.review_ensemble import ParsedTrailer, ReviewCounts, ReviewFinding
+
+    nits = (
+        ReviewFinding("nit", "flow/calibrate_rerun.py", 40, "approval_pr_number resolves outside the try"),
+        ReviewFinding("nit", "flow/calibrate_rerun.py", 90, "the refreshed StageResult is not stored back"),
+    )
+    parsed = ParsedTrailer(ReviewerVerdict.CHANGES_REQUESTED, ReviewCounts(nit=2), nits)
+    return ReviewerResult.completed(1, "fake-agent", "fake-model", "r1.md", "report", parsed)
+
+
+def _adjudication_rows(tmp_path: Path) -> list[dict]:
+    return [r for r in _rows(tmp_path, "ACT-RES") if r.get("review_finding_ids")]
+
+
+def _incident_loop(tmp_path: Path, resolver) -> dict:
+    ensemble = FakeEnsemble([_two_nit_reviewer(), clean_reviewer(2), clean_reviewer(3)])
+    with _LoopStubs():
+        return run_review_loop(
+            _ensemble_ctx(tmp_path),
+            target=EXEC_TARGET,
+            max_iterations=3,
+            ensemble_size=3,
+            run_ensemble_fn=ensemble,
+            run_resolver_fn=resolver,
+        )
+
+
+@pytest.mark.usefixtures("in_simulated_sandbox")
+def test_incident_resolver_on_a_usage_limit_leaves_both_nits_open_and_writes_no_adjudication(tmp_path: Path) -> None:
+    def usage_limited(target, iteration, findings, action_ids, rejected_findings):
+        return {"dispositions": [], "exit_code": 1, "error": SESSION_LIMIT, "output_tail": SESSION_LIMIT}
+
+    res = _incident_loop(tmp_path, usage_limited)
+
+    assert "session limit" in res["resolver_error"]
+    assert _adjudication_rows(tmp_path) == []
+    assert [f["id"] for f in res["open_findings"]] == ["R1-F1", "R1-F2"]
+    assert all(f["path"] == "flow/calibrate_rerun.py" for f in res["open_findings"])
+    assert res["consensus"]["approved"] is False
+
+
+@pytest.mark.usefixtures("in_simulated_sandbox")
+def test_incident_resolver_that_raises_leaves_both_nits_open_and_writes_no_adjudication(tmp_path: Path) -> None:
+    def raising(target, iteration, findings, action_ids, rejected_findings):
+        raise RuntimeError(SESSION_LIMIT)
+
+    res = _incident_loop(tmp_path, raising)
+
+    assert "session limit" in res["resolver_error"]
+    assert _adjudication_rows(tmp_path) == []
+    assert [f["id"] for f in res["open_findings"]] == ["R1-F1", "R1-F2"]
+    assert res["consensus"]["approved"] is False
+
+
+def test_host_dispatched_resolver_exiting_one_writes_no_adjudication_row(tmp_path: Path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    res = _run_host_loop(tmp_path, monkeypatch, _resolve_dispatcher(1, None, calls))
+
+    assert res["resolver_error"]
+    assert _adjudication_rows(tmp_path) == []
+    assert [f["id"] for f in res["open_findings"]] == ["R1-F1"]

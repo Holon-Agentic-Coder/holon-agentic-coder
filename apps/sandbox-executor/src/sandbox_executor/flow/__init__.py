@@ -177,6 +177,15 @@ from sandbox_executor.flow.partial_salvage import (
 )
 from sandbox_executor.flow.pipeline import PipelineEngine, run_flow_pipeline
 from sandbox_executor.flow.review.adjudication import _augment_pr_text_with_rejected, _filter_adjudicated_findings
+from sandbox_executor.flow.review.carried_findings import (
+    CarriedPass,
+    carried_blocker,
+    deserialize_carried,
+    merge_findings,
+    resolve_carried_first,
+    serialize_open,
+    undisposed,
+)
 from sandbox_executor.flow.review.ci_outcome import describe_ci_outcome, gate_ci_flags
 from sandbox_executor.flow.review.cli import run_review_loop_cli
 from sandbox_executor.flow.review.ensemble import (
@@ -296,6 +305,7 @@ __all__ = [
     "AdmissionDecision",
     "AdmissionUnavailable",
     "CalibrationSyncError",
+    "CarriedPass",
     "CiWaitPolicy",
     "CiWaitResult",
     "ConflictResolutionError",
@@ -396,12 +406,14 @@ __all__ = [
     "admission_stage_failure",
     "build_pr_review_consensus_report",
     "build_review_id",
+    "carried_blocker",
     "check_admission",
     "check_and_resolve_stage_conflicts",
     "check_pr_mergeability",
     "choose_merge_flag",
     "create_or_update_pr",
     "describe_ci_outcome",
+    "deserialize_carried",
     "discard_empty_calibrated_branch",
     "discover_in_flight_flows",
     "extract_valid_ledger_rows",
@@ -426,6 +438,7 @@ __all__ = [
     "load_checkpoint",
     "local_in_flight_flows",
     "lookup_merge_flag",
+    "merge_findings",
     "migrate_checkpoint_data",
     "new_local_child_branches",
     "next_poll_interval",
@@ -454,6 +467,7 @@ __all__ = [
     "rerun_calibration",
     "rerun_note",
     "resolve_append_only_conflict",
+    "resolve_carried_first",
     "resolve_ci_registration_timeout",
     "restore_starting_branch",
     "review_calibration_freshness",
@@ -472,6 +486,7 @@ __all__ = [
     "salvage_for_resume",
     "salvage_leftovers",
     "save_checkpoint",
+    "serialize_open",
     "settle_pending_ci",
     "stale_calibrated_refs",
     "superseding_failure_row",
@@ -481,6 +496,7 @@ __all__ = [
     "touch_set_replan_feedback",
     "touch_set_violation",
     "touch_set_violation_result",
+    "undisposed",
     "validate_intent_questions",
     "wait_for_pending_ci",
 ]

@@ -37,6 +37,7 @@ from sandbox_executor.calibration_ev import (
     is_matching_record,
     parse_summary_records,
 )
+from sandbox_executor.calibration_execution_owner import unique_plan_branch_of_execution
 from sandbox_executor.calibration_touch_set import touch_set_metrics, touch_set_report_lines
 from sandbox_executor.git import METADATA_PATH_PREFIXES as METADATA_PATH_PREFIXES
 from sandbox_executor.git import is_metadata_path, run_git
@@ -713,12 +714,7 @@ def _parse_predicted_from_plan_markdown(
 
 
 def parse_predicted_metrics(plan_branch: str, target_worktree: str = ".") -> tuple[PredictedMetrics, dict[str, Any]]:
-    """Parse predicted plan metrics from the plan's plans.jsonl row or its plan file.
-
-    Args:
-        plan_branch: The plan branch (or any branch below it); the plan is keyed on its intent and plan id.
-        target_worktree: Target git worktree directory.
-    """
+    """Parse predicted metrics of the plan on ``plan_branch`` (or below it) from its plans.jsonl row or plan file."""
     return (
         _parse_predicted_from_plans_ledger(plan_branch, target_worktree)
         or _parse_predicted_from_plan_markdown(plan_branch, target_worktree)
@@ -1101,28 +1097,6 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _unique_plan_branch_of_execution(execution_id: str, target_worktree: str) -> str:
-    """The plan branch of a bare execution id, only when exactly one plan in executions.jsonl has that execution.
-
-    Execution ids are keyed on their full path: a new-generation id carries no hex, so two plans may each own an
-    execution of the same name. An ambiguous bare id resolves to nothing rather than to an arbitrary plan.
-    """
-    executions_jsonl = os.path.join(target_worktree, LEDGER_EXECUTIONS_REL)
-    if not os.path.exists(executions_jsonl):
-        return ""
-    with contextlib.suppress(OSError), open(executions_jsonl, encoding="utf-8") as f:
-        records = parse_summary_records(f.read())
-        owners = {
-            str(r["plan_branch"]) for r in records if r.get("execution_id") == execution_id and r.get("plan_branch")
-        }
-        plans = {split_plan_branch(owner) for owner in owners}
-        if len(plans) == 1:
-            return next(iter(owners))
-        if len(plans) > 1:
-            logger.warning("Execution id %s is ambiguous across plans %s; pass the full branch.", execution_id, owners)
-    return ""
-
-
 def generate_calibration(  # noqa: C901, PLR0915
     execution_branch: str,
     target_worktree: str = ".",
@@ -1144,7 +1118,9 @@ def generate_calibration(  # noqa: C901, PLR0915
 
     # If plan_id is missing (e.g. short execution ID), look it up in executions.jsonl
     if (not plan_id or plan_id == "P-unknown") and execution_id and execution_id != "E-unknown":
-        resolved_pb = _unique_plan_branch_of_execution(execution_id, target_worktree)
+        resolved_pb = unique_plan_branch_of_execution(
+            execution_id, os.path.join(target_worktree, LEDGER_EXECUTIONS_REL)
+        )
         if resolved_pb:
             pb_comp = extract_branch_components(resolved_pb)
             plan_id = pb_comp["plan_id"]

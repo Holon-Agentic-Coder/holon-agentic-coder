@@ -3641,14 +3641,6 @@ def test_parse_sub_intent_list_strips_leading_hyphens_before_truncating_the_slug
     assert item["slug"] == "add-the-parser-for-every-ledger"
 
 
-def test_parse_sub_intent_list_keeps_a_duplicate_suffix_within_the_slug_limit():
-    text = "Add the parser for every ledger row"
-    first, second = executor.parse_sub_intent_list(_section(f"- {text}\n- {text}"))
-
-    assert (first["slug"], second["slug"]) == ("add-the-parser-for-every-ledger", "add-the-parser-for-every-2")
-    assert max(len(first["slug"]), len(second["slug"])) <= 32
-
-
 def test_parse_sub_intent_list_falls_back_to_a_generic_slug():
     # An item with no ASCII letter or digit still gets a slug.
     (item,) = executor.parse_sub_intent_list(_section("- Добавить парсер"))

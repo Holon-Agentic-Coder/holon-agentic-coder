@@ -101,3 +101,11 @@ def test_executor_re_exports_the_rule():
         DECISION_DECOMPOSED,
         DECISION_OVER_BUDGET,
     )
+
+
+def test_parse_sub_intent_list_keeps_a_duplicate_suffix_within_the_slug_limit():
+    text = "Add the parser for every ledger row"
+    first, second = executor.parse_sub_intent_list(f"# Plan\n\n## Sub-intent list\n\n- {text}\n- {text}\n")
+
+    assert (first["slug"], second["slug"]) == ("add-the-parser-for-every-ledger", "add-the-parser-for-every-2")
+    assert max(len(first["slug"]), len(second["slug"])) <= 32

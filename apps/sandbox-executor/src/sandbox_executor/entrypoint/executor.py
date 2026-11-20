@@ -54,6 +54,7 @@ from sandbox_executor.entrypoint.execution_workspace import (
 from sandbox_executor.entrypoint.executor_test_run import measure_executor_tests
 from sandbox_executor.entrypoint.sync_conflict import SyncConflictMessage, record_sync_failure
 from sandbox_executor.entrypoint.sync_conflict import superseding_failure_row as superseding_failure_row
+from sandbox_executor.entrypoint.taken_ids import taken_child_ids
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
@@ -467,23 +468,6 @@ def run_cmd(  # noqa: C901
 def _get_repo(repo_dir: str) -> GitRepository:
     """Return a GitRepository adapter bound to repo_dir and the executor run_cmd runner."""
     return GitRepository(repo_dir, runner=run_cmd)
-
-
-def _taken_execution_ids(repo: GitRepository, plan_branch_prefix: str) -> set[str]:
-    """Execution ids whose branches already exist under the plan, so a same-second twin derives a distinct name."""
-    taken: set[str] = set()
-    for pattern in (
-        f"refs/heads/{plan_branch_prefix}/E-*",
-        f"refs/remotes/origin/{plan_branch_prefix}/E-*",
-    ):
-        res = repo.run(["for-each-ref", "--format=%(refname)", pattern], check=False)
-        if res.returncode != 0:
-            continue
-        for ref in res.stdout.splitlines():
-            segments = ref.strip().removesuffix("/_").rstrip("/").split("/")
-            if segments and segments[-1].startswith("E-"):
-                taken.add(segments[-1])
-    return taken
 
 
 def _probe_git_repo(repo_dir: str) -> tuple[bool, str]:
@@ -1077,7 +1061,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
         exec_seq = int(time.time())
         exec_id = build_execution_id(
-            exec_seq, plan_branch_prefix, agent_name, model_name, taken=_taken_execution_ids(repo, plan_branch_prefix)
+            exec_seq, plan_branch_prefix, agent_name, model_name, taken=taken_child_ids(repo, plan_branch_prefix, "E")
         )
         exec_branch = f"{plan_branch_prefix}/{exec_id}/_"
 

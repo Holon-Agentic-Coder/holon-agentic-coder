@@ -36,7 +36,6 @@ VALID_ORIGINS: set[str] = {"initial_implementation", "pr_review", "ci_fix", "cal
 VALID_SEVERITIES: set[str] = {"critical", "important", "nit"}
 VALID_DISPOSITIONS: set[str] = {"applied", "rejected"}
 VALID_ENTRY_TYPES: set[str] = {"action", "summary"}
-# Identifier keys whose (parent, id) pair may not repeat at one ledger revision (see validate_ledger_unique_ids).
 _REPEAT_CHECKED_ID_KEYS: frozenset[str] = frozenset({"plan_id"})
 # Optional ActionRecord fields that are omitted from the serialised record when unset, so records that do not use them
 # (everything except ACT-BUDGET actions) keep their existing shape.
@@ -86,16 +85,9 @@ def build_plan_id(
     model: str,
     taken: Iterable[str] = (),
 ) -> str:
-    """Build the deterministic plan identifier ``P-{plan_seq}-{ticker}-{model code}``, with no hex.
+    """Build the plan id ``P-{plan_seq}-{ticker}-{model code}`` (no hex); a name in ``taken`` gets a free variant.
 
-    A name already present in ``taken`` (the plan ids that exist under the same intent) gets the first free
-    deterministic same-second variant, so a second writer never overwrites the first. The composed branch is
-    measured against the ref limit with room for the execution segment below it.
-
-    Raises:
-        MissingTickerError: The runner declares no ticker.
-        StageIdCollisionError: Every same-second variant is taken.
-        RefTooLongError: The plan branch cannot fit the ref limit.
+    Raises MissingTickerError, StageIdCollisionError or RefTooLongError (room is kept for an execution segment).
     """
     plan_id = distinct_stage_id(stage_id("P", plan_seq, agent, model), set(taken))
     ensure_stage_segment_fits(parent_branch, plan_id, extra=len(plan_id) + 1)
@@ -109,15 +101,9 @@ def build_execution_id(
     model: str,
     taken: Iterable[str] = (),
 ) -> str:
-    """Build the deterministic execution identifier ``E-{exec_seq}-{ticker}-{model code}``, with no hex.
+    """Build the execution id ``E-{exec_seq}-{ticker}-{model code}`` (no hex); a name in ``taken`` gets a free variant.
 
-    A name already present in ``taken`` (the execution ids that exist under the same plan) gets the first free
-    deterministic same-second variant, so a second writer never overwrites the first.
-
-    Raises:
-        MissingTickerError: The runner declares no ticker.
-        StageIdCollisionError: Every same-second variant is taken.
-        RefTooLongError: The execution branch cannot fit the ref limit.
+    Raises MissingTickerError, StageIdCollisionError or RefTooLongError, as ``build_plan_id`` does.
     """
     exec_id = distinct_stage_id(stage_id("E", exec_seq, agent, model), set(taken))
     ensure_stage_segment_fits(parent_branch, exec_id)
@@ -955,12 +941,7 @@ def format_query_results_table(records: list[dict[str, Any]]) -> str:
 
 
 def _extract_parent_ref(record: dict[str, Any], parent_key: str) -> str | None:
-    """Extract the full parent path a row's identifier is keyed on.
-
-    A plan row is keyed on its bare intent branch (a child intent or a plan nested under a plan keeps its whole path);
-    an execution row on its plan branch (``plan_paths.plan_branch_of``, so a ``plan_branch`` that embeds the
-    execution segment still names its plan).
-    """
+    """The full parent path a row's id is keyed on: a plan row's bare intent branch, an execution row's plan branch."""
     parent_raw = record.get(parent_key)
     if not isinstance(parent_raw, str) or not parent_raw.strip():
         fallback_key = {"plan_branch": "plan_id", "intent_branch": "intent_id"}.get(parent_key, "intent_branch")
@@ -984,13 +965,10 @@ def validate_ledger_unique_ids(
     id_key: str = "plan_id",
     parent_key: str = "intent_branch",
 ) -> None:
-    """Validate that no plan is recorded twice for one intent.
+    """Validate that no plan is recorded twice for one intent at one ``ledger_revision``.
 
-    Identifiers are keyed on their full parent path, never on the id alone: a new-generation plan or execution id
-    carries no hex, so two intents planned in the same second by the same runner and model share a plan id and stay
-    distinct. A repeated (intent, plan id) pair at one ``ledger_revision`` fails; a superseding row (a higher
-    revision) is the append-only way to update a plan row and passes. Execution rows are only keyed, never
-    repeat-checked: an execution's reruns and superseding summaries legitimately repeat its (plan, execution) pair.
+    Ids are keyed on their full parent path, never the id alone (hexless ids repeat across intents); a superseding row
+    passes. Execution rows are not repeat-checked: reruns and superseding summaries repeat their (plan, id) pair.
 
     Args:
         records: An iterable of ledger record dictionaries.
@@ -1004,11 +982,8 @@ def validate_ledger_unique_ids(
         return
     seen: dict[tuple[str, str, int], dict[str, Any]] = {}
     for record in records:
-        id_val = record.get(id_key)
-        if not isinstance(id_val, str) or not id_val.strip():
-            continue
-        parent_ref = _extract_parent_ref(record, parent_key)
-        if not parent_ref:
+        id_val, parent_ref = record.get(id_key), _extract_parent_ref(record, parent_key)
+        if not isinstance(id_val, str) or not id_val.strip() or not parent_ref:
             continue
         key = (parent_ref, id_val, _ledger_revision(record))
         if key in seen:

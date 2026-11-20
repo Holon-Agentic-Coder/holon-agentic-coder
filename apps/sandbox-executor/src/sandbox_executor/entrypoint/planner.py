@@ -21,6 +21,7 @@ from sandbox_executor.budgets import (
 )
 from sandbox_executor.decomposition_rule import should_decompose
 from sandbox_executor.entrypoint.execution_workspace import start_branch_from_host_fetch
+from sandbox_executor.entrypoint.taken_ids import taken_plan_ids
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
@@ -253,30 +254,6 @@ def format_agent_cmd_for_display(cmd: list[str]) -> str:
     return " ".join(print_cmd)
 
 
-def _taken_plan_ids(repo_dir: str, intent_branch_prefix: str) -> set[str]:
-    """Plan ids already recorded for this intent, so a same-second twin derives a distinct variant name."""
-    ledger_path = os.path.join(repo_dir, "holon-knowledge/ledger/plans.jsonl")
-    prefix = intent_branch_prefix.removesuffix("/_").rstrip("/")
-    # A plan file already on disk under this intent is taken too, so a new plan never overwrites one.
-    plan_dir = os.path.dirname(os.path.join(repo_dir, plan_file_rel(prefix, "P-0")))
-    on_disk = os.listdir(plan_dir) if os.path.isdir(plan_dir) else []
-    taken = {name.removesuffix(".md") for name in on_disk if name.startswith("P-") and name.endswith(".md")}
-    if not os.path.exists(ledger_path):
-        return taken
-    with open(ledger_path, encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            recorded = str(row.get("intent_branch") or "").removesuffix("/_").rstrip("/")
-            if recorded == prefix and isinstance(row.get("plan_id"), str):
-                taken.add(row["plan_id"])
-    return taken
-
-
 def _unique_temp_file(prefix: str, suffix: str) -> str:
     """Create an empty, private temp file with a collision-free name and return its path (the caller removes it)."""
     fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix)
@@ -334,7 +311,8 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
     plan_seq = int(time.time())
     safe_model = _sanitize_model_name(model_name)
-    taken_ids = _taken_plan_ids(repo_dir, intent_branch_prefix)
+    repo = GitRepository(repo_dir, runner=run_cmd)
+    taken_ids = taken_plan_ids(repo, repo_dir, intent_branch_prefix)
     try:
         plan_id = build_plan_id(plan_seq, intent_branch_prefix, agent_name, model_name, taken=taken_ids)
     except ValueError as exc:
@@ -344,7 +322,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
     # The host fetched the intent branch into the mounted worktree; the plan branch starts from it, locally.
     try:
-        start_branch_from_host_fetch(GitRepository(repo_dir, runner=run_cmd), repo_dir, intent_branch, plan_branch)
+        start_branch_from_host_fetch(repo, repo_dir, intent_branch, plan_branch)
     except RuntimeError as exc:
         print(f"Error: {redact_agent_secrets(str(exc))}")
         sys.exit(1)

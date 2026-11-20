@@ -1684,8 +1684,9 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
     try:
         # The text report prints both decisions on stdout, so the resolvers' INFO log would show them twice.
         agent_res = resolve_agent_runner(args.agent, log=False)
+        ticker_for(agent_res.value)  # A runner without a ticker may not name a branch; reject it before the probe.
         model_res = resolve_model(agent_res.value, args.model, log=False, validate=True)
-    except (UnmappedAgentRunnerError, MissingAgentRunnerError, MissingModelError) as exc:
+    except (UnmappedAgentRunnerError, MissingAgentRunnerError, MissingModelError, MissingTickerError) as exc:
         if args.json:
             error_payload: dict[str, Any] = {"error": redact_cli_error(exc)}
             agent_id = getattr(args, "agent", None) or (agent_res.value if "agent_res" in locals() else None)
@@ -1701,17 +1702,6 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
             print(json.dumps(error_payload, indent=2))
         else:
             print_encodable(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
-            print_encodable("\n".join(env_lines))
-        return 1
-
-    try:
-        # A runner without a declared ticker may not name a plan or execution branch; reject it before the probe.
-        ticker_for(agent_res.value)
-    except MissingTickerError as exc:
-        if args.json:
-            print(json.dumps({"error": str(exc), "environment": environment}, indent=2))
-        else:
-            print_encodable(f"Error: {exc}", file=sys.stderr)
             print_encodable("\n".join(env_lines))
         return 1
 
@@ -1745,12 +1735,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="holon",
         description="Holon CLI: Host wrapper for running containerized Holon AI agent roles.",
     )
-    parser.add_argument(
-        "-v",
-        "--version",
-        action="version",
-        version=f"%(prog)s {pkg_version}",
-    )
+    parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {pkg_version}")
     subparsers = parser.add_subparsers(dest="command", required=True)
     for cmd in discover():
         cmd.register(subparsers)

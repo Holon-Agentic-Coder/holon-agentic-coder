@@ -880,18 +880,3 @@ def test_render_placeholders_leaves_unknown_and_prose_braces() -> None:
     template = "{plan_identifier} {unknown} {standard | elevated} {"
     assert planner.render_placeholders(template, {"plan_id": "P-1"}) == template
     assert planner.render_placeholders(template, {}) == template
-
-
-def test_taken_plan_ids_include_the_intent_rows_and_plan_files_already_on_disk(tmp_path):
-    """A same-second twin never overwrites a plan file: rows of this intent and its plan files are both taken."""
-    ledger = tmp_path / "holon-knowledge" / "ledger" / "plans.jsonl"
-    ledger.parent.mkdir(parents=True)
-    rows = [
-        {"plan_id": "P-1-CLA-CS5.5", "intent_branch": "I-1-a/_"},
-        {"plan_id": "P-9-CLA-CS5.5", "intent_branch": "I-1-b/_"},
-    ]
-    ledger.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
-    (tmp_path / "plans" / "I-1-a").mkdir(parents=True)
-    (tmp_path / "plans" / "I-1-a" / "P-2-CLA-CS5.5.md").write_text("# Plan\n", encoding="utf-8")
-    assert planner._taken_plan_ids(str(tmp_path), "I-1-a/_") >= {"P-1-CLA-CS5.5", "P-2-CLA-CS5.5"}
-    assert "P-9-CLA-CS5.5" not in planner._taken_plan_ids(str(tmp_path), "I-1-a/_")

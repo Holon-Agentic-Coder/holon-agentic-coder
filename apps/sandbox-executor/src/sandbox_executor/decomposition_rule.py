@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sandbox_executor.budgets import DEFAULT_ENTROPY_BUDGET, resolve_entropy_budget
+from sandbox_executor.ref_names import MAX_SLUG_LENGTH, truncate_derived_slug
 
 # Decision values returned by should_decompose().
 DECISION_EXECUTE = "execute"
@@ -305,10 +306,12 @@ def _sub_intent_dicts(items: list[tuple[str, list[str]]]) -> list[dict[str, Any]
         if is_placeholder_item(text) or not any(c.isalnum() for c in text):
             # Placeholders and punctuation-only items name no child work.
             continue
-        base = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:48].strip("-") or "sub-intent"
+        # A derived child slug is at most MAX_SLUG_LENGTH characters, cut at a word boundary, duplicate suffix included.
+        base = truncate_derived_slug(re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")) or "sub-intent"
         count = seen.get(base, 0) + 1
         seen[base] = count
-        slug = base if count == 1 else f"{base}-{count}"
+        suffix = "" if count == 1 else f"-{count}"
+        slug = truncate_derived_slug(base, MAX_SLUG_LENGTH - len(suffix)) + suffix
         description = "\n".join([text, *details])
         sub_intents.append({"slug": slug, "description": description, "goal": text})
     return sub_intents

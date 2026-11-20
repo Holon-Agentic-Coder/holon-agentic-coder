@@ -18,7 +18,7 @@ from sandbox_executor.flow.checkpoint import get_default_checkpoint_path
 from sandbox_executor.flow.context import FlowContext, StageResult
 from sandbox_executor.flow.git_refs import _fetch_branch_prefix_error, _list_child_branches, _origin_has_branch
 from sandbox_executor.flow.github.merge import GhRunner, _merged_result, gh_runner
-from sandbox_executor.ref_names import FitResult, fit_child_intent_branch
+from sandbox_executor.ref_names import FitResult, fit_child_intent_branch, truncate_derived_slug
 
 PROGRESS_KEY = "children_progress"
 PENDING = "pending"
@@ -41,7 +41,7 @@ def _child_intent_branch(parent_branch: str, index: int, slug: str) -> FitResult
     The name comes from the parent's branch and position, never the clock; a sanitised slug never contains ``--``, so
     it cannot collide with another intent, and the same list always derives the same name for the same child.
     """
-    slug = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower() or f"sub-intent-{index}"
+    slug = truncate_derived_slug(re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower()) or f"sub-intent-{index}"
     return fit_child_intent_branch(parent_branch, index, slug)
 
 

@@ -70,7 +70,7 @@ stdout and stderr continuously, so an agent can never block on a full pipe. A tu
 change:
 
 - streamed stdout or stderr output (partial lines count);
-- the size or modification time of the artefact being written (`plans/P-*.md` or `executions/E-*.md`);
+- the size or modification time of the artefact being written (`plans/I-.../P-*.md` or `executions/E-*.md`);
 - for executor turns, the newest file modification time in the working tree (scanned at most every 15 s, skipping
   `.git`, `.venv` and `node_modules`), because an executor edits many files besides its notes;
 - _tool progress_: at least 0.5 s of CPU time consumed between two samples (taken every 10 s, so 5 % of one core) by the
@@ -177,7 +177,7 @@ The record has these fields in addition to the standard action fields (see [Ledg
 | `budget_seconds`  | That budget's limit in seconds                                          |
 | `elapsed_seconds` | Seconds elapsed against that budget when it fired                       |
 | `error_context`   | Human-readable description, including the stage's total elapsed time    |
-| `target`          | The artefact path (`plans/P-*.md` or `executions/E-*.md`)               |
+| `target`          | The artefact path (`plans/I-.../P-*.md` or `executions/E-*.md`)         |
 
 The record is written in one place only, once per stage failure. The planner commits it together with the salvaged
 partial plan on the plan branch (no `plans.jsonl` entry is made for an unusable plan). The executor first commits the

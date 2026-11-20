@@ -54,7 +54,9 @@ from sandbox_executor.flow import (
     run_review_loop,
 )
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
+from sandbox_executor.plan_paths import is_row_of_plan, plan_branch_of
 from sandbox_executor.redaction import redact_agent_secrets, redact_command
+from sandbox_executor.ref_names import INTENT_SUFFIX
 from sandbox_executor.resolver_result import RESOLVER_RESULT_MARKER, bounded_output_tail
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 from sandbox_executor.review_report import (
@@ -760,9 +762,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     if line:
                         try:
                             d = json.loads(line)
-                            pid = d.get("plan_id", "")
-                            if pid and pid in head_branch:
-                                plan_branch = d.get("plan_branch") or pid
+                            # Keyed on the intent and plan id together, never the plan id alone.
+                            if is_row_of_plan(d, head_branch):
+                                plan_branch = plan_branch_of(head_branch) + INTENT_SUFFIX
                         except json.JSONDecodeError:
                             continue
         except Exception as exc:

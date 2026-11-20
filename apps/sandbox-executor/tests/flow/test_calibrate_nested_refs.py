@@ -179,7 +179,7 @@ def test_stage_5_commits_the_report_on_a_nested_layout(layout: SimpleNamespace, 
     calibrated = result.payload["calibrated_branch"]
     assert calibrated == calibration_branch(EXEC)
     assert calibrated.endswith("/calibrated")
-    report_rel = f"plans/{PLAN_ID}_calibration.md"
+    report_rel = f"plans/I-1794000000-root--1-child/{PLAN_ID}_calibration.md"
     subjects = git(layout.host, "log", "--format=%s", f"refs/heads/{EXEC}").splitlines()
     assert f"chore(calibration): add calibration report for {PLAN_ID}" in subjects
     report = git(layout.host, "show", f"refs/heads/{EXEC}:{report_rel}")

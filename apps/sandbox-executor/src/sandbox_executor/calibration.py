@@ -2,7 +2,7 @@
 
 Ingests predicted plan metrics and actual execution telemetry to compute
 calibration errors, Expected Value deltas, entropy factors, and generates
-markdown calibration reports conforming to `plans/P-{plan_id}_calibration.md`.
+markdown calibration reports written beside the plan file at `plans/{intent}/{plan_id}_calibration.md`.
 """
 
 from __future__ import annotations
@@ -34,13 +34,23 @@ from sandbox_executor.calibration_ev import (
     format_dual_ev_derivation_lines,
     format_dual_ev_table_rows,
     is_converged_record,
+    is_matching_record,
     parse_summary_records,
 )
+from sandbox_executor.calibration_execution_owner import unique_plan_branch_of_execution
 from sandbox_executor.calibration_touch_set import touch_set_metrics, touch_set_report_lines
 from sandbox_executor.git import METADATA_PATH_PREFIXES as METADATA_PATH_PREFIXES
 from sandbox_executor.git import is_metadata_path, run_git
 from sandbox_executor.knowledge.records import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
+from sandbox_executor.plan_paths import (
+    calibration_report_for_branch,
+    is_row_of_plan,
+    legacy_calibration_report_rel,
+    plan_file_candidates,
+    plan_file_for_branch,
+    split_plan_branch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -584,8 +594,11 @@ def verify_calibration_freshness(
 def extract_branch_components(branch_str: str) -> dict[str, str]:
     """Extract intent, plan, and execution branch identifiers from branch path.
 
+    The plan branch is the full path down to the plan segment (``plan_paths.split_plan_branch``), so a child intent
+    or a plan nested under another plan keeps its whole parent; ``plan_parent`` is that parent without the plan.
+
     Supports inputs such as:
-    - Full execution branch: I-123-slug/P-456-agent-model/E-789-agent-model/_
+    - Full execution branch: I-123-slug/P-456-CLA-CS5.5/E-789-CLA-CS5.5/_ (or a legacy agent-model name)
     - Short execution ID: E-789-agent-model
     - Plan branch: I-123-slug/P-456-agent-model/_
     - Remote tracking branch: origin/I-123-slug/P-456-agent-model/E-789-agent-model/_
@@ -600,6 +613,7 @@ def extract_branch_components(branch_str: str) -> dict[str, str]:
         "execution_branch": branch_str,
         "intent_id": "",
         "plan_id": "",
+        "plan_parent": "",
         "execution_id": "",
     }
 
@@ -607,8 +621,6 @@ def extract_branch_components(branch_str: str) -> dict[str, str]:
         if part.startswith("I-"):
             components["intent_id"] = part
             components["intent_branch"] = f"{part}/_"
-        elif part.startswith("P-"):
-            components["plan_id"] = part
         elif part.startswith("E-"):
             components["execution_id"] = part
 
@@ -616,8 +628,11 @@ def extract_branch_components(branch_str: str) -> dict[str, str]:
     if not components["execution_id"] and re.fullmatch(r"[0-9a-fA-F]{7,40}", clean):
         components["execution_id"] = clean
 
-    if components["intent_id"] and components["plan_id"]:
-        components["plan_branch"] = f"{components['intent_id']}/{components['plan_id']}/_"
+    parent, plan_id = split_plan_branch(clean)
+    components["plan_id"] = plan_id
+    if parent and plan_id:
+        components["plan_parent"] = parent
+        components["plan_branch"] = f"{parent}/{plan_id}/_"
 
     return components
 
@@ -658,8 +673,9 @@ def _parse_plan_markdown_content(content: str, predicted: PredictedMetrics) -> N
 
 
 def _parse_predicted_from_plans_ledger(
-    plan_id: str, target_worktree: str
+    plan_branch: str, target_worktree: str
 ) -> tuple[PredictedMetrics, dict[str, Any]] | None:
+    """The plans.jsonl row of the plan on ``plan_branch``, keyed on its intent and plan id (never the id alone)."""
     plans_jsonl = os.path.join(target_worktree, "holon-knowledge", "ledger", "plans.jsonl")
     if not os.path.exists(plans_jsonl):
         return None
@@ -669,7 +685,7 @@ def _parse_predicted_from_plans_ledger(
                 continue
             with contextlib.suppress(json.JSONDecodeError, ValueError):
                 record = json.loads(line)
-                if record.get("plan_id") == plan_id or plan_id in record.get("plan_branch", ""):
+                if is_row_of_plan(record, plan_branch):
                     predicted = PredictedMetrics()
                     for field in ("p_success", "entropy", "impact", "cost", "learning_value", "ev"):
                         if field in record:
@@ -679,12 +695,13 @@ def _parse_predicted_from_plans_ledger(
 
 
 def _parse_predicted_from_plan_markdown(
-    plan_id: str, target_worktree: str
+    plan_branch: str, target_worktree: str
 ) -> tuple[PredictedMetrics, dict[str, Any]] | None:
-    candidates = [
-        os.path.join(target_worktree, "plans", f"{plan_id}.md"),
-        os.path.join(target_worktree, f"{plan_id}.md"),
-    ]
+    """The plan file of ``plan_branch``: the ``plans/{intent}/`` layout first, then the flat legacy location."""
+    parent, plan_id = split_plan_branch(plan_branch)
+    if not plan_id:
+        return None
+    candidates = [os.path.join(target_worktree, rel) for rel in plan_file_candidates(parent, plan_id)]
     for candidate in candidates:
         if not os.path.exists(candidate):
             continue
@@ -696,11 +713,11 @@ def _parse_predicted_from_plan_markdown(
     return None
 
 
-def parse_predicted_metrics(plan_id: str, target_worktree: str = ".") -> tuple[PredictedMetrics, dict[str, Any]]:
-    """Parse predicted plan metrics from plans.jsonl or plans/P-{plan_id}.md."""
+def parse_predicted_metrics(plan_branch: str, target_worktree: str = ".") -> tuple[PredictedMetrics, dict[str, Any]]:
+    """Parse predicted metrics of the plan on ``plan_branch`` (or below it) from its plans.jsonl row or plan file."""
     return (
-        _parse_predicted_from_plans_ledger(plan_id, target_worktree)
-        or _parse_predicted_from_plan_markdown(plan_id, target_worktree)
+        _parse_predicted_from_plans_ledger(plan_branch, target_worktree)
+        or _parse_predicted_from_plan_markdown(plan_branch, target_worktree)
         or (PredictedMetrics(), {})
     )
 
@@ -734,24 +751,13 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     # 1. Search holon-knowledge/ledger/executions.jsonl via git show first, then fallback to disk
     jsonl_content = read_git_file(target_ref, LEDGER_EXECUTIONS_REL, target_worktree)
     records = parse_summary_records(jsonl_content) if jsonl_content else []
-    norm_pb = plan_branch.rstrip("/_") if plan_branch else ""
-    matching = [
-        r
-        for r in records
-        if (execution_id and str(r.get("execution_id", "")) == execution_id)
-        or (norm_pb and str(r.get("plan_branch", "")).rstrip("/_") == norm_pb)
-    ]
+    matching = [r for r in records if is_matching_record(r, execution_id, plan_branch)]
     if not matching:
         executions_jsonl = os.path.join(target_worktree, LEDGER_EXECUTIONS_REL)
         if os.path.exists(executions_jsonl):
             with contextlib.suppress(Exception), open(executions_jsonl, encoding="utf-8") as f:
                 disk_records = parse_summary_records(f.read())
-                disk_matching = [
-                    r
-                    for r in disk_records
-                    if (execution_id and str(r.get("execution_id", "")) == execution_id)
-                    or (norm_pb and str(r.get("plan_branch", "")).rstrip("/_") == norm_pb)
-                ]
+                disk_matching = [r for r in disk_records if is_matching_record(r, execution_id, plan_branch)]
                 if disk_matching:
                     records = disk_records
                     matching = disk_matching
@@ -948,6 +954,7 @@ def compute_calibration_deltas(
 def format_markdown_report(report_data: dict[str, Any]) -> str:
     """Format structured markdown report conforming to reference calibration schema."""
     plan_id = report_data["plan_id"]
+    plan_file = plan_file_for_branch(report_data.get("plan_branch") or "") or f"plans/{plan_id}.md"
     execution_id = report_data["execution_id"]
     intent_branch = report_data["intent_branch"]
     agent_id = report_data["agent_id"]
@@ -968,7 +975,7 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
     lines = [
         f"# Plan Calibration Report: {plan_id}",
         "",
-        f"- **Plan Reference:** [`plans/{plan_id}.md`]({plan_id}.md)",
+        f"- **Plan Reference:** [`{plan_file}`]({plan_id}.md)",
         f"- **Execution ID:** `{execution_id}`",
         f"- **Execution Branch:** `{execution_branch}`",
         f"- **Intent Branch:** `{intent_branch}`",
@@ -1090,7 +1097,7 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def generate_calibration(  # noqa: C901, PLR0912, PLR0915
+def generate_calibration(  # noqa: C901, PLR0915
     execution_branch: str,
     target_worktree: str = ".",
 ) -> CalibrationReport:
@@ -1111,21 +1118,14 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
 
     # If plan_id is missing (e.g. short execution ID), look it up in executions.jsonl
     if (not plan_id or plan_id == "P-unknown") and execution_id and execution_id != "E-unknown":
-        executions_jsonl = os.path.join(target_worktree, "holon-knowledge", "ledger", "executions.jsonl")
-        if os.path.exists(executions_jsonl):
-            with contextlib.suppress(Exception), open(executions_jsonl, encoding="utf-8") as f:
-                for line in f:
-                    if execution_id in line:
-                        data = json.loads(line)
-                        if data.get("entry_type", "summary") != "summary":
-                            continue
-                        if data.get("execution_id") == execution_id and data.get("plan_branch"):
-                            resolved_pb = data["plan_branch"]
-                            pb_comp = extract_branch_components(resolved_pb)
-                            plan_id = pb_comp["plan_id"]
-                            plan_branch = resolved_pb
-                            intent_branch = pb_comp["intent_branch"]
-                            break
+        resolved_pb = unique_plan_branch_of_execution(
+            execution_id, os.path.join(target_worktree, LEDGER_EXECUTIONS_REL)
+        )
+        if resolved_pb:
+            pb_comp = extract_branch_components(resolved_pb)
+            plan_id = pb_comp["plan_id"]
+            plan_branch = pb_comp["plan_branch"] or resolved_pb
+            intent_branch = pb_comp["intent_branch"]
 
     # Resolve execution reference and plan reference using resolve_git_ref
     try:
@@ -1171,7 +1171,7 @@ def generate_calibration(  # noqa: C901, PLR0912, PLR0915
         raw_branch = raw_branch[len("refs/heads/") :]
     calibrated_branch = f"{raw_branch}/calibrated"
 
-    predicted, plan_meta = parse_predicted_metrics(plan_id, target_worktree=target_worktree)
+    predicted, plan_meta = parse_predicted_metrics(plan_branch, target_worktree=target_worktree)
     actual, exec_meta = parse_actual_metrics(
         execution_id,
         resolved_plan_ref,
@@ -1574,11 +1574,10 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
                     f"Failed to create calibrated branch '{calibrated_branch}' from '{start_point}': {err_msg}"
                 )
 
-    # 2. Write calibration markdown report to plans/P-{plan_id}_calibration.md
-    plans_dir = os.path.join(target_worktree, "plans")
-    os.makedirs(plans_dir, exist_ok=True)
-    report_rel = f"plans/{report.plan_id}_calibration.md"
+    # 2. Write the calibration markdown report beside the plan file: plans/{intent}/{plan_id}_calibration.md
+    report_rel = calibration_report_for_branch(report.plan_branch) or legacy_calibration_report_rel(report.plan_id)
     report_path = os.path.join(target_worktree, report_rel)
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
 
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report.markdown_content)

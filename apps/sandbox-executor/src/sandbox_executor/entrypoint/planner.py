@@ -21,17 +21,17 @@ from sandbox_executor.budgets import (
 )
 from sandbox_executor.decomposition_rule import should_decompose
 from sandbox_executor.entrypoint.execution_workspace import start_branch_from_host_fetch
+from sandbox_executor.entrypoint.taken_ids import taken_plan_ids
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
     _sanitize_model_name,
-    _sanitize_string,
     atomic_ledger_append,
     build_plan_id,
     validate_ledger_file_unique_ids,
 )
+from sandbox_executor.plan_paths import plan_file_rel
 from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
-from sandbox_executor.ref_names import original_labels
 from sandbox_executor.touch_set import parse_touch_set_section
 from sandbox_executor.turns import record_budget_failure, run_turn, supervise_authoring_turn
 
@@ -254,14 +254,6 @@ def format_agent_cmd_for_display(cmd: list[str]) -> str:
     return " ".join(print_cmd)
 
 
-PLAN_FILE_PATTERN = r"plans/P-[^/]+\.md"
-
-
-def plan_file_rel(plan_id: str) -> str:
-    """Repo-relative plan markdown path; carries the hex-qualified plan id so same-second plans never collide."""
-    return f"plans/{plan_id}.md"
-
-
 def _unique_temp_file(prefix: str, suffix: str) -> str:
     """Create an empty, private temp file with a collision-free name and return its path (the caller removes it)."""
     fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix)
@@ -319,12 +311,18 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
     plan_seq = int(time.time())
     safe_model = _sanitize_model_name(model_name)
-    plan_id = build_plan_id(plan_seq, intent_branch_prefix, agent_name, safe_model)
+    repo = GitRepository(repo_dir, runner=run_cmd)
+    taken_ids = taken_plan_ids(repo, repo_dir, intent_branch_prefix)
+    try:
+        plan_id = build_plan_id(plan_seq, intent_branch_prefix, agent_name, model_name, taken=taken_ids)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
     plan_branch = f"{intent_branch_prefix}/{plan_id}/_"
 
     # The host fetched the intent branch into the mounted worktree; the plan branch starts from it, locally.
     try:
-        start_branch_from_host_fetch(GitRepository(repo_dir, runner=run_cmd), repo_dir, intent_branch, plan_branch)
+        start_branch_from_host_fetch(repo, repo_dir, intent_branch, plan_branch)
     except RuntimeError as exc:
         print(f"Error: {redact_agent_secrets(str(exc))}")
         sys.exit(1)
@@ -392,6 +390,7 @@ Include metrics in this format:
         "parent_intent_id": intent_data.get("parent_intent_id", "NONE"),
         "description": intent_data.get("description", ""),
         "plan_id": plan_id,
+        "plan_file": plan_file_rel(intent_branch_prefix, plan_id),
         "date": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
         "intent_json": json.dumps(intent_data, indent=2),
         "safe_model": safe_model,
@@ -419,7 +418,7 @@ Include metrics in this format:
             json.dump({**intent_data, "replan_feedback": replan_feedback} if replan_feedback else intent_data, f)
 
         # Invoke AI agent
-        plan_md_rel = plan_file_rel(plan_id)
+        plan_md_rel = plan_file_rel(intent_branch_prefix, plan_id)
         plan_md_path = os.path.join(repo_dir, plan_md_rel)
         os.makedirs(os.path.dirname(plan_md_path), exist_ok=True)
 
@@ -573,7 +572,6 @@ Include metrics in this format:
         "plan_file": plan_md_rel,
         "status": "proposed",
         "entropy_budget": entropy_budget,
-        **original_labels(plan_id, _sanitize_string(agent_name, "unknown-agent"), safe_model),
     }
 
     # Format plan markdown before the ledger append, so the recorded decision is parsed from the committed file

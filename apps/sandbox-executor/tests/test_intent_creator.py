@@ -254,6 +254,25 @@ class TestIntentCreator(unittest.TestCase):
         self.assertEqual(cm.exception.code, 1)
         mock_run.assert_not_called()
 
+    def test_a_supplied_slug_over_the_limit_is_rejected_before_any_branch_exists(self):
+        data = json.dumps({"slug": "s" * 33, "description": "d", "goal": "g"})
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("builtins.open", unittest.mock.mock_open(read_data=data)),
+            patch.object(intent_creator, "get_workspace_dir", return_value="/ws"),
+            patch.object(intent_creator, "start_branch_from_host_fetch") as mock_start,
+            patch("builtins.print") as mock_print,
+            patch("subprocess.run") as mock_run,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            intent_creator.main()
+        self.assertEqual(cm.exception.code, 1)
+        mock_start.assert_not_called()
+        mock_run.assert_not_called()
+        message = " ".join(str(c.args[0]) for c in mock_print.call_args_list)
+        self.assertIn("33 characters", message)
+        self.assertIn("at most 32 characters", message)
+
     @patch("os.path.exists")
     def test_intent_creator_fails_fast_on_unresolved_questions(self, mock_exists):
         mock_exists.return_value = True

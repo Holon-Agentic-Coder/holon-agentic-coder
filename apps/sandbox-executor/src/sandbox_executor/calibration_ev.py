@@ -10,6 +10,8 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from sandbox_executor.plan_paths import plan_branch_of
+
 
 @dataclass
 class DualEVMetrics:
@@ -29,13 +31,10 @@ class DualEVMetrics:
 
 
 def is_matching_record(record: dict[str, Any], execution_id: str, plan_branch: str) -> bool:
-    """Check if summary record matches execution_id or plan_branch."""
-    if record.get("entry_type", "summary") != "summary":
-        return False
-    rec_exec_id = str(record.get("execution_id", ""))
-    rec_pb = str(record.get("plan_branch", "")).rstrip("/_")
-    norm_pb = plan_branch.rstrip("/_") if plan_branch else ""
-    return bool((execution_id and rec_exec_id == execution_id) or (norm_pb and rec_pb == norm_pb))
+    """True for a summary record of this plan (never another plan's, whatever its id); id alone without a plan."""
+    wanted, recorded = plan_branch_of(plan_branch or ""), plan_branch_of(str(record.get("plan_branch", "")))
+    same_id = bool(execution_id) and str(record.get("execution_id", "")) == execution_id
+    return record.get("entry_type", "summary") == "summary" and (recorded == wanted if wanted and recorded else same_id)
 
 
 def is_converged_record(record: dict[str, Any]) -> bool:

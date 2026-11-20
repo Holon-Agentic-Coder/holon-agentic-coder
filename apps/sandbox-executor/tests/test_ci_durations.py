@@ -26,6 +26,14 @@ from scripts.ci_durations_collect import (
     runner_os,
     seconds_between,
 )
+from scripts.ci_durations_stats import (
+    annotate,
+    ceiling_for,
+    load_ceilings,
+    parse_ceilings,
+    rolling_medians,
+    slowest_vs_baseline,
+)
 
 REPO = "acme/widgets"
 REPO_ID = 42
@@ -283,3 +291,137 @@ def workflows_dir() -> Path:
         if (parent / ".github" / "workflows").is_dir():
             return parent / ".github" / "workflows"
     raise AssertionError("no .github/workflows directory above the test module")
+
+
+def point(day: int, duration: float, **overrides: object) -> JobDuration:
+    """Return a ``test-unit.yml`` unit point on ubuntu that started on 2026-11-``day``."""
+    base: dict[str, object] = {
+        "workflow": "Test - Unit",
+        "workflow_path": ".github/workflows/test-unit.yml",
+        "job": "unit (ubuntu-latest)",
+        "runner_os": "ubuntu-latest",
+        "run_id": day,
+        "run_attempt": 1,
+        "event": "push",
+        "branch": "main",
+        "ref_class": "main",
+        "head_sha": SHA_MAIN,
+        "pr_number": None,
+        "created_at": started(day),
+        "started_at": started(day),
+        "completed_at": started(day),
+        "duration_seconds": duration,
+        "queue_seconds": 5.0,
+        "conclusion": "success",
+        "run_url": f"https://github.com/{REPO}/actions/runs/{day}/job/{day}",
+        "commit_url": f"https://github.com/{REPO}/commit/{SHA_MAIN}",
+        "pr_url": None,
+    }
+    return JobDuration(**{**base, **overrides})
+
+
+def test_rolling_median_uses_the_previous_window_of_main_successes_only() -> None:
+    rows = [point(day, 10.0 * day) for day in range(1, 6)] + [point(6, 100.0), point(7, 1.0)]
+    medians = rolling_medians(rows, window=5)
+    assert [medians[row] for row in rows[:5]] == [None] * 5
+    assert medians[rows[5]] == 30.0
+    assert medians[rows[6]] == 40.0
+
+
+def test_failed_and_pull_request_points_do_not_feed_the_baseline_but_get_one() -> None:
+    rows = [point(day, 10.0 * day) for day in range(1, 6)]
+    rows += [point(6, 999.0, conclusion="failure"), point(7, 999.0, ref_class="pr", event="pull_request")]
+    rows += [point(8, 60.0)]
+    medians = rolling_medians(rows, window=5)
+    assert medians[rows[5]] == medians[rows[6]] == medians[rows[7]] == 30.0
+
+
+def test_medians_are_computed_separately_per_runner_os() -> None:
+    ubuntu = [point(day, 10.0) for day in range(1, 4)]
+    macos = [point(day, 50.0, runner_os="macos-latest", job="unit (macos-latest)") for day in range(1, 4)]
+    ubuntu.append(point(4, 1.0))
+    medians = rolling_medians(ubuntu + macos, window=3)
+    assert medians[ubuntu[3]] == 10.0
+    assert medians[macos[2]] is None
+
+
+def test_ceilings_are_read_from_the_committed_workflows() -> None:
+    ceilings = load_ceilings(workflows_dir())
+    expected = {
+        ("build-images.yml", "build"): 600,
+        ("docker-build.yml", "build"): 300,
+        ("make.yml", "build"): 300,
+        ("test-hygiene.yml", "hygiene"): 300,
+        ("test-integration.yml", "integration"): 300,
+        ("test-stress.yml", "workspace-survival"): 600,
+        ("test-stress.yml", "Workspace survival"): 600,
+        ("test-unit.yml", "unit"): 600,
+    }
+    assert {key: ceilings.get(key) for key in expected} == expected
+    assert ceiling_for(point(1, 1.0), ceilings) == 600
+    assert (
+        ceiling_for(
+            point(1, 1.0, job="Workspace survival (ubuntu-latest)", workflow_path="x/test-stress.yml"), ceilings
+        )
+        == 600
+    )
+    assert ceiling_for(point(1, 1.0, job="lint"), ceilings) is None
+
+
+_COMPOSITE = """\
+name: Snippet
+on: workflow_dispatch
+jobs:
+  plain:
+    name: Plain (${{ matrix.os }})
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Start
+        uses: ./.github/actions/ci-timing-gate
+        with:
+          phase: start
+          max-seconds: 50
+      - name: Check
+        if: always()
+        uses: ./.github/actions/ci-timing-gate
+        with:
+          phase: check
+  custom:
+    steps:
+      - uses: ./.github/actions/ci-timing-gate
+        with:
+          phase: "check"
+          max-seconds: "900"
+  ungated:
+    steps:
+      - run: echo --ceiling 5
+"""
+
+
+def test_the_composite_gate_defaults_to_300_and_honours_max_seconds() -> None:
+    assert parse_ceilings(_COMPOSITE) == {"plain": 300, "Plain": 300, "custom": 900}
+
+
+def test_slowest_versus_baseline_ranks_by_delta() -> None:
+    unit = [point(day, 100.0) for day in range(1, 6)] + [point(6, 250.0)]
+    macos = [point(day, 200.0, runner_os="macos-latest", job="unit (macos-latest)") for day in range(1, 6)]
+    macos.append(point(6, 500.0, runner_os="macos-latest", job="unit (macos-latest)"))
+    fresh = [point(1, 900.0, job="lint")]
+    rows = unit + macos + fresh
+    ranking = slowest_vs_baseline(rows, rolling_medians(rows), limit=10)
+    assert [(r.row.runner_os, r.median, r.delta, r.ratio) for r in ranking] == [
+        ("macos-latest", 200.0, 300.0, 2.5),
+        ("ubuntu-latest", 100.0, 150.0, 2.5),
+    ]
+    assert len(slowest_vs_baseline(rows, rolling_medians(rows), limit=1)) == 1
+
+
+def test_annotate_adds_the_baseline_and_the_ceiling() -> None:
+    rows = [point(day, 10.0) for day in range(1, 7)]
+    data = annotate(rows, rolling_medians(rows), {("test-unit.yml", "unit"): 600})
+    assert data[5]["baseline_median"] == 10.0 and data[5]["ceiling"] == 600
+    assert data[0]["baseline_median"] is None

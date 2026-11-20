@@ -243,6 +243,18 @@ def test_pagination_reads_every_page_and_excludes_the_report_and_unfinished_runs
     assert len(opener.urls) == 3
 
 
+def test_a_run_served_on_two_pages_is_listed_once() -> None:
+    opener = FakeOpener(
+        {
+            f"{RUNS_QUERY}&page=1": {"total_count": 3, "workflow_runs": [run(3), run(2)]},
+            f"{RUNS_QUERY}&page=2": {"total_count": 3, "workflow_runs": [run(2), run(1)]},
+            f"{RUNS_QUERY}&page=3": {"total_count": 3, "workflow_runs": []},
+        }
+    )
+    runs, _ = list_runs(client(opener), SINCE, 500)
+    assert [r["id"] for r in runs] == [3, 2, 1]
+
+
 def test_max_runs_truncates_the_listing_and_collect_warns() -> None:
     opener = recorded_api([run(1), PR_RUN, FORK_RUN])
     opener.responses[f"{RUNS_QUERY}&page=1"] = {"total_count": 3, "workflow_runs": [run(1), PR_RUN, FORK_RUN]}

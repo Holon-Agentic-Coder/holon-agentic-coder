@@ -51,9 +51,14 @@ def _is_reported_run(run: dict[str, object]) -> bool:
 
 
 def list_runs(client: ApiClient, since: date, max_runs: int) -> tuple[list[dict[str, object]], bool]:
-    """Return the completed runs created on or after ``since`` and whether the listing was truncated."""
+    """Return the completed runs created on or after ``since`` and whether the listing was truncated.
+
+    A run created while paging shifts the listing by one, so the boundary run is served again on the next page; runs
+    already seen are skipped so their jobs are not counted twice.
+    """
     created = urllib.parse.quote(f">={since.isoformat()}")
     runs: list[dict[str, object]] = []
+    seen: set[object] = set()
     read = total = 0
     page = 1
     limit = min(max_runs, RESULT_CAP)
@@ -65,7 +70,10 @@ def list_runs(client: ApiClient, since: date, max_runs: int) -> tuple[list[dict[
             break
         batch = batch[: limit - read]
         read += len(batch)
-        runs.extend(run for run in batch if _is_reported_run(run))
+        for run in batch:
+            if run.get("id") not in seen and _is_reported_run(run):
+                seen.add(run.get("id"))
+                runs.append(run)
         page += 1
     return runs, total > read
 

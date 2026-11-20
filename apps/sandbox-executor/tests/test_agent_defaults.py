@@ -229,4 +229,3 @@ def test_antigravity_gemini_models_and_local_model_preserved():
     local_caps = get_model_capabilities("local-model")
     assert len(local_caps) > 0
     assert any(c.runner == "local-model" for c in RUNNER_CAPABILITIES)
-

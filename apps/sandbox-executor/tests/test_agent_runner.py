@@ -711,4 +711,3 @@ def test_get_runner_gemini_exits_with_antigravity_guidance(capsys: pytest.Captur
         captured = capsys.readouterr()
         combined = captured.out + captured.err
         assert "antigravity-agent" in combined
-

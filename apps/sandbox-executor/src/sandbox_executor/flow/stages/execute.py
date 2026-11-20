@@ -29,6 +29,7 @@ from sandbox_executor.flow.git_refs import (
 )
 from sandbox_executor.flow.host_remote import fetch_base, publish_new_child_branches, remote_error
 from sandbox_executor.flow.partial_salvage import salvage_for_resume
+from sandbox_executor.flow.plan_refresh import plan_refresh_stage_failure, refresh_payload
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.decomposition import _run_decomposed_plan, _sub_intent_depth_error
 from sandbox_executor.flow.stages.plan_decision import _over_budget_failure, _plan_budget_decision
@@ -154,6 +155,7 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         context.execution_branch = exec_branch
         context.log(f"Stage 3 (dry run): executor dispatch skipped; execution branch would be '{exec_branch}'.")
         admission_stage_failure(context, start_time)  # a dry run only logs the admission decision
+        plan_refresh_stage_failure(context, start_time)  # and the plan refresh a waited flow would get
         result = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
@@ -188,9 +190,10 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         depth_error = _sub_intent_depth_error(context)
         if depth_error is not None:
             return _stage_failure(context, FlowStage.EXECUTE, start_time, depth_error, dispatched=False)
-    admission_failure = admission_stage_failure(context, start_time)
-    if admission_failure is not None:
-        return admission_failure
+    # A flow admitted after an overlap wait merges origin/<target> into its plan branch before anything is cut from it.
+    admitted_failure = admission_stage_failure(context, start_time) or plan_refresh_stage_failure(context, start_time)
+    if admitted_failure is not None:
+        return admitted_failure
 
     existing_executions = _snapshot_child_branches(repo_dir, plan_prefix, "E")
     if existing_executions is None:
@@ -279,6 +282,7 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         "status": container_status,
         "exit_code": exit_code,
         "token_reduce": context.token_reduce,
+        **refresh_payload(context),
     }
 
     if summary_row is not None and container_status == DECISION_OVER_BUDGET:

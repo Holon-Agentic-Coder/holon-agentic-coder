@@ -2762,3 +2762,74 @@ def test_review_loop_does_not_advance_head_when_pushed_is_false(tmp_path, monkey
     assert res["consensus"]["approved"] is False
     assert not any("Resolver pushed new head" in log for log in ctx.logs)
     assert res.get("head_sha") != "new_unpushed_sha_9999"
+
+
+# --------------------------------------------------------------------------------------
+# Resolver turn that leaves the shared worktree detached (real git)
+# --------------------------------------------------------------------------------------
+
+
+def _resolver_repo(tmp_path: Path) -> Path:
+    """A two-commit repository on ``feature/r`` with a committed ledger, as the host mounts it."""
+    repo = tmp_path / "flow"
+    subprocess.run(["git", "init", "-q", "-b", "feature/r", str(repo)], capture_output=True, check=True)
+    ledger = repo / "holon-knowledge" / "ledger"
+    ledger.mkdir(parents=True)
+    (ledger / "executions.jsonl").write_text('{"execution_id": "E-1"}\n', encoding="utf-8")
+    (repo / "app.py").write_text("print('bug')\n", encoding="utf-8")
+    _real_git(repo, "add", "-A")
+    _real_git(repo, "commit", "-qm", "first")
+    (repo / "app.py").write_text("print('still a bug')\n", encoding="utf-8")
+    _real_git(repo, "commit", "-qam", "second")
+    return repo
+
+
+def _run_detaching_resolver(tmp_path: Path, detach_at: str) -> tuple[Path, dict, str]:
+    """Run ``--resolve`` with an agent turn that checks out ``detach_at`` and applies a fix; returns the outcome."""
+    repo = _resolver_repo(tmp_path)
+    tip = _real_git(repo, "rev-parse", "HEAD")
+    result_file = tmp_path / "result.json"
+    findings = [{"id": "R1-F1", "severity": "nit", "path": "app.py", "line": 1, "summary": "prints bug"}]
+    result_file.write_text(json.dumps({"findings": findings}), encoding="utf-8")
+    args = argparse.Namespace(
+        findings_file=str(result_file),
+        result_file=str(result_file),
+        iteration=2,
+        dry_run=False,
+        target="feature/r",
+        json=False,
+    )
+
+    def detaching_agent(repo_dir, *_args):
+        _real_git(repo_dir, "checkout", "-q", "--detach", detach_at)
+        Path(repo_dir, "app.py").write_text("print('fixed')\n", encoding="utf-8")
+        return [{"id": "R1-F1", "disposition": "applied", "rejection_reason": None}]
+
+    with (
+        patch(f"{ENTRYPOINT}._run_resolver_agent", side_effect=detaching_agent),
+        patch(f"{ENTRYPOINT}._verify_before_push", return_value=(True, True, None)),
+        pytest.raises(SystemExit),
+    ):
+        _run_resolver_mode(args, str(repo), "feature/r", "fake-agent", "fake-model")
+    return repo, json.loads(result_file.read_text(encoding="utf-8")), tip
+
+
+def test_resolver_reattaches_a_head_the_turn_detached_at_the_tip_and_commits_on_the_branch(tmp_path, capsys):
+    repo, outcome, tip = _run_detaching_resolver(tmp_path, "HEAD")
+
+    assert outcome["error"] is None
+    assert _real_git(repo, "symbolic-ref", "--short", "HEAD") == "feature/r"
+    head = _real_git(repo, "rev-parse", "refs/heads/feature/r")
+    assert head == outcome["head_sha"] != tip
+    assert _real_git(repo, "rev-parse", "HEAD~1") == tip
+    assert "resolver turn (iteration 2) left the worktree HEAD detached at" in capsys.readouterr().err
+
+
+def test_resolver_refuses_to_commit_when_the_turn_detached_head_elsewhere(tmp_path, capsys):
+    repo, outcome, tip = _run_detaching_resolver(tmp_path, "HEAD~1")
+
+    assert outcome["exit_code"] == 1
+    assert "Resolver turn moved HEAD off 'feature/r'" in outcome["error"]
+    assert "refusing to re-attach" in outcome["error"]
+    assert _real_git(repo, "rev-parse", "refs/heads/feature/r") == tip
+    assert outcome["head_sha"] == tip

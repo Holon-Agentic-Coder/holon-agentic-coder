@@ -30,6 +30,7 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, S
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.ci_final_head import check_final_head_ci, format_final_head_ci, not_pushed_record
 from sandbox_executor.flow.github.ci_reverify import RED, blocked_error, reverify_and_report
+from sandbox_executor.flow.review.conflict_gate import _stage5_conflict_gate
 from sandbox_executor.flow.review.records import _bounded_error_context
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.execute import _warn_ledger_failure
@@ -91,9 +92,9 @@ def _commit_stage5_reconciliation(context: FlowContext, repo_dir: str) -> None:
 
 
 def run_calibrate_stage(context: FlowContext) -> StageResult:
-    """Execute Stage 5, then return the host worktree to the branch the flow started on."""
+    """Execute Stage 5 unless the conflict gate refuses the head, then return the worktree to its starting branch."""
     try:
-        return _calibrate_execution_branch(context)
+        return _stage5_conflict_gate(context) or _calibrate_execution_branch(context)
     finally:
         restore_starting_branch(context)
 

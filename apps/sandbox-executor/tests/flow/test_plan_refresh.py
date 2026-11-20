@@ -47,6 +47,8 @@ BLOCKED = {
     "blocked_by": [{"kind": "pull_request", "number": 7, "branch": "feature", "files": ["src/app.py"]}],
 }
 
+REFRESHED = {"state": "admitted", "waited_since": WAITED_SINCE, "refreshed_branch": PLAN}
+
 
 def git(repo: Path, *args: str) -> str:
     res = subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
@@ -190,7 +192,7 @@ def test_ac1_a_flow_admitted_after_a_wait_gets_main_merged_before_dispatch(host:
     assert git(host, "rev-parse", f"refs/heads/{PLAN}") == plan_tip  # the local plan branch was fast-forwarded
 
     # AC5: the refreshed main commit is in the checkpoint, the Stage 3 payload and the plan's executions ledger.
-    assert saved_admission(host) == {"state": "admitted", "waited_since": WAITED_SINCE, "refreshed_to": main_sha}
+    assert saved_admission(host) == {**REFRESHED, "refreshed_to": main_sha}
     assert result.payload["plan_refreshed_to"] == main_sha
     [recorded] = refresh_rows(host)
     assert recorded["refreshed_to"] == main_sha and recorded["merge_commit"] == merge
@@ -298,5 +300,19 @@ def test_a_plan_already_containing_main_is_recorded_without_a_merge_commit(host:
     assert git(host, "rev-parse", f"origin/{PLAN}~1") == old_tip  # only the plan_refresh row commit was added
     [recorded] = refresh_rows(host)
     assert recorded["refreshed_to"] == main_sha and recorded["merge_commit"] is None
-    assert ctx.admission == {"state": "admitted", "waited_since": WAITED_SINCE, "refreshed_to": main_sha}
+    assert ctx.admission == {**REFRESHED, "refreshed_to": main_sha}
     assert plan_refresh_stage_failure(ctx, "t") is None and len(refresh_rows(host)) == 1  # not retried
+
+
+def test_a_re_planned_branch_is_refreshed_although_an_earlier_plan_was(host: Path) -> None:
+    """A re-plan (touch_set_violation, over budget) cuts a new plan branch from the stale intent tip: refresh it too."""
+    main_sha = move_main(host)
+    earlier = {**REFRESHED, "refreshed_to": main_sha, "refreshed_branch": "I-1-x/P-1-claude-agent-claude-opus-5-5/_"}
+    ctx = stage_context(host, earlier)
+    old_tip = git(host, "rev-parse", f"origin/{PLAN}")
+
+    assert plan_refresh_stage_failure(ctx, "t") is None
+
+    new_tip = git(host, "rev-parse", f"origin/{PLAN}")
+    assert is_ancestor(host, main_sha, new_tip) and is_ancestor(host, old_tip, new_tip)
+    assert ctx.admission == {**REFRESHED, "refreshed_to": main_sha} and len(refresh_rows(host)) == 1

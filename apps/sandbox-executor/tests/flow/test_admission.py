@@ -313,6 +313,7 @@ def test_dry_run_writes_no_admission_state(own_plan, monkeypatch):
 
 
 BLOCKED_AT = "2026-11-20T01:00:00.000Z"
+PLAN = "I-1-x/P-2-claude-agent-claude-opus-5-5/_"
 
 
 def _blocked() -> admission_state.AdmissionRecord:
@@ -323,21 +324,21 @@ def _blocked() -> admission_state.AdmissionRecord:
 def test_an_admission_after_a_refusal_keeps_the_wait_and_owes_a_refresh():
     record = admission_state.admitted_record(None, _blocked())
     assert record.to_dict() == {"state": "admitted", "waited_since": BLOCKED_AT}
-    assert record.refresh_due
+    assert record.refresh_due(PLAN)
 
 
 def test_a_first_check_admission_records_no_wait_and_owes_no_refresh():
     record = admission_state.admitted_record(None, None)
     assert record.to_dict() == {"state": "admitted"}
-    assert not record.refresh_due
+    assert not record.refresh_due(PLAN)
 
 
 def test_an_admitted_resume_keeps_the_wait_and_the_refresh():
     waited = admission_state.admitted_record(None, _blocked())
     resumed = admission_state.admitted_record(None, admission_state.AdmissionRecord.from_dict(waited.to_dict()))
-    assert resumed.waited_since == BLOCKED_AT and resumed.refresh_due
-    refreshed = admission_state.AdmissionRecord.from_dict(resumed.with_refresh("abc123").to_dict())
-    assert refreshed is not None and refreshed.refreshed_to == "abc123" and not refreshed.refresh_due
+    assert resumed.waited_since == BLOCKED_AT and resumed.refresh_due(PLAN)
+    refreshed = admission_state.AdmissionRecord.from_dict(resumed.with_refresh("abc123", PLAN).to_dict())
+    assert refreshed is not None and refreshed.refreshed_to == "abc123" and not refreshed.refresh_due(PLAN)
     again = admission_state.admitted_record([], refreshed)
     assert again.to_dict() == {
         "state": "admitted",
@@ -345,9 +346,18 @@ def test_an_admitted_resume_keeps_the_wait_and_the_refresh():
         "override_conflicts": [],
         "waited_since": BLOCKED_AT,
         "refreshed_to": "abc123",
+        "refreshed_branch": PLAN,
     }
+
+
+def test_a_re_planned_branch_owes_its_own_refresh():
+    refreshed = admission_state.admitted_record(None, _blocked()).with_refresh("abc123", PLAN)
+    replanned = "I-1-x/P-3-claude-agent-claude-opus-5-5/_"
+    assert refreshed.refresh_due(replanned) and refreshed.refreshed_on(replanned) is None
+    legacy = admission_state.AdmissionRecord.from_dict({**refreshed.to_dict(), "refreshed_branch": None})
+    assert legacy is not None and legacy.refresh_due(PLAN)  # a checkpoint without the branch refreshes again
 
 
 def test_malformed_wait_and_refresh_values_are_ignored():
     record = admission_state.AdmissionRecord.from_dict({"state": "admitted", "waited_since": 5, "refreshed_to": []})
-    assert record is not None and record.to_dict() == {"state": "admitted"} and not record.refresh_due
+    assert record is not None and record.to_dict() == {"state": "admitted"} and not record.refresh_due(PLAN)

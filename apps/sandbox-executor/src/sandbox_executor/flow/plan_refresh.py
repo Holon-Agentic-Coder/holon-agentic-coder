@@ -2,7 +2,8 @@
 
 A plan branch is cut from the target branch before the overlapping change merged, so an execution started from it is
 written against files that no longer exist on the target and its pull request conflicts with exactly that change. When
-the checkpoint's admission object records a wait (``waited_since``) and no refresh yet (``refreshed_to``), Stage 3
+the checkpoint's admission object records a wait (``waited_since``) and no refresh of this plan branch yet
+(``refreshed_to`` with ``refreshed_branch``; a re-plan's new plan branch is refreshed again), Stage 3
 merges ``origin/<target>`` into the plan branch on origin before the execution branch is cut and the executor is
 dispatched (:func:`plan_refresh_stage_failure`). The rules:
 
@@ -12,7 +13,7 @@ dispatched (:func:`plan_refresh_stage_failure`). The rules:
 - any other conflict aborts the merge and stops Stage 3 before dispatch naming the files; the admission object keeps
   ``waited_since`` without ``refreshed_to``, so a resume retries the refresh once the operator merged by hand;
 - a refresh (a merge, or none needed) is recorded once: a ``plan_refresh`` row on the plan branch's
-  ``executions.jsonl``, then ``refreshed_to`` in the checkpoint's admission object;
+  ``executions.jsonl``, then ``refreshed_to`` and ``refreshed_branch`` in the checkpoint's admission object;
 - a flow admitted on its first check has no ``waited_since`` and is never touched.
 """
 
@@ -56,7 +57,7 @@ def _plan_id(plan_branch: str) -> str:
 def refresh_due(context: FlowContext) -> bool:
     """Whether this flow was admitted after a wait and its plan branch is not yet refreshed onto the target."""
     record = AdmissionRecord.from_dict(context.admission)
-    return record is not None and record.refresh_due
+    return record is not None and record.refresh_due(str(context.plan_branch))
 
 
 def refresh_plan_branch(context: FlowContext) -> PlanRefresh:
@@ -119,13 +120,14 @@ def record_plan_refresh(context: FlowContext, refresh: PlanRefresh) -> str | Non
         row = _refresh_row(context, refresh, record.waited_since)
         if (error := _append_ledger_row(context, plan_branch, "executions.jsonl", row, message)) is not None:
             return f"the plan_refresh row could not be recorded: {error}"
-    return save_admission(context, record.with_refresh(refresh.refreshed_to).to_dict())
+    return save_admission(context, record.with_refresh(refresh.refreshed_to, plan_branch).to_dict())
 
 
 def refresh_payload(context: FlowContext) -> dict[str, Any]:
     """``{"plan_refreshed_to": sha}`` for the Stage 3 payload when the plan branch was refreshed, else empty."""
     record = AdmissionRecord.from_dict(context.admission)
-    return {"plan_refreshed_to": record.refreshed_to} if record is not None and record.refreshed_to else {}
+    refreshed_to = record.refreshed_on(str(context.plan_branch)) if record is not None else None
+    return {"plan_refreshed_to": refreshed_to} if refreshed_to else {}
 
 
 def _refresh_failure(context: FlowContext, start_time: str, refresh: PlanRefresh) -> StageResult:
@@ -154,12 +156,12 @@ def plan_refresh_stage_failure(context: FlowContext, start_time: str) -> StageRe
     waiting or admitted-after-waiting flow would get.
     """
     record = AdmissionRecord.from_dict(context.admission)
-    target = _target_branch(context)
+    target, due = _target_branch(context), refresh_due(context)
     if context.dry_run:
-        if record is not None and (record.blocked or record.refresh_due):
+        if record is not None and (record.blocked or due):
             context.log(f"Stage 3 (dry run): the plan branch would be refreshed onto origin/{target}.")
         return None
-    if record is None or not record.refresh_due:
+    if record is None or not due:
         return None
     refresh = refresh_plan_branch(context)
     if refresh.error is None and (record_error := record_plan_refresh(context, refresh)) is not None:

@@ -95,9 +95,10 @@ under `context.admission`). It is the machine-readable interface for operators: 
   `{"state": "admitted", "override": true, "override_conflicts": [...]}` (the `{flow, files}` conflicts it overrode, as
   in the `admission_override` row). If that row cannot be written the run is refused and the previous state is put back.
   An admission that follows a refusal also carries `waited_since` (the refusal's `blocked_since`, kept across resumes)
-  and, once Stage 3 has merged the target branch into the plan branch, `refreshed_to` (the target commit merged in):
-  `{"state": "admitted", "waited_since": "<UTC timestamp>", "refreshed_to": "<sha>"}`. A refresh is due while only
-  `waited_since` is set ([Plan Refresh After an Admission Wait](git_flow.md#plan-refresh-after-an-admission-wait)). An
+  and, once Stage 3 has merged the target branch into the plan branch, `refreshed_to` (the target commit merged in) and
+  `refreshed_branch` (the plan branch it was merged into):
+  `{"state": "admitted", "waited_since": "<UTC timestamp>", "refreshed_to": "<sha>", "refreshed_branch": "<plan>"}`. A
+  refresh is due while the current plan branch is not `refreshed_branch` ([plan_refresh.md](plan_refresh.md)). An
   admission on the first check records neither field.
 - **No field:** a checkpoint written before the admission state existed loads with no `admission` object and keeps the
   older rule (at execute or review it counts as in flight). So does a flow never admitted whose refusal recorded nothing

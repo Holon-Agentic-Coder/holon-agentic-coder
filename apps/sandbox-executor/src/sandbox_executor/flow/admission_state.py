@@ -6,9 +6,10 @@ open pull request (``{kind: "pull_request", number, branch, files}``) or a local
 (``{kind: "local_flow", plan_branch, worktree, files}``). An admission records ``{state: "admitted"}``, with
 ``override: true`` and the overridden conflicts under ``--allow-overlap``. An admission after a refusal also carries
 ``waited_since`` (the refusal's ``blocked_since``, kept across resumes) and, once Stage 3 merged the target branch into
-the plan branch (:mod:`flow.plan_refresh`), ``refreshed_to``: a refresh is due while only the
-first is set. The checkpoint's top-level ``admission`` object is the operator interface: a waiting runner reads
-``blocked_by`` to know which pull requests or flows to watch.
+the plan branch (:mod:`flow.plan_refresh`), ``refreshed_to`` and the ``refreshed_branch`` it applied to: a refresh is
+due while the current plan branch is not the refreshed one (a re-plan cuts a new branch from the stale intent tip).
+The checkpoint's top-level ``admission`` object is the operator interface: a waiting runner reads ``blocked_by`` to
+know which pull requests or flows to watch.
 """
 
 from __future__ import annotations
@@ -87,20 +88,25 @@ class AdmissionRecord:
     override_conflicts: tuple[dict[str, Any], ...] = ()
     waited_since: str | None = None
     refreshed_to: str | None = None
+    refreshed_branch: str | None = None
 
     @property
     def blocked(self) -> bool:
         """Whether Stage 3 refused this flow for an overlap (a blocked flow is not in flight)."""
         return self.state == ADMISSION_BLOCKED
 
-    @property
-    def refresh_due(self) -> bool:
-        """Whether this flow was admitted after a wait and its plan branch is not yet refreshed onto the target."""
-        return self.state == ADMISSION_ADMITTED and bool(self.waited_since) and not self.refreshed_to
+    def refresh_due(self, plan_branch: str) -> bool:
+        """Whether this flow was admitted after a wait and ``plan_branch`` is not yet refreshed onto the target."""
+        waited = self.state == ADMISSION_ADMITTED and bool(self.waited_since)
+        return waited and not (self.refreshed_to and self.refreshed_branch == plan_branch)
 
-    def with_refresh(self, refreshed_to: str) -> AdmissionRecord:
-        """A copy recording the target-branch commit the plan branch was refreshed to."""
-        return replace(self, refreshed_to=refreshed_to)
+    def refreshed_on(self, plan_branch: str) -> str | None:
+        """The target commit ``plan_branch`` was refreshed to, or ``None`` when that branch was not refreshed."""
+        return self.refreshed_to if self.refreshed_branch == plan_branch else None
+
+    def with_refresh(self, refreshed_to: str, plan_branch: str) -> AdmissionRecord:
+        """A copy recording the target-branch commit ``plan_branch`` was refreshed to."""
+        return replace(self, refreshed_to=refreshed_to, refreshed_branch=plan_branch)
 
     def to_dict(self) -> dict[str, Any]:
         """Checkpoint shape of the record."""
@@ -114,7 +120,11 @@ class AdmissionRecord:
         return data
 
     def _refresh_fields(self) -> dict[str, str | None]:
-        return {"waited_since": self.waited_since, "refreshed_to": self.refreshed_to}
+        return {
+            "waited_since": self.waited_since,
+            "refreshed_to": self.refreshed_to,
+            "refreshed_branch": self.refreshed_branch,
+        }
 
     @classmethod
     def from_dict(cls, data: Any) -> AdmissionRecord | None:
@@ -134,6 +144,7 @@ class AdmissionRecord:
             else (),
             waited_since=_str_or_none(data.get("waited_since")),
             refreshed_to=_str_or_none(data.get("refreshed_to")),
+            refreshed_branch=_str_or_none(data.get("refreshed_branch")),
         )
 
 
@@ -149,13 +160,14 @@ def admitted_record(
     """An admitted record; ``override_conflicts`` (even empty) notes an ``--allow-overlap`` admission.
 
     The wait survives: ``waited_since`` is a previous refusal's ``blocked_since`` or a previous admission's
-    ``waited_since``, and ``refreshed_to`` is kept from a previous admission only.
+    ``waited_since``, and ``refreshed_to`` with its ``refreshed_branch`` is kept from a previous admission only.
     """
     waited = previous.blocked_since if previous is not None and previous.blocked else None
     admitted = previous if previous is not None and not previous.blocked else None
     carried = {
         "waited_since": waited or (admitted.waited_since if admitted else None),
         "refreshed_to": admitted.refreshed_to if admitted else None,
+        "refreshed_branch": admitted.refreshed_branch if admitted else None,
     }
     if override_conflicts is None:
         return AdmissionRecord(ADMISSION_ADMITTED, **carried)

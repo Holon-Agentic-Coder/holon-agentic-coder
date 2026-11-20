@@ -516,3 +516,59 @@ def test_recorder_refuses_a_hand_built_rejection_without_a_reason(tmp_path: Path
 
     assert _rows(tmp_path, "ACT-RES") == []
     assert recorder.recorded_keys == set()
+
+
+# --- a container resolver turn without usable output is a failed turn ----------------------------------------------
+
+
+def _resolver_turn(tmp_path: Path, returncode: int, stdout: str = "", file_payload: object | None = None) -> list:
+    """Run ``_run_resolver_agent`` with a fake runner whose turn exits ``returncode`` and may leave a dispositions file."""
+    from sandbox_executor.entrypoint.review_loop import _run_resolver_agent
+    from sandbox_executor.turns import TurnResult
+
+    dispositions_path = tmp_path / "iter-3" / "dispositions.json"
+
+    class _Runner:
+        def build_command(self, prompt: str, model: str) -> list[str]:
+            return ["fake-agent", prompt]
+
+    def fake_run_turn(cmd: list[str], cwd: str | None = None) -> TurnResult:
+        if file_payload is not None:
+            dispositions_path.write_text(json.dumps(file_payload), encoding="utf-8")
+        return TurnResult(returncode=returncode, stdout=stdout)
+
+    with (
+        patch("sandbox_executor.entrypoint.review_loop.get_runner", return_value=_Runner()),
+        patch("sandbox_executor.entrypoint.review_loop.run_turn", side_effect=fake_run_turn),
+    ):
+        return _run_resolver_agent(str(tmp_path), "fake-agent", "m", "prompt", str(dispositions_path))
+
+
+def test_a_resolver_turn_on_a_session_limit_fails_and_names_the_usage_limit(tmp_path: Path) -> None:
+    from sandbox_executor.entrypoint.review_loop import ResolverTurnError
+
+    with pytest.raises(ResolverTurnError, match="usage limit reached") as caught:
+        _resolver_turn(tmp_path, 1, stdout="You've hit your session limit")
+
+    assert "session limit" in caught.value.output_tail
+
+
+def test_a_non_zero_resolver_turn_ignores_the_dispositions_file_it_left(tmp_path: Path) -> None:
+    from sandbox_executor.entrypoint.review_loop import ResolverTurnError
+
+    left = [{"id": "R1-F1", "disposition": "rejected", "rejection_reason": "inaccurate"}]
+    with pytest.raises(ResolverTurnError, match="exited with code 1"):
+        _resolver_turn(tmp_path, 1, file_payload=left)
+
+
+def test_a_clean_resolver_turn_without_a_dispositions_file_has_no_usable_output(tmp_path: Path) -> None:
+    from sandbox_executor.entrypoint.review_loop import ResolverTurnError
+
+    with pytest.raises(ResolverTurnError, match="no usable output"):
+        _resolver_turn(tmp_path, 0)
+
+
+def test_a_clean_resolver_turn_returns_the_dispositions_it_wrote(tmp_path: Path) -> None:
+    written = [{"id": "R1-F1", "disposition": "applied"}]
+
+    assert _resolver_turn(tmp_path, 0, file_payload={"dispositions": written}) == written

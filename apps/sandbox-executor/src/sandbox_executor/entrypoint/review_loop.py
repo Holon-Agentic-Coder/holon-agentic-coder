@@ -25,6 +25,7 @@ import dataclasses
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -392,6 +393,9 @@ def _build_resolver_prompt(
     )
 
 
+_USAGE_LIMIT = re.compile(r"session limit|usage limit|rate limit", re.IGNORECASE)
+
+
 class ResolverTurnError(RuntimeError):
     """The resolver agent turn exited non-zero; carries the bounded, redacted tail of its output."""
 
@@ -419,21 +423,24 @@ def _run_resolver_agent(
             f"Runner for agent '{agent_name}' satisfies neither 'build_command' nor 'compose_cmd' contract"
         )
     outcome = run_turn(cmd, cwd=repo_dir)
-    if os.path.exists(dispositions_path):
-        try:
-            with open(dispositions_path, encoding="utf-8") as f:
-                parsed = json.load(f)
-            if isinstance(parsed, dict) and isinstance(parsed.get("dispositions"), list):
-                return parsed["dispositions"]
-            if isinstance(parsed, list):
-                return parsed
-        except (OSError, ValueError):
-            pass
+    # A failed turn decides nothing: its exit code is checked before any dispositions file it may have left behind.
     code = getattr(outcome, "returncode", getattr(outcome, "exit_code", 0))
     if code != 0:
         output = f"{getattr(outcome, 'stdout', '') or ''}\n{getattr(outcome, 'stderr', '') or ''}"
-        raise ResolverTurnError(f"Resolver agent exited with code {code}", bounded_output_tail(output))
-    return []
+        raise ResolverTurnError(f"Resolver agent {_turn_failure_label(code, output)}", bounded_output_tail(output))
+    with contextlib.suppress(OSError, ValueError), open(dispositions_path, encoding="utf-8") as f:
+        parsed = json.load(f)
+        if isinstance(parsed, dict) and isinstance(parsed.get("dispositions"), list):
+            return parsed["dispositions"]
+        if isinstance(parsed, list):
+            return parsed
+    raise ResolverTurnError("Resolver agent produced no usable output")
+
+
+def _turn_failure_label(code: int, output: str) -> str:
+    """Name why a resolver turn failed: a usage limit the agent reported, else its exit code."""
+    label = f"exited with code {code}"
+    return f"{label}: usage limit reached" if _USAGE_LIMIT.search(output) else label
 
 
 @dataclasses.dataclass(frozen=True)

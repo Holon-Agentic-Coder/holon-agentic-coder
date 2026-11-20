@@ -20,7 +20,11 @@ from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.pr import format_review_git_trailers
 from sandbox_executor.flow.host_remote import push_commit, remote_error
 from sandbox_executor.flow.review.conflict_merge import _merge_and_push, _MergeOutcome
-from sandbox_executor.flow.review.ledger_commit import _commit_pending_ledger_rows, _LedgerCommit
+from sandbox_executor.flow.review.ledger_commit import (
+    _commit_pending_ledger_rows,
+    _LedgerCommit,
+    _only_ledger_commits_ahead,
+)
 from sandbox_executor.git import run_git
 from sandbox_executor.ledger import format_commit_trailers, generate_action_id
 from sandbox_executor.redaction import redact_agent_secrets
@@ -77,6 +81,8 @@ class _GateMerge:
 def _local_commits_unpushed(context: FlowContext, branch: str) -> bool:
     """True when ``refs/heads/<branch>`` holds commits ``origin/<branch>`` lacks and they cannot be pushed now.
 
+    Only ledger-only commits are pushed here: a non-ledger local commit (one the host refused) blocks instead.
+
     This covers an earlier ledger commit whose push was rejected: the merge starts from ``origin/<branch>``, so merging
     without it would leave its rows behind and diverge the local branch from the remote.
     """
@@ -86,7 +92,12 @@ def _local_commits_unpushed(context: FlowContext, branch: str) -> bool:
     ancestor = ["merge-base", "--is-ancestor", local, f"refs/remotes/origin/{branch}"]
     if run_git(ancestor, cwd=repo_dir, check=False).returncode == 0:
         return False
-    error = "pushing is skipped" if context.skip_push else remote_error(push_commit, repo_dir, local, branch)
+    if context.skip_push:
+        error: str | None = "pushing is skipped"
+    elif not _only_ledger_commits_ahead(repo_dir, local, branch):
+        error = "it holds commits beyond the ledger rows, which the gate never pushes"
+    else:
+        error = remote_error(push_commit, repo_dir, local, branch)
     if error:
         context.log(f"[Review Loop] Conflict gate: local '{branch}' is ahead of origin and unpushed: {error}")
     return error is not None

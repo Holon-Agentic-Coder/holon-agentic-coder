@@ -333,3 +333,37 @@ def test_an_earlier_ledger_commit_that_cannot_be_pushed_blocks_the_merge(tmp_pat
     assert gate.blocked_reason == conflict_gate.UNPUSHED_ROWS_REASON
     assert merge.calls == []
     assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") == before
+
+
+def test_an_unpushed_code_commit_blocks_the_merge_and_is_never_pushed(tmp_path, monkeypatch):
+    origin, work = _pending_rows_repos(tmp_path)
+    _git(work, "stash", "-q")
+    (work / "resolver.py").write_text("x = 1\n", encoding="utf-8")
+    _git(work, "add", "resolver.py")
+    _git(work, "commit", "-q", "-m", "resolver commit the host refused to push")
+    _git(work, "stash", "pop", "-q")
+    before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
+    merge = _RecordingMerge(CODE_CONFLICT)
+    monkeypatch.setattr(conflict_gate, "_merge_and_push", merge)
+    ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
+
+    gate = conflict_gate._gate_conflicting_head(
+        ctx, BRANCH, "main", CONFLICTING, conflict_gate._GateMerge("Action-Origin: pr_review")
+    )
+
+    assert gate.blocked_reason == conflict_gate.UNPUSHED_ROWS_REASON
+    assert merge.calls == []
+    assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") == before
+
+
+def test_the_gate_never_pushes_an_unpushed_code_commit(tmp_path):
+    origin, work = _pending_rows_repos(tmp_path)
+    _git(work, "commit", "-q", "-am", "earlier ledger rows")
+    (work / "resolver.py").write_text("x = 1\n", encoding="utf-8")
+    _git(work, "add", "resolver.py")
+    _git(work, "commit", "-q", "-m", "resolver commit the host refused to push")
+    before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
+    ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
+
+    assert conflict_gate._local_commits_unpushed(ctx, BRANCH)
+    assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") == before

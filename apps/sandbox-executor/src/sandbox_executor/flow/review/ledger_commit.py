@@ -92,8 +92,32 @@ def _commit_ledger_rows(
     return _LedgerCommit(sha=run_git(["rev-parse", "HEAD"], cwd=repo_dir).stdout.strip(), parent=parent)
 
 
+def _only_ledger_commits_ahead(repo_dir: str, rev: str, branch: str) -> bool:
+    """True when every commit ``rev`` holds beyond ``origin/<branch>`` is a single-parent, ledger-only commit.
+
+    A resolver commit the host refused to push stays local; pushing ``rev`` must never carry it to the remote.
+    """
+    res = run_git(["rev-list", "--parents", f"refs/remotes/origin/{branch}..{rev}"], cwd=repo_dir, check=False)
+    if res.returncode != 0:
+        return False
+    for line in (res.stdout or "").splitlines():
+        shas = line.split()
+        if len(shas) != 2:
+            return False
+        names = run_git(["diff-tree", "--no-commit-id", "--name-only", "-r", shas[0]], cwd=repo_dir, check=False)
+        if names.returncode != 0 or not set((names.stdout or "").splitlines()) <= set(LEDGER_RELS):
+            return False
+    return True
+
+
 def _push_ledger_commit(context: FlowContext, commit: _LedgerCommit, branch: str) -> _LedgerCommit:
-    """Fast-forward push ``commit``; a rejected push keeps the local commit and is logged, never raised."""
+    """Fast-forward push ``commit``; a rejected push keeps the local commit and is logged, never raised.
+
+    The push is refused when ``commit`` sits on local commits ``origin/<branch>`` lacks that are not ledger-only.
+    """
+    if not _only_ledger_commits_ahead(context.target_worktree, commit.sha, branch):
+        _warn(context, f"pushing ledger commit {commit.sha[:8]} refused: it sits on unpushed non-ledger commits")
+        return commit
     try:
         push_commit(context.target_worktree, commit.sha, branch)
     except HostRemoteError as exc:

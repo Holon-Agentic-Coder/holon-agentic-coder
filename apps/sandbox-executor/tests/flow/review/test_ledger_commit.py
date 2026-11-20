@@ -156,3 +156,30 @@ def test_the_reviewed_head_follows_a_ledger_commit_made_on_it():
     assert ledger_commit._advance_past_ledger_commit(target, "a" * 40, elsewhere) == (target, "a" * 40)
     assert ledger_commit._advance_past_ledger_commit(target, "a" * 40, None) == (target, "a" * 40)
     assert ledger_commit._advance_past_ledger_commit(None, "", on_head) == (None, "")
+
+
+def test_a_ledger_commit_on_an_unpushed_code_commit_is_never_pushed(tmp_path):
+    origin, work = build_flow_worktree(tmp_path)
+    before = _origin_tip(origin)
+    (work / "src" / "app.py").write_text("x = 9\n", encoding="utf-8")
+    _git(work, "commit", "-q", "-am", "resolver commit the host refused to push")
+    append_row(work, {"execution_id": "E-row"})
+    context = _context(work)
+
+    commit = ledger_commit._commit_pending_ledger_rows(context, 1)
+
+    assert commit is not None and not commit.pushed
+    assert _origin_tip(origin) == before
+    assert any("refused: it sits on unpushed non-ledger commits" in line for line in context.logs)
+
+
+def test_a_ledger_commit_on_an_earlier_unpushed_ledger_commit_pushes_both(tmp_path):
+    origin, work = build_flow_worktree(tmp_path)
+    append_row(work, {"execution_id": "E-early"})
+    _git(work, "commit", "-q", "-am", "earlier ledger rows")
+    append_row(work, {"execution_id": "E-row"})
+
+    commit = ledger_commit._commit_pending_ledger_rows(_context(work), 1)
+
+    assert commit is not None and commit.pushed
+    assert _origin_tip(origin) == commit.sha

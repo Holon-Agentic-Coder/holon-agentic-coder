@@ -35,6 +35,10 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
+def _str_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
 @dataclass(frozen=True)
 class BlockedBy:
     """One pull request or local flow a blocked flow waits on, with the overlapping files."""
@@ -63,9 +67,9 @@ class BlockedBy:
             kind=str(data["kind"]),
             files=tuple(str(path) for path in files) if isinstance(files, list) else (),
             number=_int_or_none(data.get("number")),
-            branch=data.get("branch"),
-            plan_branch=data.get("plan_branch"),
-            worktree=data.get("worktree"),
+            branch=_str_or_none(data.get("branch")),
+            plan_branch=_str_or_none(data.get("plan_branch")),
+            worktree=_str_or_none(data.get("worktree")),
         )
 
 

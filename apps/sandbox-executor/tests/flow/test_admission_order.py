@@ -130,3 +130,19 @@ def test_a_waiter_still_blocked_or_waiting_on_this_flow_is_not_ready():
     assert older_ready_waiter(own_key, own, [], [_waiter(OLDER_PLAN, "2026-11-20T10:00:00.000Z", by_pr)]) is None
     oldest = _waiter(NEWER_PLAN, "2026-11-20T00:30:00.000Z", by_pr)
     assert older_ready_waiter(own_key, own, [], [_waiter(OLDER_PLAN, since, by_pr), oldest]) is oldest
+
+
+def test_a_waiter_without_blocked_since_takes_no_place_in_the_order():
+    own = TouchSet((TouchSetEntry("src/app.py"),))
+    own_key = ("2026-11-20T09:00:00.000Z", "I-9-own/P-9-x/_")
+    undated = BlockedWaiter(OLDER_PLAN, "/w", TouchSet((TouchSetEntry("src/"),)), AdmissionRecord("blocked"))
+    assert older_ready_waiter(own_key, own, [], [undated]) is None
+
+
+def test_a_foreign_blocked_by_entry_with_non_string_references_never_crashes_admission():
+    pr = BlockedBy.from_dict({"kind": "pull_request", "number": 7, "branch": 42, "files": []})
+    flow = BlockedBy.from_dict({"kind": "local_flow", "plan_branch": ["x"], "worktree": {}, "files": []})
+    assert pr is not None and pr.branch is None
+    assert flow is not None and (flow.plan_branch, flow.worktree) == (None, None)
+    assert blocker_is_clear(pr, set(), set(), "I-9-own/P-9-x/_")
+    assert blocker_is_clear(flow, set(), set(), "I-9-own/P-9-x/_")

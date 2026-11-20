@@ -55,6 +55,7 @@ def older_ready_waiter(
         waiter
         for waiter in waiters
         if waiter.plan_branch not in in_flight
+        and waiter.record.blocked_since  # a record without its refusal time has no place in the order
         and waiter_key(waiter) < own_key
         and waiter.declared is not None
         and overlapping_entries(own, waiter.declared)

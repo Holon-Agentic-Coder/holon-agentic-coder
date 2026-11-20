@@ -523,6 +523,7 @@ class TestEntropyBudgetHandoffInFlow:
             schema_version=-1,
             replan_attempts=1,
             review_iterations_done=3,
+            admission={"state": "admitted"},
             **parent_values,
         )
         child_intent = {"slug": "child", "goal": "Add the parser"}
@@ -540,6 +541,7 @@ class TestEntropyBudgetHandoffInFlow:
             "schema_version": flow_module.CURRENT_CONTEXT_SCHEMA_VERSION,
             "replan_attempts": 0,
             "review_iterations_done": 0,  # A child intent runs its own Stage 4, so its review count starts afresh.
+            "admission": None,  # A child intent runs its own Stage 3 admission.
         }
         defaults = FlowContext(token_reduce=False)
         for name, value in parent_values.items():

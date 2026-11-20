@@ -129,6 +129,21 @@ def test_a_head_detached_at_the_tip_before_the_stage_is_reattached_not_checked_o
     assert (ctx.starting_branch, ctx.starting_detached) == (EXEC, False)
 
 
+def test_a_failed_pre_review_checkout_is_not_blamed_on_the_review_loop(flow_worktree: Path) -> None:
+    _git(flow_worktree, "checkout", "-q", "-b", "operator")
+    (flow_worktree / LEDGER).write_text('{"execution_id": "operator"}\n', encoding="utf-8")
+    _git(flow_worktree, "commit", "-qam", "operator")
+    (flow_worktree / LEDGER).write_text('{"execution_id": "uncommitted"}\n', encoding="utf-8")
+
+    ctx, result, calls = _run_stage(flow_worktree, _approved_loop)
+
+    assert result.status is StageStatus.FAILED
+    assert "could not check out execution branch" in (result.error or "")
+    assert _git(flow_worktree, "symbolic-ref", "--short", "HEAD") == "operator"
+    assert calls.count(["checkout", EXEC]) == 1
+    assert not any("Stage 4 review loop" in line for line in ctx.logs)
+
+
 @pytest.mark.parametrize("module", REVIEW_STAGE_MODULES)
 def test_no_review_stage_module_checks_out_a_bare_commit(module: str) -> None:
     source = (PACKAGE / module).read_text(encoding="utf-8")

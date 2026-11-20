@@ -69,15 +69,15 @@ def _checkout_execution_branch(context: FlowContext) -> str | None:
 
 def run_review_stage(context: FlowContext) -> StageResult:
     """Execute Stage 4 and hand the worktree back on the execution branch on every exit, a raise included."""
-    if context.dry_run or not context.execution_branch:
-        return _run_review_stage_body(context)
+    on_branch: list[str] = []  # armed by the body after its checkout, so a failed one is not blamed on the loop
     try:
-        return _run_review_stage_body(context)
+        return _run_review_stage_body(context, on_branch)
     finally:
-        restore_branch(context.target_worktree, context.execution_branch, "Stage 4 review loop", context.log, run_git)
+        if on_branch:
+            restore_branch(context.target_worktree, on_branch[0], "Stage 4 review loop", context.log, run_git)
 
 
-def _run_review_stage_body(context: FlowContext) -> StageResult:  # noqa: C901, PLR0912, PLR0915
+def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageResult:  # noqa: C901, PLR0912, PLR0915
     """Execute Stage 4: Review Loop.
 
     Evaluates diffs, test logs, and safety invariants. Enforces the human-only PR merge rule:
@@ -103,6 +103,7 @@ def _run_review_stage_body(context: FlowContext) -> StageResult:  # noqa: C901, 
                 f"Review stage failed: could not check out execution branch '{context.execution_branch}' "
                 f"before the review loop: {checkout_err}",
             )
+        on_branch.append(context.execution_branch)
         target_branch = context.intent_data.get("target_branch", "main")
         check_and_resolve_stage_conflicts(
             repo_dir, target_branch=target_branch, stage_name="review", branch=context.execution_branch

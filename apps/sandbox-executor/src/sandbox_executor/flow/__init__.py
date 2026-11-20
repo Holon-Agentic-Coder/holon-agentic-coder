@@ -10,8 +10,7 @@ is equivalent to invoking the stages by hand; the flow orchestrates and validate
    whose diff against the plan branch is empty outside holon-knowledge/ledger/, plans/ and executions/.
 4. Stage 4 (Review Loop): Autonomous review loop evaluating diffs and test results, strictly enforcing
    the human-only PR merge rule by halting at consensus approval without merging to main.
-5. Stage 5 (Post-Execution Calibration): Run the post-execution calibration engine on the execution branch,
-   producing calibration analysis report on the /calibrated branch.
+5. Stage 5 (Post-Execution Calibration): Calibrate the execution branch, reporting on its /calibrated branch.
 
 The engine is split into focused modules; see docs/architecture.md (Flow engine module map).
 """
@@ -19,14 +18,12 @@ The engine is split into focused modules; see docs/architecture.md (Flow engine 
 from __future__ import annotations
 
 from sandbox_executor.entrypoint.planner import parse_metrics
-from sandbox_executor.flow.admission import (
-    AdmissionConflict,
-    AdmissionDecision,
-    admission_stage_failure,
-    check_admission,
-    format_refusal,
-)
+from sandbox_executor.flow.admission import admission_stage_failure, check_admission, format_refusal, record_admission
+from sandbox_executor.flow.admission_decision import AdmissionConflict, AdmissionDecision, decide_admission, refusal
+from sandbox_executor.flow.admission_lock import AdmissionLockError, admission_lock, admission_lock_path
+from sandbox_executor.flow.admission_order import blocker_is_clear, older_ready_waiter, older_waiter_flows, waiter_key
 from sandbox_executor.flow.admission_record import override_already_recorded
+from sandbox_executor.flow.admission_state import AdmissionRecord, BlockedBy, admitted_record, blocked_record, utc_now
 from sandbox_executor.flow.calibrate_rebuild import (
     holds_only_calibration_commits,
     is_ancestor,
@@ -62,6 +59,7 @@ from sandbox_executor.flow.checkpoint import (
     get_default_checkpoint_path,
     load_checkpoint,
     migrate_checkpoint_data,
+    save_admission,
     save_checkpoint,
 )
 from sandbox_executor.flow.child_progress import _child_intent_branch, _sub_intent_depth
@@ -150,11 +148,15 @@ from sandbox_executor.flow.host_remote import (
 )
 from sandbox_executor.flow.in_flight import (
     AdmissionUnavailable,
+    BlockedWaiter,
     InFlightFlow,
     discover_in_flight_flows,
+    local_blocked_waiters,
     local_in_flight_flows,
     open_flow_pull_requests,
+    other_checkpoints,
     read_plan_touch_set,
+    root_intent,
 )
 from sandbox_executor.flow.intent_questions import validate_intent_questions
 from sandbox_executor.flow.ledger_reconcile import (
@@ -237,10 +239,7 @@ from sandbox_executor.flow.review.resolver import (
     _lookup_introducing_action_id,
 )
 from sandbox_executor.flow.review.verdict import review_loop_approved, review_summary_lines
-from sandbox_executor.flow.review.workspace import (
-    HOST_REVIEW_REFUSAL,
-    reviewers_sandboxed,
-)
+from sandbox_executor.flow.review.workspace import HOST_REVIEW_REFUSAL, reviewers_sandboxed
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages import children as _children
 from sandbox_executor.flow.stages.calibrate import (
@@ -279,6 +278,11 @@ from sandbox_executor.flow.stages.touch_set_guard import (
     touch_set_violation,
     touch_set_violation_result,
 )
+from sandbox_executor.flow.worktree_checkpoints import (
+    WorktreeCheckpoint,
+    read_worktree_checkpoint,
+    worktree_checkpoints,
+)
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
@@ -310,7 +314,11 @@ __all__ = [
     "_SUMMARY_STATUS_WORDS",
     "AdmissionConflict",
     "AdmissionDecision",
+    "AdmissionLockError",
+    "AdmissionRecord",
     "AdmissionUnavailable",
+    "BlockedBy",
+    "BlockedWaiter",
     "CalibrationSyncError",
     "CarriedPass",
     "CiWaitPolicy",
@@ -333,6 +341,7 @@ __all__ = [
     "SalvageResult",
     "StageResult",
     "StageStatus",
+    "WorktreeCheckpoint",
     "_append_ledger_row",
     "_append_only_union",
     "_append_superseding_execution_row",
@@ -410,7 +419,12 @@ __all__ = [
     "_warn_ledger_failure",
     "_worst_severity",
     "_write_resolved_ledger",
+    "admission_lock",
+    "admission_lock_path",
     "admission_stage_failure",
+    "admitted_record",
+    "blocked_record",
+    "blocker_is_clear",
     "build_pr_review_consensus_report",
     "build_review_id",
     "carried_blocker",
@@ -419,6 +433,7 @@ __all__ = [
     "check_pr_mergeability",
     "choose_merge_flag",
     "create_or_update_pr",
+    "decide_admission",
     "describe_ci_outcome",
     "deserialize_carried",
     "discard_empty_calibrated_branch",
@@ -445,13 +460,17 @@ __all__ = [
     "is_terminal_verdict",
     "leftover_paths",
     "load_checkpoint",
+    "local_blocked_waiters",
     "local_in_flight_flows",
     "lookup_merge_flag",
     "merge_findings",
     "migrate_checkpoint_data",
     "new_local_child_branches",
     "next_poll_interval",
+    "older_ready_waiter",
+    "older_waiter_flows",
     "open_flow_pull_requests",
+    "other_checkpoints",
     "override_already_recorded",
     "parse_metrics",
     "pending_check_names",
@@ -465,13 +484,16 @@ __all__ = [
     "push_branch",
     "push_commit",
     "read_plan_touch_set",
+    "read_worktree_checkpoint",
     "rebuild_calibrated_branch",
     "reconcile_jsonl_ledger_conflict",
     "reconcile_ledger_file",
+    "record_admission",
     "record_review_action",
     "record_starting_branch",
     "recorded_test_pass_rate",
     "redact_agent_secrets",
+    "refusal",
     "remote_error",
     "render_reviewer_summary_line",
     "report_staleness",
@@ -485,6 +507,7 @@ __all__ = [
     "review_loop_approved",
     "review_summary_lines",
     "reviewers_sandboxed",
+    "root_intent",
     "run_calibrate_stage",
     "run_execute_stage",
     "run_flow_pipeline",
@@ -496,6 +519,7 @@ __all__ = [
     "run_review_stage",
     "salvage_for_resume",
     "salvage_leftovers",
+    "save_admission",
     "save_checkpoint",
     "serialize_open",
     "settle_pending_ci",
@@ -509,6 +533,9 @@ __all__ = [
     "touch_set_violation_result",
     "undisposed",
     "unrecorded_executions",
+    "utc_now",
     "validate_intent_questions",
     "wait_for_pending_ci",
+    "waiter_key",
+    "worktree_checkpoints",
 ]

@@ -1,7 +1,6 @@
 """Holon Flow data model: the lifecycle stages, stage statuses, stage results and the flow context.
 
-``FlowContext`` carries the run configuration and every stage result between stages, and is what a
-checkpoint serialises.
+``FlowContext`` carries the run configuration and every stage result between stages; a checkpoint serialises it.
 """
 
 from __future__ import annotations
@@ -170,6 +169,8 @@ class FlowContext:
     mitm_web: bool = False
     # --allow-overlap: Stage 3 admission admits a plan that overlaps a flow in flight and records the override.
     allow_overlap: bool = False
+    # Stage 3 admission object (admission_state.AdmissionRecord.to_dict()); None until Stage 3 admission runs.
+    admission: dict[str, Any] | None = None
     stage_results: dict[str, StageResult] = field(default_factory=dict)
     logs: list[str] = field(default_factory=list)
     schema_version: int = CURRENT_CONTEXT_SCHEMA_VERSION
@@ -181,6 +182,7 @@ class FlowContext:
     carried_review_findings: list[dict[str, Any]] = field(default_factory=list)
     # Role-agent dispatcher for Stages 1-3; None means cli.dispatch_role_agent. Never checkpointed.
     dispatcher: Callable[..., int] | None = field(default=None, repr=False, compare=False)
+    checkpoint_path: str | None = field(default=None, repr=False)  # The engine's --checkpoint path; never checkpointed.
 
     @property
     def repo_dir(self) -> str:
@@ -228,6 +230,7 @@ class FlowContext:
             "review_ensemble_size": self.review_ensemble_size,
             "mitm_web": self.mitm_web,
             "allow_overlap": self.allow_overlap,
+            "admission": self.admission,
             "replan_attempts": self.replan_attempts,
             "review_iterations_done": self.review_iterations_done,
             "carried_review_findings": self.carried_review_findings,
@@ -268,6 +271,7 @@ class FlowContext:
             review_ensemble_size=int(data.get("review_ensemble_size") or DEFAULT_ENSEMBLE_SIZE),
             mitm_web=data.get("mitm_web", False),
             allow_overlap=bool(data.get("allow_overlap", False)),
+            admission=data.get("admission"),
             replan_attempts=int(data.get("replan_attempts") or 0),
             review_iterations_done=int(data.get("review_iterations_done") or 0),
             carried_review_findings=list(data.get("carried_review_findings") or []),

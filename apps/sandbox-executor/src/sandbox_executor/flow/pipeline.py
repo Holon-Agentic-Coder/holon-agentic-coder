@@ -66,7 +66,7 @@ class PipelineEngine:
     ) -> None:
         self.context = context
         self.from_stage = FlowStage.from_str(from_stage) if from_stage else None
-        self.checkpoint_path = checkpoint_path
+        self.checkpoint_path = context.checkpoint_path = checkpoint_path  # Stage 3 saves its admission state there too
         self.budgets = budgets or load_budgets(os.environ)
         self.clock = clock
         # True only while the first stage of a run resumed at Stage 3 is pending; deliberately not checkpointed.

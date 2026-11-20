@@ -268,7 +268,7 @@ moved once by `scripts/migrate_plan_layout.py`; a plan file that no branch could
 
 ### 2.7 The 5-Stage Holon Flow Lifecycle
 
-The evolution pipeline traverses five deterministic stages, representing a single continuous provenance lifecycle:
+The five deterministic stages form one provenance lifecycle ([Stage 3 admission](touch_set.md#admission-state)):
 
 | Stage              | Name                  | CLI Command                            | Artifacts & Outputs                                                                       |
 | :----------------- | :-------------------- | :------------------------------------- | :---------------------------------------------------------------------------------------- |

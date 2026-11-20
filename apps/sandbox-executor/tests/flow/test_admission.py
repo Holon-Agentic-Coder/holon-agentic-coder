@@ -8,13 +8,25 @@ from pathlib import Path
 
 import pytest
 from sandbox_executor.calibration_ev import parse_summary_records
-from sandbox_executor.flow import FlowContext, StageStatus, admission, admission_record
+from sandbox_executor.flow import (
+    FlowContext,
+    FlowStage,
+    StageResult,
+    StageStatus,
+    admission,
+    admission_record,
+    admission_state,
+)
 from sandbox_executor.flow.admission import AdmissionDecision, check_admission, format_refusal
+from sandbox_executor.flow.checkpoint import get_default_checkpoint_path, save_checkpoint
 from sandbox_executor.flow.git_refs import _latest_execution_summary
+from sandbox_executor.flow.pipeline import PipelineEngine
 from sandbox_executor.flow.stages import touch_set_guard
 from sandbox_executor.ledger import query_ledger
 
 from tests.flow.helpers import OTHER_HEAD, OTHER_PLAN, FakeGh, _git, make_plan_branch, no_worktrees
+
+THIRD_PLAN = "I-300-third/P-301-eeeeeeee-claude-agent-claude-opus-5-5/_"
 
 OWN_PLAN = "I-100-own/P-101-cccccccc-claude-agent-claude-opus-5-5/_"
 REAL_CHECK = check_admission
@@ -46,6 +58,7 @@ def test_overlap_with_a_declared_set_is_refused_and_named(own_plan):
     assert [(c.label, c.files) for c in decision.conflicts] == [
         (f"pull request #7 (branch {OTHER_HEAD})", ("src/app.py (its entry src/)",))
     ]
+    assert [entry.files for entry in decision.blocked_by] == [("src/app.py",)]
     message = format_refusal(decision)
     assert message.startswith("Stage 3 refused: the touch set overlaps pull request #7")
     assert OTHER_HEAD in message and "src/app.py" in message and "--allow-overlap" in message
@@ -141,6 +154,7 @@ def test_override_that_cannot_be_recorded_is_refused(own_plan, monkeypatch):
     assert result is not None and result.status == StageStatus.FAILED
     assert result.payload["dispatched"] is False
     assert "could not be recorded" in str(result.error) and "push rejected" in str(result.error)
+    assert context.admission is None and _admission(own_plan) is None  # the admitted record was undone
 
 
 def test_touch_set_violation_reports_an_unrecorded_superseding_row(own_plan, monkeypatch):
@@ -174,3 +188,125 @@ def test_ledger_readers_never_count_the_override_row(tmp_path):
     assert query_ledger(str(ledger), entry_type="summary") == [summary]
     assert query_ledger(str(ledger), entry_type="action") == []
     assert _latest_execution_summary([summary, override], "E-1-x") == summary
+
+
+def _admission(host: Path) -> dict | None:
+    """The top-level admission object of the run's own checkpoint (own_context has no slug: ``default``)."""
+    path = Path(get_default_checkpoint_path(str(host), "default"))
+    return json.loads(path.read_text(encoding="utf-8")).get("admission") if path.exists() else None
+
+
+def _local_flow(host: Path, tmp_path: Path) -> Path:
+    """A flow at execute in a second worktree whose plan declares docs/ (overlapping the own plan's docs/)."""
+    make_plan_branch(host, THIRD_PLAN, [{"path": "docs/"}])
+    second = tmp_path / "second"
+    _git(host, "worktree", "add", "-q", "--detach", str(second), "main")
+    context = FlowContext(target_worktree=str(second), intent_data={"slug": "third"}, plan_branch=THIRD_PLAN)
+    for stage in (FlowStage.INTENT, FlowStage.PLAN):
+        context.stage_results[stage.value] = StageResult(stage=stage, status=StageStatus.SUCCESS)
+    save_checkpoint(context)
+    return second
+
+
+def _clock(monkeypatch: pytest.MonkeyPatch, *times: str) -> None:
+    readings = iter(times)
+    monkeypatch.setattr(admission_state, "utc_now", lambda: next(readings))
+
+
+def test_refusal_records_blocked_with_each_pull_request_and_local_flow(own_plan, tmp_path, monkeypatch):
+    second = _local_flow(own_plan, tmp_path)
+    _clock(monkeypatch, "2026-11-20T01:00:00.000Z", "2026-11-20T01:00:00.000Z")
+    decision = check_admission(own_context(own_plan), other_pr(["src/app.py"]))
+    assert not decision.admitted
+    recorded = _admission(own_plan)
+    assert recorded is not None and recorded["state"] == "blocked"
+    assert recorded["blocked_since"] == "2026-11-20T01:00:00.000Z"
+    pull_request, local = recorded["blocked_by"]
+    assert pull_request == {"kind": "pull_request", "number": 7, "branch": OTHER_HEAD, "files": ["src/app.py"]}
+    assert local["kind"] == "local_flow" and local["plan_branch"] == THIRD_PLAN and local["files"] == ["docs/"]
+    assert Path(local["worktree"]).resolve() == second.resolve()
+
+
+def test_admission_records_admitted(own_plan):
+    assert check_admission(own_context(own_plan), other_pr(["lib/other.py"]), no_worktrees).admitted
+    assert _admission(own_plan) == {"state": "admitted"}
+
+
+def test_override_records_admitted_with_the_override(own_plan):
+    decision = check_admission(own_context(own_plan, allow_overlap=True), other_pr(["src/app.py"]), no_worktrees)
+    assert decision.admitted and decision.overridden
+    assert _admission(own_plan) == {
+        "state": "admitted",
+        "override": True,
+        "override_conflicts": [{"flow": f"pull request #7 (branch {OTHER_HEAD})", "files": ["src/app.py"]}],
+    }
+
+
+def test_blocked_since_is_kept_and_blocked_by_replaced_across_refusals(own_plan, monkeypatch):
+    _clock(monkeypatch, *(f"2026-11-20T0{hour}:00:00.000Z" for hour in range(1, 5)))
+    context = own_context(own_plan)
+    check_admission(context, other_pr(["src/app.py"]), no_worktrees)
+    first = _admission(own_plan)
+    later_pr = FakeGh([{"number": 8, "headRefName": OTHER_HEAD, "baseRefName": "main"}], {8: ["docs/guide.md"]})
+    check_admission(context, later_pr, no_worktrees)
+    second = _admission(own_plan)
+    assert first is not None and second is not None
+    assert first["blocked_since"] == second["blocked_since"] == "2026-11-20T01:00:00.000Z"
+    assert [entry["number"] for entry in first["blocked_by"]] == [7]
+    assert [(entry["number"], entry["files"]) for entry in second["blocked_by"]] == [(8, ["docs/guide.md"])]
+
+
+def test_non_overlap_refusals_record_nothing(own_plan):
+    decision = check_admission(own_context(own_plan), FakeGh([], {}, fail=True), no_worktrees)
+    assert not decision.admitted and _admission(own_plan) is None
+
+
+def test_a_lock_that_cannot_be_taken_fails_closed(tmp_path):
+    context = FlowContext(target_worktree=str(tmp_path), plan_branch=OWN_PLAN, token_reduce=False)
+    decision = check_admission(context, FakeGh([], {}), no_worktrees)
+    assert not decision.admitted and "admission lock could not be taken" in str(decision.reason)
+
+
+def test_a_lock_failure_refuses_even_under_allow_overlap(tmp_path):
+    context = FlowContext(target_worktree=str(tmp_path), plan_branch=OWN_PLAN, token_reduce=False, allow_overlap=True)
+    decision = check_admission(context, FakeGh([], {}), no_worktrees)
+    assert not decision.admitted and not decision.overridden
+
+
+def test_an_unsaved_admission_state_refuses_even_under_allow_overlap(own_plan, monkeypatch):
+    """A blocked checkpoint that cannot be replaced would hide the overriding run from discovery: refuse it."""
+    monkeypatch.setattr(admission, "save_admission", lambda context, record: "disk full")
+    context = own_context(own_plan, allow_overlap=True)
+    decision = check_admission(context, other_pr(["src/app.py"]), no_worktrees)
+    assert not decision.admitted and not decision.overridden
+    assert decision.reason == "the admission state could not be recorded: disk full"
+    _use_real_check(monkeypatch, other_pr(["src/app.py"]))
+    result = admission.admission_stage_failure(context, "2026-11-14T00:00:00Z")
+    assert result is not None and result.status == StageStatus.FAILED and result.payload["dispatched"] is False
+
+
+def test_the_lock_uses_the_injected_git_runner(own_plan):
+    calls: list[list[str]] = []
+
+    def recording_git(args, cwd):
+        calls.append(args)
+        return no_worktrees(args, cwd)
+
+    check_admission(own_context(own_plan), other_pr(["lib/x.py"]), recording_git)
+    assert ["rev-parse", "--git-common-dir"] in calls
+
+
+def test_admission_state_is_saved_at_the_engines_checkpoint_path(own_plan, tmp_path):
+    custom = tmp_path / "custom-checkpoint.json"
+    context = own_context(own_plan)
+    PipelineEngine(context, checkpoint_path=str(custom))  # the engine hands its --checkpoint path to the context
+    assert check_admission(context, other_pr(["src/app.py"]), no_worktrees).blocked_by
+    assert json.loads(custom.read_text(encoding="utf-8"))["context"]["admission"]["state"] == "blocked"
+    assert _admission(own_plan) is None  # no frozen copy at the default path
+
+
+def test_dry_run_writes_no_admission_state(own_plan, monkeypatch):
+    _use_real_check(monkeypatch, other_pr(["src/app.py"]))
+    context = own_context(own_plan, dry_run=True)
+    assert admission.admission_stage_failure(context, "2026-11-14T00:00:00Z") is None
+    assert context.admission is None and _admission(own_plan) is None

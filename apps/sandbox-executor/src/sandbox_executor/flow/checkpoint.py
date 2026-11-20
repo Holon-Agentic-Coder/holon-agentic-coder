@@ -116,8 +116,8 @@ class FlowCheckpoint:
     schema_version: int = CURRENT_CHECKPOINT_SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert FlowCheckpoint to dictionary."""
-        return {
+        """Convert FlowCheckpoint to dictionary; the Stage 3 ``admission`` object is also copied to the top level."""
+        data = {
             "schema_version": self.schema_version,
             "intent_slug": self.intent_slug,
             "current_stage": self.current_stage.value,
@@ -125,6 +125,9 @@ class FlowCheckpoint:
             "context": self.context.to_dict(),
             "timestamp": self.timestamp,
         }
+        if self.context.admission is not None:
+            data["admission"] = self.context.admission
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> FlowCheckpoint:
@@ -139,12 +142,15 @@ class FlowCheckpoint:
         if schema_version < CURRENT_CHECKPOINT_SCHEMA_VERSION:
             data = migrate_checkpoint_data(data, target_version=CURRENT_CHECKPOINT_SCHEMA_VERSION)
 
+        context = FlowContext.from_dict(data.get("context", {}))
+        if context.admission is None:
+            context.admission = data.get("admission")  # optional and additive: older checkpoints have neither
         return cls(
             schema_version=data.get("schema_version", CURRENT_CHECKPOINT_SCHEMA_VERSION),
             intent_slug=data.get("intent_slug", "unknown"),
             current_stage=FlowStage.from_str(data.get("current_stage", "intent")),
             completed_stages=data.get("completed_stages", []),
-            context=FlowContext.from_dict(data.get("context", {})),
+            context=context,
             timestamp=data.get("timestamp", ""),
         )
 
@@ -199,6 +205,18 @@ def save_checkpoint(context: FlowContext, filepath: str | None = None) -> str:
     os.replace(temp_name, target_path)
     context.log(f"Checkpoint saved to {target_path}")
     return target_path
+
+
+def save_admission(context: FlowContext, admission: dict[str, Any] | None) -> str | None:
+    """Set the Stage 3 ``admission`` object and save the checkpoint at the engine's path (``context.checkpoint_path``,
+    else the default one other worktrees' discovery reads); the error text on failure, keeping the previous object."""
+    previous, context.admission = context.admission, admission
+    try:
+        save_checkpoint(context, context.checkpoint_path)
+    except OSError as exc:
+        context.admission = previous
+        return str(exc)
+    return None
 
 
 def load_checkpoint(filepath: str) -> FlowCheckpoint:

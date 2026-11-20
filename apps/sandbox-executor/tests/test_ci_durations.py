@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.ci_durations import main
+from scripts.ci_durations import build_parser, main
 from scripts.ci_durations_api import ApiClient, list_runs
 from scripts.ci_durations_collect import (
     JobDuration,
@@ -330,6 +330,13 @@ def test_rolling_median_uses_the_previous_window_of_main_successes_only() -> Non
     assert medians[rows[6]] == 40.0
 
 
+def test_an_even_window_takes_the_mean_of_the_two_middle_points() -> None:
+    rows = [point(day, value) for day, value in enumerate((10.0, 20.0, 80.0, 40.0, 100.0, 1.0), start=1)]
+    medians = rolling_medians(rows, window=4)
+    assert medians[rows[4]] == 30.0  # median of 10, 20, 80, 40
+    assert medians[rows[5]] == 60.0  # median of 20, 80, 40, 100
+
+
 def test_failed_and_pull_request_points_do_not_feed_the_baseline_but_get_one() -> None:
     rows = [point(day, 10.0 * day) for day in range(1, 6)]
     rows += [point(6, 999.0, conclusion="failure"), point(7, 999.0, ref_class="pr", event="pull_request")]
@@ -507,6 +514,12 @@ def test_the_summary_says_when_no_job_has_a_baseline(tmp_path: Path, monkeypatch
     monkeypatch.setenv("GITHUB_TOKEN", SECRET)
     assert run_cli(tmp_path, recorded_api()) == 0
     assert "No job has a baseline yet." in (tmp_path / "summary.md").read_text(encoding="utf-8")
+
+
+def test_the_parser_defaults_to_30_days_and_the_step_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", "/tmp/step-summary.md")
+    args = build_parser().parse_args([])
+    assert args.days == 30 and args.summary == "/tmp/step-summary.md"
 
 
 def test_days_must_be_positive(tmp_path: Path, monkeypatch) -> None:

@@ -497,3 +497,22 @@ def test_failed_host_push_names_the_operation_branch_and_remote_without_credenti
     assert outcome.error is not None
     assert outcome.error.startswith("Resolver push failed: host push of 'feature' through remote 'origin' failed: ")
     assert "SECRET" not in outcome.error
+
+
+# --- a rejection without a stated reason never reaches the ledger --------------------------------------------------
+
+
+@pytest.mark.parametrize("reason", [None, "", "unspecified"])
+def test_recorder_refuses_a_hand_built_rejection_without_a_reason(tmp_path: Path, reason: str | None) -> None:
+    from sandbox_executor.flow.review.resolver import DispositionRecorder
+    from sandbox_executor.review_report import FindingDisposition
+
+    ctx = _ensemble_ctx(tmp_path)
+    exec_file = str(tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl")
+    recorder = DispositionRecorder(ctx, exec_file, EXEC_TARGET, {}, set(), [])
+    disp = FindingDisposition("R1-F1", "nit", "src/app.py", 3, "A nit.", "Fix it.", "rejected", reason)
+
+    recorder.record(3, [disp])
+
+    assert _rows(tmp_path, "ACT-RES") == []
+    assert recorder.recorded_keys == set()

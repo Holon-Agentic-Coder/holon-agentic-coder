@@ -24,7 +24,7 @@ from sandbox_executor.flow.review.ensemble import _ENGINE_PASSES_PER_DISPATCH
 from sandbox_executor.flow.review.records import _bounded_error_context, record_review_action
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.redaction import redact_agent_secrets
-from sandbox_executor.resolver_evidence import OPEN
+from sandbox_executor.resolver_evidence import OPEN, REJECTED, require_rejection_reason
 from sandbox_executor.resolver_result import (
     read_container_resolver_result,
     rejected_attempt_fields,
@@ -167,6 +167,18 @@ def _dispatch_review_resolver(
             os.remove(result_file)
 
 
+def _has_ledger_reason(disp: FindingDisposition) -> bool:
+    """False for a rejection without a stated reason: it is refused and never reaches the ledger (stays open)."""
+    if disp.disposition != REJECTED:
+        return True
+    try:
+        require_rejection_reason(disp.rejection_reason)
+    except ValueError as exc:
+        print(f"[Review Loop] Refused {disp.id}: {exc}; the finding stays open.")
+        return False
+    return True
+
+
 def _lookup_introducing_action_id(row: FindingRow, action_ids: Mapping[str, str]) -> str | None:
     """Find the ACT-FIND action_id that first introduced ``row``."""
     sig_key = str(finding_signature(row.severity, row.path, row.line, row.summary))
@@ -193,7 +205,7 @@ class DispositionRecorder:
         suppressed = 0
         for disp in dispositions:
             sig = finding_signature(disp.severity, disp.path, disp.line, disp.summary)
-            if sig in self.recorded_keys:
+            if sig in self.recorded_keys or not _has_ledger_reason(disp):
                 continue
             self.recorded_keys.add(sig)
             intro_id = (

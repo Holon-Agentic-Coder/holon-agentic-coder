@@ -522,7 +522,7 @@ def test_recorder_refuses_a_hand_built_rejection_without_a_reason(tmp_path: Path
 
 
 def _resolver_turn(tmp_path: Path, returncode: int, stdout: str = "", file_payload: object | None = None) -> list:
-    """Run ``_run_resolver_agent`` with a fake runner whose turn exits ``returncode`` and may leave a dispositions file."""
+    """Run ``_run_resolver_agent`` with a fake turn exiting ``returncode`` that may leave a dispositions file."""
     from sandbox_executor.entrypoint.review_loop import _run_resolver_agent
     from sandbox_executor.turns import TurnResult
 

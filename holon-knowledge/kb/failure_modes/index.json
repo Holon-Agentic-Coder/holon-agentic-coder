@@ -18802,6 +18802,39 @@
       ]
     },
     {
+      "kb_id": "KB-failure-d8c15550",
+      "file": "KB-failure-d8c15550.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-20T08:15:32.829019+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-e2e759a8",
+      "file": "KB-failure-e2e759a8.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-20T08:15:32.956954+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-ebbcd0c1",
+      "file": "KB-failure-ebbcd0c1.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-20T08:15:32.962442+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
       "kb_id": "KB-failure-15af9843",
       "file": "KB-failure-15af9843.json",
       "kb_type": "failure_mode",

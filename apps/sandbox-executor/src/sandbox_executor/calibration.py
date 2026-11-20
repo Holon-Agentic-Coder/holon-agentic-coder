@@ -33,11 +33,11 @@ from sandbox_executor.calibration_ev import (
     evaluate_dual_ev_outcomes,
     format_dual_ev_derivation_lines,
     format_dual_ev_table_rows,
-    is_converged_record,
     is_matching_record,
     parse_summary_records,
 )
 from sandbox_executor.calibration_execution_owner import unique_plan_branch_of_execution
+from sandbox_executor.calibration_outcome import is_converged_record, latest_summary_row
 from sandbox_executor.calibration_touch_set import touch_set_metrics, touch_set_report_lines
 from sandbox_executor.git import METADATA_PATH_PREFIXES as METADATA_PATH_PREFIXES
 from sandbox_executor.git import is_metadata_path, run_git
@@ -762,11 +762,7 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
                     records = disk_records
                     matching = disk_matching
 
-    best_record = (
-        max(matching, key=lambda r: (int(r.get("ledger_revision", 1)), str(r.get("created_at", ""))))
-        if matching
-        else None
-    )
+    best_record = latest_summary_row(matching)
 
     if best_record is not None:
         exec_meta = best_record

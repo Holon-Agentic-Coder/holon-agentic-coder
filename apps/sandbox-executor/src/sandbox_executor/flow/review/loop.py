@@ -35,6 +35,15 @@ from sandbox_executor.flow.review.adjudication import (
     _filter_adjudicated_findings,
     record_nit_rejections,
 )
+from sandbox_executor.flow.review.carried_findings import (
+    CarriedPass,
+    carried_blocker,
+    deserialize_carried,
+    merge_findings,
+    resolve_carried_first,
+    serialize_open,
+    undisposed,
+)
 from sandbox_executor.flow.review.ci_evidence import apply_local_test_evidence
 from sandbox_executor.flow.review.ci_outcome import gate_ci_flags
 from sandbox_executor.flow.review.ci_timing_finding import gh_timing_seams, timing_gate_finding
@@ -314,12 +323,22 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         all_dispositions,
         effective_dry_run=effective_dry_run,
     )
+    # Findings a halted pass left open go to the resolver before any reviewer; a failed pass starts no iteration.
+    carried_rows, carried_ids = deserialize_carried(context.carried_review_findings)
+    finding_action_ids.update(carried_ids)
+    carried_block = ""  # Why approval was refused while a carried finding had no disposition.
+    if carried_rows and resolver_enabled and resolved_target is not None and not effective_dry_run:
+        carried_pass = CarriedPass(context, resolved_target, max(1, first_label - 1), run_resolver_fn, recorder)
+        carried_outcome, carried_rows = resolve_carried_first(carried_rows, finding_action_ids, carried_pass)
+        resolver_error = _bounded_error_context(carried_outcome.error) if carried_outcome.error else None
+        if carried_outcome.pushed and carried_outcome.head_sha:
+            resolved_target = dataclasses.replace(resolved_target, head_sha=carried_outcome.head_sha)
 
     if pr_refusal_error:
         # Fail closed: a PR the guard refused is never reviewed, so no evidence can turn the refusal into approval.
         context.log("[Review Loop] Halting review loop without consensus: the empty-diff guard refused the PR.")
 
-    while pr_refusal_error is None and infra_error is None and iteration < last_label:
+    while pr_refusal_error is None and infra_error is None and resolver_error is None and iteration < last_label:
         iteration += 1
         context.log(f"[Review Loop] Starting review iteration {iteration}/{last_label} for target '{review_target}'.")
         iteration_timer = StageTimer("review", iteration_budget_seconds, clock=clock)
@@ -503,6 +522,12 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             break
 
         # 8. Termination and Resolver Pass
+        if ensemble_verdict is ConsensusVerdict.APPROVED and carried_rows:
+            carried_block = carried_blocker(carried_rows)
+            blockers.append(carried_block)
+            ensemble_verdict = ConsensusVerdict.CHANGES_REQUESTED
+            context.log(f"[Review Loop] Consensus blocked at iteration {iteration}: {carried_block}.")
+            break
         if ensemble_verdict is ConsensusVerdict.APPROVED:
             consensus_reached = True
             context.log(f"[Review Loop] Consensus approval reached at iteration {iteration}.")
@@ -588,7 +613,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             resolved_target,
             iteration,
             ResolverInput(
-                findings=iter_findings,
+                findings=merge_findings(iter_findings, carried_rows),
                 action_ids=finding_action_ids,
                 rejected_findings=tuple(rejected_history.values()),  # Rejected nits only.
             ),
@@ -625,6 +650,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 pending_dispositions = ()
             else:
                 pending_dispositions = (*pending_dispositions, *applied_now)
+        carried_rows = undisposed(carried_rows, all_dispositions)
 
         if head_changed and resolved_target is not None:
             new_sha = resolver_outcome.head_sha or f"{current_sha or '0' * 32}-iter{iteration}"
@@ -635,20 +661,20 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 "proceeding to re-review in full."
             )
 
-    if resolver_enabled and not effective_dry_run:
-        if pending_dispositions:
-            suppressed_ledger_records += recorder.record(iteration, pending_dispositions)
-        remaining_findings = [
-            row
-            for row in (iter_findings or collect_review_data(reviewers).findings)
-            if finding_signature(row.severity, row.path, row.line, row.summary) not in recorded_disposition_keys
+    if resolver_enabled and not effective_dry_run and pending_dispositions:
+        suppressed_ledger_records += recorder.record(iteration, pending_dispositions)
+    remaining_findings = [
+        row
+        for row in merge_findings(iter_findings or collect_review_data(reviewers).findings, carried_rows)
+        if finding_signature(row.severity, row.path, row.line, row.summary) not in recorded_disposition_keys
+    ]
+    # A failed resolver pass decided nothing: its findings stay open, unrecorded, and are returned to be carried.
+    if resolver_enabled and not effective_dry_run and resolver_error is None and remaining_findings:
+        fallback_dispositions = [
+            open_dispositions.get(finding_signature(d.severity, d.path, d.line, d.summary), d)
+            for d in deserialize_finding_dispositions([], remaining_findings, finding_action_ids)
         ]
-        if remaining_findings:
-            fallback_dispositions = [
-                open_dispositions.get(finding_signature(d.severity, d.path, d.line, d.summary), d)
-                for d in deserialize_finding_dispositions([], remaining_findings, finding_action_ids)
-            ]
-            suppressed_ledger_records += recorder.record(iteration, fallback_dispositions)
+        suppressed_ledger_records += recorder.record(iteration, fallback_dispositions)
 
     if not consensus_reached and pr_refusal_error is None and infra_error is None and iteration >= last_label:
         context.log(f"[Review Loop] Iteration budget ({budget}) exhausted without consensus.")
@@ -715,7 +741,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             failed=bool(pr_refusal_error or infra_error),
             reviewer_completed=any(result.status is ReviewerStatus.COMPLETED for result in reviewers),
             consensus_reached=consensus_reached,
-            halted_early=bool(resolver_error or no_convergence or budget_breach or missing_ref or tests_not_measured),
+            halted_early=bool(
+                resolver_error or no_convergence or budget_breach or missing_ref or tests_not_measured or carried_block
+            ),
             iteration=iteration,
             last_label=last_label,
             verdict_terminal=is_terminal_verdict(ensemble_verdict, reviewers),
@@ -754,6 +782,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         halt_reasons.append(_bounded_error_context(str(pr_refusal_error or infra_error)))
     if resolver_error:
         halt_reasons.append(f"resolver failed: {resolver_error}")
+    if carried_block:
+        halt_reasons.append(carried_block)
     if post_error:
         halt_reasons.append("consensus post failed")
     if tests_not_measured:
@@ -864,6 +894,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "consensus_blockers": list(blockers),
         "resolver_error": resolver_error,
         "calibration_freshness": calibration_freshness,
+        "open_findings": serialize_open(remaining_findings, finding_action_ids),
     }
     if pr_refusal_error or infra_error or post_error or resolver_error:
         loop_result["error"] = pr_refusal_error or infra_error or post_error or f"resolver failed: {resolver_error}"
@@ -910,4 +941,6 @@ def _run_engine_review_loop(context: FlowContext) -> dict[str, Any]:
         first_iteration=first_label,
     )
     context.review_iterations_done = max(context.review_iterations_done, int(loop_res.get("total_iterations") or 0))
+    if "open_findings" in loop_res:  # Saved with the checkpoint after Stage 4, so a resume resolves them first.
+        context.carried_review_findings = list(loop_res["open_findings"])
     return loop_res

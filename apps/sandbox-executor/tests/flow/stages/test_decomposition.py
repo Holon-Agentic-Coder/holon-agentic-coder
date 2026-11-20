@@ -523,6 +523,7 @@ class TestEntropyBudgetHandoffInFlow:
             schema_version=-1,
             replan_attempts=1,
             review_iterations_done=3,
+            carried_review_findings=[{"id": "R1-F1", "severity": "nit", "summary": "A parent nit."}],
             **parent_values,
         )
         child_intent = {"slug": "child", "goal": "Add the parser"}
@@ -540,6 +541,7 @@ class TestEntropyBudgetHandoffInFlow:
             "schema_version": flow_module.CURRENT_CONTEXT_SCHEMA_VERSION,
             "replan_attempts": 0,
             "review_iterations_done": 0,  # A child intent runs its own Stage 4, so its review count starts afresh.
+            "carried_review_findings": [],  # The parent's open findings belong to the parent's review.
         }
         defaults = FlowContext(token_reduce=False)
         for name, value in parent_values.items():

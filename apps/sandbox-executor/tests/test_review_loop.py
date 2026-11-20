@@ -2398,12 +2398,12 @@ class TestResolverAgentExecution:
         with (
             patch("sandbox_executor.entrypoint.review_loop.get_runner", return_value=spec_runner),
             patch("sandbox_executor.entrypoint.review_loop.run_turn", return_value=mock_turn_result) as mock_run_turn,
+            pytest.raises(RuntimeError, match="no usable output"),
         ):
-            res = _run_resolver_agent(repo_dir, "spec-agent", "test-model", "prompt", dispositions_path)
+            _run_resolver_agent(repo_dir, "spec-agent", "test-model", "prompt", dispositions_path)
 
         spec_runner.build_command.assert_called_once_with("prompt", "test-model")
         mock_run_turn.assert_called_once_with(["spec-agent", "--model", "test-model", "prompt"], cwd=repo_dir)
-        assert res == []
 
     def test_run_resolver_agent_fallback_to_compose_cmd(self, tmp_path: Path) -> None:
         """Verify _run_resolver_agent falls back to compose_cmd when build_command is absent."""
@@ -2421,11 +2421,11 @@ class TestResolverAgentExecution:
         with (
             patch("sandbox_executor.entrypoint.review_loop.get_runner", return_value=fallback_runner),
             patch("sandbox_executor.entrypoint.review_loop.run_turn", return_value=mock_turn_result) as mock_run_turn,
+            pytest.raises(RuntimeError, match="no usable output"),
         ):
-            res = _run_resolver_agent(repo_dir, "fallback-agent", "test-model", "prompt", dispositions_path)
+            _run_resolver_agent(repo_dir, "fallback-agent", "test-model", "prompt", dispositions_path)
 
         mock_run_turn.assert_called_once_with(["fallback-agent", "--model", "test-model", "prompt"], cwd=repo_dir)
-        assert res == []
 
     def test_run_resolver_agent_raises_attribute_error_when_contracts_missing(self, tmp_path: Path) -> None:
         """Verify _run_resolver_agent raises an informative AttributeError when runner lacks both methods."""

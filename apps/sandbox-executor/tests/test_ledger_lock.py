@@ -305,7 +305,7 @@ def test_try_append_action_record_redacts_credentials_in_failure_warning(
 
     assert result is None
     messages = [rec.getMessage() for rec in caplog.records]
-    assert any("[REDACTED_SECRET]" in msg for msg in messages)
+    assert any("*******" in msg for msg in messages)
     assert all(sample_value not in msg for msg in [*messages, *mirrored])
 
 

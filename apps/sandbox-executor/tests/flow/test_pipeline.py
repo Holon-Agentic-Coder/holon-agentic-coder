@@ -411,7 +411,7 @@ class TestFlowStages:
 
         cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
         assert len(cal_rows) == 1
-        assert cal_rows[0]["error_context"] == "Calibration run failed: fetch failed [REDACTED_SECRET]"
+        assert cal_rows[0]["error_context"] == "Calibration run failed: fetch failed *******"
         assert sample_value not in ledger.read_text(encoding="utf-8")
 
     def test_stage5_calibrate_fallback_bounds_act_cal_error_context(self, tmp_path):
@@ -471,7 +471,7 @@ class TestFlowStages:
         ):
             run_calibrate_stage(ctx)
 
-        assert any("Prettier formatting failed" in line and "[REDACTED_SECRET]" in line for line in ctx.logs)
+        assert any("Prettier formatting failed" in line and "*******" in line for line in ctx.logs)
         assert all(sample_value not in line for line in ctx.logs)
 
     @staticmethod
@@ -551,10 +551,9 @@ class TestFlowStages:
 
         assert len(ctx.logs) == 1
         assert ctx.logs[0].endswith(
-            "Warning: Ledger append failed (Stage 4 review action event) for ledger.jsonl: "
-            "OSError: denied [REDACTED_SECRET]"
+            "Warning: Ledger append failed (Stage 4 review action event) for ledger.jsonl: OSError: denied *******"
         )
-        assert any("[REDACTED_SECRET]" in rec.getMessage() for rec in caplog.records)
+        assert any("*******" in rec.getMessage() for rec in caplog.records)
         assert all(sample_value not in rec.getMessage() for rec in caplog.records)
 
     @pytest.mark.parametrize("failure_mode", ["stderr", "raises"])
@@ -580,7 +579,7 @@ class TestFlowStages:
         with patch("sandbox_executor.flow.stages.calibrate.run_git", side_effect=fake_run_git):
             _commit_stage5_reconciliation(ctx, str(tmp_path))
 
-        assert any("[REDACTED_SECRET]" in line for line in ctx.logs)
+        assert any("*******" in line for line in ctx.logs)
         assert all(sample_value not in line for line in ctx.logs)
         assert all(sample_value not in rec.getMessage() for rec in caplog.records)
 

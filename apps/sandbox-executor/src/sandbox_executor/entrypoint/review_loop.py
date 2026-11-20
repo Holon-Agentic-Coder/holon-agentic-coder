@@ -406,6 +406,8 @@ def _build_resolver_prompt(
         "A `uv.lock` change that no `pyproject.toml` dependency or `requires-python` change explains is a defect: "
         "revert it with `git checkout <base> -- uv.lock`, run `uv` only with `UV_FROZEN=1`, and never "
         "commit an incidental rewrite.\n"
+        "A module over its line limit is fixed by splitting it into smaller modules; never edit the frozen module "
+        f"budget configuration (`{MODULE_BUDGET_CONFIG}`): the harness reverts any unauthorised change to it.\n"
         "The workspace is the shared flow worktree, so never move HEAD in it: no `git checkout <commit-or-branch>`, "
         "`git switch`, `git reset --hard`, `git stash` or `gh pr checkout` (restoring one file with "
         "`git checkout <rev> -- <path>` is fine); read other revisions with `git show <rev>:<path>`, `git diff` or "

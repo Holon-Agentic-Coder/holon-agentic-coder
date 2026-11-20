@@ -26,6 +26,9 @@ codebase files.
    `PLR0913 <= 5`, `PLR0915 <= 50`) without adding inline '# noqa' suppressions; use intention-revealing names in the
    domain language (`intent`, `plan`, `execution`, `review`, `calibration`, `ledger`); add no new imports from
    entrypoints into the host flow engine.
+9. Module line budgets: if `uv run task lint` reports a module over its line limit, split the module into smaller
+   modules. Never edit the frozen module budget configuration (`holon-config/hygiene/module_budgets.json`); Stage 3
+   refuses an execution that changes it unless the intent carries `module_budget_change` quoting the maintainer.
 
 **Write Protocol (incremental execution notes):**
 

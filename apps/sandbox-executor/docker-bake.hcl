@@ -34,12 +34,6 @@ target "agent-codex" {
   tags = ["holon/agent-codex"]
 }
 
-target "agent-gemini" {
-  inherits = ["common"]
-  target = "agent-gemini"
-  tags = ["holon/agent-gemini"]
-}
-
 target "agent-opencode" {
   inherits = ["common"]
   target = "agent-opencode"
@@ -69,7 +63,6 @@ group "default" {
     "base",
     "agent-claude",
     "agent-codex",
-    "agent-gemini",
     "agent-opencode",
     "agent-pi",
     "agent-antigravity",

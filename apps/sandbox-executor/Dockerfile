@@ -3,7 +3,7 @@
 # TODO: do we want to bake in the agents or decide at runtime? we can run agent at runtime by running `npx @anthropic-ai/claude-code`
 # TODO: if we bake the agents in we need to rebuild the image everytime there is an update
 # TODO: if we choose the agent at runtime we can choose certain version or latest at runtime
-# Build targets: holon-base, agent-claude, agent-gemini, agent-opencode, agent-codex, agent-pi, agent-antigravity, holon-orchestrator
+# Build targets: holon-base, agent-claude, agent-opencode, agent-codex, agent-pi, agent-antigravity, holon-orchestrator
 
 # The single uv pin for every image built from holon-base; override with --set *.args.UV_VERSION=<x.y.z>.
 ARG UV_VERSION=0.13.7
@@ -91,12 +91,6 @@ FROM holon-base AS agent-claude
 RUN --mount=type=cache,id=npm-claude,uid=1000,gid=1000,target=/home/holon/.npm \
     echo "allow-scripts=@anthropic-ai/claude-code" > /home/holon/.npmrc && \
     npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @anthropic-ai/claude-code@2.1.302
-
-# --- Gemini Agent Layer ---
-FROM holon-base AS agent-gemini
-RUN --mount=type=cache,id=npm-gemini,uid=1000,gid=1000,target=/home/holon/.npm \
-    echo "allow-scripts=@github/keytar,node-pty" > /home/holon/.npmrc && \
-    npm install --prefix /home/holon/.local --prefer-offline --no-audit --no-fund @google/gemini-cli@0.64.0
 
 # --- OpenCode Agent Layer (opencode) ---
 FROM holon-base AS agent-opencode

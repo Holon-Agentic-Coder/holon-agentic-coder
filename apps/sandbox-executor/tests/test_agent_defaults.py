@@ -9,13 +9,18 @@ from sandbox_executor.agent_defaults import (
     DEFAULT_MODELS,
     LEGACY_DEFAULT_AGENT,
     LEGACY_DEFAULT_MODEL,
+    RUNNER_CAPABILITIES,
     MissingAgentRunnerError,
     MissingModelError,
     UnmappedAgentRunnerError,
     canonical_agent_name,
     detect_harness_agent,
+    get_available_models_for_runner,
+    get_model_capabilities,
     image_for_agent,
+    is_valid_model_for_runner,
     normalise_agent_id,
+    normalise_model_and_effort,
     resolve_agent_runner,
     resolve_model,
 )
@@ -199,3 +204,29 @@ def test_claude_api_key_detection_uses_the_secrets_file_not_holon_agent_key(tmp_
     secrets.write_text("fake-claude-value\n", encoding="utf-8")
     secrets.chmod(0o600)
     assert agent_defaults._detect_api_key_present("claude", {}) is True
+
+
+def test_gemini_runner_is_rejected_with_guidance_to_antigravity():
+    with pytest.raises(UnmappedAgentRunnerError) as exc_info:
+        resolve_agent_runner("gemini-agent", {})
+    assert "antigravity-agent" in str(exc_info.value)
+
+    with pytest.raises(UnmappedAgentRunnerError) as exc_info:
+        resolve_agent_runner("gemini", {})
+    assert "antigravity-agent" in str(exc_info.value)
+
+
+def test_antigravity_gemini_models_and_local_model_preserved():
+    models = get_available_models_for_runner("antigravity-agent")
+    assert "gemini-3.8-flash" in models
+    assert "gemini-3.8-flash-medium" in models
+    assert is_valid_model_for_runner("antigravity-agent", "gemini-3.8-flash-medium") is True
+
+    model, effort = normalise_model_and_effort("antigravity-agent", "gemini-3.8-flash-medium", "high")
+    assert model == "gemini-3.8-flash-high"
+    assert effort == "high"
+
+    local_caps = get_model_capabilities("local-model")
+    assert len(local_caps) > 0
+    assert any(c.runner == "local-model" for c in RUNNER_CAPABILITIES)
+

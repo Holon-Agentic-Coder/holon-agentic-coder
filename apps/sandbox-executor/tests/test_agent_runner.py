@@ -701,3 +701,14 @@ def test_real_registered_runners_build_command_contract(monkeypatch: pytest.Monk
     assert "--effort" in cmd_build
     assert cmd_build[cmd_build.index("--effort") + 1] == "low"
     assert "--dangerously-skip-permissions" not in cmd_build
+
+
+def test_get_runner_gemini_exits_with_antigravity_guidance(capsys: pytest.CaptureFixture[str]):
+    for name in ("gemini", "gemini-agent"):
+        with pytest.raises(SystemExit) as exc:
+            get_runner(name)
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "antigravity-agent" in combined
+

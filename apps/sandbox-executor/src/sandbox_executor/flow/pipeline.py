@@ -24,6 +24,7 @@ from sandbox_executor.flow.checkpoint import save_checkpoint
 from sandbox_executor.flow.child_progress import has_recorded_decomposition
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure
+from sandbox_executor.flow.resume_guard import _resume_context_error
 from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
 from sandbox_executor.flow.stages.children import resume_children
 from sandbox_executor.flow.stages.decomposition import _sub_intent_depth_error
@@ -179,19 +180,11 @@ class PipelineEngine:
             return run_execute_stage(self.context)
         elif stage == FlowStage.REVIEW:
             if self.context.skip_review:
-                return StageResult(
-                    stage=FlowStage.REVIEW,
-                    status=StageStatus.SKIPPED,
-                    payload={"skipped_by_flag": True},
-                )
+                return _skipped_by_flag(FlowStage.REVIEW)
             return run_review_stage(self.context)
         elif stage == FlowStage.CALIBRATE:
             if self.context.skip_calibrate:
-                return StageResult(
-                    stage=FlowStage.CALIBRATE,
-                    status=StageStatus.SKIPPED,
-                    payload={"skipped_by_flag": True},
-                )
+                return _skipped_by_flag(FlowStage.CALIBRATE)
             return run_calibrate_stage(self.context)
         else:
             return StageResult(
@@ -327,8 +320,10 @@ class PipelineEngine:
         )
 
         # Reject an invalid run before any stage runs or a checkpoint is written, so a non-dry resume never half-runs
-        # Stage 4 or Stage 5 (see flow_guard.pre_run_guard_error).
-        guard_error = pre_run_guard_error(self.context, self.worktree_validator)
+        # Stage 4 or Stage 5 and a resume missing its start stage's branch leaves the checkpoint as it was.
+        guard_error = pre_run_guard_error(self.context, self.worktree_validator) or _resume_context_error(
+            self.context, self.from_stage, self.checkpoint_path
+        )
         if guard_error is not None:
             first_stage = self.STAGE_ORDER[start_idx]
             _stage_failure(self.context, first_stage, datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), guard_error)
@@ -340,22 +335,14 @@ class PipelineEngine:
 
             if stage == FlowStage.REVIEW and self.context.skip_review:
                 self.context.log("Stage 4 (REVIEW) skipped due to --skip-review flag.")
-                result = StageResult(
-                    stage=FlowStage.REVIEW,
-                    status=StageStatus.SKIPPED,
-                    payload={"skipped_by_flag": True},
-                )
+                result = _skipped_by_flag(FlowStage.REVIEW)
                 self.after_stage(stage, result)
                 self.save_checkpoint()
                 continue
 
             if stage == FlowStage.CALIBRATE and self.context.skip_calibrate:
                 self.context.log("Stage 5 (CALIBRATE) skipped due to --skip-calibrate flag.")
-                result = StageResult(
-                    stage=FlowStage.CALIBRATE,
-                    status=StageStatus.SKIPPED,
-                    payload={"skipped_by_flag": True},
-                )
+                result = _skipped_by_flag(FlowStage.CALIBRATE)
                 self.after_stage(stage, result)
                 self.save_checkpoint()
                 continue
@@ -387,11 +374,7 @@ class PipelineEngine:
                         self.save_checkpoint()
                     elif self.context.skip_calibrate:
                         self.context.log("Stage 5 (CALIBRATE) skipped due to --skip-calibrate flag.")
-                        cal_result = StageResult(
-                            stage=FlowStage.CALIBRATE,
-                            status=StageStatus.SKIPPED,
-                            payload={"skipped_by_flag": True},
-                        )
+                        cal_result = _skipped_by_flag(FlowStage.CALIBRATE)
                         self.after_stage(FlowStage.CALIBRATE, cal_result)
                         self.save_checkpoint()
 
@@ -402,6 +385,11 @@ class PipelineEngine:
                 break
 
         return self.context.stage_results
+
+
+def _skipped_by_flag(stage: FlowStage) -> StageResult:
+    """The result of Stage 4 or Stage 5 skipped by --skip-review or --skip-calibrate."""
+    return StageResult(stage=stage, status=StageStatus.SKIPPED, payload={"skipped_by_flag": True})
 
 
 def _replan_requested(result: StageResult) -> bool:

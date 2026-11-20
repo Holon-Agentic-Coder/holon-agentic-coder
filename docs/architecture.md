@@ -470,7 +470,8 @@ split from the former single `flow.py` by moving code only. Three tests guard th
   `KNOWN_UNEXPORTED` allowlist in that test covers public definitions that were never re-exported (reachable only
   through their owning module); a new definition cannot join it, and an entry must be removed once it is re-exported.
   The test also fails if two submodules define the same public name.
-- `tests/flow/test_module_budgets.py` enforces the module size budgets in `flow_module_budgets.json`.
+- `tests/flow/test_module_budgets.py` pins `scripts/check_module_budgets.py` and checks the live tree against the module
+  line budgets (see "Module line budgets" below).
 
 | Module                         | Responsibility                                                                                              |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------- |
@@ -520,10 +521,34 @@ Rules that keep the package healthy:
   `tests/flow/lookup_patch.py` `patch_lookup_sites` when there is more than one, so they share one mock.
   `tests/flow/test_patch_targets.py` rejects package-level patch targets. The only exception is a name that a caller
   outside the package imports from `sandbox_executor.flow` inside a function body.
-- **Size ratchet.** `apps/sandbox-executor/flow_module_budgets.json` records each module's line count at the split.
-  `scripts/check_flow_module_budgets.py` runs in `uv run task lint` and through `tests/flow/test_module_budgets.py`, and
-  fails when a module grows past its budget, lacks a budget, or a budget names a missing module. Budgets only go down,
-  by hand.
+#### Module line budgets
+
+The settings live in `holon-config/hygiene/module_budgets.json`, with exactly three keys:
+
+- `default_max_lines` (200): the limit of every module without an override, so a new module or a split needs no entry;
+- `packages`: the repository-relative directories whose `.py` modules are checked (today only
+  `apps/sandbox-executor/src/sandbox_executor/flow`);
+- `overrides`: repository-relative module paths mapped to their own limit, sorted, one per line, plain integers, for the
+  modules that were already over 200 lines when the budgets were frozen.
+
+`scripts/check_module_budgets.py` runs in `uv run task lint` and as its own step of the CI hygiene job. It is generic
+over the configured packages (`--config` and `--base` exist for tests). A module over its limit fails with "split the
+module into smaller modules - the budget is frozen and may not be changed". An override naming a missing module or a
+path outside every package, an override at or below the default, and unsorted overrides are `::warning::` only.
+
+Over the limit means split. The configuration is frozen: the check compares it byte for byte with the copy at
+`git merge-base HEAD origin/main` (skipped quietly with no merge base, and with a notice when the merge base has no
+copy), and any difference, a reformat included, fails unless `HOLON_ALLOW_MODULE_BUDGET_CHANGE=1`. Only the maintainer's
+explicit instruction sets it:
+
+- in CI, the `module-budget-change` pull request label (the hygiene job checks out full history for the merge base);
+- in the flow, a `module_budget_change` field on the intent quoting the instruction. `flow/dispatch.py` then exports the
+  flag to role containers, and withholds an inherited value otherwise.
+
+Without that field (`sandbox_executor/module_budget_guard.py` owns the rule), the planner leaves the configuration out
+of the recorded touch set, Stage 3 fails an execution that changes it with `module_budget_change_refused` (no re-plan;
+the error says to split the module), and the Stage 4 resolver restores it before committing while the host refuses to
+push a resolver head that changes it. Reviewers raise any unauthorised change to it as a Critical finding.
 
 ---
 

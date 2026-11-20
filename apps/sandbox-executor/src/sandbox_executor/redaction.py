@@ -487,6 +487,23 @@ def redact_agent_secrets(text: str) -> str:
     return redact_env_literals(s)
 
 
+def redact_credential_shapes(text: str) -> str:
+    """Mask URL userinfo, provider token shapes and literal env credential values, with no input cap.
+
+    The token-anchored subset of `redact_agent_secrets`: it skips the key-name regex and its input cap, so it is safe
+    on large text (a patch, a whole test log) whose middle `redact_text` would drop.
+
+    Args:
+        text: Input string potentially containing credentials.
+
+    Returns:
+        The text with each match replaced by `REDACTION_MARKER`.
+    """
+    if not text:
+        return text
+    return redact_env_literals(_PROVIDER_TOKEN_RE.sub(REDACTION_MARKER, _mask_url_userinfo(text)))
+
+
 def redact_then_truncate(text: str | None, limit: int) -> str | None:
     """Redact the whole text with `redact_agent_secrets`, then bound it to `limit` characters.
 

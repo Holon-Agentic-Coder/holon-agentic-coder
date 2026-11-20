@@ -17,8 +17,8 @@ from typing import Any
 
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.review.records import _posting_failure_context, record_review_action
-from sandbox_executor.knowledge import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id
+from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_ensemble import ConsensusVerdict, ReviewerResult, ReviewerStatus
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ def _attempt_post(post_fn: Callable[..., dict[str, Any]], context: FlowContext, 
             title=request.title,
         )
     except Exception as exc:
-        safe_error = CredentialRedactor.redact_text(str(exc))
+        safe_error = redact_agent_secrets(str(exc))
         logger.warning("Posting review consensus for %s failed: %s", request.review_target, safe_error)
         context.log(f"Warning: Posting review consensus for '{request.review_target}' failed: {safe_error}")
         return {"error": safe_error}

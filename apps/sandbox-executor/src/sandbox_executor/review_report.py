@@ -96,6 +96,9 @@ _ID_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,23}")
 _EVIDENCE = re.compile(r"[\w./-]+(?:::[\w.\[\]-]+)?")
 _GITHUB_SLUG = re.compile(r"github\.com[:/]([^/]+/[^/.]+?)(?:\.git)?$")
 _PR_URL_NUMBER = re.compile(r"/pull/(\d+)")
+_HEX_SHA = re.compile(r"[0-9a-fA-F]+")
+_MARKDOWN_LINK = re.compile(r"\[(?P<text>[^\]]*)\]\((?P<url>[^)]*)\)")
+_SHORT_SHA_CHARS = 8
 
 
 @dataclass(frozen=True)
@@ -596,8 +599,9 @@ def _ci_summary(ci_status: Mapping[str, Any]) -> str:
 
 
 def resolve_report_title(intent_data: Mapping[str, Any] | None, target: ReviewTarget | None, raw_target: str) -> str:
-    """Return the intent title, else the PR title, else ``PR #<n>`` or the branch name; never a fixed phrase."""
-    for candidate in ((intent_data or {}).get("title"), target.title if target else None):
+    """Return the intent title, else its slug, else the PR title, else ``PR #<n>`` or the branch; no fixed phrase."""
+    intent = intent_data or {}
+    for candidate in (intent.get("title"), intent.get("slug"), target.title if target else None):
         if str(candidate or "").strip():
             return _inline(candidate, MAX_SUMMARY_CHARS)
     if target and target.pr_number is not None:
@@ -618,11 +622,11 @@ def _git_output(repo_dir: str, args: list[str]) -> str:
 
 
 def _target_commit(repo_dir: str, consensus_data: Mapping[str, Any]) -> str:
-    """The reviewed commit from the consensus data, else the checkout's short HEAD."""
+    """The reviewed commit from the consensus data, else the checkout's HEAD; a hex SHA is shortened to 8 characters."""
     commit = str(consensus_data.get("target_commit") or "").strip()
     if commit and commit != "HEAD":
-        return commit
-    return _git_output(repo_dir, ["rev-parse", "--short", "HEAD"]) or "HEAD"
+        return commit[:_SHORT_SHA_CHARS] if _HEX_SHA.fullmatch(commit) else commit
+    return _git_output(repo_dir, ["rev-parse", f"--short={_SHORT_SHA_CHARS}", "HEAD"]) or "HEAD"
 
 
 def _repo_name(repo_dir: str, consensus_data: Mapping[str, Any]) -> str:
@@ -703,6 +707,23 @@ def _severity_counts(findings: Sequence[FindingRow]) -> str:
     return f"{counts[0]} critical, {counts[1]} important and {counts[2]} nit findings"
 
 
+def _evaluation_subject(link: str, target: str, title: str) -> str:
+    """Name the reviewed target once: a clean title labels the link, and a link that repeats the ref is dropped.
+
+    ``link`` is :func:`_pr_link`'s output. A title that differs from the ref and from the link text becomes the link
+    text (``[slug](url)``); otherwise the link stands alone, unless its URL already carries the ref, in which case the
+    ref is shown once as a code span. Without a URL the title is shown alone, in backticks.
+    """
+    match = _MARKDOWN_LINK.fullmatch(link)
+    if not match:
+        return f"`{title or target or 'unknown'}`"
+    if title and title not in (target, match["text"]):
+        return f"[{title.replace('[', '(').replace(']', ')')}]({match['url']})"
+    if target and target in match["url"] and match["text"] == target:
+        return f"`{target}`"
+    return link
+
+
 def _evaluation(repo_dir: str, target: str, consensus_data: Mapping[str, Any], data: ReviewData, title: str) -> str:
     """The evaluation paragraph: title, commit, base branch, finding counts, CI state and mergeability."""
     mergeability = _mergeability_word(consensus_data)
@@ -712,8 +733,7 @@ def _evaluation(repo_dir: str, target: str, consensus_data: Mapping[str, Any], d
         ci += f" after a {float(wait.get('budget_seconds') or 0):g} s wait"
     note = _inline(consensus_data.get("mergeability_note"), MAX_REASON_CHARS)
     base = _inline(consensus_data.get("base_branch") or "main", MAX_PATH_CHARS)
-    link = _pr_link(repo_dir, target, consensus_data)
-    subject = link if title == target and link == f"`{target}`" else f"{title} ({link})"
+    subject = _evaluation_subject(_pr_link(repo_dir, target, consensus_data), target, title)
     return (
         f"Reviewed {subject} at "
         f"`{_target_commit(repo_dir, consensus_data)}` against `{base}`: {_severity_counts(data.findings)}; "

@@ -885,6 +885,12 @@ post-execution verification or git recovery failures), the superseding row must 
 readers should rely on (including `agent_output_truncated` and `agent_output_bytes`). Readers must select the row with
 the highest `ledger_revision` for a given `execution_id` without needing to merge fields backwards.
 
+Stage 5 calibration orders a plan's summary rows by flow order instead: the parsed `created_at` instant first (`+00:00`
+and `Z` both read as UTC; a missing or unparseable value sorts earliest), `ledger_revision` only to break a tie at the
+same instant, then ledger line order. Its final row is the last one in that order. A `sync_conflict` row that a later
+converged, zero-exit row follows counts as a resolved conflict, not a failure; a final `sync_conflict` row stays
+unresolved. See `apps/sandbox-executor/src/sandbox_executor/calibration_outcome.py`.
+
 **Empty-diff guard rows:** An execution whose branch has no changes outside `holon-knowledge/ledger/`, `plans/` and
 `executions/` relative to its plan branch is never recorded as `success` and never carries `test_pass_rate`. The
 executor entrypoint (`holon execute`) writes such a run directly as `status: "failed"` with

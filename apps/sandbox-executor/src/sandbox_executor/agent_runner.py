@@ -757,6 +757,12 @@ runners = {
 def get_runner(agent_name: str) -> AgentRunner:
     """Helper function to parse the agent name and return the appropriate AgentRunner instance."""
     agent_id = agent_name.lower().replace("-agent", "").replace("agent-", "")
+    if agent_id == "gemini":
+        print(
+            "Error: The 'gemini-agent' runner has been removed. Please use 'antigravity-agent' instead.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if agent_id not in runners:
         supported = ", ".join(sorted(runners.keys()))
         print(f"Error: Unsupported agent '{agent_name}'. Supported agents are: {supported}")

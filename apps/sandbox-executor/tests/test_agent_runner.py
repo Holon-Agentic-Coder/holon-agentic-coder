@@ -713,4 +713,3 @@ def test_get_runner_gemini_rejection_message(capsys: pytest.CaptureFixture[str])
         combined = captured.err + captured.out
         assert "antigravity-agent" in combined
         assert "gemini-agent" in combined
-

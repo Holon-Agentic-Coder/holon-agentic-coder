@@ -233,4 +233,3 @@ def test_antigravity_gemini_models_and_local_model_preserved():
     assert agent_defaults.is_valid_model_for_runner("antigravity-agent", "gemini-3.8-flash-medium-low") is True
     assert agent_defaults.is_valid_model_for_runner("antigravity-agent", "gemini-3.8-flash-medium-high") is True
     assert agent_defaults.is_supported_runner_model("antigravity-agent", "gemini-3.8-flash-medium") is True
-

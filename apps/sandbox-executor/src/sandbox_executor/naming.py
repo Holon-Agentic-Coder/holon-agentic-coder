@@ -20,6 +20,7 @@ once the variants are exhausted.
 from __future__ import annotations
 
 import re
+from collections.abc import Container
 from dataclasses import dataclass
 
 from sandbox_executor.agent_defaults import AGENT_TICKERS, canonical_agent_name, normalise_agent_id
@@ -168,7 +169,7 @@ def is_new_generation(identifier: str) -> bool:
     return parsed is not None and parsed.generation == GENERATION_TICKER
 
 
-def distinct_stage_id(candidate: str, taken: object) -> str:
+def distinct_stage_id(candidate: str, taken: Container[str]) -> str:
     """Return ``candidate`` or its first free deterministic same-second variant under one parent.
 
     Args:
@@ -179,11 +180,11 @@ def distinct_stage_id(candidate: str, taken: object) -> str:
         StageIdCollisionError: ``candidate`` and every ``-2`` … ``-9`` variant are taken; the second writer must
             fail clearly rather than overwrite.
     """
-    if candidate not in taken:  # type: ignore[operator]
+    if candidate not in taken:
         return candidate
     for number in range(2, MAX_SAME_SECOND_VARIANTS + 1):
         variant = f"{candidate}-{number}"
-        if variant not in taken:  # type: ignore[operator]
+        if variant not in taken:
             return variant
     raise StageIdCollisionError(
         f"every same-second variant of '{candidate}' up to -{MAX_SAME_SECOND_VARIANTS} already exists under this "

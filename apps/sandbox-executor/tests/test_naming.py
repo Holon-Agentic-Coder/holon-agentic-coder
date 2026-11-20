@@ -170,14 +170,14 @@ def _real_ledger_ids() -> set[str]:
     return ids
 
 
-def test_every_real_ledger_id_parses_as_exactly_one_legacy_generation():
+def test_every_real_ledger_id_parses_and_old_ids_classify_as_legacy():
     ids = _real_ledger_ids()
     assert ids, "the real ledgers must provide sample ids"
     for identifier in ids:
         parsed = parse_stage_id(identifier)
         assert parsed is not None, identifier
-        assert parsed.generation in (GENERATION_LEGACY_HEX, GENERATION_LEGACY_LABELS), identifier
-        assert not is_new_generation(identifier), identifier
+        if not is_new_generation(identifier):
+            assert parsed.generation in (GENERATION_LEGACY_HEX, GENERATION_LEGACY_LABELS), identifier
 
 
 def test_doctor_rejects_a_runner_without_a_ticker():

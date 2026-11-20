@@ -169,14 +169,14 @@ def _dispatch_review_resolver(
             os.remove(result_file)
 
 
-def _has_ledger_reason(disp: FindingDisposition) -> bool:
+def _has_ledger_reason(context: FlowContext, disp: FindingDisposition) -> bool:
     """False for a rejection without a stated reason: it is refused and never reaches the ledger (stays open)."""
     if disp.disposition != REJECTED:
         return True
     try:
         require_rejection_reason(disp.rejection_reason)
     except ValueError as exc:
-        print(f"[Review Loop] Refused {disp.id}: {exc}; the finding stays open.")
+        context.log(f"[Review Loop] Refused {disp.id}: {exc}; the finding stays open.")
         return False
     return True
 
@@ -207,7 +207,7 @@ class DispositionRecorder:
         suppressed = 0
         for disp in dispositions:
             sig = finding_signature(disp.severity, disp.path, disp.line, disp.summary)
-            if sig in self.recorded_keys or not _has_ledger_reason(disp):
+            if sig in self.recorded_keys or not _has_ledger_reason(self.context, disp):
                 continue
             self.recorded_keys.add(sig)
             intro_id = (

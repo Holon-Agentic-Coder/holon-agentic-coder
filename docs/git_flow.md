@@ -1122,7 +1122,27 @@ edits from an interrupted run, the host commits them onto the failed execution b
 commit (`execute: <execution_id> partial work (interrupted) for plan <plan_branch>`) and records it in
 `executions.jsonl`, then resumes from that commit. The ledgers and the execution notes file are excluded, so dirty
 engine-owned files alone produce no commit. Nothing is discarded, reset or amended, and the commit stays on the
-execution branch, never on `main` or the plan branch.
+execution branch, never on `main` or the plan branch. A never-pushed execution branch reaches origin only in the one
+push that already carries its salvage row.
+
+### 13.2b Where a Resumed Execution Starts
+
+- **The override is recorded once per plan.** A Stage 3 run admitted by `--allow-overlap` appends its
+  `admission_override` row to the plan branch's `executions.jsonl` only when no such row for the plan exists yet, so a
+  resume under the same override adds no commit to the plan branch.
+- **Partial work from an earlier plan tip is kept.** A recorded `partial_head` qualifies when it descends from the
+  current plan tip, or when its fork point lies on the plan branch's first-parent history after the intent branch tip
+  and the plan branch changed only `holon-knowledge/ledger/*.jsonl` since. The executor then merges the current plan tip
+  into the new execution branch (ledger conflicts are reconciled with the plan side as byte prefix), so the branch
+  always descends from today's plan tip. Any other merge conflict aborts the merge and the execution starts from the
+  plan tip, with the reason logged.
+- **The branch tip is preferred.** When the failed execution branch's tip strictly descends from the recorded
+  `partial_head`, adds more than the failure commit's ledgers and notes, and passes the same lineage rule (a merge of
+  `origin/main` to settle a sync conflict, for example), the resume starts from the tip; no hand-written ledger row is
+  needed. A tip that does not contain the recorded head is passed over and the log says why.
+- **An execution branch is pushed only with its ledger row.** After Stage 3 dispatch the host pushes a new execution
+  branch only when its tip carries the execution's summary row (any status). A branch whose executor failed before
+  committing that row stays local in the host worktree, untouched, and the Stage 3 log names it.
 
 ### 13.3 Partial Sub-Intent Success
 

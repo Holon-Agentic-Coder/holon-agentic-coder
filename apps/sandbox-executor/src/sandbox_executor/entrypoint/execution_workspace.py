@@ -9,6 +9,12 @@ import os
 import re
 
 from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
+from sandbox_executor.entrypoint.partial_resume import (
+    ResumeStart,
+    intent_branch_tip,
+    plan_lineage_refusal,
+    resume_from_branch_tip,
+)
 from sandbox_executor.git import GitRepository
 
 # A resumable execution branch name (validated before it reaches a refspec) and a full commit sha.
@@ -94,28 +100,35 @@ def _resume_refusal(partial_branch: str, plan_branch_prefix: str) -> str | None:
 
 def resolve_partial_head(
     repo: GitRepository, partial_branch: str, plan_tip: str | None, plan_branch_prefix: str
-) -> tuple[str | None, str]:
-    """Return the partial head to resume from (or None) and the reason, read from the failed branch's own ledger.
+) -> ResumeStart:
+    """Return where to resume (``head`` None: the plan tip) and the reason, read from the failed branch's own ledger.
 
-    The partial head must be recorded on the branch's latest summary row of a failed execution and must descend
-    from the plan tip; otherwise the caller starts from the plan tip and logs the reason.
+    The partial head must be recorded on the branch's latest summary row of a failed execution and must be partial
+    work of this plan branch (``plan_lineage_refusal``: it descends from the plan tip, or from an earlier tip the plan
+    branch left only by ledger commits); otherwise the caller starts from the plan tip and logs the reason. The
+    branch tip is preferred when it descends from that head (``resume_from_branch_tip``).
     """
     if not plan_tip:
-        return None, "the plan tip is unknown"
+        return ResumeStart(None, "the plan tip is unknown")
     refusal = _resume_refusal(partial_branch, plan_branch_prefix)
     if refusal:
-        return None, refusal
+        return ResumeStart(None, refusal)
     from sandbox_executor.flow import failed_partial_head
 
     exec_id = partial_branch.removesuffix("/_").rsplit("/", 1)[-1]
-    sha = failed_partial_head(repo.repo_dir, f"refs/remotes/origin/{partial_branch}", exec_id)
+    branch_ref = f"refs/remotes/origin/{partial_branch}"
+    sha = failed_partial_head(repo.repo_dir, branch_ref, exec_id)
     if not sha or not _SHA_RE.match(sha):
-        return None, "no partial_head"
+        return ResumeStart(None, "no partial_head")
     if repo.run(["cat-file", "-e", f"{sha}^{{commit}}"], check=False).returncode != 0:
-        return None, "the partial head is not on the fetched branch"
-    if repo.merge_base(plan_tip, sha, is_ancestor=True).returncode != 0:
-        return None, "not a descendant of the plan tip"
-    return sha, "resumed"
+        return ResumeStart(None, "the partial head is not on the fetched branch")
+    intent_tip = intent_branch_tip(repo, plan_branch_prefix)
+    lineage_refusal = plan_lineage_refusal(repo, plan_tip, sha, intent_tip)
+    if lineage_refusal:
+        return ResumeStart(None, lineage_refusal)
+    tip = repo.rev_parse(f"{branch_ref}^{{commit}}", verify=True)
+    branch_tip = (tip.stdout or "").strip() if tip.returncode == 0 else None
+    return resume_from_branch_tip(repo, branch_tip, sha, (plan_tip, intent_tip), _ENGINE_OWNED_EXCLUDES)
 
 
 def continuation_note(partial_branch: str, partial_head: str) -> str:

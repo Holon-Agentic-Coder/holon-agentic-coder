@@ -396,7 +396,9 @@ def test_merge_branch_detailed_reports_the_merged_source_commit(repos):
     again = merge_module.merge_branch_detailed(str(host), "main", PLAN, "merge main in")
 
     assert merged.source_sha == main_sha and merged.target_sha == _git(origin, "rev-parse", PLAN).strip()
+    assert merged.merge_commit == merged.target_sha
     assert again.source_sha == main_sha and again.target_sha == merged.target_sha  # already contained: no new commit
+    assert again.merge_commit is None
 
 
 def test_a_ledger_only_conflict_with_the_plan_branch_is_interleaved(repos, tmp_path):

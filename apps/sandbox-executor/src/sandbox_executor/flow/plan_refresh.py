@@ -74,10 +74,8 @@ def refresh_plan_branch(context: FlowContext) -> PlanRefresh:
     ancestry = run_git(["merge-base", "--is-ancestor", str(refreshed_to), tip], cwd=repo_dir, check=False)
     if not refreshed_to or ancestry.returncode != 0:
         return PlanRefresh(error=f"origin/{target} at {refreshed_to} is not contained in the plan tip {tip[:12]}")
-    second_parent = run_git(["rev-parse", "--verify", "--quiet", f"{tip}^2"], cwd=repo_dir, check=False)
-    merge_commit = tip if second_parent.stdout.strip() == refreshed_to else None
     fast_forward_local_branch(context, plan_branch, tip)
-    return PlanRefresh(refreshed_to=refreshed_to, merge_commit=merge_commit)
+    return PlanRefresh(refreshed_to=refreshed_to, merge_commit=merged.merge_commit)
 
 
 def refresh_already_recorded(repo_dir: str, plan_branch: str, refreshed_to: str) -> bool:

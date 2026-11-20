@@ -177,12 +177,14 @@ def _merge_in_worktree(worktree: str, source_ref: str, message: str) -> tuple[st
 @dataclass(frozen=True)
 class BranchMerge:
     """Outcome of :func:`merge_branch_detailed`: the target's tip on origin (None on failure), why it failed, the
-    conflicting paths of an aborted merge and the source commit that was merged (or already contained)."""
+    conflicting paths of an aborted merge, the source commit that was merged (or already contained) and the merge
+    commit this call pushed (None when the source was already contained)."""
 
     target_sha: str | None
     reason: str = ""
     conflicts: tuple[str, ...] = ()
     source_sha: str | None = None
+    merge_commit: str | None = None
 
 
 def merge_into_branch(
@@ -243,7 +245,7 @@ def merge_branch_detailed(
         pushed_sha, merged_sha = run_git(["rev-parse", "HEAD", "HEAD^2"], cwd=worktree).stdout.split()
         run_git(["push", "origin", f"HEAD:refs/heads/{target_branch}"], cwd=worktree, timeout=300)
         run_git(["update-ref", target_ref, pushed_sha], cwd=repo_dir, check=False)
-        return BranchMerge(pushed_sha, source_sha=merged_sha)
+        return BranchMerge(pushed_sha, source_sha=merged_sha, merge_commit=pushed_sha)
     except (RuntimeError, TimeoutError, OSError) as exc:
         return BranchMerge(None, redact_agent_secrets(str(exc)))
     finally:

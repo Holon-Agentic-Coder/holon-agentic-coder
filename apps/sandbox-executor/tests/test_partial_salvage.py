@@ -181,3 +181,16 @@ def test_resume_dispatches_the_salvaged_branch(work: Path) -> None:
 
 def test_clean_resume_dispatches_three_arguments(work: Path) -> None:
     assert stage_args(work) == [PLAN, "claude-agent", "claude-opus-5-5"]
+
+
+def test_a_never_pushed_branch_reaches_origin_only_with_its_row(work: Path, monkeypatch) -> None:
+    (work / "tests" / "conftest.py").write_text("# interrupted\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sandbox_executor.flow.execution_publish._append_superseding_execution_row", lambda *_a: "push rejected"
+    )
+    with pytest.raises(SalvageError, match="push rejected"):
+        salvage_leftovers(context(work), prefix())
+    assert git(work, "ls-remote", "origin", EXEC_BRANCH) == ""
+    assert subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", f"refs/remotes/origin/{EXEC_BRANCH}"], cwd=work
+    ).returncode

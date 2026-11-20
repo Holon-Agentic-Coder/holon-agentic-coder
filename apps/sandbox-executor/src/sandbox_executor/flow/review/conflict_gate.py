@@ -19,6 +19,7 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.pr import format_review_git_trailers
 from sandbox_executor.flow.review.conflict_merge import _merge_and_push, _MergeOutcome
+from sandbox_executor.flow.review.ledger_commit import _commit_pending_ledger_rows
 from sandbox_executor.ledger import format_commit_trailers, generate_action_id
 from sandbox_executor.redaction import redact_agent_secrets
 
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 
 MergeabilityProbe = Callable[..., dict[str, Any]]
 MERGED_REASON = "target branch merged; approval must be re-earned on the new head"
+UNPUSHED_ROWS_REASON = "pending ledger rows could not be pushed"
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,11 @@ def _gate_conflicting_head(
         reason = f"the head conflicts with {target_branch} ({why})"
         context.log(f"[Review Loop] Conflict gate: {reason}.")
         return _ConflictGateResult(conflicting=True, blocked_reason=reason)
+    # The merge starts from origin/<branch>: pending rows are committed and pushed first, or nothing is merged.
+    pending = _commit_pending_ledger_rows(context, 0, "before conflict merge")
+    if pending is not None and not pending.pushed:
+        context.log(f"[Review Loop] Conflict gate on '{branch}': {UNPUSHED_ROWS_REASON}; nothing merged.")
+        return _ConflictGateResult(conflicting=True, blocked_reason=UNPUSHED_ROWS_REASON)
     outcome = _merge_and_push(context.target_worktree, branch, target_branch, trailers)
     reason = _blocked_reason(outcome, target_branch)
     context.log(f"[Review Loop] Conflict gate on '{branch}': {reason} (no test suite was run).")
@@ -126,6 +133,7 @@ def _stage5_conflict_gate(context: FlowContext) -> StageResult | None:
         return None
     target_branch = str(context.intent_data.get("target_branch") or "main")
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _commit_pending_ledger_rows(context, 0, "before Stage 5")  # Stage 5 always starts from committed rows.
     mergeability = stage_conflicts.check_pr_mergeability(
         context.target_worktree, branch=context.execution_branch, target_branch=target_branch
     )

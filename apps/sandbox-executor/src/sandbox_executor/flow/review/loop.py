@@ -54,6 +54,7 @@ from sandbox_executor.flow.review.ensemble import (
     _semantic_pr_text,
 )
 from sandbox_executor.flow.review.ids import build_review_id
+from sandbox_executor.flow.review.ledger_commit import _advance_past_ledger_commit, _commit_pending_ledger_rows
 from sandbox_executor.flow.review.local_tests import _ReviewTestGate
 from sandbox_executor.flow.review.posting import (
     PostFacts,
@@ -81,6 +82,7 @@ from sandbox_executor.flow.review.resolver import (
     _lookup_introducing_action_id,
 )
 from sandbox_executor.flow.review.verdict import (
+    _loop_status,
     consensus_blockers,
     decide_returned_consensus,
     not_approved_verdicts,
@@ -117,27 +119,6 @@ from sandbox_executor.review_report import (
 from sandbox_executor.review_target import DiffVerdict, ReviewTarget, classify_review_diff
 
 logger = logging.getLogger(__name__)
-
-
-def _loop_status(
-    consensus_reached: bool,
-    verdict: ConsensusVerdict | None,
-    failed: bool,
-    is_dirty: bool,
-    tests_not_measured: bool,
-) -> str:
-    """Map the loop outcome to its consensus status."""
-    if consensus_reached:
-        return "approved"
-    if failed or verdict is ConsensusVerdict.FAILED:
-        return "failed"
-    if is_dirty:
-        return "conflicted_dirty"
-    if tests_not_measured:
-        return "not_measured"
-    if verdict is ConsensusVerdict.CHANGES_REQUESTED:
-        return "changes_requested"
-    return "rejected"
 
 
 def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
@@ -343,6 +324,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         context.log("[Review Loop] Halting review loop without consensus: the empty-diff guard refused the PR.")
 
     while pr_refusal_error is None and infra_error is None and resolver_error is None and iteration < last_label:
+        last_commit = None if effective_dry_run else _commit_pending_ledger_rows(context, iteration)  # Previous rows.
+        resolved_target, prev_head_sha = _advance_past_ledger_commit(resolved_target, prev_head_sha, last_commit)
         iteration += 1
         context.log(f"[Review Loop] Starting review iteration {iteration}/{last_label} for target '{review_target}'.")
         iteration_timer = StageTimer("review", iteration_budget_seconds, clock=clock)
@@ -863,6 +846,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             raise
         except Exception as e:
             _warn_ledger_failure(context, "Stage 4 review action event", exec_file, e)
+    if not effective_dry_run:  # Every exit path, a failed or halted iteration included, commits its final rows.
+        _commit_pending_ledger_rows(context, iteration)
 
     loop_result: dict[str, Any] = {
         "target": review_target,

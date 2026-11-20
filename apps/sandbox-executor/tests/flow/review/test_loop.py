@@ -21,9 +21,13 @@ from sandbox_executor.flow import (
     run_review_stage,
     save_checkpoint,
 )
+from sandbox_executor.review_target import ReviewTarget
 
-from tests.flow.helpers import _review_loop_gh_stubs
+from tests.flow.helpers import _git, _review_loop_gh_stubs
 from tests.flow.lookup_patch import patch_lookup_sites
+from tests.review_fakes import FakeEnsemble, clean_reviewer, objecting_reviewer
+from tests.review_flow_repo import LEDGER, added_rows, build_flow_worktree, changed_paths, ledger_commits
+from tests.review_loop_stubs import EXEC_TARGET, _ensemble_ctx, _LoopStubs
 
 
 class TestReviewLoopStage:
@@ -380,3 +384,100 @@ class TestEngineOwnedReviewLoop:
         spent.payload["consensus"] = {"iterations": 4, "passes": 0}
 
         assert engine.stage_budget_seconds(FlowStage.REVIEW, spent) == per_pass
+
+
+def _applied(findings) -> list[dict]:
+    return [
+        {
+            "id": f.id,
+            "severity": f.severity,
+            "path": f.path,
+            "line": f.line,
+            "summary": f.summary,
+            "disposition": "applied",
+        }
+        for f in findings
+    ]
+
+
+class TestReviewLoopCommitsItsLedgerRows:
+    """Real git against a local bare origin: every iteration's rows are committed, ledger files only, and pushed."""
+
+    @staticmethod
+    def _run(work: Path, reviewers, resolver, max_iterations: int = 2) -> dict:
+        passes: list[int] = []
+
+        def ensemble(size: int):
+            passes.append(size)
+            return reviewers(len(passes))
+
+        def real_head(repo_dir: str, review_target: str):
+            return ReviewTarget(review_target, review_target, _git(work, "rev-parse", "HEAD")), None
+
+        with _LoopStubs(), patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", real_head):
+            return run_review_loop(
+                _ensemble_ctx(work),
+                target=EXEC_TARGET,
+                max_iterations=max_iterations,
+                ensemble_size=1,
+                run_ensemble_fn=FakeEnsemble(ensemble),
+                run_resolver_fn=resolver,
+            )
+
+    def test_each_iteration_leaves_a_clean_tree_with_its_rows_in_their_own_commit(self, tmp_path):
+        origin, work = build_flow_worktree(tmp_path)
+        fixes: list[str] = []
+
+        def pushing_resolver(target, iteration, findings, action_ids, rejected_findings):
+            (work / "src" / "app.py").write_text(f"x = {iteration + 1}\n", encoding="utf-8")
+            _git(work, "add", "src/app.py")
+            _git(work, "commit", "-q", "-m", f"fix iteration {iteration}")
+            fixes.append(_git(work, "rev-parse", "HEAD"))
+            _git(work, "push", "-q", "origin", f"HEAD:refs/heads/{EXEC_TARGET}")
+            return {"dispositions": _applied(findings), "head_sha": fixes[-1], "pushed": True}
+
+        res = self._run(work, lambda n: [objecting_reviewer(1) if n == 1 else clean_reviewer(1)], pushing_resolver)
+
+        assert res["consensus"]["approved"] is True
+        assert _git(work, "status", "--porcelain") == ""
+        assert _git(origin, "rev-parse", f"refs/heads/{EXEC_TARGET}") == _git(work, "rev-parse", "HEAD")
+        final, first = ledger_commits(work)
+        assert final == _git(work, "rev-parse", "HEAD")
+        assert changed_paths(work, final) == changed_paths(work, first) == [LEDGER]
+        assert changed_paths(work, fixes[0]) == ["src/app.py"]  # The fix commit carries no ledger row.
+        assert _git(work, "rev-parse", f"{first}^") == fixes[0]
+        assert {row.get("review_iteration") for row in added_rows(work, first)} == {1}
+        final_rows = added_rows(work, final)
+        assert {row.get("review_iteration") for row in final_rows} >= {2}
+        assert any(row.get("entry_type") == "summary" for row in final_rows)
+        assert "co-authored-by" not in _git(work, "log", "-1", "--format=%B", final).lower()
+
+    def test_a_failed_iteration_still_commits_its_rows(self, tmp_path):
+        _, work = build_flow_worktree(tmp_path)
+
+        def failing_resolver(target, iteration, findings, action_ids, rejected_findings):
+            return {"error": "pre-push tests failed", "exit_code": 1, "failed_tests": ["tests/test_app.py::test_x"]}
+
+        res = self._run(work, lambda n: [objecting_reviewer(1)], failing_resolver)
+
+        assert res["resolver_error"]
+        assert _git(work, "status", "--porcelain") == ""
+        assert changed_paths(work) == [LEDGER]
+        rows = added_rows(work)
+        assert any("resolver change rejected" in str(row.get("action")) for row in rows)
+        assert any(row.get("entry_type") == "summary" for row in rows)
+        assert any(row.get("review_iteration") == 1 for row in rows)
+
+    def test_ledger_only_heads_still_halt_on_no_convergence(self, tmp_path):
+        _, work = build_flow_worktree(tmp_path)
+
+        def idle_resolver(target, iteration, findings, action_ids, rejected_findings):
+            # Like the resolver container: it reports the worktree HEAD, and the host infers a push from a moved head.
+            return {"dispositions": _applied(findings), "head_sha": _git(work, "rev-parse", "HEAD")}
+
+        res = self._run(work, lambda n: [objecting_reviewer(1)], idle_resolver, max_iterations=5)
+
+        assert res["no_convergence"] is True
+        assert res["consensus"]["iterations"] == 3
+        assert _git(work, "status", "--porcelain") == ""
+        assert len(ledger_commits(work)) == 3

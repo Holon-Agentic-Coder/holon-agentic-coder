@@ -62,6 +62,22 @@ def _merge_target_ledger_only(worktree: str, target_ref: str, message: str) -> _
     return _MergeOutcome(merged=True, ledger_only=True, conflicting_paths=paths)
 
 
+def _follow_merged_head(repo_dir: str, branch: str, merged_sha: str) -> None:
+    """Fast-forward the local ``branch`` to the pushed merge, so its next ledger commit still pushes as a fast-forward.
+
+    Never forced: a local branch that is not an ancestor of the merge, or a fast-forward git refuses, stays as it is
+    (Stage 5's sync levels it with origin).
+    """
+    ref = f"refs/heads/{branch}"
+    old = run_git(["rev-parse", "--verify", "--quiet", ref], cwd=repo_dir, check=False).stdout.strip()
+    if not old or run_git(["merge-base", "--is-ancestor", old, merged_sha], cwd=repo_dir, check=False).returncode:
+        return
+    if run_git(["symbolic-ref", "--quiet", "HEAD"], cwd=repo_dir, check=False).stdout.strip() == ref:
+        run_git(["merge", "--ff-only", "-q", merged_sha], cwd=repo_dir, check=False)
+    else:
+        run_git(["update-ref", ref, merged_sha, old], cwd=repo_dir, check=False)
+
+
 def _merge_and_push(repo_dir: str, branch: str, target_branch: str, trailers: str = "") -> _MergeOutcome:
     """Merge ``origin/<target_branch>`` into ``origin/<branch>`` in a temporary worktree and push the result.
 
@@ -85,6 +101,7 @@ def _merge_and_push(repo_dir: str, branch: str, target_branch: str, trailers: st
             merged_sha = run_git(["rev-parse", "HEAD"], cwd=worktree).stdout.strip()
             push_commit(repo_dir, merged_sha, branch)
             run_git(["update-ref", f"refs/remotes/origin/{branch}", merged_sha], cwd=repo_dir, check=False)
+            _follow_merged_head(repo_dir, branch, merged_sha)
         return outcome
     except LedgerRewriteError:
         raise

@@ -181,3 +181,89 @@ def test_the_gate_refuses_to_merge_into_a_protected_branch_or_after_a_failed_fet
     unfetched = conflict_gate._merge_and_push(str(tmp_path), "feature", "main")
     assert unfetched.merged is False
     assert unfetched.error.startswith("fetching 'main' and 'feature' failed: ")
+
+
+class _SpyMerge:
+    """Records, when the merge starts, the flow worktree's status and the ledger origin's branch holds; then merges."""
+
+    def __init__(self, origin: Path, work: Path) -> None:
+        self.origin, self.work = origin, work
+        self.seen: list[tuple[str, str]] = []
+
+    def __call__(self, repo_dir: str, branch: str, target_branch: str, trailers: str = ""):
+        self.seen.append(
+            (_git(self.work, "status", "--porcelain"), _git(self.origin, "show", f"refs/heads/{branch}:{LEDGER}"))
+        )
+        return _REAL_MERGE(repo_dir, branch, target_branch, trailers)
+
+
+_REAL_MERGE = conflict_gate._merge_and_push
+
+
+def _pending_rows_repos(tmp_path: Path) -> tuple[Path, Path]:
+    """The ledger-only conflict, with the flow worktree on the head branch and one uncommitted row pending."""
+    origin, work = build_conflicting_repos(tmp_path)
+    _git(work, "checkout", "-q", BRANCH)
+    with (work / LEDGER).open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"execution_id": "E-pending", "created_at": "2026-11-06T00:00:00Z"}) + "\n")
+    return origin, work
+
+
+def _through_the_post_gate(work: Path, exec_file: Path) -> None:
+    request = PostRequest(
+        repo_dir=str(work),
+        review_target=BRANCH,
+        consensus_data={"approved": True, "base_branch": "main"},
+        proxy_env=None,
+        reviewers=[],
+        title="t",
+        iteration=1,
+        mergeability_probe=lambda *a, **k: dict(CONFLICTING),
+    )
+    ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
+    post_error, _ = post_review_consensus(MagicMock(), ctx, str(exec_file), request)
+    assert post_error == f"conflict gate: {conflict_gate.MERGED_REASON}"
+
+
+def _through_the_stage5_gate(work: Path, exec_file: Path) -> None:
+    del exec_file
+    ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
+    assert conflict_gate._stage5_conflict_gate(ctx) is None
+
+
+@pytest.mark.parametrize("gate", [_through_the_post_gate, _through_the_stage5_gate])
+def test_a_conflict_merge_starts_from_a_clean_tree_with_pending_rows_committed_and_pushed(tmp_path, monkeypatch, gate):
+    refuse_test_runs(monkeypatch)
+    origin, work = _pending_rows_repos(tmp_path)
+    monkeypatch.setattr(conflict_gate.stage_conflicts, "check_pr_mergeability", lambda *a, **k: dict(CONFLICTING))
+    spy = _SpyMerge(origin, work)
+    monkeypatch.setattr(conflict_gate, "_merge_and_push", spy)
+
+    gate(work, tmp_path / "gate-ledger.jsonl")
+
+    ((status, origin_ledger),) = spy.seen
+    assert status == ""
+    assert "E-pending" in origin_ledger
+    merged = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
+    assert _git(work, "rev-parse", "HEAD") == merged  # The local branch followed the pushed merge.
+    assert _git(work, "status", "--porcelain") == ""
+    ids = [json.loads(line)["execution_id"] for line in _git(origin, "show", f"{merged}:{LEDGER}").splitlines()]
+    assert ids == ["E-base", "E-main", "E-early", "E-late", "E-pending"]
+
+
+def test_pending_rows_that_cannot_be_pushed_block_the_gate_without_merging(tmp_path, monkeypatch):
+    origin, work = _pending_rows_repos(tmp_path)
+    _git(work, "stash", "-q")
+    _git(work, "reset", "-q", "--hard", "HEAD~1")  # Behind origin: the ledger commit cannot fast-forward.
+    _git(work, "stash", "pop", "-q")
+    before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
+    merge = _RecordingMerge(CODE_CONFLICT)
+    monkeypatch.setattr(conflict_gate, "_merge_and_push", merge)
+    ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
+
+    gate = conflict_gate._gate_conflicting_head(ctx, BRANCH, "main", CONFLICTING, "Action-Origin: pr_review")
+
+    assert gate.blocked_reason == conflict_gate.UNPUSHED_ROWS_REASON
+    assert merge.calls == []
+    assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") == before
+    assert _git(work, "status", "--porcelain") == ""  # The rows are safe in the local commit.

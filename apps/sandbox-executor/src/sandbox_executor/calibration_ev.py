@@ -2,6 +2,8 @@
 
 Computes Clean / Intrinsic EV, Observed EV with intermediate failures,
 and Bug EV Drag to distinguish pipeline/environment failures from agent delivery.
+The final row is the latest in flow order (created_at instant first, ledger_revision as the tie-break); see
+``calibration_outcome``.
 """
 
 from __future__ import annotations
@@ -10,6 +12,12 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from sandbox_executor.calibration_outcome import (
+    has_unresolved_failure,
+    is_converged_record,
+    record_exit_code,
+    summary_row_order_key,
+)
 from sandbox_executor.plan_paths import plan_branch_of
 
 
@@ -37,22 +45,6 @@ def is_matching_record(record: dict[str, Any], execution_id: str, plan_branch: s
     return record.get("entry_type", "summary") == "summary" and (recorded == wanted if wanted and recorded else same_id)
 
 
-def is_converged_record(record: dict[str, Any]) -> bool:
-    """True for a summary row that ends a run successfully.
-
-    ``success`` and ``halted_for_human`` do; so does the superseding ``decomposed`` row Stage 3 writes once every child
-    merged and the plan branch was integrated (``integrated: true``), which carries no ``exit_code``.
-    """
-    status = str(record.get("status", "success"))
-    return status in ("success", "halted_for_human") or (status == "decomposed" and record.get("integrated") is True)
-
-
-def _record_exit_code(record: dict[str, Any]) -> int:
-    """The row's exit code; a row without one is 0 when it converged or is a (not failed) ``decomposed`` row, else 1."""
-    ok = is_converged_record(record) or str(record.get("status", "success")) == "decomposed"
-    return int(record.get("exit_code", 0 if ok else 1))
-
-
 def evaluate_dual_ev_outcomes(
     records: list[dict[str, Any]],
     execution_id: str,
@@ -78,20 +70,15 @@ def evaluate_dual_ev_outcomes(
             bug_ev_drag=0.0,
         )
 
-    def sort_key(rec: dict[str, Any]) -> tuple[int, str]:
-        return (int(rec.get("ledger_revision", 1)), str(rec.get("created_at", "")))
-
-    sorted_records = sorted(matching, key=sort_key)
+    sorted_records = sorted(matching, key=summary_row_order_key)
     final_record = sorted_records[-1]
 
-    is_converged = is_converged_record(final_record) and _record_exit_code(final_record) == 0
+    is_converged = is_converged_record(final_record) and record_exit_code(final_record) == 0
     p_clean = 1.0 if is_converged else 0.0
     imp_clean = float(predicted_impact) if is_converged else 0.0
     ev_clean = round((imp_clean * p_clean) - cost_effort, 2)
 
-    has_failure = any(str(r.get("status", "success")) == "failed" or _record_exit_code(r) != 0 for r in sorted_records)
-
-    if has_failure:
+    if has_unresolved_failure(sorted_records):
         p_bugs, imp_bugs = 0.0, 0.0
         ev_bugs = round(0.0 - cost_effort, 2)
     else:

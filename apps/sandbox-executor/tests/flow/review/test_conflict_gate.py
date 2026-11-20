@@ -293,3 +293,43 @@ def test_stage5_rows_whose_push_was_rejected_block_the_merge(tmp_path, monkeypat
     assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") == before
     message = _git(work, "log", "-1", "--format=%B")
     assert "(before Stage 5)" in message and "Review-Iteration: 2" in message
+
+
+def _committed_rows_repos(tmp_path: Path, *, diverged: bool) -> tuple[Path, Path]:
+    """An earlier ledger commit left unpushed on the local branch (diverged from origin when ``diverged``)."""
+    origin, work = _unpushable_rows_repos(tmp_path) if diverged else _pending_rows_repos(tmp_path)
+    _git(work, "commit", "-q", "-am", "earlier ledger rows")
+    return origin, work
+
+
+def test_an_earlier_unpushed_ledger_commit_is_pushed_before_the_merge(tmp_path, monkeypatch):
+    refuse_test_runs(monkeypatch)
+    origin, work = _committed_rows_repos(tmp_path, diverged=False)
+    spy = _SpyMerge(origin, work)
+    monkeypatch.setattr(conflict_gate, "_merge_and_push", spy)
+    ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
+
+    gate = conflict_gate._gate_conflicting_head(
+        ctx, BRANCH, "main", CONFLICTING, conflict_gate._GateMerge("Action-Origin: pr_review")
+    )
+
+    assert gate.blocked_reason == conflict_gate.MERGED_REASON
+    ((_, origin_ledger),) = spy.seen
+    assert "E-pending" in origin_ledger
+    assert _git(work, "rev-parse", "HEAD") == _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
+
+
+def test_an_earlier_ledger_commit_that_cannot_be_pushed_blocks_the_merge(tmp_path, monkeypatch):
+    origin, work = _committed_rows_repos(tmp_path, diverged=True)
+    before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
+    merge = _RecordingMerge(CODE_CONFLICT)
+    monkeypatch.setattr(conflict_gate, "_merge_and_push", merge)
+    ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
+
+    gate = conflict_gate._gate_conflicting_head(
+        ctx, BRANCH, "main", CONFLICTING, conflict_gate._GateMerge("Action-Origin: pr_review")
+    )
+
+    assert gate.blocked_reason == conflict_gate.UNPUSHED_ROWS_REASON
+    assert merge.calls == []
+    assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") == before

@@ -19,8 +19,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from sandbox_executor.calibration import LEDGER_EXECUTIONS_REL
-from sandbox_executor.entrypoint.execution_workspace import workspace_mounted
+from sandbox_executor.entrypoint.execution_workspace import ENGINE_OWNED_LEDGER_PATHS, workspace_mounted
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.github.merge import PROTECTED_BRANCHES, _bare_branch
 from sandbox_executor.flow.host_remote import HostRemoteError, push_commit
@@ -32,11 +31,7 @@ from sandbox_executor.review_target import ReviewTarget
 logger = logging.getLogger(__name__)
 
 # The only ledgers: every row Stage 4 writes lands in one of these append-only files.
-LEDGER_RELS: tuple[str, ...] = (
-    "holon-knowledge/ledger/intents.jsonl",
-    "holon-knowledge/ledger/plans.jsonl",
-    LEDGER_EXECUTIONS_REL,
-)
+LEDGER_RELS: tuple[str, ...] = ENGINE_OWNED_LEDGER_PATHS
 
 
 @dataclass(frozen=True)
@@ -117,7 +112,8 @@ def _commit_pending_ledger_rows(context: FlowContext, iteration: int, reason: st
     """Commit the flow worktree's pending ledger rows on the execution branch and push them; never raises.
 
     Nothing happens on a dry run, inside a role container (the host commits the mounted worktree), without an execution
-    branch, on a protected branch, or when no row is pending. ``skip_push`` commits without pushing.
+    branch, on a protected branch, or when no row is pending. With ``context.skip_push`` the rows are committed
+    but not pushed.
 
     Returns:
         The commit (``pushed`` tells whether it reached the remote), or None when nothing was committed.

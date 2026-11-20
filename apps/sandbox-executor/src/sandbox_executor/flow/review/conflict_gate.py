@@ -18,8 +18,10 @@ from sandbox_executor.flow import stage_conflicts
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.pr import format_review_git_trailers
+from sandbox_executor.flow.host_remote import push_commit, remote_error
 from sandbox_executor.flow.review.conflict_merge import _merge_and_push, _MergeOutcome
 from sandbox_executor.flow.review.ledger_commit import _commit_pending_ledger_rows, _LedgerCommit
+from sandbox_executor.git import run_git
 from sandbox_executor.ledger import format_commit_trailers, generate_action_id
 from sandbox_executor.redaction import redact_agent_secrets
 
@@ -72,6 +74,24 @@ class _GateMerge:
     committed: _LedgerCommit | None = None
 
 
+def _local_commits_unpushed(context: FlowContext, branch: str) -> bool:
+    """True when ``refs/heads/<branch>`` holds commits ``origin/<branch>`` lacks and they cannot be pushed now.
+
+    This covers an earlier ledger commit whose push was rejected: the merge starts from ``origin/<branch>``, so merging
+    without it would leave its rows behind and diverge the local branch from the remote.
+    """
+    repo_dir, local = context.target_worktree, f"refs/heads/{branch}"
+    if run_git(["rev-parse", "--verify", "-q", local], cwd=repo_dir, check=False).returncode != 0:
+        return False
+    ancestor = ["merge-base", "--is-ancestor", local, f"refs/remotes/origin/{branch}"]
+    if run_git(ancestor, cwd=repo_dir, check=False).returncode == 0:
+        return False
+    error = "pushing is skipped" if context.skip_push else remote_error(push_commit, repo_dir, local, branch)
+    if error:
+        context.log(f"[Review Loop] Conflict gate: local '{branch}' is ahead of origin and unpushed: {error}")
+    return error is not None
+
+
 def _gate_conflicting_head(
     context: FlowContext,
     branch: str | None,
@@ -92,7 +112,7 @@ def _gate_conflicting_head(
         return _ConflictGateResult(conflicting=True, blocked_reason=reason)
     # The merge starts from origin/<branch>: pending rows are committed and pushed first, or nothing is merged.
     pending = _commit_pending_ledger_rows(context, merge.iteration, "before conflict merge") or merge.committed
-    if pending is not None and not pending.pushed:
+    if (pending is not None and not pending.pushed) or _local_commits_unpushed(context, branch):
         context.log(f"[Review Loop] Conflict gate on '{branch}': {UNPUSHED_ROWS_REASON}; nothing merged.")
         return _ConflictGateResult(conflicting=True, blocked_reason=UNPUSHED_ROWS_REASON)
     outcome = _merge_and_push(context.target_worktree, branch, target_branch, merge.trailers)

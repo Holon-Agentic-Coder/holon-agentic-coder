@@ -23,6 +23,7 @@ from sandbox_executor.flow.admission import admission_stage_failure, check_admis
 from sandbox_executor.flow.admission_decision import AdmissionConflict, AdmissionDecision, decide_admission, refusal
 from sandbox_executor.flow.admission_lock import AdmissionLockError, admission_lock, admission_lock_path
 from sandbox_executor.flow.admission_order import blocker_is_clear, older_ready_waiter, older_waiter_flows, waiter_key
+from sandbox_executor.flow.admission_record import override_already_recorded
 from sandbox_executor.flow.admission_state import AdmissionRecord, BlockedBy, admitted_record, blocked_record, utc_now
 from sandbox_executor.flow.calibrate_rebuild import (
     holds_only_calibration_commits,
@@ -78,6 +79,12 @@ from sandbox_executor.flow.dispatch import (
     _stage_failure,
     _test_evidence,
     recorded_test_pass_rate,
+)
+from sandbox_executor.flow.execution_publish import (
+    held_execution_failure,
+    hold_unrecorded_executions,
+    publish_with_first_row,
+    unrecorded_executions,
 )
 from sandbox_executor.flow.git_refs import (
     EXECUTOR_GIT_ENV,
@@ -178,6 +185,15 @@ from sandbox_executor.flow.partial_salvage import (
 )
 from sandbox_executor.flow.pipeline import PipelineEngine, run_flow_pipeline
 from sandbox_executor.flow.review.adjudication import _augment_pr_text_with_rejected, _filter_adjudicated_findings
+from sandbox_executor.flow.review.carried_findings import (
+    CarriedPass,
+    carried_blocker,
+    deserialize_carried,
+    merge_findings,
+    resolve_carried_first,
+    serialize_open,
+    undisposed,
+)
 from sandbox_executor.flow.review.ci_outcome import describe_ci_outcome, gate_ci_flags
 from sandbox_executor.flow.review.cli import run_review_loop_cli
 from sandbox_executor.flow.review.ensemble import (
@@ -306,6 +322,7 @@ __all__ = [
     "BlockedBy",
     "BlockedWaiter",
     "CalibrationSyncError",
+    "CarriedPass",
     "CiWaitPolicy",
     "CiWaitResult",
     "ConflictResolutionError",
@@ -412,6 +429,7 @@ __all__ = [
     "blocker_is_clear",
     "build_pr_review_consensus_report",
     "build_review_id",
+    "carried_blocker",
     "check_admission",
     "check_and_resolve_stage_conflicts",
     "check_pr_mergeability",
@@ -419,6 +437,7 @@ __all__ = [
     "create_or_update_pr",
     "decide_admission",
     "describe_ci_outcome",
+    "deserialize_carried",
     "discard_empty_calibrated_branch",
     "discover_in_flight_flows",
     "extract_valid_ledger_rows",
@@ -433,6 +452,8 @@ __all__ = [
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
     "head_move_since_calibration",
+    "held_execution_failure",
+    "hold_unrecorded_executions",
     "holds_only_calibration_commits",
     "is_ancestor",
     "is_calibration_commit",
@@ -444,12 +465,14 @@ __all__ = [
     "local_blocked_waiters",
     "local_in_flight_flows",
     "lookup_merge_flag",
+    "merge_findings",
     "migrate_checkpoint_data",
     "new_local_child_branches",
     "next_poll_interval",
     "older_ready_waiter",
     "older_waiter_flows",
     "open_flow_pull_requests",
+    "override_already_recorded",
     "parse_metrics",
     "pending_check_names",
     "post_pr_review_consensus",
@@ -458,6 +481,7 @@ __all__ = [
     "probe_ci_checks",
     "publish_calibration",
     "publish_new_child_branches",
+    "publish_with_first_row",
     "push_branch",
     "push_commit",
     "read_plan_touch_set",
@@ -477,6 +501,7 @@ __all__ = [
     "rerun_calibration",
     "rerun_note",
     "resolve_append_only_conflict",
+    "resolve_carried_first",
     "resolve_ci_registration_timeout",
     "restore_starting_branch",
     "review_calibration_freshness",
@@ -496,6 +521,7 @@ __all__ = [
     "salvage_leftovers",
     "save_admission",
     "save_checkpoint",
+    "serialize_open",
     "settle_pending_ci",
     "stale_calibrated_refs",
     "superseding_failure_row",
@@ -505,6 +531,8 @@ __all__ = [
     "touch_set_replan_feedback",
     "touch_set_violation",
     "touch_set_violation_result",
+    "undisposed",
+    "unrecorded_executions",
     "utc_now",
     "validate_intent_questions",
     "wait_for_pending_ci",

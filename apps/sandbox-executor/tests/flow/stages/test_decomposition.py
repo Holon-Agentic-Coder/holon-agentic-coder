@@ -524,6 +524,7 @@ class TestEntropyBudgetHandoffInFlow:
             replan_attempts=1,
             review_iterations_done=3,
             admission={"state": "admitted"},
+            carried_review_findings=[{"id": "R1-F1", "severity": "nit", "summary": "A parent nit."}],
             **parent_values,
         )
         child_intent = {"slug": "child", "goal": "Add the parser"}
@@ -542,6 +543,7 @@ class TestEntropyBudgetHandoffInFlow:
             "replan_attempts": 0,
             "review_iterations_done": 0,  # A child intent runs its own Stage 4, so its review count starts afresh.
             "admission": None,  # A child intent runs its own Stage 3 admission.
+            "carried_review_findings": [],  # The parent's open findings belong to the parent's review.
         }
         defaults = FlowContext(token_reduce=False)
         for name, value in parent_values.items():

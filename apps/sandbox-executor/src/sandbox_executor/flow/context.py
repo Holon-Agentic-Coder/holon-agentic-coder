@@ -179,6 +179,8 @@ class FlowContext:
     replan_attempts: int = 0
     # Engine-owned Stage 4 count: the label of the last review pass run, checkpointed so a resume continues it.
     review_iterations_done: int = 0
+    # Stage 4 findings a halted pass left without a disposition; a resume sends them to the resolver first.
+    carried_review_findings: list[dict[str, Any]] = field(default_factory=list)
     # Role-agent dispatcher for Stages 1-3; None means cli.dispatch_role_agent. Never checkpointed.
     dispatcher: Callable[..., int] | None = field(default=None, repr=False, compare=False)
 
@@ -231,6 +233,7 @@ class FlowContext:
             "admission": self.admission,
             "replan_attempts": self.replan_attempts,
             "review_iterations_done": self.review_iterations_done,
+            "carried_review_findings": self.carried_review_findings,
             "stage_results": {k: v.to_dict() for k, v in self.stage_results.items()},
             "logs": self.logs,
         }
@@ -271,6 +274,7 @@ class FlowContext:
             admission=data.get("admission"),
             replan_attempts=int(data.get("replan_attempts") or 0),
             review_iterations_done=int(data.get("review_iterations_done") or 0),
+            carried_review_findings=list(data.get("carried_review_findings") or []),
             stage_results=parsed_results,
             logs=data.get("logs", []),
         )

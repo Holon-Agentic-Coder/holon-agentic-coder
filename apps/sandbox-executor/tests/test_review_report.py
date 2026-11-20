@@ -624,3 +624,21 @@ def test_report_without_a_github_origin_renders_the_target_without_a_link(tmp_pa
     assert "](" not in body
     assert "github.com" not in body
     assert "Holon-Agentic-Coder" not in body
+
+
+# --- Fail-closed dispositions ---------------------------------------------------------------------------------------
+
+
+NIT_ROW = review_report.FindingRow("R1-F1", "nit", "flow/calibrate_rerun.py", 40, (1,), "A nit.", "Fix it.")
+
+
+def test_a_nit_without_a_resolver_entry_stays_open():
+    (disp,) = review_report.deserialize_finding_dispositions([], [NIT_ROW])
+
+    assert (disp.disposition, disp.rejection_reason) == ("open", None)
+
+
+def test_a_nit_rejected_without_a_reason_stays_open():
+    (disp,) = review_report.deserialize_finding_dispositions([{"id": "R1-F1", "disposition": "rejected"}], [NIT_ROW])
+
+    assert (disp.disposition, disp.rejection_reason) == ("open", None)

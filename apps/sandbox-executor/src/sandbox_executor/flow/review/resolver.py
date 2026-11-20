@@ -24,7 +24,7 @@ from sandbox_executor.flow.review.ensemble import _ENGINE_PASSES_PER_DISPATCH
 from sandbox_executor.flow.review.records import _bounded_error_context, record_review_action
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.redaction import redact_agent_secrets
-from sandbox_executor.resolver_evidence import OPEN
+from sandbox_executor.resolver_evidence import OPEN, REJECTED, require_rejection_reason
 from sandbox_executor.resolver_result import (
     read_container_resolver_result,
     rejected_attempt_fields,
@@ -140,8 +140,12 @@ def _dispatch_review_resolver(
         # Fails closed: a non-zero exit, or a file still holding the input payload, is a failed pass.
         parsed = read_container_resolver_result(data, exit_code, target.head_sha)
         pushed, push_error = _push_resolver_head(context, target, parsed.head_sha, parsed.error)
+        # A failed pass carries no dispositions at all: its findings stay open and no adjudication row is written.
+        dispositions = (
+            () if parsed.error else deserialize_finding_dispositions(parsed.raw_dispositions, findings, lookup)
+        )
         return ResolverOutcome(
-            dispositions=deserialize_finding_dispositions(parsed.raw_dispositions, findings, lookup),
+            dispositions=dispositions,
             head_sha=parsed.head_sha,
             pushed=pushed,
             lint_passed=parsed.lint_passed,
@@ -153,9 +157,7 @@ def _dispatch_review_resolver(
             test_summary=parsed.test_summary,
         )
     except Exception as exc:
-        dispositions = deserialize_finding_dispositions([], findings, lookup)
         return ResolverOutcome(
-            dispositions=dispositions,
             head_sha=target.head_sha,
             pushed=False,
             lint_passed=False,
@@ -165,6 +167,18 @@ def _dispatch_review_resolver(
     finally:
         with contextlib.suppress(OSError):
             os.remove(result_file)
+
+
+def _has_ledger_reason(context: FlowContext, disp: FindingDisposition) -> bool:
+    """False for a rejection without a stated reason: it is refused and never reaches the ledger (stays open)."""
+    if disp.disposition != REJECTED:
+        return True
+    try:
+        require_rejection_reason(disp.rejection_reason)
+    except ValueError as exc:
+        context.log(f"[Review Loop] Refused {disp.id}: {exc}; the finding stays open.")
+        return False
+    return True
 
 
 def _lookup_introducing_action_id(row: FindingRow, action_ids: Mapping[str, str]) -> str | None:
@@ -193,7 +207,7 @@ class DispositionRecorder:
         suppressed = 0
         for disp in dispositions:
             sig = finding_signature(disp.severity, disp.path, disp.line, disp.summary)
-            if sig in self.recorded_keys:
+            if sig in self.recorded_keys or not _has_ledger_reason(self.context, disp):
                 continue
             self.recorded_keys.add(sig)
             intro_id = (
@@ -266,16 +280,15 @@ def _invoke_resolver_pass(
     except TypeError:
         raw = run_resolver_fn(list(findings), iteration)
     except Exception as exc:
-        dispositions = deserialize_finding_dispositions([], findings, lookup)
         return ResolverOutcome(
-            dispositions=dispositions,
             head_sha=target.head_sha,
             pushed=False,
             error=f"Resolver failed: {redact_agent_secrets(str(exc))}",
         )
     if isinstance(raw, ResolverOutcome):
+        decided = () if raw.error else raw.dispositions
         dispositions = deserialize_finding_dispositions(
-            [serialize_finding_disposition(d) for d in raw.dispositions], findings, lookup
+            [serialize_finding_disposition(d) for d in decided], findings, lookup
         )
         return dataclasses.replace(raw, dispositions=dispositions, head_sha=raw.head_sha or target.head_sha)
     if isinstance(raw, Mapping):
@@ -284,12 +297,11 @@ def _invoke_resolver_pass(
             raw_disps = [
                 serialize_finding_disposition(d) if isinstance(d, FindingDisposition) else d for d in raw_disps
             ]
-        dispositions = deserialize_finding_dispositions(raw_disps, findings, lookup)
         head_sha = str(raw.get("head_sha") or target.head_sha or "").strip()
         pushed = bool(raw.get("pushed", head_sha != target.head_sha))
         err = resolver_error_text(raw.get("error"), raw.get("exit_code"), raw.get("output_tail"))
         return ResolverOutcome(
-            dispositions=dispositions,
+            dispositions=() if err else deserialize_finding_dispositions(raw_disps, findings, lookup),
             head_sha=head_sha,
             pushed=pushed,
             lint_passed=bool(raw.get("lint_passed", True)),

@@ -8,7 +8,15 @@ from pathlib import Path
 
 import pytest
 from sandbox_executor.calibration_ev import parse_summary_records
-from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, admission, admission_state
+from sandbox_executor.flow import (
+    FlowContext,
+    FlowStage,
+    StageResult,
+    StageStatus,
+    admission,
+    admission_record,
+    admission_state,
+)
 from sandbox_executor.flow.admission import AdmissionDecision, check_admission, format_refusal
 from sandbox_executor.flow.checkpoint import get_default_checkpoint_path, save_checkpoint
 from sandbox_executor.flow.git_refs import _latest_execution_summary
@@ -109,6 +117,31 @@ def test_override_appends_exactly_one_row(own_plan, monkeypatch):
     assert row["plan_id"] == OWN_PLAN.removesuffix("/_").rsplit("/", 1)[-1] and row["intent_id"] == "I-100-own/_"
     assert row["recorded_by"] == "flow" and row["created_at"]
     assert row["conflicts"][0]["files"] == ["src/app.py"]
+
+
+def test_override_is_recorded_once_per_plan(own_plan, monkeypatch):
+    """A resume under the same override adds no plan-branch commit, so the plan tip partial work forked from stays."""
+    _use_real_check(monkeypatch, other_pr(["src/app.py"]))
+    assert admission.admission_stage_failure(own_context(own_plan, allow_overlap=True), "2026-11-14T00:00:00Z") is None
+    tip = _git(own_plan, "rev-parse", f"refs/remotes/origin/{OWN_PLAN}")
+    resumed = own_context(own_plan, allow_overlap=True)
+    assert admission.admission_stage_failure(resumed, "2026-11-14T01:00:00Z") is None
+    assert _git(own_plan, "rev-parse", f"refs/remotes/origin/{OWN_PLAN}") == tip
+    content = _git(own_plan, "show", f"refs/remotes/origin/{OWN_PLAN}:holon-knowledge/ledger/executions.jsonl")
+    assert [json.loads(line)["kind"] for line in content.splitlines() if line.strip()] == ["admission_override"]
+    assert any("override already recorded on" in line for line in resumed.logs)
+
+
+def test_an_override_row_of_another_plan_does_not_count(own_plan):
+    row = {"kind": "admission_override", "plan_id": "P-9-other", "plan_branch": "I-100-own/P-9-other/_"}
+    _git(own_plan, "checkout", "-q", OWN_PLAN)
+    ledger = own_plan / "holon-knowledge" / "ledger" / "executions.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    _git(own_plan, "add", "-A")
+    _git(own_plan, "commit", "-q", "-m", "foreign override row")
+    _git(own_plan, "push", "-q", "origin", OWN_PLAN)
+    assert not admission_record.override_already_recorded(str(own_plan), OWN_PLAN)
 
 
 def test_override_that_cannot_be_recorded_is_refused(own_plan, monkeypatch):

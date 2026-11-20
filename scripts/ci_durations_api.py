@@ -19,6 +19,7 @@ from datetime import date
 from scripts.ci_timing_gate import API_ROOT, build_request, default_opener
 
 PAGE_SIZE = 100
+RESULT_CAP = 1000  # the API answers 422 past the first 1000 results of a listing
 REPORT_WORKFLOW = "ci-durations.yml"
 
 Opener = Callable[[urllib.request.Request], bytes]
@@ -55,13 +56,14 @@ def list_runs(client: ApiClient, since: date, max_runs: int) -> tuple[list[dict[
     runs: list[dict[str, object]] = []
     read = total = 0
     page = 1
-    while read < max_runs:
+    limit = min(max_runs, RESULT_CAP)
+    while read < limit:
         listing = client.get_json(f"runs?created={created}&per_page={PAGE_SIZE}&page={page}")
         batch = listing.get("workflow_runs") or []
         total = max(total, int(listing.get("total_count") or 0))
         if not batch:
             break
-        batch = batch[: max_runs - read]
+        batch = batch[: limit - read]
         read += len(batch)
         runs.extend(run for run in batch if _is_reported_run(run))
         page += 1

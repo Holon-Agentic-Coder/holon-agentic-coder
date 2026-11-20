@@ -163,7 +163,8 @@ delta, the ratio and the ceiling. The report never fails on a slow job: failing 
 
 Each run makes one request per 100 runs plus one per run for its jobs. `--max-runs` (default 500) keeps that well below
 the `GITHUB_TOKEN` limit of 1000 requests an hour. When it, or the API's cap of 1000 results per listing, cuts the
-window short, the report and the summary say so with a warning.
+window short, the report and the summary say so with a warning. Runs whose jobs cannot be read (for example once the
+rate limit is hit) are merged into one warning that counts them and names the first five.
 
 ## Branch Protection Status Checks
 

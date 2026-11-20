@@ -17,6 +17,7 @@ from scripts.ci_timing_gate import BASELINE_BRANCH, FETCH_ERRORS
 
 PULL_REQUEST_EVENTS = ("pull_request", "pull_request_target")
 DROPPED_CONCLUSIONS = ("skipped",)
+SAMPLE_FAILURES = 5  # failed job listings named in the single warning; the rest are only counted
 _MATRIX_SUFFIX = re.compile(r"\s*\(([^()]*)\)\s*$")
 _SHA = re.compile(r"[0-9a-f]{7,64}")
 
@@ -169,7 +170,7 @@ def normalise_job(client: ApiClient, run: dict[str, object], job: dict[str, obje
 
 
 def collect(client: ApiClient, since: date, max_runs: int) -> Collection:
-    """Collect every job record since ``since``; a failed job listing for one run becomes a warning.
+    """Collect every job record since ``since``; failed job listings are merged into one warning.
 
     A failure listing the runs themselves propagates: the report never renders partial or invented data silently.
     """
@@ -181,11 +182,16 @@ def collect(client: ApiClient, since: date, max_runs: int) -> Collection:
             "the report covers only the newest runs of the window."
         )
     rows: list[JobDuration] = []
+    failed: list[str] = []
     for run in runs:
         try:
             jobs = list_jobs(client, int(run["id"]))
             rows.extend(row for job in jobs if (row := normalise_job(client, run, job)) is not None)
         except FETCH_ERRORS as exc:
-            warnings.append(f"::warning::Could not read the jobs of run {run.get('id')} ({type(exc).__name__}).")
+            failed.append(f"{run.get('id')} ({type(exc).__name__})")
+    if failed:
+        more = f" and {len(failed) - SAMPLE_FAILURES} more" if len(failed) > SAMPLE_FAILURES else ""
+        noun = "run" if len(failed) == 1 else f"{len(failed)} runs:"
+        warnings.append(f"::warning::Could not read the jobs of {noun} {', '.join(failed[:SAMPLE_FAILURES])}{more}.")
     rows.sort(key=lambda row: (row.started_at, row.workflow, row.job, row.run_attempt))
     return Collection(rows, len(runs), warnings)

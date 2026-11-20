@@ -261,6 +261,35 @@ def test_a_failed_job_listing_becomes_a_warning_naming_the_run() -> None:
     assert result.warnings == ["::warning::Could not read the jobs of run 2 (HTTPError)."]
 
 
+def test_many_failed_job_listings_become_one_warning_with_a_count() -> None:
+    opener = recorded_api([run(i) for i in range(1, 9)])
+    for i in range(1, 9):
+        opener.responses[f"runs/{i}/jobs?filter=all&per_page=100&page=1"] = urllib.error.HTTPError(
+            "u", 403, "rate limit exceeded", None, None
+        )
+    result = collect(client(opener), SINCE, 500)
+    assert result.rows == []
+    assert result.warnings == [
+        "::warning::Could not read the jobs of 8 runs: 1 (HTTPError), 2 (HTTPError), 3 (HTTPError), "
+        "4 (HTTPError), 5 (HTTPError) and 3 more."
+    ]
+
+
+def test_the_run_listing_stops_at_the_api_result_cap() -> None:
+    pages = {
+        f"{RUNS_QUERY}&page={page}": {
+            "total_count": 1500,
+            "workflow_runs": [run(i) for i in range(page * 100 - 99, page * 100 + 1)],
+        }
+        for page in range(1, 12)
+    }
+    opener = FakeOpener(pages)
+    runs, truncated = list_runs(client(opener), SINCE, 5000)
+    assert len(runs) == 1000
+    assert truncated
+    assert not any(url.endswith("&page=11") for url in opener.urls)
+
+
 def test_a_failed_run_listing_is_not_hidden() -> None:
     with pytest.raises(urllib.error.URLError):
         collect(client(FakeOpener({})), SINCE, 500)

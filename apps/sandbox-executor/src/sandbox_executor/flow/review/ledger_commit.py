@@ -39,7 +39,7 @@ LEDGER_RELS: tuple[str, ...] = (
 
 
 @dataclass(frozen=True)
-class LedgerCommit:
+class _LedgerCommit:
     """A ledger-only commit on the execution branch: ``parent`` is the head it was made on."""
 
     sha: str
@@ -47,7 +47,7 @@ class LedgerCommit:
     pushed: bool = False
 
 
-def pending_ledger_paths(repo_dir: str) -> list[str]:
+def _pending_ledger_paths(repo_dir: str) -> list[str]:
     """Return the ledger files modified or untracked in ``repo_dir``; empty when it is not a git worktree."""
     res = run_git(["status", "--porcelain", "--untracked-files=all", "--", *LEDGER_RELS], cwd=repo_dir, check=False)
     if res.returncode != 0:
@@ -65,16 +65,16 @@ def _checked_out_branch(repo_dir: str) -> str | None:
     return lines[1]
 
 
-def ledger_commit_message(iteration: int, reason: str = "") -> str:
+def _ledger_commit_message(iteration: int, reason: str = "") -> str:
     """The ledger commit message: a subject naming the iteration or the reason, then the review trailers only."""
     subject = f"chore(review): record review ledger rows ({reason or f'iteration {iteration}'})"
     trailers = ["Action-Origin: pr_review"] + ([f"Review-Iteration: {iteration}"] if iteration >= 1 else [])
     return subject + "\n\n" + "\n".join(trailers)
 
 
-def commit_ledger_rows(
+def _commit_ledger_rows(
     repo_dir: str, branch: str, message: str, log: Callable[[str], None] | None = None
-) -> LedgerCommit | None:
+) -> _LedgerCommit | None:
     """Commit the pending ledger files of ``repo_dir`` on ``branch``; None when nothing is pending or off the branch.
 
     The commit names the ledger paths explicitly, so other staged or modified files stay exactly as they were.
@@ -84,7 +84,7 @@ def commit_ledger_rows(
     """
     from sandbox_executor.flow.stages.review import REVIEW_GIT_ENV  # Lazy: stages.review imports the review loop.
 
-    pending = pending_ledger_paths(repo_dir)
+    pending = _pending_ledger_paths(repo_dir)
     if not pending:
         return None
     checked_out = _checked_out_branch(repo_dir)
@@ -95,10 +95,10 @@ def commit_ledger_rows(
     parent = run_git(["rev-parse", "HEAD"], cwd=repo_dir).stdout.strip()
     run_git(["add", "--", *pending], cwd=repo_dir)
     run_git(["commit", "-q", "-m", message, "--", *pending], cwd=repo_dir, env={**os.environ, **REVIEW_GIT_ENV})
-    return LedgerCommit(sha=run_git(["rev-parse", "HEAD"], cwd=repo_dir).stdout.strip(), parent=parent)
+    return _LedgerCommit(sha=run_git(["rev-parse", "HEAD"], cwd=repo_dir).stdout.strip(), parent=parent)
 
 
-def _push_ledger_commit(context: FlowContext, commit: LedgerCommit, branch: str) -> LedgerCommit:
+def _push_ledger_commit(context: FlowContext, commit: _LedgerCommit, branch: str) -> _LedgerCommit:
     """Fast-forward push ``commit``; a rejected push keeps the local commit and is logged, never raised."""
     try:
         push_commit(context.target_worktree, commit.sha, branch)
@@ -114,7 +114,7 @@ def _warn(context: FlowContext, detail: str) -> None:
     context.log(msg)
 
 
-def commit_pending_ledger_rows(context: FlowContext, iteration: int, reason: str = "") -> LedgerCommit | None:
+def _commit_pending_ledger_rows(context: FlowContext, iteration: int, reason: str = "") -> _LedgerCommit | None:
     """Commit the flow worktree's pending ledger rows on the execution branch and push them; never raises.
 
     Nothing happens on a dry run, inside a role container (the host commits the mounted worktree), without an execution
@@ -127,8 +127,8 @@ def commit_pending_ledger_rows(context: FlowContext, iteration: int, reason: str
     if context.dry_run or workspace_mounted() or not branch or _bare_branch(branch) in PROTECTED_BRANCHES:
         return None
     try:
-        message = ledger_commit_message(iteration, reason)
-        commit = commit_ledger_rows(context.target_worktree, branch, message, context.log)
+        message = _ledger_commit_message(iteration, reason)
+        commit = _commit_ledger_rows(context.target_worktree, branch, message, context.log)
         if commit is None:
             return None
         context.log(f"[Review Loop] Committed ledger rows at {commit.sha[:8]} ({reason or f'iteration {iteration}'}).")
@@ -138,8 +138,8 @@ def commit_pending_ledger_rows(context: FlowContext, iteration: int, reason: str
         return None
 
 
-def advance_past_ledger_commit(
-    target: ReviewTarget | None, prev_head_sha: str, commit: LedgerCommit | None
+def _advance_past_ledger_commit(
+    target: ReviewTarget | None, prev_head_sha: str, commit: _LedgerCommit | None
 ) -> tuple[ReviewTarget | None, str]:
     """Move the reviewed head onto a ledger commit made on it; a ledger-only move is no diff change for convergence."""
     if target is None or commit is None or commit.parent != target.head_sha:
@@ -148,8 +148,8 @@ def advance_past_ledger_commit(
     return dataclasses.replace(target, head_sha=commit.sha), carried
 
 
-def close_review_stage(context: FlowContext, on_branch: list[str], restore: Callable[..., object]) -> None:
+def _close_review_stage(context: FlowContext, on_branch: list[str], restore: Callable[..., object]) -> None:
     """Stage 4's exit: commit rows still pending on the execution branch, then hand the worktree back (``restore``)."""
     if on_branch:
-        commit_pending_ledger_rows(context, context.review_iterations_done, "stage 4 exit")
+        _commit_pending_ledger_rows(context, context.review_iterations_done, "stage 4 exit")
         restore(context.target_worktree, on_branch[0], "Stage 4 review loop", context.log, run_git)

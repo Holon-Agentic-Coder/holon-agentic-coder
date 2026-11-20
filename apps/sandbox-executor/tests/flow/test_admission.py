@@ -310,3 +310,44 @@ def test_dry_run_writes_no_admission_state(own_plan, monkeypatch):
     context = own_context(own_plan, dry_run=True)
     assert admission.admission_stage_failure(context, "2026-11-14T00:00:00Z") is None
     assert context.admission is None and _admission(own_plan) is None
+
+
+BLOCKED_AT = "2026-11-20T01:00:00.000Z"
+
+
+def _blocked() -> admission_state.AdmissionRecord:
+    entry = admission_state.BlockedBy(admission_state.BLOCKED_BY_PULL_REQUEST, ("src/app.py",), number=7, branch="b")
+    return admission_state.blocked_record(None, (entry,), BLOCKED_AT)
+
+
+def test_an_admission_after_a_refusal_keeps_the_wait_and_owes_a_refresh():
+    record = admission_state.admitted_record(None, _blocked())
+    assert record.to_dict() == {"state": "admitted", "waited_since": BLOCKED_AT}
+    assert record.refresh_due
+
+
+def test_a_first_check_admission_records_no_wait_and_owes_no_refresh():
+    record = admission_state.admitted_record(None, None)
+    assert record.to_dict() == {"state": "admitted"}
+    assert not record.refresh_due
+
+
+def test_an_admitted_resume_keeps_the_wait_and_the_refresh():
+    waited = admission_state.admitted_record(None, _blocked())
+    resumed = admission_state.admitted_record(None, admission_state.AdmissionRecord.from_dict(waited.to_dict()))
+    assert resumed.waited_since == BLOCKED_AT and resumed.refresh_due
+    refreshed = admission_state.AdmissionRecord.from_dict(resumed.with_refresh("abc123").to_dict())
+    assert refreshed is not None and refreshed.refreshed_to == "abc123" and not refreshed.refresh_due
+    again = admission_state.admitted_record([], refreshed)
+    assert again.to_dict() == {
+        "state": "admitted",
+        "override": True,
+        "override_conflicts": [],
+        "waited_since": BLOCKED_AT,
+        "refreshed_to": "abc123",
+    }
+
+
+def test_malformed_wait_and_refresh_values_are_ignored():
+    record = admission_state.AdmissionRecord.from_dict({"state": "admitted", "waited_since": 5, "refreshed_to": []})
+    assert record is not None and record.to_dict() == {"state": "admitted"} and not record.refresh_due

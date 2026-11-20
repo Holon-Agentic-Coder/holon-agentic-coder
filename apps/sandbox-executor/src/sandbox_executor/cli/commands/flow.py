@@ -11,6 +11,7 @@ from typing import Any
 
 from sandbox_executor import cli
 from sandbox_executor.agent_defaults import Resolution
+from sandbox_executor.cli.commands._flow_resume import discover_resume_checkpoint
 from sandbox_executor.cli.commands._flow_worktree import (
     TARGET_WORKTREE_HELP,
     ensure_flow_worktree,
@@ -49,12 +50,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "--from-stage",
         choices=_FROM_STAGE_CHOICES,
         default=None,
-        help="Resume pipeline from a specific stage.",
+        help=(
+            "Resume pipeline from a specific stage. Without --checkpoint, loads the intent's checkpoint "
+            "(.holon/flow/checkpoint-<slug>.json) from the target worktree when it exists."
+        ),
     )
     parser.add_argument(
         "--checkpoint",
         default=None,
-        help="Optional path to a flow checkpoint file.",
+        help=(
+            "Optional path to a flow checkpoint file. A --from-stage resume without it uses the intent's checkpoint in "
+            "the target worktree when it exists."
+        ),
     )
     parser.add_argument(
         "--agent", default=None, help=f"{_AGENT_HELP} A --checkpoint resume keeps the checkpoint's runner by default."
@@ -148,6 +155,10 @@ def _resolve_checkpoint_and_intent(
     args: argparse.Namespace,
 ) -> tuple[Any | None, dict[str, Any], str, str] | None:
     context = None
+    discovered = discover_resume_checkpoint(args)
+    if discovered is not None:
+        logger.info("Resuming from checkpoint %s (found for --from-stage %s).", discovered, args.from_stage)
+        args.checkpoint = discovered
     if args.checkpoint:
         if not os.path.exists(args.checkpoint):
             print(f"Error: Checkpoint file '{args.checkpoint}' does not exist.", file=sys.stderr)

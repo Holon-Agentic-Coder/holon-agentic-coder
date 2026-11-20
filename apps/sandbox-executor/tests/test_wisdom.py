@@ -223,7 +223,7 @@ def test_promote_pending_candidates_zero_touch_immutability(tmp_path: Path) -> N
         min_trials=2,
         dry_run=False,
     )
-    assert len(second_promoted) == len(first_promoted)
+    assert second_promoted == []
 
     # Collect current files and assert exact identity
     current_files: set[str] = set()

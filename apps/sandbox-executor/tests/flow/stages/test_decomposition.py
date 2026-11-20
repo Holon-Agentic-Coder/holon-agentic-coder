@@ -22,7 +22,7 @@ from sandbox_executor.flow import (
     run_plan_stage,
 )
 
-from tests.flow.decomposition_fakes import decomposed_flow
+from tests.flow.decomposition_fakes import decomposed_flow, parent_ctx
 from tests.flow.helpers import SUB_INTENT_LIST, BudgetRoleAgents, _all_intent_rows, _budget_context, _ledger_rows
 from tests.flow.lookup_patch import patch_lookup_sites
 
@@ -373,8 +373,8 @@ class TestEntropyBudgetHandoffInFlow:
         assert agents.roles() == ["intent-creator", "planner"]
 
     @pytest.mark.parametrize("sub_intents", [[], None, ["not-a-dict"]], ids=["empty", "missing", "no-dict-items"])
-    def test_decomposed_row_without_sub_intent_items_fails_stage(self, sub_intents):
-        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "goal": "Change the application"})
+    def test_decomposed_row_without_sub_intent_items_fails_stage(self, tmp_path, sub_intents):
+        ctx = parent_ctx(tmp_path)
         row: dict[str, Any] = {"status": "decomposed", "plan_branch": "I-1-parent/P-2-agent-model/_"}
         if sub_intents is not None:
             row["sub_intents"] = sub_intents
@@ -451,8 +451,8 @@ class TestEntropyBudgetHandoffInFlow:
         # A negative or unreadable depth counts as a root intent, so children start at depth 1.
         assert flow_module._sub_intent_depth({"sub_intent_depth": recorded}) == expected
 
-    def test_child_pipeline_that_runs_no_stage_fails_the_parent(self):
-        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "goal": "Change the application"})
+    def test_child_pipeline_that_runs_no_stage_fails_the_parent(self, tmp_path):
+        ctx = parent_ctx(tmp_path)
         ctx.intent_branch = "I-1-parent/_"
         row = {
             "status": "decomposed",
@@ -471,8 +471,8 @@ class TestEntropyBudgetHandoffInFlow:
         assert [c["slug"] for c in res.payload["children"]] == ["first"]
         assert run.call_count == 1
 
-    def test_plan_branch_refresh_failure_fails_the_child_before_it_is_cut(self):
-        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "goal": "Change the application"})
+    def test_plan_branch_refresh_failure_fails_the_child_before_it_is_cut(self, tmp_path):
+        ctx = parent_ctx(tmp_path)
         ctx.intent_branch = "I-1-parent/_"
         row = {
             "status": "decomposed",
@@ -606,8 +606,8 @@ class TestEntropyBudgetHandoffInFlow:
         review_body = source.split("def _run_review_stage_body(", 1)[1].split("\ndef ", 1)[0]
         assert "status=StageStatus.HALTED_FOR_HUMAN" in review_body
 
-    def test_child_branch_that_cannot_fit_fails_stage_three_with_the_named_limit(self):
-        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "goal": "Change the application"})
+    def test_child_branch_that_cannot_fit_fails_stage_three_with_the_named_limit(self, tmp_path):
+        ctx = parent_ctx(tmp_path)
         long_plan_branch = f"I-1-{'a' * 300}/P-2-agent-model/_"
         row: dict[str, Any] = {
             "status": "decomposed",

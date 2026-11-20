@@ -27,6 +27,7 @@ import time
 import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
@@ -52,7 +53,7 @@ from sandbox_executor.entrypoint.execution_workspace import (
     workspace_mounted,
 )
 from sandbox_executor.entrypoint.executor_test_run import measure_executor_tests
-from sandbox_executor.entrypoint.partial_resume import RESUMED, ResumeStart
+from sandbox_executor.entrypoint.partial_resume import merge_plan_tip, start_execution_branch
 from sandbox_executor.entrypoint.sync_conflict import SyncConflictMessage, record_sync_failure
 from sandbox_executor.entrypoint.sync_conflict import superseding_failure_row as superseding_failure_row
 from sandbox_executor.entrypoint.taken_ids import taken_child_ids
@@ -1025,60 +1026,6 @@ def _is_patch_structure(line: str) -> bool:
     return line.startswith(("diff --git ", "@@ ", "From ", "index ", "--- ", "+++ ")) or line == "-- "
 
 
-def _merge_plan_tip(repo: GitRepository, repo_dir: str, plan_tip: str) -> str | None:
-    """Merge the current plan tip into HEAD unless HEAD already descends from it; the reason on failure.
-
-    Ledger-only conflicts are reconciled with the plan side as byte prefix; any other conflict aborts the merge.
-    """
-    if repo.merge_base(plan_tip, "HEAD", is_ancestor=True).returncode == 0:
-        return None
-    _configure_executor_identity(repo_dir)
-    if repo.run(["merge", "--no-edit", plan_tip], check=False).returncode == 0:
-        return None
-    merged, message = _reconcile_conflicted_merge(repo, repo_dir, plan_tip)
-    return None if merged else str(message)
-
-
-def _resume_start(
-    repo: GitRepository,
-    repo_dir: str,
-    branches: tuple[str, str],
-    partial_branch: str | None,
-    plan_tip: str | None,
-) -> str | None:
-    """Create the execution branch (``branches``: plan branch, execution branch) and return the partial head it resumes.
-
-    On a resume it starts from the commit ``resolve_partial_head`` chose and merges the current plan tip in, so the
-    branch always descends from today's plan tip; when there is nothing to resume, or that merge fails, it starts from
-    the plan tip and says why on stderr (None is returned then).
-    """
-    plan_branch, exec_branch = branches
-    start = (
-        resolve_partial_head(repo, partial_branch, plan_tip, plan_branch.removesuffix("/_"))
-        if partial_branch
-        else ResumeStart(None, "")
-    )
-    if start.head:
-        print(f"Resuming partial work from {partial_branch} at {start.head}")
-        if start.reason != RESUMED:
-            print(f"Resume: {redact_agent_secrets(start.reason)}", file=sys.stderr)
-    elif partial_branch:
-        print(f"Starting from the plan tip of {plan_branch}: {redact_agent_secrets(start.reason)}", file=sys.stderr)
-    # A mounted worktree is not on the plan branch, so the execution branch starts from the plan tip explicitly.
-    start_point = start.head or plan_tip
-    repo.run(["checkout", "-b", exec_branch, *([start_point] if start_point else [])])
-    merge_error = _merge_plan_tip(repo, repo_dir, plan_tip) if start.head and plan_tip else None
-    if merge_error and plan_tip:
-        print(
-            f"Starting from the plan tip of {plan_branch}: could not merge the current plan tip into the partial "
-            f"work: {redact_agent_secrets(merge_error)}",
-            file=sys.stderr,
-        )
-        repo.run(["checkout", "-B", exec_branch, plan_tip])
-        return None
-    return start.head
-
-
 def main() -> None:  # noqa: C901, PLR0912, PLR0915
     repo_dir = None
     exec_id: str | None = None
@@ -1122,7 +1069,16 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
         # Plan branch tip: the base the empty-diff guard compares the agent's work against, even on a resume.
         plan_tip = mounted_plan_tip
-        partial_head = _resume_start(repo, repo_dir, (plan_branch, exec_branch), partial_branch, plan_tip)
+        merge = partial(
+            merge_plan_tip,
+            repo,
+            configure_identity=partial(_configure_executor_identity, repo_dir),
+            reconcile=partial(_reconcile_conflicted_merge, repo, repo_dir),
+        )
+        resolve = partial(resolve_partial_head, repo, plan_tip=plan_tip, plan_branch_prefix=plan_branch_prefix)
+        partial_head = start_execution_branch(
+            repo, (plan_branch, exec_branch), partial_branch, plan_tip, (resolve, merge)
+        )
         # Before the agent runs, so the commits it makes step by step land on the execution branch.
         _configure_executor_identity(repo_dir)
 

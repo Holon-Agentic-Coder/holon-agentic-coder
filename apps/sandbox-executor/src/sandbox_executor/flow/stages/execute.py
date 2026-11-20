@@ -220,6 +220,8 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
     # failed one included, so the failure row and any partial work reach origin for a resume; a row-less one stays.
     left_alone = hold_unrecorded_executions(context, plan_prefix, existing_executions)
     push_error = remote_error(publish_new_child_branches, repo_dir, plan_prefix, "E", left_alone)
+    if held_failure := held_execution_failure(context, start_time, left_alone - existing_executions, exit_code):
+        return held_failure
     # The executor exits OVER_BUDGET_EXIT_CODE only once its over_budget row is committed; that row decides.
     if exit_code not in (0, OVER_BUDGET_EXIT_CODE):
         return _stage_failure(
@@ -234,8 +236,6 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         return _stage_failure(
             context, FlowStage.EXECUTE, start_time, f"Execute stage failed: {push_error}", exit_code=exit_code
         )
-    if held_failure := held_execution_failure(context, start_time, left_alone - existing_executions, exit_code):
-        return held_failure
     fetch_error = _fetch_branch_prefix_error(repo_dir, plan_prefix)
     if fetch_error is not None:
         return _stage_failure(

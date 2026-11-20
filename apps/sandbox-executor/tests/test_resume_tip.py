@@ -7,6 +7,8 @@ and the row). No network, container or real remote is used.
 
 import json
 import subprocess
+from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -14,7 +16,7 @@ from unittest.mock import patch
 import pytest
 from sandbox_executor.entrypoint import executor
 from sandbox_executor.entrypoint.execution_workspace import resolve_partial_head
-from sandbox_executor.entrypoint.partial_resume import RESUMED
+from sandbox_executor.entrypoint.partial_resume import RESUMED, merge_plan_tip, start_execution_branch
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, admission, run_execute_stage
 from sandbox_executor.flow.admission import AdmissionDecision
 from sandbox_executor.git import GitRepository
@@ -82,10 +84,18 @@ def push_failed(repo: Path, *, force: bool = False) -> None:
     git(repo, "push", "-q", *(["--force"] if force else []), "origin", FAILED)
 
 
-def resume(repo: Path) -> str | None:
+def resume(repo: Path, merge: Callable[[str], str | None] | None = None) -> str | None:
     """Create NEW_EXEC as the executor does on a resume of FAILED, from the plan tip the host fetched."""
     plan_tip = git(repo, "rev-parse", f"refs/remotes/origin/{PLAN}")
-    return executor._resume_start(GitRepository(repo), str(repo), (PLAN, NEW_EXEC), FAILED, plan_tip)
+    git_repo = GitRepository(repo)
+    merge = merge or partial(
+        merge_plan_tip,
+        git_repo,
+        configure_identity=partial(executor._configure_executor_identity, str(repo)),
+        reconcile=partial(executor._reconcile_conflicted_merge, git_repo, str(repo)),
+    )
+    resolve = partial(resolve_partial_head, git_repo, plan_tip=plan_tip, plan_branch_prefix=PREFIX)
+    return start_execution_branch(git_repo, (PLAN, NEW_EXEC), FAILED, plan_tip, (resolve, merge))
 
 
 def test_resume_under_a_repeated_override_continues_the_partial_head(host: Path, monkeypatch) -> None:
@@ -196,8 +206,7 @@ def test_a_ledger_conflict_with_the_plan_tip_is_reconciled(host: Path) -> None:
 
 def test_a_failed_plan_tip_merge_falls_back_to_the_plan_tip(host: Path, capsys) -> None:
     plan_tip = move_plan_by_a_ledger_row(host)
-    with patch.object(executor, "_merge_plan_tip", return_value="conflict in src/app.py"):
-        assert resume(host) is None
+    assert resume(host, merge=lambda _tip: "conflict in src/app.py") is None
     err = capsys.readouterr().err
     assert "could not merge the current plan tip into the partial work: conflict in src/app.py" in err
     assert git(host, "rev-parse", NEW_EXEC) == plan_tip

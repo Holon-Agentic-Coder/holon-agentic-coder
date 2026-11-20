@@ -13,10 +13,12 @@ Each helper takes the caller's GitRepository, so the git commands run through th
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from sandbox_executor.git import GitRepository
 from sandbox_executor.plan_paths import split_plan_branch
+from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.ref_names import INTENT_SUFFIX
 
 #: The reason of a resume from the recorded partial head with nothing to report.
@@ -113,3 +115,60 @@ def resume_from_branch_tip(
     count = _stdout(repo, ["rev-list", "--count", f"{partial_head}..{branch_tip}"]) or "?"
     reason = f"resumed from the branch tip {tip12}, {count} commit(s) after the recorded partial head {head12}"
     return ResumeStart(branch_tip, reason)
+
+
+def merge_plan_tip(
+    repo: GitRepository,
+    plan_tip: str,
+    configure_identity: Callable[[], None],
+    reconcile: Callable[[str], tuple[bool, str]],
+) -> str | None:
+    """Merge the current plan tip into HEAD unless HEAD already descends from it; the reason on failure.
+
+    ``reconcile`` settles a conflicted merge whose conflicts are all ledgers (the plan side as byte prefix) and aborts
+    it otherwise; ``configure_identity`` sets the committer the merge commit is made as.
+    """
+    if _is_ancestor(repo, plan_tip, "HEAD"):
+        return None
+    configure_identity()
+    if repo.run(["merge", "--no-edit", plan_tip], check=False).returncode == 0:
+        return None
+    merged, message = reconcile(plan_tip)
+    return None if merged else str(message)
+
+
+def start_execution_branch(
+    repo: GitRepository,
+    branches: tuple[str, str],
+    partial_branch: str | None,
+    plan_tip: str | None,
+    steps: tuple[Callable[[str], ResumeStart], Callable[[str], str | None]],
+) -> str | None:
+    """Create the execution branch (``branches``: plan branch, execution branch) and return the partial head it resumes.
+
+    On a resume it starts from the commit ``steps`` resolves for ``partial_branch`` and then merges the current plan tip
+    in (the merge step returns None, or why it failed), so the branch always descends from today's plan tip; when there
+    is nothing to resume, or that merge fails, it starts from the plan tip and says why on stderr (None is returned).
+    """
+    plan_branch, exec_branch = branches
+    resolve, merge = steps
+    start = resolve(partial_branch) if partial_branch else ResumeStart(None, "")
+    if start.head:
+        print(f"Resuming partial work from {partial_branch} at {start.head}")
+        if start.reason != RESUMED:
+            print(f"Resume: {redact_agent_secrets(start.reason)}", file=sys.stderr)
+    elif partial_branch:
+        print(f"Starting from the plan tip of {plan_branch}: {redact_agent_secrets(start.reason)}", file=sys.stderr)
+    # A mounted worktree is not on the plan branch, so the execution branch starts from the plan tip explicitly.
+    start_point = start.head or plan_tip
+    repo.run(["checkout", "-b", exec_branch, *([start_point] if start_point else [])])
+    merge_error = merge(plan_tip) if start.head and plan_tip else None
+    if merge_error and plan_tip:
+        print(
+            f"Starting from the plan tip of {plan_branch}: could not merge the current plan tip into the partial "
+            f"work: {redact_agent_secrets(merge_error)}",
+            file=sys.stderr,
+        )
+        repo.run(["checkout", "-B", exec_branch, plan_tip])
+        return None
+    return start.head

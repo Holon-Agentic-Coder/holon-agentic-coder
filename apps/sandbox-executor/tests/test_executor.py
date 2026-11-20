@@ -3176,6 +3176,19 @@ class TestExecutorIncrementalNotes(unittest.TestCase):
         self.assertEqual(len(actions), 1)
         self.assertIn("impl err", actions[0]["error_context"])
 
+    def test_error_context_redacts_a_token_straddling_the_500_character_cut(self):
+        # Truncating first would leave a token prefix too short for the provider sweep; redaction runs first.
+        probe = make_gh_probe() + "0" * 4
+        stderr = "e" * 490 + probe + " tail"
+        run = self.run_executor(
+            [self.write_notes(VALID_NOTES, returncode=1, stderr=stderr)], env={"HOLON_ACTION_LOGGING": "1"}
+        )
+        (action,) = [e for e in run["entries"] if e.get("event_type") == "command_execution"]
+        context = action["error_context"]
+        self.assertLessEqual(len(context), 500)
+        self.assertNotIn(probe[:8], context)
+        self.assertFalse([probe[i : i + 8] for i in range(4, len(probe) - 7) if probe[i : i + 8] in context])
+
     def test_missing_notes_warning_does_not_claim_output_is_in_the_ledger(self):
         run = self.run_executor([self.write_notes(None)])
         self.assertNotIn("agent output captured in the execution ledger", run["stderr"])

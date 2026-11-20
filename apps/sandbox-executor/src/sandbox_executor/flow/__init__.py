@@ -82,9 +82,10 @@ from sandbox_executor.flow.dispatch import (
     recorded_test_pass_rate,
 )
 from sandbox_executor.flow.execution_publish import (
-    publish_execution_branches,
-    publish_recorded_executions,
+    held_execution_failure,
+    hold_unrecorded_executions,
     publish_with_first_row,
+    unrecorded_executions,
 )
 from sandbox_executor.flow.git_refs import (
     EXECUTOR_GIT_ENV,
@@ -422,6 +423,8 @@ __all__ = [
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
     "head_move_since_calibration",
+    "held_execution_failure",
+    "hold_unrecorded_executions",
     "holds_only_calibration_commits",
     "is_ancestor",
     "is_calibration_commit",
@@ -444,9 +447,7 @@ __all__ = [
     "prepare_calibrated_branch",
     "probe_ci_checks",
     "publish_calibration",
-    "publish_execution_branches",
     "publish_new_child_branches",
-    "publish_recorded_executions",
     "publish_with_first_row",
     "push_branch",
     "push_commit",
@@ -491,6 +492,7 @@ __all__ = [
     "touch_set_replan_feedback",
     "touch_set_violation",
     "touch_set_violation_result",
+    "unrecorded_executions",
     "validate_intent_questions",
     "wait_for_pending_ci",
 ]

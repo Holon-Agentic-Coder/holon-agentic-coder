@@ -16,6 +16,8 @@ import sys
 from dataclasses import dataclass
 
 from sandbox_executor.git import GitRepository
+from sandbox_executor.plan_paths import split_plan_branch
+from sandbox_executor.ref_names import INTENT_SUFFIX
 
 #: The reason of a resume from the recorded partial head with nothing to report.
 RESUMED = "resumed"
@@ -46,7 +48,7 @@ def _is_ledger_path(path: str) -> bool:
 
 def intent_branch_tip(repo: GitRepository, plan_branch_prefix: str) -> str | None:
     """The tip of the plan's intent branch the host fetched (origin first, then local); None when neither resolves."""
-    intent_branch = f"{plan_branch_prefix.rsplit('/', 1)[0]}/_"
+    intent_branch = f"{split_plan_branch(plan_branch_prefix)[0]}{INTENT_SUFFIX}"
     for ref in (f"refs/remotes/origin/{intent_branch}", f"refs/heads/{intent_branch}"):
         tip = _stdout(repo, ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"])
         if tip:

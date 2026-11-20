@@ -49,7 +49,7 @@ class TestStage3PartialResumeDispatch:
                 "sandbox_executor.flow.stages.execute.salvage_for_resume",
                 side_effect=lambda _ctx, _prefix, existing: (existing, None),
             ),
-            patch("sandbox_executor.flow.stages.execute.publish_execution_branches", return_value=None),
+            patch("sandbox_executor.flow.stages.execute.publish_new_child_branches", return_value=[]),
             patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None),
             patch(
                 "sandbox_executor.flow.stages.execute._snapshot_child_branches", return_value={self.FAILED, self.OLDER}

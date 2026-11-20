@@ -16,7 +16,7 @@ from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 from sandbox_executor.flow.admission import admission_stage_failure
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _dispatch_role, _recorded_test_fields, _stage_failure
-from sandbox_executor.flow.execution_publish import publish_execution_branches
+from sandbox_executor.flow.execution_publish import held_execution_failure, hold_unrecorded_executions
 from sandbox_executor.flow.git_refs import (
     _append_superseding_execution_row,
     _discover_child_branch,
@@ -27,7 +27,7 @@ from sandbox_executor.flow.git_refs import (
     _snapshot_child_branches,
     _track_local_branch,
 )
-from sandbox_executor.flow.host_remote import fetch_base, remote_error
+from sandbox_executor.flow.host_remote import fetch_base, publish_new_child_branches, remote_error
 from sandbox_executor.flow.partial_salvage import salvage_for_resume
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.decomposition import _run_decomposed_plan, _sub_intent_depth_error
@@ -218,7 +218,8 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
     exit_code = _dispatch_role(context, "executor", executor_args)
     # The container only commits. The host pushes each execution branch it committed that carries its ledger row, a
     # failed one included, so the failure row and any partial work reach origin for a resume; a row-less one stays.
-    push_error = publish_execution_branches(context, plan_prefix, existing_executions)
+    left_alone = hold_unrecorded_executions(context, plan_prefix, existing_executions)
+    push_error = remote_error(publish_new_child_branches, repo_dir, plan_prefix, "E", left_alone)
     # The executor exits OVER_BUDGET_EXIT_CODE only once its over_budget row is committed; that row decides.
     if exit_code not in (0, OVER_BUDGET_EXIT_CODE):
         return _stage_failure(
@@ -233,6 +234,8 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         return _stage_failure(
             context, FlowStage.EXECUTE, start_time, f"Execute stage failed: {push_error}", exit_code=exit_code
         )
+    if held_failure := held_execution_failure(context, start_time, left_alone - existing_executions, exit_code):
+        return held_failure
     fetch_error = _fetch_branch_prefix_error(repo_dir, plan_prefix)
     if fetch_error is not None:
         return _stage_failure(

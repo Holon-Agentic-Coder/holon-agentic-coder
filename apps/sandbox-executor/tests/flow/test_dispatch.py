@@ -534,7 +534,9 @@ class TestFlowRoleDispatch:
         assert "recorded a superseding" not in error
         assert res.payload["container_status"] is None
         assert res.payload["superseding_row_recorded"] is False
-        assert _ledger_rows(host, f"origin/{ctx.execution_branch}", "executions.jsonl") == []
+        # A branch without its ledger row is never pushed; it stays local in the host worktree.
+        assert "kept local and not pushed" in error
+        assert _git(host, "ls-remote", str(origin), res.payload["execution_branch"]) == ""
 
     def test_empty_execution_reports_failed_superseding_write(self, flow_repos, tmp_path):
         host, origin = flow_repos

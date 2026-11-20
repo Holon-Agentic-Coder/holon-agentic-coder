@@ -148,7 +148,7 @@ def duration_chart(rows: list[JobDuration], medians: dict[JobDuration, float | N
     )
 
 
-def queue_strip(rows: list[JobDuration]) -> str:
+def queue_strip(rows: list[JobDuration], medians: dict[JobDuration, float | None]) -> str:
     """Return a strip of stacked bars, one per point in start order: queue time below, run time above."""
     total = nice_max(max(row.queue_seconds + row.duration_seconds for row in rows))
     y = Scale(0.0, total, STRIP_HEIGHT - 4, 4)
@@ -159,7 +159,7 @@ def queue_strip(rows: list[JobDuration]) -> str:
         left = round(LEFT + index * step + (step - width) / 2, 1)
         queue_top, run_top = y(row.queue_seconds), y(row.queue_seconds + row.duration_seconds)
         bars.append(
-            f'<a href="{escape(row.run_url, quote=True)}"><title>{tooltip(row, None)}</title>'
+            f'<a href="{escape(row.run_url, quote=True)}"><title>{tooltip(row, medians.get(row))}</title>'
             f'<rect class="queue" x="{left}" y="{queue_top}" width="{width}" height="{round(y(0) - queue_top, 1)}"/>'
             f'<rect class="run" x="{left}" y="{run_top}" width="{width}" '
             f'height="{round(max(0.0, queue_top - run_top - 2), 1)}"/></a>'

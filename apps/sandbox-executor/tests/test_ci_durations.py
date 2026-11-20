@@ -471,7 +471,8 @@ def test_slowest_versus_baseline_ranks_by_delta() -> None:
     macos = [point(day, 200.0, runner_os="macos-latest", job="unit (macos-latest)") for day in range(1, 6)]
     macos.append(point(6, 500.0, runner_os="macos-latest", job="unit (macos-latest)"))
     fresh = [point(1, 900.0, job="lint")]
-    rows = unit + macos + fresh
+    faster = [point(day, 300.0, job="docs") for day in range(1, 6)] + [point(6, 100.0, job="docs")]
+    rows = unit + macos + fresh + faster
     ranking = slowest_vs_baseline(rows, rolling_medians(rows), limit=10)
     assert [(r.row.runner_os, r.median, r.delta, r.ratio) for r in ranking] == [
         ("macos-latest", 200.0, 300.0, 2.5),

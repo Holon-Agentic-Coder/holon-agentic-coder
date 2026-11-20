@@ -158,12 +158,12 @@ def ceiling_for(row: JobDuration, ceilings: Ceilings) -> int | None:
 
 
 def slowest_vs_baseline(rows: list[JobDuration], medians: Medians, limit: int = 10) -> list[Regression]:
-    """Rank the latest ``main`` point of each series by how far it sits above its baseline, largest delta first."""
+    """Rank the latest ``main`` points that sit above their series baseline by delta, largest first."""
     found: list[Regression] = []
     for points in group_series(rows).values():
         main = [row for row in points if row.ref_class == "main"]
         median = medians.get(main[-1]) if main else None
-        if median:
+        if median and main[-1].duration_seconds > median:
             latest = main[-1]
             found.append(Regression(latest, median, latest.duration_seconds - median, latest.duration_seconds / median))
     found.sort(key=lambda r: (-r.delta, series_key(r.row)))

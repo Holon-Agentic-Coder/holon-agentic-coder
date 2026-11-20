@@ -92,7 +92,7 @@ def series_section(anchor: str, rows: list[JobDuration], medians: Medians, ceili
     return (
         f'<section id="{anchor}"><h2>{escape(title)}</h2>'
         f'<p class="meta">{len(rows)} points; ceiling {fmt_seconds(ceiling)}</p>'
-        f"{duration_chart(rows, medians, ceiling)}{queue_strip(rows)}"
+        f"{duration_chart(rows, medians, ceiling)}{queue_strip(rows, medians)}"
         f"<details><summary>Every point</summary><table>{header}{body}</table></details></section>"
     )
 

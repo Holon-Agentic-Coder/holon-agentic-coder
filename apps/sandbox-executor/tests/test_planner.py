@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import re
+import subprocess
 import tempfile
 import unittest
 import uuid
@@ -20,6 +21,7 @@ from sandbox_executor.decomposition_rule import (
     should_decompose,
 )
 from sandbox_executor.entrypoint import planner
+from sandbox_executor.plan_attempt import PLAN_FAILURE_DETAIL_REL
 from sandbox_executor.turns import TurnResult
 
 from tests.leak_assertions import assert_no_fragment, make_gh_probe
@@ -334,6 +336,12 @@ def append_file(content, returncode=0):
         return TurnResult(returncode=returncode)
 
     return turn
+
+
+API_ERROR_LINE = (
+    'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"system.2.cache_control.ttl: '
+    "a ttl='1h' cache_control block must not come after a ttl='5m' cache_control block\"}}"
+)
 
 
 def stdout_only(stdout, returncode=0):
@@ -760,6 +768,78 @@ class TestPlannerMain(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertIn("no stage time was left to resume", records[0]["action"])
         self.assertNotIn("resume did not recover", h.stderr)
+
+    def test_api_error_fails_with_the_api_text_and_writes_no_plan(self):
+        h = self.harness([stdout_only(API_ERROR_LINE, returncode=1)])
+        self.assertEqual(h.exit_code, 1)
+        self.assertIn("cache_control.ttl", h.stderr)
+        self.assertIn("API call failed", h.stderr)
+        self.assertNotIn("missing or non-numeric overall metrics", h.stderr)
+        self.assertNotIn("WARNING: agent did not write", h.stderr)
+        self.assertEqual(list((pathlib.Path(h.repo_dir) / "plans").rglob("P-*.md")), [])
+        detail = (pathlib.Path(h.repo_dir) / PLAN_FAILURE_DETAIL_REL).read_text()
+        self.assertIn("system.2.cache_control.ttl", detail)
+        self.assertEqual(h.ledger_lines("plans.jsonl"), [])
+        self.assertEqual(h.ledger_lines("executions.jsonl"), [])
+        self.assertFalse(h.committed())
+
+    def test_api_error_on_stderr_is_redacted_in_the_detail(self):
+        secret = "sk-ant-api03-" + "A" * 40
+
+        def turn(cmd, watch_path):
+            return TurnResult(returncode=1, stderr=f"API Error: 401 bad key {secret}")
+
+        h = self.harness([turn])
+        self.assertEqual(h.exit_code, 1)
+        detail = (pathlib.Path(h.repo_dir) / PLAN_FAILURE_DETAIL_REL).read_text()
+        self.assertIn("API Error: 401", detail)
+        self.assertNotIn(secret, detail + h.stderr)
+
+    def test_partial_plan_then_api_error_leaves_no_untracked_plan_file(self):
+        def partial_then_error(cmd, watch_path):
+            repo = pathlib.Path(watch_path).parents[2]
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            pathlib.Path(watch_path).write_text("# Plan for I-12345\n\n## Step 1: Partial\n")
+            return TurnResult(returncode=1, stdout=API_ERROR_LINE)
+
+        h = self.harness([partial_then_error, stdout_only(API_ERROR_LINE, returncode=1)])
+        self.assertEqual(h.exit_code, 1)
+        self.assertIn("cache_control.ttl", h.stderr)
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all", "--", "plans/"],
+            cwd=h.repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(status.stdout, "")
+        self.assertFalse(h.committed())
+
+    def test_valid_plan_quoting_an_api_error_is_still_committed(self):
+        quoting = VALID_PLAN + f"\n## Incident\n\nThe agent printed:\n\n{API_ERROR_LINE}\n"
+        h = self.harness([write_file(quoting, stdout=API_ERROR_LINE)])
+        self.assertEqual(h.exit_code, 0, h.stderr)
+        self.assertEqual(len(h.ledger_lines("plans.jsonl")), 1)
+        self.assertTrue(h.committed())
+
+    def test_stale_failure_detail_is_cleared_before_the_run(self):
+        def turn(cmd, watch_path):
+            self.assertFalse((pathlib.Path(watch_path).parents[2] / PLAN_FAILURE_DETAIL_REL).exists())
+            return write_file(VALID_PLAN)(cmd, watch_path)
+
+        h = _PlannerHarness(self, [turn])
+        seed_workspace = h._seed_workspace
+
+        def seed_with_stale_detail():
+            seed_workspace()
+            stale = pathlib.Path(h.repo_dir) / PLAN_FAILURE_DETAIL_REL
+            stale.parent.mkdir(parents=True)
+            stale.write_text("API Error: 500 from an earlier attempt")
+
+        h._seed_workspace = seed_with_stale_detail
+        h.run()
+        self.addCleanup(h.cleanup)
+        self.assertEqual(h.exit_code, 0, h.stderr)
 
 
 # --------------------------------------------------------------------------------------

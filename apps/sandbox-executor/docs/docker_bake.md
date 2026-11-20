@@ -103,7 +103,6 @@ cold build (`--no-cache`) and an incremental cached build:
 | `holon/orchestrator`      | ~4s                       | ~0.2s                    | Entrypoint script injection & source packaging      |
 | `holon/agent-claude`      | ~38s                      | ~0.5s                    | `@anthropic-ai/claude-code@2.1.302` npm install     |
 | `holon/agent-codex`       | ~24s                      | ~0.4s                    | `@openai/codex@0.163.0` npm install                 |
-| `holon/agent-gemini`      | ~42s                      | ~0.5s                    | `@google/gemini-cli@0.64.0` npm install             |
 | `holon/agent-opencode`    | ~31s                      | ~0.4s                    | `opencode-ai@1.19.3` npm install                    |
 | `holon/agent-pi`          | ~35s                      | ~0.5s                    | `@earendil-works/pi-coding-agent@1.3.0` npm install |
 | `holon/agent-antigravity` | ~29s                      | ~0.4s                    | Antigravity CLI installer execution                 |

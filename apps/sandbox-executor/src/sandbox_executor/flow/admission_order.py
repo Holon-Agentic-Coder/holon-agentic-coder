@@ -3,8 +3,10 @@
 A flow that finds no overlap still defers to a blocked waiter (:class:`flow.in_flight.BlockedWaiter`) whose declared
 touch set overlaps its own, whose ``(blocked_since, plan_branch)`` key is strictly smaller than its own (a flow never
 refused uses "now", so every waiter is older) and whose ``blocked_by`` entries are all clear: a pull request no longer
-open, a local flow neither in flight nor waiting. An entry naming this flow's own lineage is never clear (the waiter
-waits on us). Every deferral points at a strictly older key, a total order, so the waits-for graph stays acyclic.
+open, a local flow neither in flight nor waiting. An entry naming this flow itself is clear unless this flow is
+admitted (it is not running while it re-checks); one naming a pull request or another flow of this lineage is never
+clear, since discovery does not list them. Every deferral points at a strictly older key, a total order, so the
+waits-for graph stays acyclic.
 """
 
 from __future__ import annotations
@@ -19,22 +21,29 @@ def waiter_key(waiter: BlockedWaiter) -> tuple[str, str]:
     return (waiter.record.blocked_since or "", waiter.plan_branch)
 
 
-def blocker_is_clear(entry: BlockedBy, flows: list[InFlightFlow], waiters: list[BlockedWaiter], own_root: str) -> bool:
-    """Whether a waiter's ``blocked_by`` entry no longer holds it back."""
-    if _root_intent(entry.branch or entry.plan_branch or "") == own_root:
-        return False
+def blocker_is_clear(entry: BlockedBy, open_numbers: set[int], busy: set[str], own_plan_branch: str) -> bool:
+    """Whether a waiter's ``blocked_by`` entry no longer holds it back; ``busy``: plan branches in flight or waiting."""
+    own_root = _root_intent(own_plan_branch)
     if entry.kind == BLOCKED_BY_PULL_REQUEST:
-        return entry.number not in {flow.number for flow in flows if flow.number is not None}
-    busy = {flow.plan_branch for flow in flows} | {waiter.plan_branch for waiter in waiters}
-    return entry.plan_branch not in busy
+        return _root_intent(entry.branch or "") != own_root and entry.number not in open_numbers
+    plan_branch = entry.plan_branch or ""
+    if plan_branch != own_plan_branch and _root_intent(plan_branch) == own_root:
+        return False
+    return plan_branch not in busy
 
 
 def older_ready_waiter(
-    own_key: tuple[str, str], own: TouchSet, flows: list[InFlightFlow], waiters: list[BlockedWaiter]
+    own_key: tuple[str, str],
+    own: TouchSet,
+    flows: list[InFlightFlow],
+    waiters: list[BlockedWaiter],
+    own_admitted: bool = False,
 ) -> BlockedWaiter | None:
     """The oldest overlapping waiter older than ``own_key`` (``(blocked_since or now, plan_branch)``) that is ready."""
-    own_root = _root_intent(own_key[1])
+    own_plan_branch = own_key[1]
     in_flight = {flow.plan_branch for flow in flows}
+    busy = in_flight | {waiter.plan_branch for waiter in waiters} | ({own_plan_branch} if own_admitted else set())
+    open_numbers = {flow.number for flow in flows if flow.number is not None}
     ready = [
         waiter
         for waiter in waiters
@@ -42,6 +51,6 @@ def older_ready_waiter(
         and waiter_key(waiter) < own_key
         and waiter.declared is not None
         and overlapping_entries(own, waiter.declared)
-        and all(blocker_is_clear(entry, flows, waiters, own_root) for entry in waiter.record.blocked_by)
+        and all(blocker_is_clear(entry, open_numbers, busy, own_plan_branch) for entry in waiter.record.blocked_by)
     ]
     return min(ready, key=waiter_key, default=None)

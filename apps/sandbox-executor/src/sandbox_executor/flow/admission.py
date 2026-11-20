@@ -22,7 +22,13 @@ from typing import Any
 from sandbox_executor.flow import admission_state
 from sandbox_executor.flow.admission_lock import AdmissionLockError, admission_lock
 from sandbox_executor.flow.admission_order import older_ready_waiter
-from sandbox_executor.flow.admission_state import AdmissionRecord, BlockedBy, admitted_record, blocked_record
+from sandbox_executor.flow.admission_state import (
+    ADMISSION_ADMITTED,
+    AdmissionRecord,
+    BlockedBy,
+    admitted_record,
+    blocked_record,
+)
 from sandbox_executor.flow.checkpoint import save_checkpoint
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
@@ -93,18 +99,19 @@ def _blocked_by(flow: InFlightFlow, conflict: AdmissionConflict) -> BlockedBy:
     return BlockedBy(flow.kind, conflict.files, flow.number, flow.head, flow.plan_branch, flow.worktree)
 
 
-def _own_key(context: FlowContext) -> tuple[str, str]:
+def _own_key(record: AdmissionRecord | None, plan_branch: str) -> tuple[str, str]:
     """This flow's place in the admission order: its first refusal time, or now when it was never refused."""
-    record = AdmissionRecord.from_dict(context.admission)
     since = record.blocked_since if record is not None and record.blocked else None
-    return (since or admission_state.utc_now(), str(context.plan_branch))
+    return (since or admission_state.utc_now(), plan_branch)
 
 
 def _waiter_conflicts(
     context: FlowContext, own: TouchSet, flows: list[InFlightFlow], waiters: list[BlockedWaiter]
 ) -> list[tuple[InFlightFlow, AdmissionConflict]]:
     """The older ready waiter this flow defers to, as a ``local_flow`` conflict; empty when there is none."""
-    waiter = older_ready_waiter(_own_key(context), own, flows, waiters)
+    record = AdmissionRecord.from_dict(context.admission)
+    own_admitted = record is not None and record.state == ADMISSION_ADMITTED
+    waiter = older_ready_waiter(_own_key(record, str(context.plan_branch)), own, flows, waiters, own_admitted)
     if waiter is None:
         return []
     since = waiter.record.blocked_since

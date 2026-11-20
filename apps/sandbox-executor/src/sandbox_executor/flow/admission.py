@@ -5,7 +5,7 @@ flow :mod:`flow.in_flight` discovers: with its declared touch set (entry against
 for an open pull request, with its real changed files (``files_in_set``). Metadata never conflicts. A plan without a
 touch set, or a discovery that could not run, is refused too (fail closed). ``--allow-overlap``
 (``FlowContext.allow_overlap``) admits the run anyway and appends one ``admission_override`` row to the plan branch's
-``executions.jsonl``; refusal never closes, merges or edits another flow.
+``executions.jsonl`` once per plan (``flow.admission_record``); refusal never closes, merges or edits another flow.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from sandbox_executor.flow.admission_record import ADMISSION_OVERRIDE_KIND, override_already_recorded
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.git_refs import _append_ledger_row
@@ -26,9 +27,6 @@ from sandbox_executor.flow.in_flight import (
     read_plan_touch_set,
 )
 from sandbox_executor.touch_set import TouchSet, files_in_set, overlapping_entries
-
-#: ``entry_type`` and ``kind`` of the executions.jsonl row an override appends (never a summary or an action).
-ADMISSION_OVERRIDE_KIND = "admission_override"
 
 
 @dataclass(frozen=True)
@@ -125,8 +123,8 @@ def _record_admission_override(context: FlowContext, decision: AdmissionDecision
 def admission_stage_failure(context: FlowContext, start_time: str) -> StageResult | None:
     """Run admission for Stage 3: ``None`` to dispatch, or the failed result that refuses it before any dispatch.
 
-    A dry run only logs the decision. An override is recorded before dispatch; if that row cannot be written the run
-    is refused, so no overlapping execution goes unrecorded.
+    A dry run only logs the decision. An override is recorded before dispatch, once per plan; if that row cannot be
+    written the run is refused, so no overlapping execution goes unrecorded.
     """
     decision = check_admission(context)
     if decision.admitted and not decision.overridden:
@@ -146,6 +144,11 @@ def admission_stage_failure(context: FlowContext, start_time: str) -> StageResul
             dispatched=False,
             **decision.to_payload(),
         )
+    if override_already_recorded(context.target_worktree, str(context.plan_branch)):
+        context.log(
+            f"Stage 3 admitted by --allow-overlap (override already recorded on '{context.plan_branch}'): {message}"
+        )
+        return None
     write_error = _record_admission_override(context, decision)
     if write_error is not None:
         error = f"Stage 3 refused: the --allow-overlap override could not be recorded: {write_error}"

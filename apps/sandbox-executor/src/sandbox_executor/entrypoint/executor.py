@@ -27,6 +27,7 @@ import time
 import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
@@ -52,6 +53,7 @@ from sandbox_executor.entrypoint.execution_workspace import (
     workspace_mounted,
 )
 from sandbox_executor.entrypoint.executor_test_run import measure_executor_tests
+from sandbox_executor.entrypoint.partial_resume import merge_plan_tip, start_execution_branch
 from sandbox_executor.entrypoint.sync_conflict import SyncConflictMessage, record_sync_failure
 from sandbox_executor.entrypoint.sync_conflict import superseding_failure_row as superseding_failure_row
 from sandbox_executor.entrypoint.taken_ids import taken_child_ids
@@ -1067,19 +1069,16 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
         # Plan branch tip: the base the empty-diff guard compares the agent's work against, even on a resume.
         plan_tip = mounted_plan_tip
-        partial_head: str | None = None
-        if partial_branch:
-            partial_head, resume_reason = resolve_partial_head(repo, partial_branch, plan_tip, plan_branch_prefix)
-            if partial_head:
-                print(f"Resuming partial work from {partial_branch} at {partial_head}")
-            else:
-                print(
-                    f"Starting from the plan tip of {plan_branch}: {redact_agent_secrets(resume_reason)}",
-                    file=sys.stderr,
-                )
-        # A mounted worktree is not on the plan branch, so the execution branch starts from the plan tip explicitly.
-        start_point = partial_head or mounted_plan_tip
-        repo.run(["checkout", "-b", exec_branch, *([start_point] if start_point else [])])
+        merge = partial(
+            merge_plan_tip,
+            repo,
+            configure_identity=partial(_configure_executor_identity, repo_dir),
+            reconcile=partial(_reconcile_conflicted_merge, repo, repo_dir),
+        )
+        resolve = partial(resolve_partial_head, repo, plan_tip=plan_tip, plan_branch_prefix=plan_branch_prefix)
+        partial_head = start_execution_branch(
+            repo, (plan_branch, exec_branch), partial_branch, plan_tip, (resolve, merge)
+        )
         # Before the agent runs, so the commits it makes step by step land on the execution branch.
         _configure_executor_identity(repo_dir)
 

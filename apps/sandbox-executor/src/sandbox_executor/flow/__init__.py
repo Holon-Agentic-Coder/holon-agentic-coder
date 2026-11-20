@@ -26,6 +26,7 @@ from sandbox_executor.flow.admission import (
     check_admission,
     format_refusal,
 )
+from sandbox_executor.flow.admission_record import override_already_recorded
 from sandbox_executor.flow.calibrate_rebuild import (
     holds_only_calibration_commits,
     is_ancestor,
@@ -79,6 +80,12 @@ from sandbox_executor.flow.dispatch import (
     _stage_failure,
     _test_evidence,
     recorded_test_pass_rate,
+)
+from sandbox_executor.flow.execution_publish import (
+    held_execution_failure,
+    hold_unrecorded_executions,
+    publish_with_first_row,
+    unrecorded_executions,
 )
 from sandbox_executor.flow.git_refs import (
     EXECUTOR_GIT_ENV,
@@ -428,6 +435,8 @@ __all__ = [
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
     "head_move_since_calibration",
+    "held_execution_failure",
+    "hold_unrecorded_executions",
     "holds_only_calibration_commits",
     "is_ancestor",
     "is_calibration_commit",
@@ -443,6 +452,7 @@ __all__ = [
     "new_local_child_branches",
     "next_poll_interval",
     "open_flow_pull_requests",
+    "override_already_recorded",
     "parse_metrics",
     "pending_check_names",
     "post_pr_review_consensus",
@@ -451,6 +461,7 @@ __all__ = [
     "probe_ci_checks",
     "publish_calibration",
     "publish_new_child_branches",
+    "publish_with_first_row",
     "push_branch",
     "push_commit",
     "read_plan_touch_set",
@@ -497,6 +508,7 @@ __all__ = [
     "touch_set_violation",
     "touch_set_violation_result",
     "undisposed",
+    "unrecorded_executions",
     "validate_intent_questions",
     "wait_for_pending_ci",
 ]

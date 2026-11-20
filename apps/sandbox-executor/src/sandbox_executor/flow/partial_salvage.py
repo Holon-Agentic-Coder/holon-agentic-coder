@@ -9,6 +9,7 @@ here, and nothing is reset, cleaned, stashed or amended.
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 from dataclasses import dataclass, field
@@ -17,11 +18,13 @@ from typing import Any
 
 from sandbox_executor.entrypoint.execution_workspace import ENGINE_OWNED_LEDGER_PATHS, ENGINE_OWNED_NOTES_GLOB
 from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.flow.execution_publish import publish_with_first_row
 from sandbox_executor.flow.git_refs import (
     EXECUTOR_GIT_ENV,
     _append_superseding_execution_row,
     _fetch_branch_prefix_error,
     _latest_execution_summary,
+    _origin_has_branch,
     _read_ledger_rows,
     _snapshot_child_branches,
 )
@@ -132,16 +135,20 @@ def _salvage_row(context: FlowContext, branch: str, exec_id: str, sha: str, file
 
 
 def _publish_partial(context: FlowContext, target: tuple[str, str], sha: str, plan_prefix: str, count: int) -> None:
-    """Push the branch and record ``sha`` as its partial head.
+    """Push the branch and record ``sha`` as its partial head (a never-pushed branch is pushed with that row).
 
     Raises:
         SalvageError: If the push or the ledger append fails; the local commit stays so a later resume retries.
     """
     repo_dir = context.target_worktree
     branch, exec_id = target
-    error = remote_error(push_branch, repo_dir, branch) or _fetch_branch_prefix_error(repo_dir, plan_prefix)
-    if error is None:
-        error = _append_superseding_execution_row(context, branch, _salvage_row(context, branch, exec_id, sha, count))
+    row = functools.partial(_salvage_row, context, branch, exec_id, sha, count)
+    if _origin_has_branch(repo_dir, branch):
+        error = remote_error(push_branch, repo_dir, branch) or _fetch_branch_prefix_error(repo_dir, plan_prefix)
+        error = error or _append_superseding_execution_row(context, branch, row())
+    else:
+        # Never pushed: the row is committed first and the branch reaches origin with it, never without one.
+        error = publish_with_first_row(context, branch, row)
     if error is not None:
         raise SalvageError(f"partial work committed as {sha[:12]} on '{branch}' but not recorded: {error}")
 

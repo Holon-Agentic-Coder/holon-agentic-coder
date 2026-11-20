@@ -39,12 +39,11 @@ AGENT_IMAGE_MAPPING: dict[str, str] = {
     "claude": "holon/agent-claude",
     "pi": "holon/agent-pi",
     "codex": "holon/agent-codex",
-    "gemini": "holon/agent-gemini",
     "opencode": "holon/agent-opencode",
 }
 
 # Agent tickers, declared beside the runner definitions: exactly three uppercase letters per runner that may run a
-# flow. A ticker is never reassigned or reused, and there is no fallback: a runner without one (codex, gemini,
+# flow. A ticker is never reassigned or reused, and there is no fallback: a runner without one (codex,
 # opencode) is rejected by 'holon doctor' and when an intent is opened, before any branch is created. The ticker
 # appears only in plan and execution names; ledger rows keep the full agent and model.
 AGENT_TICKERS: dict[str, str] = {
@@ -62,7 +61,6 @@ DEFAULT_MODELS: dict[str, str] = {
     "claude": "claude-opus-5-5",
     "pi": "claude-opus-5-5",
     "codex": "gpt-5-codex",
-    "gemini": "gemini-3.8-flash",
     "opencode": "anthropic/claude-opus-5-5",
 }
 
@@ -154,14 +152,6 @@ RUNNER_CAPABILITIES: tuple[ModelCapability, ...] = (
         effort_levels=[],
         fallback_tier="Secondary (Cloud/CLI)",
     ),
-    # Gemini Runner
-    ModelCapability(
-        runner="gemini-agent",
-        canonical_model="gemini-3.8-flash",
-        aliases=["gemini"],
-        effort_levels=[],
-        fallback_tier="Secondary (Cloud/CLI)",
-    ),
     # OpenCode Runner
     ModelCapability(
         runner="opencode-agent",
@@ -214,7 +204,7 @@ def is_valid_model_for_runner(agent: str, model: str) -> bool:
     for cap in matching_caps:
         if m_lower == cap.canonical_model.lower() or m_lower in [a.lower() for a in cap.aliases]:
             return True
-        if norm_runner in ("antigravity", "gemini"):
+        if norm_runner == "antigravity":
             for eff in ("low", "medium", "high"):
                 if m_lower == f"{cap.canonical_model.lower()}-{eff}":
                     return True
@@ -259,7 +249,7 @@ def normalise_model_and_effort(agent: str, model: str | None, effort: str | None
             canonical = cap.canonical_model
             break
 
-    if normalise_agent_id(agent) in ("antigravity", "gemini"):
+    if normalise_agent_id(agent) == "antigravity":
         return _coordinate_gemini_effort(canonical, effort)
 
     return canonical, None
@@ -278,7 +268,6 @@ def _detect_api_key_present(norm: str, env: Mapping[str, str]) -> bool:
         "claude": ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         "pi": ("PI_API_KEY",),
         "codex": ("OPENAI_API_KEY", "CODEX_API_KEY"),
-        "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
         "opencode": ("OPENCODE_API_KEY",),
     }
     return any(_is_set(env.get(k)) for k in runner_env_keys.get(norm, ()))
@@ -308,10 +297,6 @@ def _detect_session_dir_present(norm: str) -> bool:
             os.path.join(home, ".pi/agent/models.json"),
             "/home/holon/.config/pi/models.json",
             "/home/holon/.pi/agent/models.json",
-        ),
-        "gemini": (
-            os.path.join(home, ".config/gcloud"),
-            "/home/holon/.config/gcloud",
         ),
     }
     return any(os.path.exists(p) for p in runner_session_paths.get(norm, ()))

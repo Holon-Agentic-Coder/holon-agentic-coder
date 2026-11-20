@@ -52,7 +52,7 @@ def _pending_ledger_paths(repo_dir: str) -> list[str]:
     res = run_git(["status", "--porcelain", "--untracked-files=all", "--", *LEDGER_RELS], cwd=repo_dir, check=False)
     if res.returncode != 0:
         return []
-    paths = (line[3:].strip() for line in (res.stdout or "").splitlines())
+    paths = (line[2:].strip() for line in (res.stdout or "").splitlines())
     return [path for path in paths if path in LEDGER_RELS]
 
 

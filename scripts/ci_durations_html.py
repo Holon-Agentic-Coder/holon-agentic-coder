@@ -41,6 +41,7 @@ svg{display:block;width:100%;height:auto}.tick,.ceiling-label{fill:var(--ink-2);
 .grid{stroke:var(--grid);stroke-width:1}.ceiling{stroke:var(--ink);stroke-width:1.5;stroke-dasharray:6 4}
 .median{fill:none;stroke:var(--ink-2);stroke-width:2}.hit{fill:transparent}
 .pt .mark{stroke:var(--surface);stroke-width:2}.pt.main .mark{fill:var(--main)}.pt.pr .mark{fill:var(--pr)}
+.pt.other .mark{fill:var(--ink-2)}
 .pt.fail .mark{fill:var(--surface);stroke:var(--critical);stroke-width:2.5}
 .pt.cancelled .mark{fill:var(--muted)}.ring{fill:none;stroke:var(--ink);stroke-width:1.5}
 .queue{fill:var(--muted)}.run{fill:var(--main)}
@@ -51,6 +52,7 @@ details{margin-top:.25rem}
 
 LEGEND = (
     '<p class="legend"><span>● main (circle)</span><span>■ pull-request head (square)</span>'
+    "<span>▲ other: dispatch, schedule or branch push (triangle)</span>"
     "<span>○ red hollow: failed</span><span>grey: cancelled</span><span>◎ ring: re-run attempt</span>"
     "<span>— rolling median of the previous successful main runs</span><span>- - timing-gate ceiling</span>"
     "<span>strip: queue (grey) below run (blue)</span></p>"

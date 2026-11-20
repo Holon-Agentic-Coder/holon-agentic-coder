@@ -261,6 +261,15 @@ def test_a_failed_job_listing_becomes_a_warning_naming_the_run() -> None:
     assert result.warnings == ["::warning::Could not read the jobs of run 2 (HTTPError)."]
 
 
+def test_a_run_whose_job_fails_to_normalise_contributes_no_rows() -> None:
+    opener = recorded_api()
+    jobs = [job(21), job(22, started_at="not a time")]
+    opener.responses["runs/2/jobs?filter=all&per_page=100&page=1"] = {"total_count": 2, "jobs": jobs}
+    result = collect(client(opener), SINCE, 500)
+    assert {row.run_id for row in result.rows} == {1, 3}
+    assert result.warnings == ["::warning::Could not read the jobs of run 2 (ValueError)."]
+
+
 def test_many_failed_job_listings_become_one_warning_with_a_count() -> None:
     opener = recorded_api([run(i) for i in range(1, 9)])
     for i in range(1, 9):

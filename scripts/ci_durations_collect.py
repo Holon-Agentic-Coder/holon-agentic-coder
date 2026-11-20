@@ -186,9 +186,11 @@ def collect(client: ApiClient, since: date, max_runs: int) -> Collection:
     for run in runs:
         try:
             jobs = list_jobs(client, int(run["id"]))
-            rows.extend(row for job in jobs if (row := normalise_job(client, run, job)) is not None)
+            run_rows = [row for job in jobs if (row := normalise_job(client, run, job)) is not None]
         except FETCH_ERRORS as exc:
             failed.append(f"{run.get('id')} ({type(exc).__name__})")
+            continue
+        rows.extend(run_rows)
     if failed:
         more = f" and {len(failed) - SAMPLE_FAILURES} more" if len(failed) > SAMPLE_FAILURES else ""
         noun = "run" if len(failed) == 1 else f"{len(failed)} runs:"

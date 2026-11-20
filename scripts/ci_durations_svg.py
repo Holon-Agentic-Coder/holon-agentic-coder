@@ -1,9 +1,10 @@
 """Inline SVG charts for the CI duration report: duration over time and the queue-versus-run strip.
 
 The charts are plain SVG strings with no script and no external reference. Every API-derived string is escaped, and
-every point is an ``<a href>`` to its run with a ``<title>`` tooltip. ``main`` points are circles and pull-request
-points squares, so the ref is never told by colour alone; failures are hollow, cancelled jobs grey and re-runs carry
-an outer ring. Colours come from CSS classes defined by ``scripts.ci_durations_html``.
+every point is an ``<a href>`` to its run with a ``<title>`` tooltip. ``main`` points are circles, pull-request
+points squares and other runs (dispatch, schedule, branch pushes) triangles, so the ref is never told by colour alone;
+failures are hollow, cancelled jobs grey and re-runs carry an outer ring. Colours come from CSS classes defined by
+``scripts.ci_durations_html``.
 """
 
 from __future__ import annotations
@@ -50,7 +51,7 @@ def nice_max(value: float) -> float:
 
 def point_classes(row: JobDuration) -> str:
     """Return the CSS classes that encode a point's ref, outcome and attempt."""
-    classes = ["pt", "main" if row.ref_class == "main" else "pr"]
+    classes = ["pt", row.ref_class if row.ref_class in ("main", "pr") else "other"]
     if row.conclusion in FAILED:
         classes.append("fail")
     elif row.conclusion != "success":
@@ -72,12 +73,14 @@ def tooltip(row: JobDuration, median: float | None) -> str:
 
 
 def marker(row: JobDuration, x: float, y: float, median: float | None) -> str:
-    """Return a linked point: a circle for ``main``, a square otherwise, with a ring for a re-run."""
-    shape = (
-        f'<circle class="mark" cx="{x}" cy="{y}" r="4.5"/>'
-        if row.ref_class == "main"
-        else f'<rect class="mark" x="{x - 4.5}" y="{y - 4.5}" width="9" height="9" rx="1"/>'
-    )
+    """Return a linked point: a circle for ``main``, a square for a pull request, a triangle otherwise, with a ring
+    for a re-run."""
+    if row.ref_class == "main":
+        shape = f'<circle class="mark" cx="{x}" cy="{y}" r="4.5"/>'
+    elif row.ref_class == "pr":
+        shape = f'<rect class="mark" x="{x - 4.5}" y="{y - 4.5}" width="9" height="9" rx="1"/>'
+    else:
+        shape = f'<polygon class="mark" points="{x},{y - 5.5} {x + 5.5},{y + 4.5} {x - 5.5},{y + 4.5}"/>'
     ring = f'<circle class="ring" cx="{x}" cy="{y}" r="8"/>' if row.is_rerun else ""
     hit = f'<circle class="hit" cx="{x}" cy="{y}" r="10"/>'
     return (

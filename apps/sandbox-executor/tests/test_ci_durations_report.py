@@ -79,6 +79,14 @@ def test_failure_rerun_and_ref_markers_are_present() -> None:
     assert point_classes(point(1, 1.0, conclusion="timed_out")) == "pt main fail"
 
 
+def test_a_dispatch_schedule_or_branch_push_point_is_an_other_triangle() -> None:
+    other = point(10, 90.0, event="workflow_dispatch", ref_class="other")
+    assert point_classes(other) == "pt other"
+    page = render([*fixture_rows(), other])
+    assert 'class="pt other"' in page and '<polygon class="mark"' in page
+    assert "▲ other" in page
+
+
 def test_median_and_ceiling_lines_appear_only_where_defined() -> None:
     page = render()
     lint, unit = page.split('<section id="s1">')

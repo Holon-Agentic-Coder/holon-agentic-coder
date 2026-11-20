@@ -129,7 +129,8 @@ still in progress, skipped jobs and jobs that never started are left out. Per jo
 - head SHA, branch, event and runner OS (the job's first runner label, for example `ubuntu-latest`);
 - PR number: the first pull request of the run whose base is this repository. The API lists no pull request for a run
   from a fork, so such points show the branch and no PR link;
-- ref class: `main` for a push to `main`, `pr` for a pull-request head, `other` for dispatch and schedule runs.
+- ref class: `main` for a push to `main`, `pr` for a pull-request head, `other` for everything else (dispatch and
+  schedule runs, and pushes to branches other than `main`).
 
 The baseline of a point is the median of the previous 5 successful `main` runs of the same workflow, job and runner OS
 (the current point excluded), as the timing gate compares against `--runs 5`. It is empty while fewer than 5 exist. The
@@ -142,10 +143,10 @@ shown.
 The `ci-durations` artefact (kept for 30 days) holds:
 
 - `ci-durations.html`: one self-contained page with no external assets and no script, so it opens offline. Each job and
-  runner OS has a chart of duration over time: `main` points are circles, pull-request heads squares, failures hollow
-  red, cancelled jobs grey and re-runs ringed, with the rolling-median line, the dashed ceiling and a strip of queue
-  time below run time. Every point links to its run and shows a tooltip; the table under each chart links every point to
-  its run, commit and pull request.
+  runner OS has a chart of duration over time: `main` points are circles, pull-request heads squares, other runs
+  triangles, failures hollow red, cancelled jobs grey and re-runs ringed, with the rolling-median line, the dashed
+  ceiling and a strip of queue time below run time. Every point links to its run and shows a tooltip; the table under
+  each chart links every point to its run, commit and pull request.
 - `ci-durations.json`: every point with the fields above plus `baseline_median` and `ceiling`, under
   `schema_version: 1`.
 

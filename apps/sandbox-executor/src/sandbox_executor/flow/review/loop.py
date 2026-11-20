@@ -789,8 +789,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         halt_reasons.append(f"resolver failed: {resolver_error}")
     if carried_block:
         halt_reasons.append(carried_block)
-    if post_error:
-        halt_reasons.append("consensus post failed")
+    if post_error:  # The conflict gate's post_error already reads "conflict gate: <reason>".
+        halt_reasons.append(post_error if consensus_status == "conflict_gate" else "consensus post failed")
     if tests_not_measured:
         halt_reasons.append("test results not measured")
     not_approved = not_approved_verdicts(reviewers)

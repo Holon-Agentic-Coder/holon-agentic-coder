@@ -221,6 +221,11 @@ Stage 4 and Stage 5 action rows keep their historical field order and identifier
   there when the container's file did not survive) and `failed_tests` (a list of test node ids), and the redacted test
   summary (the `short test summary info` section and the counts line) is its `error_context`. Older rows lack these
   fields.
+- A void correction row (`ACT-COR-{ts}-{hex8}`) marks an earlier row as void without editing it: it reuses the voided
+  row's `execution_id`, `target`, `review_iteration`, `review_finding_ids` and `introduced_by_action_id`, sets
+  `parent_action_id` to the voided `action_id`, `action_origin: "operator"`, `outcome: "success"`, a null
+  `review_disposition` and `rejection_reason`, labels `["ledger-correction", "void", ...]` and an `error_context` naming
+  why the voided row is false. Readers that honour corrections skip a row named by a void row's `parent_action_id`.
 - `ACT-CAL` uses `execution_id` `CAL-{plan_id}-{ts}`, `category: "doc"` and labels
   `["calibration", "stage-5", plan_id]`. Beyond the common action fields it carries `plan_branch`, `execution_branch`,
   `evaluated_commit_sha`, `predicted_metrics`, `actual_metrics`, `calibration_deltas` and `calibration_report_path` (new

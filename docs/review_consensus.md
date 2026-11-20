@@ -52,17 +52,37 @@ Ledger fields (see [ledger_schema.md](ledger_schema.md)): an `ACT-RES` row with 
 `left open (no evidenced adjudication)`, outcome `failure`) records a finding still open when the review loop ended; no
 new disposition value is written, so `executions.jsonl` keeps its vocabulary and Holon still keeps exactly three
 append-only ledgers. The `rejection_reason` vocabulary is `not diff-grounded`, `inaccurate`, `out of scope`,
-`conflicting with a higher-severity finding`, `no-convergence` (set by the loop's convergence guard) or `unspecified`
-(the resolver gave no recognised reason; it is never silently recorded as `out of scope`).
+`conflicting with a higher-severity finding` or `no-convergence` (set by the loop's convergence guard itself, never
+through the evidence rule). A resolver entry with no recognised reason is read as `unspecified`, which is only a marker:
+the rejection is refused and the finding stays `open`, so no `rejected` row carries an empty or `unspecified` reason
+(historical rows may; see the void correction rows in [ledger_schema.md](ledger_schema.md)).
 
 Evidence rule for resolver rejections (`sandbox_executor/resolver_evidence.py`): a rejection of an `important` or
 `critical` finding stands only when its reason is not `out of scope` or `unspecified` and the resolver supplies an
 `evidence` value naming the code it checked, a `path:line` token or a test (`tests/...::test_name` or a `test_*.py`
 file). Otherwise the finding's in-memory disposition is `open`, its rejection reason is null and the resolver's text is
-kept as evidence for audit (`unevidenced rejection (<reason>): <evidence>`, carried in the row's `error_context`). A
-finding the resolver did not adjudicate is `open` when important or critical and `rejected` (`unspecified`) when a nit.
-The reviewed finding's severity is authoritative, so a resolver cannot downgrade a finding to escape the rule. Only
-rejected nits are remembered as already adjudicated; see [Consensus integrity](#consensus-integrity).
+kept as evidence for audit (`unevidenced rejection (<reason>): <evidence>`, carried in the row's `error_context`). At
+every severity, a rejection without a stated reason is refused (`refused rejection (no reason)`) and a finding the
+resolver did not adjudicate stays `open`; `DispositionRecorder` refuses to write a reasonless rejection as a second
+guard. The reviewed finding's severity is authoritative, so a resolver cannot downgrade a finding to escape the rule.
+Only rejected nits are remembered as already adjudicated; see [Consensus integrity](#consensus-integrity).
+
+## Failed resolver passes and carried findings
+
+A finding leaves the review loop only through a disposition supplied by a resolver that ran: `applied`, or `rejected`
+with a stated reason. A resolver pass that fails (a non-zero exit, a usage or session limit, a timeout, no usable
+output, or an exception) carries no dispositions at all: the container entrypoint checks the turn's exit code before
+reading any dispositions file it left, and treats a clean exit without one as "no usable output". The loop then halts
+and writes no `ACT-RES` adjudication row for the pass (the tests-failed rejected-attempt row is unchanged). The loop
+result returns the findings still open as `open_findings`, on every exit.
+
+The engine stores `open_findings` in `FlowContext.carried_review_findings`, which the checkpoint saved after Stage 4
+persists. A `--from-stage review` resume sends those carried findings to the resolver before any new reviewer iteration
+(labelled with the halted pass's iteration); if that pass fails again, no iteration starts. Later resolver passes
+receive the carried findings still open merged with the fresh ones, de-duplicated by signature. While any carried
+finding has no disposition, an `APPROVED` ensemble verdict is turned into `CHANGES_REQUESTED`, the consensus blockers
+and the summary's halt reasons name the findings, and nothing is posted. The logic lives in
+`flow/review/carried_findings.py`.
 
 ## When the review is posted
 

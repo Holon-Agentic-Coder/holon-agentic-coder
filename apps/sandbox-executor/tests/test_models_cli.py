@@ -37,7 +37,7 @@ def test_models_command_table_display(capsys: pytest.CaptureFixture[str]) -> Non
     assert "claude-opus-5-5" in out
     assert "pi-agent" in out
     assert "codex-agent" in out
-    assert "gemini-agent" in out
+    assert "gemini-agent" not in out
     assert "opencode-agent" in out
     assert "local-model" in out
 

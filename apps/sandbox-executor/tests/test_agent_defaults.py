@@ -9,6 +9,7 @@ from sandbox_executor.agent_defaults import (
     DEFAULT_MODELS,
     LEGACY_DEFAULT_AGENT,
     LEGACY_DEFAULT_MODEL,
+    RUNNER_CAPABILITIES,
     MissingAgentRunnerError,
     MissingModelError,
     UnmappedAgentRunnerError,
@@ -16,9 +17,11 @@ from sandbox_executor.agent_defaults import (
     detect_harness_agent,
     image_for_agent,
     normalise_agent_id,
+    normalise_model_and_effort,
     resolve_agent_runner,
     resolve_model,
 )
+from sandbox_executor.agent_runner import get_runner
 
 
 @pytest.mark.parametrize(
@@ -199,3 +202,59 @@ def test_claude_api_key_detection_uses_the_secrets_file_not_holon_agent_key(tmp_
     secrets.write_text("fake-claude-value\n", encoding="utf-8")
     secrets.chmod(0o600)
     assert agent_defaults._detect_api_key_present("claude", {}) is True
+
+
+@pytest.mark.parametrize("gemini_runner", ["gemini", "gemini-agent"])
+def test_gemini_runner_is_rejected_via_unmapped_runner_error(gemini_runner: str):
+    with pytest.raises(UnmappedAgentRunnerError) as exc_info:
+        resolve_agent_runner(gemini_runner, {})
+    msg = str(exc_info.value)
+    assert f"Agent runner '{gemini_runner}' (from --agent) has no container image." in msg
+    assert "Supported runners:" in msg
+    assert "antigravity-agent" in msg
+    assert "claude-agent" in msg
+    assert "codex-agent" in msg
+    assert "opencode-agent" in msg
+    assert "pi-agent" in msg
+
+
+@pytest.mark.parametrize("gemini_runner", ["gemini", "gemini-agent"])
+def test_get_runner_rejects_gemini_with_unsupported_agent_message(
+    gemini_runner: str, capsys: pytest.CaptureFixture[str]
+):
+    with pytest.raises(SystemExit) as exc_info:
+        get_runner(gemini_runner)
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert f"Error: Unsupported agent '{gemini_runner}'." in output
+    assert "Supported agents are: antigravity, claude, codex, opencode, pi" in output
+
+
+def test_antigravity_gemini_models_and_local_model_preserved_in_capabilities():
+    caps = {cap.canonical_model for cap in RUNNER_CAPABILITIES if cap.runner == "antigravity-agent"}
+    assert "gemini-3.8-flash" in caps
+    assert "gemini-3.8-flash-medium" in caps
+    assert "gemini-3.8-flash-high" in caps
+
+    local_caps = [cap for cap in RUNNER_CAPABILITIES if cap.runner == "local-model"]
+    assert len(local_caps) == 1
+    assert local_caps[0].canonical_model == "local-model"
+
+
+@pytest.mark.parametrize(
+    ("raw_model", "effort", "expected_model", "expected_effort"),
+    [
+        ("gemini-3.8-flash", "low", "gemini-3.8-flash-low", "low"),
+        ("gemini-3.8-flash-medium", "medium", "gemini-3.8-flash-medium", "medium"),
+        ("gemini-3.8-flash", "high", "gemini-3.8-flash-high", "high"),
+        ("gemini-3.8-flash-medium", None, "gemini-3.8-flash-medium", "medium"),
+        ("gemini-3.8-flash", None, "gemini-3.8-flash", None),
+    ],
+)
+def test_antigravity_gemini_effort_coordination(
+    raw_model: str, effort: str | None, expected_model: str, expected_effort: str | None
+):
+    canonical, coordinated_effort = normalise_model_and_effort("antigravity", raw_model, effort)
+    assert canonical == expected_model
+    assert coordinated_effort == expected_effort

@@ -551,8 +551,7 @@ class TestFlowStages:
 
         assert len(ctx.logs) == 1
         assert ctx.logs[0].endswith(
-            "Warning: Ledger append failed (Stage 4 review action event) for ledger.jsonl: "
-            "OSError: denied *******"
+            "Warning: Ledger append failed (Stage 4 review action event) for ledger.jsonl: OSError: denied *******"
         )
         assert any("*******" in rec.getMessage() for rec in caplog.records)
         assert all(sample_value not in rec.getMessage() for rec in caplog.records)

@@ -366,9 +366,39 @@ def test_a_non_ledger_conflict_with_the_plan_branch_is_refused(repos, tmp_path):
 
     result = merge_child_pr(str(host), number, PLAN, runner=gh)
 
-    assert result.merged is False and "conflicts outside holon-knowledge/ledger" in (result.reason or "")
+    assert result.merged is False
+    assert "conflicts in src/parser.py (outside holon-knowledge/ledger" in (result.reason or "")
     assert gh.merge_calls() == []
     assert gh.sha(CHILD_EXEC) == head_before
+
+
+def test_merge_branch_detailed_names_every_conflicting_path_and_aborts(repos):
+    origin, host, work = repos
+    _commit(work, "main", "origin/main", "src/parser.py", "PARSER = main\n")
+    _commit(work, CHILD_EXEC, f"origin/{CHILD_EXEC}", "README.md", "child\n")
+    _commit(work, "main", "origin/main", "README.md", "main\n")
+    before = _git(origin, "rev-parse", f"refs/heads/{CHILD_EXEC}").strip()
+
+    merged = merge_module.merge_branch_detailed(str(host), "main", CHILD_EXEC, "merge main in")
+
+    assert merged.target_sha is None and merged.conflicts == ("README.md", "src/parser.py")
+    assert "conflicts in README.md, src/parser.py (outside holon-knowledge/ledger" in merged.reason
+    assert _git(origin, "rev-parse", f"refs/heads/{CHILD_EXEC}").strip() == before
+    assert len(_git(host, "worktree", "list").splitlines()) == 1
+
+
+def test_merge_branch_detailed_reports_the_merged_source_commit(repos):
+    origin, host, work = repos
+    _commit(work, "main", "origin/main", "docs/new.md", "new\n")
+    main_sha = _git(origin, "rev-parse", "refs/heads/main").strip()
+
+    merged = merge_module.merge_branch_detailed(str(host), "main", PLAN, "merge main in")
+    again = merge_module.merge_branch_detailed(str(host), "main", PLAN, "merge main in")
+
+    assert merged.source_sha == main_sha and merged.target_sha == _git(origin, "rev-parse", PLAN).strip()
+    assert merged.merge_commit == merged.target_sha
+    assert again.source_sha == main_sha and again.target_sha == merged.target_sha  # already contained: no new commit
+    assert again.merge_commit is None
 
 
 def test_a_ledger_only_conflict_with_the_plan_branch_is_interleaved(repos, tmp_path):

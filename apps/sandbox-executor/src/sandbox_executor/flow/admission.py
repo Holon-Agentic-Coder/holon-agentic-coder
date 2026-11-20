@@ -33,11 +33,11 @@ def record_admission(context: FlowContext, decision: AdmissionDecision) -> Admis
     An admission records ``admitted`` (with the override and its conflicts under ``--allow-overlap``), an overlap
     refusal ``blocked``; any other refusal records nothing. A write failure refuses, even under ``--allow-overlap``.
     """
+    previous = AdmissionRecord.from_dict(context.admission)
     if decision.admitted:
         overridden = [conflict.to_dict() for conflict in decision.conflicts] if decision.overridden else None
-        record = admitted_record(overridden)
+        record = admitted_record(overridden, previous)
     elif decision.blocked_by:
-        previous = AdmissionRecord.from_dict(context.admission)
         record = blocked_record(previous, decision.blocked_by, admission_state.utc_now())
     else:
         return decision

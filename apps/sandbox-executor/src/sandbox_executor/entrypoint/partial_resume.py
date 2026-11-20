@@ -1,9 +1,12 @@
 """Where a resumed execution starts: the plan-lineage rule and the choice between the recorded head and the branch tip.
 
 A failed execution's partial work forks from the plan tip of its day. The plan branch may have moved since, but only by
-engine-owned ledger commits (an ``--allow-overlap`` override row, for one) is that work still this plan's: its fork
-point lies on the plan branch's own first-parent history, past the intent branch tip, and the plan branch changed
-nothing but ``holon-knowledge/ledger/*.jsonl`` after it. A failed execution branch may also have moved past its recorded
+engine-owned commits is that work still this plan's: its fork point lies on the plan branch's own first-parent history,
+past the intent branch tip, and each first-parent commit after it either changed nothing but
+``holon-knowledge/ledger/*.jsonl`` (an ``--allow-overlap`` override or ``plan_refresh`` row, for one) or is a Stage 3
+refresh merge: a two-parent commit whose subject starts with ``REFRESH_MERGE_PREFIX`` and whose tree, outside the
+ledgers, is exactly what merging its parents gives (``git merge-tree``), so a hand-made commit that merely copies the
+message is still refused. A failed execution branch may also have moved past its recorded
 ``partial_head`` (a human merged ``origin/main`` to settle a sync conflict, say); the branch tip is then preferred when
 it still contains that head and passes the same rule.
 
@@ -17,7 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from sandbox_executor.git import GitRepository
-from sandbox_executor.plan_paths import split_plan_branch
+from sandbox_executor.plan_paths import REFRESH_MERGE_PREFIX, split_plan_branch
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.ref_names import INTENT_SUFFIX
 
@@ -75,10 +78,36 @@ def plan_lineage_refusal(repo: GitRepository, plan_tip: str, head: str, intent_t
     plan_history = _stdout(repo, ["rev-list", "--first-parent", plan_tip, *([f"^{intent_tip}"] if intent_tip else [])])
     if fork not in (plan_history or "").split():
         return f"{_NOT_A_DESCENDANT}, and it forked off the plan branch history at {fork[:12]}"
-    changed = _stdout(repo, ["diff", "--name-only", fork, plan_tip])
-    if changed is None or not all(_is_ledger_path(path) for path in changed.splitlines() if path):
+    if not _only_ledgers_changed(repo, fork, plan_tip) and not _engine_owned_since(repo, fork, plan_tip):
         return f"{_NOT_A_DESCENDANT}, and the plan branch changed more than its ledgers since {fork[:12]}"
     return None
+
+
+def _only_ledgers_changed(repo: GitRepository, base: str, tip: str) -> bool:
+    changed = _stdout(repo, ["diff", "--name-only", base, tip])
+    return changed is not None and all(_is_ledger_path(path) for path in changed.splitlines() if path)
+
+
+def _is_refresh_merge(repo: GitRepository, commit: str, parents: list[str]) -> bool:
+    """A Stage 3 refresh merge: two parents, the refresh subject and, outside the ledgers, the tree of their merge."""
+    subject = _stdout(repo, ["log", "-1", "--format=%s", commit]) or ""
+    if len(parents) != 2 or not subject.startswith(REFRESH_MERGE_PREFIX):
+        return False
+    merged = repo.run(["merge-tree", "--write-tree", *parents], check=False)  # exit 1: conflicts; the tree is printed
+    tree = (merged.stdout or "").split("\n", 1)[0].strip() if merged.returncode in (0, 1) else ""
+    return bool(tree) and _only_ledgers_changed(repo, tree, commit)
+
+
+def _engine_owned_since(repo: GitRepository, fork: str, plan_tip: str) -> bool:
+    """Whether every first-parent commit of the plan branch after ``fork`` is a ledger commit or a refresh merge."""
+    history = _stdout(repo, ["rev-list", "--first-parent", "--parents", f"{fork}..{plan_tip}"])
+    for line in (history or "").splitlines():
+        commit, *parents = line.split()
+        if not parents or not (
+            _only_ledgers_changed(repo, parents[0], commit) or _is_refresh_merge(repo, commit, parents)
+        ):
+            return False
+    return history is not None
 
 
 def _changes_only_engine_owned(repo: GitRepository, base: str, tip: str, excludes: tuple[str, ...]) -> bool:

@@ -8,8 +8,10 @@ import tempfile
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import NoReturn
 
 from sandbox_executor import artefacts
+from sandbox_executor.agent_api_error import detect_api_error
 from sandbox_executor.agent_runner import get_runner, get_workspace_dir
 from sandbox_executor.artefacts import PLAN_REQUIRED_METRICS, PLAN_SPEC, plan_write_protocol, validate_artefact
 from sandbox_executor.budgets import (
@@ -30,10 +32,11 @@ from sandbox_executor.ledger import (
     build_plan_id,
     validate_ledger_file_unique_ids,
 )
+from sandbox_executor.plan_attempt import clear_failure_detail, discard_untracked_plan_file, write_failure_detail
 from sandbox_executor.plan_paths import plan_file_rel
 from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
 from sandbox_executor.touch_set import parse_touch_set_section
-from sandbox_executor.turns import record_budget_failure, run_turn, supervise_authoring_turn
+from sandbox_executor.turns import AuthoringOutcome, record_budget_failure, run_turn, supervise_authoring_turn
 
 # The commit identity goes on the command line: a mounted host worktree's repository config is shared with the host and
 # mounted read-only, so a ``git config`` write there fails.
@@ -290,6 +293,23 @@ def _touch_set_field(plan_md_path: str) -> dict:
     return {"touch_set": touch_set.to_row()}
 
 
+def _fail_plan_attempt(repo_dir: str, plan_md_rel: str, message: str) -> NoReturn:
+    """Fail the plan attempt: report ``message`` (redacted), remove its untracked plan file, and exit 1.
+
+    The message also goes to the git-ignored failure detail file, so the host's plan stage can name the real cause.
+    """
+    message = redact_agent_secrets(message)
+    print(f"Error: {message}", file=sys.stderr)
+    discard_untracked_plan_file(repo_dir, plan_md_rel)
+    write_failure_detail(repo_dir, message)
+    sys.exit(1)
+
+
+def _api_error_of(outcome: AuthoringOutcome) -> str | None:
+    """The API error any turn of the agent printed (stdout, then stderr), or None."""
+    return detect_api_error(*(text for turn in outcome.turns for text in (turn.stdout, turn.stderr)))
+
+
 def main():  # noqa: C901, PLR0912, PLR0915
     if len(sys.argv) < 4:
         print("Usage: planner.py <intent_branch> <agent_name> <model_name>")
@@ -308,6 +328,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
         intent_branch_prefix = intent_branch_prefix[:-2]
 
     repo_dir = get_workspace_dir()
+    clear_failure_detail(repo_dir)
 
     plan_seq = int(time.time())
     safe_model = _sanitize_model_name(model_name)
@@ -442,6 +463,7 @@ Include metrics in this format:
         budgets = load_budgets(os.environ)
         stage_timer = StageTimer("plan", budgets.stage_seconds("plan"))
         outcome = None
+        agent_error = "the planner agent did not run"
         try:
             outcome = supervise_authoring_turn(
                 build_agent_cmd,
@@ -459,7 +481,7 @@ Include metrics in this format:
                 prompt_file=prompt_file,
             )
         except Exception as e:
-            print(f"Error: Exception running agent: {redact_agent_secrets(str(e))}", file=sys.stderr)
+            agent_error = f"Exception running agent: {e}"
         finally:
             # Credentials are removed even when a turn breached its budget.
             runner.cleanup_ephemeral_credentials()
@@ -470,7 +492,14 @@ Include metrics in this format:
                 os.remove(temp_f)
 
     if outcome is None:
-        sys.exit(1)
+        _fail_plan_attempt(repo_dir, plan_md_rel, agent_error)
+
+    result = outcome.last
+    report = outcome.report
+    # An API failure is reported as such, never as a budget breach or a metrics failure.
+    api_error = None if report is not None and report.usable else _api_error_of(outcome)
+    if api_error is not None:
+        _fail_plan_attempt(repo_dir, plan_md_rel, f"the planner agent's API call failed: {api_error}")
 
     if outcome.budget_failure is not None:
         # Name the follow-up that actually ran: a resume after a breach, the re-prompt of a clean turn, or none at all
@@ -493,8 +522,6 @@ Include metrics in this format:
         print(stage_timer.summary("failed"))
         sys.exit(1)
 
-    result = outcome.last
-    report = outcome.report
     if report is not None and report.usable:
         if result.returncode != 0 or result.truncated:
             # The plan on disk is complete enough to commit; a cut-off final chat message does not matter.
@@ -504,6 +531,10 @@ Include metrics in this format:
             )
     elif report is None or not report.exists:
         stdout_text = (result.stdout or "").strip()
+        stdout_api_error = detect_api_error(stdout_text)
+        if stdout_api_error is not None:
+            # Defensive second guard: an API error is never written to the plan path.
+            _fail_plan_attempt(repo_dir, plan_md_rel, f"the planner agent's API call failed: {stdout_api_error}")
         if stdout_text:
             print(
                 f"WARNING: agent did not write {plan_md_rel}; falling back to the plan text captured from stdout.",
@@ -524,18 +555,18 @@ Include metrics in this format:
     # Validate before any ledger append or commit. Missing metrics are a failure, never back-filled with defaults.
     if report is None or not report.metrics_ok:
         missing = ", ".join(report.missing_metrics) if report is not None else ", ".join(PLAN_REQUIRED_METRICS)
-        print(
-            f"Error: metrics validation failed for {plan_md_rel}: missing or non-numeric overall metrics: {missing}.",
-            file=sys.stderr,
+        _fail_plan_attempt(
+            repo_dir,
+            plan_md_rel,
+            f"metrics validation failed for {plan_md_rel}: missing or non-numeric overall metrics: {missing}.",
         )
-        sys.exit(1)
     if not report.size_ok:
-        print(
-            f"Error: Plan generation produced an empty or invalid plan file ({report.size} bytes, at least "
+        _fail_plan_attempt(
+            repo_dir,
+            plan_md_rel,
+            f"Plan generation produced an empty or invalid plan file ({report.size} bytes, at least "
             f"{PLAN_SPEC.size_floor} expected).",
-            file=sys.stderr,
         )
-        sys.exit(1)
     if report.missing_sections:
         print(f"WARNING: {report.describe()}", file=sys.stderr)
 

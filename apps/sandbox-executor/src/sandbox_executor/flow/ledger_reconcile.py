@@ -12,6 +12,7 @@ import logging
 import os
 from typing import Any, Literal, TextIO
 
+from sandbox_executor.flow.ledger_order import _order_appended_rows
 from sandbox_executor.ledger import LedgerLock, LedgerRewriteError, assert_ledger_prefix
 
 logger = logging.getLogger(__name__)
@@ -96,17 +97,16 @@ def _split_conflict_sides(content: str) -> tuple[list[str], list[str]]:
 
 
 def _append_only_union(prefix_lines: list[str], other_lines: list[str]) -> str:
-    """Return the prefix side unchanged, followed by the other side's lines it lacks, in their original order.
+    """Return the prefix side unchanged, followed by the other side's lines it lacks, ordered by ``created_at``.
 
-    Lines are compared as exact text (ignoring only the line ending), so an identical line is not repeated; rows are
-    never parsed, deduplicated by key, sorted or re-serialised.
-    """
+    Lines are compared as exact text (ignoring the line ending), so an identical line is not repeated; the prefix never
+    moves, and appended rows are never deduplicated by key or re-serialised (see ``_order_appended_rows``)."""
     prefix = "".join(prefix_lines)
     if prefix and not prefix.endswith("\n"):
         prefix += "\n"
     seen = {line.rstrip("\r\n") for line in prefix_lines}
     missing = (line.rstrip("\r\n") for line in other_lines if line.strip())
-    extra = [line + "\n" for line in dict.fromkeys(missing) if line not in seen]
+    extra = _order_appended_rows([line + "\n" for line in dict.fromkeys(missing) if line not in seen])
     return prefix + "".join(extra)
 
 
@@ -134,8 +134,8 @@ def reconcile_jsonl_ledger_conflict(content: str, prefix_side: PrefixSide = "our
     """Resolve JSONL ledger content containing standard or diff3 conflict markers by pure append.
 
     Content without line-anchored conflict markers is returned unchanged. Otherwise the ``prefix_side`` file is kept
-    byte for byte and the other side's missing lines follow in their original order; rows are never deduplicated by
-    key, sorted by timestamp or re-serialised.
+    byte for byte and the other side's missing lines are appended ordered by ``created_at``; the prefix is never
+    moved, and rows are never deduplicated by key or re-serialised.
 
     Args:
         content: Raw JSONL ledger content.

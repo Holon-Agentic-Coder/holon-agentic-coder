@@ -52,6 +52,18 @@ consensus model and post one short consensus review built only from what the rev
     that configuration as a Critical finding unless the intent carries `module_budget_change` quoting the maintainer's
     instruction; the resolver never edits it.
 
+## Operating rules
+
+1. **Conflict gate**: before approving, and before Stage 5 calibration, check the PR's `mergeable` and
+   `mergeStateStatus`. On `CONFLICTING` or `DIRTY`, merge `{target_branch}` into the PR head first; never approve a
+   conflicting head, and re-earn the approval on the merged head.
+2. **Ledger-only fast resolution**: when only `holon-knowledge/ledger/*.jsonl` files conflict, keep the
+   `{target_branch}` side as the untouched prefix, append the head-only rows after it in `created_at` order, commit the
+   merge, and do not rerun the test suite. Never move or rewrite an existing ledger row.
+3. **Authentic data only**: reviews and scorecards use only authentic data from real runs, diffs and CI. Never use
+   synthetic, invented or placeholder figures.
+4. **Test command**: run tests only via `uv run pytest`.
+
 Review commits carry these RFC 2822 trailers:
 
 ```text

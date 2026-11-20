@@ -132,7 +132,7 @@ class TestStage4LedgerProvenance:
 
         post_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST"]
         assert len(post_rows) == 1
-        assert post_rows[0]["error_context"] == "gh exploded using [REDACTED_SECRET]"
+        assert post_rows[0]["error_context"] == "gh exploded using *******"
         assert sample_value not in ledger.read_text(encoding="utf-8")
         assert sample_value not in str(result["posting"])
         assert all(sample_value not in rec.getMessage() for rec in caplog.records)
@@ -158,7 +158,7 @@ class TestStage4LedgerProvenance:
         assert post_rows[0]["outcome"] == "failure"
         assert "Review posting failed: review=False, comment=True." in error_context
         assert "official_review: Official review submission failed (exit code 1)" in error_context
-        assert "[REDACTED_SECRET]" in error_context
+        assert "*******" in error_context
         assert "discussion_comment" not in error_context
         assert sample_value not in ledger.read_text(encoding="utf-8")
 

@@ -725,11 +725,10 @@ class FakeGitCommands:
             return subprocess.CompletedProcess(args, 128, stdout="", stderr=f"fatal: {verb} failed")
         if verb == "remote" and args[2:4] == ["get-url", "origin"]:
             return subprocess.CompletedProcess(args, 0, stdout=f"{self._origin_url}\n", stderr="")
-        if verb == "symbolic-ref" and args[-1].startswith("refs/heads/"):
-            # The re-attach of a HEAD detached at the branch tip ('git symbolic-ref ... HEAD refs/heads/<b>').
-            self._branch = args[-1].removeprefix("refs/heads/")
-            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         if verb == "symbolic-ref":
+            if args[-1].startswith("refs/heads/"):
+                # The re-attach of a HEAD detached at the branch tip ('git symbolic-ref ... HEAD refs/heads/<b>').
+                self._branch = args[-1].removeprefix("refs/heads/")
             return subprocess.CompletedProcess(args, 0 if self._branch else 1, stdout=f"{self._branch}\n", stderr="")
         if verb == "rev-parse" and any("HEAD" in a for a in args):
             head = self._heads.pop(0) if len(self._heads) > 1 else self._heads[0]

@@ -214,9 +214,30 @@ def test_a_detached_head_is_resolved_through_the_callers_git_runner_too(tmp_path
 
     from sandbox_executor.flow.calibrate_sync import record_starting_branch
 
-    answers = [SimpleNamespace(returncode=1, stdout=""), SimpleNamespace(returncode=0, stdout="abc123\n")]
+    answers = [
+        SimpleNamespace(returncode=1, stdout=""),
+        SimpleNamespace(returncode=0, stdout="abc123\n"),
+        SimpleNamespace(returncode=0, stdout="def456\n"),  # the execution branch tip is elsewhere
+    ]
     fake = MagicMock(side_effect=answers)
     ctx = FlowContext(target_worktree=str(tmp_path), execution_branch=EXEC, agent="a", model="m")
     with patch("sandbox_executor.flow.calibrate_sync.run_git", side_effect=AssertionError("spawned a real git")):
         record_starting_branch(ctx, fake)
     assert (ctx.starting_branch, ctx.starting_detached) == ("abc123", True)
+
+
+def test_a_start_detached_at_the_execution_tip_is_recorded_as_the_branch_and_never_re_detached(
+    repos: SimpleNamespace,
+) -> None:
+    from sandbox_executor.flow.calibrate_sync import record_starting_branch, restore_starting_branch
+
+    git(repos.host, "checkout", "-q", "--detach", EXEC)
+    ctx = FlowContext(target_worktree=str(repos.host), execution_branch=EXEC, agent="a", model="m")
+
+    record_starting_branch(ctx)
+    assert (ctx.starting_branch, ctx.starting_detached) == (EXEC, False)
+    git(repos.host, "symbolic-ref", "HEAD", f"refs/heads/{EXEC}")  # the stage re-attached the branch
+    restore_starting_branch(ctx)
+
+    assert git(repos.host, "symbolic-ref", "--short", "HEAD") == EXEC
+    assert any("nothing to restore" in line for line in ctx.logs)

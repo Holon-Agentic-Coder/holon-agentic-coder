@@ -11,6 +11,7 @@ from sandbox_executor.flow.in_flight import (
     MAX_OPEN_PULL_REQUESTS,
     AdmissionUnavailable,
     discover_in_flight_flows,
+    local_blocked_waiters,
     local_in_flight_flows,
     open_flow_pull_requests,
     read_plan_touch_set,
@@ -24,8 +25,12 @@ CHILD_PLAN = "I-100-own--1-child/P-103-eeeeeeee-claude-agent-claude-opus-5-5/_"
 CHILD_HEAD = CHILD_PLAN.removesuffix("/_") + "/E-104-ffffffff-claude-agent-claude-opus-5-5/_"
 
 
-def write_checkpoint(worktree: Path, plan_branch: str, completed: list[FlowStage], slug: str) -> None:
-    context = FlowContext(target_worktree=str(worktree), intent_data={"slug": slug}, plan_branch=plan_branch)
+def write_checkpoint(
+    worktree: Path, plan_branch: str, completed: list[FlowStage], slug: str, admission: dict | None = None
+) -> None:
+    context = FlowContext(
+        target_worktree=str(worktree), intent_data={"slug": slug}, plan_branch=plan_branch, admission=admission
+    )
     for stage in completed:
         context.stage_results[stage.value] = StageResult(stage=stage, status=StageStatus.SUCCESS)
     save_checkpoint(context)
@@ -155,3 +160,48 @@ def test_parent_and_child_intents_share_one_lineage(flow_repos):
     no_worktrees = lambda args, cwd: _ok("worktree " + cwd)  # noqa: E731
     assert discover_in_flight_flows(str(host), OWN_HEAD, gh, no_worktrees) == []
     assert discover_in_flight_flows(str(host), CHILD_HEAD, gh, no_worktrees) == []
+
+
+BLOCKED = {
+    "state": "blocked",
+    "blocked_since": "2026-11-20T01:00:00.000Z",
+    "blocked_by": [{"kind": "pull_request", "number": 9, "branch": "b", "files": ["src/app.py"]}],
+}
+THIRD_PLAN = "I-300-third/P-301-eeeeeeee-claude-agent-claude-opus-5-5/_"
+FOURTH_PLAN = "I-400-fourth/P-401-ffffffff-claude-agent-claude-opus-5-5/_"
+
+
+def test_a_blocked_checkpoint_is_not_in_flight_but_is_a_waiter(flow_repos, tmp_path):
+    host, _origin = flow_repos
+    for plan in (OTHER_PLAN, THIRD_PLAN, FOURTH_PLAN):
+        make_plan_branch(host, plan, [{"path": "src/"}])
+    second = tmp_path / "second"
+    _git(host, "worktree", "add", "-q", "--detach", str(second), "main")
+    executing = [FlowStage.INTENT, FlowStage.PLAN]
+    write_checkpoint(second, OTHER_PLAN, executing, "blocked", BLOCKED)
+    write_checkpoint(second, THIRD_PLAN, executing, "admitted", {"state": "admitted"})
+    write_checkpoint(second, FOURTH_PLAN, executing, "older-flow")  # no admission field: still in flight
+
+    flows = local_in_flight_flows(str(host), "I-100-own")
+    assert not isinstance(flows, AdmissionUnavailable)
+    assert sorted(flow.plan_branch for flow in flows) == sorted([THIRD_PLAN, FOURTH_PLAN])
+    assert {(flow.kind, flow.worktree) for flow in flows} == {("local_flow", str(second))}
+
+    waiters = local_blocked_waiters(str(host), "I-100-own")
+    assert not isinstance(waiters, AdmissionUnavailable)
+    assert [(w.plan_branch, w.worktree, w.record.blocked_since) for w in waiters] == [
+        (OTHER_PLAN, str(second), "2026-11-20T01:00:00.000Z")
+    ]
+    assert waiters[0].declared == TouchSet((TouchSetEntry("src/"),))
+
+
+def test_a_blocked_flow_with_an_open_pull_request_stays_in_flight(flow_repos, tmp_path):
+    host, _origin = flow_repos
+    make_plan_branch(host, OTHER_PLAN, [{"path": "src/"}])
+    second = tmp_path / "second"
+    _git(host, "worktree", "add", "-q", "--detach", str(second), "main")
+    write_checkpoint(second, OTHER_PLAN, [FlowStage.INTENT, FlowStage.PLAN], "blocked", BLOCKED)
+    gh = FakeGh([{"number": 7, "headRefName": OTHER_HEAD}], {7: ["src/app.py"]})
+    flows = discover_in_flight_flows(str(host), OWN_HEAD, gh)
+    assert not isinstance(flows, AdmissionUnavailable)
+    assert [(flow.kind, flow.number, flow.head) for flow in flows] == [("pull_request", 7, OTHER_HEAD)]

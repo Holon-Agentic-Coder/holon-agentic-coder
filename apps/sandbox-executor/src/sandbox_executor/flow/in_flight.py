@@ -1,9 +1,11 @@
 """Stage 3 admission input: the flows in flight beside this one and the files they declare or change.
 
 A flow is in flight when it has an open pull request whose head is a flow execution branch (``I-.../P-.../E-.../_``),
-or a checkpoint in another git worktree whose stage is execute or review and whose plan branch still resolves. Each
-carries its declared touch set (its plan branch's newest ``plans.jsonl`` row, from refs) and, for a pull request, its
-changed files. This run's root intent and children are excluded; a local flow with an open pull request is listed once.
+or a checkpoint in another git worktree whose stage is execute or review, whose plan branch still resolves and whose
+Stage 3 admission state is not ``blocked`` (a refused flow waits; it blocks no one). Each carries its declared touch set
+(its plan branch's newest ``plans.jsonl`` row, from refs), the reference a ``blocked_by`` entry names and, for a pull
+request, its changed files. This run's root intent and children are excluded; a local flow with an open pull request is
+listed once, so it stays in flight whatever its checkpoint says. :func:`local_blocked_waiters` lists the blocked ones.
 
 Discovery is host-side and read-only via injected ``gh``/``git`` runners; failures return :class:`AdmissionUnavailable`.
 """
@@ -20,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from sandbox_executor.flow.admission_state import BLOCKED_BY_LOCAL_FLOW, BLOCKED_BY_PULL_REQUEST, AdmissionRecord
 from sandbox_executor.flow.checkpoint import load_checkpoint
 from sandbox_executor.flow.context import FlowStage
 from sandbox_executor.flow.git_refs import _read_ledger_rows, _resolve_branch_ref
@@ -45,12 +48,31 @@ _EXECUTION_HEAD_RE = re.compile(r"^(?P<plan>I-\d+-\S*/P-\d+-[^/]+)/E-\d+-[^/]+/_
 
 @dataclass(frozen=True)
 class InFlightFlow:
-    """A flow in flight: its label, plan branch, declared touch set and, for a pull request, its changed files."""
+    """A flow in flight: label, plan branch, declared touch set and reference (pull request ``number`` and ``head``,
+    else the local ``worktree``); a pull request also carries its changed files."""
 
     label: str
     plan_branch: str
     declared: TouchSet | None = None
     changed_files: tuple[str, ...] | None = None
+    number: int | None = None
+    head: str | None = None
+    worktree: str | None = None
+
+    @property
+    def kind(self) -> str:
+        """The ``blocked_by`` kind naming this flow: a pull request when it has a number, else a local flow."""
+        return BLOCKED_BY_PULL_REQUEST if self.number is not None else BLOCKED_BY_LOCAL_FLOW
+
+
+@dataclass(frozen=True)
+class BlockedWaiter:
+    """A local flow Stage 3 refused for an overlap: it waits (not in flight) with its recorded admission state."""
+
+    plan_branch: str
+    worktree: str
+    declared: TouchSet | None
+    record: AdmissionRecord
 
 
 @dataclass(frozen=True)
@@ -133,10 +155,12 @@ def open_flow_pull_requests(
         changed = _pull_request_diff(gh, int(pr.get("number") or 0), repo_dir)
         if isinstance(changed, AdmissionUnavailable):
             return changed
-        label = f"pull request #{pr.get('number')} (branch {head})"
+        number = int(pr.get("number") or 0)
+        label = f"pull request #{number} (branch {head})"
         if _resolve_branch_ref(repo_dir, plan_branch) is None:
             logger.warning("Plan branch %s of %s is not on this host; only its diff is compared", plan_branch, label)
-        flows.append(InFlightFlow(label, plan_branch, read_plan_touch_set(repo_dir, plan_branch), changed))
+        declared = read_plan_touch_set(repo_dir, plan_branch)
+        flows.append(InFlightFlow(label, plan_branch, declared, changed, number=number, head=head))
     return flows
 
 
@@ -149,34 +173,77 @@ def _other_worktrees(repo_dir: str, run_git: GitRunner) -> list[str] | Admission
     return [path for path in paths if os.path.realpath(path) != own]
 
 
-def _checkpoint_plan_branch(path: str) -> str | None:
-    """The plan branch of a checkpoint whose current stage is execute or review; ``None`` for any other or bad file."""
+@dataclass(frozen=True)
+class _OtherCheckpoint:
+    plan_branch: str
+    worktree: str
+    in_flight_stage: bool
+    record: AdmissionRecord | None
+
+
+def _read_checkpoint(path: str, worktree: str) -> _OtherCheckpoint | None:
+    """A checkpoint's plan branch, stage and admission record; ``None`` for a bad file or one without a plan branch."""
     try:
         checkpoint = load_checkpoint(path)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         logger.debug("Skipping unreadable checkpoint %s: %s", path, exc)  # stale or foreign: never blocks
         return None
-    return (checkpoint.context.plan_branch or None) if checkpoint.current_stage in _IN_FLIGHT_STAGES else None
+    if not checkpoint.context.plan_branch:
+        return None
+    in_flight_stage = checkpoint.current_stage in _IN_FLIGHT_STAGES
+    record = AdmissionRecord.from_dict(checkpoint.context.admission)
+    return _OtherCheckpoint(str(checkpoint.context.plan_branch), worktree, in_flight_stage, record)
+
+
+def _other_checkpoints(
+    repo_dir: str, own_root: str, run_git: GitRunner | None
+) -> list[_OtherCheckpoint] | AdmissionUnavailable:
+    """Checkpoints at execute or review in other worktrees, outside ``own_root``, whose plan branch still resolves."""
+    worktrees = _other_worktrees(repo_dir, run_git or _host_git)
+    if isinstance(worktrees, AdmissionUnavailable):
+        return worktrees
+    found: list[_OtherCheckpoint] = []
+    for worktree in worktrees:
+        for path in sorted(glob.glob(os.path.join(worktree, ".holon", "flow", "checkpoint-*.json"))):
+            checkpoint = _read_checkpoint(path, worktree)
+            if checkpoint is None or not checkpoint.in_flight_stage or _root_intent(checkpoint.plan_branch) == own_root:
+                continue
+            if _resolve_branch_ref(repo_dir, checkpoint.plan_branch) is not None:  # a deleted plan branch is stale
+                found.append(checkpoint)
+    return found
 
 
 def local_in_flight_flows(
     repo_dir: str, own_root: str, run_git: GitRunner | None = None
 ) -> list[InFlightFlow] | AdmissionUnavailable:
-    """Flows whose checkpoint in another worktree is at execute or review and whose plan branch still resolves."""
-    worktrees = _other_worktrees(repo_dir, run_git or _host_git)
-    if isinstance(worktrees, AdmissionUnavailable):
-        return worktrees
-    flows: list[InFlightFlow] = []
-    for worktree in worktrees:
-        for path in sorted(glob.glob(os.path.join(worktree, ".holon", "flow", "checkpoint-*.json"))):
-            plan_branch = _checkpoint_plan_branch(path)
-            if not plan_branch or _root_intent(plan_branch) == own_root:
-                continue
-            if _resolve_branch_ref(repo_dir, plan_branch) is None:
-                continue  # the plan branch was deleted: the checkpoint is stale
-            label = f"local flow on branch {plan_branch} (worktree {worktree})"
-            flows.append(InFlightFlow(label, plan_branch, read_plan_touch_set(repo_dir, plan_branch)))
-    return flows
+    """Flows whose checkpoint in another worktree is at execute or review, not blocked, with a live plan branch."""
+    checkpoints = _other_checkpoints(repo_dir, own_root, run_git)
+    if isinstance(checkpoints, AdmissionUnavailable):
+        return checkpoints
+    return [
+        InFlightFlow(
+            f"local flow on branch {checkpoint.plan_branch} (worktree {checkpoint.worktree})",
+            checkpoint.plan_branch,
+            read_plan_touch_set(repo_dir, checkpoint.plan_branch),
+            worktree=checkpoint.worktree,
+        )
+        for checkpoint in checkpoints
+        if checkpoint.record is None or not checkpoint.record.blocked  # no record: an older flow, still in flight
+    ]
+
+
+def local_blocked_waiters(
+    repo_dir: str, own_root: str, run_git: GitRunner | None = None
+) -> list[BlockedWaiter] | AdmissionUnavailable:
+    """Flows whose checkpoint in another worktree records a ``blocked`` admission state, with a live plan branch."""
+    checkpoints = _other_checkpoints(repo_dir, own_root, run_git)
+    if isinstance(checkpoints, AdmissionUnavailable):
+        return checkpoints
+    return [
+        BlockedWaiter(c.plan_branch, c.worktree, read_plan_touch_set(repo_dir, c.plan_branch), c.record)
+        for c in checkpoints
+        if c.record is not None and c.record.blocked
+    ]
 
 
 def discover_in_flight_flows(

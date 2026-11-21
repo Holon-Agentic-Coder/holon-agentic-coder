@@ -9,7 +9,7 @@ is thrown at:
   and ``--json`` prints one valid JSON document whose ``environment`` section has the documented keys;
 - the run path (``cli.run_docker_container`` for the pi planner, inside a timed host stage so the budget hand-down
   runs): no exception escapes, an invalid ``models.json`` or envelope value is a clean ``Error:`` with exit 1, and a
-  handed-down ``HOLON_STAGE_BUDGET_SECONDS`` is always a finite positive integer.
+  handed-down ``HOLON_STAGE_BUDGET_SECONDS`` is always a finite positive integer or the ``unlimited`` sentinel.
 
 stdout, stderr and the log are strict UTF-8 byte streams (``errors="strict"``), like a real terminal or pipe, so text
 that a ``StringIO`` would accept but a terminal cannot encode fails the case. Every document and value carries a
@@ -29,7 +29,7 @@ import tempfile
 from collections.abc import Callable, Iterator
 from unittest.mock import MagicMock, patch
 
-from sandbox_executor import budgets, cli, local_llm
+from sandbox_executor import budget_limits, budgets, cli, local_llm
 from sandbox_executor.preflight import PreflightResult, PreflightStatus
 
 _FRAGMENT = 6
@@ -203,6 +203,13 @@ def _numeric_values(credential: str) -> list[str]:
         "0x10",
         "1_0",
         " 12 ",
+        # Sentinel-like strings: only the exact (case-insensitive, trimmed) word means "no ceiling".
+        "unlimited",
+        " UnLimited\t",
+        "unlimitedd",
+        "UNLIMIT",
+        "un limited",
+        "unlimited inf",
         credential,
         "12" + os.fsdecode(b"\xff"),
         os.fsdecode(b"\xed\xa0\x80"),
@@ -335,7 +342,9 @@ def _handed_down(argv: list[str]) -> list[str]:
 
 def _assert_handdown_finite(argv: list[str]) -> None:
     for value in _handed_down(argv):
-        assert value.isdigit() and int(value) >= 1, "hand-down is not a positive integer"
+        if value == budget_limits.UNLIMITED:  # the documented sentinel, never inf
+            continue
+        assert value.isdigit() and int(value) >= 1, "hand-down is not a positive integer or 'unlimited'"
 
 
 def test_malformed_models_json_never_crashes_doctor_or_run_path():

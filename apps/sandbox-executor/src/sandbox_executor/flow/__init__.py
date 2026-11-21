@@ -27,6 +27,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.admission_order": "blocker_is_clear older_ready_waiter older_waiter_flows waiter_key",
     "sandbox_executor.flow.admission_record": "override_already_recorded",
     "sandbox_executor.flow.admission_state": "AdmissionRecord BlockedBy admitted_record blocked_record utc_now",
+    "sandbox_executor.flow.base_files": "base_branch_name list_base_files",
     "sandbox_executor.flow.calibrate_rebuild": (
         "holds_only_calibration_commits is_ancestor is_calibration_commit is_calibration_path "
         "rebuild_calibrated_branch stale_calibrated_refs"
@@ -85,8 +86,9 @@ _LAZY_EXPORTS: dict[str, str] = {
         "remote_error"
     ),
     "sandbox_executor.flow.in_flight": (
-        "AdmissionUnavailable BlockedWaiter InFlightFlow discover_in_flight_flows local_blocked_waiters "
-        "local_in_flight_flows open_flow_pull_requests other_checkpoints read_plan_touch_set root_intent"
+        "AdmissionUnavailable BlockedWaiter InFlightFlow command_failure discover_in_flight_flows host_git "
+        "local_blocked_waiters local_in_flight_flows open_flow_pull_requests other_checkpoints read_plan_touch_set "
+        "root_intent"
     ),
     "sandbox_executor.flow.intent_questions": (
         "IntentQuestions QuestionKind answered_by_id answered_by_text has_inline_answer is_marked_open "
@@ -328,6 +330,7 @@ __all__ = [
     "admitted_record",
     "answered_by_id",
     "answered_by_text",
+    "base_branch_name",
     "blocked_record",
     "blocker_is_clear",
     "build_pr_review_consensus_report",
@@ -338,6 +341,7 @@ __all__ = [
     "check_pr_mergeability",
     "choose_merge_flag",
     "classify_conflicts",
+    "command_failure",
     "consult_knowledge",
     "create_or_update_pr",
     "decide_admission",
@@ -363,6 +367,7 @@ __all__ = [
     "held_execution_failure",
     "hold_unrecorded_executions",
     "holds_only_calibration_commits",
+    "host_git",
     "intent_payload_file",
     "is_ancestor",
     "is_calibration_commit",
@@ -371,6 +376,7 @@ __all__ = [
     "is_pending_only",
     "is_terminal_verdict",
     "leftover_paths",
+    "list_base_files",
     "load_checkpoint",
     "local_blocked_waiters",
     "local_in_flight_flows",

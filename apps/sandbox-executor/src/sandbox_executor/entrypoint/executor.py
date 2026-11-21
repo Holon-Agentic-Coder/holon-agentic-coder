@@ -1453,7 +1453,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "execution_notes": notes_rel,
                 "execution_notes_valid": notes_valid,
                 "elapsed_seconds": round(stage_timer.elapsed(), 1),
-                "budget_seconds": stage_timer.budget_seconds,
+                **stage_timer.ledger_fields(),
             }
             exec_entry.update(test_fields)
             if failure_reason:

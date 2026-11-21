@@ -1,5 +1,6 @@
 """Hermetic unit and integration tests for ActionRecord, commit trailers, and holon ledger query CLI."""
 
+import dataclasses
 import io
 import json
 import os
@@ -22,6 +23,19 @@ from sandbox_executor.ledger import (
     generate_action_id,
     parse_commit_trailers,
     query_ledger,
+)
+from sandbox_executor.ledger.query import LedgerQuery
+from sandbox_executor.ledger.query_filters import (
+    FILTER_PREDICATES,
+    match_category,
+    match_entry_type,
+    match_labels,
+    match_origin,
+    match_outcome,
+    match_review_severity,
+    match_target,
+    match_text,
+    parse_labels,
 )
 
 
@@ -721,6 +735,98 @@ class TestAtomicLedgerLocking(unittest.TestCase):
             t_items = [p["item"] for p in parsed if p["thread"] == t_idx]
             self.assertEqual(len(t_items), records_per_thread)
             self.assertEqual(sorted(t_items), list(range(records_per_thread)))
+
+
+class TestLedgerQueryPredicates(unittest.TestCase):
+    """Pin each per-filter predicate of ``ledger/query_filters.py`` and the predicate table."""
+
+    def test_parse_labels_handles_strings_lists_and_other_values(self):
+        self.assertEqual(parse_labels(" UI , ,db"), ["ui", "db"])
+        self.assertEqual(parse_labels(["Api", " ", 7]), ["api", "7"])
+        self.assertEqual(parse_labels(None), [])
+        self.assertEqual(parse_labels({"ui": 1}), [])
+
+    def test_entry_type_defaults_to_summary_and_all_matches_everything(self):
+        cases = [
+            ({}, "summary", True),
+            ({}, "action", False),
+            ({"entry_type": "Action"}, "ACTION", True),
+            ({"entry_type": "action"}, "all", True),
+            ({"entry_type": "action"}, None, True),
+            ({"entry_type": "action"}, "", True),
+        ]
+        for rec, wanted, expected in cases:
+            with self.subTest(rec=rec, wanted=wanted):
+                self.assertIs(match_entry_type(rec, wanted), expected)
+
+    def test_entry_type_always_reads_the_record(self):
+        with self.assertRaises(AttributeError):
+            match_entry_type(["not", "a", "mapping"], None)
+
+    def test_labels_match_any_of_string_or_list_labels(self):
+        cases = [
+            ({"labels": "ui, db"}, ["db"], True),
+            ({"labels": ["UI", "api"]}, ["api", "x"], True),
+            ({"labels": ["ui"]}, ["db"], False),
+            ({"labels": 42}, ["42"], False),
+            ({}, ["ui"], False),
+        ]
+        for rec, wanted, expected in cases:
+            with self.subTest(rec=rec, wanted=wanted):
+                self.assertIs(match_labels(rec, wanted), expected)
+
+    def test_outcome_treats_failure_and_failed_as_synonyms(self):
+        cases = [
+            ({"outcome": "failed"}, "failure", True),
+            ({"outcome": "failure"}, "FAILED", True),
+            ({"status": "Failed"}, "failure", True),
+            ({"outcome": "success"}, "failure", False),
+            ({"status": "success"}, "Success", True),
+            ({"outcome": "failed"}, "success", False),
+            ({}, "success", False),
+        ]
+        for rec, wanted, expected in cases:
+            with self.subTest(rec=rec, wanted=wanted):
+                self.assertIs(match_outcome(rec, wanted), expected)
+
+    def test_case_insensitive_field_predicates(self):
+        self.assertTrue(match_category({"category": "Code"}, "code"))
+        self.assertFalse(match_category({}, "code"))
+        self.assertTrue(match_origin({"action_origin": "pr_review"}, "PR_REVIEW"))
+        self.assertFalse(match_origin({"action_origin": "ci_fix"}, "pr_review"))
+        self.assertTrue(match_review_severity({"review_severity": "Nit"}, "nit"))
+        with self.assertRaises(AttributeError):
+            match_review_severity({"review_severity": None}, "nit")
+
+    def test_target_matches_target_or_plan_branch_substring(self):
+        self.assertTrue(match_target({"target": "src/App.py"}, "app"))
+        self.assertTrue(match_target({"plan_branch": "I-1/P-2/_"}, "p-2"))
+        self.assertFalse(match_target({"target": "docs"}, "src"))
+
+    def test_text_searches_every_searchable_field(self):
+        for field_name in (
+            "action",
+            "summary",
+            "target",
+            "error_context",
+            "mistake_category",
+            "execution_id",
+            "action_id",
+            "event_type",
+            "plan_branch",
+        ):
+            with self.subTest(field=field_name):
+                self.assertTrue(match_text({field_name: "Needle in hay"}, "NEEDLE"))
+        self.assertFalse(match_text({"agent": "needle"}, "needle"))
+
+    def test_predicate_table_covers_every_filter_field_except_limit(self):
+        query_fields = {f.name for f in dataclasses.fields(LedgerQuery)} - {"limit"}
+        self.assertEqual({name for name, _ in FILTER_PREDICATES}, query_fields)
+
+    def test_ledger_query_activates_only_filters_in_use(self):
+        spec = LedgerQuery(labels=" , ", outcome="success", limit=3)
+        self.assertEqual(spec.predicates(), [(match_entry_type, None), (match_outcome, "success")])
+        self.assertEqual(LedgerQuery(labels="A,b").predicates()[1], (match_labels, ["a", "b"]))
 
 
 if __name__ == "__main__":

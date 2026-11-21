@@ -18,6 +18,7 @@ from sandbox_executor.flow.checkpoint import (
 from sandbox_executor.flow.checkpoint_discovery import get_default_checkpoint_path
 from sandbox_executor.flow.in_flight import BlockedWaiter, InFlightFlow
 from sandbox_executor.touch_set import TouchSet, TouchSetEntry
+from sandbox_executor.touch_set_overlap import TouchSetOnBase
 
 from tests.flow.helpers import OTHER_PLAN, FakeGh, _git, make_plan_branch
 
@@ -108,8 +109,11 @@ def _waiter(plan_branch: str, since: str, *blocked_by: BlockedBy) -> BlockedWait
     return BlockedWaiter(plan_branch, "/w", TouchSet((TouchSetEntry("src/"),)), record)
 
 
+BASE = frozenset({"src/app.py"})
+
+
 def test_a_waiter_still_blocked_or_waiting_on_this_flow_is_not_ready():
-    own = TouchSet((TouchSetEntry("src/app.py"),))
+    own = TouchSetOnBase(TouchSet((TouchSetEntry("src/app.py"),)), BASE)
     own_plan = "I-9-own/P-9-x/_"
     own_key = ("2026-11-20T09:00:00.000Z", own_plan)
     by_pr = BlockedBy("pull_request", ("src/app.py",), number=7, branch=MERGING_HEAD)
@@ -132,8 +136,18 @@ def test_a_waiter_still_blocked_or_waiting_on_this_flow_is_not_ready():
     assert older_ready_waiter(own_key, own, [], [_waiter(OLDER_PLAN, since, by_pr), oldest]) is oldest
 
 
+def test_a_waiter_overlapping_only_on_new_files_is_not_deferred_to():
+    own_key = ("2026-11-20T09:00:00.000Z", "I-9-own/P-9-x/_")
+    by_merged_pr = BlockedBy("pull_request", ("src/app.py",), number=7, branch=MERGING_HEAD)
+    waiter = _waiter(OLDER_PLAN, "2026-11-20T01:00:00.000Z", by_merged_pr)  # declares src/
+    adds_a_file = TouchSetOnBase(TouchSet((TouchSetEntry("src/new.py"),)), BASE)
+    assert older_ready_waiter(own_key, adds_a_file, [], [waiter]) is None  # src/new.py is not on the base
+    edits_a_file = TouchSetOnBase(TouchSet((TouchSetEntry("src/app.py"),)), BASE)
+    assert older_ready_waiter(own_key, edits_a_file, [], [waiter]) is waiter
+
+
 def test_a_waiter_without_blocked_since_takes_no_place_in_the_order():
-    own = TouchSet((TouchSetEntry("src/app.py"),))
+    own = TouchSetOnBase(TouchSet((TouchSetEntry("src/app.py"),)), BASE)
     own_key = ("2026-11-20T09:00:00.000Z", "I-9-own/P-9-x/_")
     undated = BlockedWaiter(OLDER_PLAN, "/w", TouchSet((TouchSetEntry("src/"),)), AdmissionRecord("blocked"))
     assert older_ready_waiter(own_key, own, [], [undated]) is None

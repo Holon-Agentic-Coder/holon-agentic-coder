@@ -27,7 +27,10 @@ The stall window bounds silence *within* a response, so it is only stricter than
 shown that it streams: after stdout/stderr output in the current response (since the last artefact progress event).
 Non-streaming runners (``claude -p`` / ``pi -p`` in text mode print nothing until they exit) cannot emit a stall
 signal, so for them the silence window is ``max(stall_seconds, turn_seconds)`` and a single response gets the full
-turn budget; with an observable response boundary the turn budget is the one that fires.
+turn budget; with an observable response boundary the turn budget is the one that fires. With an ``unlimited`` turn
+timeout the turn budget never fires and the non-streaming silence window is
+``max(stall_seconds, DEFAULT_TURN_SECONDS)``, so silence stays bounded while stall detection is on (see
+:func:`silence_window`).
 
 :func:`supervise_authoring_turn` adds the authoring policy on top: validate the artefact after the turn, attempt exactly
 one follow-up turn (a resume after a breach, or a targeted re-prompt for missing sections), and report a budget failure
@@ -48,7 +51,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sandbox_executor.artefacts import ArtefactReport, ArtefactSpec, build_reprompt, validate_artefact
-from sandbox_executor.budgets import BudgetBreach, Clock, Sleeper, StageTimer, TurnBudgets
+from sandbox_executor.budgets import DEFAULT_TURN_SECONDS, BudgetBreach, Clock, Sleeper, StageTimer, TurnBudgets
 from sandbox_executor.ledger import ActionRecord, append_action_record, generate_action_id
 
 logger = logging.getLogger(__name__)
@@ -389,6 +392,28 @@ def build_turn_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
     return effective_env
 
 
+def silence_window(budgets: TurnBudgets, streaming: bool) -> float:
+    """Seconds of silence (no output, no progress) allowed before a ``stall`` breach.
+
+    A streaming runner gets ``stall_seconds``. A non-streaming runner, which cannot signal liveness mid-response, gets
+    ``max(stall_seconds, turn_seconds)``, or ``max(stall_seconds, DEFAULT_TURN_SECONDS)`` when the turn timeout is
+    ``unlimited``, so silence is never unbounded while stall detection is on (``stall_seconds > 0``).
+    """
+    if streaming:
+        return budgets.stall_seconds
+    turn = DEFAULT_TURN_SECONDS if budgets.turn_seconds is None else budgets.turn_seconds
+    return max(budgets.stall_seconds, turn)
+
+
+def _turn_breach(
+    budgets: TurnBudgets, turn_observable: bool, now: float, last_progress: float, stage: str
+) -> BudgetBreach | None:
+    """The ``turn`` breach once a response has run past ``turn_seconds``; never with an ``unlimited`` turn timeout."""
+    if budgets.turn_seconds is None or not turn_observable or now - last_progress < budgets.turn_seconds:
+        return None
+    return BudgetBreach(stage, "turn", budgets.turn_seconds, now - last_progress)
+
+
 def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
     cmd: list[str],
     *,
@@ -435,9 +460,9 @@ def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
     CPU consumed by the runner's descendants between two samples, and also counts as activity for the stall window;
     ``stall`` fires after ``stall_seconds`` with no output and no artefact or tool progress once the runner has
     streamed output in the current response, and otherwise (a non-streaming
-    runner, which cannot signal liveness mid-response) after ``max(stall_seconds, turn_seconds)``; ``stage`` fires
-    when ``stage_timer`` reaches its ceiling. The process elapsed time on its own is never compared with the turn
-    budget.
+    runner, which cannot signal liveness mid-response) after :func:`silence_window`; ``stage`` fires when
+    ``stage_timer`` reaches its ceiling. An ``unlimited`` turn timeout or stage never fires. The process elapsed time
+    on its own is never compared with the turn budget.
     """
     budgets = turn_budgets or TurnBudgets()
     start = clock()
@@ -469,7 +494,6 @@ def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
     # True once the runner has streamed stdout/stderr in the current response; only then is the (shorter) stall window
     # a meaningful liveness check. Reset by every artefact or tree progress event (a response boundary).
     streaming = False
-    silent_stall_seconds = max(budgets.stall_seconds, budgets.turn_seconds)
     seen_counts = [0, 0]
     seen_file = _file_state(watch_path)
     seen_tree = _tree_mtime(watch_tree)
@@ -521,12 +545,11 @@ def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
                         streaming = False
                     seen_tools = sample
 
-            stall_window = budgets.stall_seconds if streaming else silent_stall_seconds
-            if turn_observable and now - last_progress >= budgets.turn_seconds:
-                breach = BudgetBreach(stage, "turn", budgets.turn_seconds, now - last_progress)
-            elif budgets.stall_seconds > 0 and now - last_activity >= stall_window:
+            stall_window = silence_window(budgets, streaming)
+            breach = _turn_breach(budgets, turn_observable, now, last_progress, stage)
+            if breach is None and budgets.stall_seconds > 0 and now - last_activity >= stall_window:
                 breach = BudgetBreach(stage, "stall", stall_window, now - last_activity)
-            elif stage_timer is not None and stage_timer.breached():
+            if breach is None and stage_timer is not None and stage_timer.breached():
                 breach = stage_timer.breach()
             if breach is not None:
                 logger.warning("Stopping agent turn: %s", breach.describe())
@@ -670,11 +693,11 @@ def supervise_authoring_turn(  # noqa: PLR0913
             report.size,
             artefact_rel,
         )
-        if not report.complete and stage_timer.remaining() > 0:
+        if not report.complete and stage_timer.has_time_left():
             outcome.follow_up = "resume"
             run_follow_up(build_reprompt(report.missing_labels(), artefact_rel, partial=True, modify_code=modify_code))
             report = validate_artefact(artefact_path, spec)
-    elif report.exists and not report.complete and stage_timer.remaining() > 0:
+    elif report.exists and not report.complete and stage_timer.has_time_left():
         outcome.follow_up = "reprompt"
         logger.info("Re-prompting once for missing content: %s", report.describe())
         run_follow_up(build_reprompt(report.missing_labels(), artefact_rel, modify_code=modify_code))

@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from sandbox_executor.cli import main
 from sandbox_executor.knowledge.consult import ConsultEngine
+from sandbox_executor.knowledge.consult_filters import ConsultQuery, build_where
 from sandbox_executor.knowledge.index import ActionIndexDatabase
 from sandbox_executor.knowledge.promotion import (
     compute_beta_posterior,
@@ -155,6 +156,36 @@ def test_consult_multi_label_roundtrip(temp_dir: str) -> None:
     res_fts = engine.consult_records(query_text="component")
     assert res_fts.total_matched == 1
     assert res_fts.records[0]["action_id"] == "act-3"
+
+
+def test_consult_rejects_unknown_filter(temp_dir: str) -> None:
+    """A misspelt consult filter raises TypeError instead of silently matching everything."""
+    with pytest.raises(TypeError):
+        ConsultQuery(any_label=["db"])
+    engine = ConsultEngine(project_db_path=os.path.join(temp_dir, "index.db"), auto_sync_ledgers=[])
+    with pytest.raises(TypeError):
+        engine.consult_records(any_label=["db"])
+
+
+def test_consult_build_where_orders_clauses_and_params() -> None:
+    """Clauses join in filter order with their params aligned; no filter gives an empty WHERE."""
+    assert build_where(ConsultQuery()) == ("", [])
+
+    query = ConsultQuery(
+        all_labels=[" DB ", "backend", "db", " "],
+        any_labels=["ui"],
+        not_labels=["Frontend"],
+        query_text=' say "hi" ',
+        session_seen_ids=["rec-1"],
+    )
+    where_sql, params = build_where(query)
+
+    assert params == ["db", "backend", "db", 2, "ui", "frontend", '"say ""hi"""', "rec-1"]
+    assert where_sql.startswith("WHERE ")
+    assert where_sql.count(" AND ") == 4
+    assert where_sql.count("?") == len(params)
+    assert where_sql.index("HAVING COUNT(DISTINCT label)") < where_sql.index("NOT IN") < where_sql.index("MATCH")
+    assert where_sql.endswith("ar.record_id NOT IN (?)")
 
 
 def test_consult_latency_benchmark(temp_dir: str) -> None:

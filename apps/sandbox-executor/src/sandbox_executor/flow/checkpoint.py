@@ -173,10 +173,11 @@ class FlowCheckpoint:
         return cls.from_dict(data)
 
     @classmethod
-    def default_path(cls, repo_dir: Path | str, intent_slug: str, store: CheckpointStore | None = None) -> Path:
-        """Derive the canonical checkpoint path via the store."""
+    def default_path(cls, repo_dir: Path | str, key: str, store: CheckpointStore | None = None) -> Path:
+        """Derive the canonical checkpoint path via the store; ``key`` is the ``_checkpoint_names`` key (the branch for
+        a sub-intent, else the slug), not necessarily the bare intent slug."""
         s = store if store is not None else FileCheckpointStore()
-        return s.default_path(repo_dir, intent_slug)
+        return s.default_path(repo_dir, key)
 
     @staticmethod
     def migrate(data: dict[str, Any], target_version: int = CURRENT_CHECKPOINT_SCHEMA_VERSION) -> dict[str, Any]:

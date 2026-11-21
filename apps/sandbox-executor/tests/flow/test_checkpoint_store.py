@@ -32,8 +32,8 @@ class InMemoryCheckpointStore:
     def save(self, path: Path | str, data: dict[str, Any]) -> None:
         self.storage[str(path)] = json.loads(json.dumps(data))
 
-    def default_path(self, repo_dir: Path | str, intent_slug: str) -> Path:
-        return Path(repo_dir) / f"{intent_slug}.json"
+    def default_path(self, repo_dir: Path | str, key: str) -> Path:
+        return Path(repo_dir) / f"{key}.json"
 
 
 def test_checkpoint_store_protocol_compliance() -> None:

@@ -23,8 +23,8 @@ class CheckpointStore(Protocol):
         """Persist checkpoint data dictionary to path."""
         ...
 
-    def default_path(self, repo_dir: Path | str, intent_slug: str) -> Path:
-        """Derive the canonical checkpoint file path for an intent slug."""
+    def default_path(self, repo_dir: Path | str, key: str) -> Path:
+        """Derive the canonical checkpoint file path for a checkpoint key (sub-intent branch or intent slug)."""
         ...
 
 
@@ -49,6 +49,6 @@ class FileCheckpointStore:
             temp_name = tf.name
         os.replace(temp_name, str_path)
 
-    def default_path(self, repo_dir: Path | str, intent_slug: str) -> Path:
-        """Derive the canonical checkpoint file path for an intent slug."""
-        return Path(get_default_checkpoint_path(str(repo_dir), intent_slug))
+    def default_path(self, repo_dir: Path | str, key: str) -> Path:
+        """Derive the canonical checkpoint file path for a checkpoint key (sub-intent branch or intent slug)."""
+        return Path(get_default_checkpoint_path(str(repo_dir), key))

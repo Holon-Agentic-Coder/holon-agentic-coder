@@ -46,3 +46,17 @@ def test_spaced_and_quoted_paths_are_decoded():
         '--- "a/caf\\303\\251.py"\n+++ "b/caf\\303\\251.py"\n'
     )
     assert patch_paths(patch) == ["dir with space/a b.py", "café.py"]
+
+
+def test_a_quoted_mode_only_change_is_read_from_the_header():
+    patch = 'diff --git "a/caf\\303\\251.sh" "b/caf\\303\\251.sh"\nold mode 100644\nnew mode 100755\n'
+    assert patch_paths(patch) == ["café.sh"]
+
+
+def test_hunk_lines_that_look_like_path_headers_are_not_paths():
+    patch = (
+        "diff --git a/notes.md b/notes.md\n--- a/notes.md\n+++ b/notes.md\n@@ -1,3 +1,3 @@\n"
+        "--- a/phantom.py\n+++ b/ghost.py\n-rename from other.py\n context\n"
+        "diff --git a/next.py b/next.py\n--- a/next.py\n+++ b/next.py\n@@ -1 +1 @@\n-x\n+y\n"
+    )
+    assert patch_paths(patch) == ["notes.md", "next.py"]

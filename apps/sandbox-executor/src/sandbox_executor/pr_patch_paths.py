@@ -23,7 +23,13 @@ def _unquote(path: str) -> str:
 
 
 def _header_path(rest: str) -> str | None:
-    """The path of an unquoted ``a/P b/P`` header (a mode or binary change has no other path line), else None."""
+    """A plain or C-quoted ``a/P b/P`` header's path (a mode or binary change has no other path line), else None."""
+    if rest.startswith('"') and rest.endswith('"'):
+        sides = rest[1:-1].split('" "')
+        if len(sides) == 2 and sides[0].startswith("a/") and sides[1].startswith("b/"):
+            old, new = (_unquote(f'"{side}"')[2:] for side in sides)
+            return old if old == new else None
+        return None
     end = 2 + (len(rest) - 5) // 2  # "a/" + P + " b/" + P
     if rest.startswith("a/") and rest[end:].startswith(" b/") and rest[2:end] == rest[end + 3 :]:
         return rest[2:end]
@@ -41,11 +47,16 @@ def _quoted_prefix_path(line: str) -> str | None:
 def patch_paths(patch: str) -> list[str]:
     """Every path ``patch`` changes, in first-seen order: both sides of a rename and a deleted file included."""
     paths: dict[str, None] = {}
+    in_header = False  # path lines are read only between a file's "diff --git" and its first "@@" hunk
     for line in patch.splitlines():
         line = line.removesuffix("\t")  # git pads a path holding a space with a tab on the --- and +++ lines
+        path = None
         if line.startswith(_HEADER):
+            in_header = True
             path = _header_path(line[len(_HEADER) :])
-        else:
+        elif line.startswith("@@"):
+            in_header = False
+        elif in_header:
             prefix = next((p for p in _PATH_PREFIXES if line.startswith(p)), None)
             path = _unquote(line[len(prefix) :]) if prefix else _quoted_prefix_path(line)
         if path:

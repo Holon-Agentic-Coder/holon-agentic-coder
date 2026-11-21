@@ -29,7 +29,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
-from typing import Any
+from typing import Any, Self
 
 from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
 from sandbox_executor.agent_runner import get_runner, get_workspace_dir
@@ -1049,554 +1049,799 @@ def _is_patch_structure(line: str) -> bool:
     return line.startswith(("diff --git ", "@@ ", "From ", "index ", "--- ", "+++ ")) or line == "-- "
 
 
-def main() -> None:  # noqa: C901, PLR0912, PLR0915
-    repo_dir = None
-    exec_id: str | None = None
-    timestamp_str: str = datetime.now(UTC).isoformat()
+def _read_plan_row(repo_dir: str, plan_branch_prefix: str) -> dict[str, Any] | None:
+    """Return the newest plans.jsonl row of the plan, or None; unparseable lines are skipped with a warning."""
+    plans_file_path = os.path.join(repo_dir, "holon-knowledge/ledger/plans.jsonl")
+    plan_data = None
+    if os.path.exists(plans_file_path):
+        with open(plans_file_path) as f:
+            for line_no, line in enumerate(f, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    data = json.loads(line)
+                    # Keyed on the intent and the plan id together; the newest matching row wins, so a
+                    # superseding row the flow back-filled is read.
+                    if is_row_of_plan(data, plan_branch_prefix):
+                        plan_data = data
+                except Exception as e:
+                    print(f"Warning: skipping line {line_no} in plans.jsonl: {e}", file=sys.stderr)
+    return plan_data
 
-    if len(sys.argv) < 2:
-        print("Usage: executor.py <plan_branch> [agent_name] [model_name] [partial_execution_branch]")
-        sys.exit(1)
 
-    plan_branch = sys.argv[1]
-    # The host CLI always passes resolved values; no harness detection inside the container.
-    agent_name = sys.argv[2] if len(sys.argv) > 2 else FALLBACK_AGENT
-    model_name = sys.argv[3] if len(sys.argv) > 3 else default_model_for(agent_name)
-    # Passed by 'holon flow' only on a Stage 3 resume: a failed execution branch whose partial work to continue.
-    partial_branch = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else None
+def _read_intent_row(repo_dir: str, target_intent_branch: str) -> dict[str, Any] | None:
+    """Return the first intents.jsonl row of the intent branch, or None, skipping unparseable lines with a warning."""
+    intents_file_path = os.path.join(repo_dir, "holon-knowledge/ledger/intents.jsonl")
+    if not os.path.exists(intents_file_path):
+        return None
+    with open(intents_file_path) as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+                branch = data.get("branch")
+                if isinstance(branch, str) and (target_intent_branch.rstrip("/_") == branch.rstrip("/_")):
+                    return data
+            except Exception as e:
+                # Ignore invalid or corrupted lines in intents ledger
+                print(f"Warning: skipping unparseable line in intents.jsonl: {e}", file=sys.stderr)
+    return None
 
-    runner = get_runner(agent_name)
-    runner.validate()
 
-    plan_branch_prefix = plan_branch
-    if plan_branch_prefix.endswith("/_"):
-        plan_branch_prefix = plan_branch_prefix[:-2]
-
-    repo_dir = get_workspace_dir()
-    if not workspace_mounted():
-        print(
-            "Error: the host worktree is not mounted at the sandbox workspace; the executor never clones or fetches.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+def _parse_review_iteration(raw_iter: Any) -> int | None:
+    """The review iteration as an int, or None when it is absent or not a number."""
+    if raw_iter is None:
+        return None
     try:
-        repo = _get_repo(repo_dir)
-        # The host provisioned, fetched and mounted the worktree: no clone, fetch, reset or clean here.
-        mounted_plan_tip = validate_mounted_workspace(repo, repo_dir, plan_branch)
+        return int(raw_iter)
+    except (ValueError, TypeError):
+        return None
 
-        exec_seq = int(time.time())
-        exec_id = build_execution_id(
-            exec_seq, plan_branch_prefix, agent_name, model_name, taken=taken_child_ids(repo, plan_branch_prefix, "E")
+
+def _parse_review_finding_ids(raw_findings: Any) -> list[str] | None:
+    """The review finding ids from a comma, semicolon or whitespace separated string or a list, or None."""
+    if not raw_findings:
+        return None
+    if isinstance(raw_findings, str):
+        return [f.strip() for f in re.split(r"[,;\s]+", raw_findings) if f.strip()]
+    if isinstance(raw_findings, list):
+        return [str(f).strip() for f in raw_findings if str(f).strip()]
+    return None
+
+
+@dataclass(frozen=True)
+class ExecutionArgs:
+    """The executor command line: ``<plan_branch> [agent_name] [model_name] [partial_execution_branch]``.
+
+    The host CLI always passes resolved values; there is no harness detection inside the container.
+    """
+
+    plan_branch: str
+    agent_name: str
+    model_name: str
+    # Passed by 'holon flow' only on a Stage 3 resume: a failed execution branch whose partial work to continue.
+    partial_branch: str | None
+
+    @classmethod
+    def from_argv(cls, argv: list[str]) -> Self:
+        """Parse ``sys.argv`` (at least the plan branch): a missing agent or model takes its default, an empty fourth
+        argument means no partial branch."""
+        agent_name = argv[2] if len(argv) > 2 else FALLBACK_AGENT
+        return cls(
+            plan_branch=argv[1],
+            agent_name=agent_name,
+            model_name=argv[3] if len(argv) > 3 else default_model_for(agent_name),
+            partial_branch=argv[4] if len(argv) > 4 and argv[4] else None,
         )
-        exec_branch = f"{plan_branch_prefix}/{exec_id}/_"
+
+
+class ExecutionRun:
+    """One Stage 3 execution of a plan, in place in the host worktree mounted into the container.
+
+    The named steps run in a fixed order (see `run`) and share the run's state as attributes. They write the
+    ``executions.jsonl`` summary row (and, when action logging is on, its action records), commit the execution branch
+    locally for the host to push, and exit 1 on a failed run or `OVER_BUDGET_EXIT_CODE` on a refused plan.
+    """
+
+    def __init__(self, args: ExecutionArgs) -> None:
+        self.args = args
+        self.plan_branch = args.plan_branch
+        self.plan_branch_prefix = args.plan_branch[:-2] if args.plan_branch.endswith("/_") else args.plan_branch
+        self.runner: Any = None
+        self.repo_dir = ""
+        self.repo: GitRepository | None = None
+        self.exec_seq = 0
+        self.exec_id: str | None = None
+        self.exec_branch = ""
+        self.plan_tip: str | None = None
+        self.partial_head: str | None = None
+        self.timestamp_str = datetime.now(UTC).isoformat()
+        self.plan_data: dict[str, Any] = {}
+        self.plan_content = ""
+        self.intent_data: dict[str, Any] = {}
+        self.ledger_dir = ""
+        self.decision: DecompositionDecision | None = None
+        self.exec_entry: dict[str, Any] = {}
+        self.commit_msg = ""
+        # Set when a failed execution's code is salvaged; the host pushes that commit even with nothing else staged.
+        self.salvaged_head: str | None = None
+        # Set once the execution branch carries its commit; the host pushes it after this container returns.
+        self.branch_recorded = False
+        # The authoring turn and its outcome; only an executed (not decomposed or refused) plan sets these.
+        self.notes_rel = ""
+        self.notes_path = ""
+        self.stage_timer: StageTimer | None = None
+        self.agent_result: Any = None
+        self.notes_report: ArtefactReport | None = None
+        self.exec_status = ""
+        self.summary = ""
+        self.budget_breach: BudgetBreach | None = None
+        self.budget_reason = ""
+        self.action_origin = "initial_implementation"
+        self.review_severity: str | None = None
+        self.review_iteration: int | None = None
+        self.review_finding_ids: list[str] | None = None
+        self.agent_output_text = ""
+        self.agent_output_truncated = False
+        self.agent_output_bytes = 0
+        self.notes_valid = False
+        self.failure_reason: str | None = None
+        self.test_fields: dict[str, Any] = {}
+
+    @property
+    def executions_ledger(self) -> str:
+        """Absolute path of the ``executions.jsonl`` ledger in the worktree."""
+        return os.path.join(self.ledger_dir, "executions.jsonl")
+
+    def run(self) -> None:
+        """Run every step in order.
+
+        Exits 1 when the workspace is not mounted. Inside the mounted workspace an escaping exception is reported as
+        ``Execution failed: ...`` and re-raised, while a step's ``SystemExit`` passes through untouched; either way the
+        runner's ephemeral credentials are cleaned up.
+        """
+        self.runner = get_runner(self.args.agent_name)
+        self.runner.validate()
+        self.repo_dir = get_workspace_dir()
+        if not workspace_mounted():
+            print(
+                "Error: the host worktree is not mounted at the sandbox workspace; the executor never clones or "
+                "fetches.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        try:
+            self._run_steps()
+        except Exception as e:
+            print(f"Execution failed: {redact_agent_secrets(str(e))}", file=sys.stderr)
+            raise
+        finally:
+            if self.runner is not None and hasattr(self.runner, "cleanup_ephemeral_credentials"):
+                self.runner.cleanup_ephemeral_credentials()
+
+    def _run_steps(self) -> None:
+        """The steps inside the mounted workspace; a decomposed or refused plan skips the agent and its checks."""
+        self.prepare_workspace()
+        self.load_plan()
+        skip_agent = self.record_decision()
+        if not skip_agent:
+            self.run_turns()
+            self.check_work()
+            self.salvage()
+            self.record_ledger()
+            self.stage_changes()
+        if self.commit_steps():
+            self.push()
+        self._exit_with_status(skip_agent)
+
+    def prepare_workspace(self) -> None:
+        """Validate the mounted worktree, choose the execution id and check out the new execution branch.
+
+        A Stage 3 resume merges the partial branch's work into the new branch. The executor git identity is configured
+        before the agent runs, and stage conflicts are resolved. Never clones, fetches, resets or cleans.
+        """
+        self.repo = repo = _get_repo(self.repo_dir)
+        # The host provisioned, fetched and mounted the worktree: no clone, fetch, reset or clean here.
+        mounted_plan_tip = validate_mounted_workspace(repo, self.repo_dir, self.plan_branch)
+
+        prefix = self.plan_branch_prefix
+        self.exec_seq = int(time.time())
+        self.exec_id = build_execution_id(
+            self.exec_seq, prefix, self.args.agent_name, self.args.model_name, taken=taken_child_ids(repo, prefix, "E")
+        )
+        self.exec_branch = f"{prefix}/{self.exec_id}/_"
 
         # Plan branch tip: the base the empty-diff guard compares the agent's work against, even on a resume.
-        plan_tip = mounted_plan_tip
+        self.plan_tip = mounted_plan_tip
         merge = partial(
             merge_plan_tip,
             repo,
-            configure_identity=partial(_configure_executor_identity, repo_dir),
-            reconcile=partial(_reconcile_conflicted_merge, repo, repo_dir),
+            configure_identity=partial(_configure_executor_identity, self.repo_dir),
+            reconcile=partial(_reconcile_conflicted_merge, repo, self.repo_dir),
         )
-        resolve = partial(resolve_partial_head, repo, plan_tip=plan_tip, plan_branch_prefix=plan_branch_prefix)
-        partial_head = start_execution_branch(
-            repo, (plan_branch, exec_branch), partial_branch, plan_tip, (resolve, merge)
+        resolve = partial(resolve_partial_head, repo, plan_tip=self.plan_tip, plan_branch_prefix=prefix)
+        self.partial_head = start_execution_branch(
+            repo, (self.plan_branch, self.exec_branch), self.args.partial_branch, self.plan_tip, (resolve, merge)
         )
         # Before the agent runs, so the commits it makes step by step land on the execution branch.
-        _configure_executor_identity(repo_dir)
+        _configure_executor_identity(self.repo_dir)
 
         # Proactively check and resolve any stage conflicts
         from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 
-        check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch="main", stage_name="execute")
+        check_and_resolve_stage_conflicts(repo_dir=self.repo_dir, target_branch="main", stage_name="execute")
 
-        # Load plan data from plans.jsonl
-        plans_file_path = os.path.join(repo_dir, "holon-knowledge/ledger/plans.jsonl")
-        plan_data = None
-        if os.path.exists(plans_file_path):
-            with open(plans_file_path) as f:
-                for line_no, line in enumerate(f, start=1):
-                    if not line.strip():
-                        continue
-                    try:
-                        data = json.loads(line)
-                        # Keyed on the intent and the plan id together; the newest matching row wins, so a
-                        # superseding row the flow back-filled is read.
-                        if is_row_of_plan(data, plan_branch_prefix):
-                            plan_data = data
-                    except Exception as e:
-                        print(f"Warning: skipping line {line_no} in plans.jsonl: {e}", file=sys.stderr)
-
-        if not plan_data:
-            plan_data = {
-                "plan_id": plan_branch_prefix.split("/")[-1],
-                "intent_branch": plan_branch_prefix.rsplit("/", 1)[0] + "/_",
-                "agent": agent_name,
-                "model": model_name,
-                "entropy": 3.0,
-            }
+    def load_plan(self) -> None:
+        """Read the plan row, the plan markdown and the intent row, falling back to rows derived from the branch."""
+        prefix = self.plan_branch_prefix
+        self.plan_data = _read_plan_row(self.repo_dir, prefix) or {
+            "plan_id": prefix.split("/")[-1],
+            "intent_branch": prefix.rsplit("/", 1)[0] + "/_",
+            "agent": self.args.agent_name,
+            "model": self.args.model_name,
+            "entropy": 3.0,
+        }
 
         # Load plan markdown content if available
-        plan_content = ""
-        plan_file_rel = recorded_plan_file(plan_data.get("plan_file"), plan_branch_prefix)
-        if plan_file_rel and os.path.exists(os.path.join(repo_dir, plan_file_rel)):
-            with open(os.path.join(repo_dir, plan_file_rel)) as f:
-                plan_content = f.read()
+        plan_file_rel = recorded_plan_file(self.plan_data.get("plan_file"), prefix)
+        if plan_file_rel and os.path.exists(os.path.join(self.repo_dir, plan_file_rel)):
+            with open(os.path.join(self.repo_dir, plan_file_rel)) as f:
+                self.plan_content = f.read()
 
-        # Load intent data from intents.jsonl
-        intents_file_path = os.path.join(repo_dir, "holon-knowledge/ledger/intents.jsonl")
-        intent_data = None
-        target_intent_branch = plan_data.get("intent_branch", "")
-        if os.path.exists(intents_file_path):
-            with open(intents_file_path) as f:
-                for line in f:
-                    if not line.strip():
-                        continue
-                    try:
-                        data = json.loads(line)
-                        branch = data.get("branch")
-                        if isinstance(branch, str) and (target_intent_branch.rstrip("/_") == branch.rstrip("/_")):
-                            intent_data = data
-                            break
-                    except Exception as e:
-                        # Ignore invalid or corrupted lines in intents ledger
-                        print(f"Warning: skipping unparseable line in intents.jsonl: {e}", file=sys.stderr)
+        intent_branch = self.plan_data.get("intent_branch", "")
+        self.intent_data = _read_intent_row(self.repo_dir, intent_branch) or {
+            "branch": self.plan_data.get("intent_branch", "I-unknown")
+        }
 
-        if not intent_data:
-            intent_data = {"branch": plan_data.get("intent_branch", "I-unknown")}
+    def record_decision(self) -> bool:
+        """Decide whether the plan is executed; returns True when the agent is skipped.
 
-        timestamp_str = datetime.now(UTC).isoformat()
-        ledger_dir = os.path.join(repo_dir, "holon-knowledge/ledger")
-        os.makedirs(ledger_dir, exist_ok=True)
+        A decomposed or over-budget plan gets one ``executions.jsonl`` summary row (and a ``plan_decomposition`` action
+        record), staged for the commit. A corrupt recorded decision exits 1 before any row is written.
+        """
+        self.timestamp_str = datetime.now(UTC).isoformat()
+        self.ledger_dir = os.path.join(self.repo_dir, "holon-knowledge/ledger")
+        os.makedirs(self.ledger_dir, exist_ok=True)
 
-        decision = _recorded_decision(plan_data, plan_content, intent_data)
+        self.decision = _recorded_decision(self.plan_data, self.plan_content, self.intent_data)
         # Both non-execute outcomes record one summary row, commit it (the host pushes it) and skip the agent.
-        skip_agent = decision.decision != DECISION_EXECUTE
-        # Set when a failed execution's code is salvaged; the host pushes that commit even with nothing else staged.
-        salvaged_head: str | None = None
+        if self.decision.decision == DECISION_EXECUTE:
+            return False
+        self._record_non_execute_row(self.decision)
+        return True
 
-        if skip_agent:
-            exec_entry = {
-                "entry_type": "summary",
-                "execution_id": exec_id,
+    def _record_non_execute_row(self, decision: DecompositionDecision) -> None:
+        """Append the decomposed or over-budget summary row and its action record, and stage the ledger."""
+        self.exec_entry = {
+            "entry_type": "summary",
+            "execution_id": self.exec_id,
+            "plan_branch": self.plan_branch,
+            "agent": self.args.agent_name,
+            "agent_version": self.runner.get_version(),
+            "model": self.args.model_name,
+            "status": decision.decision,
+            "entropy": decision.entropy,
+            "entropy_budget": decision.entropy_budget,
+            "created_at": self.timestamp_str,
+        }
+        action_text = self._describe_non_execute_decision(decision)
+        with atomic_ledger_append(self.executions_ledger) as ef:
+            ef.write(json.dumps(self.exec_entry) + "\n")
+
+        if is_action_logging_enabled(self.intent_data):
+            with suppress_ledger_failures():
+                append_action_record(
+                    self.executions_ledger,
+                    ActionRecord(
+                        action_id=generate_action_id(),
+                        execution_id=self.exec_id,
+                        event_type="plan_decomposition",
+                        action=action_text,
+                        category="config",
+                        labels=["decomposition", "workflow"],
+                        target=self.plan_branch,
+                        outcome="success" if decision.decision == DECISION_DECOMPOSED else "failure",
+                        action_origin="initial_implementation",
+                    ),
+                )
+
+        self.repo.add("holon-knowledge/ledger/executions.jsonl")
+
+    def _describe_non_execute_decision(self, decision: DecompositionDecision) -> str:
+        """Fill the row's summary (and decomposition reference) and the commit message; returns the action text."""
+        plan_branch = self.plan_branch
+        if decision.decision == DECISION_DECOMPOSED:
+            count = len(decision.sub_intents)
+            print(f"The plan records an explicit sub-intent list of {count} item(s); referring to it.")
+            # The plan row is the only record of the list; this summary refers to it and never copies it.
+            self.exec_entry["plan_decision"] = {
+                "plan_id": self.plan_data.get("plan_id"),
                 "plan_branch": plan_branch,
-                "agent": agent_name,
-                "agent_version": runner.get_version(),
-                "model": model_name,
-                "status": decision.decision,
-                "entropy": decision.entropy,
-                "entropy_budget": decision.entropy_budget,
-                "created_at": timestamp_str,
+                "decision": DECISION_DECOMPOSED,
+                "sub_intent_count": count,
             }
-            if decision.decision == DECISION_DECOMPOSED:
-                count = len(decision.sub_intents)
-                print(f"The plan records an explicit sub-intent list of {count} item(s); referring to it.")
-                # The plan row is the only record of the list; this summary refers to it and never copies it.
-                exec_entry["plan_decision"] = {
-                    "plan_id": plan_data.get("plan_id"),
-                    "plan_branch": plan_branch,
-                    "decision": DECISION_DECOMPOSED,
-                    "sub_intent_count": count,
-                }
-                exec_entry["summary"] = (
-                    f"The plan {plan_branch} records {count} sub-intent(s); the flow runs each one through the full "
-                    "pipeline."
+            self.exec_entry["summary"] = (
+                f"The plan {plan_branch} records {count} sub-intent(s); the flow runs each one through the full "
+                "pipeline."
+            )
+            self.commit_msg = f"execute: the plan {plan_branch} records {count} sub-intent(s)"
+            return f"The plan {plan_branch} records {count} sub-intent(s)"
+        self.exec_entry["summary"] = (
+            f"Plan entropy {decision.entropy} exceeds the entropy budget {decision.entropy_budget} and the "
+            "plan lists no sub-intent list; the plan was not executed."
+        )
+        print(self.exec_entry["summary"])
+        self.commit_msg = f"execute: plan {plan_branch} is over its entropy budget"
+        return f"Refused over-budget plan {plan_branch}"
+
+    def run_turns(self) -> None:
+        """Run the supervised authoring turn and classify its outcome.
+
+        Records an unrecovered budget failure in ``executions.jsonl`` unconditionally, resolves the review provenance,
+        records the agent's ``command_execution`` action and captures the redacted, byte-bounded agent output.
+        """
+        print(f"Executing plan {self.plan_branch} using agent {self.args.agent_name}...")
+        self.notes_rel = f"executions/{self.exec_id}.md"
+        self.notes_path = os.path.join(self.repo_dir, self.notes_rel)
+        base_prompt = build_execution_prompt(
+            self.repo_dir,
+            self.plan_branch,
+            ExecutionPromptInputs(self.plan_data, self.plan_content, self.intent_data),
+            self.exec_id,
+        )
+        if self.args.partial_branch and self.partial_head:
+            base_prompt = f"{base_prompt}\n\n{continuation_note(self.args.partial_branch, self.partial_head)}"
+        full_prompt = f"{base_prompt}\n\n{execution_write_protocol(self.notes_rel)}"
+
+        budgets = load_budgets(os.environ)
+        self.stage_timer = StageTimer("execute", budgets.stage_seconds("execute"))
+        self._supervise_authoring(base_prompt, full_prompt, budgets.turn)
+        self._record_budget_failure()
+        self._resolve_action_provenance()
+        self._record_agent_action()
+        self._capture_agent_output()
+
+    def _supervise_authoring(self, base_prompt: str, full_prompt: str, turn_budgets: Any) -> None:
+        """Run the authoring turn from temporary prompt and intent files, removed afterwards, and classify it."""
+        prompt_file = os.path.join(tempfile.gettempdir(), f"exec_prompt-{self.exec_seq}.md")
+        intent_file = os.path.join(tempfile.gettempdir(), f"exec_intent-{self.exec_seq}.json")
+        runner, model_name = self.runner, self.args.model_name
+        try:
+            with open(prompt_file, "w") as f:
+                f.write(full_prompt)
+            with open(intent_file, "w") as f:
+                json.dump(self.intent_data, f)
+
+            outcome = supervise_authoring_turn(
+                lambda text: runner.build_cmd(model_name, prompt_file, intent_file, text),
+                full_prompt,
+                artefact_path=self.notes_path,
+                artefact_rel=self.notes_rel,
+                spec=EXECUTION_SPEC,
+                stage="execute",
+                turn_budgets=turn_budgets,
+                stage_timer=self.stage_timer,
+                run=run_turn,
+                modify_code=False,
+                context=base_prompt,
+                watch_tree=self.repo_dir,
+                cwd=self.repo_dir,
+                stdin_file=prompt_file if getattr(runner, "uses_stdin", False) else None,
+                prompt_file=prompt_file,
+            )
+            self.exec_status, self.summary, self.budget_breach, self.budget_reason = classify_execution_outcome(outcome)
+            # The implementation turn is the one classify_execution_outcome judges; follow-ups only touch the
+            # notes, so output size and error context describe the implementation turn.
+            self.agent_result = outcome.first
+            self.notes_report = outcome.report
+        finally:
+            for tf in (prompt_file, intent_file):
+                if os.path.exists(tf):
+                    with contextlib.suppress(Exception):
+                        os.remove(tf)
+
+    def _record_budget_failure(self) -> None:
+        """Append the ``act_budget`` failure row of an unrecovered budget breach; a write failure is only a warning."""
+        if self.budget_breach is None:
+            return
+        # Written unconditionally (not gated on action logging): an unrecovered budget failure must always be
+        # auditable, and this is the only write site, so there is exactly one record per stage failure.
+        try:
+            os.makedirs(self.ledger_dir, exist_ok=True)
+            record_budget_failure(
+                self.executions_ledger,
+                self.budget_breach,
+                record_id=self.exec_id,
+                target=self.notes_rel,
+                clock_elapsed=self.stage_timer.elapsed(),
+                reason=self.budget_reason,
+            )
+        except LedgerRewriteError:
+            raise
+        except Exception as e:
+            print(f"Warning: Failed to record budget failure: {redact_agent_secrets(str(e))}", file=sys.stderr)
+
+    def _resolve_action_provenance(self) -> None:
+        """Resolve the action origin and review provenance: environment, then intent row, else HEAD's trailers."""
+        intent_data = self.intent_data
+        self.action_origin = (
+            os.getenv("HOLON_ACTION_ORIGIN")
+            or (intent_data.get("action_origin") or intent_data.get("origin") if intent_data else None)
+            or "initial_implementation"
+        )
+        self.review_severity = os.getenv("HOLON_REVIEW_SEVERITY") or (
+            intent_data.get("review_severity") if intent_data else None
+        )
+        self.review_iteration = _parse_review_iteration(
+            os.getenv("HOLON_REVIEW_ITERATION") or (intent_data.get("review_iteration") if intent_data else None)
+        )
+        self.review_finding_ids = _parse_review_finding_ids(
+            os.getenv("HOLON_REVIEW_FINDING_IDS") or (intent_data.get("review_finding_ids") if intent_data else None)
+        )
+
+        if self.action_origin == "initial_implementation":
+            extracted_prov = extract_action_provenance_from_commit(repo_dir=self.repo_dir, commit_ref="HEAD")
+            if extracted_prov.get("action_origin") != "initial_implementation":
+                self.action_origin = extracted_prov["action_origin"]
+                self.review_severity = extracted_prov.get("review_severity") or self.review_severity
+                self.review_iteration = (
+                    extracted_prov.get("review_iteration") if self.review_iteration is None else self.review_iteration
                 )
-                action_text = f"The plan {plan_branch} records {count} sub-intent(s)"
-                commit_msg = f"execute: the plan {plan_branch} records {count} sub-intent(s)"
+                self.review_finding_ids = extracted_prov.get("review_finding_ids") or self.review_finding_ids
+
+    def _record_agent_action(self) -> None:
+        """Append the ``command_execution`` action record of the agent run, when action logging is on."""
+        if not is_action_logging_enabled(self.intent_data):
+            return
+        res = self.agent_result
+        agent_name, model_name = self.args.agent_name, self.args.model_name
+        with suppress_ledger_failures():
+            os.makedirs(self.ledger_dir, exist_ok=True)
+            append_action_record(
+                self.executions_ledger,
+                ActionRecord(
+                    action_id=generate_action_id(),
+                    execution_id=self.exec_id,
+                    event_type="command_execution",
+                    action=f"Executed agent {agent_name} with model {model_name}",
+                    category="code",
+                    labels=["agent", agent_name, "execution"],
+                    target=f"{agent_name}:{model_name}",
+                    outcome="success" if self.exec_status == "success" else "failure",
+                    error_context=(redact_then_truncate(res.stderr, 500) if res.returncode != 0 else None),
+                    action_origin=self.action_origin,
+                    review_severity=self.review_severity,
+                    review_iteration=self.review_iteration,
+                    review_finding_ids=self.review_finding_ids,
+                ),
+            )
+
+    def _capture_agent_output(self) -> None:
+        """Keep the implementation turn's combined output, redacted and byte-bounded; a failure keeps nothing."""
+        res = self.agent_result
+        try:
+            stdout = res.stdout or ""
+            stderr = res.stderr or ""
+            if stdout and stderr:
+                combined = f"{stdout}\n{stderr}" if not stdout.endswith("\n") else f"{stdout}{stderr}"
             else:
-                exec_entry["summary"] = (
-                    f"Plan entropy {decision.entropy} exceeds the entropy budget {decision.entropy_budget} and the "
-                    "plan lists no sub-intent list; the plan was not executed."
-                )
-                print(exec_entry["summary"])
-                action_text = f"Refused over-budget plan {plan_branch}"
-                commit_msg = f"execute: plan {plan_branch} is over its entropy budget"
-            with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
-                ef.write(json.dumps(exec_entry) + "\n")
+                combined = stdout or stderr
 
-            if is_action_logging_enabled(intent_data):
-                with suppress_ledger_failures():
-                    append_action_record(
-                        os.path.join(ledger_dir, "executions.jsonl"),
-                        ActionRecord(
-                            action_id=generate_action_id(),
-                            execution_id=exec_id,
-                            event_type="plan_decomposition",
-                            action=action_text,
-                            category="config",
-                            labels=["decomposition", "workflow"],
-                            target=plan_branch,
-                            outcome="success" if decision.decision == DECISION_DECOMPOSED else "failure",
-                            action_origin="initial_implementation",
-                        ),
-                    )
+            max_bytes = get_agent_log_byte_budget()
+            # Sweep, bound on a line boundary, redact, then refit: see prepare_agent_output_block
+            # for why that order and that final refit are both required.
+            self.agent_output_text, self.agent_output_truncated, _dropped = prepare_agent_output_block(
+                combined, max_bytes
+            )
+            self.agent_output_bytes = len(self.agent_output_text.encode("utf-8"))
+        except Exception as e:
+            print(f"Warning: Failed to capture agent output: {redact_agent_secrets(str(e))}", file=sys.stderr)
+            self.agent_output_text = ""
+            self.agent_output_truncated = False
+            self.agent_output_bytes = 0
 
-            repo.add("holon-knowledge/ledger/executions.jsonl")
+    def check_work(self) -> None:
+        """Check the agent's finished work before anything is staged.
+
+        Validates the execution notes, requires a usable git repository (raises when it cannot be repaired), applies the
+        empty-diff guard (which can turn a success into a failure), measures the project's tests and converges prettier
+        on changed markdown.
+        """
+        self.notes_valid = finalise_execution_notes(self.notes_path, self.notes_report)
+        self._require_healthy_repo()
+        self._guard_empty_diff()
+        # Measure the project's tests on the agent's finished work, before anything is staged or committed.
+        self.test_fields = measure_executor_tests(self.repo_dir, self.repo, self.exec_status)
+        self._converge_markdown()
+
+    def _require_healthy_repo(self) -> None:
+        """Repair benign git damage the agent left, or raise: the mounted worktree's git directory is never rebuilt."""
+        is_healthy, probe_err = _probe_git_repo(self.repo_dir)
+        if is_healthy:
+            return
+        repaired = _repair_git_repo(
+            self.repo_dir, probe_err, default_branch=self.exec_branch, plan_branch=self.plan_branch
+        )
+        if not repaired:
+            # Its .git pointer is read-only and the git directory is the host's: never re-initialise it.
+            raise RuntimeError(
+                f"the mounted worktree's git repository is unusable after the agent ran ({probe_err}); its "
+                "files are kept in the host worktree"
+            )
+
+    def _guard_empty_diff(self) -> None:
+        """Fail a successful run whose diff against the plan tip is empty or cannot be computed.
+
+        Empty-diff guard (shared with holon flow and the review loop): an agent run that changes nothing outside
+        holon-knowledge/ledger/, plans/ and executions/ is never recorded as success, and whatever it did change is
+        committed only as failed partial work. Fail closed when the diff cannot be computed.
+        """
+        if self.exec_status != "success":
+            return
+        from sandbox_executor.git import (
+            EMPTY_DIFF_FAILURE_REASON,
+            EMPTY_DIFF_STATUS,
+            empty_diff_summary,
+            has_effective_diff,
+        )
+
+        diff_base = self.plan_tip
+        try:
+            if not diff_base:
+                raise RuntimeError(f"tip of {self.plan_branch} is unknown")
+            effective = has_effective_diff(self.repo_dir, diff_base, git_runner=_entrypoint_git_runner(self.repo_dir))
+        except Exception as e:
+            self.exec_status = EMPTY_DIFF_STATUS
+            self.failure_reason = "diff_unverified"
+            self.summary = (
+                f"Could not verify the execution diff against {self.plan_branch}; treating it as a failure: "
+                f"{redact_agent_secrets(str(e))}"
+            )
         else:
-            print(f"Executing plan {plan_branch} using agent {agent_name}...")
-            prompt_file = os.path.join(tempfile.gettempdir(), f"exec_prompt-{exec_seq}.md")
-            intent_file = os.path.join(tempfile.gettempdir(), f"exec_intent-{exec_seq}.json")
-            notes_rel = f"executions/{exec_id}.md"
-            notes_path = os.path.join(repo_dir, notes_rel)
-            base_prompt = build_execution_prompt(
-                repo_dir, plan_branch, ExecutionPromptInputs(plan_data, plan_content, intent_data), exec_id
+            if not effective:
+                self.exec_status = EMPTY_DIFF_STATUS
+                self.failure_reason = EMPTY_DIFF_FAILURE_REASON
+                self.summary = empty_diff_summary(self.plan_branch)
+        if self.failure_reason:
+            print(f"Error: {self.summary}", file=sys.stderr)
+            report_empty_diff_output(self.failure_reason, self.agent_output_text, self.agent_output_bytes)
+
+    def _converge_markdown(self) -> None:
+        """Format modified and untracked markdown files with prettier; a formatting failure is only a warning."""
+        try:
+            if md_files := changed_markdown_files(self.repo):
+                converge_prettier(md_files, repo_dir=self.repo_dir)
+                if is_action_logging_enabled(self.intent_data):
+                    with suppress_ledger_failures():
+                        append_action_record(
+                            self.executions_ledger,
+                            ActionRecord(
+                                action_id=generate_action_id(),
+                                execution_id=self.exec_id,
+                                event_type="doc_update",
+                                action=f"Formatted {len(md_files)} markdown files with prettier",
+                                category="doc",
+                                labels=["formatting", "prettier"],
+                                target=", ".join(md_files[:3]),
+                                outcome="success",
+                                action_origin=self.action_origin,
+                            ),
+                        )
+        except LedgerRewriteError:
+            raise
+        except Exception as e:
+            print(f"Warning: Prettier formatting failed: {redact_agent_secrets(str(e))}", file=sys.stderr)
+
+    def salvage(self) -> None:
+        """Commit a failed run's code changes as ``partial work (failed)``, recording the partial head.
+
+        Salvage on failure, in two commits: first the agent's code changes ("partial work (failed)"), then the notes and
+        the ledger row ("failed for plan"), so a failed execution never loses its code.
+        """
+        if self.exec_status != "success" and self.plan_tip:
+            self.salvaged_head = _salvage_partial_work(
+                self.repo_dir, self.exec_id, self.plan_branch, self.notes_rel, self.plan_tip
             )
-            if partial_branch and partial_head:
-                base_prompt = f"{base_prompt}\n\n{continuation_note(partial_branch, partial_head)}"
-            full_prompt = f"{base_prompt}\n\n{execution_write_protocol(notes_rel)}"
 
-            budgets = load_budgets(os.environ)
-            stage_timer = StageTimer("execute", budgets.stage_seconds("execute"))
-            budget_breach: BudgetBreach | None = None
-            notes_report: ArtefactReport | None = None
-            try:
-                with open(prompt_file, "w") as f:
-                    f.write(full_prompt)
-                with open(intent_file, "w") as f:
-                    json.dump(intent_data, f)
+    def record_ledger(self) -> None:
+        """Append the execution's summary row to ``executions.jsonl`` and choose the commit message.
 
-                outcome = supervise_authoring_turn(
-                    lambda text: runner.build_cmd(model_name, prompt_file, intent_file, text),
-                    full_prompt,
-                    artefact_path=notes_path,
-                    artefact_rel=notes_rel,
-                    spec=EXECUTION_SPEC,
-                    stage="execute",
-                    turn_budgets=budgets.turn,
-                    stage_timer=stage_timer,
-                    run=run_turn,
-                    modify_code=False,
-                    context=base_prompt,
-                    watch_tree=repo_dir,
-                    cwd=repo_dir,
-                    stdin_file=prompt_file if getattr(runner, "uses_stdin", False) else None,
-                    prompt_file=prompt_file,
-                )
-                exec_status, summary, budget_breach, budget_reason = classify_execution_outcome(outcome)
-                # The implementation turn is the one classify_execution_outcome judges; follow-ups only touch the
-                # notes, so output size and error context describe the implementation turn.
-                res = outcome.first
-                notes_report = outcome.report
-            finally:
-                for tf in (prompt_file, intent_file):
-                    if os.path.exists(tf):
-                        with contextlib.suppress(Exception):
-                            os.remove(tf)
+        A write failure other than `LedgerRewriteError` is only a warning. Also appends the ``git_mutation`` action
+        record when action logging is on.
+        """
+        self.exec_entry = self._summary_row()
+        try:
+            os.makedirs(self.ledger_dir, exist_ok=True)
+            with atomic_ledger_append(self.executions_ledger) as ef:
+                ef.write(json.dumps(self.exec_entry) + "\n")
+        except LedgerRewriteError:
+            raise
+        except Exception as e:
+            print(f"Warning: Failed to write execution ledger row: {redact_agent_secrets(str(e))}", file=sys.stderr)
 
-            if budget_breach is not None:
-                # Written unconditionally (not gated on action logging): an unrecovered budget failure must always be
-                # auditable, and this is the only write site, so there is exactly one record per stage failure.
-                try:
-                    os.makedirs(ledger_dir, exist_ok=True)
-                    record_budget_failure(
-                        os.path.join(ledger_dir, "executions.jsonl"),
-                        budget_breach,
-                        record_id=exec_id,
-                        target=notes_rel,
-                        clock_elapsed=stage_timer.elapsed(),
-                        reason=budget_reason,
-                    )
-                except LedgerRewriteError:
-                    raise
-                except Exception as e:
-                    print(f"Warning: Failed to record budget failure: {redact_agent_secrets(str(e))}", file=sys.stderr)
+        self.commit_msg = self._execution_commit_message()
+        self._record_commit_action()
 
-            action_origin = (
-                os.getenv("HOLON_ACTION_ORIGIN")
-                or (intent_data.get("action_origin") or intent_data.get("origin") if intent_data else None)
-                or "initial_implementation"
-            )
-            review_severity = os.getenv("HOLON_REVIEW_SEVERITY") or (
-                intent_data.get("review_severity") if intent_data else None
-            )
-            review_iteration = None
-            raw_iter = os.getenv("HOLON_REVIEW_ITERATION") or (
-                intent_data.get("review_iteration") if intent_data else None
-            )
-            if raw_iter is not None:
-                try:
-                    review_iteration = int(raw_iter)
-                except (ValueError, TypeError):
-                    review_iteration = None
-            review_finding_ids = None
-            raw_findings = os.getenv("HOLON_REVIEW_FINDING_IDS") or (
-                intent_data.get("review_finding_ids") if intent_data else None
-            )
-            if raw_findings:
-                if isinstance(raw_findings, str):
-                    review_finding_ids = [f.strip() for f in re.split(r"[,;\s]+", raw_findings) if f.strip()]
-                elif isinstance(raw_findings, list):
-                    review_finding_ids = [str(f).strip() for f in raw_findings if str(f).strip()]
+    def _summary_row(self) -> dict[str, Any]:
+        """The execution's ``executions.jsonl`` summary row."""
+        stage_timer = self.stage_timer
+        exec_entry = {
+            "entry_type": "summary",
+            "execution_id": self.exec_id,
+            "plan_branch": self.plan_branch,
+            "agent": self.args.agent_name,
+            "agent_version": self.runner.get_version(),
+            "model": self.args.model_name,
+            "status": self.exec_status,
+            "summary": self.summary,
+            "created_at": self.timestamp_str,
+            "agent_output_truncated": self.agent_output_truncated,
+            "agent_output_bytes": self.agent_output_bytes,
+            "ledger_revision": 1,
+            "execution_notes": self.notes_rel,
+            "execution_notes_valid": self.notes_valid,
+            "elapsed_seconds": round(stage_timer.elapsed(), 1),
+            **stage_timer.ledger_fields(),
+        }
+        exec_entry.update(self.test_fields)
+        if self.failure_reason:
+            exec_entry["failure_reason"] = self.failure_reason
+        if self.salvaged_head:
+            exec_entry["partial_head"] = self.salvaged_head
+        return exec_entry
 
-            if action_origin == "initial_implementation":
-                extracted_prov = extract_action_provenance_from_commit(repo_dir=repo_dir, commit_ref="HEAD")
-                if extracted_prov.get("action_origin") != "initial_implementation":
-                    action_origin = extracted_prov["action_origin"]
-                    review_severity = extracted_prov.get("review_severity") or review_severity
-                    review_iteration = (
-                        extracted_prov.get("review_iteration") if review_iteration is None else review_iteration
-                    )
-                    review_finding_ids = extracted_prov.get("review_finding_ids") or review_finding_ids
-
-            if is_action_logging_enabled(intent_data):
-                with suppress_ledger_failures():
-                    os.makedirs(ledger_dir, exist_ok=True)
-                    append_action_record(
-                        os.path.join(ledger_dir, "executions.jsonl"),
-                        ActionRecord(
-                            action_id=generate_action_id(),
-                            execution_id=exec_id,
-                            event_type="command_execution",
-                            action=f"Executed agent {agent_name} with model {model_name}",
-                            category="code",
-                            labels=["agent", agent_name, "execution"],
-                            target=f"{agent_name}:{model_name}",
-                            outcome="success" if exec_status == "success" else "failure",
-                            error_context=(redact_then_truncate(res.stderr, 500) if res.returncode != 0 else None),
-                            action_origin=action_origin,
-                            review_severity=review_severity,
-                            review_iteration=review_iteration,
-                            review_finding_ids=review_finding_ids,
-                        ),
-                    )
-
-            agent_output_text = ""
-            agent_output_truncated = False
-            agent_output_bytes = 0
-
-            try:
-                stdout = res.stdout or ""
-                stderr = res.stderr or ""
-                if stdout and stderr:
-                    combined = f"{stdout}\n{stderr}" if not stdout.endswith("\n") else f"{stdout}{stderr}"
-                else:
-                    combined = stdout or stderr
-
-                max_bytes = get_agent_log_byte_budget()
-                # Sweep, bound on a line boundary, redact, then refit: see prepare_agent_output_block
-                # for why that order and that final refit are both required.
-                agent_output_text, agent_output_truncated, _dropped = prepare_agent_output_block(combined, max_bytes)
-                agent_output_bytes = len(agent_output_text.encode("utf-8"))
-            except Exception as e:
-                print(f"Warning: Failed to capture agent output: {redact_agent_secrets(str(e))}", file=sys.stderr)
-                agent_output_text = ""
-                agent_output_truncated = False
-                agent_output_bytes = 0
-
-            notes_valid = finalise_execution_notes(notes_path, notes_report)
-
-            is_healthy, probe_err = _probe_git_repo(repo_dir)
-            if not is_healthy:
-                repaired = _repair_git_repo(repo_dir, probe_err, default_branch=exec_branch, plan_branch=plan_branch)
-                if not repaired:
-                    # Its .git pointer is read-only and the git directory is the host's: never re-initialise it.
-                    raise RuntimeError(
-                        f"the mounted worktree's git repository is unusable after the agent ran ({probe_err}); its "
-                        "files are kept in the host worktree"
-                    )
-
-            # Empty-diff guard (shared with holon flow and the review loop): an agent run that changes nothing
-            # outside holon-knowledge/ledger/, plans/ and executions/ is never recorded as success, and whatever it did
-            # change is committed only as failed partial work. Fail closed when the diff cannot be computed.
-            failure_reason: str | None = None
-            if exec_status == "success":
-                from sandbox_executor.git import (
-                    EMPTY_DIFF_FAILURE_REASON,
-                    EMPTY_DIFF_STATUS,
-                    empty_diff_summary,
-                    has_effective_diff,
-                )
-
-                diff_base = plan_tip
-                try:
-                    if not diff_base:
-                        raise RuntimeError(f"tip of {plan_branch} is unknown")
-                    effective = has_effective_diff(repo_dir, diff_base, git_runner=_entrypoint_git_runner(repo_dir))
-                except Exception as e:
-                    exec_status = EMPTY_DIFF_STATUS
-                    failure_reason = "diff_unverified"
-                    summary = (
-                        f"Could not verify the execution diff against {plan_branch}; treating it as a failure: "
-                        f"{redact_agent_secrets(str(e))}"
-                    )
-                else:
-                    if not effective:
-                        exec_status = EMPTY_DIFF_STATUS
-                        failure_reason = EMPTY_DIFF_FAILURE_REASON
-                        summary = empty_diff_summary(plan_branch)
-                if failure_reason:
-                    print(f"Error: {summary}", file=sys.stderr)
-                    report_empty_diff_output(failure_reason, agent_output_text, agent_output_bytes)
-
-            # Measure the project's tests on the agent's finished work, before anything is staged or committed.
-            test_fields = measure_executor_tests(repo_dir, repo, exec_status)
-
-            # Format modified/untracked markdown files with prettier
-            try:
-                if md_files := changed_markdown_files(repo):
-                    converge_prettier(md_files, repo_dir=repo_dir)
-                    if is_action_logging_enabled(intent_data):
-                        with suppress_ledger_failures():
-                            append_action_record(
-                                os.path.join(ledger_dir, "executions.jsonl"),
-                                ActionRecord(
-                                    action_id=generate_action_id(),
-                                    execution_id=exec_id,
-                                    event_type="doc_update",
-                                    action=f"Formatted {len(md_files)} markdown files with prettier",
-                                    category="doc",
-                                    labels=["formatting", "prettier"],
-                                    target=", ".join(md_files[:3]),
-                                    outcome="success",
-                                    action_origin=action_origin,
-                                ),
-                            )
-            except LedgerRewriteError:
-                raise
-            except Exception as e:
-                print(f"Warning: Prettier formatting failed: {redact_agent_secrets(str(e))}", file=sys.stderr)
-
-            # Salvage on failure, in two commits: first the agent's code changes ("partial work (failed)"), then the
-            # notes and the ledger row ("failed for plan"), so a failed execution never loses its code.
-            if exec_status != "success" and plan_tip:
-                salvaged_head = _salvage_partial_work(repo_dir, exec_id, plan_branch, notes_rel, plan_tip)
-
-            exec_entry = {
-                "entry_type": "summary",
-                "execution_id": exec_id,
-                "plan_branch": plan_branch,
-                "agent": agent_name,
-                "agent_version": runner.get_version(),
-                "model": model_name,
-                "status": exec_status,
-                "summary": summary,
-                "created_at": timestamp_str,
-                "agent_output_truncated": agent_output_truncated,
-                "agent_output_bytes": agent_output_bytes,
-                "ledger_revision": 1,
-                "execution_notes": notes_rel,
-                "execution_notes_valid": notes_valid,
-                "elapsed_seconds": round(stage_timer.elapsed(), 1),
-                **stage_timer.ledger_fields(),
-            }
-            exec_entry.update(test_fields)
-            if failure_reason:
-                exec_entry["failure_reason"] = failure_reason
-            if salvaged_head:
-                exec_entry["partial_head"] = salvaged_head
-            try:
-                os.makedirs(ledger_dir, exist_ok=True)
-                with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
-                    ef.write(json.dumps(exec_entry) + "\n")
-            except LedgerRewriteError:
-                raise
-            except Exception as e:
-                print(f"Warning: Failed to write execution ledger row: {redact_agent_secrets(str(e))}", file=sys.stderr)
-
-            if exec_status == "success":
-                commit_msg = f"execute: {exec_id} completed for plan {plan_branch}"
-            else:
-                # The failure commit (ledger row and notes, after the partial-work commit) never reads as completed.
-                commit_msg = f"execute: {exec_id} failed for plan {plan_branch}"
-            trailers = format_commit_trailers(
-                action_origin=action_origin,
-                review_severity=review_severity,
-                review_iteration=review_iteration,
-                review_finding_ids=review_finding_ids,
-            )
-            if action_origin != "initial_implementation" or review_severity or review_iteration or review_finding_ids:
-                commit_msg = f"{commit_msg}\n\n{trailers}"
-
-            if is_action_logging_enabled(intent_data):
-                with suppress_ledger_failures():
-                    append_action_record(
-                        os.path.join(ledger_dir, "executions.jsonl"),
-                        ActionRecord(
-                            action_id=generate_action_id(),
-                            execution_id=exec_id,
-                            event_type="git_mutation",
-                            action=f"Committed execution changes: {commit_msg.splitlines()[0]}",
-                            category="code",
-                            labels=["commit", "git"],
-                            target="HEAD",
-                            outcome="success",
-                            action_origin=action_origin,
-                            review_severity=review_severity,
-                            review_iteration=review_iteration,
-                            review_finding_ids=review_finding_ids,
-                        ),
-                    )
-
-            add_targets = [
-                f for f in ("holon-knowledge/ledger/executions.jsonl",) if os.path.exists(os.path.join(repo_dir, f))
-            ]
-            if exec_status != "success" and os.path.exists(notes_path):
-                # The notes (partial or not) explain the failure; the code changes are already in the partial commit.
-                add_targets.append(notes_rel)
-            if add_targets:
-                repo.run(["add", *add_targets], check=False)
-            if exec_status == "success":
-                repo.add(all_files=True)
-            # Log staged changes to provide visibility
-            status_output = repo.run(["status", "--short"], check=False)
-            print("Current git repository status:")
-            print(redact_agent_secrets(status_output.stdout))
-
-        # Set once the execution branch carries its commit; the host pushes it after this container returns.
-        branch_recorded = False
-        staged_check = repo.diff(cached=True, quiet=True)
-        if staged_check.returncode != 0 or salvaged_head:
-            if staged_check.returncode != 0:
-                _configure_executor_identity(repo_dir)
-                repo.commit(commit_msg)
-            # Invariant: A branch with no parent must never be published, whatever the execution status.
-            can_record = repo.rev_parse("HEAD^", verify=True).returncode == 0
-            can_record = attribution_allows_publish(plan_tip, _entrypoint_git_runner(repo_dir)) and can_record
-            if can_record:
-                target_base = (
-                    os.getenv("HOLON_TARGET_BRANCH")
-                    or (intent_data.get("target_branch") if intent_data else None)
-                    or "main"
-                )
-                # The host fetched the target branch into the worktree before dispatch; no remote is read here.
-                sync_ok, sync_msg = sync_and_reconcile_pre_push(repo_dir, target_branch=target_base)
-                if not sync_ok:
-                    can_record = record_sync_failure(repo, exec_entry, exec_id, ledger_dir, sync_msg)
-
-            if can_record:
-                branch_recorded = True
-                print(f"Execution branch '{exec_branch}' successfully committed locally; the host pushes it.")
-            else:
-                print("Refusing to publish execution branch: safety or sync verification failed.", file=sys.stderr)
+    def _execution_commit_message(self) -> str:
+        """The ``completed`` or ``failed`` commit message, with provenance trailers on a review-driven execution."""
+        if self.exec_status == "success":
+            commit_msg = f"execute: {self.exec_id} completed for plan {self.plan_branch}"
         else:
+            # The failure commit (ledger row and notes, after the partial-work commit) never reads as completed.
+            commit_msg = f"execute: {self.exec_id} failed for plan {self.plan_branch}"
+        trailers = format_commit_trailers(
+            action_origin=self.action_origin,
+            review_severity=self.review_severity,
+            review_iteration=self.review_iteration,
+            review_finding_ids=self.review_finding_ids,
+        )
+        if (
+            self.action_origin != "initial_implementation"
+            or self.review_severity
+            or self.review_iteration
+            or self.review_finding_ids
+        ):
+            commit_msg = f"{commit_msg}\n\n{trailers}"
+        return commit_msg
+
+    def _record_commit_action(self) -> None:
+        """Append the ``git_mutation`` action record of the execution commit, when action logging is on."""
+        if not is_action_logging_enabled(self.intent_data):
+            return
+        with suppress_ledger_failures():
+            append_action_record(
+                self.executions_ledger,
+                ActionRecord(
+                    action_id=generate_action_id(),
+                    execution_id=self.exec_id,
+                    event_type="git_mutation",
+                    action=f"Committed execution changes: {self.commit_msg.splitlines()[0]}",
+                    category="code",
+                    labels=["commit", "git"],
+                    target="HEAD",
+                    outcome="success",
+                    action_origin=self.action_origin,
+                    review_severity=self.review_severity,
+                    review_iteration=self.review_iteration,
+                    review_finding_ids=self.review_finding_ids,
+                ),
+            )
+
+    def stage_changes(self) -> None:
+        """Stage the ledger, plus the notes on a failure or every change on a success, and print the status.
+
+        On a failure the code changes are already in the partial-work commit, so only the ledger and notes are staged.
+        """
+        repo_dir, repo = self.repo_dir, self.repo
+        add_targets = [
+            f for f in ("holon-knowledge/ledger/executions.jsonl",) if os.path.exists(os.path.join(repo_dir, f))
+        ]
+        if self.exec_status != "success" and os.path.exists(self.notes_path):
+            # The notes (partial or not) explain the failure; the code changes are already in the partial commit.
+            add_targets.append(self.notes_rel)
+        if add_targets:
+            repo.run(["add", *add_targets], check=False)
+        if self.exec_status == "success":
+            repo.add(all_files=True)
+        # Log staged changes to provide visibility
+        status_output = repo.run(["status", "--short"], check=False)
+        print("Current git repository status:")
+        print(redact_agent_secrets(status_output.stdout))
+
+    def commit_steps(self) -> bool:
+        """Commit whatever is staged; returns whether the execution branch has a commit to record.
+
+        A salvaged partial-work commit counts even when nothing else is staged; with neither, prints that nothing was
+        committed.
+        """
+        staged_check = self.repo.diff(cached=True, quiet=True)
+        if staged_check.returncode == 0 and not self.salvaged_head:
             print("No staged changes to commit.")
+            return False
+        if staged_check.returncode != 0:
+            _configure_executor_identity(self.repo_dir)
+            self.repo.commit(self.commit_msg)
+        return True
 
+    def pre_push_sync(self) -> bool:
+        """Merge the fetched target branch and reconcile ledger conflicts; returns whether the branch can be recorded.
+
+        A failed sync records a superseding failure row (see `record_sync_failure`), which decides the result. The host
+        fetched the target branch into the worktree before dispatch; no remote is read here.
+        """
+        intent_data = self.intent_data
+        target_base = (
+            os.getenv("HOLON_TARGET_BRANCH") or (intent_data.get("target_branch") if intent_data else None) or "main"
+        )
+        sync_ok, sync_msg = sync_and_reconcile_pre_push(self.repo_dir, target_branch=target_base)
+        if sync_ok:
+            return True
+        return record_sync_failure(self.repo, self.exec_entry, self.exec_id, self.ledger_dir, sync_msg)
+
+    def push(self) -> None:
+        """Record the committed execution branch for the host to push, after the safety and sync checks.
+
+        Invariant: a branch with no parent, or one the attribution guard rejects, is never published, whatever the
+        execution status. Sets `branch_recorded`; the container itself never pushes.
+        """
+        can_record = self.repo.rev_parse("HEAD^", verify=True).returncode == 0
+        can_record = attribution_allows_publish(self.plan_tip, _entrypoint_git_runner(self.repo_dir)) and can_record
+        if can_record:
+            can_record = self.pre_push_sync()
+
+        if can_record:
+            self.branch_recorded = True
+            print(f"Execution branch '{self.exec_branch}' successfully committed locally; the host pushes it.")
+        else:
+            print("Refusing to publish execution branch: safety or sync verification failed.", file=sys.stderr)
+
+    def _exit_with_status(self, skip_agent: bool) -> None:
+        """Print the stage summary and exit 1 on a budget breach; exit `OVER_BUDGET_EXIT_CODE` on a recorded refusal.
+
+        An over-budget refusal whose row no execution branch carries is a failed run and exits 1. Otherwise returns.
+        """
         if not skip_agent:
-            print(stage_timer.summary("ok" if exec_status == "success" else "failed"))
-            if budget_breach is not None:
+            print(self.stage_timer.summary("ok" if self.exec_status == "success" else "failed"))
+            if self.budget_breach is not None:
                 sys.exit(1)
-        elif decision.decision == DECISION_OVER_BUDGET:
-            refusal = (
-                f"Error: plan {plan_branch} was not executed: its entropy {decision.entropy} exceeds the entropy "
-                f"budget {decision.entropy_budget} and it lists no sub-intent list."
-            )
-            if not branch_recorded:
-                # No execution branch carries the over_budget row: a failed run, not a refusal.
-                print(f"{refusal} Its over_budget row was not recorded on an execution branch.", file=sys.stderr)
-                sys.exit(1)
-            print(
-                f"{refusal} Re-plan it within the budget, or add an explicit sub-intent list.",
-                file=sys.stderr,
-            )
-            sys.exit(OVER_BUDGET_EXIT_CODE)
+            return
+        decision = self.decision
+        if decision.decision != DECISION_OVER_BUDGET:
+            return
+        refusal = (
+            f"Error: plan {self.plan_branch} was not executed: its entropy {decision.entropy} exceeds the entropy "
+            f"budget {decision.entropy_budget} and it lists no sub-intent list."
+        )
+        if not self.branch_recorded:
+            # No execution branch carries the over_budget row: a failed run, not a refusal.
+            print(f"{refusal} Its over_budget row was not recorded on an execution branch.", file=sys.stderr)
+            sys.exit(1)
+        print(
+            f"{refusal} Re-plan it within the budget, or add an explicit sub-intent list.",
+            file=sys.stderr,
+        )
+        sys.exit(OVER_BUDGET_EXIT_CODE)
 
-    except Exception as e:
-        print(f"Execution failed: {redact_agent_secrets(str(e))}", file=sys.stderr)
-        raise
-    finally:
-        if "runner" in locals() and hasattr(runner, "cleanup_ephemeral_credentials"):
-            runner.cleanup_ephemeral_credentials()
+
+def main() -> None:
+    """Executor entry point: ``executor.py <plan_branch> [agent_name] [model_name] [partial_execution_branch]``.
+
+    Without a plan branch prints the usage line and exits 1; otherwise runs one `ExecutionRun`, whose exit codes it
+    passes through.
+    """
+    if len(sys.argv) < 2:
+        print("Usage: executor.py <plan_branch> [agent_name] [model_name] [partial_execution_branch]")
+        sys.exit(1)
+    ExecutionRun(ExecutionArgs.from_argv(sys.argv)).run()
 
 
 if __name__ == "__main__":

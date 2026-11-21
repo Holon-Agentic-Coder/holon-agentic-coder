@@ -1,0 +1,57 @@
+name: CI Durations
+
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Days of workflow runs to report"
+        required: false
+        default: "30"
+
+# Read-only: list runs and jobs, read the workflow files. The report never writes to the repository.
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: ci-durations
+  cancel-in-progress: true
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: CI Timing Gate (Start)
+        uses: ./.github/actions/ci-timing-gate
+        with:
+          phase: start
+
+      - name: Build the CI duration report
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The input reaches the shell through the environment only, never interpolated into the script.
+          DAYS: ${{ inputs.days || '30' }}
+        run: python3 -m scripts.ci_durations --days "${DAYS}" --out-dir ci-durations
+
+      - name: Upload the CI duration report
+        if: always() && hashFiles('ci-durations/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-durations
+          path: ci-durations/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: CI Timing Gate (Check <= 10 min)
+        if: always()
+        uses: ./.github/actions/ci-timing-gate
+        with:
+          phase: check
+          max-seconds: 600

@@ -121,10 +121,7 @@ _CLEAN_GIT_ENV_VARS: tuple[str, ...] = (
 
 def _get_clean_git_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     """Returns a clean environment dictionary with leaked git variables removed."""
-    env = dict(os.environ if base_env is None else base_env)
-    for var in _CLEAN_GIT_ENV_VARS:
-        env.pop(var, None)
-    return env
+    return {k: v for k, v in (os.environ if base_env is None else base_env).items() if k not in _CLEAN_GIT_ENV_VARS}
 
 
 def is_action_logging_enabled(intent_data: dict[str, Any] | None = None) -> bool:
@@ -134,8 +131,8 @@ def is_action_logging_enabled(intent_data: dict[str, Any] | None = None) -> bool
         return flag.lower() in ("1", "true", "yes", "on")
     if os.getenv("HOLON_ACTION_ORIGIN") or os.getenv("HOLON_REVIEW_SEVERITY"):
         return True
-    if intent_data and any(
-        k in intent_data for k in ("action_origin", "review_severity", "review_iteration", "review_finding_ids")
+    if intent_data and (
+        intent_data.keys() & {"action_origin", "review_severity", "review_iteration", "review_finding_ids"}
     ):
         return True
     return "PYTEST_CURRENT_TEST" not in os.environ
@@ -394,38 +391,6 @@ def sanitize_agent_output(raw_output: str, max_bytes: int = 65536) -> tuple[str,
     decoded_tail = tail_bytes.decode("utf-8", errors="replace")
     marker = _marker_line(dropped_bytes, len(tail_bytes), _marker_reason(cause))
     return marker + decoded_tail, True, dropped_bytes
-
-
-EMPTY_DIFF_EXCERPT_CHARS: int = 500
-
-
-def format_empty_diff_excerpt(agent_output_text: str, agent_output_bytes: int) -> str | None:
-    """Format a bounded, redacted tail excerpt of agent output for empty_diff diagnostics.
-
-    Returns None if agent_output_text is empty or whitespace-only. Otherwise, extracts
-    up to the last EMPTY_DIFF_EXCERPT_CHARS characters, redacts any secrets defensively,
-    and returns a header with byte count followed by the excerpt.
-    """
-    if not agent_output_text or not agent_output_text.strip():
-        return None
-
-    tail = agent_output_text[-EMPTY_DIFF_EXCERPT_CHARS:]
-    redacted_tail = redact_agent_secrets(tail)
-    return f"Agent output tail (last {len(redacted_tail)} of {agent_output_bytes} bytes, redacted):\n{redacted_tail}"
-
-
-def report_empty_diff_output(
-    failure_reason: str | None,
-    agent_output_text: str,
-    agent_output_bytes: int,
-) -> None:
-    """Print bounded, redacted agent output excerpt to stderr when failure_reason is empty_diff."""
-    from sandbox_executor.git import EMPTY_DIFF_FAILURE_REASON
-
-    if failure_reason == EMPTY_DIFF_FAILURE_REASON:
-        excerpt = format_empty_diff_excerpt(agent_output_text, agent_output_bytes)
-        if excerpt:
-            print(excerpt, file=sys.stderr)
 
 
 _FALLBACK_SAFE_DIRECTORIES: set[str] = set()
@@ -1434,6 +1399,8 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         summary = empty_diff_summary(plan_branch)
                 if failure_reason:
                     print(f"Error: {summary}", file=sys.stderr)
+                    from sandbox_executor.entrypoint.empty_diff_excerpt import report_empty_diff_output
+
                     report_empty_diff_output(failure_reason, agent_output_text, agent_output_bytes)
 
             # Measure the project's tests on the agent's finished work, before anything is staged or committed.
@@ -1441,8 +1408,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
             # Format modified/untracked markdown files with prettier
             try:
-                md_files = changed_markdown_files(repo)
-                if md_files:
+                if md_files := changed_markdown_files(repo):
                     converge_prettier(md_files, repo_dir=repo_dir)
                     if is_action_logging_enabled(intent_data):
                         with suppress_ledger_failures():

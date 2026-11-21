@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sandbox_executor.budgets import ENV_REPLAN_FEEDBACK
-from sandbox_executor.entrypoint.planner import load_metrics_config, parse_metrics
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _dispatch_role, _stage_failure
 from sandbox_executor.flow.git_refs import (
@@ -22,17 +20,140 @@ from sandbox_executor.flow.git_refs import (
 )
 from sandbox_executor.flow.host_remote import publish_new_child_branches, remote_error
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
+from sandbox_executor.flow.stages.plan_support import (
+    dry_run_plan_result,
+    plan_id_of,
+    plan_metrics,
+    replan_feedback_env,
+)
+from sandbox_executor.flow.stages.stage_support import consult_knowledge, stage_success
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
-from sandbox_executor.knowledge import ConsultEngine
 from sandbox_executor.ledger import build_plan_id
 from sandbox_executor.naming import MissingTickerError, model_code, ticker_for
 from sandbox_executor.plan_attempt import settle_failed_plan_attempt, snapshot_plan_attempt
-from sandbox_executor.plan_paths import is_row_of_plan, plan_file_rel, recorded_plan_file
+from sandbox_executor.plan_paths import is_row_of_plan, recorded_plan_file
 
 logger = logging.getLogger(__name__)
 
 
-def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911, PLR0912, PLR0915
+@dataclass
+class PlanStage:
+    """Stage 2 for one flow: the intent branch's prefix and the plan the planner produced, one method per step."""
+
+    context: FlowContext
+    start_time: str
+    intent_prefix: str
+    repo_dir: str
+    preferred_suffix: str = ""
+    existing_plans: set[str] = field(default_factory=set)
+    plan_branch: str = ""
+    plan_row: dict[str, Any] = field(default_factory=dict)
+    plan_file: str = ""
+    plan_content: str = ""
+
+    @property
+    def no_plan_error(self) -> str:
+        """The error when no planner produced a plan file: the flow never writes a plan itself."""
+        return (
+            f"Plan stage failed: no planner agent produced plans/P-*.md on a plan branch under "
+            f"{self.context.intent_branch}; refusing to fabricate a plan."
+        )
+
+    def fail(self, message: str, **payload: Any) -> StageResult:
+        """Record and return the FAILED Stage 2 result."""
+        return _stage_failure(self.context, FlowStage.PLAN, self.start_time, message, **payload)
+
+    def resolve_suffix(self) -> StageResult | None:
+        """Name the suffix the new plan branch ends in; a ticker-less runner fails before dispatch."""
+        try:
+            self.preferred_suffix = f"-{ticker_for(self.context.agent)}-{model_code(self.context.model)}"
+        except MissingTickerError as exc:
+            return self.fail(f"Plan stage failed: {exc}")
+        return None
+
+    def produce(self) -> StageResult | None:
+        """Run the planner and read back its plan: the first failing step's result, or None."""
+        for step in (self.prepare, self.dispatch_planner, self.adopt_plan_branch, self.read_plan):
+            failure = step()
+            if failure is not None:
+                return failure
+        return None
+
+    def prepare(self) -> StageResult | None:
+        """Refuse a skip-push run, resolve stage conflicts and snapshot the plan branches already on origin."""
+        if self.context.skip_push:
+            return self.fail(SKIP_PUSH_DISPATCH_ERROR)
+        target_branch = self.context.intent_data.get("target_branch", "main")
+        check_and_resolve_stage_conflicts(
+            self.repo_dir, target_branch=target_branch, stage_name="plan", branch=self.context.intent_branch
+        )
+        existing_plans = _snapshot_child_branches(self.repo_dir, self.intent_prefix, "P")
+        if existing_plans is None:
+            return self.fail(
+                f"Plan stage failed: could not fetch origin branches under {self.intent_prefix} before dispatching "
+                "the planner."
+            )
+        self.existing_plans = existing_plans
+        return None
+
+    def dispatch_planner(self) -> StageResult | None:
+        """Dispatch the planner container and publish every plan branch it committed."""
+        context = self.context
+        replan_feedback = str(context.intent_data.get("replan_feedback") or "").strip()
+        with replan_feedback_env(replan_feedback):
+            attempt_before = snapshot_plan_attempt(self.repo_dir, context.intent_branch)
+            exit_code = _dispatch_role(context, "planner", [context.intent_branch, context.agent, context.model])
+        # The host pushes every plan branch the container committed, a failed planner's salvage commit included.
+        push_error = remote_error(
+            publish_new_child_branches, self.repo_dir, self.intent_prefix, "P", self.existing_plans
+        )
+        if exit_code != 0:
+            # A failed attempt leaves no untracked plan file, and its own failure detail (an API error) names the cause.
+            detail = settle_failed_plan_attempt(self.repo_dir, context.intent_branch, attempt_before)
+            cause = f"Plan stage failed: {detail}" if detail else self.no_plan_error
+            return self.fail(f"{cause} (planner agent exited with code {exit_code})")
+        if push_error is not None:
+            return self.fail(f"Plan stage failed: {push_error}")
+        return None
+
+    def adopt_plan_branch(self) -> StageResult | None:
+        """Fetch origin and adopt the one new plan branch the planner pushed."""
+        fetch_error = _fetch_branch_prefix_error(self.repo_dir, self.intent_prefix)
+        if fetch_error is not None:
+            return self.fail(
+                f"Plan stage failed: the planner agent exited 0 but origin branches under {self.intent_prefix} "
+                f"could not be fetched to adopt its plan branch: {fetch_error}"
+            )
+        plan_branch, ambiguity = _discover_child_branch(
+            self.repo_dir,
+            self.intent_prefix,
+            "P",
+            before=self.existing_plans,
+            preferred_suffix=self.preferred_suffix,
+        )
+        if ambiguity:
+            return self.fail(f"Plan stage failed: {ambiguity}.")
+        if not plan_branch:
+            return self.fail(self.no_plan_error)
+        self.plan_branch = plan_branch
+        return None
+
+    def read_plan(self) -> StageResult | None:
+        """Read the plan branch's newest plan row and the plan file it records."""
+        plan_ref = f"refs/remotes/origin/{self.plan_branch}"
+        plan_rows = [
+            r for r in _read_ledger_rows(self.repo_dir, plan_ref, "plans.jsonl") if is_row_of_plan(r, self.plan_branch)
+        ]
+        self.plan_row = plan_rows[-1] if plan_rows else {}
+        self.plan_file = recorded_plan_file(self.plan_row.get("plan_file"), self.plan_branch)
+        plan_content = _git_show_text(self.repo_dir, plan_ref, self.plan_file)
+        if plan_content is None:
+            return self.fail(self.no_plan_error, plan_branch=self.plan_branch)
+        self.plan_content = plan_content
+        return None
+
+
+def run_plan_stage(context: FlowContext) -> StageResult:
     """Execute Stage 2: dispatch the planner agent and adopt the plan branch it committed.
 
     The host fetches the intent branch; the planner container (the same one 'holon plan' launches) authors
@@ -49,161 +170,35 @@ def run_plan_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911,
         return StageResult(stage=FlowStage.PLAN, status=StageStatus.FAILED, start_time=start_time, error=err)
 
     intent_prefix = context.intent_branch.removesuffix("/_").rstrip("/")
-    repo_dir = context.target_worktree
-    try:
-        # The new plan branch ends in the runner's ticker and model code; a ticker-less runner fails before dispatch.
-        preferred_suffix = f"-{ticker_for(context.agent)}-{model_code(context.model)}"
-    except MissingTickerError as exc:
-        return _stage_failure(context, FlowStage.PLAN, start_time, f"Plan stage failed: {exc}")
-
+    stage = PlanStage(context, start_time, intent_prefix, context.target_worktree)
+    failure = stage.resolve_suffix()
+    if failure is not None:
+        return failure
     # Pre-planning wisdom consult
-    consulted_ids: list[str] = []
-    try:
-        db_path = os.path.join(repo_dir, "holon-knowledge/.index/action_index.db")
-        consult_engine = ConsultEngine(project_db_path=db_path)
-        intent_labels = context.intent_data.get("labels", [])
-        if isinstance(intent_labels, str):
-            intent_labels = [lbl.strip() for lbl in intent_labels.split(",") if lbl.strip()]
-        consult_res = consult_engine.consult_records(any_labels=intent_labels, top_k=6, max_tokens=1200)
-        consulted_ids = consult_res.consulted_ids
-        if consulted_ids:
-            context.log(f"Consulted {len(consulted_ids)} knowledge records for plan: {consulted_ids}")
-    except Exception as e:
-        logger.debug("Non-fatal consult failure during plan stage: %s", e)
-
+    consulted_ids = consult_knowledge(context, context.intent_data, match="any", purpose="plan", log=logger)
     if context.dry_run:
         # Validation only: name the branch the planner would create, without dispatching or writing anything.
         plan_id = build_plan_id(int(time.time()), intent_prefix, context.agent, context.model)
-        plan_branch = f"{intent_prefix}/{plan_id}/_"
-        context.plan_branch = plan_branch
-        context.log(f"Stage 2 (dry run): planner dispatch skipped; plan branch would be '{plan_branch}'.")
-        result = StageResult(
-            stage=FlowStage.PLAN,
-            status=StageStatus.SUCCESS,
-            start_time=start_time,
-            end_time=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            payload={
-                "plan_id": plan_id,
-                "plan_branch": plan_branch,
-                "plan_file": plan_file_rel(intent_prefix, plan_id),
-                "metrics": {},
-                "consulted_knowledge_ids": consulted_ids,
-                "dry_run": True,
-            },
-        )
-        context.stage_results["plan"] = result
-        return result
+        return dry_run_plan_result(context, start_time, f"{intent_prefix}/{plan_id}/_", consulted_ids)
+    failure = stage.produce()
+    if failure is not None:
+        return failure
 
-    no_plan_error = (
-        f"Plan stage failed: no planner agent produced plans/P-*.md on a plan branch under "
-        f"{context.intent_branch}; refusing to fabricate a plan."
-    )
-    if context.skip_push:
-        return _stage_failure(context, FlowStage.PLAN, start_time, SKIP_PUSH_DISPATCH_ERROR)
-
-    target_branch = context.intent_data.get("target_branch", "main")
-    check_and_resolve_stage_conflicts(
-        repo_dir, target_branch=target_branch, stage_name="plan", branch=context.intent_branch
-    )
-
-    existing_plans = _snapshot_child_branches(repo_dir, intent_prefix, "P")
-    if existing_plans is None:
-        return _stage_failure(
-            context,
-            FlowStage.PLAN,
-            start_time,
-            f"Plan stage failed: could not fetch origin branches under {intent_prefix} before dispatching the planner.",
-        )
-    replan_feedback = str(context.intent_data.get("replan_feedback") or "").strip()
-    previous_feedback_env = os.environ.get(ENV_REPLAN_FEEDBACK)
-    if replan_feedback:
-        # Forwarded into the planner container like every HOLON_* variable; never written to a ledger.
-        os.environ[ENV_REPLAN_FEEDBACK] = replan_feedback
-    attempt_before = snapshot_plan_attempt(repo_dir, context.intent_branch)
-    try:
-        exit_code = _dispatch_role(context, "planner", [context.intent_branch, context.agent, context.model])
-    finally:
-        if replan_feedback:
-            if previous_feedback_env is None:
-                os.environ.pop(ENV_REPLAN_FEEDBACK, None)
-            else:
-                os.environ[ENV_REPLAN_FEEDBACK] = previous_feedback_env
-    # The host pushes every plan branch the container committed, a failed planner's salvage commit included.
-    push_error = remote_error(publish_new_child_branches, repo_dir, intent_prefix, "P", existing_plans)
-    if exit_code != 0:
-        # A failed attempt leaves no untracked plan file, and its own failure detail (an API error) names the cause.
-        detail = settle_failed_plan_attempt(repo_dir, context.intent_branch, attempt_before)
-        cause = f"Plan stage failed: {detail}" if detail else no_plan_error
-        return _stage_failure(
-            context, FlowStage.PLAN, start_time, f"{cause} (planner agent exited with code {exit_code})"
-        )
-    if push_error is not None:
-        return _stage_failure(context, FlowStage.PLAN, start_time, f"Plan stage failed: {push_error}")
-    fetch_error = _fetch_branch_prefix_error(repo_dir, intent_prefix)
-    if fetch_error is not None:
-        return _stage_failure(
-            context,
-            FlowStage.PLAN,
-            start_time,
-            f"Plan stage failed: the planner agent exited 0 but origin branches under {intent_prefix} "
-            f"could not be fetched to adopt its plan branch: {fetch_error}",
-        )
-    plan_branch, ambiguity = _discover_child_branch(
-        repo_dir,
-        intent_prefix,
-        "P",
-        before=existing_plans,
-        preferred_suffix=preferred_suffix,
-    )
-    if ambiguity:
-        return _stage_failure(context, FlowStage.PLAN, start_time, f"Plan stage failed: {ambiguity}.")
-    if not plan_branch:
-        return _stage_failure(context, FlowStage.PLAN, start_time, no_plan_error)
-
-    plan_id = plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
-    plan_ref = f"refs/remotes/origin/{plan_branch}"
-    plan_rows = [r for r in _read_ledger_rows(repo_dir, plan_ref, "plans.jsonl") if is_row_of_plan(r, plan_branch)]
-    plan_row = plan_rows[-1] if plan_rows else {}
-    plan_md_rel = recorded_plan_file(plan_row.get("plan_file"), plan_branch)
-    plan_content = _git_show_text(repo_dir, plan_ref, plan_md_rel)
-    if plan_content is None:
-        return _stage_failure(context, FlowStage.PLAN, start_time, no_plan_error, plan_branch=plan_branch)
-
-    # Metrics are read back for the stage payload only; the planner's plans.jsonl row is authoritative.
-    metrics: dict[str, Any] = dict(parse_metrics(plan_content))
-    for key in ("p_success", "entropy", "impact", "cost", "learning_value", "ev"):
-        if isinstance(plan_row.get(key), int | float):
-            metrics[key] = float(plan_row[key])
-    if "ev" not in metrics and all(k in metrics for k in ("p_success", "impact", "learning_value", "entropy", "cost")):
-        ev_cfg = load_metrics_config(repo_dir)
-        metrics["ev"] = (
-            metrics["p_success"] * metrics["impact"]
-            + ev_cfg.get("mu", 0.5) * metrics["learning_value"]
-            - ev_cfg.get("lambda", 0.3) * metrics["entropy"]
-            - metrics["cost"]
-        )
-
-    context.plan_branch = plan_branch
-    _track_local_branch(context, plan_branch)
-
-    end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    metrics = plan_metrics(stage.repo_dir, stage.plan_content, stage.plan_row)
+    context.plan_branch = stage.plan_branch
+    _track_local_branch(context, stage.plan_branch)
     ev_text = f"{metrics['ev']:.2f}" if isinstance(metrics.get("ev"), int | float) else "n/a"
-    context.log(f"Stage 2 completed: planner agent produced '{plan_md_rel}' on '{plan_branch}' (EV={ev_text}).")
-    result = StageResult(
-        stage=FlowStage.PLAN,
-        status=StageStatus.SUCCESS,
-        start_time=start_time,
-        end_time=end_time,
-        payload={
-            "plan_id": plan_id,
-            "plan_branch": plan_branch,
-            "plan_file": plan_md_rel,
-            "metrics": metrics,
-            "consulted_knowledge_ids": consulted_ids,
-        },
+    context.log(
+        f"Stage 2 completed: planner agent produced '{stage.plan_file}' on '{stage.plan_branch}' (EV={ev_text})."
     )
-    context.stage_results["plan"] = result
-    return result
+    payload = {
+        "plan_id": plan_id_of(stage.plan_branch),
+        "plan_branch": stage.plan_branch,
+        "plan_file": stage.plan_file,
+        "metrics": metrics,
+        "consulted_knowledge_ids": consulted_ids,
+    }
+    return stage_success(context, FlowStage.PLAN, "plan", start_time, payload)
 
 
 def _format_entropy(value: Any) -> str:

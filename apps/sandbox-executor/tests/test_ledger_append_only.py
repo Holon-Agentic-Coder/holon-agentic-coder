@@ -496,7 +496,7 @@ def _run_executor_main(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, plan: dict[str, Any] | None = None, status: str = "tip-sha\n"
 ) -> list[list[str]]:
     """Run the executor entrypoint with faked git and agent until it raises; return every command it ran."""
-    from tests.test_executor import _cuts_branch, _turn_via_run_cmd, _validate_stub
+    from tests.executor_fixtures import _cuts_branch, _turn_via_run_cmd, _validate_stub
 
     commands: list[list[str]] = []
     plan_row = plan or {"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 2.0}

@@ -45,24 +45,59 @@ def _collect_module_imports(source: str, package: str = ENTRYPOINT_PACKAGE) -> l
     return imports
 
 
+def _entrypoint_sources() -> list[Path]:
+    """Every entrypoint source file, those of entrypoint subpackages (such as ``executor/``) included."""
+    return sorted(path for path in ENTRYPOINT_DIR.rglob("*.py") if "__pycache__" not in path.parts)
+
+
+def _owning_package(py_file: Path) -> str:
+    """The package a source file's relative imports resolve against: its own directory (``__init__`` included)."""
+    return ".".join(py_file.parent.relative_to(SRC_DIR).parts)
+
+
+def _entrypoint_module_names() -> list[str]:
+    """The importable entrypoint modules, without the entrypoint package itself and without ``__main__`` modules."""
+    names: list[str] = []
+    for path in _entrypoint_sources():
+        if path.stem == "__main__":
+            continue  # importing it would run the entrypoint
+        module = _owning_package(path) if path.stem == "__init__" else f"{_owning_package(path)}.{path.stem}"
+        if module != ENTRYPOINT_PACKAGE:
+            names.append(module)
+    return names
+
+
+def test_entrypoint_scan_covers_the_executor_package() -> None:
+    """The recursive scan reaches the executor package, so the import guards cannot quietly scan nothing there."""
+    scanned = {path.relative_to(ENTRYPOINT_DIR).as_posix() for path in _entrypoint_sources()}
+    assert {"executor/__init__.py", "executor/__main__.py", "executor/run.py"} <= scanned
+    assert _owning_package(ENTRYPOINT_DIR / "executor" / "run.py") == "sandbox_executor.entrypoint.executor"
+    assert _owning_package(ENTRYPOINT_DIR / "planner.py") == ENTRYPOINT_PACKAGE
+    modules = _entrypoint_module_names()
+    assert "sandbox_executor.entrypoint.executor" in modules
+    assert "sandbox_executor.entrypoint.executor.run" in modules
+    assert "sandbox_executor.entrypoint.executor.__main__" not in modules
+
+
 def test_entrypoints_do_not_import_host_orchestration_or_package_root() -> None:
     """Container entrypoints must remain decoupled from host orchestration (flow.pipeline, flow.stages, cli)."""
     assert ENTRYPOINT_DIR.is_dir(), f"Entrypoint directory not found at {ENTRYPOINT_DIR}"
-    py_files = sorted(ENTRYPOINT_DIR.glob("*.py"))
+    py_files = _entrypoint_sources()
     assert py_files, f"No python files found under {ENTRYPOINT_DIR}"
 
     violations: list[str] = []
     for py_file in py_files:
         content = py_file.read_text(encoding="utf-8")
-        imports = _collect_module_imports(content)
+        imports = _collect_module_imports(content, _owning_package(py_file))
+        rel_path = py_file.relative_to(ENTRYPOINT_DIR).as_posix()
         for lineno, imported_path in imports:
             if imported_path in FORBIDDEN_MODULES or imported_path.startswith(
                 tuple(f"{module}." for module in FORBIDDEN_MODULES)
             ):
-                violations.append(f"{py_file.name}:{lineno} forbidden import '{imported_path}'")
+                violations.append(f"{rel_path}:{lineno} forbidden import '{imported_path}'")
             elif imported_path == "sandbox_executor.flow":
                 # Entrypoints must import specific domain modules, not the full flow package
-                violations.append(f"{py_file.name}:{lineno} forbidden root package import '{imported_path}'")
+                violations.append(f"{rel_path}:{lineno} forbidden root package import '{imported_path}'")
 
     assert not violations, "Found forbidden orchestration imports in container entrypoints:\n" + "\n".join(violations)
 
@@ -100,10 +135,7 @@ LAZILY_IMPORTED = (
 
 @pytest.mark.parametrize(
     "module",
-    sorted(
-        [f"{ENTRYPOINT_PACKAGE}.{path.stem}" for path in ENTRYPOINT_DIR.glob("*.py") if path.stem != "__init__"]
-        + list(LAZILY_IMPORTED)
-    ),
+    sorted(_entrypoint_module_names() + list(LAZILY_IMPORTED)),
 )
 def test_importing_an_entrypoint_loads_no_host_orchestration(module: str) -> None:
     """At runtime too: package ``__init__`` side effects must not drag the host engine into an entrypoint."""

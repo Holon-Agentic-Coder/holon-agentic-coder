@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable
 
 import pytest
-from sandbox_executor.entrypoint.executor import build_execution_prompt
+from sandbox_executor.entrypoint.executor import ExecutionPromptInputs, build_execution_prompt
 from sandbox_executor.entrypoint.planner import render_placeholders
 from sandbox_executor.review_ensemble import ReviewerResult, parse_review_trailer
 from sandbox_executor.review_report import ROLES_CLOSE, ROLES_OPEN, parse_reviewer_detail
@@ -131,9 +131,11 @@ def rendered_executor() -> str:
     return build_execution_prompt(
         repo_dir=str(REPO_ROOT),
         plan_branch="P-1-test",
-        plan_data={"plan_id": "P-1-test"},
-        plan_content="Dummy plan.",
-        intent_data={"intent_id": "I-1-test"},
+        inputs=ExecutionPromptInputs(
+            plan_data={"plan_id": "P-1-test"},
+            plan_content="Dummy plan.",
+            intent_data={"intent_id": "I-1-test"},
+        ),
         exec_id="E-1-test",
     )
 

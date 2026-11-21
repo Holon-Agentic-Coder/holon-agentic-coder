@@ -205,7 +205,7 @@ def save_checkpoint(context: FlowContext, filepath: str | None = None) -> str:
         completed_stages=completed,
         context=context,
     )
-    saved = checkpoint.save(filepath)
+    saved = checkpoint.save(filepath or None)
     return str(saved)
 
 

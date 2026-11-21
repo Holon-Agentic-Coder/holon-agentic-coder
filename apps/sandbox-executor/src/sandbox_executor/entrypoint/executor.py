@@ -1232,7 +1232,7 @@ class ExecutionRun:
             self.record_ledger()
             self.stage_changes()
         if self.commit_steps():
-            self.push()
+            self.record_branch()
         self._exit_with_status(skip_agent)
 
     def prepare_workspace(self) -> None:
@@ -1787,7 +1787,7 @@ class ExecutionRun:
             return True
         return record_sync_failure(self.repo, self.exec_entry, self.exec_id, self.ledger_dir, sync_msg)
 
-    def push(self) -> None:
+    def record_branch(self) -> None:
         """Record the committed execution branch for the host to push, after the safety and sync checks.
 
         Invariant: a branch with no parent, or one the attribution guard rejects, is never published, whatever the

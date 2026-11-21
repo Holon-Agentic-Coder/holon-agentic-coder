@@ -35,6 +35,7 @@ from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import LedgerRewriteError, build_execution_id
 from sandbox_executor.plan_paths import recorded_plan_file
 from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.ref_names import INTENT_SUFFIX
 
 
 @dataclass(frozen=True)
@@ -211,7 +212,7 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
         self.exec_id = build_execution_id(
             self.exec_seq, prefix, self.args.agent_name, self.args.model_name, taken=taken_child_ids(repo, prefix, "E")
         )
-        self.exec_branch = f"{prefix}/{self.exec_id}/_"
+        self.exec_branch = f"{prefix}/{self.exec_id}{INTENT_SUFFIX}"
 
         # Plan branch tip: the base the empty-diff guard compares the agent's work against, even on a resume.
         self.plan_tip = mounted_plan_tip

@@ -479,7 +479,8 @@ split from the former single `flow.py` by moving code only. Three tests guard th
 | `flow/constants.py`            | Constants shared by two or more modules (`CURRENT_CONTEXT_SCHEMA_VERSION`, `CI_REGISTRATION_POLL_SECONDS`). |
 | `flow/context.py`              | The data model: `FlowStage`, `StageStatus`, `StageResult` and `FlowContext`.                                |
 | `flow/checkpoint.py`           | Checkpoint schema migration, `FlowCheckpoint`, and saving and loading checkpoints.                          |
-| `flow/ledger_reconcile.py`     | Resolves conflicts in the append-only JSONL ledgers by a union under the ledger lock.                       |
+| `flow/checkpoint_store.py`     | The `CheckpointStore` protocol and the `FileCheckpointStore` adapter that persists a `FlowCheckpoint`.      |
+| `flow/ledger_reconcile.py`     | Compatibility shim re-exporting the ledger conflict resolution that now lives in `ledger/reconcile.py`.     |
 | `flow/ledger_warning.py`       | Reports a non-fatal ledger failure, redacted, to the log and the operator-facing context log.               |
 | `flow/ledger_interleave.py`    | Resolves ledger-only merge conflicts: merge-base rows kept as a prefix, appended rows interleaved.          |
 | `flow/child_progress.py`       | Per-child progress of a decomposed Stage 3, origin reconciliation and the next-action decision.             |
@@ -488,6 +489,7 @@ split from the former single `flow.py` by moving code only. Three tests guard th
 | `flow/dispatch.py`             | Role-agent dispatch shared with `holon intent`, `holon plan` and `holon execute`.                           |
 | `flow/host_remote.py`          | Host-side fetch of the base and push of the committed branch; containers never touch the remote.            |
 | `flow/git_refs.py`             | Branch fetches, child-branch discovery, ledger readers, execution refs and the effective diff.              |
+| `flow/partial_head.py`         | Recovers the `partial_head` of a failed execution from the branch's latest execution summary row.           |
 | `flow/github/pr.py`            | Mergeability checks, review git trailers, semantic PR metadata and creating the PR.                         |
 | `flow/github/ci.py`            | Probes CI checks and waits for them to register and settle.                                                 |
 | `flow/github/review_post.py`   | Posts the Stage 4 consensus review to the pull request.                                                     |
@@ -509,6 +511,19 @@ split from the former single `flow.py` by moving code only. Three tests guard th
 | `flow/pipeline.py`             | `PipelineEngine` and `run_flow_pipeline`, which run the five stages in order with checkpoints.              |
 
 The `flow/github/`, `flow/review/` and `flow/stages/` packages each have an `__init__.py` holding only a docstring.
+
+The ledger primitives live in the separate `sandbox_executor.ledger` package
+(`apps/sandbox-executor/src/sandbox_executor/ledger/`), which the flow engine imports but which never imports the flow
+engine:
+
+| Module                | Responsibility                                                                                   |
+| --------------------- | ------------------------------------------------------------------------------------------------ |
+| `ledger/__init__.py`  | Re-exports the package's records, locks, queries and reconciliation as its public API.           |
+| `ledger/lock.py`      | `LedgerLock`, atomic appends and the `assert_ledger_prefix` append-only check.                   |
+| `ledger/rows.py`      | Action and summary records, identifier builders and the append operations for the ledgers.       |
+| `ledger/query.py`     | `LedgerQuery`: filtering, table formatting and identifier uniqueness validation.                 |
+| `ledger/order.py`     | Chronological order for the rows a conflict resolution appends after the untouched prefix.       |
+| `ledger/reconcile.py` | `LedgerReconciler`: resolves a ledger conflict by keeping a prefix and appending the other rows. |
 
 Rules that keep the package healthy:
 

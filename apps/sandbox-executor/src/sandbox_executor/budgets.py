@@ -34,6 +34,7 @@ from typing import Literal, overload
 
 from sandbox_executor.budget_limits import (
     UNLIMITED,
+    format_budget_minutes,
     is_unlimited,
     minutes_text,
     unbounded_supervision_warning,
@@ -326,6 +327,30 @@ class StageTimer:
     def summary(self, status: str) -> str:
         """``format_stage_summary`` for this timer."""
         return format_stage_summary(self.stage, status, self.elapsed(), self.budget_seconds)
+
+    def ledger_fields(self) -> dict[str, object]:
+        """Ledger row budget fields: ``budget_seconds`` (``None`` when unlimited), plus ``budget`` when unlimited."""
+        fields: dict[str, object] = {"budget_seconds": self.budget_seconds}
+        if self.unlimited:
+            fields["budget"] = UNLIMITED
+        return fields
+
+
+def describe_budgets(budgets: Budgets) -> list[str]:
+    """The ``holon doctor`` budget lines: ``budgets ...``, plus a ``WARNING:`` when supervision is unbounded."""
+    stage_minutes = " ".join(
+        f"{name}={format_budget_minutes(budgets.stage_seconds(name))}"
+        for name in ("intent", "plan", "execute", "review_iteration", "calibration")
+    )
+    turn = UNLIMITED if budgets.turn.turn_seconds is None else f"{budgets.turn.turn_seconds:g}s"
+    override = f" stage_override={UNLIMITED}" if budgets.stage_override_unlimited else ""
+    lines = [f"budgets turn={turn} stall={budgets.turn.stall_seconds:g}s {stage_minutes}{override}"]
+    unbounded = unbounded_supervision_warning(
+        budgets.turn.turn_seconds, budgets.turn.stall_seconds, budgets.unlimited_stages()
+    )
+    if unbounded is not None:
+        lines.append(f"WARNING: {unbounded}")
+    return lines
 
 
 def format_minutes(seconds: float) -> str:

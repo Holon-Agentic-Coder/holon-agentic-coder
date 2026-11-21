@@ -173,10 +173,6 @@ class TestTurnExecutionEnvironment(unittest.TestCase):
         self.assertEqual(passed_env.get("DOCKER_CLI_HINTS"), "false")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestUnlimitedTurnSupervision(unittest.TestCase):
     """An unlimited turn timeout or stage never fires, while the stall window (and a finite turn limit) still does."""
 
@@ -249,3 +245,7 @@ class TestUnlimitedAuthoringTurn(unittest.TestCase):
         outcome = harness.supervise([harness.write("# Plan for I-1\n", breach=stall), harness.write(None)])
         self.assertEqual(outcome.follow_up, "resume")
         self.assertEqual(len(outcome.turns), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

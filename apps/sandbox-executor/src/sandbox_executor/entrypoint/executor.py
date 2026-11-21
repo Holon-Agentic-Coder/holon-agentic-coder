@@ -34,7 +34,6 @@ from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
 from sandbox_executor.agent_runner import get_runner, get_workspace_dir
 from sandbox_executor.artefacts import EXECUTION_SPEC, ArtefactReport, execution_write_protocol
 from sandbox_executor.attribution_check import attribution_allows_publish
-from sandbox_executor.budget_limits import UNLIMITED
 from sandbox_executor.budgets import BudgetBreach, StageTimer, load_budgets
 
 # The decomposition rule lives in the neutral module; it is re-exported here so existing importers keep working.
@@ -1454,11 +1453,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "execution_notes": notes_rel,
                 "execution_notes_valid": notes_valid,
                 "elapsed_seconds": round(stage_timer.elapsed(), 1),
-                "budget_seconds": stage_timer.budget_seconds,
+                **stage_timer.ledger_fields(),
             }
             exec_entry.update(test_fields)
-            if stage_timer.unlimited:
-                exec_entry["budget"] = UNLIMITED
             if failure_reason:
                 exec_entry["failure_reason"] = failure_reason
             if salvaged_head:

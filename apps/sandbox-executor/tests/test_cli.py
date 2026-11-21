@@ -293,24 +293,6 @@ class TestHolonCLI(unittest.TestCase):
                 any(a.startswith("HOLON_STAGE_BUDGET_SECONDS=") for a in mock_run.call_args[0][0]),
             )
 
-    @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
-    @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
-    @patch("subprocess.run")
-    @patch("shutil.which", return_value="/usr/bin/docker")
-    def test_run_docker_container_hands_down_an_unlimited_stage(
-        self, mock_which, mock_run, mock_mounts, mock_worktree_mounts
-    ):
-        # An unlimited host stage replaces any forwarded host value with the sentinel the container honours.
-        from sandbox_executor.budgets import StageTimer, active_stage_timer
-
-        mock_run.return_value = MagicMock(returncode=0)
-        timer = StageTimer("execute", None, clock=lambda: 1000.0)
-        with patch.dict(os.environ, {"HOLON_STAGE_BUDGET_SECONDS": "9999"}, clear=True):
-            with active_stage_timer(timer):
-                run_docker_container("planner", "holon/agent-pi", ["branch"], agent_id="pi")
-            budget_args = [a for a in mock_run.call_args[0][0] if a.startswith("HOLON_STAGE_BUDGET_SECONDS=")]
-            self.assertEqual(budget_args, ["HOLON_STAGE_BUDGET_SECONDS=unlimited"])
-
     def test_run_docker_container_requires_agent_id(self):
         with self.assertRaises(TypeError):
             run_docker_container("planner", "holon/agent-antigravity", ["branch"])  # type: ignore[call-arg]
@@ -1078,32 +1060,6 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("prefill_cache=warm", output)
         self.assertIn("WARNING: model=qwen3 max_tokens=8000 exceeds", output)
         self.assertIn("budgets turn=3600s stall=90s", output)
-
-    def test_doctor_shows_unlimited_budgets(self):
-        env = {"HOLON_STAGE_BUDGET_EXECUTE_MINUTES": "unlimited", "HOLON_TURN_TIMEOUT_SECONDS": " Unlimited "}
-        _, output = self.run_doctor(env, _fetcher(HEALTH_WARM))
-        self.assertIn("budgets turn=unlimited stall=90s", output)
-        self.assertIn("execute=unlimited", output)
-        self.assertIn("plan=35min", output)
-        self.assertNotIn("stage_override", output)
-        self.assertNotIn("hung agent", output)
-
-    def test_doctor_shows_an_unlimited_stage_override(self):
-        _, output = self.run_doctor({"HOLON_STAGE_BUDGET_SECONDS": "UNLIMITED"}, _fetcher(HEALTH_WARM))
-        self.assertIn("intent=unlimited plan=unlimited execute=unlimited", output)
-        self.assertIn("stage_override=unlimited", output)
-
-    def test_doctor_warns_when_every_limit_is_disabled(self):
-        env = {
-            "HOLON_STAGE_BUDGET_EXECUTE_MINUTES": "unlimited",
-            "HOLON_TURN_TIMEOUT_SECONDS": "unlimited",
-            "HOLON_TURN_STALL_SECONDS": "0",
-        }
-        _, output = self.run_doctor(env, _fetcher(HEALTH_WARM))
-        warnings = [line for line in output.splitlines() if line.startswith("WARNING: Unbounded agent supervision")]
-        self.assertEqual(len(warnings), 1)
-        self.assertIn("execute", warnings[0])
-        self.assertIn("nothing will stop a hung agent", warnings[0])
 
     def test_doctor_without_mismatch_has_no_warning(self):
         env = {

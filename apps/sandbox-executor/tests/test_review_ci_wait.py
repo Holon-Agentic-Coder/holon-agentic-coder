@@ -394,3 +394,93 @@ def test_spent_wait_is_cleared_when_the_resolver_pushes_a_new_head(tmp_path, mon
     assert resolver.call_count >= 1
     # Without the clear the second iteration would skip its wait; each wait sleeps 15 s then 15 s (budget 30 s).
     assert sum(fake.sleeps) > 30.0
+
+
+class RecordingContext:
+    """Collects the wait's log lines verbatim."""
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def log(self, message: str) -> None:
+        self.lines.append(message)
+
+
+def _probe(*buckets: tuple[str, str]) -> dict:
+    checks = [{"name": name, "bucket": bucket, "state": bucket.upper()} for name, bucket in buckets]
+    count = {b: sum(1 for _, bucket in buckets if bucket == b) for b in ("pass", "fail", "pending")}
+    return {
+        "source": "github_cli",
+        "pending": count["pending"],
+        "failed": count["fail"],
+        "passed": count["pass"],
+        "all_passed": count["pass"] == len(buckets),
+        "total": len(buckets),
+        "checks": checks,
+    }
+
+
+def test_wait_logs_a_start_line_each_finished_check_and_one_summary_but_nothing_for_unchanged_polls():
+    fake = FakeTime()
+    context = RecordingContext()
+    start = _probe(("lint", "pending"), ("unit", "pending"), ("docs", "pending"))
+    probes = [
+        _probe(("lint", "pending"), ("unit", "pending"), ("docs", "pending")),
+        _probe(("lint", "pass"), ("unit", "pending"), ("docs", "pending")),
+        _probe(("lint", "pass"), ("unit", "pass"), ("docs", "skipping")),
+    ]
+    policy = CiWaitPolicy(1800.0, 15.0, clock=fake.clock, sleep=fake.sleep)
+    status, result = wait_for_pending_ci(context, MagicMock(side_effect=probes), start, policy)
+
+    assert result.exhausted is False and status["pending"] == 0
+    assert context.lines == [
+        "[Review Loop] Tracking 3 GitHub CI check(s): 3 pending (budget 1800s).",
+        "[Review Loop] CI check 'lint' finished: pass (2 pending).",
+        "[Review Loop] CI check 'unit' finished: pass (0 pending).",
+        "[Review Loop] CI check 'docs' finished: skipping (0 pending).",
+        "[Review Loop] CI wait settled after 105s: 2 passed, 0 failed, 1 other.",
+    ]
+    assert not any("Waiting for" in line for line in context.lines)
+
+
+def test_wait_past_its_deadline_logs_one_start_line_and_one_budget_summary_naming_the_pending_checks():
+    fake = FakeTime()
+    context = RecordingContext()
+    pending = _probe(("lint", "pass"), ("macos-tests", "pending"))
+    policy = CiWaitPolicy(100.0, 15.0, clock=fake.clock, sleep=fake.sleep)
+    _, result = wait_for_pending_ci(context, MagicMock(return_value=dict(pending)), dict(pending), policy)
+
+    assert result.exhausted is True
+    assert context.lines == [
+        "[Review Loop] Tracking 2 GitHub CI check(s): 1 pending (budget 100s).",
+        "[Review Loop] CI wait budget of 100s spent: 1 check(s) still pending (macos-tests).",
+    ]
+
+
+def test_wait_stopped_on_a_failure_reports_the_checks_still_pending():
+    fake = FakeTime()
+    context = RecordingContext()
+    start = {"source": "github_cli", "pending": 3, "failed": 0, "passed": 0, "total": 3}
+    probes = [dict(start, pending=2, failed=1)]
+    policy = CiWaitPolicy(1800.0, 15.0, clock=fake.clock, sleep=fake.sleep)
+    wait_for_pending_ci(context, MagicMock(side_effect=probes), start, policy)
+
+    assert (
+        context.lines[-1]
+        == "[Review Loop] CI wait stopped on a failure after 15s: 0 passed, 1 failed, 2 still pending, 0 other."
+    )
+
+
+def test_wait_without_check_names_logs_the_pending_count_change():
+    fake = FakeTime()
+    context = RecordingContext()
+    start = {"source": "github_cli", "pending": 2, "failed": 0, "passed": 0, "total": 2}
+    probes = [dict(start, pending=1, passed=1), dict(start, pending=0, passed=2)]
+    policy = CiWaitPolicy(1800.0, 15.0, clock=fake.clock, sleep=fake.sleep)
+    wait_for_pending_ci(context, MagicMock(side_effect=probes), start, policy)
+
+    assert context.lines[1:] == [
+        "[Review Loop] CI checks pending: 2 -> 1.",
+        "[Review Loop] CI checks pending: 1 -> 0.",
+        "[Review Loop] CI wait settled after 45s: 2 passed, 0 failed, 0 other.",
+    ]

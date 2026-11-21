@@ -5,7 +5,8 @@ import os
 from unittest.mock import patch
 
 import pytest
-from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, run_review_loop
+from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, run_review_loop, run_review_stage
+from sandbox_executor.flow.review.records import record_review_action
 
 from tests.flow.helpers import (
     EXECUTION_ID_PATTERNS,
@@ -14,12 +15,15 @@ from tests.flow.helpers import (
     HISTORICAL_REVIEW_KEYS,
     REAL_EXECUTIONS_LEDGER,
     REVIEWER_ROW_KEYS,
+    _git,
     _ledger_fingerprint,
     _prefix,
     _read_rows,
     _verified_diff,
 )
 from tests.flow.lookup_patch import patch_lookup_sites
+from tests.review_flow_repo import LEDGER, added_rows, build_flow_worktree, changed_paths
+from tests.review_loop_stubs import EXEC_TARGET
 
 
 class TestStage4LedgerProvenance:
@@ -132,7 +136,7 @@ class TestStage4LedgerProvenance:
 
         post_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST"]
         assert len(post_rows) == 1
-        assert post_rows[0]["error_context"] == "gh exploded using [REDACTED_SECRET]"
+        assert post_rows[0]["error_context"] == "gh exploded using *******"
         assert sample_value not in ledger.read_text(encoding="utf-8")
         assert sample_value not in str(result["posting"])
         assert all(sample_value not in rec.getMessage() for rec in caplog.records)
@@ -158,7 +162,7 @@ class TestStage4LedgerProvenance:
         assert post_rows[0]["outcome"] == "failure"
         assert "Review posting failed: review=False, comment=True." in error_context
         assert "official_review: Official review submission failed (exit code 1)" in error_context
-        assert "[REDACTED_SECRET]" in error_context
+        assert "*******" in error_context
         assert "discussion_comment" not in error_context
         assert sample_value not in ledger.read_text(encoding="utf-8")
 
@@ -270,3 +274,36 @@ class TestStage4LedgerProvenance:
         assert record_review_action(ctx, str(ledger), bad) is None
         assert not ledger.exists()
         assert any("not-a-category" in rec.getMessage() for rec in caplog.records if rec.levelname == "WARNING")
+
+
+def test_a_stage_4_exit_by_raise_commits_the_rows_the_loop_recorded(tmp_path):
+    """The Stage 4 backstop: a loop that recorded a row and then raised leaves no ledger file modified."""
+    origin, work = build_flow_worktree(tmp_path)
+    ctx = FlowContext(repo_dir=str(work), execution_branch=EXEC_TARGET, token_reduce=False)
+    exec_file = str(work / LEDGER)
+    row = {
+        "action_id": "ACT-REV-0123456789ab",
+        "execution_id": "REV-ITR-1-1",
+        "action": "recorded before the raise",
+        "category": "code",
+        "target": EXEC_TARGET,
+        "outcome": "failure",
+        "entry_type": "action",
+    }
+
+    def recording_then_raising(context):
+        record_review_action(context, exec_file, row)
+        raise RuntimeError("review loop crashed")
+
+    with (
+        patch("sandbox_executor.flow.stages.review._run_engine_review_loop", recording_then_raising),
+        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+        pytest.raises(RuntimeError, match="review loop crashed"),
+    ):
+        run_review_stage(ctx)
+
+    assert _git(work, "status", "--porcelain") == ""
+    assert changed_paths(work) == [LEDGER]
+    assert [r["action"] for r in added_rows(work)] == ["recorded before the raise"]
+    assert _git(origin, "rev-parse", f"refs/heads/{EXEC_TARGET}") == _git(work, "rev-parse", "HEAD")
+    assert _git(work, "rev-parse", "--abbrev-ref", "HEAD") == EXEC_TARGET

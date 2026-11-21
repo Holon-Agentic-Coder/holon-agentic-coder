@@ -1,0 +1,194 @@
+"""The mergeability gate in front of an approved consensus post and in front of Stage 5.
+
+The loop probes mergeability once per iteration, so the target branch can move before the post or Stage 5. A head
+probed ``CONFLICTING`` or ``DIRTY`` (``UNKNOWN`` and ``MISSING_REF`` keep the loop's handling) is never approved or
+calibrated as it stands: the target branch is merged first, in a temporary detached worktree on ``origin/<branch>``.
+Ledger-only conflicts are resolved without a test run (target rows stay a byte prefix, head-only rows follow in
+``created_at`` order) and pushed; the approval must then be re-earned. A code conflict aborts the merge and blocks.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+
+from sandbox_executor.flow import stage_conflicts
+from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
+from sandbox_executor.flow.dispatch import _stage_failure
+from sandbox_executor.flow.github.pr import format_review_git_trailers
+from sandbox_executor.flow.host_remote import push_commit, remote_error
+from sandbox_executor.flow.review.conflict_merge import _merge_and_push, _MergeOutcome
+from sandbox_executor.flow.review.ledger_commit import (
+    _commit_pending_ledger_rows,
+    _LedgerCommit,
+    _only_ledger_commits_ahead,
+)
+from sandbox_executor.git import run_git
+from sandbox_executor.ledger import format_commit_trailers, generate_action_id
+from sandbox_executor.redaction import redact_agent_secrets
+
+if TYPE_CHECKING:
+    from sandbox_executor.flow.review.posting import PostRequest
+
+MergeabilityProbe = Callable[..., dict[str, Any]]
+MERGED_REASON = "target branch merged; approval must be re-earned on the new head"
+UNPUSHED_ROWS_REASON = "pending ledger rows could not be pushed"
+
+
+@dataclass(frozen=True)
+class _ConflictGateResult:
+    """The gate's decision: ``blocked_reason`` is None only when the head may be approved or calibrated."""
+
+    conflicting: bool
+    merged: bool = False
+    ledger_only: bool = False
+    blocked_reason: str | None = None
+
+
+def _is_conflicting(mergeability: Mapping[str, Any] | None) -> bool:
+    """True for an explicit ``CONFLICTING`` or ``DIRTY`` probe; ``UNKNOWN`` and ``MISSING_REF`` are not conflicts."""
+    probe = mergeability or {}
+    state = str(probe.get("merge_state_status") or "").upper()
+    if state == "MISSING_REF":
+        return False
+    return str(probe.get("mergeable") or "").upper() == "CONFLICTING" or state == "DIRTY" or bool(probe.get("is_dirty"))
+
+
+def _blocked_reason(outcome: _MergeOutcome, target_branch: str) -> str:
+    """Why the head stays blocked after the merge attempt."""
+    if outcome.merged:
+        return MERGED_REASON
+    if outcome.conflicting_paths:
+        return f"code conflicts with {target_branch} in: {', '.join(outcome.conflicting_paths)}"
+    return f"merging {target_branch} failed: {outcome.error or 'unknown error'}"
+
+
+@dataclass(frozen=True)
+class _GateMerge:
+    """What a non-dry-run gate merges with: the merge commit's ``trailers`` and the label of its own ledger commit.
+
+    ``committed`` is a ledger commit the caller already made, so a push it lost still blocks the merge from
+    ``origin/<branch>``.
+    """
+
+    trailers: str
+    iteration: int = 0
+    committed: _LedgerCommit | None = None
+
+
+def _local_commits_unpushed(context: FlowContext, branch: str) -> bool:
+    """True when ``refs/heads/<branch>`` holds commits ``origin/<branch>`` lacks and they cannot be pushed now.
+
+    Only ledger-only commits are pushed here: a non-ledger local commit (one the host refused) blocks instead.
+
+    This covers an earlier ledger commit whose push was rejected: the merge starts from ``origin/<branch>``, so merging
+    without it would leave its rows behind and diverge the local branch from the remote.
+    """
+    repo_dir, local = context.target_worktree, f"refs/heads/{branch}"
+    if run_git(["rev-parse", "--verify", "-q", local], cwd=repo_dir, check=False).returncode != 0:
+        return False
+    ancestor = ["merge-base", "--is-ancestor", local, f"refs/remotes/origin/{branch}"]
+    if run_git(ancestor, cwd=repo_dir, check=False).returncode == 0:
+        return False
+    if context.skip_push:
+        error: str | None = "pushing is skipped"
+    elif not _only_ledger_commits_ahead(repo_dir, local, branch):
+        error = "it holds commits beyond the ledger rows, which the gate never pushes"
+    else:
+        error = remote_error(push_commit, repo_dir, local, branch)
+    if error:
+        context.log(f"[Review Loop] Conflict gate: local '{branch}' is ahead of origin and unpushed: {error}")
+    return error is not None
+
+
+def _gate_conflicting_head(
+    context: FlowContext,
+    branch: str | None,
+    target_branch: str,
+    mergeability: Mapping[str, Any],
+    merge: _GateMerge | None,
+) -> _ConflictGateResult:
+    """Decide on a probed head: pass a clean one, otherwise merge the target branch and block.
+
+    ``merge`` None probes without merging (a dry run).
+    """
+    if not _is_conflicting(mergeability):
+        return _ConflictGateResult(conflicting=False)
+    if merge is None or not branch:
+        why = "dry run, nothing merged" if branch else "the head branch is unknown, nothing merged"
+        reason = f"the head conflicts with {target_branch} ({why})"
+        context.log(f"[Review Loop] Conflict gate: {reason}.")
+        return _ConflictGateResult(conflicting=True, blocked_reason=reason)
+    # The merge starts from origin/<branch>: pending rows are committed and pushed first, or nothing is merged.
+    pending = _commit_pending_ledger_rows(context, merge.iteration, "before conflict merge") or merge.committed
+    if (pending is not None and not pending.pushed) or _local_commits_unpushed(context, branch):
+        context.log(f"[Review Loop] Conflict gate on '{branch}': {UNPUSHED_ROWS_REASON}; nothing merged.")
+        return _ConflictGateResult(conflicting=True, blocked_reason=UNPUSHED_ROWS_REASON)
+    outcome = _merge_and_push(context.target_worktree, branch, target_branch, merge.trailers)
+    reason = _blocked_reason(outcome, target_branch)
+    context.log(f"[Review Loop] Conflict gate on '{branch}': {reason} (no test suite was run).")
+    return _ConflictGateResult(True, outcome.merged, outcome.ledger_only, reason)
+
+
+def _gate_record(review_target: str, gate: _ConflictGateResult) -> dict[str, Any]:
+    """The ACT row recording a blocked approval; its ``error_context`` is redacted."""
+    return {
+        "action_id": generate_action_id("ACT-GATE"),
+        "execution_id": f"REV-GATE-{int(datetime.now(UTC).timestamp())}",
+        "action": f"Approved consensus not posted for {review_target}: the head conflicts with the target branch",
+        "category": "code",
+        "target": review_target,
+        "outcome": "failure",
+        "entry_type": "action",
+        "action_origin": "pr_review",
+        "labels": ["review", "conflict-gate"],
+        "error_context": redact_agent_secrets(str(gate.blocked_reason)),
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _approved_post_gate(
+    context: FlowContext, exec_file: str, request: PostRequest, probe: MergeabilityProbe
+) -> tuple[str, dict[str, Any]] | None:
+    """Gate an approved post: None lets it proceed, else the post error and the ``posting_res`` to return.
+
+    ``probe`` is the loop's mergeability probe already bound to the repository and the review target; a merge commit
+    carries the ``pr_review`` trailers of the request's review iteration.
+    """
+    from sandbox_executor.flow.review.records import record_review_action  # Lazy: records imports review_report.
+
+    review_target = request.review_target
+    target_branch = str(request.consensus_data.get("base_branch") or "main")
+    mergeability = probe(target_branch=target_branch)
+    branch = context.execution_branch or (review_target if not review_target.isdigit() else None)
+    merge = _GateMerge(format_review_git_trailers("pr_review", request.iteration), request.iteration)
+    gate = _gate_conflicting_head(context, branch, target_branch, mergeability, merge)
+    if gate.blocked_reason is None:
+        return None
+    record_review_action(context, exec_file, _gate_record(review_target, gate))
+    return f"conflict gate: {gate.blocked_reason}", {"posted": False, "conflict_gate": asdict(gate)}
+
+
+def _stage5_conflict_gate(context: FlowContext) -> StageResult | None:
+    """Fail Stage 5 on a conflicting execution head; None lets it start.
+
+    Once the target branch is merged and pushed, Stage 5 proceeds on the new head (its sync levels the local ref with
+    origin). A dry run probes without merging.
+    """
+    if not context.execution_branch:
+        return None
+    target_branch = str(context.intent_data.get("target_branch") or "main")
+    start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    iteration = context.review_iterations_done
+    committed = _commit_pending_ledger_rows(context, iteration, "before Stage 5")  # Stage 5 starts from committed rows.
+    mergeability = stage_conflicts.check_pr_mergeability(
+        context.target_worktree, branch=context.execution_branch, target_branch=target_branch
+    )
+    merge = None if context.dry_run else _GateMerge(format_commit_trailers("calibration"), iteration, committed)
+    gate = _gate_conflicting_head(context, context.execution_branch, target_branch, mergeability, merge)
+    if gate.blocked_reason is None or gate.merged:
+        return None
+    reason = f"Calibrate stage refused: {gate.blocked_reason}"
+    return _stage_failure(context, FlowStage.CALIBRATE, start_time, reason, conflict_gate=asdict(gate))

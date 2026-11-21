@@ -388,6 +388,8 @@ def test_every_stage4_dispatch_reviews_the_flow_worktree_in_place(tmp_path: Path
         with (
             patch("subprocess.run", side_effect=AssertionError("the loop ran a subprocess")) as no_subprocess,
             patch("sandbox_executor.flow.review.resolver.push_commit") as host_push,
+            # The ledger commits run git by design; tests/flow/review/test_ledger_commit.py covers them with real git.
+            patch("sandbox_executor.flow.review.loop._commit_pending_ledger_rows", return_value=None),
         ):
             res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=5)
     finally:

@@ -345,3 +345,27 @@ def test_resolver_prompt_says_split_and_never_edit_the_budget() -> None:
     text = normalised(_build_resolver_prompt("/r", "head", 1, [], "/d.json"))
     assert "splitting it into smaller modules" in text
     assert BUDGET_CONFIG_PATH in text
+
+
+#: One distinctive lower-case phrase set per review loop operating rule.
+REVIEW_OPERATING_RULES = {
+    "conflict gate": (
+        "`mergeable` and `mergestatestatus`",
+        "on `conflicting` or `dirty`, merge `{target_branch}` into the pr head first",
+        "never approve a conflicting head",
+    ),
+    "ledger-only fast resolution": (
+        "only `holon-knowledge/ledger/*.jsonl` files conflict",
+        "append the head-only rows after it in `created_at` order",
+        "do not rerun the test suite",
+    ),
+    "authentic data": ("only authentic data from real runs, diffs and ci", "never use synthetic"),
+    "test command": ("run tests only via `uv run pytest`",),
+}
+
+
+@pytest.mark.parametrize("rule", sorted(REVIEW_OPERATING_RULES))
+def test_review_loop_template_states_each_operating_rule(rule: str) -> None:
+    text = normalised(MARKDOWN_TEMPLATE)
+    missing = [phrase for phrase in REVIEW_OPERATING_RULES[rule] if phrase not in text]
+    assert missing == [], f"the {rule} rule is missing: {missing}"

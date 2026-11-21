@@ -1232,9 +1232,9 @@ def test_run_calibrate_commit_failure_warning_redacts_credentials(calibration_re
         run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
 
     messages = [rec.getMessage() for rec in caplog.records]
-    assert any("Git commit of calibration report" in m and "[REDACTED_SECRET]" in m for m in messages)
+    assert any("Git commit of calibration report" in m and "*******" in m for m in messages)
     assert all(sample_value not in m for m in messages)
-    assert "[REDACTED_SECRET]" in str(excinfo.value)
+    assert "*******" in str(excinfo.value)
     assert sample_value not in str(excinfo.value)
 
 
@@ -1727,7 +1727,7 @@ class TestFormatCalibrationReport:
         ):
             format_calibration_report(_REPORT_REL, str(tmp_path))
         assert sample_value not in str(excinfo.value)
-        assert "[REDACTED_SECRET]" in str(excinfo.value)
+        assert "*******" in str(excinfo.value)
 
     def test_run_calibrate_fails_closed_before_ledger_and_git(self, calibration_repo):
         repo, git = calibration_repo

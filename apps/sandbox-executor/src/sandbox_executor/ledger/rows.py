@@ -308,9 +308,9 @@ def _report_ledger_failure(
     exc: BaseException,
     log_fn: Callable[[str], None] | None,
 ) -> None:
-    from sandbox_executor.knowledge.records import CredentialRedactor
+    from sandbox_executor.redaction import redact_agent_secrets
 
-    detail = CredentialRedactor.redact_text(str(exc))
+    detail = redact_agent_secrets(str(exc))
     message = f"Ledger append failed ({label}, record {record_id}) for {ledger_path}: {type(exc).__name__}: {detail}"
     logger.warning(message)
     if log_fn is not None:

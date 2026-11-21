@@ -136,7 +136,10 @@ _LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.review.verdict": "review_loop_approved review_summary_lines",
     "sandbox_executor.flow.review.workspace": "HOST_REVIEW_REFUSAL reviewers_sandboxed",
-    "sandbox_executor.flow.stage_conflicts": "check_and_resolve_stage_conflicts",
+    "sandbox_executor.flow.stage_conflict_resolution": "ConflictKind classify_conflicts resolve_classified_conflicts",
+    "sandbox_executor.flow.stage_conflicts": (
+        "ConflictDetection check_and_resolve_stage_conflicts detect_stage_conflicts"
+    ),
     "sandbox_executor.flow.stages.calibrate": (
         "_commit_stage5_promoted_artifacts _commit_stage5_reconciliation run_calibrate_stage"
     ),
@@ -210,6 +213,8 @@ __all__ = [
     "CheckpointStore",
     "CiWaitPolicy",
     "CiWaitResult",
+    "ConflictDetection",
+    "ConflictKind",
     "ConflictResolutionError",
     "DispositionRecorder",
     "FileCheckpointStore",
@@ -325,10 +330,12 @@ __all__ = [
     "check_and_resolve_stage_conflicts",
     "check_pr_mergeability",
     "choose_merge_flag",
+    "classify_conflicts",
     "create_or_update_pr",
     "decide_admission",
     "describe_ci_outcome",
     "deserialize_carried",
+    "detect_stage_conflicts",
     "discard_empty_calibrated_branch",
     "discover_in_flight_flows",
     "extract_valid_ledger_rows",
@@ -404,6 +411,7 @@ __all__ = [
     "resolve_append_only_conflict",
     "resolve_carried_first",
     "resolve_ci_registration_timeout",
+    "resolve_classified_conflicts",
     "restore_starting_branch",
     "review_calibration_freshness",
     "review_loop_approved",

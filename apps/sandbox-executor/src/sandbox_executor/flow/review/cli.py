@@ -74,10 +74,11 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
         print(f"  Consensus      : {consensus.get('status', 'unknown').upper()}")
         print("===============================================================\n")
         if approved:
-            print("[SAFETY HALT] Review Loop reached consensus approval.")
-            print("Pipeline halted for human review (autonomous merge prohibited).")
-            cmd = loop_res.get("human_approval_command", f"holon review approve {target}")
-            print(f"To approve manually, run: {cmd}\n")
+            print(
+                "[REVIEW APPROVED] Review Loop reached consensus approval; "
+                "the PR is ready for the maintainer to merge (the flow never merges to main)."
+            )
+            print()
         else:
             print(f"Review Loop did not reach consensus approval (status={consensus.get('status')}).")
             if loop_res.get("error"):

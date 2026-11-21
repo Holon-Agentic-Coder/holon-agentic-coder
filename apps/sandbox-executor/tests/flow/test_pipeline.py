@@ -116,7 +116,7 @@ class TestFlowStages:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
-            payload={"test_pass_rate": 1.0, "exit_code": 0},
+            payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
         )
 
         # The empty-diff guard allows the PR: only an allowed diff can reach consensus.
@@ -136,8 +136,9 @@ class TestFlowStages:
                 args = call[0][0]
                 assert "merge" not in args, f"HUMAN-ONLY MERGE RULE VIOLATED: merge invoked with args {args}"
 
-        assert res.status == StageStatus.HALTED_FOR_HUMAN
-        assert res.payload["halted_for_human"] is True
+        assert res.status == StageStatus.APPROVED
+        assert res.payload["halted_for_human"] is False
+        assert res.payload["approved"] is True
         assert res.payload["human_merge_gate_enforced"] is True
         assert res.payload["consensus"]["approved"] is True
         assert "holon review approve" in res.payload["human_approval_command"]
@@ -185,7 +186,7 @@ class TestFlowStages:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.FAILED,
-            payload={"test_pass_rate": 0.0, "exit_code": 1},
+            payload={"head_sha": "stage3-head", "test_pass_rate": 0.0, "exit_code": 1},
         )
         res = run_review_stage(ctx)
         assert res.status == StageStatus.FAILED
@@ -737,6 +738,29 @@ class TestStageBudgets:
         assert "budget_breach" not in review.payload
         mock_cal.assert_called_once()
 
+    def test_pipeline_runs_stage5_after_approved(self, tmp_path):
+        ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "appr", "goal": "Appr"}, auto_calibrate=True)
+        review = StageResult(
+            stage=FlowStage.REVIEW,
+            status=StageStatus.APPROVED,
+            payload={"consensus": {"approved": True, "iterations": 1}, "approved": True},
+        )
+        calibrate = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
+
+        def fake_review(context):
+            context.stage_results["review"] = review
+            return review
+
+        with (
+            patch("sandbox_executor.flow.pipeline.run_review_stage", side_effect=fake_review),
+            patch("sandbox_executor.flow.pipeline.run_calibrate_stage", return_value=calibrate) as mock_cal,
+        ):
+            engine = PipelineEngine(ctx, from_stage="review")
+            engine.run()
+        assert review.status == StageStatus.APPROVED
+        mock_cal.assert_called_once()
+        assert any("Pipeline finished at the merge boundary: review approved" in log for log in ctx.logs)
+
     def test_calibration_overrun_keeps_success(self, tmp_path):
         ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "cal", "goal": "Cal"}, dry_run=True)
         calibrate = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
@@ -828,7 +852,9 @@ class TestStageBudgets:
     def test_review_iteration_ceiling_stops_the_loop(self, tmp_path):
         ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-y/E-3-z/_", dry_run=True)
         ctx.stage_results["execute"] = StageResult(
-            stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 0.0, "exit_code": 1}
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            payload={"head_sha": "stage3-head", "test_pass_rate": 0.0, "exit_code": 1},
         )
         with patch_lookup_sites(
             "sandbox_executor.flow.git_refs.run_git", "sandbox_executor.flow.github.pr.run_git"

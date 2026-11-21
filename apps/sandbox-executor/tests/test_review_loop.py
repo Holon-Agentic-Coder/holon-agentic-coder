@@ -952,7 +952,9 @@ def _loop_ctx(tmp_path: Path, target: str = "feature/x", dry_run: bool = False):
     (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True, exist_ok=True)
     ctx = FlowContext(repo_dir=str(tmp_path), execution_branch=target, token_reduce=False, dry_run=dry_run)
     ctx.stage_results["execute"] = StageResult(
-        stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 1.0, "exit_code": 0}
+        stage=FlowStage.EXECUTE,
+        status=StageStatus.SUCCESS,
+        payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
     )
     return ctx
 

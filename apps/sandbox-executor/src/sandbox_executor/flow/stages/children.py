@@ -32,6 +32,7 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, S
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.git_refs import _fetch_refspecs_error
 from sandbox_executor.flow.github.merge import merge_child_pr
+from sandbox_executor.flow.stage_status import REVIEW_BOUNDARY_STATUSES
 from sandbox_executor.flow.stages.integration import integrate_children
 from sandbox_executor.redaction import redact_agent_secrets
 
@@ -173,10 +174,10 @@ def _merge_readiness_error(results: dict[str, StageResult]) -> str | None:
     review = results.get(FlowStage.REVIEW.value)
     calibrate = results.get(FlowStage.CALIBRATE.value)
     consensus = review.payload.get("consensus") if review is not None else None
-    if review is None or review.status != StageStatus.HALTED_FOR_HUMAN:
-        return f"its Stage 4 did not halt at consensus (status {review.status.value if review else 'not run'})"
+    if review is None or review.status not in REVIEW_BOUNDARY_STATUSES:
+        return f"its Stage 4 did not reach consensus approval (status {review.status.value if review else 'not run'})"
     if not (isinstance(consensus, dict) and consensus.get("approved")):
-        return "its Stage 4 halted without consensus approval"
+        return "its Stage 4 did not reach consensus approval"
     if calibrate is None or calibrate.status not in (StageStatus.SUCCESS, StageStatus.SKIPPED):
         return f"its Stage 5 did not complete (status {calibrate.status.value if calibrate else 'not run'})"
     return None

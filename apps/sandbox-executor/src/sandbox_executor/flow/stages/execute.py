@@ -37,7 +37,13 @@ from sandbox_executor.flow.stages.plan_decision import _over_budget_failure, _pl
 from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
 from sandbox_executor.flow.stages.touch_set_guard import superseding_failure_row, touch_set_violation_result
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
-from sandbox_executor.git import EMPTY_DIFF_FAILURE_REASON, EMPTY_DIFF_STATUS, changed_paths, empty_diff_summary
+from sandbox_executor.git import (
+    EMPTY_DIFF_FAILURE_REASON,
+    EMPTY_DIFF_STATUS,
+    changed_paths,
+    empty_diff_summary,
+    run_git,
+)
 from sandbox_executor.knowledge import ActionIndexDatabase, compute_context_fingerprint
 from sandbox_executor.ledger import build_execution_id
 from sandbox_executor.naming import MissingTickerError, model_code, ticker_for
@@ -387,6 +393,9 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log(f"Stage 3 completed: Execution branch '{exec_branch}' changes {len(changed)} path(s).")
+    # The commit Stage 3 tested, so Stage 4 applies its test evidence only to an unchanged head.
+    tip = run_git(["rev-parse", "--verify", f"{exec_ref}^{{commit}}"], cwd=repo_dir, check=False)
+    tested_head = tip.stdout.strip() if tip.returncode == 0 else ""
     result = StageResult(
         stage=FlowStage.EXECUTE,
         status=StageStatus.SUCCESS,
@@ -396,6 +405,7 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         payload={
             **base_payload,
             "changed_files": len(changed),
+            "head_sha": tested_head,
             **_recorded_test_fields(summary_row),
         },
     )

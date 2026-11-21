@@ -908,10 +908,11 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             print(f"  Reason         : {_bounded_error_context(str(loop_res['error']))}")
         print("===============================================================\n")
         if approved:
-            print("[SAFETY HALT] Review Loop reached consensus approval.")
-            print("Pipeline halted for human review (autonomous merge prohibited).")
-            cmd = loop_res.get("human_approval_command", f"holon review approve {args.target}")
-            print(f"To approve manually, run: {cmd}\n")
+            print(
+                "[REVIEW APPROVED] Review Loop reached consensus approval; "
+                "the PR is ready for the maintainer to merge (the flow never merges to main)."
+            )
+            print()
 
     sys.exit(0 if approved else 1)
 

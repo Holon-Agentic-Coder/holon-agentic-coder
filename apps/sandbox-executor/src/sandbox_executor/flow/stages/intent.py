@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import contextlib
-import json
 import logging
-import os
-import tempfile
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
+from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _dispatch_role, _stage_failure
 from sandbox_executor.flow.git_refs import (
     _fetch_branch_prefix_error,
@@ -22,8 +19,8 @@ from sandbox_executor.flow.git_refs import (
 from sandbox_executor.flow.host_remote import fetch_base, push_branch, remote_error
 from sandbox_executor.flow.intent_questions import validate_intent_questions
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
+from sandbox_executor.flow.stages.stage_support import consult_knowledge, intent_payload_file, stage_success
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
-from sandbox_executor.knowledge import ConsultEngine
 from sandbox_executor.naming import MissingTickerError
 from sandbox_executor.ref_names import RefTooLongError, SlugTooLongError, resolve_root_intent_branch, root_intent_slug
 
@@ -56,7 +53,124 @@ def _reused_intent_conflict(repo_dir: str, intent_branch: str, branch: str, inte
     )
 
 
-def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR0911, PLR0912, PLR0915
+@dataclass
+class IntentStage:
+    """Stage 1 for one flow: the working intent payload and the branch it resolves to, one method per step."""
+
+    context: FlowContext
+    start_time: str
+    intent_data: dict[str, Any]
+    branch: str = ""
+    slug: str = ""
+    target_branch: str = "main"
+    dispatched: bool = False
+
+    @property
+    def intent_branch(self) -> str:
+        """The intent branch: the bare branch prefix the intent creator appends ``/_`` to."""
+        return f"{self.branch}/_"
+
+    def fail(self, message: str, **payload: Any) -> StageResult:
+        """Record and return the FAILED Stage 1 result."""
+        return _stage_failure(self.context, FlowStage.INTENT, self.start_time, message, **payload)
+
+    def validation_error(self) -> str | None:
+        """Why the intent payload is not acceptable (no goal or description, unresolved questions), or None."""
+        if not self.intent_data.get("goal") and not self.intent_data.get("description"):
+            return "Validation failed: Intent must have at least 'goal' or 'description'."
+        # Front-load clarifying questions validation
+        valid_questions, unresolved = validate_intent_questions(self.intent_data)
+        if valid_questions:
+            return None
+        unresolved_list_str = "; ".join(unresolved)
+        return (
+            f"Validation failed: Unresolved questions detected in intent payload. "
+            f"All clarifying questions must be resolved prior to completing Stage 1. Unresolved: {unresolved_list_str}"
+        )
+
+    def resolve_branch(self) -> StageResult | None:
+        """Name the intent branch and record it on the context; a failure when the ref cannot be named."""
+        goal = self.intent_data.get("goal")
+        description = self.intent_data.get("description") or goal or "No description provided"
+        target_branch = self.intent_data.get("target_branch", "main")
+        # The intent creator expects the bare branch prefix and appends '/_' itself; a slug over the limit fails first.
+        try:
+            self.slug = root_intent_slug(self.intent_data, goal or description or "task")
+            self.branch = resolve_root_intent_branch(
+                self.intent_data, self.slug, int(time.time()), self.context.agent, self.context.model
+            )
+        except (RefTooLongError, MissingTickerError, SlugTooLongError) as e:
+            return self.fail(f"Intent stage failed: {e}")
+        self.intent_data["branch"] = self.branch
+        self.intent_data["target_branch"] = self.target_branch = target_branch
+        self.context.intent_branch = self.intent_branch
+        self.context.intent_data = self.intent_data
+        return None
+
+    def establish_branch(self) -> StageResult | None:
+        """Reuse the origin intent branch or dispatch the intent creator to create it; a failure, or None."""
+        if self.context.skip_push:
+            return self.fail(SKIP_PUSH_DISPATCH_ERROR)
+        repo_dir = self.context.target_worktree
+        check_and_resolve_stage_conflicts(repo_dir, target_branch=self.target_branch, stage_name="intent", branch=None)
+        fetch_error = _fetch_branch_prefix_error(repo_dir, self.branch)
+        if fetch_error is not None:
+            return self.fail(
+                f"Intent stage failed: could not fetch origin branches under {self.branch} before dispatching the "
+                f"intent creator: {fetch_error}",
+                intent_branch=self.intent_branch,
+            )
+        if not _origin_has_branch(repo_dir, self.intent_branch):
+            failure = self.create_branch()
+        elif (conflict := _reused_intent_conflict(repo_dir, self.intent_branch, self.branch, self.intent_data)) is None:
+            self.context.log(
+                f"Intent branch '{self.intent_branch}' already exists on origin; reusing it without re-dispatching."
+            )
+            failure = None
+        else:
+            failure = self.fail(conflict, intent_branch=self.intent_branch)
+        if failure is None:
+            _track_local_branch(self.context, self.intent_branch)
+        return failure
+
+    def create_branch(self) -> StageResult | None:
+        """Dispatch the intent creator on the fetched target branch, then publish and verify its branch."""
+        base_error = remote_error(fetch_base, self.context.target_worktree, self.target_branch)
+        if base_error is not None:
+            return self.fail(f"Intent stage failed: {base_error}", intent_branch=self.intent_branch)
+        with intent_payload_file(self.intent_data) as intent_file:
+            exit_code = _dispatch_role(self.context, "intent-creator", [], intent_file=intent_file)
+        self.dispatched = True
+        if exit_code != 0:
+            return self.fail(
+                f"Intent stage failed: intent-creator agent exited with code {exit_code}.",
+                intent_branch=self.intent_branch,
+            )
+        return self.publish_branch()
+
+    def publish_branch(self) -> StageResult | None:
+        """Push the intent branch the container created, fetch origin and verify the branch is there."""
+        repo_dir = self.context.target_worktree
+        push_error = remote_error(push_branch, repo_dir, self.intent_branch)
+        if push_error is not None:
+            return self.fail(f"Intent stage failed: {push_error}", intent_branch=self.intent_branch)
+        fetch_error = _fetch_branch_prefix_error(repo_dir, self.branch)
+        if fetch_error is not None:
+            return self.fail(
+                f"Intent stage failed: the intent-creator agent exited 0 but origin branches under {self.branch} "
+                f"could not be fetched to verify '{self.intent_branch}': {fetch_error}",
+                intent_branch=self.intent_branch,
+            )
+        if not _origin_has_branch(repo_dir, self.intent_branch):
+            return self.fail(
+                f"Intent stage failed: the intent-creator agent exited cleanly but '{self.intent_branch}' "
+                "was not found on origin.",
+                intent_branch=self.intent_branch,
+            )
+        return None
+
+
+def run_intent_stage(context: FlowContext) -> StageResult:
     """Execute Stage 1: validate the intent payload and dispatch the intent-creator agent.
 
     The host fetches the target branch; the intent-creator container (the same one 'holon intent' launches) creates
@@ -65,156 +179,29 @@ def run_intent_stage(context: FlowContext) -> StageResult:  # noqa: C901, PLR091
     """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 1: Intent Creation")
-
-    intent_data = dict(context.intent_data)
+    stage = IntentStage(context, start_time, dict(context.intent_data))
 
     # Pre-action wisdom consult
-    consulted_ids: list[str] = []
-    try:
-        db_path = os.path.join(context.target_worktree, "holon-knowledge/.index/action_index.db")
-        consult_engine = ConsultEngine(project_db_path=db_path)
-        intent_labels = intent_data.get("labels", [])
-        if isinstance(intent_labels, str):
-            intent_labels = [lbl.strip() for lbl in intent_labels.split(",") if lbl.strip()]
-        consult_res = consult_engine.consult_records(all_labels=intent_labels, top_k=6, max_tokens=1200)
-        consulted_ids = consult_res.consulted_ids
-        if consulted_ids:
-            context.log(f"Consulted {len(consulted_ids)} knowledge records for intent: {consulted_ids}")
-            intent_data["consulted_knowledge_ids"] = consulted_ids
-    except Exception as e:
-        logger.debug("Non-fatal consult failure during intent stage: %s", e)
+    consulted_ids = consult_knowledge(context, stage.intent_data, match="all", purpose="intent", log=logger)
+    if consulted_ids:
+        stage.intent_data["consulted_knowledge_ids"] = consulted_ids
 
-    goal = intent_data.get("goal")
-    raw_desc = intent_data.get("description")
-    target_branch = intent_data.get("target_branch", "main")
+    error = stage.validation_error()
+    if error is not None:
+        return stage.fail(error)
+    failure = stage.resolve_branch()
+    if failure is None and not context.dry_run:
+        failure = stage.establish_branch()
+    if failure is not None:
+        return failure
 
-    if not goal and not raw_desc:
-        error_msg = "Validation failed: Intent must have at least 'goal' or 'description'."
-        return _stage_failure(context, FlowStage.INTENT, start_time, error_msg)
-
-    # Front-load clarifying questions validation
-    valid_questions, unresolved = validate_intent_questions(intent_data)
-    if not valid_questions:
-        unresolved_list_str = "; ".join(unresolved)
-        error_msg = (
-            f"Validation failed: Unresolved questions detected in intent payload. "
-            f"All clarifying questions must be resolved prior to completing Stage 1. Unresolved: {unresolved_list_str}"
-        )
-        return _stage_failure(context, FlowStage.INTENT, start_time, error_msg)
-
-    description = raw_desc or goal or "No description provided"
-
-    # The intent creator expects the bare branch prefix and appends '/_' itself; a slug over the limit fails first.
-    try:
-        raw_slug = root_intent_slug(intent_data, goal or description or "task")
-        branch = resolve_root_intent_branch(intent_data, raw_slug, int(time.time()), context.agent, context.model)
-    except (RefTooLongError, MissingTickerError, SlugTooLongError) as e:
-        return _stage_failure(context, FlowStage.INTENT, start_time, f"Intent stage failed: {e}")
-    intent_data["branch"] = branch
-    intent_data["target_branch"] = target_branch
-
-    intent_branch = f"{branch}/_"
-    context.intent_branch = intent_branch
-    context.intent_data = intent_data
-
-    dispatched = False
-    if not context.dry_run:
-        if context.skip_push:
-            return _stage_failure(context, FlowStage.INTENT, start_time, SKIP_PUSH_DISPATCH_ERROR)
-        repo_dir = context.target_worktree
-        check_and_resolve_stage_conflicts(repo_dir, target_branch=target_branch, stage_name="intent", branch=None)
-        fetch_error = _fetch_branch_prefix_error(repo_dir, branch)
-        if fetch_error is not None:
-            return _stage_failure(
-                context,
-                FlowStage.INTENT,
-                start_time,
-                f"Intent stage failed: could not fetch origin branches under {branch} before dispatching the "
-                f"intent creator: {fetch_error}",
-                intent_branch=intent_branch,
-            )
-        if _origin_has_branch(repo_dir, intent_branch):
-            conflict = _reused_intent_conflict(repo_dir, intent_branch, branch, intent_data)
-            if conflict is not None:
-                return _stage_failure(context, FlowStage.INTENT, start_time, conflict, intent_branch=intent_branch)
-            context.log(f"Intent branch '{intent_branch}' already exists on origin; reusing it without re-dispatching.")
-        else:
-            base_error = remote_error(fetch_base, repo_dir, target_branch)
-            if base_error is not None:
-                return _stage_failure(
-                    context,
-                    FlowStage.INTENT,
-                    start_time,
-                    f"Intent stage failed: {base_error}",
-                    intent_branch=intent_branch,
-                )
-            tmp_dir = os.path.expanduser("~/.holon/tmp")
-            os.makedirs(tmp_dir, exist_ok=True)
-            fd, intent_file = tempfile.mkstemp(prefix="holon-flow-intent-", suffix=".json", dir=tmp_dir)
-            try:
-                # mkstemp creates 0600, but the container's 'holon' user (uid 1000) reads the bind mount, as it
-                # reads the 0644 file 'holon intent <file>' mounts. The payload is the intent JSON, not a secret.
-                os.fchmod(fd, 0o644)
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(intent_data, f)
-                exit_code = _dispatch_role(context, "intent-creator", [], intent_file=intent_file)
-            finally:
-                with contextlib.suppress(OSError):
-                    os.remove(intent_file)
-            dispatched = True
-            if exit_code != 0:
-                return _stage_failure(
-                    context,
-                    FlowStage.INTENT,
-                    start_time,
-                    f"Intent stage failed: intent-creator agent exited with code {exit_code}.",
-                    intent_branch=intent_branch,
-                )
-            push_error = remote_error(push_branch, repo_dir, intent_branch)
-            if push_error is not None:
-                return _stage_failure(
-                    context,
-                    FlowStage.INTENT,
-                    start_time,
-                    f"Intent stage failed: {push_error}",
-                    intent_branch=intent_branch,
-                )
-            fetch_error = _fetch_branch_prefix_error(repo_dir, branch)
-            if fetch_error is not None:
-                return _stage_failure(
-                    context,
-                    FlowStage.INTENT,
-                    start_time,
-                    f"Intent stage failed: the intent-creator agent exited 0 but origin branches under {branch} "
-                    f"could not be fetched to verify '{intent_branch}': {fetch_error}",
-                    intent_branch=intent_branch,
-                )
-            if not _origin_has_branch(repo_dir, intent_branch):
-                return _stage_failure(
-                    context,
-                    FlowStage.INTENT,
-                    start_time,
-                    f"Intent stage failed: the intent-creator agent exited cleanly but '{intent_branch}' "
-                    "was not found on origin.",
-                    intent_branch=intent_branch,
-                )
-        _track_local_branch(context, intent_branch)
-
-    end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    context.log(f"Stage 1 completed: Intent branch '{intent_branch}' established.")
-    result = StageResult(
-        stage=FlowStage.INTENT,
-        status=StageStatus.SUCCESS,
-        start_time=start_time,
-        end_time=end_time,
-        payload={
-            "intent_branch": intent_branch,
-            "branch": branch,
-            "slug": raw_slug,
-            "consulted_knowledge_ids": consulted_ids,
-            "dispatched": dispatched,
-            "intent": intent_data,
-        },
-    )
-    context.stage_results["intent"] = result
-    return result
+    context.log(f"Stage 1 completed: Intent branch '{stage.intent_branch}' established.")
+    payload = {
+        "intent_branch": stage.intent_branch,
+        "branch": stage.branch,
+        "slug": stage.slug,
+        "consulted_knowledge_ids": consulted_ids,
+        "dispatched": stage.dispatched,
+        "intent": stage.intent_data,
+    }
+    return stage_success(context, FlowStage.INTENT, "intent", start_time, payload)

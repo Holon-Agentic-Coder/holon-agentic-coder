@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-a1f2bc89",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-21T05:16:33.065177+00:00",
+  "updated_ts": "2026-11-21T05:16:33.065177+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795229816-790ef98e-claude-agent",
+      "REV-1795229816-d3c49b12-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795178792-purge-gemini-agent-runner/P-1795184239-ANA-G3.8F/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 16 iteration(s): not approved: reviewer 1 final verdict FAILED, reviewer 2 final verdict FAILED, reviewer 3 final verdict FAILED; final verdicts: Reviewer 1 FAILED (0/0/0); Reviewer 2 FAILED (0/0/0); Reviewer 3 FAILED (0/0/0)",
+    "symptoms": []
+  }
+}

@@ -86,7 +86,7 @@ def test_ticker_for_resolves_declared_runners(agent, ticker):
     assert agent_ticker(agent) == ticker
 
 
-@pytest.mark.parametrize("agent", ["codex-agent", "gemini-agent", "opencode-agent", "local-model"])
+@pytest.mark.parametrize("agent", ["codex-agent", "opencode-agent", "local-model"])
 def test_a_runner_without_a_ticker_is_rejected_naming_the_runner(agent):
     assert agent_ticker(agent) is None
     with pytest.raises(MissingTickerError) as caught:

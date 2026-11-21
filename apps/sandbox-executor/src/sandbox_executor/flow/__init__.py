@@ -150,7 +150,9 @@ _LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.stages.execute": "_resumable_partial_branch run_execute_stage",
     "sandbox_executor.flow.stages.intent": "IntentStage _reused_intent_conflict run_intent_stage",
     "sandbox_executor.flow.stages.plan": "PlanStage _format_entropy run_plan_stage",
-    "sandbox_executor.flow.stages.plan_decision": "_backfill_plan_row _over_budget_failure _plan_budget_decision",
+    "sandbox_executor.flow.stages.plan_decision": (
+        "PlanBudget _backfill_plan_row _over_budget_failure _plan_budget_decision"
+    ),
     "sandbox_executor.flow.stages.plan_support": "dry_run_plan_result plan_id_of plan_metrics replan_feedback_env",
     "sandbox_executor.flow.stages.review": "TESTS_NOT_MEASURED_ERROR _checkout_execution_branch run_review_stage",
     "sandbox_executor.flow.stages.stage_support": "consult_knowledge intent_payload_file stage_success",
@@ -230,6 +232,7 @@ __all__ = [
     "IntentStage",
     "MigrationTransform",
     "PipelineEngine",
+    "PlanBudget",
     "PlanRefresh",
     "PlanStage",
     "PrefixSide",

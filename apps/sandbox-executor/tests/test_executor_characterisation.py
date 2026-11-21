@@ -10,6 +10,7 @@ pattern, and nothing else is.
 import contextlib
 import io
 import json
+import logging
 import os
 import re
 import subprocess
@@ -19,6 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from sandbox_executor.budgets import BudgetBreach
+from sandbox_executor.cli import PACKAGE_LOGGER_NAME, _CurrentStderrHandler
 from sandbox_executor.entrypoint import executor
 from sandbox_executor.turns import TurnResult
 
@@ -119,7 +121,12 @@ class _Run:
         runner.build_cmd.side_effect = lambda model, pf, inf, prompt: ["agy", prompt]
         stdout, stderr = io.StringIO(), io.StringIO()
         code: int | str | None = None
+        # An earlier test in the same process may have run `configure_cli_logging`, whose handler would put log records
+        # on the captured stderr; the pins cover `main`'s own messages, so detach that handler for the run.
+        package_logger = logging.getLogger(PACKAGE_LOGGER_NAME)
+        handlers = [h for h in package_logger.handlers if not isinstance(h, _CurrentStderrHandler)]
         with (
+            patch.object(package_logger, "handlers", handlers),
             patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": self.workspace}),
             patch.object(executor, "workspace_mounted", return_value=True),
             patch.object(executor, "run_turn", side_effect=fake_run_turn),

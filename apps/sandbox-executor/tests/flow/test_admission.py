@@ -18,7 +18,8 @@ from sandbox_executor.flow import (
     admission_state,
 )
 from sandbox_executor.flow.admission import AdmissionDecision, check_admission, format_refusal
-from sandbox_executor.flow.checkpoint import get_default_checkpoint_path, save_checkpoint
+from sandbox_executor.flow.checkpoint import save_checkpoint
+from sandbox_executor.flow.checkpoint_discovery import get_default_checkpoint_path
 from sandbox_executor.flow.git_refs import _latest_execution_summary
 from sandbox_executor.flow.pipeline import PipelineEngine
 from sandbox_executor.flow.stages import touch_set_guard

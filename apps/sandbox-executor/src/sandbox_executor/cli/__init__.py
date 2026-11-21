@@ -348,9 +348,6 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:  # noqa: C901
         "codex": [
             (os.path.join(home, ".codex"), "/home/holon/.codex"),
         ],
-        "gemini": [
-            (os.path.join(home, ".config/gcloud"), "/home/holon/.config/gcloud"),
-        ],
     }
 
     norm_agent_id = local_llm.normalize_agent_id(agent_id)
@@ -1453,17 +1450,10 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
 
 
 def _report_budgets(env: Mapping[str, str], out: TextIO) -> None:
-    from sandbox_executor.budgets import load_budgets
+    from sandbox_executor.budgets import describe_budgets, load_budgets
 
-    budgets = load_budgets(env)
-    stage_minutes = " ".join(
-        f"{name}={budgets.stage_seconds(name) / 60.0:g}min"
-        for name in ("intent", "plan", "execute", "review_iteration", "calibration")
-    )
-    print(
-        f"budgets turn={budgets.turn.turn_seconds:g}s stall={budgets.turn.stall_seconds:g}s {stage_minutes}",
-        file=out,
-    )
+    for line in describe_budgets(load_budgets(env)):
+        print(line, file=out)
 
 
 def _report_gateways(  # noqa: PLR0913

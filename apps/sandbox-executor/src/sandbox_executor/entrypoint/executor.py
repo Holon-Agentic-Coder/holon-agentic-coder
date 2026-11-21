@@ -823,7 +823,7 @@ def _conflicted_files(repo: GitRepository) -> list[str]:
 
 def _reconcile_conflicted_merge(repo: GitRepository, repo_dir: str, target_ref: str) -> tuple[bool, str]:
     """Resolve an in-flight merge whose conflicts are all append-only ledgers, or abort it and say why."""
-    from sandbox_executor.flow import reconcile_ledger_file
+    from sandbox_executor.ledger.reconcile import reconcile_ledger_file
 
     conflicted_files = _conflicted_files(repo)
     non_ledger_files = [
@@ -1083,7 +1083,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         _configure_executor_identity(repo_dir)
 
         # Proactively check and resolve any stage conflicts
-        from sandbox_executor.flow import check_and_resolve_stage_conflicts
+        from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 
         check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch="main", stage_name="execute")
 
@@ -1453,7 +1453,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "execution_notes": notes_rel,
                 "execution_notes_valid": notes_valid,
                 "elapsed_seconds": round(stage_timer.elapsed(), 1),
-                "budget_seconds": stage_timer.budget_seconds,
+                **stage_timer.ledger_fields(),
             }
             exec_entry.update(test_fields)
             if failure_reason:

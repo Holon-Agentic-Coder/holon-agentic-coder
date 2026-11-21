@@ -14,7 +14,7 @@ import os
 import re
 from typing import Any
 
-from sandbox_executor.flow.checkpoint import get_default_checkpoint_path
+from sandbox_executor.flow.checkpoint_discovery import get_default_checkpoint_path
 from sandbox_executor.flow.context import FlowContext, StageResult
 from sandbox_executor.flow.git_refs import _fetch_branch_prefix_error, _list_child_branches, _origin_has_branch
 from sandbox_executor.flow.github.merge import GhRunner, _merged_result, gh_runner

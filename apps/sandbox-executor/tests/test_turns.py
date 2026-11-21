@@ -9,13 +9,19 @@ from __future__ import annotations
 
 import io
 import os
+import signal
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
+from sandbox_executor.budgets import DEFAULT_TURN_SECONDS, BudgetBreach, StageTimer, TurnBudgets
 from sandbox_executor.cli import _run_docker, run_docker_container
 from sandbox_executor.flow import probe_ci_checks
-from sandbox_executor.turns import build_turn_env, run_turn
+from sandbox_executor.turns import build_turn_env, run_turn, silence_window
+
+from tests import test_turn_supervisor
+from tests.test_turn_supervisor import CHILD_PID, MINUTE, Harness, TickStream
 
 
 class TestTurnExecutionEnvironment(unittest.TestCase):
@@ -165,6 +171,80 @@ class TestTurnExecutionEnvironment(unittest.TestCase):
         passed_env = mock_run.call_args.kwargs.get("env")
         self.assertIsInstance(passed_env, dict)
         self.assertEqual(passed_env.get("DOCKER_CLI_HINTS"), "false")
+
+
+class TestUnlimitedTurnSupervision(unittest.TestCase):
+    """An unlimited turn timeout or stage never fires, while the stall window (and a finite turn limit) still does."""
+
+    def _progressing(self, harness, every=MINUTE):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "notes.md")
+
+        def grow(now):
+            if int(now) % every == 0:
+                with open(path, "a") as f:
+                    f.write(f"section at {now}\n")
+
+        harness.on_tick = grow
+        return path
+
+    def test_progressing_runner_past_an_hour_is_never_stopped_when_unlimited(self):
+        h = Harness(exit_at=3 * 3600)
+        path = self._progressing(h)
+        timer = StageTimer("execute", None, clock=h.clock)
+        result = h.run(turn=None, stall=90, watch_path=path, stage_timer=timer)
+        self.assertIsNone(result.breach)
+        self.assertEqual(h.signals, [])
+        self.assertGreaterEqual(h.clock.now, 3 * 3600)
+
+    def test_streaming_runner_that_goes_silent_is_still_stalled(self):
+        stream = TickStream()
+        h = Harness(exit_at=None, stdout=stream)
+        h.on_tick = lambda now: stream.feed(b"tok ") if now <= 60 else None
+        timer = StageTimer("execute", None, clock=h.clock)
+        result = h.run(turn=None, stall=90, stage_timer=timer)
+        self.assertEqual(result.breach.budget_name, "stall")
+        self.assertEqual(result.breach.budget_seconds, 90)
+        self.assertLess(h.clock.now, 60 + 120)
+        self.assertEqual(h.signals, [(CHILD_PID, signal.SIGTERM)])
+
+    def test_finite_turn_limit_still_fires_under_an_unlimited_stage(self):
+        stream = TickStream()
+        h = Harness(exit_at=None, stdout=stream)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        h.on_tick = lambda now: stream.feed(b"tok ")
+        timer = StageTimer("execute", None, clock=h.clock)
+        result = h.run(turn=300, stall=90, watch_path=os.path.join(tmp.name, "plan.md"), stage_timer=timer)
+        self.assertEqual(result.breach.budget_name, "turn")
+        self.assertLess(h.clock.now, 400)
+
+    def test_non_streaming_silence_window_falls_back_to_the_default_turn(self):
+        self.assertEqual(silence_window(TurnBudgets(turn_seconds=None, stall_seconds=90), streaming=False), 3600)
+        self.assertEqual(silence_window(TurnBudgets(turn_seconds=None, stall_seconds=90), streaming=True), 90)
+        self.assertEqual(silence_window(TurnBudgets(turn_seconds=300, stall_seconds=90), streaming=False), 300)
+        h = Harness(exit_at=None)
+        result = h.run(turn=None, stall=90)
+        self.assertEqual(result.breach.budget_name, "stall")
+        self.assertEqual(result.breach.budget_seconds, DEFAULT_TURN_SECONDS)
+        self.assertLess(h.clock.now, DEFAULT_TURN_SECONDS + 30)
+
+
+class TestUnlimitedAuthoringTurn(unittest.TestCase):
+    """``supervise_authoring_turn`` still resumes after a breach when the stage has no ceiling."""
+
+    def test_resume_runs_under_an_unlimited_stage_however_long_it_ran(self):
+        # Reuse the supervisor suite's scripted-turn harness; a module attribute keeps it out of this file's collection.
+        harness = test_turn_supervisor.TestSuperviseAuthoringTurn("test_no_resume_when_stage_has_no_time_left")
+        harness.setUp()
+        self.addCleanup(harness.doCleanups)
+        harness.timer = StageTimer("plan", None, clock=harness.clock)
+        harness.clock.now = 30 * 24 * 3600
+        stall = BudgetBreach("plan", "stall", 90, 95)
+        outcome = harness.supervise([harness.write("# Plan for I-1\n", breach=stall), harness.write(None)])
+        self.assertEqual(outcome.follow_up, "resume")
+        self.assertEqual(len(outcome.turns), 2)
 
 
 if __name__ == "__main__":

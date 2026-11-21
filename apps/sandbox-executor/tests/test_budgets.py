@@ -221,3 +221,144 @@ def test_replan_and_depth_bounds_are_pinned_to_the_documented_values():
     assert MAX_SUB_INTENT_DEPTH == 2
     # HOLON_* variables are forwarded into role containers, so the feedback variable must keep that prefix.
     assert ENV_REPLAN_FEEDBACK == "HOLON_REPLAN_FEEDBACK"
+
+
+# --- The unlimited sentinel -----------------------------------------------------------------------------------------
+
+_SENTINELS = ("unlimited", "UNLIMITED", " UnLimited ", "\tunlimited\n")
+
+
+@pytest.mark.parametrize("raw", _SENTINELS)
+@pytest.mark.parametrize("stage", sorted(ENV_STAGE_BUDGET_MINUTES))
+def test_each_stage_variable_accepts_the_sentinel(stage, raw, caplog):
+    with caplog.at_level("WARNING", logger="sandbox_executor.budgets"):
+        budgets = load_budgets({ENV_STAGE_BUDGET_MINUTES[stage]: raw})
+    assert budgets.stage_seconds(stage) is None
+    assert budgets.stages.for_stage(stage) is None
+    assert budgets.unlimited_stages() == [stage]
+    # Every other stage keeps its default.
+    others = [name for name in ENV_STAGE_BUDGET_MINUTES if name != stage]
+    assert all(budgets.stage_seconds(name) == StageBudgets().for_stage(name) for name in others)
+    assert [r.levelname for r in caplog.records] == ["WARNING"]
+    assert ENV_STAGE_BUDGET_MINUTES[stage] in caplog.records[0].getMessage()
+
+
+@pytest.mark.parametrize("raw", _SENTINELS)
+def test_the_stage_override_sentinel_makes_every_stage_unlimited(raw):
+    budgets = load_budgets({ENV_STAGE_BUDGET_SECONDS: raw, ENV_STAGE_BUDGET_MINUTES["execute"]: "30"})
+    assert budgets.stage_override_unlimited
+    assert budgets.stage_override_seconds is None
+    assert all(budgets.stage_seconds(name) is None for name in ENV_STAGE_BUDGET_MINUTES)
+    assert budgets.stage_seconds("review") is None
+
+
+@pytest.mark.parametrize("raw", _SENTINELS)
+def test_the_turn_timeout_accepts_the_sentinel(raw):
+    budgets = load_budgets({ENV_TURN_TIMEOUT: raw})
+    assert budgets.turn.turn_seconds is None
+    assert budgets.turn.stall_seconds == 90
+    assert budgets.stage_seconds("execute") == 2700
+
+
+def test_unset_and_blank_still_mean_the_default():
+    for env in ({}, {ENV_STAGE_BUDGET_MINUTES["execute"]: "  ", ENV_TURN_TIMEOUT: ""}):
+        budgets = load_budgets(env)
+        assert budgets.stage_seconds("execute") == 2700
+        assert budgets.turn.turn_seconds == DEFAULT_TURN_SECONDS
+        assert not budgets.stage_override_unlimited
+
+
+@pytest.mark.parametrize("raw", ["inf", "-inf", "nan", "Infinity", "unlimit", "none"])
+def test_infinite_and_near_miss_values_still_keep_the_default(raw, caplog):
+    env = {ENV_STAGE_BUDGET_MINUTES["execute"]: raw, ENV_TURN_TIMEOUT: raw, ENV_STAGE_BUDGET_SECONDS: raw}
+    with caplog.at_level("WARNING", logger="sandbox_executor.budgets"):
+        budgets = load_budgets(env)
+    assert budgets.stage_seconds("execute") == 2700
+    assert budgets.turn.turn_seconds == DEFAULT_TURN_SECONDS
+    assert not budgets.stage_override_unlimited
+    assert len(caplog.records) == 3
+    assert all(raw not in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize("variable", [ENV_TURN_STALL, "HOLON_REVIEW_CI_WAIT_SECONDS"])
+def test_stall_and_ci_wait_reject_the_sentinel(variable, caplog):
+    from sandbox_executor.budgets import resolve_review_ci_wait_seconds
+
+    with caplog.at_level("WARNING", logger="sandbox_executor.budgets"):
+        budgets = load_budgets({variable: "unlimited"})
+        ci_wait = resolve_review_ci_wait_seconds({variable: "unlimited"})
+    assert budgets.turn.stall_seconds == 90
+    assert ci_wait == 1800
+    assert any("not a number" in record.getMessage() for record in caplog.records)
+
+
+def test_an_unlimited_stage_timer_never_breaches():
+    clock = FakeClock()
+    timer = StageTimer("execute", None, clock=clock)
+    clock.now += MAX_BUDGET_SECONDS + 1
+    assert timer.unlimited
+    assert not timer.breached()
+    assert timer.remaining() is None
+    assert timer.has_time_left()
+    assert timer.remaining_capped(30) == 30
+
+
+def test_a_finite_stage_timer_caps_and_runs_out():
+    clock = FakeClock()
+    timer = StageTimer("execute", 60, clock=clock)
+    clock.now += 15
+    assert timer.remaining_capped(30) == 30
+    clock.now += 30
+    assert timer.remaining_capped(30) == 15
+    assert timer.has_time_left()
+    clock.now += 20
+    assert not timer.has_time_left()
+    assert timer.remaining_capped(30) == 0
+
+
+def test_the_summary_line_shows_unlimited():
+    assert format_stage_summary("execute", "ok", 73.2 * 60, None) == "execute: ok (73.2 min / unlimited)"
+    clock = FakeClock()
+    timer = StageTimer("execute", None, clock=clock)
+    clock.now += 73.2 * 60
+    assert timer.summary("ok") == "execute: ok (73.2 min / unlimited)"
+
+
+def test_an_unlimited_timer_hands_down_the_sentinel_and_the_container_honours_it():
+    clock = FakeClock()
+    timer = StageTimer("execute", None, clock=clock)
+    clock.now += 10 * 24 * 3600
+    with active_stage_timer(timer):
+        env = stage_budget_handdown_env()
+    assert env == {ENV_STAGE_BUDGET_SECONDS: "unlimited"}
+    container = load_budgets(env)
+    assert all(container.stage_seconds(name) is None for name in ENV_STAGE_BUDGET_MINUTES)
+
+
+def _error_records(caplog):
+    return [record for record in caplog.records if record.levelname == "ERROR"]
+
+
+def test_every_limit_disabled_logs_one_error(caplog):
+    env = {ENV_TURN_TIMEOUT: "unlimited", ENV_TURN_STALL: "0", ENV_STAGE_BUDGET_MINUTES["execute"]: "unlimited"}
+    with caplog.at_level("WARNING", logger="sandbox_executor.budgets"):
+        load_budgets(env)
+    errors = _error_records(caplog)
+    assert len(errors) == 1
+    assert "execute" in errors[0].getMessage()
+    assert "hung agent" in errors[0].getMessage()
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {ENV_TURN_TIMEOUT: "unlimited", ENV_TURN_STALL: "90", ENV_STAGE_BUDGET_MINUTES["execute"]: "unlimited"},
+        {ENV_TURN_TIMEOUT: "3600", ENV_TURN_STALL: "0", ENV_STAGE_BUDGET_MINUTES["execute"]: "unlimited"},
+        {ENV_TURN_TIMEOUT: "unlimited", ENV_TURN_STALL: "0"},
+    ],
+)
+def test_a_remaining_limit_logs_no_error_but_still_warns(env, caplog):
+    with caplog.at_level("WARNING", logger="sandbox_executor.budgets"):
+        load_budgets(env)
+    assert _error_records(caplog) == []
+    assert any(record.levelname == "WARNING" for record in caplog.records)

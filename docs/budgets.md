@@ -27,6 +27,9 @@ from synthetic throughput data, and the tests that exercise them use injected cl
 | Review CI wait        | 1800 s  | `HOLON_REVIEW_CI_WAIT_SECONDS`                | Waiting for pending CI checks; separate from the review iteration.  |
 | Stage ceiling (exact) | (unset) | `HOLON_STAGE_BUDGET_SECONDS`                  | Replaces every per-stage value above, in seconds.                   |
 
+The turn timeout and every stage variable also accept `unlimited` to remove that ceiling; see
+[Unlimited budgets](#unlimited-budgets).
+
 `HOLON_REVIEW_CI_WAIT_SECONDS` is in seconds, not minutes, and is not part of `HOLON_STAGE_BUDGET_SECONDS`: the wait
 backs off from 15 s to a 120 s ceiling and ends once no check is pending or one has failed (the Stage 5 final-head check
 keeps waiting while a check has failed, so it can name every failed check); `0`, negative and non-numeric values are
@@ -53,15 +56,46 @@ minutes cannot overflow to an infinite budget), are ignored with a warning that 
 the default is kept (except that `HOLON_TURN_STALL_SECONDS=0` is accepted and disables stall detection); an invalid
 `HOLON_STAGE_BUDGET_SECONDS` is ignored, so the per-stage budgets apply. Out-of-range values are rejected, never
 clamped, so no `inf`, `nan` or absurd value reaches the timers, the summary lines or the handed-down
-`HOLON_STAGE_BUDGET_SECONDS`. The model-envelope integers (`HOLON_LOCAL_CONTEXT_WINDOW`, `HOLON_CONTEXT_RESERVE_TOKENS`)
-are rejected the same way above 2147483647, but as a configuration error that stops the run, because a wrong envelope
-cannot fall back to a safe default. All of these variables start with `HOLON_`, so the host CLI forwards them into the
-sandbox container automatically. `holon doctor` prints the effective values.
+`HOLON_STAGE_BUDGET_SECONDS`. "No ceiling" is only ever expressed as the `unlimited` sentinel and carried internally as
+`None`, never as `inf`. The model-envelope integers (`HOLON_LOCAL_CONTEXT_WINDOW`, `HOLON_CONTEXT_RESERVE_TOKENS`) are
+rejected the same way above 2147483647, but as a configuration error that stops the run, because a wrong envelope cannot
+fall back to a safe default. All of these variables start with `HOLON_`, so the host CLI forwards them into the sandbox
+container automatically. `holon doctor` prints the effective values.
 
 > [!NOTE] A turn is a single assistant response, not a runner process. One `claude -p` or `pi -p` invocation performs a
 > whole plan or execution as many responses and legitimately runs for tens of minutes (31.4 min for a real planner run),
 > so the runner process as a whole is bounded only by its stage ceiling and the stall window. The process's own elapsed
 > time is never compared with the turn budget.
+
+### Unlimited budgets
+
+Set a budget variable to `unlimited` to run without that ceiling, instead of a large magic number such as `10080`
+minutes. The sentinel is case-insensitive and whitespace-trimmed (`UNLIMITED` and a padded `Unlimited` both work); any
+other word, and the literal `inf`, `nan` or `Infinity`, is still rejected with a warning and the default is kept. Unset
+or blank still means the default.
+
+- **Accepted by:** the five stage-minute variables
+  (`HOLON_STAGE_BUDGET_{INTENT,PLAN,EXECUTE,REVIEW_ITERATION,CALIBRATION}_MINUTES`), `HOLON_STAGE_BUDGET_SECONDS` (every
+  stage becomes unlimited) and `HOLON_TURN_TIMEOUT_SECONDS`.
+- **Not accepted by:** `HOLON_TURN_STALL_SECONDS`, which already uses `0` to disable stall detection, and
+  `HOLON_REVIEW_CI_WAIT_SECONDS`.
+- **Containers:** an unlimited host stage hands `HOLON_STAGE_BUDGET_SECONDS=unlimited` down to its role containers,
+  which parse it with the same rules, so the container's own per-stage default cannot fire. A container from an older
+  image that does not know the sentinel ignores it as "not a number" and keeps its per-stage default, so it fails safe.
+- **Turn supervision:** with `HOLON_TURN_TIMEOUT_SECONDS=unlimited` the turn budget never fires. Stall detection still
+  does: a streaming runner keeps the `HOLON_TURN_STALL_SECONDS` window, and a non-streaming runner gets
+  `max(HOLON_TURN_STALL_SECONDS, 3600)` (the default turn timeout) instead of an unbounded silence window.
+- **Warnings:** every variable set to `unlimited` logs a `WARNING` naming it, and `holon flow` logs
+  `WARNING: Stage '<stage>' runs with no wall-clock ceiling ...` when an unlimited stage starts. When the turn timeout
+  is `unlimited`, `HOLON_TURN_STALL_SECONDS=0` and at least one stage is unlimited, nothing can stop a hung agent in
+  those stages: `load_budgets` logs this at `ERROR` level and `holon doctor` prints it as a `WARNING:` line. The
+  combination is warned about, not refused, so legitimately long local-model runs keep an escape hatch; the risk is
+  impossible to miss rather than impossible to choose.
+- **Output and ledger:** the summary line reads `execute: ok (73.2 min / unlimited)`; `holon doctor` prints, for
+  example, `budgets turn=unlimited stall=90s ... execute=unlimited ...` (and `stage_override=unlimited` when
+  `HOLON_STAGE_BUDGET_SECONDS` is set to it). The execution summary row records `budget_seconds: null` with
+  `budget: "unlimited"`, and the flow stage payload carries `stage_budget: "unlimited"` (see
+  [Ledger Schema](ledger_schema.md)).
 
 ## Turn supervision
 
@@ -98,7 +132,8 @@ budgets are checked as follows:
 - **Stall** fires when nothing at all (no output, no artefact or tree change, no tool progress) has happened for the
   stall window. The window is `HOLON_TURN_STALL_SECONDS` only once the runner has streamed stdout or stderr output in
   the current response (since the last artefact or tree change); otherwise it is
-  `max(HOLON_TURN_STALL_SECONDS, HOLON_TURN_TIMEOUT_SECONDS)`.
+  `max(HOLON_TURN_STALL_SECONDS, HOLON_TURN_TIMEOUT_SECONDS)`, or `max(HOLON_TURN_STALL_SECONDS, 3600)` when the turn
+  timeout is `unlimited`.
 - **Stage** fires when the stage ceiling is reached, however much progress the process is making.
 
 The stall window only means something for a runner that can signal liveness mid-response. The default runners
@@ -235,7 +270,8 @@ against the plan tip. Otherwise, the executor starts from the plan tip and logs 
 ## Stage summary lines
 
 Every stage reports elapsed time against its budget in the form `stage: status (elapsed min / budget min)`, for example
-`plan: ok (4.1 min / 35 min)`. Elapsed minutes carry one decimal; whole-minute budgets are printed as integers.
+`plan: ok (4.1 min / 35 min)`. Elapsed minutes carry one decimal; whole-minute budgets are printed as integers. An
+unlimited stage prints `unlimited` in place of the budget, for example `execute: ok (73.2 min / unlimited)`.
 
 - The planner and executor entrypoints print the line when they finish (`plan: ok ...`, `execute: failed ...`).
 - `holon flow` logs it for every stage and prints it in the flow summary. The review stage's budget is one review

@@ -64,7 +64,7 @@ def main():  # noqa: PLR0915
         intent_data = json.load(f)
 
     # Front-load clarifying questions validation
-    from sandbox_executor.flow import validate_intent_questions
+    from sandbox_executor.flow.intent_questions import validate_intent_questions
 
     valid_questions, unresolved = validate_intent_questions(intent_data)
     if not valid_questions:
@@ -114,7 +114,7 @@ def main():  # noqa: PLR0915
         sys.exit(1)
 
     # Proactively check and resolve any stage conflicts
-    from sandbox_executor.flow import check_and_resolve_stage_conflicts
+    from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 
     check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch=target_branch, stage_name="intent")
 

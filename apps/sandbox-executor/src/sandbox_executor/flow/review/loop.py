@@ -29,6 +29,7 @@ from sandbox_executor.flow.github.ci import (
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, CiWaitResult, settle_pending_ci
 from sandbox_executor.flow.github.pr import check_pr_mergeability, create_or_update_pr, format_review_git_trailers
 from sandbox_executor.flow.github.review_post import post_pr_review_consensus
+from sandbox_executor.flow.ledger_warning import _warn_ledger_failure
 from sandbox_executor.flow.review.adjudication import (
     Adjudication,
     _augment_pr_text_with_rejected,
@@ -89,7 +90,6 @@ from sandbox_executor.flow.review.verdict import (
     render_final_verdicts,
 )
 from sandbox_executor.flow.review.workspace import reviewers_sandboxed
-from sandbox_executor.flow.stages.execute import _warn_ledger_failure
 from sandbox_executor.knowledge import append_action_event, compute_context_fingerprint
 from sandbox_executor.ledger import (
     LedgerRewriteError,
@@ -386,10 +386,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         elif not is_dirty and not missing_ref and not effective_dry_run and infra_error is None:
             # Post-review CI gate on clean review: wait for CI registration and pending checks to settle.
             if pr_allowed and test_pass_rate is None and not tests_failed and shutil.which("gh"):
-                reg_timeout = min(
-                    resolve_ci_registration_timeout(ci_registration_timeout),
-                    max(0.0, iteration_timer.remaining()),
-                )
+                reg_timeout = iteration_timer.remaining_capped(resolve_ci_registration_timeout(ci_registration_timeout))
                 _wait_for_ci_registration(
                     context,
                     repo_dir,

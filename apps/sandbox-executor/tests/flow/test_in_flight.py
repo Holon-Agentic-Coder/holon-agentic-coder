@@ -5,7 +5,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
+import pytest
+from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, in_flight
 from sandbox_executor.flow.checkpoint import save_checkpoint
 from sandbox_executor.flow.in_flight import (
     MAX_OPEN_PULL_REQUESTS,
@@ -61,17 +62,26 @@ def test_pull_requests_keep_flow_heads_outside_own_lineage(flow_repos):
     assert [flow.label for flow in flows] == [f"pull request #7 (branch {OTHER_HEAD})"]
     assert flows[0].plan_branch == OTHER_PLAN
     assert flows[0].changed_files == ("src/app.py",)
-    assert flows[0].declared == TouchSet((TouchSetEntry("src/app.py"),))
+    assert flows[0].declared is None  # a pull request is compared by its diff, never by its planned touch set
     assert [call[:3] for call in gh.calls] == [["pr", "list", "--state"], ["pr", "diff", "7"]]
 
 
-def test_pull_request_without_readable_plan_row_compares_only_its_diff(flow_repos, caplog):
+def test_pull_request_without_its_plan_branch_on_the_host_compares_only_its_diff(flow_repos, caplog):
     host, _origin = flow_repos
     gh = FakeGh([{"number": 7, "headRefName": OTHER_HEAD}], {7: ["src/app.py"]})
     flows = discover_in_flight_flows(str(host), OWN_HEAD, gh, lambda args, cwd: _ok("worktree " + cwd))
     assert not isinstance(flows, AdmissionUnavailable)
     assert flows[0].declared is None and flows[0].changed_files == ("src/app.py",)
-    assert any(OTHER_PLAN in r.getMessage() and "only its diff" in r.getMessage() for r in caplog.records)
+    assert caplog.records == []  # its plan row is never read, so a missing plan branch warns of nothing
+
+
+def test_a_pull_requests_planned_touch_set_is_never_read(flow_repos, monkeypatch):
+    host, _origin = flow_repos
+    make_plan_branch(host, OTHER_PLAN, [{"path": "src/"}, {"path": "docs/"}])
+    monkeypatch.setattr(in_flight, "read_plan_touch_set", lambda *args: pytest.fail("a plan row was read"))
+    flows = open_flow_pull_requests(str(host), "I-100-own", FakeGh([{"number": 7, "headRefName": OTHER_HEAD}], {7: []}))
+    assert not isinstance(flows, AdmissionUnavailable)
+    assert [(flow.declared, flow.changed_files) for flow in flows] == [(None, ())]
 
 
 def test_gh_failure_returns_admission_unavailable(flow_repos):

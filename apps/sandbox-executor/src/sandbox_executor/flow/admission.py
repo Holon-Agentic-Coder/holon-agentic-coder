@@ -62,10 +62,19 @@ def check_admission(
         return AdmissionDecision(False, reason=f"the admission lock could not be taken: {exc}")
 
 
+#: Overlapping files named per conflict in the refusal message; the payload and ``blocked_by`` keep the full list.
+MAX_REFUSAL_FILES = 20
+
+
+def _file_list(files: tuple[str, ...]) -> str:
+    shown = ", ".join(files[:MAX_REFUSAL_FILES])
+    return f"{shown} and {len(files) - MAX_REFUSAL_FILES} more" if len(files) > MAX_REFUSAL_FILES else shown
+
+
 def format_refusal(decision: AdmissionDecision) -> str:
-    """One message naming every overlapping flow (pull request and branch, or local branch) and its files."""
+    """One message naming every overlapping flow (pull request and branch, or local branch) and its concrete files."""
     if decision.conflicts:
-        overlaps = "; ".join(f"{conflict.label} on {', '.join(conflict.files)}" for conflict in decision.conflicts)
+        overlaps = "; ".join(f"{conflict.label} on {_file_list(conflict.files)}" for conflict in decision.conflicts)
         return (
             f"Stage 3 refused: the touch set overlaps {overlaps}; finish or merge that flow first, "
             "or rerun with --allow-overlap."

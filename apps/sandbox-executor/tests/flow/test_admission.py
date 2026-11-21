@@ -40,7 +40,7 @@ def own_context(host: Path, **overrides) -> FlowContext:
     )
 
 
-def other_pr(diff: list[str]) -> FakeGh:
+def other_pr(diff: list[str] | str) -> FakeGh:
     return FakeGh([{"number": 7, "headRefName": OTHER_HEAD, "baseRefName": "main"}], {7: diff})
 
 
@@ -404,6 +404,23 @@ def test_an_unresolved_target_branch_fails_closed(own_plan):
     context = own_context(own_plan, intent_data={"target_branch": "release-9"})
     decision = check_admission(context, other_pr(["lib/x.py"]), no_worktrees)
     assert not decision.admitted and "the base branch release-9 could not be resolved" in str(decision.reason)
+
+
+def test_with_nothing_in_flight_the_base_is_never_listed(own_plan):
+    context = own_context(own_plan, intent_data={"target_branch": "release-9"})  # an unresolvable base is never read
+    assert check_admission(context, FakeGh([], {}), no_worktrees) == AdmissionDecision(admitted=True)
+
+
+def test_a_pull_request_renaming_a_file_out_of_a_folder_entry_overlaps(flow_repos):
+    """The rename's source is on the base, so it overlaps our folder entry although its destination is new."""
+    host = _own_plan(flow_repos[0], [{"path": "apps/x/tests/"}])
+    seed_base_files(host, BASE_TESTS)
+    rename = (
+        "diff --git a/apps/x/tests/test_old.py b/lib/test_old.py\nsimilarity index 100%\n"
+        "rename from apps/x/tests/test_old.py\nrename to lib/test_old.py\n"
+    )
+    decision = check_admission(own_context(host), other_pr(rename), no_worktrees)
+    assert not decision.admitted and decision.conflicts[0].files == ("apps/x/tests/test_old.py",)
 
 
 BLOCKED_AT = "2026-11-20T01:00:00.000Z"

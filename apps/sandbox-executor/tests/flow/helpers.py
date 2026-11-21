@@ -604,9 +604,9 @@ OTHER_HEAD = "I-200-other/P-201-aaaaaaaa-claude-agent-claude-opus-5-5/E-202-bbbb
 
 
 class FakeGh:
-    """Answers ``gh pr list`` and ``gh pr diff`` from fixed data; ``fail`` makes every call exit 1."""
+    """Answers ``gh pr list`` and ``gh pr diff`` (a patch) from fixed data; ``fail`` makes every call exit 1."""
 
-    def __init__(self, prs: list[dict[str, Any]], diffs: dict[int, list[str]], fail: bool = False):
+    def __init__(self, prs: list[dict[str, Any]], diffs: dict[int, list[str] | str], fail: bool = False):
         self.prs, self.diffs, self.fail = prs, diffs, fail
         self.calls: list[list[str]] = []
 
@@ -616,7 +616,13 @@ class FakeGh:
             return subprocess.CompletedProcess(["gh", *args], 1, "", "HTTP 502")
         if args[:2] == ["pr", "list"]:
             return subprocess.CompletedProcess(["gh", *args], 0, json.dumps(self.prs), "")
-        return subprocess.CompletedProcess(["gh", *args], 0, "\n".join(self.diffs[int(args[2])]), "")
+        diff = self.diffs[int(args[2])]
+        return subprocess.CompletedProcess(["gh", *args], 0, diff if isinstance(diff, str) else patch_of(diff), "")
+
+
+def patch_of(paths: list[str]) -> str:
+    """A ``gh pr diff`` patch modifying each of ``paths`` (a raw patch string is answered as it is)."""
+    return "".join(f"diff --git a/{p} b/{p}\n--- a/{p}\n+++ b/{p}\n@@ -1 +1 @@\n-old\n+new\n" for p in paths)
 
 
 def make_plan_branch(host: Path, plan_branch: str, touch_set: list[dict[str, Any]] | None) -> None:

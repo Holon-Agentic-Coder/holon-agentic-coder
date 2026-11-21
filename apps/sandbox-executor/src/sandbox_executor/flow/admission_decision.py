@@ -4,10 +4,11 @@ The plan row's ``touch_set`` is compared with every flow :mod:`flow.in_flight` d
 (:mod:`touch_set_overlap`) against the files of the base branch (:mod:`flow.base_files`): an open pull request by its
 changed files only (``changed_files_overlap``), a local flow by its declared touch set (``declared_overlap``). A new
 file overlaps only an identical literal path, and folder or glob entries match only base files. Metadata never
-conflicts; a base listing that fails refuses (fail closed). A plan without a touch set, or a discovery that could not
-run, is refused too (fail closed). When nothing overlaps, the flow still defers to an older ready waiter
-(:mod:`flow.admission_order`). An overlap refusal carries the ``blocked_by`` entries :mod:`flow.admission` records;
-``--allow-overlap`` admits any refusal as ``overridden``.
+conflicts; the base is listed only when some flow or waiter is there to compare, and a listing that fails refuses
+(fail closed). A plan without a touch set, or a discovery that could not run, is refused too (fail closed). When
+nothing overlaps, the flow still defers to an older ready waiter (:mod:`flow.admission_order`). An overlap refusal
+carries the ``blocked_by`` entries :mod:`flow.admission` records; ``--allow-overlap`` admits any refusal as
+``overridden``.
 """
 
 from __future__ import annotations
@@ -17,11 +18,12 @@ from typing import Any
 
 from sandbox_executor.flow.admission_order import older_waiter_flows
 from sandbox_executor.flow.admission_state import BlockedBy
-from sandbox_executor.flow.base_files import _base_branch_name, _list_base_files
+from sandbox_executor.flow.base_files import base_branch_name, list_base_files
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.github.merge import GhRunner
 from sandbox_executor.flow.in_flight import (
     AdmissionUnavailable,
+    BlockedWaiter,
     GitRunner,
     InFlightFlow,
     discover_in_flight_flows,
@@ -107,12 +109,26 @@ def decide_admission(context: FlowContext, run_gh: GhRunner | None, run_git: Git
     flows = discover_in_flight_flows(context.target_worktree, own_branch, run_gh, checkpoints=checkpoints)
     if isinstance(flows, AdmissionUnavailable):
         return refusal(context, reason=f"the flows in flight could not be discovered: {flows.reason}")
-    base_files = _list_base_files(context.target_worktree, _base_branch_name(context), run_git)
+    waiters = local_blocked_waiters(context.target_worktree, checkpoints)
+    return _overlap_decision(context, own, flows, waiters, run_git)
+
+
+def _overlap_decision(
+    context: FlowContext,
+    own: TouchSet,
+    flows: list[InFlightFlow],
+    waiters: list[BlockedWaiter],
+    run_git: GitRunner | None,
+) -> AdmissionDecision:
+    """Admit unless ``own`` overlaps a flow in flight or an older ready waiter, on the files of the base branch."""
+    if not flows and not waiters:  # nothing to overlap: the base branch is never listed
+        return AdmissionDecision(admitted=True)
+    base_files = list_base_files(context.target_worktree, base_branch_name(context), run_git)
     if isinstance(base_files, AdmissionUnavailable):
         return refusal(context, reason=f"the files of the base branch could not be listed: {base_files.reason}")
-    waiters = local_blocked_waiters(context.target_worktree, checkpoints)
     pairs = _conflict_pairs(own, flows, base_files)
     if not pairs:
+        plan_branch = str(context.plan_branch or "")
         older = older_waiter_flows(context.admission, plan_branch, TouchSetOnBase(own, base_files), flows, waiters)
         pairs = _conflict_pairs(own, older, base_files)
     if not pairs:

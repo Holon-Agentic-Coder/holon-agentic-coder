@@ -57,14 +57,15 @@ flow reads the active plan row's `touch_set` and compares it with every flow in 
   files; it never fetches, checks out or writes another flow's branch.
 - **Compared:** on concrete files, against the files of the base branch (the intent's `target_branch`, `main` by
   default, origin tracking ref first, listed once per admission with `git ls-tree -r --name-only`, metadata dropped). An
-  open pull request is compared by its real changed files only (`gh pr diff <n> --name-only`), never by its planned
-  touch set; a local flow, and an older waiter, by its declared touch set. A literal entry names itself, whether it
-  exists or not; a folder or glob entry names only the base files it matches. So a changed file that exists on the base
-  overlaps when one of this plan's entries matches it, a new file (absent from the base) overlaps only an identical
-  literal path in the other set, and folder or glob entries on both sides meet only on existing files. A glob written
-  for new files (`tests/test_new_*.py`) therefore overlaps nothing. A path with only a bracket class, such as
-  `app/[id]/page.tsx`, reads as a literal and also as a class against the base. Metadata never conflicts. A base listing
-  that fails (an unresolved branch or a `git` failure) refuses admission (fail closed).
+  open pull request is compared by its real changed files only (the paths of its `gh pr diff <n>` patch, a rename's
+  source and a deleted file included), never by its planned touch set; a local flow, and an older waiter, by its
+  declared touch set. A literal entry names itself, whether it exists or not; a folder or glob entry names only the base
+  files it matches. So a changed file that exists on the base overlaps when one of this plan's entries matches it, a new
+  file (absent from the base) overlaps only an identical literal path in the other set, and folder or glob entries on
+  both sides meet only on existing files. A glob written for new files (`tests/test_new_*.py`) therefore overlaps
+  nothing. A path with only a bracket class, such as `app/[id]/page.tsx`, reads as a literal and also as a class against
+  the base. Metadata never conflicts. A base listing that fails (an unresolved branch or a `git` failure) refuses
+  admission (fail closed); with no flow in flight and no waiter the base is not listed at all.
 - **Refusal:** Stage 3 fails before any dispatch with a message naming each pull request and branch (or local branch and
   worktree) and the concrete overlapping files (never the folder or glob pattern), for example
   `Stage 3 refused: the touch set overlaps pull request #7 (branch I-.../E-.../_) on src/app.py; finish or merge that flow first, or rerun with --allow-overlap.`

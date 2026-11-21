@@ -261,42 +261,6 @@ def score_touch_set(touch_set: TouchSet, changed_paths: list[str]) -> TouchSetSc
     )
 
 
-def _literal_prefix(path: str) -> str:
-    """The part of an entry before its first glob character (the whole path for a literal or a directory)."""
-    cut = min((path.index(char) for char in _GLOB_CHARS if char in path), default=len(path))
-    return path[:cut]
-
-
-def entries_overlap(a: TouchSetEntry, b: TouchSetEntry) -> bool:
-    """Whether two declared entries can name a common file; metadata entries never overlap.
-
-    A literal path overlaps an entry that matches it; two directories overlap when one contains the other; a glob
-    against a directory or a glob overlaps when one literal prefix starts the other. The glob rule is deliberately
-    conservative: a false overlap only asks for ``--allow-overlap``, a missed one lets two flows edit one file.
-    """
-    if is_metadata_path(a.path) or is_metadata_path(b.path):
-        return False
-    if a.path == b.path:
-        return True
-    a_literal = not a.path.endswith("/") and _literal_prefix(a.path) == a.path
-    b_literal = not b.path.endswith("/") and _literal_prefix(b.path) == b.path
-    if a_literal or b_literal:
-        return entry_matches(b, a.path) if a_literal else entry_matches(a, b.path)
-    prefix_a, prefix_b = _literal_prefix(a.path), _literal_prefix(b.path)
-    return prefix_a.startswith(prefix_b) or prefix_b.startswith(prefix_a)
-
-
-def overlapping_entries(own: TouchSet, other: TouchSet) -> list[tuple[str, str]]:
-    """Pairs ``(own entry path, other entry path)`` of declared entries that can name a common file."""
-    pairs = ((mine, theirs) for mine in own.entries for theirs in other.entries)
-    return [(mine.path, theirs.path) for mine, theirs in pairs if entries_overlap(mine, theirs)]
-
-
-def files_in_set(touch_set: TouchSet, paths: list[str]) -> list[str]:
-    """The normalised non-metadata ``paths`` that some declared entry matches, de-duplicated in their first order."""
-    return [path for path in code_paths(paths) if any(entry_matches(entry, path) for entry in touch_set.entries)]
-
-
 def out_of_set_files(touch_set: TouchSet, changed_paths: list[str]) -> list[str]:
     """The normalised non-metadata changed paths that no declared entry matches (the enforcement violations)."""
     return [p for p in code_paths(changed_paths) if not any(entry_matches(entry, p) for entry in touch_set.entries)]

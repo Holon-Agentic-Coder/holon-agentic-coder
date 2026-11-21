@@ -10,7 +10,6 @@ from typing import Any
 
 import pytest
 from sandbox_executor import flow
-from sandbox_executor import ledger as ledger_module
 from sandbox_executor.entrypoint import executor as executor_module
 from sandbox_executor.entrypoint.executor import sync_and_reconcile_pre_push
 from sandbox_executor.flow import (
@@ -155,7 +154,7 @@ class TestPrefixGuard:
     def test_try_append_action_record_propagates_rewrite_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(ledger_module, "assert_ledger_prefix", _report_rewrite)
+        monkeypatch.setattr("sandbox_executor.ledger.lock.assert_ledger_prefix", _report_rewrite)
         reported: list[str] = []
         with pytest.raises(LedgerRewriteError):
             try_append_action_record(
@@ -166,7 +165,7 @@ class TestPrefixGuard:
     def test_try_append_ledger_line_propagates_rewrite_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(ledger_module, "assert_ledger_prefix", _report_rewrite)
+        monkeypatch.setattr("sandbox_executor.ledger.lock.assert_ledger_prefix", _report_rewrite)
         reported: list[str] = []
         with pytest.raises(LedgerRewriteError):
             try_append_ledger_line(
@@ -193,7 +192,7 @@ class TestPrefixGuard:
     ) -> None:
         ledger = tmp_path / "executions.jsonl"
         ledger.write_text(_conflicted(), encoding="utf-8")
-        monkeypatch.setattr("sandbox_executor.flow.ledger_reconcile.assert_ledger_prefix", _report_rewrite)
+        monkeypatch.setattr("sandbox_executor.ledger.reconcile.assert_ledger_prefix", _report_rewrite)
         with pytest.raises(LedgerRewriteError):
             reconcile_ledger_file(str(ledger))
 
@@ -450,7 +449,7 @@ class TestPrePushMerge:
         self._branch_with_intent_row(host)
         self._advance_main(host, origin, tmp_path, "holon-knowledge/ledger/intents.jsonl", '{"slug":"main-row"}\n')
         head = _git(host, "rev-parse", "HEAD")
-        monkeypatch.setattr("sandbox_executor.flow.ledger_reconcile.assert_ledger_prefix", _report_rewrite)
+        monkeypatch.setattr("sandbox_executor.ledger.reconcile.assert_ledger_prefix", _report_rewrite)
 
         with pytest.raises(LedgerRewriteError):
             sync_and_reconcile_pre_push(str(host), target_branch="main")
@@ -537,7 +536,7 @@ def test_executor_rewrite_stops_before_commit(
 ) -> None:
     """The summary-row write and the best-effort action-record writes both fail closed."""
     monkeypatch.setenv("HOLON_ACTION_LOGGING", action_logging)
-    monkeypatch.setattr(ledger_module, "assert_ledger_prefix", _report_rewrite)
+    monkeypatch.setattr("sandbox_executor.ledger.lock.assert_ledger_prefix", _report_rewrite)
     commands = _run_executor_main(tmp_path, monkeypatch)
     assert not any(c[:2] == ["git", "commit"] for c in commands)
 
@@ -611,7 +610,7 @@ def _flow_context(tmp_path: Path, **kwargs: Any) -> flow.FlowContext:
 def test_superseding_row_rewrite_propagates_before_push(
     tmp_path: Path, fake_git: FakeGit, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(ledger_module, "assert_ledger_prefix", _report_rewrite)
+    monkeypatch.setattr("sandbox_executor.ledger.lock.assert_ledger_prefix", _report_rewrite)
     with pytest.raises(LedgerRewriteError):
         flow._append_superseding_execution_row(_flow_context(tmp_path), "I-1/P-2/E-3/_", {"execution_id": "E-3"})
     assert not any(c[:1] in (["commit"], ["push"]) for c in fake_git.calls)

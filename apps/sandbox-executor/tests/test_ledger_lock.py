@@ -2,8 +2,9 @@
 
 import concurrent.futures
 import json
-import multiprocessing
 import os
+import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -185,6 +186,14 @@ def _process_append_worker(ledger_file: str, worker_id: int, count: int) -> None
         append_action_record(ledger_file, _review_record(worker_id, seq), preserve_shape=True)
 
 
+_CHILD_APPEND_SCRIPT = (
+    "import json, sys\n"
+    "from sandbox_executor.ledger import append_action_record\n"
+    "for record in json.load(sys.stdin):\n"
+    "    append_action_record(sys.argv[1], record, preserve_shape=True)\n"
+)
+
+
 def _assert_clean_ledger(ledger_file: str, expected: int) -> None:
     with open(ledger_file, encoding="utf-8") as f:
         raw_lines = f.read().splitlines()
@@ -296,7 +305,7 @@ def test_try_append_action_record_redacts_credentials_in_failure_warning(
     def _fail(*_args: object, **_kwargs: object) -> None:
         raise OSError(f"remote said {sample_value}")
 
-    monkeypatch.setattr("sandbox_executor.ledger.append_action_record", _fail)
+    monkeypatch.setattr("sandbox_executor.ledger.rows.append_action_record", _fail)
     mirrored: list[str] = []
 
     result = try_append_action_record(
@@ -309,17 +318,31 @@ def test_try_append_action_record_redacts_credentials_in_failure_warning(
     assert all(sample_value not in msg for msg in [*messages, *mirrored])
 
 
-@pytest.mark.skipif("fork" not in multiprocessing.get_all_start_methods(), reason="fork start method unavailable")
 def test_concurrent_process_appends_do_not_interleave(tmp_path: Path) -> None:
     """Eight processes appending ~8 KiB records via LedgerLock produce 400 intact lines."""
     ledger_file = str(tmp_path / "executions.jsonl")
-    ctx = multiprocessing.get_context("fork")
-    procs = [ctx.Process(target=_process_append_worker, args=(ledger_file, wid, 50)) for wid in range(8)]
-    for proc in procs:
-        proc.start()
-    for proc in procs:
-        proc.join(timeout=60)
-        assert proc.exitcode == 0
+    # Fresh interpreters that import only sandbox_executor: forking a threaded xdist worker can hang, and
+    # spawn would need to import this test module, which is not importable under --import-mode=importlib.
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", _CHILD_APPEND_SCRIPT, ledger_file],
+            stdin=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(8)
+    ]
+    try:
+        for wid, proc in enumerate(procs):
+            assert proc.stdin is not None
+            proc.stdin.write(json.dumps([_review_record(wid, seq) for seq in range(50)]))
+            proc.stdin.close()
+        for proc in procs:
+            assert proc.wait(timeout=60) == 0
+    finally:
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
     _assert_clean_ledger(ledger_file, 400)
 
 

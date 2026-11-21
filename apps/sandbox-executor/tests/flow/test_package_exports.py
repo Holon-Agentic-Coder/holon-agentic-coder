@@ -8,13 +8,11 @@ Constants are intentionally outside the definitions contract.
 from __future__ import annotations
 
 import ast
-import sys
+import importlib
 from pathlib import Path
 
 import pytest
 import sandbox_executor.flow as flow
-from sandbox_executor.flow import pipeline
-from sandbox_executor.flow.stages import children
 
 # Names flow.py imported from elsewhere that callers and tests still reach as ``sandbox_executor.flow.<name>``.
 REEXPORTED_IMPORTS = (
@@ -25,12 +23,10 @@ REEXPORTED_IMPORTS = (
     "run_git",
 )
 
-# Namespaces captured at import (collection) time, before any fixture patches a submodule binding.
-FLOW_NAMESPACES = {
-    name: dict(vars(module))
-    for name, module in list(sys.modules.items())
-    if name == "sandbox_executor.flow" or name.startswith("sandbox_executor.flow.")
-}
+
+def owner_binding(name: str) -> object:
+    """The object ``name`` is bound to in the submodule that defines it."""
+    return getattr(importlib.import_module(DEFINITIONS[name]), name)
 
 
 FLOW_PACKAGE_DIR = Path(flow.__file__).resolve().parent
@@ -183,18 +179,12 @@ def test_every_public_definition_is_listed_in_all():
 
 @pytest.mark.parametrize("name", sorted(set(DEFINITIONS) - KNOWN_UNEXPORTED))
 def test_package_reexports_each_definition_from_its_module(name):
-    owner = FLOW_NAMESPACES[DEFINITIONS[name]][name]
     assert name in flow.__all__
-    assert FLOW_NAMESPACES["sandbox_executor.flow"][name] is owner
+    assert getattr(flow, name) is owner_binding(name)
 
 
 def test_every_definition_listed_in_all_resolves_to_its_owning_module():
-    stale = [
-        name
-        for name in flow.__all__
-        if name in DEFINITIONS
-        and FLOW_NAMESPACES["sandbox_executor.flow"][name] is not FLOW_NAMESPACES[DEFINITIONS[name]][name]
-    ]
+    stale = [name for name in flow.__all__ if name in DEFINITIONS and getattr(flow, name) is not owner_binding(name)]
     assert stale == []
 
 
@@ -222,7 +212,3 @@ def test_the_check_reports_a_definition_added_without_being_re_exported(tmp_path
 def test_package_reexports_the_imported_names_callers_reach(name):
     assert name in flow.__all__
     assert hasattr(flow, name)
-
-
-def test_the_child_loop_sees_the_pipeline_engine_through_the_late_binding():
-    assert children.PipelineEngine is pipeline.PipelineEngine

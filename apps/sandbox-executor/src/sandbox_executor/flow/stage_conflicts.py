@@ -17,8 +17,86 @@ from sandbox_executor.git import run_git
 
 logger = logging.getLogger(__name__)
 
+UNMERGED_PREFIXES = ("UU", "AA", "UD", "DU", "DD", "AU", "UA")
 
-def check_and_resolve_stage_conflicts(  # noqa: C901, PLR0912, PLR0915
+
+def _parse_porcelain_unmerged(stdout: str) -> list[str]:
+    """The unmerged paths ``git status --porcelain`` output reports, in order and without duplicates."""
+    conflicting_files: list[str] = []
+    for line in stdout.splitlines():
+        line_str = line.strip()
+        if not line_str or len(line_str) < 3:
+            continue
+        prefix = line_str[:2]
+        if prefix in UNMERGED_PREFIXES or prefix.startswith("U") or prefix.endswith("U"):
+            file_path = line_str[2:].strip().strip("\"'")
+            if " -> " in file_path:
+                file_path = file_path.split(" -> ")[1].strip().strip("\"'")
+            if file_path not in conflicting_files:
+                conflicting_files.append(file_path)
+    return conflicting_files
+
+
+def _probe_upstream_conflicts(repo_dir: str, branch: str, target_branch: str) -> list[str]:
+    """The paths ``git merge-tree`` reports conflicting when ``branch`` is not mergeable into ``target_branch``.
+
+    The probe is non-fatal: any failure is logged at DEBUG level and yields no paths.
+    """
+    probed: list[str] = []
+    try:
+        merge_diag = check_pr_mergeability(repo_dir, branch=branch, target_branch=target_branch)
+        if merge_diag.get("is_dirty") or merge_diag.get("mergeable") == "CONFLICTING":
+            target_ref = f"origin/{target_branch}"
+            ref_chk = run_git(["rev-parse", "--verify", target_ref], cwd=repo_dir, check=False)
+            if ref_chk.returncode != 0:
+                target_ref = target_branch
+
+            branch_ref = (
+                branch if branch == "HEAD" else (_resolve_branch_ref(repo_dir, branch, prefer_remote=False) or branch)
+            )
+            mt_proc = run_git(["merge-tree", branch_ref, target_ref], cwd=repo_dir, check=False)
+            mt_raw = getattr(mt_proc, "stdout", "")
+            mt_out = mt_raw if isinstance(mt_raw, str) else ""
+            if mt_out:
+                for line in mt_out.splitlines():
+                    if "CONFLICT" in line or line.startswith("changed in both"):
+                        for p in line.split():
+                            p_clean = p.strip(",:\"'")
+                            if (os.sep in p_clean or "." in p_clean) and p_clean not in probed:
+                                probed.append(p_clean)
+    except Exception as exc:
+        logger.debug("Non-fatal upstream mergeability probe in check_and_resolve_stage_conflicts: %s", exc)
+    return probed
+
+
+def _partition_and_resolve_conflicts(
+    repo_dir: str,
+    conflicting_files: list[str],
+    probe_branch: str,
+    probed_files: set[str],
+) -> tuple[list[str], list[str]]:
+    """Resolve the conflicted ledgers by pure append and return ``(resolved_ledgers, non_ledger_conflicts)``.
+
+    A ledger that cannot be resolved counts as a non-ledger conflict, so the caller fails closed on it.
+    """
+    resolved_ledgers: list[str] = []
+    non_ledger_conflicts: list[str] = []
+    for f in conflicting_files:
+        norm_f = f.replace("\\", "/")
+        if not ("holon-knowledge/ledger" in norm_f and norm_f.endswith(".jsonl")):
+            non_ledger_conflicts.append(f)
+        elif probe_branch != "HEAD" and f in probed_files:
+            # The probed branch is not checked out, so the working-tree copy is not its ledger; append-only
+            # ledgers reconcile at merge time and must not be rewritten in the operator's checkout here.
+            continue
+        elif _resolve_conflicting_ledger(repo_dir, norm_f):
+            resolved_ledgers.append(norm_f)
+        else:
+            non_ledger_conflicts.append(norm_f)
+    return resolved_ledgers, non_ledger_conflicts
+
+
+def check_and_resolve_stage_conflicts(
     repo_dir: str,
     target_branch: str = "main",
     stage_name: str = "",
@@ -51,58 +129,20 @@ def check_and_resolve_stage_conflicts(  # noqa: C901, PLR0912, PLR0915
     Raises:
         ConflictResolutionError: When unresolvable non-ledger conflicts exist.
     """
-    conflicting_files: list[str] = []
-    resolved_ledgers: list[str] = []
-
     # 1. Inspect git status --porcelain with isinstance guard for MagicMock test compatibility
     status_proc = run_git(["status", "--porcelain"], cwd=repo_dir, check=False)
     raw_out = getattr(status_proc, "stdout", "")
     stdout = raw_out if isinstance(raw_out, str) else ""
-
-    unmerged_prefixes = ("UU", "AA", "UD", "DU", "DD", "AU", "UA")
-    for line in stdout.splitlines():
-        line_str = line.strip()
-        if not line_str or len(line_str) < 3:
-            continue
-        prefix = line_str[:2]
-        if prefix in unmerged_prefixes or prefix.startswith("U") or prefix.endswith("U"):
-            file_path = line_str[2:].strip().strip("\"'")
-            if " -> " in file_path:
-                file_path = file_path.split(" -> ")[1].strip().strip("\"'")
-            if file_path not in conflicting_files:
-                conflicting_files.append(file_path)
+    conflicting_files = _parse_porcelain_unmerged(stdout)
 
     # 2. Check mergeability against target_branch if clean so far
     probe_branch = (branch or "").strip()
     probed_files: list[str] = []
     if not conflicting_files and probe_branch:
-        try:
-            merge_diag = check_pr_mergeability(repo_dir, branch=probe_branch, target_branch=target_branch)
-            if merge_diag.get("is_dirty") or merge_diag.get("mergeable") == "CONFLICTING":
-                target_ref = f"origin/{target_branch}"
-                ref_chk = run_git(["rev-parse", "--verify", target_ref], cwd=repo_dir, check=False)
-                if ref_chk.returncode != 0:
-                    target_ref = target_branch
-
-                branch_ref = (
-                    probe_branch
-                    if probe_branch == "HEAD"
-                    else (_resolve_branch_ref(repo_dir, probe_branch, prefer_remote=False) or probe_branch)
-                )
-                mt_proc = run_git(["merge-tree", branch_ref, target_ref], cwd=repo_dir, check=False)
-                mt_raw = getattr(mt_proc, "stdout", "")
-                mt_out = mt_raw if isinstance(mt_raw, str) else ""
-                if mt_out:
-                    for line in mt_out.splitlines():
-                        if "CONFLICT" in line or line.startswith("changed in both"):
-                            parts = line.split()
-                            for p in parts:
-                                p_clean = p.strip(",:\"'")
-                                if (os.sep in p_clean or "." in p_clean) and p_clean not in conflicting_files:
-                                    conflicting_files.append(p_clean)
-                                    probed_files.append(p_clean)
-        except Exception as exc:
-            logger.debug("Non-fatal upstream mergeability probe in check_and_resolve_stage_conflicts: %s", exc)
+        probed_files = _probe_upstream_conflicts(repo_dir, probe_branch, target_branch)
+        for pf in probed_files:
+            if pf not in conflicting_files:
+                conflicting_files.append(pf)
 
     # Also count ledgers whose working-tree copy holds line-anchored conflict markers
     for rel_path in _ledgers_with_conflict_markers(repo_dir):
@@ -110,19 +150,9 @@ def check_and_resolve_stage_conflicts(  # noqa: C901, PLR0912, PLR0915
             conflicting_files.append(rel_path)
 
     # 3. Resolve ledger conflicts by pure append; never stage them here
-    non_ledger_conflicts: list[str] = []
-    for f in conflicting_files:
-        norm_f = f.replace("\\", "/")
-        if not ("holon-knowledge/ledger" in norm_f and norm_f.endswith(".jsonl")):
-            non_ledger_conflicts.append(f)
-        elif probe_branch != "HEAD" and f in probed_files:
-            # The probed branch is not checked out, so the working-tree copy is not its ledger; append-only
-            # ledgers reconcile at merge time and must not be rewritten in the operator's checkout here.
-            continue
-        elif _resolve_conflicting_ledger(repo_dir, norm_f):
-            resolved_ledgers.append(norm_f)
-        else:
-            non_ledger_conflicts.append(norm_f)
+    resolved_ledgers, non_ledger_conflicts = _partition_and_resolve_conflicts(
+        repo_dir, conflicting_files, probe_branch, set(probed_files)
+    )
 
     if non_ledger_conflicts:
         err_msg = (

@@ -113,7 +113,7 @@ def resolve_partial_head(
     refusal = _resume_refusal(partial_branch, plan_branch_prefix)
     if refusal:
         return ResumeStart(None, refusal)
-    from sandbox_executor.flow import failed_partial_head
+    from sandbox_executor.flow.partial_head import failed_partial_head
 
     exec_id = partial_branch.removesuffix("/_").rsplit("/", 1)[-1]
     branch_ref = f"refs/remotes/origin/{partial_branch}"

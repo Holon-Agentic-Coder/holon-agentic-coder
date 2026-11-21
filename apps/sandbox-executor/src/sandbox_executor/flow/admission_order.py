@@ -1,12 +1,12 @@
 """Stage 3 admission order: the oldest overlapping waiter whose blockers have all cleared is admitted first.
 
 A flow that finds no overlap still defers to a blocked waiter (:class:`flow.in_flight.BlockedWaiter`) whose declared
-touch set overlaps its own, whose ``(blocked_since, plan_branch)`` key is strictly smaller than its own (a flow never
-refused uses "now", so every waiter is older) and whose ``blocked_by`` entries are all clear: a pull request no longer
-open, a local flow neither in flight nor waiting. An entry naming this flow itself is clear (an admitted flow never
-defers, so this one is not running while it re-checks); one naming a pull request or another flow of this lineage is
-never clear, since discovery does not list them. Every deferral points at a strictly older key, a total order, so the
-waits-for graph stays acyclic.
+touch set overlaps its own on concrete files (``touch_set_overlap.declared_overlap`` against the base branch's files),
+whose ``(blocked_since, plan_branch)`` key is strictly smaller than its own (a flow never refused uses "now", so every
+waiter is older) and whose ``blocked_by`` entries are all clear: a pull request no longer open, a local flow neither in
+flight nor waiting. An entry naming this flow itself is clear (an admitted flow never defers, so this one is not running
+while it re-checks); one naming a pull request or another flow of this lineage is never clear, since discovery does not
+list them. Every deferral points at a strictly older key, a total order, so the waits-for graph stays acyclic.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from sandbox_executor.flow.admission_state import (
     BlockedBy,
 )
 from sandbox_executor.flow.in_flight import BlockedWaiter, InFlightFlow, root_intent
-from sandbox_executor.touch_set import TouchSet, overlapping_entries
+from sandbox_executor.touch_set_overlap import TouchSetOnBase
 
 
 def waiter_key(waiter: BlockedWaiter) -> tuple[str, str]:
@@ -42,7 +42,7 @@ def blocker_is_clear(entry: BlockedBy, open_numbers: set[int], busy: set[str], o
 
 def older_ready_waiter(
     own_key: tuple[str, str],
-    own: TouchSet,
+    own: TouchSetOnBase,
     flows: list[InFlightFlow],
     waiters: list[BlockedWaiter],
 ) -> BlockedWaiter | None:
@@ -58,7 +58,7 @@ def older_ready_waiter(
         and waiter.record.blocked_since  # a record without its refusal time has no place in the order
         and waiter_key(waiter) < own_key
         and waiter.declared is not None
-        and overlapping_entries(own, waiter.declared)
+        and own.overlap(waiter.declared)
         and all(blocker_is_clear(entry, open_numbers, busy, own_plan_branch) for entry in waiter.record.blocked_by)
     ]
     return min(ready, key=waiter_key, default=None)
@@ -67,7 +67,7 @@ def older_ready_waiter(
 def older_waiter_flows(
     admission: dict[str, Any] | None,
     plan_branch: str,
-    own: TouchSet,
+    own: TouchSetOnBase,
     flows: list[InFlightFlow],
     waiters: list[BlockedWaiter],
 ) -> list[InFlightFlow]:

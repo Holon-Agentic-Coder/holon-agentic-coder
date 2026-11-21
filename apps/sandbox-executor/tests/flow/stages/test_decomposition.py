@@ -1134,3 +1134,72 @@ class TestEntropyBudgetHandoffInFlow:
         assert res.error is not None
         assert res.error.startswith(f"Execute stage failed: the executor agent exited {OVER_BUDGET_EXIT_CODE} but ")
         assert res.error.endswith("could not be fetched to adopt its execution branch: network down")
+
+
+class TestPlanDecomposition:
+    """PlanDecomposition owns the sub-intent list checks, the failure payloads and the child-branch naming."""
+
+    BASE_KEYS: frozenset[str] = frozenset({"execution_id", "decomposed", "sub_intents", "children"})
+    PLAN_BRANCH = "I-1-parent/P-2-agent-model/_"
+
+    @staticmethod
+    def _failed_payload_keys(ctx: FlowContext, row: dict[str, Any]) -> set[str]:
+        res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, {"execution_id": "E-1"})
+        assert res.status == StageStatus.FAILED
+        return set(res.payload)
+
+    def test_the_no_items_failure_carries_no_plan_branch(self):
+        ctx = FlowContext(token_reduce=False, plan_branch=self.PLAN_BRANCH)
+        assert self._failed_payload_keys(ctx, {"sub_intents": []}) == self.BASE_KEYS
+
+    def test_the_depth_failure_carries_the_plan_branch_only(self):
+        ctx = FlowContext(
+            token_reduce=False, plan_branch=self.PLAN_BRANCH, intent_data={"sub_intent_depth": MAX_SUB_INTENT_DEPTH}
+        )
+        row = {"sub_intents": [{"slug": "child"}], "entropy_budget": 5.0}
+        assert self._failed_payload_keys(ctx, row) == self.BASE_KEYS | {"plan_branch"}
+
+    def test_the_missing_plan_branch_failure_records_it_as_none(self):
+        ctx = FlowContext(token_reduce=False)
+        row = {"sub_intents": [{"slug": "child"}], "entropy_budget": 5.0}
+        res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, {"execution_id": "E-1"})
+        assert (
+            res.error == "Execute stage failed: no plan branch is known, so the sub-intents cannot be nested under it."
+        )
+        assert set(res.payload) == self.BASE_KEYS | {"plan_branch"}
+        assert res.payload["plan_branch"] is None
+
+    def test_a_child_branch_too_long_fails_after_the_target_and_budget_are_recorded(self):
+        ctx = FlowContext(token_reduce=False, intent_data={"target_branch": "develop"})
+        row = {
+            "sub_intents": [{"slug": "child"}],
+            "plan_branch": f"I-1-{'a' * 300}/P-2-agent-model/_",
+            "entropy_budget": 5.0,
+        }
+        res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, {"execution_id": "E-1"})
+        assert set(res.payload) == self.BASE_KEYS | {"plan_branch", "parent_target_branch", "entropy_budget"}
+        assert (res.payload["parent_target_branch"], res.payload["entropy_budget"]) == ("develop", 5.0)
+
+    def test_from_summary_row_keeps_dict_items_and_prefers_the_context_plan_branch(self):
+        row = {"sub_intents": [{"slug": "a"}, "not-a-dict", 3, {"slug": "b"}], "plan_branch": "I-9-other/P-1-x/_"}
+        decomposition = flow_module.PlanDecomposition.from_summary_row(
+            FlowContext(token_reduce=False, plan_branch=self.PLAN_BRANCH), row
+        )
+        assert decomposition.items == [{"slug": "a"}, {"slug": "b"}]
+        assert decomposition.plan_branch == self.PLAN_BRANCH
+        fallback = flow_module.PlanDecomposition.from_summary_row(FlowContext(token_reduce=False), row)
+        assert fallback.plan_branch == "I-9-other/P-1-x/_"
+        assert flow_module.PlanDecomposition.from_summary_row(FlowContext(), {"sub_intents": "x"}).items == []
+
+    @pytest.mark.parametrize(
+        ("index", "slug"), [(1, "add-the-parser"), (2, "Add The CLI flag!"), (3, ""), (4, "x" * 200)]
+    )
+    def test_child_branch_is_the_child_progress_name(self, index, slug):
+        decomposition = flow_module.PlanDecomposition(FlowContext(token_reduce=False), [], self.PLAN_BRANCH)
+        assert decomposition.child_branch(index, slug) == flow_module._child_intent_branch(
+            self.PLAN_BRANCH, index, slug
+        )
+
+    def test_depth_counts_the_children_one_level_below_the_intent(self):
+        ctx = FlowContext(token_reduce=False, intent_data={"sub_intent_depth": 2})
+        assert flow_module.PlanDecomposition(ctx, [], "").depth() == 3

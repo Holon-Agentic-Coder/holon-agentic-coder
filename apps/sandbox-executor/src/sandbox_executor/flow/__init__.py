@@ -144,9 +144,8 @@ _LAZY_EXPORTS: dict[str, str] = {
         "_commit_stage5_promoted_artifacts _commit_stage5_reconciliation run_calibrate_stage"
     ),
     "sandbox_executor.flow.stages.children": "_PR_URL_RE _child_context _child_review_pr",
-    "sandbox_executor.flow.stages.decomposition": (
-        "_decomposition_child_lines _run_decomposed_plan _sub_intent_depth_error format_decomposition_summary"
-    ),
+    "sandbox_executor.flow.stages.decomposition": "PlanDecomposition _run_decomposed_plan _sub_intent_depth_error",
+    "sandbox_executor.flow.stages.decomposition_summary": "_decomposition_child_lines format_decomposition_summary",
     "sandbox_executor.flow.stages.execute": "_resumable_partial_branch run_execute_stage",
     "sandbox_executor.flow.stages.intent": "IntentStage _reused_intent_conflict run_intent_stage",
     "sandbox_executor.flow.stages.plan": "PlanStage _format_entropy run_plan_stage",
@@ -233,6 +232,7 @@ __all__ = [
     "MigrationTransform",
     "PipelineEngine",
     "PlanBudget",
+    "PlanDecomposition",
     "PlanRefresh",
     "PlanStage",
     "PrefixSide",

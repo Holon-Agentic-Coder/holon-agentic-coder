@@ -22,7 +22,7 @@ apps/sandbox-executor/
 │       ├── context_cleaner.py   # Context and git workspace sanitisation
 │       ├── entrypoint/          # Sandbox role entrypoints & Stage 4 review loop
 │       │   ├── planner.py       # Sandboxed plan generation entrypoint
-│       │   ├── executor.py      # Sandboxed execution entrypoint & credential scrubber
+│       │   ├── executor/        # Sandboxed execution entrypoint package & credential scrubber
 │       │   └── review_loop.py   # Autonomous native PR review loop runner
 │       ├── knowledge/           # Knowledge & Wisdom consult engine
 │       │   ├── consult.py       # Multi-label consult engine & payload token budgeter
@@ -284,7 +284,7 @@ local branch.
 For the Stage 3 executor, the host fetches the plan branch (and any partial execution branch a resume continues) into
 the worktree before dispatch: `holon flow` through its existing fetch of the plan's branches, and `holon execute`
 through `git_flow.fetch_origin_branch()`, after provisioning or reusing the plan's `flow-<slug>` worktree when it is
-given a default-branch checkout. The entrypoint (`entrypoint/executor.py`) recognises the mount by
+given a default-branch checkout. The entrypoint (the `entrypoint/executor/` package) recognises the mount by
 `HOLON_TARGET_WORKTREE` naming the sandbox workspace path and then never clones, fetches, resets or cleans: it requires
 a readable `HEAD`, a worktree without uncommitted changes (edits left by a crashed run stay on the host and are never
 swept into a new execution) and a plan branch that already resolves, creates the execution branch from the plan tip (or

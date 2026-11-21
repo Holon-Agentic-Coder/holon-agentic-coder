@@ -136,3 +136,24 @@ def review_summary_lines(loop_res: dict[str, Any]) -> list[str]:
     )
     lines.append(f"  Roles          : {roles}; open findings: {len(review_data.get('findings') or [])}")
     return lines
+
+
+def _loop_status(
+    consensus_reached: bool,
+    verdict: ConsensusVerdict | None,
+    failed: bool,
+    is_dirty: bool,
+    tests_not_measured: bool,
+) -> str:
+    """Map the loop outcome to its consensus status."""
+    if consensus_reached:
+        return "approved"
+    if failed or verdict is ConsensusVerdict.FAILED:
+        return "failed"
+    if is_dirty:
+        return "conflicted_dirty"
+    if tests_not_measured:
+        return "not_measured"
+    if verdict is ConsensusVerdict.CHANGES_REQUESTED:
+        return "changes_requested"
+    return "rejected"

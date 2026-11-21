@@ -1,306 +1,176 @@
 """Holon Flow Orchestration Pipeline Engine.
 
-Automates the complete 5-stage Holon Flow lifecycle. Stages 1-3 dispatch the same containerised role
-agents as 'holon intent', 'holon plan' and 'holon execute' (via cli.dispatch_role_agent), so a flow run
-is equivalent to invoking the stages by hand; the flow orchestrates and validates but never authors content:
-1. Stage 1 (Intent Creation): Validate intent payload, dispatch the intent-creator agent, verify its branch.
-2. Stage 2 (Plan Generation): Dispatch the planner agent and adopt the plan branch and plans/P-*.md it pushed;
-   fail (never fabricate a plan) when no planner produced one.
-3. Stage 3 (Plan Execution): Dispatch the executor agent, adopt its execution branch, and fail an execution
-   whose diff against the plan branch is empty outside holon-knowledge/ledger/, plans/ and executions/.
-4. Stage 4 (Review Loop): Autonomous review loop evaluating diffs and test results, strictly enforcing
-   the human-only PR merge rule by halting at consensus approval without merging to main.
-5. Stage 5 (Post-Execution Calibration): Calibrate the execution branch, reporting on its /calibrated branch.
-
+Automates the complete 5-stage Holon Flow lifecycle (Stages 1-5).
 The engine is split into focused modules; see docs/architecture.md (Flow engine module map).
+
+The re-exports resolve lazily on first access, so importing one flow submodule (as the container entrypoints do)
+does not load the host engine (``flow.pipeline``, ``flow.stages``) through this package.
 """
 
 from __future__ import annotations
 
-from sandbox_executor.entrypoint.planner import parse_metrics
-from sandbox_executor.flow.admission import admission_stage_failure, check_admission, format_refusal, record_admission
-from sandbox_executor.flow.admission_decision import AdmissionConflict, AdmissionDecision, decide_admission, refusal
-from sandbox_executor.flow.admission_lock import AdmissionLockError, admission_lock, admission_lock_path
-from sandbox_executor.flow.admission_order import blocker_is_clear, older_ready_waiter, older_waiter_flows, waiter_key
-from sandbox_executor.flow.admission_record import override_already_recorded
-from sandbox_executor.flow.admission_state import AdmissionRecord, BlockedBy, admitted_record, blocked_record, utc_now
-from sandbox_executor.flow.calibrate_rebuild import (
-    holds_only_calibration_commits,
-    is_ancestor,
-    is_calibration_commit,
-    is_calibration_path,
-    rebuild_calibrated_branch,
-    stale_calibrated_refs,
-)
-from sandbox_executor.flow.calibrate_rerun import (
-    HeadMoveCheck,
-    RerunSeams,
-    head_move_since_calibration,
-    post_stale_signal,
-    report_staleness,
-    rerun_calibration,
-    review_calibration_freshness,
-)
-from sandbox_executor.flow.calibrate_sync import (
-    CalibrationSyncError,
-    discard_empty_calibrated_branch,
-    prepare_calibrated_branch,
-    publish_calibration,
-    record_starting_branch,
-    restore_starting_branch,
-    sync_execution_ref,
-)
-from sandbox_executor.flow.checkpoint import (
-    CHECKPOINT_MIGRATION_REGISTRY,
-    CURRENT_CHECKPOINT_SCHEMA_VERSION,
-    FlowCheckpoint,
-    MigrationTransform,
-    _migrate_v0_to_v1,
-    get_default_checkpoint_path,
-    load_checkpoint,
-    migrate_checkpoint_data,
-    save_admission,
-    save_checkpoint,
-)
-from sandbox_executor.flow.child_progress import _child_intent_branch, _sub_intent_depth
-from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS, CURRENT_CONTEXT_SCHEMA_VERSION
-from sandbox_executor.flow.context import (
-    _SUMMARY_STATUS_WORDS,
-    FlowContext,
-    FlowStage,
-    StageResult,
-    StageStatus,
-    _support_legacy_repo_dir,
-)
-from sandbox_executor.flow.dispatch import (
-    _dispatch_role,
-    _get_dispatcher,
-    _stage_failure,
-    _test_evidence,
-    recorded_test_pass_rate,
-)
-from sandbox_executor.flow.execution_publish import (
-    held_execution_failure,
-    hold_unrecorded_executions,
-    publish_with_first_row,
-    unrecorded_executions,
-)
-from sandbox_executor.flow.git_refs import (
-    EXECUTOR_GIT_ENV,
-    _append_ledger_row,
-    _append_superseding_execution_row,
-    _discover_child_branch,
-    _execution_effective_diff,
-    _execution_parent_plan_branch,
-    _fetch_branch_prefix,
-    _fetch_branch_prefix_error,
-    _fetch_refspecs_error,
-    _git_show_text,
-    _has_origin_remote,
-    _latest_execution_summary,
-    _list_child_branches,
-    _origin_has_branch,
-    _read_ledger_rows,
-    _resolve_branch_ref,
-    _resolve_review_commit,
-    _snapshot_child_branches,
-    _sync_local_execution_refs,
-    _track_local_branch,
-    fast_forward_local_branch,
-)
-from sandbox_executor.flow.github.ci import (
-    CI_REGISTRATION_TIMEOUT_ENV_VAR,
-    CI_REGISTRATION_TIMEOUT_SECONDS,
-    _ci_green,
-    _extract_failed_ci_check_names,
-    _wait_for_ci_registration,
-    probe_ci_checks,
-    resolve_ci_registration_timeout,
-)
-from sandbox_executor.flow.github.ci_final_head import format_final_head_ci
-from sandbox_executor.flow.github.ci_reverify import rerun_note
-from sandbox_executor.flow.github.ci_wait import (
-    CiWaitPolicy,
-    CiWaitResult,
-    is_pending_only,
-    next_poll_interval,
-    pending_check_names,
-    settle_pending_ci,
-    wait_for_pending_ci,
-)
-from sandbox_executor.flow.github.merge import BranchMerge, merge_branch_detailed
-from sandbox_executor.flow.github.merge_method import choose_merge_flag, lookup_merge_flag
-from sandbox_executor.flow.github.pr import (
-    _resolve_commit_ref,
-    check_pr_mergeability,
-    create_or_update_pr,
-    format_review_git_trailers,
-    generate_semantic_pr_metadata,
-)
-from sandbox_executor.flow.github.review_post import post_pr_review_consensus
-from sandbox_executor.flow.host_remote import (
-    HostRemoteError,
-    fetch_base,
-    new_local_child_branches,
-    publish_new_child_branches,
-    push_branch,
-    push_commit,
-    remote_error,
-)
-from sandbox_executor.flow.in_flight import (
-    AdmissionUnavailable,
-    BlockedWaiter,
-    InFlightFlow,
-    discover_in_flight_flows,
-    local_blocked_waiters,
-    local_in_flight_flows,
-    open_flow_pull_requests,
-    other_checkpoints,
-    read_plan_touch_set,
-    root_intent,
-)
-from sandbox_executor.flow.intent_questions import validate_intent_questions
-from sandbox_executor.flow.ledger_reconcile import (
-    _CONFLICT_MARKERS,
-    _SECTION_AFTER_MARKER,
-    LEDGER_REL_PATHS,
-    ConflictResolutionError,
-    PrefixSide,
-    _append_only_union,
-    _has_conflict_marker_lines,
-    _ledgers_with_conflict_markers,
-    _resolve_conflicting_ledger,
-    _resolve_ledger_under_lock,
-    _split_conflict_sides,
-    _write_resolved_ledger,
-    extract_valid_ledger_rows,
-    reconcile_jsonl_ledger_conflict,
-    reconcile_ledger_file,
-    resolve_append_only_conflict,
-)
-from sandbox_executor.flow.partial_salvage import (
-    SalvageError,
-    SalvageResult,
-    leftover_paths,
-    salvage_for_resume,
-    salvage_leftovers,
-)
-from sandbox_executor.flow.pipeline import PipelineEngine, run_flow_pipeline
-from sandbox_executor.flow.plan_refresh import (
-    PLAN_REFRESH_KIND,
-    PlanRefresh,
-    plan_refresh_stage_failure,
-    record_plan_refresh,
-    refresh_already_recorded,
-    refresh_due,
-    refresh_payload,
-    refresh_plan_branch,
-)
-from sandbox_executor.flow.review.adjudication import _augment_pr_text_with_rejected, _filter_adjudicated_findings
-from sandbox_executor.flow.review.carried_findings import (
-    CarriedPass,
-    carried_blocker,
-    deserialize_carried,
-    merge_findings,
-    resolve_carried_first,
-    serialize_open,
-    undisposed,
-)
-from sandbox_executor.flow.review.ci_outcome import describe_ci_outcome, gate_ci_flags
-from sandbox_executor.flow.review.cli import run_review_loop_cli
-from sandbox_executor.flow.review.ensemble import (
-    _ENGINE_PASSES_PER_DISPATCH,
-    _dispatch_review_ensemble,
-    _ensemble_iteration,
-    _resolve_reviewed_target,
-    _review_base_ref,
-    _semantic_pr_text,
-)
-from sandbox_executor.flow.review.ids import build_review_id
-from sandbox_executor.flow.review.loop import (
-    _loop_status,
-    _review_window,
-    _reviewers_objected,
-    _run_engine_review_loop,
-    run_review_loop,
-)
-from sandbox_executor.flow.review.posting import is_terminal_verdict
-from sandbox_executor.flow.review.records import (
-    _SEVERITY_RANK,
-    POSTING_ERROR_CONTEXT_MAX_CHARS,
-    _attach_transported_detail,
-    _bounded_error_context,
-    _posting_failure_context,
-    _record_infrastructure_findings,
-    _record_reviewer_rows,
-    _refused_review_result,
-    _review_row,
-    _reviewer_finding_ids,
-    _reviewer_summary,
-    _worst_severity,
-    record_review_action,
-    render_reviewer_summary_line,
-)
-from sandbox_executor.flow.review.resolver import (
-    DispositionRecorder,
-    ResolverInput,
-    ResolverOutcome,
-    _dispatch_review_resolver,
-    _invoke_resolver_pass,
-    _lookup_introducing_action_id,
-)
-from sandbox_executor.flow.review.verdict import review_loop_approved, review_summary_lines
-from sandbox_executor.flow.review.workspace import HOST_REVIEW_REFUSAL, reviewers_sandboxed
-from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
-from sandbox_executor.flow.stages import children as _children
-from sandbox_executor.flow.stages.calibrate import (
-    _commit_stage5_promoted_artifacts,
-    _commit_stage5_reconciliation,
-    run_calibrate_stage,
-)
-from sandbox_executor.flow.stages.children import _PR_URL_RE, _child_context, _child_review_pr
-from sandbox_executor.flow.stages.decomposition import (
-    _decomposition_child_lines,
-    _run_decomposed_plan,
-    _sub_intent_depth_error,
-    format_decomposition_summary,
-)
-from sandbox_executor.flow.stages.execute import (
-    FAILED_EXECUTION_STATUSES,
-    _resumable_partial_branch,
-    _warn_ledger_failure,
-    failed_partial_head,
-    run_execute_stage,
-)
-from sandbox_executor.flow.stages.intent import _reused_intent_conflict, run_intent_stage
-from sandbox_executor.flow.stages.plan import _format_entropy, run_plan_stage
-from sandbox_executor.flow.stages.plan_decision import _backfill_plan_row, _over_budget_failure, _plan_budget_decision
-from sandbox_executor.flow.stages.review import (
-    REVIEW_GIT_ENV,
-    TESTS_NOT_MEASURED_ERROR,
-    _checkout_execution_branch,
-    run_review_stage,
-)
-from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
-from sandbox_executor.flow.stages.touch_set_guard import (
-    superseding_failure_row,
-    touch_set_replan_exhausted,
-    touch_set_replan_feedback,
-    touch_set_violation,
-    touch_set_violation_result,
-)
-from sandbox_executor.flow.worktree_checkpoints import (
-    WorktreeCheckpoint,
-    read_worktree_checkpoint,
-    worktree_checkpoints,
-)
-from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
-from sandbox_executor.git import run_git
-from sandbox_executor.redaction import redact_agent_secrets
-from sandbox_executor.review_report import build_pr_review_consensus_report
+import importlib
+from typing import Any
 
-# stages.children runs child flows through PipelineEngine, but pipeline imports the stages; bind it late.
-_children.PipelineEngine = PipelineEngine
+# A submodule import binds the submodule over a same-named package attribute, so these two functions are bound
+# eagerly, after their (light) modules load, to keep ``flow.admission_lock`` and ``flow.worktree_checkpoints`` the
+# functions.
+from sandbox_executor.flow.admission_lock import admission_lock
+from sandbox_executor.flow.worktree_checkpoints import worktree_checkpoints
+
+# Owning module -> the space-separated names this package re-exports from it.
+_LAZY_EXPORTS: dict[str, str] = {
+    "sandbox_executor.entrypoint.planner": "parse_metrics",
+    "sandbox_executor.flow.admission": "admission_stage_failure check_admission format_refusal record_admission",
+    "sandbox_executor.flow.admission_decision": "AdmissionConflict AdmissionDecision decide_admission refusal",
+    "sandbox_executor.flow.admission_lock": "AdmissionLockError admission_lock_path",
+    "sandbox_executor.flow.admission_order": "blocker_is_clear older_ready_waiter older_waiter_flows waiter_key",
+    "sandbox_executor.flow.admission_record": "override_already_recorded",
+    "sandbox_executor.flow.admission_state": "AdmissionRecord BlockedBy admitted_record blocked_record utc_now",
+    "sandbox_executor.flow.calibrate_rebuild": (
+        "holds_only_calibration_commits is_ancestor is_calibration_commit is_calibration_path "
+        "rebuild_calibrated_branch stale_calibrated_refs"
+    ),
+    "sandbox_executor.flow.calibrate_rerun": (
+        "HeadMoveCheck RerunSeams head_move_since_calibration post_stale_signal report_staleness rerun_calibration "
+        "review_calibration_freshness"
+    ),
+    "sandbox_executor.flow.calibrate_sync": (
+        "CalibrationSyncError discard_empty_calibrated_branch prepare_calibrated_branch publish_calibration "
+        "record_starting_branch restore_starting_branch sync_execution_ref"
+    ),
+    "sandbox_executor.flow.checkpoint": (
+        "CHECKPOINT_MIGRATION_REGISTRY CURRENT_CHECKPOINT_SCHEMA_VERSION FlowCheckpoint MigrationTransform "
+        "_migrate_v0_to_v1 load_checkpoint migrate_checkpoint_data save_admission save_checkpoint"
+    ),
+    "sandbox_executor.flow.checkpoint_discovery": "get_default_checkpoint_path",
+    "sandbox_executor.flow.checkpoint_store": "CheckpointStore FileCheckpointStore",
+    "sandbox_executor.flow.child_progress": "_child_intent_branch _sub_intent_depth",
+    "sandbox_executor.flow.constants": "CI_REGISTRATION_POLL_SECONDS CURRENT_CONTEXT_SCHEMA_VERSION",
+    "sandbox_executor.flow.context": (
+        "_SUMMARY_STATUS_WORDS FlowContext FlowStage StageResult StageStatus _support_legacy_repo_dir"
+    ),
+    "sandbox_executor.flow.dispatch": (
+        "_dispatch_role _get_dispatcher _stage_failure _test_evidence recorded_test_pass_rate"
+    ),
+    "sandbox_executor.flow.execution_publish": (
+        "held_execution_failure hold_unrecorded_executions publish_with_first_row unrecorded_executions"
+    ),
+    "sandbox_executor.flow.git_refs": (
+        "EXECUTOR_GIT_ENV _append_ledger_row _append_superseding_execution_row _discover_child_branch "
+        "_execution_effective_diff _execution_parent_plan_branch _fetch_branch_prefix _fetch_branch_prefix_error "
+        "_fetch_refspecs_error _git_show_text _has_origin_remote _latest_execution_summary _list_child_branches "
+        "_origin_has_branch _read_ledger_rows _resolve_branch_ref _resolve_review_commit _snapshot_child_branches "
+        "_sync_local_execution_refs _track_local_branch fast_forward_local_branch"
+    ),
+    "sandbox_executor.flow.github.ci": (
+        "CI_REGISTRATION_TIMEOUT_ENV_VAR CI_REGISTRATION_TIMEOUT_SECONDS _ci_green _extract_failed_ci_check_names "
+        "_wait_for_ci_registration probe_ci_checks resolve_ci_registration_timeout"
+    ),
+    "sandbox_executor.flow.github.ci_final_head": "format_final_head_ci",
+    "sandbox_executor.flow.github.ci_reverify": "rerun_note",
+    "sandbox_executor.flow.github.ci_wait": (
+        "CiWaitPolicy CiWaitResult is_pending_only next_poll_interval pending_check_names settle_pending_ci "
+        "wait_for_pending_ci"
+    ),
+    "sandbox_executor.flow.github.merge": "BranchMerge merge_branch_detailed",
+    "sandbox_executor.flow.github.merge_method": "choose_merge_flag lookup_merge_flag",
+    "sandbox_executor.flow.github.pr": (
+        "_resolve_commit_ref check_pr_mergeability create_or_update_pr format_review_git_trailers "
+        "generate_semantic_pr_metadata"
+    ),
+    "sandbox_executor.flow.github.review_post": "post_pr_review_consensus",
+    "sandbox_executor.flow.host_remote": (
+        "HostRemoteError fetch_base new_local_child_branches publish_new_child_branches push_branch push_commit "
+        "remote_error"
+    ),
+    "sandbox_executor.flow.in_flight": (
+        "AdmissionUnavailable BlockedWaiter InFlightFlow discover_in_flight_flows local_blocked_waiters "
+        "local_in_flight_flows open_flow_pull_requests other_checkpoints read_plan_touch_set root_intent"
+    ),
+    "sandbox_executor.flow.intent_questions": "validate_intent_questions",
+    "sandbox_executor.flow.ledger_warning": "_warn_ledger_failure",
+    "sandbox_executor.flow.ledger_reconcile": (
+        "_CONFLICT_MARKERS _SECTION_AFTER_MARKER LEDGER_REL_PATHS ConflictResolutionError PrefixSide "
+        "_append_only_union _has_conflict_marker_lines _ledgers_with_conflict_markers _resolve_conflicting_ledger "
+        "_resolve_ledger_under_lock _split_conflict_sides _write_resolved_ledger extract_valid_ledger_rows "
+        "reconcile_jsonl_ledger_conflict reconcile_ledger_file resolve_append_only_conflict"
+    ),
+    "sandbox_executor.flow.partial_head": "FAILED_EXECUTION_STATUSES failed_partial_head",
+    "sandbox_executor.flow.partial_salvage": (
+        "SalvageError SalvageResult leftover_paths salvage_for_resume salvage_leftovers"
+    ),
+    "sandbox_executor.flow.pipeline": "PipelineEngine run_flow_pipeline",
+    "sandbox_executor.flow.plan_refresh": (
+        "PLAN_REFRESH_KIND PlanRefresh plan_refresh_stage_failure record_plan_refresh refresh_already_recorded "
+        "refresh_due refresh_payload refresh_plan_branch"
+    ),
+    "sandbox_executor.flow.review.adjudication": "_augment_pr_text_with_rejected _filter_adjudicated_findings",
+    "sandbox_executor.flow.review.carried_findings": (
+        "CarriedPass carried_blocker deserialize_carried merge_findings resolve_carried_first serialize_open undisposed"
+    ),
+    "sandbox_executor.flow.review.ci_outcome": "describe_ci_outcome gate_ci_flags",
+    "sandbox_executor.flow.review.cli": "run_review_loop_cli",
+    "sandbox_executor.flow.review.ensemble": (
+        "_ENGINE_PASSES_PER_DISPATCH _dispatch_review_ensemble _ensemble_iteration _resolve_reviewed_target "
+        "_review_base_ref _semantic_pr_text"
+    ),
+    "sandbox_executor.flow.review.git_identity": "REVIEW_GIT_ENV",
+    "sandbox_executor.flow.review.ids": "build_review_id",
+    "sandbox_executor.flow.review.loop": (
+        "_loop_status _review_window _reviewers_objected _run_engine_review_loop run_review_loop"
+    ),
+    "sandbox_executor.flow.review.posting": "is_terminal_verdict",
+    "sandbox_executor.flow.review.records": (
+        "_SEVERITY_RANK POSTING_ERROR_CONTEXT_MAX_CHARS _attach_transported_detail _bounded_error_context "
+        "_posting_failure_context _record_infrastructure_findings _record_reviewer_rows _refused_review_result "
+        "_review_row _reviewer_finding_ids _reviewer_summary _worst_severity record_review_action "
+        "render_reviewer_summary_line"
+    ),
+    "sandbox_executor.flow.review.resolver": (
+        "DispositionRecorder ResolverInput ResolverOutcome _dispatch_review_resolver _invoke_resolver_pass "
+        "_lookup_introducing_action_id"
+    ),
+    "sandbox_executor.flow.review.verdict": "review_loop_approved review_summary_lines",
+    "sandbox_executor.flow.review.workspace": "HOST_REVIEW_REFUSAL reviewers_sandboxed",
+    "sandbox_executor.flow.stage_conflicts": "check_and_resolve_stage_conflicts",
+    "sandbox_executor.flow.stages.calibrate": (
+        "_commit_stage5_promoted_artifacts _commit_stage5_reconciliation run_calibrate_stage"
+    ),
+    "sandbox_executor.flow.stages.children": "_PR_URL_RE _child_context _child_review_pr",
+    "sandbox_executor.flow.stages.decomposition": (
+        "_decomposition_child_lines _run_decomposed_plan _sub_intent_depth_error format_decomposition_summary"
+    ),
+    "sandbox_executor.flow.stages.execute": "_resumable_partial_branch run_execute_stage",
+    "sandbox_executor.flow.stages.intent": "_reused_intent_conflict run_intent_stage",
+    "sandbox_executor.flow.stages.plan": "_format_entropy run_plan_stage",
+    "sandbox_executor.flow.stages.plan_decision": "_backfill_plan_row _over_budget_failure _plan_budget_decision",
+    "sandbox_executor.flow.stages.review": "TESTS_NOT_MEASURED_ERROR _checkout_execution_branch run_review_stage",
+    "sandbox_executor.flow.stages.sync_conflict": "sync_conflict_result",
+    "sandbox_executor.flow.stages.touch_set_guard": (
+        "superseding_failure_row touch_set_replan_exhausted touch_set_replan_feedback touch_set_violation "
+        "touch_set_violation_result"
+    ),
+    "sandbox_executor.flow.worktree_checkpoints": "WorktreeCheckpoint read_worktree_checkpoint",
+    "sandbox_executor.flow_guard": "SKIP_PUSH_DISPATCH_ERROR",
+    "sandbox_executor.git": "run_git",
+    "sandbox_executor.redaction": "redact_agent_secrets",
+    "sandbox_executor.review_report": "build_pr_review_consensus_report",
+}
+_OWNER = {name: module for module, names in _LAZY_EXPORTS.items() for name in names.split()}
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve a re-exported name from its owning module on each access, so a patch on the owner is always seen."""
+    module = _OWNER.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(importlib.import_module(module), name)
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *_OWNER})
+
 
 __all__ = [
     "CHECKPOINT_MIGRATION_REGISTRY",
@@ -334,10 +204,12 @@ __all__ = [
     "BranchMerge",
     "CalibrationSyncError",
     "CarriedPass",
+    "CheckpointStore",
     "CiWaitPolicy",
     "CiWaitResult",
     "ConflictResolutionError",
     "DispositionRecorder",
+    "FileCheckpointStore",
     "FlowCheckpoint",
     "FlowContext",
     "FlowStage",

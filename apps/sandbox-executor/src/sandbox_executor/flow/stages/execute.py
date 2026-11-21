@@ -28,6 +28,7 @@ from sandbox_executor.flow.git_refs import (
     _track_local_branch,
 )
 from sandbox_executor.flow.host_remote import fetch_base, publish_new_child_branches, remote_error
+from sandbox_executor.flow.partial_head import FAILED_EXECUTION_STATUSES, failed_partial_head
 from sandbox_executor.flow.partial_salvage import salvage_for_resume
 from sandbox_executor.flow.plan_refresh import plan_refresh_stage_failure, refresh_payload
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
@@ -43,23 +44,6 @@ from sandbox_executor.naming import MissingTickerError, model_code, ticker_for
 from sandbox_executor.redaction import redact_agent_secrets
 
 logger = logging.getLogger(__name__)
-
-
-# The executor entrypoint has historically written "failure"; guard rows use "failed". Both mean failure.
-FAILED_EXECUTION_STATUSES: frozenset[str] = frozenset({"failed", "failure"})
-
-
-def failed_partial_head(repo_dir: str, ref: str, execution_id: str) -> str | None:
-    """The ``partial_head`` on ``ref``'s latest summary row for ``execution_id`` when that row is a failure.
-
-    Both failure statuses count: ``failure`` (a budget breach, an agent error or any other failure) and
-    ``EMPTY_DIFF_STATUS`` (an empty or unverified diff), since either row can carry salvaged partial work.
-    """
-    row = _latest_execution_summary(_read_ledger_rows(repo_dir, ref, "executions.jsonl"), execution_id, ref) or {}
-    partial_head = row.get("partial_head")
-    if row.get("status") in ("failure", EMPTY_DIFF_STATUS) and isinstance(partial_head, str) and partial_head:
-        return partial_head
-    return None
 
 
 def _resumable_partial_branch(repo_dir: str, branches: set[str]) -> str | None:
@@ -417,15 +401,3 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
     )
     context.stage_results["execute"] = result
     return result
-
-
-def _warn_ledger_failure(context: FlowContext, label: str, ledger_path: str, exc: BaseException) -> None:
-    """Report a non-fatal ledger failure at WARNING level and in the operator-facing context log.
-
-    The exception text is passed through the canonical ``redact_agent_secrets`` first, so a
-    secret carried in the failure detail never reaches either log.
-    """
-    detail = redact_agent_secrets(str(exc))
-    message = f"Ledger append failed ({label}) for {ledger_path}: {type(exc).__name__}: {detail}"
-    logger.warning(message)
-    context.log(f"Warning: {message}")

@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-38c3904f",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-21T05:16:32.775206+00:00",
+  "updated_ts": "2026-11-21T05:16:32.775206+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795185289-ba45e650-antigravity-agent",
+      "REV-1795185283-44b2016c-antigravity-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795178792-purge-gemini-agent-runner/P-1795184239-ANA-G3.8F/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 1 iteration(s): not approved: reviewer 1 final verdict FAILED; final verdicts: Reviewer 1 FAILED (0/0/0); Reviewer 2 APPROVED (0/0/0); Reviewer 3 APPROVED (0/0/0)",
+    "symptoms": []
+  }
+}

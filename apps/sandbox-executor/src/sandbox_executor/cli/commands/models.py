@@ -58,7 +58,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "--agent",
         type=str,
         default=None,
-        help="Filter models by agent runner (e.g. antigravity, claude, pi, codex, gemini, opencode, local).",
+        help="Filter models by agent runner (e.g. antigravity, claude, pi, codex, opencode, local).",
     )
     parser.add_argument(
         "--json",

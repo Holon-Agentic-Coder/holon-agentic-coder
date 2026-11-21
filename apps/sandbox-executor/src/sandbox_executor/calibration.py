@@ -38,13 +38,18 @@ from sandbox_executor.calibration_ev import (
 )
 from sandbox_executor.calibration_execution_owner import unique_plan_branch_of_execution
 from sandbox_executor.calibration_outcome import is_converged_record, latest_summary_row
+from sandbox_executor.calibration_predicted import (
+    cross_check_selected_row,
+    metrics_from_row,
+    read_plans_rows,
+    select_plans_row,
+)
 from sandbox_executor.calibration_touch_set import touch_set_metrics, touch_set_report_lines
 from sandbox_executor.git import METADATA_PATH_PREFIXES as METADATA_PATH_PREFIXES
 from sandbox_executor.git import is_metadata_path, run_git
 from sandbox_executor.ledger import generate_action_id, try_append_action_record
 from sandbox_executor.plan_paths import (
     calibration_report_for_branch,
-    is_row_of_plan,
     legacy_calibration_report_rel,
     plan_file_candidates,
     plan_file_for_branch,
@@ -673,25 +678,15 @@ def _parse_plan_markdown_content(content: str, predicted: PredictedMetrics) -> N
 
 
 def _parse_predicted_from_plans_ledger(
-    plan_branch: str, target_worktree: str
+    plan_branch: str, target_worktree: str, execution_id: str = ""
 ) -> tuple[PredictedMetrics, dict[str, Any]] | None:
-    """The plans.jsonl row of the plan on ``plan_branch``, keyed on its intent and plan id (never the id alone)."""
+    """The plan's highest-revision plans.jsonl row, keyed on intent and plan id (never the id alone), cross-checked."""
     plans_jsonl = os.path.join(target_worktree, "holon-knowledge", "ledger", "plans.jsonl")
-    if not os.path.exists(plans_jsonl):
+    record = select_plans_row(read_plans_rows(plans_jsonl), plan_branch)
+    if record is None:
         return None
-    with contextlib.suppress(Exception), open(plans_jsonl, encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            with contextlib.suppress(json.JSONDecodeError, ValueError):
-                record = json.loads(line)
-                if is_row_of_plan(record, plan_branch):
-                    predicted = PredictedMetrics()
-                    for field in ("p_success", "entropy", "impact", "cost", "learning_value", "ev"):
-                        if field in record:
-                            setattr(predicted, field, float(record[field]))
-                    return predicted, record
-    return None
+    cross_check_selected_row(record, plan_branch, target_worktree, execution_id)
+    return PredictedMetrics(**metrics_from_row(record)), record
 
 
 def _parse_predicted_from_plan_markdown(
@@ -713,10 +708,12 @@ def _parse_predicted_from_plan_markdown(
     return None
 
 
-def parse_predicted_metrics(plan_branch: str, target_worktree: str = ".") -> tuple[PredictedMetrics, dict[str, Any]]:
+def parse_predicted_metrics(
+    plan_branch: str, target_worktree: str = ".", *, execution_id: str = ""
+) -> tuple[PredictedMetrics, dict[str, Any]]:
     """Parse predicted metrics of the plan on ``plan_branch`` (or below it) from its plans.jsonl row or plan file."""
     return (
-        _parse_predicted_from_plans_ledger(plan_branch, target_worktree)
+        _parse_predicted_from_plans_ledger(plan_branch, target_worktree, execution_id)
         or _parse_predicted_from_plan_markdown(plan_branch, target_worktree)
         or (PredictedMetrics(), {})
     )
@@ -1167,7 +1164,9 @@ def generate_calibration(  # noqa: C901, PLR0915
         raw_branch = raw_branch[len("refs/heads/") :]
     calibrated_branch = f"{raw_branch}/calibrated"
 
-    predicted, plan_meta = parse_predicted_metrics(plan_branch, target_worktree=target_worktree)
+    predicted, plan_meta = parse_predicted_metrics(
+        plan_branch, target_worktree=target_worktree, execution_id="" if execution_id == "E-unknown" else execution_id
+    )
     actual, exec_meta = parse_actual_metrics(
         execution_id,
         resolved_plan_ref,

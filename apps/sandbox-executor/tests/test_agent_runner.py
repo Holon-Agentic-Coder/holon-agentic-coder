@@ -27,7 +27,7 @@ def _docker_image_available(image_name: str) -> bool:
 class TestAgentRunner(unittest.TestCase):
     def test_runner_mappings(self):
         """Test that get_runner correctly maps agent names and validates support."""
-        supported_agents = ["pi", "pi-agent", "gemini-agent", "claude-agent", "antigravity-agent"]
+        supported_agents = ["pi", "pi-agent", "claude-agent", "antigravity-agent"]
         for agent in supported_agents:
             runner = get_runner(agent)
             self.assertIsNotNone(runner)
@@ -53,7 +53,6 @@ class TestAgentRunner(unittest.TestCase):
                 json.dumps(ATTRIBUTION_OFF),
                 "-p",
             ],
-            "gemini": ["gemini", "--model", "gemini-3.5-flash", "-p"],
             "opencode": ["opencode", "run", "--model", "gemini-3.5-flash"],
             "codex": ["codex", "exec", "-m", "gemini-3.5-flash"],
             "antigravity": [
@@ -200,12 +199,12 @@ class TestAgentRunner(unittest.TestCase):
                 self.assertIsNone(os.getenv("HOLON_AGENT_KEY"))
                 self.assertTrue(os.path.exists(os.path.join(fake_home, ".config/claude/config.json")))
 
-            # Test targeting non-matching agent (gemini) -> should not set HOLON_AGENT_KEY
+            # Test targeting non-matching agent (opencode) -> should not set HOLON_AGENT_KEY
             with (
                 patch.dict(os.environ, env, clear=True),
                 patch("os.path.exists", side_effect=lambda p: p == bundle_path),
             ):
-                runner = get_runner("gemini")
+                runner = get_runner("opencode")
                 with self.assertRaises(SystemExit):
                     runner.validate()
                 self.assertIsNone(os.getenv("HOLON_AGENT_KEY"))
@@ -283,7 +282,6 @@ class TestAgentRunner(unittest.TestCase):
         agent_image_mapping = {
             "pi": "holon/agent-pi",
             "claude": "holon/agent-claude",
-            "gemini": "holon/agent-gemini",
             "opencode": "holon/agent-opencode",
             "codex": "holon/agent-codex",
             "antigravity": "holon/agent-antigravity",
@@ -329,7 +327,6 @@ class TestAgentRunner(unittest.TestCase):
         agent_image_mapping = {
             "pi": "holon/agent-pi",
             "claude": "holon/agent-claude",
-            "gemini": "holon/agent-gemini",
             "opencode": "holon/agent-opencode",
             "codex": "holon/agent-codex",
             "antigravity": "holon/agent-antigravity",
@@ -648,7 +645,7 @@ def test_claude_bypass_evaluated_at_build_time(claude_env: pytest.MonkeyPatch) -
     assert "bypassPermissions" in runner.compose_cmd("m", "p")
 
 
-@pytest.mark.parametrize("agent", ["pi", "gemini", "opencode", "codex"])
+@pytest.mark.parametrize("agent", ["pi", "opencode", "codex"])
 def test_other_runners_never_emit_claude_bypass(claude_env: pytest.MonkeyPatch, agent: str) -> None:
     cmd = runners[agent].compose_cmd("m", "p")
     assert not set(CLAUDE_BYPASS) & set(cmd)
@@ -673,7 +670,7 @@ def test_real_registered_runners_build_command_contract(monkeypatch: pytest.Monk
         assert cmd_build[-1] == "test-prompt"
 
     # 2. Specifically verify all supported agent aliases via get_runner()
-    agent_aliases = ["pi", "claude", "gemini", "opencode", "codex", "antigravity-agent"]
+    agent_aliases = ["pi", "claude", "opencode", "codex", "antigravity-agent"]
     for alias in agent_aliases:
         runner = get_runner(alias)
         assert isinstance(runner, (StandardAgentRunner, AntigravityAgentRunner))

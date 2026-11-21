@@ -15,6 +15,7 @@ from sandbox_executor.flow.git_refs import _fetch_refspecs_error
 from sandbox_executor.flow.github.merge import PROTECTED_BRANCHES, _bare_branch
 from sandbox_executor.flow.host_remote import push_commit
 from sandbox_executor.flow.ledger_reconcile import reconcile_ledger_file
+from sandbox_executor.flow.review.git_identity import REVIEW_GIT_ENV
 from sandbox_executor.git import run_git
 from sandbox_executor.ledger import LedgerRewriteError
 from sandbox_executor.redaction import redact_agent_secrets
@@ -41,8 +42,6 @@ def _merge_target_ledger_only(worktree: str, target_ref: str, message: str) -> _
     The ledgers are resolved with the target side (``theirs`` in a merge) as the byte prefix. No test command runs.
     The merge commit carries ``message`` (with its provenance trailers) whether or not a ledger conflict was resolved.
     """
-    from sandbox_executor.flow.stages.review import REVIEW_GIT_ENV  # Lazy: stages.review imports the review loop.
-
     env = {**os.environ, **REVIEW_GIT_ENV}
     merge = run_git(["merge", "--no-ff", "-m", message, target_ref], cwd=worktree, check=False, env=env)
     if merge.returncode == 0:
@@ -60,6 +59,22 @@ def _merge_target_ledger_only(worktree: str, target_ref: str, message: str) -> _
         run_git(["add", path], cwd=worktree)
     run_git(["commit", "-m", message], cwd=worktree, env=env)
     return _MergeOutcome(merged=True, ledger_only=True, conflicting_paths=paths)
+
+
+def _follow_merged_head(repo_dir: str, branch: str, merged_sha: str) -> None:
+    """Fast-forward the local ``branch`` to the pushed merge, so its next ledger commit still pushes as a fast-forward.
+
+    Never forced: a local branch that is not an ancestor of the merge, or a fast-forward git refuses, stays as it is
+    (Stage 5's sync levels it with origin).
+    """
+    ref = f"refs/heads/{branch}"
+    old = run_git(["rev-parse", "--verify", "--quiet", ref], cwd=repo_dir, check=False).stdout.strip()
+    if not old or run_git(["merge-base", "--is-ancestor", old, merged_sha], cwd=repo_dir, check=False).returncode:
+        return
+    if run_git(["symbolic-ref", "--quiet", "HEAD"], cwd=repo_dir, check=False).stdout.strip() == ref:
+        run_git(["merge", "--ff-only", "-q", merged_sha], cwd=repo_dir, check=False)
+    else:
+        run_git(["update-ref", ref, merged_sha, old], cwd=repo_dir, check=False)
 
 
 def _merge_and_push(repo_dir: str, branch: str, target_branch: str, trailers: str = "") -> _MergeOutcome:
@@ -85,6 +100,7 @@ def _merge_and_push(repo_dir: str, branch: str, target_branch: str, trailers: st
             merged_sha = run_git(["rev-parse", "HEAD"], cwd=worktree).stdout.strip()
             push_commit(repo_dir, merged_sha, branch)
             run_git(["update-ref", f"refs/remotes/origin/{branch}", merged_sha], cwd=repo_dir, check=False)
+            _follow_merged_head(repo_dir, branch, merged_sha)
         return outcome
     except LedgerRewriteError:
         raise

@@ -18,7 +18,8 @@ import pytest
 from sandbox_executor import flow as flow_module
 from sandbox_executor.budgets import MAX_SUB_INTENT_DEPTH
 from sandbox_executor.flow import FlowContext, FlowStage, PipelineEngine, StageResult, StageStatus
-from sandbox_executor.flow.checkpoint import get_default_checkpoint_path, load_checkpoint
+from sandbox_executor.flow.checkpoint import load_checkpoint
+from sandbox_executor.flow.checkpoint_discovery import get_default_checkpoint_path
 from sandbox_executor.flow.child_progress import child_checkpoint_path, next_child_action
 from sandbox_executor.flow.github.merge import MergeResult
 from sandbox_executor.flow.stages.children import _build_child_intent, resume_children

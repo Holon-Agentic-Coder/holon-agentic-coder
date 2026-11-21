@@ -284,7 +284,7 @@ class _PlannerHarness:
             patch.object(planner, "run_cmd", side_effect=self._fake_run_cmd),
             patch.object(planner, "run_turn", side_effect=self._fake_run_turn),
             patch.object(planner, "converge_prettier", side_effect=self.converge_side_effect) as self.mock_converge,
-            patch("sandbox_executor.flow.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stage_conflicts.check_and_resolve_stage_conflicts"),
             redirect_stdout(out),
             redirect_stderr(err),
         ):

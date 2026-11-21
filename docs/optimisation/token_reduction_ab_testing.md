@@ -90,8 +90,8 @@ monitoring mode, `HOLON_PASSIVE_MONITORING=1`) and records structured transactio
 #### Tier 4: End-to-End Sandbox A/B Test (Arbitrary Agents & Models)
 
 Executes containerised agent workloads in Docker sandbox across **arbitrary agent harnesses** (`antigravity`, `claude`,
-`pi`, `codex`, `gemini`) and **arbitrary models** with mitmproxy sidecar (`--token-reduce`), Root CA trust injection,
-and live container socket proxying:
+`pi`, `codex`) and **arbitrary models** with mitmproxy sidecar (`--token-reduce`), Root CA trust injection, and live
+container socket proxying:
 
 ```bash
 cd holon-agentic-coder-ref/develop

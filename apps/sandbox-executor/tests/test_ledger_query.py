@@ -618,7 +618,7 @@ class TestAtomicLedgerLocking(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0], {"test": "value"})
 
-    @patch("sandbox_executor.ledger.os.fsync")
+    @patch("sandbox_executor.ledger.lock.os.fsync")
     def test_atomic_ledger_append_fsync_called(self, mock_fsync):
         """Verify os.fsync is called with file descriptor before file close."""
         ledger_path = os.path.join(self.temp_dir.name, "test_fsync.jsonl")
@@ -644,7 +644,7 @@ class TestAtomicLedgerLocking(unittest.TestCase):
             return original_flock(fd, op)
 
         with (
-            patch("sandbox_executor.ledger.fcntl.flock", side_effect=mock_flock),
+            patch("sandbox_executor.ledger.lock.fcntl.flock", side_effect=mock_flock),
             atomic_ledger_append(ledger_path, timeout=5.0, initial_delay=0.01) as f,
         ):
             f.write(json.dumps({"retry": "success"}) + "\n")
@@ -666,7 +666,7 @@ class TestAtomicLedgerLocking(unittest.TestCase):
                 raise BlockingIOError(11, "Resource temporarily unavailable")
 
         with (
-            patch("sandbox_executor.ledger.fcntl.flock", side_effect=mock_flock),
+            patch("sandbox_executor.ledger.lock.fcntl.flock", side_effect=mock_flock),
             self.assertRaises(TimeoutError) as ctx,
             atomic_ledger_append(ledger_path, timeout=0.1, initial_delay=0.01),
         ):
@@ -677,7 +677,7 @@ class TestAtomicLedgerLocking(unittest.TestCase):
         """Verify non-POSIX systems without fcntl log warning and fall back to open."""
         ledger_path = os.path.join(self.temp_dir.name, "test_fallback.jsonl")
         with (
-            patch("sandbox_executor.ledger.fcntl", None),
+            patch("sandbox_executor.ledger.lock.fcntl", None),
             self.assertLogs("sandbox_executor.ledger", level="WARNING") as cm,
             atomic_ledger_append(ledger_path) as f,
         ):

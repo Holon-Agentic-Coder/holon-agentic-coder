@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 from sandbox_executor.flow import reconcile_jsonl_ledger_conflict
-from sandbox_executor.flow.ledger_order import _order_appended_rows
 from sandbox_executor.flow.review import conflict_gate
+from sandbox_executor.ledger.order import _order_appended_rows
 
 from tests.flow.helpers import _git
 from tests.ledger_conflict_repos import BRANCH, LEDGER, _commit, _row, build_conflicting_repos, refuse_test_runs

@@ -141,3 +141,20 @@ def test_misspelt_filter_raises_type_error_in_both(tmp_path: Path) -> None:
         query_ledger(str(ledger), catgory="code")
     with pytest.raises(TypeError):
         reference_query_ledger(str(ledger), catgory="code")
+
+
+SYNTHETIC_ROWS = [
+    {"entry_type": "action", "category": "Code", "labels": "UI, db", "outcome": "failed", "target": "src/a.py"},
+    {"labels": ["Api", " "], "status": "Failure", "plan_branch": "I-1/P-2/_", "summary": "Needle"},
+    {"entry_type": "summary", "labels": 7, "outcome": "success", "action_origin": "ci_fix", "review_severity": "Nit"},
+    {"entry_type": "ACTION", "error_context": "needle trace", "mistake_category": "typo"},
+]
+
+
+@pytest.mark.parametrize("filters", FILTER_MATRIX.values(), ids=FILTER_MATRIX.keys())
+def test_query_matches_reference_on_synthetic_edge_rows(tmp_path: Path, filters: dict[str, Any]) -> None:
+    """Edge rows absent from the real ledgers (blank and corrupt lines, odd label types) also agree."""
+    ledger = tmp_path / "edge.jsonl"
+    lines = [json.dumps(row) for row in SYNTHETIC_ROWS] + ["", "{not json"]
+    ledger.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert _run(query_ledger, str(ledger), filters) == _run(reference_query_ledger, str(ledger), filters)

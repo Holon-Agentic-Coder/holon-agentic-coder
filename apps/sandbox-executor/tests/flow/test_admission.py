@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,7 @@ from sandbox_executor.flow.pipeline import PipelineEngine
 from sandbox_executor.flow.stages import touch_set_guard
 from sandbox_executor.ledger import query_ledger
 
-from tests.flow.helpers import OTHER_HEAD, OTHER_PLAN, FakeGh, _git, make_plan_branch, no_worktrees
+from tests.flow.helpers import OTHER_HEAD, OTHER_PLAN, FakeGh, _git, make_plan_branch, no_worktrees, seed_base_files
 
 THIRD_PLAN = "I-300-third/P-301-eeeeeeee-claude-agent-claude-opus-5-5/_"
 
@@ -39,25 +40,35 @@ def own_context(host: Path, **overrides) -> FlowContext:
     )
 
 
-def other_pr(diff: list[str]) -> FakeGh:
+def other_pr(diff: list[str] | str) -> FakeGh:
     return FakeGh([{"number": 7, "headRefName": OTHER_HEAD, "baseRefName": "main"}], {7: diff})
 
 
 @pytest.fixture
 def own_plan(flow_repos):
-    """The run's own plan branch (declaring src/app.py and docs/), pushed so an override row can be appended."""
+    """The run's own plan branch (declaring src/app.py and docs/), pushed so an override row can be appended.
+
+    The base branch holds src/app.py and docs/guide.md, so both entries name an existing file.
+    """
     host, _origin = flow_repos
+    seed_base_files(host, ["docs/guide.md"])
     make_plan_branch(host, OWN_PLAN, [{"path": "src/app.py"}, {"path": "docs/"}])
     _git(host, "push", "-q", "origin", OWN_PLAN)
     return host
 
 
-def test_overlap_with_a_declared_set_is_refused_and_named(own_plan):
-    make_plan_branch(own_plan, OTHER_PLAN, [{"path": "src/"}, {"path": "lib/"}])
+def test_a_pull_request_is_compared_by_its_diff_not_its_planned_touch_set(own_plan):
+    """AC2: the pull request's plan declares src/ and docs/, but its diff (lib/x.py) touches none of our files."""
+    make_plan_branch(own_plan, OTHER_PLAN, [{"path": "src/"}, {"path": "docs/"}])
     decision = check_admission(own_context(own_plan), other_pr(["lib/x.py"]), no_worktrees)
+    assert decision == AdmissionDecision(admitted=True)
+
+
+def test_overlap_with_a_pull_request_diff_is_refused_and_named(own_plan):
+    decision = check_admission(own_context(own_plan), other_pr(["src/app.py", "lib/x.py"]), no_worktrees)
     assert not decision.admitted and not decision.overridden
     assert [(c.label, c.files) for c in decision.conflicts] == [
-        (f"pull request #7 (branch {OTHER_HEAD})", ("src/app.py (its entry src/)",))
+        (f"pull request #7 (branch {OTHER_HEAD})", ("src/app.py",))
     ]
     assert [entry.files for entry in decision.blocked_by] == [("src/app.py",)]
     message = format_refusal(decision)
@@ -197,9 +208,9 @@ def _admission(host: Path) -> dict | None:
     return json.loads(path.read_text(encoding="utf-8")).get("admission") if path.exists() else None
 
 
-def _local_flow(host: Path, tmp_path: Path) -> Path:
-    """A flow at execute in a second worktree whose plan declares docs/ (overlapping the own plan's docs/)."""
-    make_plan_branch(host, THIRD_PLAN, [{"path": "docs/"}])
+def _local_flow(host: Path, tmp_path: Path, touch_set: list[dict] | None = None) -> Path:
+    """A flow at execute in a second worktree whose plan declares ``touch_set`` (by default docs/, as the own plan)."""
+    make_plan_branch(host, THIRD_PLAN, touch_set or [{"path": "docs/"}])
     second = tmp_path / "second"
     _git(host, "worktree", "add", "-q", "--detach", str(second), "main")
     context = FlowContext(target_worktree=str(second), intent_data={"slug": "third"}, plan_branch=THIRD_PLAN)
@@ -224,7 +235,7 @@ def test_refusal_records_blocked_with_each_pull_request_and_local_flow(own_plan,
     assert recorded["blocked_since"] == "2026-11-20T01:00:00.000Z"
     pull_request, local = recorded["blocked_by"]
     assert pull_request == {"kind": "pull_request", "number": 7, "branch": OTHER_HEAD, "files": ["src/app.py"]}
-    assert local["kind"] == "local_flow" and local["plan_branch"] == THIRD_PLAN and local["files"] == ["docs/"]
+    assert local["kind"] == "local_flow" and local["plan_branch"] == THIRD_PLAN and local["files"] == ["docs/guide.md"]
     assert Path(local["worktree"]).resolve() == second.resolve()
 
 
@@ -311,6 +322,105 @@ def test_dry_run_writes_no_admission_state(own_plan, monkeypatch):
     context = own_context(own_plan, dry_run=True)
     assert admission.admission_stage_failure(context, "2026-11-14T00:00:00Z") is None
     assert context.admission is None and _admission(own_plan) is None
+
+
+# Acceptance tests of the concrete-file overlap rule: new files, pull request diffs, existing files, refusal text.
+WILDCARDS = [{"path": "tests/test_*.py"}, {"path": "tests/flow/**/test_*.py"}, {"path": "apps/x/tests/"}]
+NEW_TESTS = ["tests/test_new.py", "tests/flow/a/test_new.py", "apps/x/tests/test_new.py"]
+BASE_TESTS = ["tests/test_old.py", "tests/flow/a/test_old.py", "apps/x/tests/test_old.py"]
+
+
+def _own_plan(host: Path, touch_set: list[dict]) -> Path:
+    make_plan_branch(host, OWN_PLAN, touch_set)
+    _git(host, "push", "-q", "origin", OWN_PLAN)
+    return host
+
+
+def test_new_files_never_overlap_folder_or_wildcard_entries(flow_repos, tmp_path):
+    """AC1: a pull request, or a local flow, adding new files under our wildcard and folder entries is admitted."""
+    host = _own_plan(flow_repos[0], WILDCARDS)
+    seed_base_files(host, BASE_TESTS)  # the wildcards match existing files too, just not the new ones
+    assert check_admission(own_context(host), other_pr(NEW_TESTS), no_worktrees).admitted
+    _local_flow(host, tmp_path, [{"path": path} for path in NEW_TESTS])
+    decision = check_admission(own_context(host), other_pr([]))
+    assert decision == AdmissionDecision(admitted=True)
+
+
+def test_an_identical_new_literal_path_still_overlaps(flow_repos, tmp_path):
+    host = _own_plan(flow_repos[0], [{"path": "src/new.py"}, {"path": "apps/x/tests/"}])
+    assert check_admission(own_context(host), other_pr(["src/new.py"]), no_worktrees).conflicts[0].files == (
+        "src/new.py",
+    )
+    _local_flow(host, tmp_path, [{"path": "src/new.py"}])
+    decision = check_admission(own_context(host), other_pr([]))
+    assert not decision.admitted and [c.files for c in decision.conflicts] == [("src/new.py",)]
+
+
+def test_an_existing_file_under_a_folder_entry_still_overlaps(flow_repos, tmp_path):
+    """AC3 and AC4: a pull request or a local flow touching an existing file below our folder entry is refused, and
+    the refusal names the concrete file, never the bare folder pattern."""
+    host = _own_plan(flow_repos[0], [{"path": "apps/x/tests/"}])
+    seed_base_files(host, BASE_TESTS)
+    by_pr = check_admission(own_context(host), other_pr(["apps/x/tests/test_old.py"]), no_worktrees)
+    assert not by_pr.admitted and by_pr.conflicts[0].files == ("apps/x/tests/test_old.py",)
+    _local_flow(host, tmp_path, [{"path": "apps/x/tests/test_old.py"}, {"path": "apps/x/tests/test_new.py"}])
+    by_local = check_admission(own_context(host), other_pr([]))
+    assert not by_local.admitted
+    assert [c.files for c in by_local.conflicts] == [("apps/x/tests/test_old.py",)]
+    assert [entry.files for entry in by_local.blocked_by] == [("apps/x/tests/test_old.py",)]
+    message = format_refusal(by_local)
+    assert "on apps/x/tests/test_old.py;" in message and "apps/x/tests/ " not in message
+    assert "apps/x/tests/," not in message and "(its entry" not in message
+
+
+def test_a_folder_against_folder_refusal_lists_twenty_files_and_counts_the_rest(flow_repos, tmp_path):
+    """AC4: the message names at most 20 concrete files per flow; the payload and blocked_by keep all of them."""
+    host = _own_plan(flow_repos[0], [{"path": "lib/"}])
+    seeded = [f"lib/m{n:02d}.py" for n in range(25)]
+    seed_base_files(host, seeded)
+    _local_flow(host, tmp_path, [{"path": "lib/"}, {"path": "lib/brand_new.py"}])
+    decision = check_admission(own_context(host), other_pr([]))
+    assert decision.conflicts[0].files == tuple(seeded) and decision.blocked_by[0].files == tuple(seeded)
+    assert decision.to_payload()["conflicts"][0]["files"] == seeded
+    message = format_refusal(decision)
+    assert f"on {', '.join(seeded[:20])} and 5 more;" in message and "lib/m20.py" not in message
+
+
+def test_a_base_listing_failure_fails_closed(own_plan):
+    def no_ls_tree(args, cwd):
+        if args[:1] == ["ls-tree"]:
+            return subprocess.CompletedProcess(["git", *args], 128, "", "fatal: not a tree object")
+        return no_worktrees(args, cwd)
+
+    decision = check_admission(own_context(own_plan), other_pr(["lib/x.py"]), no_ls_tree)
+    assert not decision.admitted and not decision.blocked_by and _admission(own_plan) is None
+    assert decision.reason is not None and decision.reason.startswith(
+        "the files of the base branch could not be listed"
+    )
+    assert "not a tree object" in decision.reason
+
+
+def test_an_unresolved_target_branch_fails_closed(own_plan):
+    context = own_context(own_plan, intent_data={"target_branch": "release-9"})
+    decision = check_admission(context, other_pr(["lib/x.py"]), no_worktrees)
+    assert not decision.admitted and "the base branch release-9 could not be resolved" in str(decision.reason)
+
+
+def test_with_nothing_in_flight_the_base_is_never_listed(own_plan):
+    context = own_context(own_plan, intent_data={"target_branch": "release-9"})  # an unresolvable base is never read
+    assert check_admission(context, FakeGh([], {}), no_worktrees) == AdmissionDecision(admitted=True)
+
+
+def test_a_pull_request_renaming_a_file_out_of_a_folder_entry_overlaps(flow_repos):
+    """The rename's source is on the base, so it overlaps our folder entry although its destination is new."""
+    host = _own_plan(flow_repos[0], [{"path": "apps/x/tests/"}])
+    seed_base_files(host, BASE_TESTS)
+    rename = (
+        "diff --git a/apps/x/tests/test_old.py b/lib/test_old.py\nsimilarity index 100%\n"
+        "rename from apps/x/tests/test_old.py\nrename to lib/test_old.py\n"
+    )
+    decision = check_admission(own_context(host), other_pr(rename), no_worktrees)
+    assert not decision.admitted and decision.conflicts[0].files == ("apps/x/tests/test_old.py",)
 
 
 BLOCKED_AT = "2026-11-20T01:00:00.000Z"

@@ -39,6 +39,23 @@ def test_touch_set_field_never_fails_the_plan(tmp_path, capsys):
     assert "could not parse the plan's touch set" in capsys.readouterr().err
 
 
+def test_touch_set_field_warns_about_folder_and_wildcard_entries_and_keeps_them(tmp_path, capsys):
+    plan = tmp_path / "P-1.md"
+    plan.write_text("## Touch Set\n\n- `src/a.py`\n- `docs/`\n- `tests/test_*.py`\n", encoding="utf-8")
+    assert planner._touch_set_field(str(plan)) == {
+        "touch_set": [{"path": "src/a.py"}, {"path": "docs/"}, {"path": "tests/test_*.py"}]
+    }
+    err = capsys.readouterr().err
+    assert "folder or wildcard entries (docs/, tests/test_*.py)" in err and "prefer module paths" in err
+
+
+def test_touch_set_field_with_literal_paths_only_prints_nothing(tmp_path, capsys):
+    plan = tmp_path / "P-1.md"
+    plan.write_text("## Touch Set\n\n- `src/a.py`\n- `app/[id]/page.tsx`\n", encoding="utf-8")
+    assert planner._touch_set_field(str(plan)) == {"touch_set": [{"path": "src/a.py"}, {"path": "app/[id]/page.tsx"}]}
+    assert capsys.readouterr().err == ""
+
+
 BUDGET_PLAN = "## Touch Set\n\n- `src/a.py`\n- `holon-config/hygiene/module_budgets.json`\n- `holon-config/`\n"
 
 
@@ -62,7 +79,7 @@ def test_touch_set_field_keeps_the_budget_configuration_when_the_intent_quotes_t
             {"path": "holon-config/"},
         ]
     }
-    assert capsys.readouterr().err == ""
+    assert "dropped from the touch set" not in capsys.readouterr().err
 
 
 def test_touch_set_field_without_the_section_stays_null_without_authorisation(tmp_path):
@@ -72,7 +89,13 @@ def test_touch_set_field_without_the_section_stays_null_without_authorisation(tm
 
 
 @pytest.mark.parametrize(
-    "module", ["sandbox_executor.entrypoint.planner", "sandbox_executor.calibration", "sandbox_executor.touch_set"]
+    "module",
+    [
+        "sandbox_executor.entrypoint.planner",
+        "sandbox_executor.calibration",
+        "sandbox_executor.touch_set",
+        "sandbox_executor.touch_set_overlap",
+    ],
 )
 def test_importing_first_in_a_fresh_interpreter_does_not_cycle(module):
     code = f"import {module}; from sandbox_executor.touch_set import parse_touch_set_section"

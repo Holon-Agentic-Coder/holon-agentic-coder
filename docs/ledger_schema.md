@@ -226,6 +226,19 @@ Stage 4 and Stage 5 action rows keep their historical field order and identifier
   `parent_action_id` to the voided `action_id`, `action_origin: "operator"`, `outcome: "success"`, a null
   `review_disposition` and `rejection_reason`, labels `["ledger-correction", "void", ...]` and an `error_context` naming
   why the voided row is false. Readers that honour corrections skip a row named by a void row's `parent_action_id`.
+- A plans correction row corrects a wrong `plans.jsonl` row without editing it. It repeats every field of the row it
+  supersedes (the same `plan_id`, `intent_branch` and `plan_file`), replaces only the wrong metric fields (`p_success`,
+  `entropy`, `impact`, `cost`, `learning_value`, `ev`) with the plan file's Overall Plan Metrics values, sets
+  `ledger_revision` to the highest existing revision for that (intent, plan ID) plus one (so at least `2`) and a fresh
+  `created_at`, and adds provenance: `corrects_revision` (the superseded revision), `correction_reason` (for example
+  `"per_step_metrics_table"`) and `corrected_by` (`"operator"` or `"flow"`). The superseded line stays as written (Core
+  principle 1, `holon-config/world/constraints.md` §3); the (intent, plan ID, revision) duplicate check already accepts
+  the superseding row. Readers take the matching plans row with the highest `ledger_revision`, ties going to the later
+  `created_at` instant and a full tie to the last line; this also selects the flow's `decision_recorded_by: "flow"` row.
+  Stage 5 calibration (`sandbox_executor/calibration_predicted.py`) cross-checks the selected row against the plan
+  file's `## Overall Plan Metrics` table and the execution summary's `predicted_metrics` and logs a warning naming both
+  values on any difference above `0.01`; it still uses the selected row. Historic plans rows were written from a
+  per-step metrics table by an old parser bug (for example `ev` `7.38` instead of `52.26`), which motivates this row.
 - `ACT-CAL` uses `execution_id` `CAL-{plan_id}-{ts}`, `category: "doc"` and labels
   `["calibration", "stage-5", plan_id]`. Beyond the common action fields it carries `plan_branch`, `execution_branch`,
   `evaluated_commit_sha`, `predicted_metrics`, `actual_metrics`, `calibration_deltas` and `calibration_report_path` (new
@@ -810,7 +823,10 @@ Appended when a plan is proposed by the planner:
 - `decomposition_decision`, `sub_intents` (only when `decomposed`): the recorded decision (see the plan row
   decomposition decision paragraph under the stage matrix); optional on historic rows.
 - `ledger_revision`, `decision_recorded_by: "flow"`: _(Only on the flow's superseding back-fill row)_ the superseded
-  row's revision (default `1`) plus one. Readers take the newest matching row.
+  row's revision (default `1`) plus one. Readers take the matching row with the highest `ledger_revision`, then the
+  latest `created_at`.
+- `corrects_revision`, `correction_reason`, `corrected_by`: _(Only on a plans correction row)_ the superseded revision,
+  why it was wrong and who appended the correction; see the plans correction row above.
 
 #### Execution Ledger (`executions.jsonl`)
 

@@ -27,6 +27,8 @@ This directory contains the CI/CD workflows for the `holon-agentic-coder` projec
   multi-architecture Buildx caching, incorporating timing gate checks.
 - `build-images.yml`: Manual dispatch workflow to build and verify Docker container images with multi-architecture
   Buildx caching.
+- `ci-durations.yml`: Runs daily at 04:23 UTC and on manual dispatch, with read-only permissions (`actions: read`,
+  `contents: read`). It builds the CI duration report described below and uploads it as the `ci-durations` artefact.
 
 ### Pull requests into any branch
 
@@ -105,6 +107,65 @@ the relative-check failure becomes a printed warning that names the label, so ev
 request. The ceiling cannot be overridden by label: it changes only through a committed edit to the `--ceiling` flag in
 the workflow file. That is also how to raise the ceiling for `build-images.yml` if its multi-architecture build ever
 exceeds 600 s.
+
+## CI Duration Report
+
+`scripts/ci_durations.py` shows how long every CI job took over time, so a slowdown is visible as a trend with a link to
+the commit that caused it. Where the timing gate fails one slow job, the report shows the history behind it. It uses the
+standard library only and runs on the runner's own `python3` as `python3 -m scripts.ci_durations`, with focused sibling
+modules: `ci_durations_api.py` (paginated REST access), `ci_durations_collect.py` (job records), `ci_durations_stats.py`
+(baselines and ceilings), `ci_durations_html.py` and `ci_durations_svg.py` (rendering).
+
+### What is collected
+
+For every completed run created in the last N days (default 30), the script reads `actions/runs` and
+`actions/runs/{id}/jobs?filter=all`, so jobs of earlier attempts are included. Runs of `ci-durations.yml` itself, runs
+still in progress, skipped jobs and jobs that never started are left out. Per job it records:
+
+- duration: `completed_at - started_at` of the job;
+- queue time: `started_at - created_at` of the job, never below 0;
+- conclusion: failed jobs (`failure`, `timed_out`) and cancelled jobs are kept and marked;
+- run attempt: a job of attempt 2 or later is a re-run;
+- head SHA, branch, event and runner OS (the job's first runner label, for example `ubuntu-latest`);
+- PR number: the first pull request of the run whose base is this repository. The API lists no pull request for a run
+  from a fork, so such points show the branch and no PR link;
+- ref class: `main` for a push to `main`, `pr` for a pull-request head, `other` for everything else (dispatch and
+  schedule runs, and pushes to branches other than `main`).
+
+The baseline of a point is the median of the previous 5 successful `main` runs of the same workflow, job and runner OS
+(the current point excluded), as the timing gate compares against `--runs 5`. It is empty while fewer than 5 exist. The
+ceiling is read from the committed workflow file: the `--ceiling` flag of `scripts/ci_timing_gate.py`, or the
+`max-seconds` input of a `ci-timing-gate` `phase: check` step (300 when omitted). Where neither is found, no ceiling is
+shown.
+
+### Outputs
+
+The `ci-durations` artefact (kept for 30 days) holds:
+
+- `ci-durations.html`: one self-contained page with no external assets and no script, so it opens offline. Each job and
+  runner OS has a chart of duration over time: `main` points are circles, pull-request heads squares, other runs
+  triangles, failures hollow red, cancelled jobs grey and re-runs ringed, with the rolling-median line, the dashed
+  ceiling and a strip of queue time below run time. Every point links to its run and shows a tooltip; the table under
+  each chart links every point to its run, commit and pull request.
+- `ci-durations.json`: every point with the fields above plus `baseline_median` and `ceiling`, under
+  `schema_version: 1`.
+
+The job summary lists up to 10 jobs whose latest `main` duration is furthest above its baseline, with the median, the
+delta, the ratio and the ceiling. The report never fails on a slow job: failing is the timing gate's role.
+
+### Refreshing and reading it
+
+- Wait for the daily run, or open the Actions tab, choose "CI Durations" and "Run workflow" (optionally with another
+  number of days), or run `gh workflow run ci-durations.yml -f days=14`.
+- Download the report with `gh run download <run-id> -n ci-durations` and open `ci-durations.html` in a browser.
+- Run it locally from the repository root:
+  `GITHUB_TOKEN=$(gh auth token) python3 -m scripts.ci_durations --repo OWNER/NAME --out-dir ci-durations`. Without a
+  token it exits with an error and writes nothing: the report shows real data only.
+
+Each run makes one request per 100 runs plus one per run for its jobs. `--max-runs` (default 500) keeps that well below
+the `GITHUB_TOKEN` limit of 1000 requests an hour. When it, or the API's cap of 1000 results per listing, cuts the
+window short, the report and the summary say so with a warning. Runs whose jobs cannot be read (for example once the
+rate limit is hit) are merged into one warning that counts them and names the first five.
 
 ## Branch Protection Status Checks
 

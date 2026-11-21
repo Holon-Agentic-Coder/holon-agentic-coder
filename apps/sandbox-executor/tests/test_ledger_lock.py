@@ -309,17 +309,23 @@ def test_try_append_action_record_redacts_credentials_in_failure_warning(
     assert all(sample_value not in msg for msg in [*messages, *mirrored])
 
 
-@pytest.mark.skipif("fork" not in multiprocessing.get_all_start_methods(), reason="fork start method unavailable")
 def test_concurrent_process_appends_do_not_interleave(tmp_path: Path) -> None:
     """Eight processes appending ~8 KiB records via LedgerLock produce 400 intact lines."""
     ledger_file = str(tmp_path / "executions.jsonl")
-    ctx = multiprocessing.get_context("fork")
+    # spawn, not fork: the xdist worker is multi-threaded, so a forked child can inherit a held lock and hang.
+    ctx = multiprocessing.get_context("spawn")
     procs = [ctx.Process(target=_process_append_worker, args=(ledger_file, wid, 50)) for wid in range(8)]
     for proc in procs:
         proc.start()
-    for proc in procs:
-        proc.join(timeout=60)
-        assert proc.exitcode == 0
+    try:
+        for proc in procs:
+            proc.join(timeout=60)
+            assert proc.exitcode == 0
+    finally:
+        for proc in procs:
+            if proc.is_alive():
+                proc.kill()
+                proc.join()
     _assert_clean_ledger(ledger_file, 400)
 
 

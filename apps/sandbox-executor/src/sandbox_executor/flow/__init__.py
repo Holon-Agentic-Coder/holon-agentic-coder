@@ -141,7 +141,9 @@ _LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.stages.decomposition": (
         "_decomposition_child_lines _run_decomposed_plan _sub_intent_depth_error format_decomposition_summary"
     ),
+    "sandbox_executor.flow.stages.empty_diff_outcome": "empty_diff_failure",
     "sandbox_executor.flow.stages.execute": "_resumable_partial_branch run_execute_stage",
+    "sandbox_executor.flow.stages.execute_veto": "execution_veto_error",
     "sandbox_executor.flow.stages.intent": "_reused_intent_conflict run_intent_stage",
     "sandbox_executor.flow.stages.plan": "_format_entropy run_plan_stage",
     "sandbox_executor.flow.stages.plan_decision": "_backfill_plan_row _over_budget_failure _plan_budget_decision",
@@ -324,6 +326,8 @@ __all__ = [
     "deserialize_carried",
     "discard_empty_calibrated_branch",
     "discover_in_flight_flows",
+    "empty_diff_failure",
+    "execution_veto_error",
     "extract_valid_ledger_rows",
     "failed_partial_head",
     "fast_forward_local_branch",

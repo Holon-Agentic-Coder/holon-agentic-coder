@@ -5,7 +5,6 @@ executions.
 from __future__ import annotations
 
 import logging
-import os
 import re
 import time
 from datetime import UTC, datetime
@@ -18,7 +17,6 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, S
 from sandbox_executor.flow.dispatch import _dispatch_role, _recorded_test_fields, _stage_failure
 from sandbox_executor.flow.execution_publish import held_execution_failure, hold_unrecorded_executions
 from sandbox_executor.flow.git_refs import (
-    _append_superseding_execution_row,
     _discover_child_branch,
     _fetch_branch_prefix_error,
     _latest_execution_summary,
@@ -28,17 +26,18 @@ from sandbox_executor.flow.git_refs import (
     _track_local_branch,
 )
 from sandbox_executor.flow.host_remote import fetch_base, publish_new_child_branches, remote_error
-from sandbox_executor.flow.partial_head import FAILED_EXECUTION_STATUSES, failed_partial_head
+from sandbox_executor.flow.partial_head import failed_partial_head
 from sandbox_executor.flow.partial_salvage import salvage_for_resume
 from sandbox_executor.flow.plan_refresh import plan_refresh_stage_failure, refresh_payload
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.decomposition import _run_decomposed_plan, _sub_intent_depth_error
+from sandbox_executor.flow.stages.empty_diff_outcome import empty_diff_failure
+from sandbox_executor.flow.stages.execute_veto import execution_veto_error
 from sandbox_executor.flow.stages.plan_decision import _over_budget_failure, _plan_budget_decision
 from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
-from sandbox_executor.flow.stages.touch_set_guard import superseding_failure_row, touch_set_violation_result
+from sandbox_executor.flow.stages.touch_set_guard import touch_set_violation_result
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
-from sandbox_executor.git import EMPTY_DIFF_FAILURE_REASON, EMPTY_DIFF_STATUS, changed_paths, empty_diff_summary
-from sandbox_executor.knowledge import ActionIndexDatabase, compute_context_fingerprint
+from sandbox_executor.git import changed_paths
 from sandbox_executor.ledger import build_execution_id
 from sandbox_executor.naming import MissingTickerError, model_code, ticker_for
 from sandbox_executor.redaction import redact_agent_secrets
@@ -98,39 +97,9 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
     except MissingTickerError as exc:
         return _stage_failure(context, FlowStage.EXECUTE, start_time, f"Execute stage failed: {exc}")
 
-    # Deterministic failure veto check
-    exec_fp = compute_context_fingerprint(
-        target=context.plan_branch,
-        tool=context.agent,
-        command_prefix="pytest",
-    )
-    db_path = os.path.join(repo_dir, "holon-knowledge/.index/action_index.db")
-    try:
-        if os.path.exists(db_path):
-            index_db = ActionIndexDatabase(db_path=db_path)
-            conn = index_db.get_connection()
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT is_shadow, state FROM active_vetoes WHERE context_fingerprint = ? AND state != 'lifted';",
-                (exec_fp,),
-            )
-            veto_match = cur.fetchone()
-            conn.close()
-            if veto_match:
-                is_shadow = bool(veto_match["is_shadow"])
-                if is_shadow:
-                    context.log(f"[VETO SHADOW WARNING] Known failure pattern matches context {exec_fp}")
-                else:
-                    err = f"Execution blocked by deterministic failure veto for context fingerprint: {exec_fp}"
-                    context.log(f"[VETO BLOCKED] {err}")
-                    return StageResult(
-                        stage=FlowStage.EXECUTE,
-                        status=StageStatus.FAILED,
-                        start_time=start_time,
-                        error=err,
-                    )
-    except Exception as e:
-        logger.debug("Non-fatal veto check exception: %s", e)
+    veto_error = execution_veto_error(context)
+    if veto_error is not None:
+        return StageResult(stage=FlowStage.EXECUTE, status=StageStatus.FAILED, start_time=start_time, error=veto_error)
 
     if context.dry_run:
         # Validation only: name the branch the executor would create, without dispatching or writing anything.
@@ -317,51 +286,7 @@ def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> Sta
         )
 
     if not changed:
-        guard_summary = empty_diff_summary(context.plan_branch)
-        guard_payload = {
-            **base_payload,
-            "status": EMPTY_DIFF_STATUS,
-            "failure_reason": EMPTY_DIFF_FAILURE_REASON,
-            "container_status": container_status,
-            "superseding_row_recorded": False,
-        }
-        agent_exit = f"the executor agent exited with code {exit_code}"
-        if summary_row is None:
-            outcome = (
-                f"{agent_exit} but '{exec_branch}' carries no executions.jsonl summary row for {exec_id}, "
-                "so no superseding row was recorded"
-            )
-        elif container_status in FAILED_EXECUTION_STATUSES:
-            detail = summary_row.get("summary") or "no summary"
-            outcome = (
-                f"{agent_exit} and the container already recorded status '{container_status}': {detail}; "
-                "no superseding row was written"
-            )
-        else:
-            superseding = superseding_failure_row(
-                summary_row, EMPTY_DIFF_STATUS, EMPTY_DIFF_FAILURE_REASON, guard_summary
-            )
-            write_error = _append_superseding_execution_row(context, exec_branch, superseding)
-            guard_payload["superseding_row_recorded"] = write_error is None
-            if write_error:
-                context.log(f"Warning: could not record the empty-diff failure row on '{exec_branch}': {write_error}")
-                outcome = (
-                    f"{agent_exit} and the container recorded status '{container_status}', but recording the "
-                    f"superseding '{EMPTY_DIFF_STATUS}' row (failure_reason '{EMPTY_DIFF_FAILURE_REASON}') failed, "
-                    f"so the ledger still shows '{container_status}': {write_error}"
-                )
-            else:
-                outcome = (
-                    f"{agent_exit} and the container recorded status '{container_status}'; recorded a superseding "
-                    f"status '{EMPTY_DIFF_STATUS}' row (failure_reason '{EMPTY_DIFF_FAILURE_REASON}')"
-                )
-        return _stage_failure(
-            context,
-            FlowStage.EXECUTE,
-            start_time,
-            f"Execute stage failed: {guard_summary}; {outcome}; no PR will be created or updated.",
-            **guard_payload,
-        )
+        return empty_diff_failure(context, start_time, exec_branch, summary_row, base_payload)
 
     if summary_row is None:
         return _stage_failure(

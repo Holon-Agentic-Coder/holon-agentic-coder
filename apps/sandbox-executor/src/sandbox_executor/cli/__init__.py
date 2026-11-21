@@ -168,6 +168,7 @@ __all__ = [
     "_SKIP_PREFLIGHT_HELP",
     "_TOKEN_REDUCE_HELP",
     "ActionIndexDatabase",
+    "ANTIGRAVITY_WRITABLE_TMPFS",
     "ConsultEngine",
     "FlowContext",
     "TelemetryCollector",
@@ -288,6 +289,25 @@ def find_github_token() -> str | None:
     return None
 
 
+# The parent /home/holon/.gemini/antigravity-cli stays :ro for credential isolation.
+# brain/ and conversations/ must be writable for agy's OnTaskCompleted background-task wakeup and runtime state.
+ANTIGRAVITY_WRITABLE_TMPFS: tuple[str, ...] = (
+    "/home/holon/.gemini/config:uid=1000,gid=1000",
+    "/home/holon/.gemini/antigravity-cli/log:uid=1000,gid=1000",
+    "/home/holon/.gemini/antigravity-cli/cache:uid=1000,gid=1000",
+    "/home/holon/.gemini/antigravity-cli/brain:uid=1000,gid=1000",
+    "/home/holon/.gemini/antigravity-cli/conversations:uid=1000,gid=1000",
+)
+
+
+def _antigravity_session_mounts(source: str) -> list[str]:
+    """Construct read-only session mount with writable tmpfs overlays for Antigravity."""
+    mounts = ["-v", f"{source}:/home/holon/.gemini/antigravity-cli:ro"]
+    for spec in ANTIGRAVITY_WRITABLE_TMPFS:
+        mounts.extend(["--tmpfs", spec])
+    return mounts
+
+
 def get_agent_session_mounts(agent_id: str) -> list[str]:  # noqa: C901
     """Auto-detect and construct session mounts for supported agents."""
     mounts = []
@@ -306,11 +326,7 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:  # noqa: C901
         # On macOS, ~/.holon/sessions/antigravity is required if not using HOLON_AGENT_KEY
         if sys.platform == "darwin":
             if os.path.exists(dedicated_session):
-                mounts.extend(["-v", f"{dedicated_session}:/home/holon/.gemini/antigravity-cli:ro"])
-                mounts.extend(["--tmpfs", "/home/holon/.gemini/config:uid=1000,gid=1000"])
-                mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/log:uid=1000,gid=1000"])
-                mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/cache:uid=1000,gid=1000"])
-                return mounts
+                return _antigravity_session_mounts(dedicated_session)
             elif not has_key:
                 print(
                     "Error: Missing Antigravity sandbox session directory on macOS.\n"
@@ -326,18 +342,11 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:  # noqa: C901
 
         # On Linux and other platforms, mount ~/.holon/sessions/antigravity or host ~/.gemini/antigravity-cli
         if os.path.exists(dedicated_session):
-            mounts.extend(["-v", f"{dedicated_session}:/home/holon/.gemini/antigravity-cli:ro"])
-            mounts.extend(["--tmpfs", "/home/holon/.gemini/config:uid=1000,gid=1000"])
-            mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/log:uid=1000,gid=1000"])
-            mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/cache:uid=1000,gid=1000"])
-            return mounts
+            return _antigravity_session_mounts(dedicated_session)
 
         host_agy_cli = os.path.join(home, ".gemini", "antigravity-cli")
         if os.path.exists(host_agy_cli):
-            mounts.extend(["-v", f"{host_agy_cli}:/home/holon/.gemini/antigravity-cli:ro"])
-            mounts.extend(["--tmpfs", "/home/holon/.gemini/config:uid=1000,gid=1000"])
-            mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/log:uid=1000,gid=1000"])
-            mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/cache:uid=1000,gid=1000"])
+            return _antigravity_session_mounts(host_agy_cli)
 
         return mounts
 

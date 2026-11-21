@@ -1,0 +1,34 @@
+{
+  "kb_id": "KB-failure-cb3f91f7",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-21T13:04:24.596379+00:00",
+  "updated_ts": "2026-11-21T13:04:24.596379+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-1795253872-c6185012",
+      "ACT-1795253315-247a2daa",
+      "ACT-1795253154-d5a08412",
+      "ACT-1795252520-f3850cd3",
+      "ACT-1795252515-1efb79ef"
+    ],
+    "success_count": 0,
+    "failure_count": 8,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "test",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795222649-antigravity-tmpfs-empty-diff/P-1795222667-CLA-CO5.5/E-1795251360-ANA-G3.8F/_",
+    "description": "Reproduced failure across 8 executions with identical context.",
+    "action": "Review Loop executed for I-1795222649-antigravity-tmpfs-empty-diff/P-1795222667-CLA-CO5.5/E-1795251360-ANA-G3.8F/_",
+    "symptoms": [
+      "Consensus failed: findings=[]; resolver failed: Resolver pre-push test failed (exit code 1); failed: apps/sandbox-executor/tests/test_executor_empty_diff.py::TestExecutorEmptyDiff::test_main_diff_unverified_no_stderr_excerpt, apps/sandbox-executor/tests/test_executor_empty_diff.py::TestExecutorEmptyDiff::test_main_empty_diff_stderr_excerpt_empty_output, apps/sandbox-executor/tests/test_executor_empty_diff.py::TestExecutorEmptyDiff::test_main_empty_diff_stderr_excerpt_non_empty_output, apps/sandbox-executor/tests/test_executor_empty_diff.py::TestExecutorEmptyDiff::test_main_success_no_stderr_excerpt; full output: .holon/review/verification/test.log: =========================== short test summary info ============================\nFAILED apps/sandbox-executor/tests/test_executor_empty_diff.py::TestExecutorEmptyDiff::test_main_diff_unverified_no_stderr_excerpt\nFAILED apps/sandbox-executor/tests/test_executor_empty_diff.py::TestExecutorEmptyDiff::test_main_empty_diff_stderr_excerpt_empty_output\nFAILED apps/sandbox-executor/tests/test_executor_empty_diff.py::TestExecutorEmptyDiff::test_main_empty_diff_stderr_excerpt_non_empty_output\nFAILED apps/sandbox-executor/tests/test_executor_empty_diff.py::TestExecutorEmptyDiff::test_main_success_no_stderr_excerpt\n================== 4 failed, 5247 passed, 1 skipped in 22.03s ==================; final verdicts: no reviewer returned a verdict"
+    ]
+  }
+}

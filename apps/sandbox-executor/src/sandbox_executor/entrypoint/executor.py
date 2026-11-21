@@ -26,6 +26,7 @@ import tempfile
 import time
 import traceback
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
 from typing import Any
@@ -237,7 +238,7 @@ def _drop_unanchorable_front(redacted_region: str) -> tuple[str, int]:
     return redacted_region[len(front) :], len(front.encode("utf-8"))
 
 
-def prepare_agent_output_block(raw_output: str, max_bytes: int = 65536) -> tuple[str, bool, int]:  # noqa: C901
+def prepare_agent_output_block(raw_output: str, max_bytes: int = 65536) -> tuple[str, bool, int]:
     """Produce the `## Agent Output` block: redacted, and no larger than the byte budget.
 
     Field contract: the returned text is `marker + tail` and, for any budget of at least twice the
@@ -307,7 +308,37 @@ def prepare_agent_output_block(raw_output: str, max_bytes: int = 65536) -> tuple
 
     reserve = min(_TRUNCATION_MARKER_RESERVE, max_bytes // 2)
     tail_budget = max_bytes - reserve
+    redacted_region, dropped_bytes, causes = _redact_cut_region(encoded, tail_budget)
 
+    # Bound the REDACTED bytes, which is the only bound that can honour the budget once masking has
+    # rewritten sizes: growing a value past the budget is no longer a refit problem, because nothing
+    # is committed that was not already redacted. Whole leading lines are dropped, never a partial
+    # line, and the newest bytes are always the ones kept.
+    encoded_tail = redacted_region.encode("utf-8")
+    pos = 0
+    while len(encoded_tail) - pos > tail_budget:
+        newline_at = encoded_tail.find(b"\n", pos)
+        if newline_at < 0 or newline_at == len(encoded_tail) - 1:
+            # No complete line fits: the record keeps the notice and none of the line.
+            pos = len(encoded_tail)
+            if "no complete line within budget" not in causes:
+                causes.append("no complete line within budget")
+            break
+        pos = newline_at + 1
+    dropped_bytes += pos
+    encoded_tail = encoded_tail[pos:]
+
+    tail = encoded_tail.decode("utf-8", errors="replace")
+    marker = _marker_line(dropped_bytes, len(encoded_tail), _marker_reason(*causes))
+    return marker + tail, True, dropped_bytes
+
+
+def _redact_cut_region(encoded: bytes, tail_budget: int) -> tuple[str, int, list[str]]:
+    """Redact the region around the byte cut and drop its unanchorable front.
+
+    Returns (redacted_region, dropped_bytes, marker_causes): the bytes before the region and its dropped front count
+    as dropped, and the causes are bare marker phrases in the order they were hit.
+    """
     # The byte cut lands at `cut_offset`; the REDACTION region reaches `_ANCHOR_CONTEXT_BYTES` past
     # it and then out to that line's start, so a key name sitting above the value the cut lands on is
     # inside the text the regexes see and gets masked instead of being dropped with the front.
@@ -335,28 +366,7 @@ def prepare_agent_output_block(raw_output: str, max_bytes: int = 65536) -> tuple
         dropped_bytes += front_bytes
         if not redacted_region:
             causes.append("no complete line within budget")
-
-    # Bound the REDACTED bytes, which is the only bound that can honour the budget once masking has
-    # rewritten sizes: growing a value past the budget is no longer a refit problem, because nothing
-    # is committed that was not already redacted. Whole leading lines are dropped, never a partial
-    # line, and the newest bytes are always the ones kept.
-    encoded_tail = redacted_region.encode("utf-8")
-    pos = 0
-    while len(encoded_tail) - pos > tail_budget:
-        newline_at = encoded_tail.find(b"\n", pos)
-        if newline_at < 0 or newline_at == len(encoded_tail) - 1:
-            # No complete line fits: the record keeps the notice and none of the line.
-            pos = len(encoded_tail)
-            if "no complete line within budget" not in causes:
-                causes.append("no complete line within budget")
-            break
-        pos = newline_at + 1
-    dropped_bytes += pos
-    encoded_tail = encoded_tail[pos:]
-
-    tail = encoded_tail.decode("utf-8", errors="replace")
-    marker = _marker_line(dropped_bytes, len(encoded_tail), _marker_reason(*causes))
-    return marker + tail, True, dropped_bytes
+    return redacted_region, dropped_bytes, causes
 
 
 def sanitize_agent_output(raw_output: str, max_bytes: int = 65536) -> tuple[str, bool, int]:
@@ -409,7 +419,7 @@ def _get_local_safe_directories(repo_dir: str) -> list[str]:
     return []
 
 
-def run_cmd(  # noqa: C901
+def run_cmd(
     args: list[str],
     cwd: str | None = None,
     check: bool = True,
@@ -431,19 +441,10 @@ def run_cmd(  # noqa: C901
     cmd_args = list(args)
     if cmd_args and cmd_args[0] == "git":
         cmd_env = _get_clean_git_env(env)
-        if cwd:
-            norm_cwd = os.path.realpath(cwd)
-            is_safe = norm_cwd in _FALLBACK_SAFE_DIRECTORIES
-            if not is_safe:
-                safe_dirs = _get_local_safe_directories(cwd)
-                for sd in safe_dirs:
-                    if sd == "*" or os.path.realpath(sd) == norm_cwd:
-                        is_safe = True
-                        break
-            # If configured as safe in local config, or if falling back, inject safe.directory per-invocation
-            has_safe_dir = any(arg == "safe.directory" or arg.startswith("safe.directory=") for arg in cmd_args)
-            if is_safe and not has_safe_dir and len(cmd_args) > 1:
-                cmd_args = [cmd_args[0], "-c", f"safe.directory={cwd}", *cmd_args[1:]]
+        # If configured as safe in local config, or if falling back, inject safe.directory per-invocation
+        has_safe_dir = any(arg == "safe.directory" or arg.startswith("safe.directory=") for arg in cmd_args)
+        if cwd and _is_safe_directory(cwd) and not has_safe_dir and len(cmd_args) > 1:
+            cmd_args = [cmd_args[0], "-c", f"safe.directory={cwd}", *cmd_args[1:]]
 
     result = subprocess.run(cmd_args, cwd=cwd, capture_output=True, text=True, env=cmd_env)
     if result.returncode != 0 and check:
@@ -451,18 +452,26 @@ def run_cmd(  # noqa: C901
         print(f"Command args: {cmd_str}", file=sys.stderr)
         full_out = redact_agent_secrets(result.stdout)
         full_err = redact_agent_secrets(result.stderr)
-        out = full_out
-        err = full_err
-        if len(out) > _MAX_PRINT_LEN:
-            half_print = _MAX_PRINT_LEN // 2
-            out = out[:half_print] + "\n... (truncated) ...\n" + out[-half_print:]
-        if len(err) > _MAX_PRINT_LEN:
-            half_print = _MAX_PRINT_LEN // 2
-            err = err[:half_print] + "\n... (truncated) ...\n" + err[-half_print:]
-        print(f"Stdout:\n{out}", file=sys.stderr)
-        print(f"Stderr:\n{err}", file=sys.stderr)
+        print(f"Stdout:\n{_clip_for_print(full_out)}", file=sys.stderr)
+        print(f"Stderr:\n{_clip_for_print(full_err)}", file=sys.stderr)
         raise subprocess.CalledProcessError(result.returncode, redacted_args, output=full_out, stderr=full_err)
     return result
+
+
+def _is_safe_directory(cwd: str) -> bool:
+    """Whether ``cwd`` is a fallback safe directory or registered (or wildcarded) in the local safe.directory config."""
+    norm_cwd = os.path.realpath(cwd)
+    if norm_cwd in _FALLBACK_SAFE_DIRECTORIES:
+        return True
+    return any(sd == "*" or os.path.realpath(sd) == norm_cwd for sd in _get_local_safe_directories(cwd))
+
+
+def _clip_for_print(text: str) -> str:
+    """Keep the head and tail of ``text`` when it is longer than ``_MAX_PRINT_LEN``, joined by a truncation line."""
+    if len(text) <= _MAX_PRINT_LEN:
+        return text
+    half_print = _MAX_PRINT_LEN // 2
+    return text[:half_print] + "\n... (truncated) ...\n" + text[-half_print:]
 
 
 def _get_repo(repo_dir: str) -> GitRepository:
@@ -592,7 +601,7 @@ def _resolve_local_ref(git_dir: str, refname: str) -> str | None:
     return None
 
 
-def _repair_git_repo(  # noqa: C901
+def _repair_git_repo(
     repo_dir: str,
     probe_err: str,
     default_branch: str = "main",
@@ -618,18 +627,7 @@ def _repair_git_repo(  # noqa: C901
     """
     # Case (a): Dubious ownership
     if "detected dubious ownership" in probe_err or "safe.directory" in probe_err:
-        res = _get_repo(repo_dir).run(
-            ["-c", f"safe.directory={repo_dir}", "config", "--local", "--add", "safe.directory", repo_dir],
-            check=False,
-        )
-        if res.returncode != 0:
-            err_msg = (res.stderr or res.stdout).strip()
-            print(
-                f"Warning: unable to write safe.directory to local git config ({redact_agent_secrets(err_msg)}); "
-                f"falling back to per-invocation -c safe.directory",
-                file=sys.stderr,
-            )
-            _FALLBACK_SAFE_DIRECTORIES.add(os.path.realpath(repo_dir))
+        _persist_safe_directory(repo_dir)
 
     # Case (b): Stale index lock or locked ref
     if (
@@ -637,15 +635,7 @@ def _repair_git_repo(  # noqa: C901
         or "cannot lock ref" in probe_err
         or os.path.exists(os.path.join(repo_dir, ".git", "index.lock"))
     ):
-        removed, still_held = _remove_abandoned_locks(repo_dir)
-        for lock in removed:
-            print(f"Warning: removed abandoned git lock file {lock}", file=sys.stderr)
-        if still_held:
-            print(
-                "Warning: git lock file(s) too young to be declared abandoned are left in place: "
-                f"{', '.join(still_held)}. They may belong to a running git process.",
-                file=sys.stderr,
-            )
+        _clear_abandoned_locks(repo_dir)
 
     # Case (c): Leaked environment variables
     for var in _CLEAN_GIT_ENV_VARS:
@@ -658,39 +648,71 @@ def _repair_git_repo(  # noqa: C901
         or "Needed a single revision" in probe_err
         or "HEAD" in probe_err
         or not os.path.exists(os.path.join(repo_dir, ".git", "HEAD"))
-    ):
-        git_dir = os.path.join(repo_dir, ".git")
-        if os.path.isdir(git_dir):
-            head_path = os.path.join(git_dir, "HEAD")
-            target_branch = default_branch or "main"
-            # HEAD damage makes every git command fail, so the tip has to be read from disk. Guessing
-            # an arbitrary branch here would silently put the execution commit on the wrong ref,
-            # so the only acceptable sources are the execution branch itself and the plan branch the
-            # workspace was checked out from.
-            tip_sha = _resolve_local_ref(git_dir, target_branch) or (
-                _resolve_local_ref(git_dir, plan_branch) if plan_branch else None
-            )
-            if tip_sha:
-                target_ref_dir = os.path.join(git_dir, "refs", "heads", *target_branch.split("/")[:-1])
-                with contextlib.suppress(Exception):
-                    os.makedirs(target_ref_dir, exist_ok=True)
-                    with open(os.path.join(git_dir, "refs", "heads", *target_branch.split("/")), "w") as rf:
-                        rf.write(f"{tip_sha}\n")
-                with contextlib.suppress(Exception), open(head_path, "w") as f:
-                    f.write(f"ref: refs/heads/{target_branch}\n")
-                repo = _get_repo(repo_dir)
-                verify = repo.run(["symbolic-ref", "HEAD"], check=False)
-                if verify.returncode != 0 or verify.stdout.strip() != f"refs/heads/{target_branch}":
-                    repo.run(["symbolic-ref", "HEAD", f"refs/heads/{target_branch}"], check=False)
-            else:
-                print(
-                    f"Warning: cannot restore HEAD to '{target_branch}': no local ref for it or for "
-                    f"'{plan_branch or 'unknown'}'; leaving HEAD untouched.",
-                    file=sys.stderr,
-                )
+    ) and os.path.isdir(os.path.join(repo_dir, ".git")):
+        _restore_head(repo_dir, default_branch or "main", plan_branch)
 
     healthy, _ = _probe_git_repo(repo_dir)
     return healthy
+
+
+def _persist_safe_directory(repo_dir: str) -> None:
+    """Add ``repo_dir`` to the local safe.directory config, or fall back to per-invocation ``-c safe.directory``."""
+    res = _get_repo(repo_dir).run(
+        ["-c", f"safe.directory={repo_dir}", "config", "--local", "--add", "safe.directory", repo_dir],
+        check=False,
+    )
+    if res.returncode != 0:
+        err_msg = (res.stderr or res.stdout).strip()
+        print(
+            f"Warning: unable to write safe.directory to local git config ({redact_agent_secrets(err_msg)}); "
+            f"falling back to per-invocation -c safe.directory",
+            file=sys.stderr,
+        )
+        _FALLBACK_SAFE_DIRECTORIES.add(os.path.realpath(repo_dir))
+
+
+def _clear_abandoned_locks(repo_dir: str) -> None:
+    """Remove the provably abandoned git lock files and report the ones still held as warnings."""
+    removed, still_held = _remove_abandoned_locks(repo_dir)
+    for lock in removed:
+        print(f"Warning: removed abandoned git lock file {lock}", file=sys.stderr)
+    if still_held:
+        print(
+            "Warning: git lock file(s) too young to be declared abandoned are left in place: "
+            f"{', '.join(still_held)}. They may belong to a running git process.",
+            file=sys.stderr,
+        )
+
+
+def _restore_head(repo_dir: str, target_branch: str, plan_branch: str | None) -> None:
+    """Point a dangling or missing HEAD at ``target_branch``, read from disk, or warn and leave HEAD untouched."""
+    git_dir = os.path.join(repo_dir, ".git")
+    head_path = os.path.join(git_dir, "HEAD")
+    # HEAD damage makes every git command fail, so the tip has to be read from disk. Guessing
+    # an arbitrary branch here would silently put the execution commit on the wrong ref,
+    # so the only acceptable sources are the execution branch itself and the plan branch the
+    # workspace was checked out from.
+    tip_sha = _resolve_local_ref(git_dir, target_branch) or (
+        _resolve_local_ref(git_dir, plan_branch) if plan_branch else None
+    )
+    if not tip_sha:
+        print(
+            f"Warning: cannot restore HEAD to '{target_branch}': no local ref for it or for "
+            f"'{plan_branch or 'unknown'}'; leaving HEAD untouched.",
+            file=sys.stderr,
+        )
+        return
+    target_ref_dir = os.path.join(git_dir, "refs", "heads", *target_branch.split("/")[:-1])
+    with contextlib.suppress(Exception):
+        os.makedirs(target_ref_dir, exist_ok=True)
+        with open(os.path.join(git_dir, "refs", "heads", *target_branch.split("/")), "w") as rf:
+            rf.write(f"{tip_sha}\n")
+    with contextlib.suppress(Exception), open(head_path, "w") as f:
+        f.write(f"ref: refs/heads/{target_branch}\n")
+    repo = _get_repo(repo_dir)
+    verify = repo.run(["symbolic-ref", "HEAD"], check=False)
+    if verify.returncode != 0 or verify.stdout.strip() != f"refs/heads/{target_branch}":
+        repo.run(["symbolic-ref", "HEAD", f"refs/heads/{target_branch}"], check=False)
 
 
 def _entrypoint_git_runner(repo_dir: str) -> Callable[[list[str]], str]:
@@ -862,19 +884,22 @@ def _reconcile_conflicted_merge(repo: GitRepository, repo_dir: str, target_ref: 
         return False, f"Exception during ledger reconciliation merge: {redact_agent_secrets(str(exc))}"
 
 
-def build_execution_prompt(  # noqa: PLR0913
-    repo_dir: str,
-    plan_branch: str,
-    plan_data: dict[str, Any],
-    plan_content: str,
-    intent_data: dict[str, Any],
-    exec_id: str,
-) -> str:
+@dataclass(frozen=True)
+class ExecutionPromptInputs:
+    """The plan and intent an execution prompt describes: the plans.jsonl row, the plan markdown and the intent row."""
+
+    plan_data: dict[str, Any]
+    plan_content: str
+    intent_data: dict[str, Any]
+
+
+def build_execution_prompt(repo_dir: str, plan_branch: str, inputs: ExecutionPromptInputs, exec_id: str) -> str:
     """Render ``holon-config/prompts/executor.template.md`` when present, else the built-in execution prompt.
 
     The write protocol for the execution notes is appended by the caller, so it is always present whichever prompt is
     used.
     """
+    plan_data, plan_content, intent_data = inputs.plan_data, inputs.plan_content, inputs.intent_data
     intent_json = json.dumps(intent_data, indent=2)
     template_path = os.path.join(repo_dir, "holon-config/prompts/executor.template.md")
     template = None
@@ -1214,7 +1239,9 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             intent_file = os.path.join(tempfile.gettempdir(), f"exec_intent-{exec_seq}.json")
             notes_rel = f"executions/{exec_id}.md"
             notes_path = os.path.join(repo_dir, notes_rel)
-            base_prompt = build_execution_prompt(repo_dir, plan_branch, plan_data, plan_content, intent_data, exec_id)
+            base_prompt = build_execution_prompt(
+                repo_dir, plan_branch, ExecutionPromptInputs(plan_data, plan_content, intent_data), exec_id
+            )
             if partial_branch and partial_head:
                 base_prompt = f"{base_prompt}\n\n{continuation_note(partial_branch, partial_head)}"
             full_prompt = f"{base_prompt}\n\n{execution_write_protocol(notes_rel)}"

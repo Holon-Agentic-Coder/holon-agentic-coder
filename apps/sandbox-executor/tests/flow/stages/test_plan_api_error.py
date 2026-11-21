@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from sandbox_executor.flow import StageStatus, run_intent_stage, run_plan_stage
+from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.flow.stages.plan import PlanStage
 from sandbox_executor.plan_attempt import PLAN_FAILURE_DETAIL_REL
 
 from tests.flow.helpers import FakeRoleAgents, _dispatch_context, _git
@@ -82,3 +85,21 @@ def test_an_untracked_plan_file_present_before_the_dispatch_survives(flow_repos,
     assert result.status == StageStatus.FAILED
     assert scratch.exists()
     assert _untracked_plans(host).splitlines() == [f"?? {scratch.relative_to(host).as_posix()}"]
+
+
+def test_a_push_error_is_reported_only_after_the_planner_exited_zero(tmp_path):
+    stage_module = "sandbox_executor.flow.stages.plan"
+    context = FlowContext(target_worktree=str(tmp_path), intent_branch="I-1-x/_")
+    stage = PlanStage(context, "2026-11-21T00:00:00Z", "I-1-x", str(tmp_path))
+    with (
+        patch(f"{stage_module}.snapshot_plan_attempt", return_value=set()),
+        patch(f"{stage_module}.settle_failed_plan_attempt", return_value=""),
+        patch(f"{stage_module}.remote_error", return_value="push rejected") as publish,
+        patch(f"{stage_module}._dispatch_role", side_effect=[1, 0]),
+    ):
+        failed_planner = stage.dispatch_planner()
+        failed_push = stage.dispatch_planner()
+
+    assert publish.call_count == 2
+    assert failed_planner.error == f"{stage.no_plan_error} (planner agent exited with code 1)"
+    assert failed_push.error == "Plan stage failed: push rejected"

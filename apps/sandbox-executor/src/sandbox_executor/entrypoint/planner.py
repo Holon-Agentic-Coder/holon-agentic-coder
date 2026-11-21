@@ -37,6 +37,7 @@ from sandbox_executor.plan_attempt import clear_failure_detail, discard_untracke
 from sandbox_executor.plan_paths import plan_file_rel
 from sandbox_executor.redaction import redact_agent_secrets, redact_command, redact_command_args
 from sandbox_executor.touch_set import parse_touch_set_section
+from sandbox_executor.touch_set_overlap import broad_entries
 from sandbox_executor.turns import AuthoringOutcome, record_budget_failure, run_turn, supervise_authoring_turn
 
 # The commit identity goes on the command line: a mounted host worktree's repository config is shared with the host and
@@ -282,7 +283,8 @@ def _touch_set_field(plan_md_path: str, intent_data: Mapping | None = None) -> d
 
     Advisory only: a missing section or a parse error records ``None`` and never fails the plan. The frozen module
     budget configuration is dropped from the set unless the intent carries ``module_budget_change``, so it never
-    serialises Stage 3 admission (Stage 3 refuses a change to it anyway).
+    serialises Stage 3 admission (Stage 3 refuses a change to it anyway). Folder or wildcard entries print one
+    advisory warning and are recorded unchanged.
     """
     try:
         with open(plan_md_path, encoding="utf-8") as f:
@@ -297,6 +299,12 @@ def _touch_set_field(plan_md_path: str, intent_data: Mapping | None = None) -> d
         touch_set, removed = without_budget_config(touch_set)
         if removed:
             print(f"Warning: dropped from the touch set. {refusal_message(removed)}", file=sys.stderr)
+    if broad := broad_entries(touch_set):
+        print(
+            f"Warning: the touch set has folder or wildcard entries ({', '.join(broad)}); they match every existing "
+            "file below them at Stage 3 admission, so prefer module paths.",
+            file=sys.stderr,
+        )
     return {"touch_set": touch_set.to_row()}
 
 

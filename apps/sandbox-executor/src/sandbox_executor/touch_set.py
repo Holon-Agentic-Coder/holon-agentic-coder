@@ -2,7 +2,7 @@
 
 The planner records the parsed set on its ``plans.jsonl`` row (``touch_set``), and Stage 5 calibration scores it
 against the execution diff (precision and recall). Stage 3 admission compares it with in-flight flows
-(``entries_overlap``, ``files_in_set``) and enforcement checks the execution diff against it (``out_of_set_files``).
+through :mod:`touch_set_overlap` and enforcement checks the execution diff against it (``out_of_set_files``).
 Format: one backticked repository-relative POSIX path or glob per top-level bullet, a trailing ``/`` for a whole
 directory, ``*`` within one path segment and ``**`` across directories, and an optional ``symbols: a, b`` suffix that is
 stored but never scored. Metadata paths (``git.is_metadata_path``) are dropped.
@@ -11,6 +11,7 @@ Pure logic with no I/O, kept outside the flow package so the planner entrypoint 
 
 from __future__ import annotations
 
+import functools
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -194,6 +195,7 @@ def _glob_literal_or_class(token: str) -> str:
     return re.escape(token)
 
 
+@functools.lru_cache(maxsize=256)
 def _glob_regex(pattern: str) -> re.Pattern[str]:
     """Translate a glob where ``*`` and ``?`` stay within one segment and ``**/`` spans zero or more directories."""
     parts: list[str] = []
@@ -216,6 +218,11 @@ def entry_matches(entry: TouchSetEntry, path: str) -> bool:
     return clean == entry.path
 
 
+def is_literal_entry(entry: TouchSetEntry) -> bool:
+    """Whether an entry names one file: no trailing ``/``, ``*`` or ``?`` (``app/[id]/page.tsx`` reads as a path)."""
+    return not entry.path.endswith("/") and "*" not in entry.path and "?" not in entry.path
+
+
 @dataclass(frozen=True)
 class TouchSetScore:
     """Touch-set accuracy against a diff; precision or recall is ``None`` when its denominator is zero."""
@@ -235,14 +242,14 @@ class TouchSetScore:
         }
 
 
-def _code_paths(paths: list[str]) -> list[str]:
+def code_paths(paths: list[str]) -> list[str]:
     """Normalised, de-duplicated paths with metadata (``git.is_metadata_path``) dropped, in their first order."""
     return list(dict.fromkeys(p for p in map(normalise_touch_path, paths) if p and not is_metadata_path(p)))
 
 
 def score_touch_set(touch_set: TouchSet, changed_paths: list[str]) -> TouchSetScore:
     """Precision: declared entries matching some changed file. Recall: changed non-metadata files covered."""
-    paths = _code_paths(changed_paths)
+    paths = code_paths(changed_paths)
     used = [entry for entry in touch_set.entries if any(entry_matches(entry, path) for path in paths)]
     unpredicted = [path for path in paths if not any(entry_matches(entry, path) for entry in touch_set.entries)]
     entries = touch_set.entries
@@ -254,42 +261,6 @@ def score_touch_set(touch_set: TouchSet, changed_paths: list[str]) -> TouchSetSc
     )
 
 
-def _literal_prefix(path: str) -> str:
-    """The part of an entry before its first glob character (the whole path for a literal or a directory)."""
-    cut = min((path.index(char) for char in _GLOB_CHARS if char in path), default=len(path))
-    return path[:cut]
-
-
-def entries_overlap(a: TouchSetEntry, b: TouchSetEntry) -> bool:
-    """Whether two declared entries can name a common file; metadata entries never overlap.
-
-    A literal path overlaps an entry that matches it; two directories overlap when one contains the other; a glob
-    against a directory or a glob overlaps when one literal prefix starts the other. The glob rule is deliberately
-    conservative: a false overlap only asks for ``--allow-overlap``, a missed one lets two flows edit one file.
-    """
-    if is_metadata_path(a.path) or is_metadata_path(b.path):
-        return False
-    if a.path == b.path:
-        return True
-    a_literal = not a.path.endswith("/") and _literal_prefix(a.path) == a.path
-    b_literal = not b.path.endswith("/") and _literal_prefix(b.path) == b.path
-    if a_literal or b_literal:
-        return entry_matches(b, a.path) if a_literal else entry_matches(a, b.path)
-    prefix_a, prefix_b = _literal_prefix(a.path), _literal_prefix(b.path)
-    return prefix_a.startswith(prefix_b) or prefix_b.startswith(prefix_a)
-
-
-def overlapping_entries(own: TouchSet, other: TouchSet) -> list[tuple[str, str]]:
-    """Pairs ``(own entry path, other entry path)`` of declared entries that can name a common file."""
-    pairs = ((mine, theirs) for mine in own.entries for theirs in other.entries)
-    return [(mine.path, theirs.path) for mine, theirs in pairs if entries_overlap(mine, theirs)]
-
-
-def files_in_set(touch_set: TouchSet, paths: list[str]) -> list[str]:
-    """The normalised non-metadata ``paths`` that some declared entry matches, de-duplicated in their first order."""
-    return [path for path in _code_paths(paths) if any(entry_matches(entry, path) for entry in touch_set.entries)]
-
-
 def out_of_set_files(touch_set: TouchSet, changed_paths: list[str]) -> list[str]:
     """The normalised non-metadata changed paths that no declared entry matches (the enforcement violations)."""
-    return [p for p in _code_paths(changed_paths) if not any(entry_matches(entry, p) for entry in touch_set.entries)]
+    return [p for p in code_paths(changed_paths) if not any(entry_matches(entry, p) for entry in touch_set.entries)]

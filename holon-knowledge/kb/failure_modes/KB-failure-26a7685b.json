@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-26a7685b",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-21T13:04:24.842569+00:00",
+  "updated_ts": "2026-11-21T13:04:24.842569+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795253872-e03217eb-antigravity-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795222649-antigravity-tmpfs-empty-diff/P-1795222667-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 1 iteration(s): resolver failed: Resolver pre-push test failed (exit code 1); failed: apps/sandbox-executor/tests/test_executor_empty_diff.py::TestExecutorEmptyDiff::test_main_diff_unverified_no_stderr_excerpt, apps/sandbox-executor/tests/test_executor_empty_diff.py::TestExecutorEmptyDiff::test_main_empty_diff_stderr_excerpt_empty_output, apps/sandbox-executor/tests/test_executor_empty_diff.py::TestExecutorEmptyDiff::test_main_empty_diff_stderr_excerpt_non_empty_output, apps/sandbox-executor/tests/test_executor_empty_diff.py::TestExecutorEmptyDiff::test_main_success_no_stderr_excerpt; full output: .holon/review/verification/test.log: =========================== short test summary info ============================\nFAILED apps/sandbox-executor/tests/test_executor_empty_diff.py::TestExecutorEmptyDiff::test_main_diff_unverified_no_stderr_excerpt\nFAILED apps/sandbox-executor/tests/test_executor_empty_diff.py::TestExecutorEmptyDiff::test_main_empty_diff_stderr_excerpt_empty_output\nFAILED apps/sandbox-executor/tests/test_executor_empty_diff.py::TestExecutorEmptyDiff::test_main_empty_diff_stderr_excerpt_non_empty_output\nFAILED apps/sandbox-executor/tests/test_executor_empty_diff.py::TestExecutorEmptyDiff::test_main_success_no_stderr_excerpt\n================== 4 failed, 5247 passed, 1 skipped in 22.03s ==================; final verdicts: no reviewer returned a verdict",
+    "symptoms": []
+  }
+}

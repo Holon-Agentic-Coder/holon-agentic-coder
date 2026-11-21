@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import logging
 import math
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from sandbox_executor.knowledge.consult_filters import ConsultQuery, build_where, clean_labels, row_to_record
 from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, ActionIndexDatabase
 
 logger = logging.getLogger(__name__)
@@ -76,176 +78,112 @@ class ConsultEngine:
             except Exception as e:
                 logger.debug("Failed incremental sync for %s: %s", ledger_path, e)
 
-    def consult_records(  # noqa: PLR0913, PLR0915
-        self,
-        all_labels: list[str] | None = None,
-        any_labels: list[str] | None = None,
-        not_labels: list[str] | None = None,
-        query_text: str | None = None,
-        top_k: int = 6,
-        max_tokens: int = 1200,
-        session_seen_ids: set[str] | list[str] | None = None,
-    ) -> ConsultResult:
-        """Consult knowledge records matching conjunctive, disjunctive, negated labels, and text query."""
+    def consult_records(self, **filters: Any) -> ConsultResult:
+        """Consult knowledge records matching conjunctive, disjunctive, negated labels, and text query.
+
+        Args:
+            **filters: Keyword filters, the fields of ``ConsultQuery``: ``all_labels``, ``any_labels``,
+                ``not_labels``, ``query_text``, ``top_k`` (default 6, capped at 6), ``max_tokens`` (default 1200)
+                and ``session_seen_ids``.
+
+        Raises:
+            TypeError: When a filter is not a ``ConsultQuery`` field.
+        """
+        query = ConsultQuery(**filters)
         self._sync_if_needed()
         start_time = time.perf_counter()
 
-        clean_all = [lbl.strip().lower() for lbl in (all_labels or []) if lbl.strip()]
-        clean_any = [lbl.strip().lower() for lbl in (any_labels or []) if lbl.strip()]
-        clean_not = [lbl.strip().lower() for lbl in (not_labels or []) if lbl.strip()]
-        seen_set = set(session_seen_ids or [])
-
         conn = self.db.get_connection()
         try:
-            where_clauses: list[str] = []
-            params: list[Any] = []
-
-            # 1. Conjunctive: Must contain ALL specified labels
-            if clean_all:
-                placeholders = ",".join(["?"] * len(clean_all))
-                where_clauses.append(
-                    f"""
-                    ar.record_id IN (
-                        SELECT record_id FROM record_labels
-                        WHERE label IN ({placeholders})
-                        GROUP BY record_id
-                        HAVING COUNT(DISTINCT label) = ?
-                    )
-                    """
-                )
-                params.extend(clean_all)
-                params.append(len(set(clean_all)))
-
-            # 2. Disjunctive: Must contain ANY of the specified labels
-            if clean_any:
-                placeholders = ",".join(["?"] * len(clean_any))
-                where_clauses.append(
-                    f"""
-                    ar.record_id IN (
-                        SELECT DISTINCT record_id FROM record_labels
-                        WHERE label IN ({placeholders})
-                    )
-                    """
-                )
-                params.extend(clean_any)
-
-            # 3. Negated: Must NOT contain any of the specified labels
-            if clean_not:
-                placeholders = ",".join(["?"] * len(clean_not))
-                where_clauses.append(
-                    f"""
-                    ar.record_id NOT IN (
-                        SELECT DISTINCT record_id FROM record_labels
-                        WHERE label IN ({placeholders})
-                    )
-                    """
-                )
-                params.extend(clean_not)
-
-            # 4. Text search via FTS5
-            if query_text and query_text.strip():
-                clean_query = query_text.strip().replace('"', '""')
-                where_clauses.append(
-                    """
-                    ar.record_id IN (
-                        SELECT record_id FROM action_records_fts
-                        WHERE action_records_fts MATCH ?
-                    )
-                    """
-                )
-                params.append(f'"{clean_query}"')
-
-            # 5. Session-level deduplication
-            if seen_set:
-                placeholders = ",".join(["?"] * len(seen_set))
-                where_clauses.append(f"ar.record_id NOT IN ({placeholders})")
-                params.extend(list(seen_set))
-
-            where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
-            query_sql = f"""
-                SELECT ar.record_id, ar.action_id, ar.execution_id, ar.action, ar.category,
-                       ar.target, ar.outcome, ar.verdict, ar.context_fingerprint,
-                       ar.error_context, ar.created_at, ar.payload_json
-                FROM action_records ar
-                {where_sql}
-                ORDER BY ar.created_at DESC
-            """
-
-            cur = conn.cursor()
-            cur.execute(query_sql, params)
-            rows = cur.fetchall()
-
-            total_matched = len(rows)
-            allocated_records: list[dict[str, Any]] = []
-            consulted_ids: list[str] = []
-            tokens_injected = 0
-            truncated = False
-
-            eff_top_k = min(top_k, 6)
-
-            for row in rows:
-                if len(allocated_records) >= eff_top_k:
-                    truncated = True
-                    break
-
-                rec_dict = {
-                    "record_id": row["record_id"],
-                    "action_id": row["action_id"],
-                    "execution_id": row["execution_id"],
-                    "action": row["action"],
-                    "category": row["category"],
-                    "target": row["target"],
-                    "outcome": row["outcome"],
-                    "verdict": row["verdict"],
-                    "context_fingerprint": row["context_fingerprint"],
-                    "error_context": row["error_context"],
-                    "created_at": row["created_at"],
-                    "payload_json": row["payload_json"],
-                }
-
-                rec_tokens = estimate_record_tokens(rec_dict)
-                if tokens_injected + rec_tokens > max_tokens and allocated_records:
-                    truncated = True
-                    break
-
-                allocated_records.append(rec_dict)
-                consulted_ids.append(row["record_id"])
-                tokens_injected += rec_tokens
-
+            rows = _fetch_matches(conn, query)
+            allocation = _allocate_within_budget(rows, query.top_k, query.max_tokens)
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
 
-            # Record telemetry asynchronously / in table
-            try:
-                all_lbls_str = ",".join(clean_all + clean_any)
-                with conn:
-                    conn.execute(
-                        """
-                        INSERT INTO consult_telemetry (
-                            timestamp, query_labels, latency_ms, matched_count, tokens_injected, cache_hit
-                        ) VALUES (?, ?, ?, ?, ?, ?);
-                        """,
-                        (
-                            datetime.now(UTC).isoformat(),
-                            all_lbls_str,
-                            elapsed_ms,
-                            total_matched,
-                            tokens_injected,
-                            1 if elapsed_ms < 5.0 else 0,
-                        ),
-                    )
-            except Exception as e:
-                logger.debug("Failed to record consult telemetry: %s", e)
+            query_labels = ",".join(clean_labels(query.all_labels) + clean_labels(query.any_labels))
+            _record_telemetry(conn, query_labels, elapsed_ms, len(rows), allocation.tokens_injected)
 
             return ConsultResult(
-                records=allocated_records,
-                total_matched=total_matched,
+                records=allocation.records,
+                total_matched=len(rows),
                 latency_ms=elapsed_ms,
-                tokens_injected=tokens_injected,
-                truncated=truncated or (total_matched > len(allocated_records)),
-                consulted_ids=consulted_ids,
+                tokens_injected=allocation.tokens_injected,
+                truncated=allocation.truncated or (len(rows) > len(allocation.records)),
+                consulted_ids=allocation.consulted_ids,
             )
         finally:
             conn.close()
+
+
+def _fetch_matches(conn: sqlite3.Connection, query: ConsultQuery) -> list[sqlite3.Row]:
+    """Return every record matching the query, newest first."""
+    where_sql, params = build_where(query)
+    query_sql = f"""
+        SELECT ar.record_id, ar.action_id, ar.execution_id, ar.action, ar.category,
+               ar.target, ar.outcome, ar.verdict, ar.context_fingerprint,
+               ar.error_context, ar.created_at, ar.payload_json
+        FROM action_records ar
+        {where_sql}
+        ORDER BY ar.created_at DESC
+    """
+    cur = conn.cursor()
+    cur.execute(query_sql, params)
+    return cur.fetchall()
+
+
+@dataclass
+class _BudgetAllocation:
+    """The records admitted within the top-k and token budgets."""
+
+    records: list[dict[str, Any]] = field(default_factory=list)
+    consulted_ids: list[str] = field(default_factory=list)
+    tokens_injected: int = 0
+    truncated: bool = False
+
+
+def _allocate_within_budget(rows: list[sqlite3.Row], top_k: int, max_tokens: int) -> _BudgetAllocation:
+    """Admit rows in order until ``min(top_k, 6)`` records or the token budget; the first record always fits."""
+    allocation = _BudgetAllocation()
+    eff_top_k = min(top_k, 6)
+    for row in rows:
+        if len(allocation.records) >= eff_top_k:
+            allocation.truncated = True
+            break
+
+        rec_dict = row_to_record(row)
+        rec_tokens = estimate_record_tokens(rec_dict)
+        if allocation.tokens_injected + rec_tokens > max_tokens and allocation.records:
+            allocation.truncated = True
+            break
+
+        allocation.records.append(rec_dict)
+        allocation.consulted_ids.append(row["record_id"])
+        allocation.tokens_injected += rec_tokens
+    return allocation
+
+
+def _record_telemetry(
+    conn: sqlite3.Connection, query_labels: str, elapsed_ms: float, matched: int, tokens_injected: int
+) -> None:
+    """Record one consult in ``consult_telemetry``; a failure is logged and never fails the consult."""
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO consult_telemetry (
+                    timestamp, query_labels, latency_ms, matched_count, tokens_injected, cache_hit
+                ) VALUES (?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    datetime.now(UTC).isoformat(),
+                    query_labels,
+                    elapsed_ms,
+                    matched,
+                    tokens_injected,
+                    1 if elapsed_ms < 5.0 else 0,
+                ),
+            )
+    except Exception as e:
+        logger.debug("Failed to record consult telemetry: %s", e)
 
 
 def format_consult_results_table(result: ConsultResult) -> str:

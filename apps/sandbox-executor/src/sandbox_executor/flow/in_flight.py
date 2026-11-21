@@ -2,10 +2,12 @@
 
 A flow is in flight when it has an open pull request whose head is a flow execution branch (``I-.../P-.../E-.../_``),
 or a checkpoint in another git worktree whose stage is execute or review, whose plan branch still resolves and whose
-Stage 3 admission state is not ``blocked`` (a refused flow waits; it blocks no one). Each carries its declared touch set
-(its plan branch's newest ``plans.jsonl`` row, from refs), the reference a ``blocked_by`` entry names and, for a pull
-request, its changed files. This run's root intent and children are excluded; a local flow with an open pull request is
-listed once, so it stays in flight whatever its checkpoint says. :func:`local_blocked_waiters` lists the blocked ones.
+Stage 3 admission state is not ``blocked`` (a refused flow waits; it blocks no one). Each carries the reference a
+``blocked_by`` entry names and what admission compares: a pull request only its changed files (its ``gh pr diff``
+patch, rename sources included), never its planned touch set; a local flow its declared touch set (its plan branch's
+newest ``plans.jsonl`` row, from refs).
+This run's root intent and children are excluded; a local flow with an open pull request is listed once, so it stays
+in flight whatever its checkpoint says. :func:`local_blocked_waiters` lists the blocked ones.
 
 Discovery is host-side and read-only via injected ``gh``/``git`` runners; failures return :class:`AdmissionUnavailable`.
 """
@@ -13,7 +15,6 @@ Discovery is host-side and read-only via injected ``gh``/``git`` runners; failur
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import subprocess
@@ -27,11 +28,10 @@ from sandbox_executor.flow.github import merge
 from sandbox_executor.flow.worktree_checkpoints import WorktreeCheckpoint, worktree_checkpoints
 from sandbox_executor.git import is_metadata_path, run_git
 from sandbox_executor.plan_paths import is_row_of_plan
+from sandbox_executor.pr_patch_paths import patch_paths
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.ref_names import INTENT_SUFFIX
 from sandbox_executor.touch_set import TouchSet, normalise_touch_path
-
-logger = logging.getLogger(__name__)
 
 #: Runs ``git <args>`` in a directory and returns the completed process (``check=False`` semantics).
 GitRunner = Callable[[list[str], str], subprocess.CompletedProcess[str]]
@@ -45,8 +45,8 @@ _EXECUTION_HEAD_RE = re.compile(r"^(?P<plan>I-\d+-\S*/P-\d+-[^/]+)/E-\d+-[^/]+/_
 
 @dataclass(frozen=True)
 class InFlightFlow:
-    """A flow in flight: label, plan branch, declared touch set and reference (pull request ``number`` and ``head``,
-    else the local ``worktree``); a pull request also carries its changed files."""
+    """A flow in flight: label, plan branch and reference (pull request ``number`` and ``head``, else the local
+    ``worktree``); a pull request carries its ``changed_files``, a local flow (or an older waiter) its ``declared``."""
 
     label: str
     plan_branch: str
@@ -79,7 +79,7 @@ class AdmissionUnavailable:
     reason: str
 
 
-def _host_git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+def host_git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
     return run_git(args, cwd=cwd, check=False)
 
 
@@ -101,7 +101,7 @@ def root_intent(branch: str) -> str:
     return branch.split("/", 1)[0].split("--", 1)[0]
 
 
-def _failure(command: str, result: subprocess.CompletedProcess[str]) -> AdmissionUnavailable:
+def command_failure(command: str, result: subprocess.CompletedProcess[str]) -> AdmissionUnavailable:
     detail = redact_agent_secrets((result.stderr or "").strip())[:300]
     return AdmissionUnavailable(f"'{command}' failed: {detail or 'no output'}")
 
@@ -109,7 +109,7 @@ def _failure(command: str, result: subprocess.CompletedProcess[str]) -> Admissio
 def _gh_json(run_gh: merge.GhRunner, args: list[str], repo_dir: str) -> list[dict[str, Any]] | AdmissionUnavailable:
     result = run_gh(args, repo_dir)
     if result.returncode != 0:
-        return _failure(f"gh {' '.join(args[:2])}", result)
+        return command_failure(f"gh {' '.join(args[:2])}", result)
     try:
         data = json.loads(result.stdout or "[]")
     except json.JSONDecodeError:
@@ -120,17 +120,17 @@ def _gh_json(run_gh: merge.GhRunner, args: list[str], repo_dir: str) -> list[dic
 
 
 def _pull_request_diff(run_gh: merge.GhRunner, number: int, repo_dir: str) -> tuple[str, ...] | AdmissionUnavailable:
-    result = run_gh(["pr", "diff", str(number), "--name-only"], repo_dir)
+    result = run_gh(["pr", "diff", str(number), "--color", "never"], repo_dir)
     if result.returncode != 0:
-        return _failure(f"gh pr diff {number}", result)
-    paths = (normalise_touch_path(line) for line in (result.stdout or "").splitlines())
+        return command_failure(f"gh pr diff {number}", result)
+    paths = (normalise_touch_path(path) for path in patch_paths(result.stdout or ""))
     return tuple(dict.fromkeys(path for path in paths if path and not is_metadata_path(path)))
 
 
 def open_flow_pull_requests(
     repo_dir: str, own_root: str, run_gh: merge.GhRunner | None = None
 ) -> list[InFlightFlow] | AdmissionUnavailable:
-    """Open pull requests whose head is a flow execution branch outside ``own_root``, with declared and real files."""
+    """Open pull requests whose head is a flow execution branch outside ``own_root``, with their changed files."""
     gh = merge.gh_runner(run_gh)
     limit = str(MAX_LISTED_PULL_REQUESTS + 1)
     fields = ["--state", "open", "--limit", limit, "--json", "number,headRefName,baseRefName"]
@@ -154,17 +154,14 @@ def open_flow_pull_requests(
             return changed
         number = int(pr.get("number") or 0)
         label = f"pull request #{number} (branch {head})"
-        if _resolve_branch_ref(repo_dir, plan_branch) is None:
-            logger.warning("Plan branch %s of %s is not on this host; only its diff is compared", plan_branch, label)
-        declared = read_plan_touch_set(repo_dir, plan_branch)
-        flows.append(InFlightFlow(label, plan_branch, declared, changed, number=number, head=head))
+        flows.append(InFlightFlow(label, plan_branch, None, changed, number=number, head=head))
     return flows
 
 
 def _other_worktrees(repo_dir: str, run_git: GitRunner) -> list[str] | AdmissionUnavailable:
     result = run_git(["worktree", "list", "--porcelain"], repo_dir)
     if result.returncode != 0:
-        return _failure("git worktree list", result)
+        return command_failure("git worktree list", result)
     own = os.path.realpath(repo_dir)
     paths = [line[len("worktree ") :] for line in (result.stdout or "").splitlines() if line.startswith("worktree ")]
     return [path for path in paths if os.path.realpath(path) != own]
@@ -174,7 +171,7 @@ def other_checkpoints(
     repo_dir: str, own_root: str, run_git: GitRunner | None = None
 ) -> list[WorktreeCheckpoint] | AdmissionUnavailable:
     """Checkpoints at execute or review in other worktrees, outside ``own_root``, whose plan branch still resolves."""
-    worktrees = _other_worktrees(repo_dir, run_git or _host_git)
+    worktrees = _other_worktrees(repo_dir, run_git or host_git)
     if isinstance(worktrees, AdmissionUnavailable):
         return worktrees
     return [

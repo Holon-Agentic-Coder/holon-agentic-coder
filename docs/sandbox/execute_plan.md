@@ -77,7 +77,6 @@ under `/home/holon/...` as read-only (`:ro`) mounts:
 - **`claude`**: Maps `~/.config/claude`
 - **`codex`**: Maps `~/.codex`
 - **`pi`**: Maps `~/.config/pi`
-- **`gemini`**: Maps `~/.config/gcloud`
 
 ### 3. Host Worktree and Host-Side Git
 

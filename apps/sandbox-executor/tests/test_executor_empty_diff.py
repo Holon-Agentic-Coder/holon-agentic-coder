@@ -170,3 +170,11 @@ class TestExecutorEmptyDiff(unittest.TestCase):
         self.assertIsNotNone(res)
         self.assertNotIn(suffix, res)
         self.assertNotIn(token[-12:], res)
+
+    def test_format_empty_diff_excerpt_redacts_key_value_straddling_cut(self):
+        """A `password=value` whose key falls before the 500-char cut does not leak its value into the excerpt."""
+        secret = "hunter2-Zq8vLm3RxT7pWk4N"
+        full = "x" * 1000 + "\npassword=" + secret + " " + "y" * (EMPTY_DIFF_EXCERPT_CHARS - 10)
+        res = format_empty_diff_excerpt(full, len(full.encode("utf-8")))
+        self.assertIsNotNone(res)
+        self.assertNotIn(secret[-8:], res)

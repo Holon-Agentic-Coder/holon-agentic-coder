@@ -83,14 +83,21 @@ def _is_stage_3_passing(stage_3_evidence: tuple[float | None, bool], stage_3_hea
     return current_head == stage_3_head
 
 
+def _is_stage_3_measured(stage_3_evidence: tuple[float | None, bool], stage_3_head: str, current_head: str) -> bool:
+    rate, failed = stage_3_evidence
+    if rate is None and not failed:
+        return False
+    return current_head == stage_3_head
+
+
 def choose_evidence(*args: Any, **kwargs: Any) -> str:
     """Decide which test evidence source to use for the current head commit.
 
     Applying rules in priority order:
     1. Resolver evidence confirmed on current head -> resolver_evidence
     2. Green CI on PR head matching current head -> ci_head
-    3. Stage 3 passed on unchanged head -> stage_3
-    4. Otherwise (Stage 3 failed, unmeasured, or head moved) -> review_local
+    3. Stage 3 on an unchanged head when measured -> stage_3
+    4. Otherwise (unmeasured, or head moved) -> review_local
     """
     if args and isinstance(args[0], HeadEvidenceDecisionInput):
         inp = args[0]
@@ -114,7 +121,7 @@ def choose_evidence(*args: Any, **kwargs: Any) -> str:
     if _is_ci_head_passing(ci_status, current_head, pr_head_sha):
         return TEST_SOURCE_CI_HEAD
 
-    if _is_stage_3_passing(stage_3_evidence, stage_3_head, current_head):
+    if _is_stage_3_measured(stage_3_evidence, stage_3_head, current_head):
         return TEST_SOURCE_STAGE_3
 
     return TEST_SOURCE_REVIEW_LOCAL

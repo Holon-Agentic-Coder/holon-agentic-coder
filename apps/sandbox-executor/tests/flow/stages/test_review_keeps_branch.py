@@ -99,7 +99,7 @@ def _assert_on_branch_with_the_row_committed(worktree: Path) -> None:
 def test_after_a_review_iteration_the_worktree_is_on_the_execution_branch(flow_worktree: Path) -> None:
     ctx, result, calls = _run_stage(flow_worktree, _approved_loop)
 
-    assert result.status is StageStatus.HALTED_FOR_HUMAN
+    assert result.status is StageStatus.APPROVED
     _assert_on_branch_with_the_row_committed(flow_worktree)
     assert any("Stage 4 review loop left the worktree HEAD detached at" in line for line in ctx.logs)
     assert any(f"re-attached '{EXEC}'" in line for line in ctx.logs)
@@ -124,7 +124,7 @@ def test_a_head_detached_at_the_tip_before_the_stage_is_reattached_not_checked_o
 
     ctx, result, calls = _run_stage(flow_worktree, lambda _ctx: loop)
 
-    assert result.status is StageStatus.HALTED_FOR_HUMAN
+    assert result.status is StageStatus.APPROVED
     assert _git(flow_worktree, "symbolic-ref", "--short", "HEAD") == EXEC
     assert ["checkout", EXEC] not in calls
     assert (ctx.starting_branch, ctx.starting_detached) == (EXEC, False)

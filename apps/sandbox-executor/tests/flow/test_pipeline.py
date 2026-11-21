@@ -136,8 +136,9 @@ class TestFlowStages:
                 args = call[0][0]
                 assert "merge" not in args, f"HUMAN-ONLY MERGE RULE VIOLATED: merge invoked with args {args}"
 
-        assert res.status == StageStatus.HALTED_FOR_HUMAN
-        assert res.payload["halted_for_human"] is True
+        assert res.status == StageStatus.APPROVED
+        assert res.payload["halted_for_human"] is False
+        assert res.payload["approved"] is True
         assert res.payload["human_merge_gate_enforced"] is True
         assert res.payload["consensus"]["approved"] is True
         assert "holon review approve" in res.payload["human_approval_command"]

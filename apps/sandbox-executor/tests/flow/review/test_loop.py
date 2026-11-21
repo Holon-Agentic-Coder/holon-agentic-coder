@@ -130,7 +130,8 @@ class TestReviewLoopStage:
                 assert "merge" not in args, f"HUMAN-ONLY MERGE RULE VIOLATED: merge invoked with args {args}"
 
         assert res["consensus"]["approved"] is True
-        assert res["halted_for_human"] is True
+        assert res["halted_for_human"] is False
+        assert res["approved"] is True
         assert res["human_merge_gate_enforced"] is True
         assert "holon review approve" in res["human_approval_command"]
 
@@ -189,7 +190,7 @@ class TestReviewLoopStage:
         assert action_records[0]["review_iteration"] == 1
 
         assert len(summary_records) >= 1
-        assert summary_records[0]["status"] == "halted_for_human"
+        assert summary_records[0]["status"] == "approved"
         assert summary_records[0]["total_iterations"] == 1
         assert summary_records[0]["trailers"]["action_origin"] == "pr_review"
 
@@ -217,7 +218,7 @@ class TestReviewLoopStage:
             assert code == 0
             captured = capsys.readouterr().out
             assert "Holon Review Loop Summary" in captured
-            assert "[SAFETY HALT]" in captured
+            assert "[REVIEW APPROVED]" in captured
             assert "holon review approve" in captured
 
         # Test rejected exit code

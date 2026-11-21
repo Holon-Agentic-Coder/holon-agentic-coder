@@ -118,6 +118,9 @@ _LAZY_EXPORTS: dict[str, str] = {
         "_review_base_ref _semantic_pr_text"
     ),
     "sandbox_executor.flow.review.git_identity": "REVIEW_GIT_ENV",
+    "sandbox_executor.flow.review.head_test_evidence": (
+        "HeadEvidenceDecisionInput HeadTestEvidence choose_evidence has_pass_marker"
+    ),
     "sandbox_executor.flow.review.ids": "build_review_id",
     "sandbox_executor.flow.review.loop": (
         "_loop_status _review_window _reviewers_objected _run_engine_review_loop run_review_loop"
@@ -148,6 +151,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.stages.plan": "_format_entropy run_plan_stage",
     "sandbox_executor.flow.stages.plan_decision": "_backfill_plan_row _over_budget_failure _plan_budget_decision",
     "sandbox_executor.flow.stages.review": "TESTS_NOT_MEASURED_ERROR _checkout_execution_branch run_review_stage",
+    "sandbox_executor.flow.stages.review_outcome": "ReviewOutcomeContext build_review_stage_outcome",
     "sandbox_executor.flow.stages.sync_conflict": "sync_conflict_result",
     "sandbox_executor.flow.stages.touch_set_guard": (
         "superseding_failure_row touch_set_replan_exhausted touch_set_replan_feedback touch_set_violation "
@@ -215,7 +219,9 @@ __all__ = [
     "FlowCheckpoint",
     "FlowContext",
     "FlowStage",
+    "HeadEvidenceDecisionInput",
     "HeadMoveCheck",
+    "HeadTestEvidence",
     "HostRemoteError",
     "InFlightFlow",
     "MigrationTransform",
@@ -225,6 +231,7 @@ __all__ = [
     "RerunSeams",
     "ResolverInput",
     "ResolverOutcome",
+    "ReviewOutcomeContext",
     "SalvageError",
     "SalvageResult",
     "StageResult",
@@ -316,10 +323,12 @@ __all__ = [
     "blocker_is_clear",
     "build_pr_review_consensus_report",
     "build_review_id",
+    "build_review_stage_outcome",
     "carried_blocker",
     "check_admission",
     "check_and_resolve_stage_conflicts",
     "check_pr_mergeability",
+    "choose_evidence",
     "choose_merge_flag",
     "command_failure",
     "create_or_update_pr",
@@ -339,6 +348,7 @@ __all__ = [
     "gate_ci_flags",
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
+    "has_pass_marker",
     "head_move_since_calibration",
     "held_execution_failure",
     "hold_unrecorded_executions",

@@ -63,7 +63,7 @@ overwriting `/etc/shadow` or `/usr/bin/`).
 - **Source**: Environment variables forwarded directly to the container/process.
 - **Key Variables**:
   - `HOLON_AGENT_KEY`: The primary API key or bearer token used by the agent runner. The `claude` runner does not use it
-    (see [`claude`](#3-claude)).
+    (see [`claude`](#2-claude)).
   - `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`: The `claude` runner's credential variables. An explicit value
     wins over the secrets file.
   - `HOLON_AGENT_OSS_MODE`: Set to `true` or `1` to run agents in offline or open-source modes without requiring
@@ -170,7 +170,6 @@ of inline JSON is the follow-up that removes it.
   - **Claude**: `~/.config/claude` -> `/home/holon/.config/claude`
   - **Codex**: `~/.codex` -> `/home/holon/.codex`
   - **Pi**: `~/.config/pi` -> `/home/holon/.config/pi`
-  - **Gemini**: `~/.config/gcloud` -> `/home/holon/.config/gcloud`
 
 ---
 
@@ -187,14 +186,7 @@ Each agent has specific command-line structures and validation routines:
 - **Validation**: Requires `HOLON_AGENT_KEY` to be set, or an active session directory mounted to
   `/home/holon/.gemini/antigravity-cli` or `/home/holon/.config/gcloud`.
 
-### 2. `gemini`
-
-- **Binary**: `gemini`
-- **Command template**: `gemini --model <model_name> -p <prompt>`
-- **Validation**: Requires `HOLON_AGENT_KEY` to be set, or active gcloud credentials mounted to
-  `/home/holon/.config/gcloud`.
-
-### 3. `claude`
+### 2. `claude`
 
 - **Binary**: `claude`
 - **Command template**:
@@ -218,7 +210,7 @@ Each agent has specific command-line structures and validation routines:
   separate-argument, `=`-joined and `sh -c` forms, so no secret-bearing JSON reaches a log. The `HOLON_AGENT_SETTINGS`
   tunnel still carries other configuration but is not needed for authentication.
 
-### 4. `pi`
+### 3. `pi`
 
 - **Binary**: `pi`
 - **Command template**: `pi -p --model <model_name> --provider <HOLON_AGENT_PROVIDER> <prompt>`
@@ -232,13 +224,13 @@ Each agent has specific command-line structures and validation routines:
 - **Validation**: Requires `HOLON_AGENT_KEY` to be set, a mounted `models.json` (`/home/holon/.pi/agent/models.json` or
   the legacy path), or host-local model mode (see [Host-Local Model Endpoints](#host-local-model-endpoints)).
 
-### 5. `opencode`
+### 4. `opencode`
 
 - **Binary**: `opencode`
 - **Command template**: `opencode run --model <model_name> --agent <HOLON_AGENT_MODE> <prompt>`
 - **Validation**: Requires the `HOLON_AGENT_KEY` environment variable.
 
-### 6. `codex`
+### 5. `codex`
 
 - **Binary**: `codex`
 - **Command template**:

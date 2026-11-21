@@ -47,9 +47,6 @@ if [ -n "${HOLON_AGENT_KEY:-}" ] && [ -n "${HOLON_AGENT_ID:-}" ]; then
         codex)
             export OPENAI_API_KEY="${HOLON_AGENT_KEY}"
             ;;
-        gemini)
-            export GEMINI_API_KEY="${HOLON_AGENT_KEY}"
-            ;;
         opencode)
             export OPENCODE_API_KEY="${HOLON_AGENT_KEY}"
             ;;

@@ -493,7 +493,6 @@ resolved.
 | `claude-agent`      | `claude-opus-5-5`           |                                                                                         |
 | `pi-agent`          | `claude-opus-5-5`           | Depends on the configured pi provider; override with `--model` or `HOLON_MODEL`.        |
 | `codex-agent`       | `gpt-5-codex`               | Not verified against the live CLI; `holon doctor` reports a rejected model.             |
-| `gemini-agent`      | `gemini-3.8-flash`          | Not verified against the live CLI; `holon doctor` reports a rejected model.             |
 | `opencode-agent`    | `anthropic/claude-opus-5-5` | opencode expects `provider/model`; not verified against the live CLI.                   |
 
 The previous `gemini-3.5-flash` default has been removed: current agy no longer lists it and rejects it together with

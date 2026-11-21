@@ -37,8 +37,6 @@ SUMMARY_STATUS_WORDS: dict[StageStatus, str] = {
     StageStatus.PENDING: "pending",
     StageStatus.RUNNING: "running",
 }
-_SUMMARY_STATUS_WORDS = SUMMARY_STATUS_WORDS
-
 REVIEW_BOUNDARY_STATUSES: frozenset[StageStatus] = frozenset({StageStatus.APPROVED, StageStatus.HALTED_FOR_HUMAN})
 """Stage statuses that mark the consensus boundary where Stage 4 ended.
 

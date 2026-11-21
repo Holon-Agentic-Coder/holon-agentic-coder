@@ -155,5 +155,7 @@ def _applies(ci_status: dict[str, Any], stage_3_rate: float | None, stage_3_fail
 
 
 def has_pass_marker(text: str) -> bool:
+    import re
+
     clean = text.lower()
-    return "passed" in clean or "0 failed" in clean
+    return bool(re.search(r"\bpassed\b", clean)) or "0 failed" in clean

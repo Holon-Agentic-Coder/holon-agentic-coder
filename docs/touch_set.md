@@ -2,9 +2,10 @@
 
 The planner declares the files a plan expects to change in a `## Touch Set` section of the plan file. Stage 2 records
 the parsed set on the plan row, Stage 3 admits the plan only when that set overlaps no flow in flight, Stage 3 then
-enforces it on the execution diff, and Stage 5 calibration scores it. The parsing, matching, overlap and scoring rules
-live in `sandbox_executor/touch_set.py`; discovery in `flow/in_flight.py` (other worktrees' checkpoints read by
-`flow/worktree_checkpoints.py`), the admission decision in `flow/admission_decision.py` (the oldest-waiter rule in
+enforces it on the execution diff, and Stage 5 calibration scores it. The parsing, matching and scoring rules live in
+`sandbox_executor/touch_set.py` and the admission overlap rule in `sandbox_executor/touch_set_overlap.py`; discovery in
+`flow/in_flight.py` (other worktrees' checkpoints read by `flow/worktree_checkpoints.py`), the base-branch file listing
+in `flow/base_files.py`, the admission decision in `flow/admission_decision.py` (the oldest-waiter rule in
 `flow/admission_order.py`), the lock and the recorded state in `flow/admission_lock.py` and `flow/admission_state.py`,
 the Stage 3 hook in `flow/admission.py` and enforcement in `flow/stages/touch_set_guard.py`.
 
@@ -15,7 +16,8 @@ the Stage 3 hook in `flow/admission.py` and enforcement in `flow/stages/touch_se
 and `**` spans directories) and, only when the plan named some, `symbols` (stored and reported, never scored). Metadata
 paths (`plans/`, `executions/`, `holon-knowledge/`, `.holon/`) are never listed. Placeholder items such as `- none` are
 skipped (a section holding only placeholders records `[]`), and a plan without the section records `null`; neither fails
-the plan. Example:
+the plan. A folder or wildcard entry prints one advisory warning naming it (at Stage 3 it matches every existing file
+below it, so module paths are preferred); the entry is still recorded and the plan never fails. Example:
 
 ```json
 {
@@ -53,25 +55,31 @@ flow reads the active plan row's `touch_set` and compares it with every flow in 
   own lineage) are excluded, and a local flow that also has a pull request is listed once, so a flow with an open pull
   request stays in flight whatever its checkpoint says. Discovery runs host-side and only reads refs and checkpoint
   files; it never fetches, checks out or writes another flow's branch.
-- **Compared:** this plan's declared entries against the other flow's declared entries (two literals overlap when equal,
-  a literal and a directory or glob when the entry matches the literal, two directories when one contains the other, and
-  a glob against a directory or glob when one literal prefix starts the other: conservative on purpose), and against the
-  real files of each pull request (`gh pr diff <n> --name-only`). Metadata never conflicts. Since nothing is fetched, a
-  pull request whose plan branch this host does not have is compared by its diff only (a warning is logged).
+- **Compared:** on concrete files, against the files of the base branch (the intent's `target_branch`, `main` by
+  default, origin tracking ref first, listed once per admission with `git ls-tree -r --name-only`, metadata dropped). An
+  open pull request is compared by its real changed files only (`gh pr diff <n> --name-only`), never by its planned
+  touch set; a local flow, and an older waiter, by its declared touch set. A literal entry names itself, whether it
+  exists or not; a folder or glob entry names only the base files it matches. So a changed file that exists on the base
+  overlaps when one of this plan's entries matches it, a new file (absent from the base) overlaps only an identical
+  literal path in the other set, and folder or glob entries on both sides meet only on existing files. A glob written
+  for new files (`tests/test_new_*.py`) therefore overlaps nothing. A path with only a bracket class, such as
+  `app/[id]/page.tsx`, reads as a literal and also as a class against the base. Metadata never conflicts. A base listing
+  that fails (an unresolved branch or a `git` failure) refuses admission (fail closed).
 - **Refusal:** Stage 3 fails before any dispatch with a message naming each pull request and branch (or local branch and
-  worktree) and the overlapping files, for example
+  worktree) and the concrete overlapping files (never the folder or glob pattern), for example
   `Stage 3 refused: the touch set overlaps pull request #7 (branch I-.../E-.../_) on src/app.py; finish or merge that flow first, or rerun with --allow-overlap.`
-  The payload carries `admission_refused: true`, `dispatched: false` and `conflicts`. A plan row without a touch set,
-  and a `gh` or `git` failure during discovery, are refused too (fail closed), with the reason in `admission_reason`. A
-  dry run only logs the decision. Refusal never closes, merges or edits the other flow.
+  At most 20 files are named per flow, followed by `and N more`. The payload carries `admission_refused: true`,
+  `dispatched: false` and `conflicts` (each with its full file list). A plan row without a touch set, and a `gh` or
+  `git` failure during discovery or the base listing, are refused too (fail closed), with the reason in
+  `admission_reason`. A dry run only logs the decision. Refusal never closes, merges or edits the other flow.
 
 A checkpoint left at execute or review by an abandoned admitted run (or one older than the admission state) still counts
 as in flight while its plan branch exists; delete the checkpoint (or the branch) or use the override. A blocked
 checkpoint never counts as in flight. Local flows are compared by their declared sets only, so a local flow without a
-pull request whose plan row records no touch set never conflicts (a known gap: its files are not known until it opens a
-pull request). A resumed Stage 3 (`--from-stage execute` or a `--checkpoint` resume) is admitted again like a fresh one,
-so a flow that started since can refuse it, and each admitted resume under `--allow-overlap` appends another override
-row.
+pull request whose plan row records no touch set never conflicts, and the new files of a local flow are compared only
+when one set declares them literally (a known gap: its files are not known until it opens a pull request). A resumed
+Stage 3 (`--from-stage execute` or a `--checkpoint` resume) is admitted again like a fresh one, so a flow that started
+since can refuse it, and each admitted resume under `--allow-overlap` appends another override row.
 
 ## Admission state
 
@@ -110,15 +118,15 @@ forever. Every `blocked_by` entry therefore names an open pull request, an admit
 waiting flow, never a newer waiter, and no cycle can form.
 
 **Oldest waiter first.** When the lock holder finds no overlap, it still defers to another blocked flow whose declared
-touch set overlaps its own, whose `(blocked_since, plan_branch)` is older than its own (a flow never refused counts as
-blocked now) and whose own `blocked_by` entries have all cleared (no longer an open pull request; a local flow neither
-in flight nor waiting). It then records itself blocked by that flow as a `local_flow` entry, and the refusal names "an
-older waiting flow on branch ... (worktree ..., blocked since ...)". So when a pull request merges and every flow
-waiting on it re-checks, the one blocked longest is admitted first and the others wait for it. A waiter's entry naming
-the checking flow itself is clear (an admitted flow, resuming, defers to no waiter); one naming another pull request or
-flow of the checking flow's own lineage is never clear. An abandoned waiter whose blockers have cleared holds newer
-overlapping flows back until its plan branch is deleted (which drops its checkpoint from discovery) or a flow is run
-with `--allow-overlap`.
+touch set overlaps its own on concrete files (the same base-file rule), whose `(blocked_since, plan_branch)` is older
+than its own (a flow never refused counts as blocked now) and whose own `blocked_by` entries have all cleared (no longer
+an open pull request; a local flow neither in flight nor waiting). It then records itself blocked by that flow as a
+`local_flow` entry, and the refusal names "an older waiting flow on branch ... (worktree ..., blocked since ...)". So
+when a pull request merges and every flow waiting on it re-checks, the one blocked longest is admitted first and the
+others wait for it. A waiter's entry naming the checking flow itself is clear (an admitted flow, resuming, defers to no
+waiter); one naming another pull request or flow of the checking flow's own lineage is never clear. An abandoned waiter
+whose blockers have cleared holds newer overlapping flows back until its plan branch is deleted (which drops its
+checkpoint from discovery) or a flow is run with `--allow-overlap`.
 
 ## `--allow-overlap`
 
@@ -130,7 +138,7 @@ is refused, so every overlapping execution is on record (the execution branch in
 - `entry_type` and `kind`: both `"admission_override"`.
 - `plan_id`, `plan_branch` and `intent_id` (the intent branch): the admitted plan. No `execution_id`.
 - `conflicts`: a list of `{flow, files}`, where `flow` names the pull request and head branch (or the local branch and
-  worktree) and `files` the overlapping files or declared entries; empty when the refusal had no conflict.
+  worktree) and `files` the concrete overlapping files; empty when the refusal had no conflict.
 - `reason`: the refusal reason without a conflict (no touch set, discovery unavailable), otherwise `null`.
 - `recorded_by`: `"flow"`; `created_at`: an ISO 8601 UTC timestamp.
 

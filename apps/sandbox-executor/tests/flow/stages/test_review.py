@@ -102,3 +102,46 @@ class TestStage4TestEvidence:
         results = res.payload["review_package"]["test_results"]
         assert {key: results[key] for key in expected} == expected
         assert {results[key] for key in ("source", "run_error")} == {None}
+
+    def test_review_stage_approval_wording_and_status(self, tmp_path):
+        ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": 1.0})
+        loop_res = {
+            "consensus": {"approved": True, "status": "approved"},
+            "mergeability": {"is_dirty": False},
+            "reviewers": [{"status": "COMPLETED", "verdict": "APPROVED"}],
+        }
+        with (
+            patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
+            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
+            patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
+        ):
+            res = run_review_stage(ctx)
+
+        assert res.status == StageStatus.APPROVED
+        assert res.summary_line() == "review: approved"
+        assert res.payload["approved"] is True
+        assert res.payload["ready_for_maintainer_merge"] is True
+        assert res.payload["halted_for_human"] is False
+        assert any("Stage 4 approved: Review Loop reached consensus approval" in log for log in ctx.logs)
+        assert not any("SAFETY HALT" in log for log in ctx.logs)
+
+    def test_review_stage_dry_run_wording_and_status(self, tmp_path):
+        ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": 1.0}, dry_run=True)
+        loop_res = {
+            "consensus": {"approved": False, "status": "not_measured"},
+            "mergeability": {"is_dirty": False},
+            "reviewers": [{"status": "COMPLETED", "verdict": "APPROVED"}],
+        }
+        with (
+            patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
+            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
+        ):
+            res = run_review_stage(ctx)
+
+        assert res.status == StageStatus.HALTED_FOR_HUMAN
+        assert res.summary_line() == "review: halted"
+        assert res.payload["halted_for_human"] is True
+        assert any("SAFETY HALT" in log for log in ctx.logs)
+        assert any("Dry-run review loop finished; consensus not measured and not approved." in log for log in ctx.logs)

@@ -789,10 +789,10 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "agent": context.agent,
         "agent_version": "1.4.0",
         "model": context.model,
-        "status": "halted_for_human" if consensus_reached else "failed",
+        "status": "approved" if consensus_reached else "failed",
         "entry_type": "summary",
         "summary": (
-            f"Review Loop reached consensus approval after {iteration} iteration(s) (human-only merge safety halt)"
+            f"Review Loop reached consensus approval after {iteration} iteration(s); PR ready for maintainer merge"
             if consensus_reached
             else f"Review Loop halted without consensus after {iteration} iteration(s)"
             + (f": {'; '.join(halt_reasons)}" if halt_reasons else "")
@@ -850,6 +850,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
     loop_result: dict[str, Any] = {
         "target": review_target,
+        "approved": consensus_reached,
+        "ready_for_maintainer_merge": consensus_reached,
         "consensus": {
             "approved": consensus_reached,
             "score": approval_score,
@@ -858,7 +860,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             "max_review_iterations": last_label,
             "status": consensus_status,
         },
-        "halted_for_human": consensus_reached,
+        "halted_for_human": False,
         "human_merge_gate_enforced": consensus_reached,
         "human_approval_command": f"holon review approve {review_target}",
         "mergeability": last_mergeability,

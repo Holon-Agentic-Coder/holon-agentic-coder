@@ -1067,6 +1067,23 @@ def test_failed_post_makes_the_loop_non_approved(tmp_path, post):
     assert "consensus post failed" in summary["summary"]
 
 
+def test_approved_loop_records_summary_row_status_approved(tmp_path):
+    from sandbox_executor.flow import run_review_loop
+
+    stack, _verify, _mock_post = _green_loop_patches()
+    with stack:
+        res = run_review_loop(_loop_ctx(tmp_path), target="feature/x", auto_pr=False, max_iterations=1)
+
+    assert res["consensus"]["approved"] is True
+    assert res["halted_for_human"] is False
+    assert res["ready_for_maintainer_merge"] is True
+    rows = _ledger_rows(tmp_path)
+    summary = next(r for r in rows if r.get("entry_type") == "summary")
+    assert summary["status"] == "approved"
+    expected_msg = "Review Loop reached consensus approval after 1 iteration(s); PR ready for maintainer merge"
+    assert expected_msg in summary["summary"]
+
+
 def test_failed_post_makes_the_cli_exit_one(tmp_path, capsys):
     import argparse
 

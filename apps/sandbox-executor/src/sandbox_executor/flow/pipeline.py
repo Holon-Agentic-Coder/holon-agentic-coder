@@ -26,6 +26,7 @@ from sandbox_executor.flow.child_progress import has_recorded_decomposition
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.resume_guard import _resume_context_error
+from sandbox_executor.flow.stage_status import REVIEW_BOUNDARY_STATUSES
 from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
 from sandbox_executor.flow.stages.children import resume_children
 from sandbox_executor.flow.stages.decomposition import _sub_intent_depth_error
@@ -309,7 +310,7 @@ class PipelineEngine:
         finally:
             restore_starting_branch(self.context)
 
-    def _run_stages(self) -> dict[str, StageResult]:  # noqa: C901, PLR0915
+    def _run_stages(self) -> dict[str, StageResult]:
         """Execute the configured pipeline stages sequentially."""
         start_idx = 0
         if self.from_stage:
@@ -369,29 +370,33 @@ class PipelineEngine:
                 self.context.log(f"Pipeline halted due to failure in stage '{result.stage.value}'.")
                 break
 
-            # Only Stage 4 (the review consensus halt before merge) may halt; no earlier stage waits for a human.
-            if result.status == StageStatus.HALTED_FOR_HUMAN:
-                if stage == FlowStage.REVIEW:
-                    if self.context.auto_calibrate and not self.context.skip_calibrate:
-                        cal_stage = FlowStage.CALIBRATE
-                        self.before_stage(cal_stage)
-                        cal_result = self.timed_execute_stage(cal_stage)
-                        cal_result = rerun_calibration(self.context, cal_result, run_calibrate_stage)
-                        self.after_stage(cal_stage, cal_result)
-                        self.save_checkpoint()
-                    elif self.context.skip_calibrate:
-                        self.context.log("Stage 5 (CALIBRATE) skipped due to --skip-calibrate flag.")
-                        cal_result = _skipped_by_flag(FlowStage.CALIBRATE)
-                        self.after_stage(FlowStage.CALIBRATE, cal_result)
-                        self.save_checkpoint()
-
-                self.context.log(
-                    f"Pipeline safely halted for human intervention at stage '{stage.value}'. "
-                    "Halting execution without merging."
-                )
+            # Stage 4 ends at the consensus boundary before merge; no earlier stage halts or waits for human.
+            if result.status in REVIEW_BOUNDARY_STATUSES:
+                self._handle_review_boundary(stage, result)
                 break
 
         return self.context.stage_results
+
+    def _handle_review_boundary(self, stage: FlowStage, result: StageResult) -> None:
+        """Handle calibrate dispatch and logging when Stage 4 ends at the consensus boundary."""
+        if stage == FlowStage.REVIEW:
+            if self.context.auto_calibrate and not self.context.skip_calibrate:
+                self.before_stage(FlowStage.CALIBRATE)
+                cal_res = self.timed_execute_stage(FlowStage.CALIBRATE)
+                cal_res = rerun_calibration(self.context, cal_res, run_calibrate_stage)
+                self.after_stage(FlowStage.CALIBRATE, cal_res)
+                self.save_checkpoint()
+            elif self.context.skip_calibrate:
+                self.context.log("Stage 5 (CALIBRATE) skipped due to --skip-calibrate flag.")
+                self.after_stage(FlowStage.CALIBRATE, _skipped_by_flag(FlowStage.CALIBRATE))
+                self.save_checkpoint()
+
+        verb = (
+            f"finished at the merge boundary: review approved, PR ready for maintainer merge (stage '{stage.value}')."
+            if result.status == StageStatus.APPROVED
+            else f"safely halted for human intervention at stage '{stage.value}'. Halting execution without merging."
+        )
+        self.context.log(f"Pipeline {verb}")
 
 
 def _skipped_by_flag(stage: FlowStage) -> StageResult:

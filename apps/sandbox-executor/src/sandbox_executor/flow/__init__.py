@@ -88,7 +88,10 @@ _LAZY_EXPORTS: dict[str, str] = {
         "AdmissionUnavailable BlockedWaiter InFlightFlow discover_in_flight_flows local_blocked_waiters "
         "local_in_flight_flows open_flow_pull_requests other_checkpoints read_plan_touch_set root_intent"
     ),
-    "sandbox_executor.flow.intent_questions": "validate_intent_questions",
+    "sandbox_executor.flow.intent_questions": (
+        "IntentQuestions QuestionKind answered_by_id answered_by_text has_inline_answer is_marked_open "
+        "validate_intent_questions"
+    ),
     "sandbox_executor.flow.ledger_warning": "_warn_ledger_failure",
     "sandbox_executor.flow.ledger_reconcile": (
         "_CONFLICT_MARKERS _SECTION_AFTER_MARKER LEDGER_REL_PATHS ConflictResolutionError PrefixSide "
@@ -216,10 +219,12 @@ __all__ = [
     "HeadMoveCheck",
     "HostRemoteError",
     "InFlightFlow",
+    "IntentQuestions",
     "MigrationTransform",
     "PipelineEngine",
     "PlanRefresh",
     "PrefixSide",
+    "QuestionKind",
     "RerunSeams",
     "ResolverInput",
     "ResolverOutcome",
@@ -309,6 +314,8 @@ __all__ = [
     "admission_lock_path",
     "admission_stage_failure",
     "admitted_record",
+    "answered_by_id",
+    "answered_by_text",
     "blocked_record",
     "blocker_is_clear",
     "build_pr_review_consensus_report",
@@ -335,6 +342,7 @@ __all__ = [
     "gate_ci_flags",
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
+    "has_inline_answer",
     "head_move_since_calibration",
     "held_execution_failure",
     "hold_unrecorded_executions",
@@ -342,6 +350,7 @@ __all__ = [
     "is_ancestor",
     "is_calibration_commit",
     "is_calibration_path",
+    "is_marked_open",
     "is_pending_only",
     "is_terminal_verdict",
     "leftover_paths",

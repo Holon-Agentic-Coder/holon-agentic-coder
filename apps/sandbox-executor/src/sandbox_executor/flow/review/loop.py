@@ -386,10 +386,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         elif not is_dirty and not missing_ref and not effective_dry_run and infra_error is None:
             # Post-review CI gate on clean review: wait for CI registration and pending checks to settle.
             if pr_allowed and test_pass_rate is None and not tests_failed and shutil.which("gh"):
-                reg_timeout = min(
-                    resolve_ci_registration_timeout(ci_registration_timeout),
-                    max(0.0, iteration_timer.remaining()),
-                )
+                reg_timeout = iteration_timer.remaining_capped(resolve_ci_registration_timeout(ci_registration_timeout))
                 _wait_for_ci_registration(
                     context,
                     repo_dir,

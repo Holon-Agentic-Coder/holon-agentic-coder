@@ -46,6 +46,7 @@ from sandbox_executor.decomposition_rule import is_placeholder_item as is_placeh
 from sandbox_executor.decomposition_rule import parse_sub_intent_list as parse_sub_intent_list
 from sandbox_executor.decomposition_rule import should_decompose as should_decompose
 from sandbox_executor.entrypoint.changed_markdown import changed_markdown_files
+from sandbox_executor.entrypoint.empty_diff_excerpt import report_empty_diff_output
 from sandbox_executor.entrypoint.execution_workspace import continuation_note as continuation_note
 from sandbox_executor.entrypoint.execution_workspace import (
     resolve_partial_head,
@@ -1399,8 +1400,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         summary = empty_diff_summary(plan_branch)
                 if failure_reason:
                     print(f"Error: {summary}", file=sys.stderr)
-                    from sandbox_executor.entrypoint.empty_diff_excerpt import report_empty_diff_output
-
                     report_empty_diff_output(failure_reason, agent_output_text, agent_output_bytes)
 
             # Measure the project's tests on the agent's finished work, before anything is staged or committed.

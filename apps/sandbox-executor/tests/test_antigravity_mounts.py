@@ -81,3 +81,22 @@ class TestAntigravityMounts(unittest.TestCase):
         self.assertIn("/home/holon/.gemini/antigravity-cli/brain:uid=1000,gid=1000", mounts)
         self.assertIn("/home/holon/.gemini/antigravity-cli/conversations:uid=1000,gid=1000", mounts)
         self.assertFalse(any(m.endswith("antigravity-cli:rw") for m in mounts))
+
+    @patch("sys.platform", "darwin")
+    @patch("os.path.exists", return_value=False)
+    def test_antigravity_darwin_missing_session_without_key_exits(self, mock_exists):
+        env = {k: v for k, v in os.environ.items() if k not in ("HOLON_AGENT_KEY", "HOLON_ANTIGRAVITY_SESSION_DIR")}
+        with patch.dict(os.environ, env, clear=True), patch("sys.stderr"), self.assertRaises(SystemExit) as ctx:
+            get_agent_session_mounts("antigravity")
+        self.assertEqual(ctx.exception.code, 1)
+
+    @patch("sys.platform", "darwin")
+    @patch("os.path.exists")
+    def test_antigravity_darwin_key_set_falls_back_to_host_cli(self, mock_exists):
+        host_cli = os.path.expanduser("~/.gemini/antigravity-cli")
+        mock_exists.side_effect = lambda p: p == host_cli
+        with patch.dict(os.environ, {"HOLON_AGENT_KEY": "not-a-real-key"}):
+            mounts = get_agent_session_mounts("antigravity")
+        self.assertIn(f"{host_cli}:/home/holon/.gemini/antigravity-cli:ro", mounts)
+        for spec in ANTIGRAVITY_WRITABLE_TMPFS:
+            self.assertIn(spec, mounts)

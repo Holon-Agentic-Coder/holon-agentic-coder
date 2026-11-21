@@ -154,9 +154,19 @@ class TestExecutorEmptyDiff(unittest.TestCase):
         res = format_empty_diff_excerpt(full, total_bytes)
         self.assertIsNotNone(res)
         header, body = res.split("\n", 1)
-        self.assertIn(f"of {total_bytes} bytes, redacted):", header)
+        self.assertIn(f"chars of redacted output, {total_bytes} bytes total):", header)
         self.assertLessEqual(len(body), 500)
         self.assertIn("END", body)
         self.assertNotIn("HEAD_", body)
         self.assertNotIn(token, body)
         self.assertNotIn(token, res)
+
+    def test_format_empty_diff_excerpt_redacts_token_straddling_cut(self):
+        """A token whose prefix falls before the 500-char cut does not leak its suffix into the excerpt."""
+        token = _fake_token("ghp_", "9f3Aq7ZxR2tKp8WmQ4vLs6Bn")
+        suffix = token[8:]
+        full = "x" * 1000 + " " + token + " " + "y" * (EMPTY_DIFF_EXCERPT_CHARS - len(suffix) - 1)
+        res = format_empty_diff_excerpt(full, len(full.encode("utf-8")))
+        self.assertIsNotNone(res)
+        self.assertNotIn(suffix, res)
+        self.assertNotIn(token[-12:], res)

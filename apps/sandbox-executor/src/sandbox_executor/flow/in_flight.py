@@ -2,10 +2,11 @@
 
 A flow is in flight when it has an open pull request whose head is a flow execution branch (``I-.../P-.../E-.../_``),
 or a checkpoint in another git worktree whose stage is execute or review, whose plan branch still resolves and whose
-Stage 3 admission state is not ``blocked`` (a refused flow waits; it blocks no one). Each carries its declared touch set
-(its plan branch's newest ``plans.jsonl`` row, from refs), the reference a ``blocked_by`` entry names and, for a pull
-request, its changed files. This run's root intent and children are excluded; a local flow with an open pull request is
-listed once, so it stays in flight whatever its checkpoint says. :func:`local_blocked_waiters` lists the blocked ones.
+Stage 3 admission state is not ``blocked`` (a refused flow waits; it blocks no one). Each carries the reference a
+``blocked_by`` entry names and what admission compares: a pull request only its changed files (``gh pr diff``), never
+its planned touch set; a local flow its declared touch set (its plan branch's newest ``plans.jsonl`` row, from refs).
+This run's root intent and children are excluded; a local flow with an open pull request is listed once, so it stays
+in flight whatever its checkpoint says. :func:`local_blocked_waiters` lists the blocked ones.
 
 Discovery is host-side and read-only via injected ``gh``/``git`` runners; failures return :class:`AdmissionUnavailable`.
 """
@@ -13,7 +14,6 @@ Discovery is host-side and read-only via injected ``gh``/``git`` runners; failur
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import subprocess
@@ -31,8 +31,6 @@ from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.ref_names import INTENT_SUFFIX
 from sandbox_executor.touch_set import TouchSet, normalise_touch_path
 
-logger = logging.getLogger(__name__)
-
 #: Runs ``git <args>`` in a directory and returns the completed process (``check=False`` semantics).
 GitRunner = Callable[[list[str], str], subprocess.CompletedProcess[str]]
 
@@ -45,8 +43,8 @@ _EXECUTION_HEAD_RE = re.compile(r"^(?P<plan>I-\d+-\S*/P-\d+-[^/]+)/E-\d+-[^/]+/_
 
 @dataclass(frozen=True)
 class InFlightFlow:
-    """A flow in flight: label, plan branch, declared touch set and reference (pull request ``number`` and ``head``,
-    else the local ``worktree``); a pull request also carries its changed files."""
+    """A flow in flight: label, plan branch and reference (pull request ``number`` and ``head``, else the local
+    ``worktree``); a pull request carries its ``changed_files``, a local flow (or an older waiter) its ``declared``."""
 
     label: str
     plan_branch: str
@@ -130,7 +128,7 @@ def _pull_request_diff(run_gh: merge.GhRunner, number: int, repo_dir: str) -> tu
 def open_flow_pull_requests(
     repo_dir: str, own_root: str, run_gh: merge.GhRunner | None = None
 ) -> list[InFlightFlow] | AdmissionUnavailable:
-    """Open pull requests whose head is a flow execution branch outside ``own_root``, with declared and real files."""
+    """Open pull requests whose head is a flow execution branch outside ``own_root``, with their changed files."""
     gh = merge.gh_runner(run_gh)
     limit = str(MAX_LISTED_PULL_REQUESTS + 1)
     fields = ["--state", "open", "--limit", limit, "--json", "number,headRefName,baseRefName"]
@@ -154,10 +152,7 @@ def open_flow_pull_requests(
             return changed
         number = int(pr.get("number") or 0)
         label = f"pull request #{number} (branch {head})"
-        if _resolve_branch_ref(repo_dir, plan_branch) is None:
-            logger.warning("Plan branch %s of %s is not on this host; only its diff is compared", plan_branch, label)
-        declared = read_plan_touch_set(repo_dir, plan_branch)
-        flows.append(InFlightFlow(label, plan_branch, declared, changed, number=number, head=head))
+        flows.append(InFlightFlow(label, plan_branch, None, changed, number=number, head=head))
     return flows
 
 

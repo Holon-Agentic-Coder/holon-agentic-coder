@@ -168,7 +168,14 @@ class _ReviewTestGate:
         elif source == TEST_SOURCE_STAGE_3:
             rate, failed = self.stage_3_evidence
             detail = f"rate {rate}, failed={failed}"
-            _attribute_test_source(ci_status, self._stage_3, None)
+            if self._stage_3 and (
+                self._stage_3.get("test_pass_rate") is not None or self._stage_3.get("test_run_error")
+            ):
+                ci_status["test_counts"] = {
+                    "passed": self._stage_3.get("tests_passed"),
+                    "failed": self._stage_3.get("tests_failed"),
+                    "errored": self._stage_3.get("tests_errored"),
+                }
         else:
             outcome = self._tester.measure()
             rate, failed = outcome.rate, outcome.failed

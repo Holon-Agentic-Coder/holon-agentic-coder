@@ -1,4 +1,10 @@
-"""Tests for ``entrypoint/executor/commands.py``: ``run_cmd``, what it prints, its git env, and repo-dir cleanup."""
+"""Tests for the command helpers the executor re-exports.
+
+Covers ``entrypoint/executor/commands.py`` (``run_cmd``, its git env, ``safe_float``), the
+``redaction.py`` helpers it prints through (``redact_args``, ``redact_text``), and the
+``agent_runner.py`` repo-dir cleanup (``cleanup_repo_dir``, ``_clear_dir_contents``,
+``_check_forbidden_root``, ``_handle_remove_readonly``).
+"""
 
 import os
 import subprocess

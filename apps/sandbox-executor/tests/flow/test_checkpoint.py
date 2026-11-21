@@ -237,3 +237,17 @@ def test_blocked_record_keeps_the_first_blocked_since_and_replaces_blocked_by():
     assert again.blocked_since == "2026-11-20T01:00:00.000Z" and again.blocked_by == newer
     fresh = blocked_record(admitted_record(), newer, "2026-11-20T02:00:00.000Z")
     assert fresh.blocked_since == "2026-11-20T02:00:00.000Z"
+
+
+def test_checkpoint_review_boundary_statuses(tmp_path):
+    # Both fresh APPROVED and legacy HALTED_FOR_HUMAN count as completed stages in checkpoint
+    for status in (StageStatus.APPROVED, StageStatus.HALTED_FOR_HUMAN):
+        ctx = FlowContext(target_worktree=str(tmp_path), intent_data={"slug": f"boundary-{status.value}"})
+        ctx.stage_results["intent"] = StageResult(stage=FlowStage.INTENT, status=StageStatus.SUCCESS)
+        ctx.stage_results["plan"] = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
+        ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+        ctx.stage_results["review"] = StageResult(stage=FlowStage.REVIEW, status=status)
+        path = save_checkpoint(ctx)
+        cp = load_checkpoint(path)
+        assert "review" in cp.completed_stages
+        assert cp.current_stage == FlowStage.CALIBRATE

@@ -347,7 +347,7 @@ class TestChildLoopWithStubbedPipelines:
         )
         assert res.error == (
             "Execute stage failed: sub-intent 1/1 'first' is not ready to merge into 'I-1-parent/P-2-agent-model/_': "
-            "its Stage 4 did not halt at consensus (status skipped)"
+            "its Stage 4 did not reach consensus approval (status skipped)"
         )
         assert res.payload["children_progress"][0]["status"] == "failed"
 
@@ -512,7 +512,7 @@ class TestChildLoopWithStubbedPipelines:
 
         assert res.status == StageStatus.FAILED
         assert "sub-intent 1/2 'first' is not ready to merge" in (res.error or "")
-        assert "its Stage 4 did not halt at consensus" in (res.error or "")
+        assert "its Stage 4 did not reach consensus approval" in (res.error or "")
         assert [c.intent_data["slug"] for c in children] == ["first"]
         assert getattr(children[0], flag) is True
         assert [e["status"] for e in res.payload["children_progress"]] == ["failed", "pending"]

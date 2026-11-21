@@ -21,10 +21,29 @@ from sandbox_executor.agent_defaults import (
 )
 from sandbox_executor.budgets import format_stage_summary
 from sandbox_executor.flow.constants import CURRENT_CONTEXT_SCHEMA_VERSION
+from sandbox_executor.flow.stage_status import (
+    REVIEW_BOUNDARY_STATUSES,
+    SUMMARY_STATUS_WORDS,
+    StageStatus,
+)
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE
 
 logger = logging.getLogger(__name__)
+
+# Kept for backward compatibility with tests/callers that read or patch _SUMMARY_STATUS_WORDS.
+_SUMMARY_STATUS_WORDS = SUMMARY_STATUS_WORDS
+
+__all__ = [
+    "REVIEW_BOUNDARY_STATUSES",
+    "SUMMARY_STATUS_WORDS",
+    "_SUMMARY_STATUS_WORDS",
+    "FlowContext",
+    "FlowStage",
+    "StageResult",
+    "StageStatus",
+    "_support_legacy_repo_dir",
+]
 
 
 class FlowStage(StrEnum):
@@ -47,28 +66,6 @@ class FlowStage(StrEnum):
             if stage.value == clean:
                 return stage
         raise ValueError(f"Unknown FlowStage '{val}'. Valid stages: {[s.value for s in cls]}")
-
-
-class StageStatus(StrEnum):
-    """Execution status of an individual pipeline stage."""
-
-    PENDING = "pending"
-    RUNNING = "running"
-    SUCCESS = "success"
-    FAILED = "failed"
-    HALTED_FOR_HUMAN = "halted_for_human"
-    SKIPPED = "skipped"
-
-    @classmethod
-    def from_str(cls, val: str | StageStatus) -> StageStatus:
-        """Parse string or enum instance to StageStatus case-insensitively."""
-        if isinstance(val, StageStatus):
-            return val
-        clean = str(val).strip().lower()
-        for status in cls:
-            if status.value == clean:
-                return status
-        raise ValueError(f"Unknown StageStatus '{val}'. Valid statuses: {[s.value for s in cls]}")
 
 
 @dataclass
@@ -100,7 +97,7 @@ class StageResult:
 
     def summary_line(self) -> str:
         """``stage: status (elapsed min / budget min or unlimited)``, or a bare ``stage: status`` when not timed."""
-        word = _SUMMARY_STATUS_WORDS.get(self.status, self.status.value)
+        word = SUMMARY_STATUS_WORDS.get(self.status, self.status.value)
         if self.elapsed_seconds is None:
             return f"{self.stage.value}: {word}"
         return format_stage_summary(self.stage.value, word, self.elapsed_seconds, self.budget_seconds)
@@ -118,16 +115,6 @@ class StageResult:
             elapsed_seconds=data.get("elapsed_seconds"),
             budget_seconds=data.get("budget_seconds"),
         )
-
-
-_SUMMARY_STATUS_WORDS: dict[StageStatus, str] = {
-    StageStatus.SUCCESS: "ok",
-    StageStatus.FAILED: "failed",
-    StageStatus.HALTED_FOR_HUMAN: "halted",
-    StageStatus.SKIPPED: "skipped",
-    StageStatus.PENDING: "pending",
-    StageStatus.RUNNING: "running",
-}
 
 
 def _support_legacy_repo_dir(cls: type) -> type:

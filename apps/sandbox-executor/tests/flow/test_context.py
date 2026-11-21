@@ -43,10 +43,12 @@ class TestFlowDataModels:
         assert StageStatus.SUCCESS.value == "success"
         assert StageStatus.FAILED.value == "failed"
         assert StageStatus.HALTED_FOR_HUMAN.value == "halted_for_human"
+        assert StageStatus.APPROVED.value == "approved"
         assert StageStatus.SKIPPED.value == "skipped"
 
         assert StageStatus.from_str("pending") == StageStatus.PENDING
         assert StageStatus.from_str("HALTED_FOR_HUMAN") == StageStatus.HALTED_FOR_HUMAN
+        assert StageStatus.from_str("APPROVED") == StageStatus.APPROVED
         with pytest.raises(ValueError, match="Unknown StageStatus"):
             StageStatus.from_str("unknown_status")
 

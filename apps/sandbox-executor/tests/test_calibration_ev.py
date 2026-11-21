@@ -9,7 +9,11 @@ from unittest.mock import MagicMock, patch
 
 from sandbox_executor.calibration import PredictedMetrics, parse_actual_metrics
 from sandbox_executor.calibration_ev import evaluate_dual_ev_outcomes
-from sandbox_executor.calibration_outcome import latest_summary_row, summary_row_order_key
+from sandbox_executor.calibration_outcome import (
+    is_converged_record,
+    latest_summary_row,
+    summary_row_order_key,
+)
 
 PLAN = "I-t/P-t/_"
 IMPACT, COST = 50.0, 4.0
@@ -128,3 +132,14 @@ class TestParseActualMetricsFinalRow(unittest.TestCase):
         self.assertEqual(actual.exit_code, 0)
         self.assertEqual(actual.p_success_with_bugs, 1.0)
         self.assertEqual(actual.bug_ev_drag, 0.0)
+
+
+class TestConvergedRecords(unittest.TestCase):
+    def test_converged_record_statuses(self) -> None:
+        # Both fresh 'approved' and legacy 'halted_for_human' converge
+        self.assertTrue(is_converged_record({"status": "approved"}))
+        self.assertTrue(is_converged_record({"status": "halted_for_human"}))
+        self.assertTrue(is_converged_record({"status": "success"}))
+        self.assertTrue(is_converged_record({"status": "decomposed", "integrated": True}))
+        self.assertFalse(is_converged_record({"status": "failed"}))
+        self.assertFalse(is_converged_record({"status": "sync_conflict"}))

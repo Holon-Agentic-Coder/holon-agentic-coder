@@ -108,13 +108,12 @@ def test_probe_command_carries_parents_before_the_file_mount(fake_home: Path) ->
                 "/home/holon/.codex/cache:uid=1000,gid=1000",
             ],
         ),
-        ("gemini", ["-v", "{home}/.config/gcloud:/home/holon/.config/gcloud:ro"]),
     ],
 )
 def test_other_runners_mounts_are_unchanged(
     agent: str, expected: list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for sub in (".config/claude", ".codex", ".config/gcloud"):
+    for sub in (".config/claude", ".codex"):
         (tmp_path / sub).mkdir(parents=True)
     monkeypatch.setenv("HOME", str(tmp_path))
 

@@ -13,7 +13,6 @@ DOCKERFILE_PATH = pathlib.Path(__file__).parent.parent / "Dockerfile"
 AGENT_TARGETS = [
     "agent-antigravity",
     "agent-claude",
-    "agent-gemini",
     "agent-opencode",
     "agent-pi",
     "agent-codex",

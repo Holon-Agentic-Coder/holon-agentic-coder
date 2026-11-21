@@ -14,6 +14,7 @@ from sandbox_executor.flow.calibrate_sync import record_starting_branch
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure, _test_evidence
 from sandbox_executor.flow.review.ci_outcome import describe_ci_outcome
+from sandbox_executor.flow.review.ledger_commit import _close_review_stage
 from sandbox_executor.flow.review.loop import _reviewers_objected, _run_engine_review_loop
 from sandbox_executor.flow.review.records import render_reviewer_summary_line
 from sandbox_executor.flow.review.verdict import not_approved_verdicts, render_final_verdicts
@@ -27,14 +28,6 @@ from sandbox_executor.review_ensemble import ConsensusVerdict
 from sandbox_executor.worktree_head import ReattachStatus, reattach_branch, restore_branch
 
 logger = logging.getLogger(__name__)
-
-
-REVIEW_GIT_ENV: dict[str, str] = {
-    "GIT_AUTHOR_NAME": "Holon Review Loop Agent",
-    "GIT_AUTHOR_EMAIL": "review-loop-agent@holon-agentic-coder.com",
-    "GIT_COMMITTER_NAME": "Holon Review Loop Agent",
-    "GIT_COMMITTER_EMAIL": "review-loop-agent@holon-agentic-coder.com",
-}
 
 
 TESTS_NOT_MEASURED_ERROR = (
@@ -68,13 +61,12 @@ def _checkout_execution_branch(context: FlowContext) -> str | None:
 
 
 def run_review_stage(context: FlowContext) -> StageResult:
-    """Execute Stage 4 and hand the worktree back on the execution branch on every exit, a raise included."""
+    """Execute Stage 4; every exit, a raise included, commits pending ledger rows and hands the worktree back."""
     on_branch: list[str] = []  # armed by the body after its checkout, so a failed one is not blamed on the loop
     try:
         return _run_review_stage_body(context, on_branch)
-    finally:
-        if on_branch:
-            restore_branch(context.target_worktree, on_branch[0], "Stage 4 review loop", context.log, run_git)
+    finally:  # Rows still pending are committed on the execution branch before the worktree is handed back.
+        _close_review_stage(context, on_branch, restore_branch)
 
 
 def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageResult:  # noqa: C901, PLR0912, PLR0915

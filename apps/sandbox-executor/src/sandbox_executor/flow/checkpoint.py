@@ -5,16 +5,15 @@ A checkpoint lets ``holon flow --resume`` continue from the last completed stage
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL
-from sandbox_executor.flow.checkpoint_discovery import _checkpoint_names, get_default_checkpoint_path
+from sandbox_executor.flow.checkpoint_discovery import _checkpoint_names
+from sandbox_executor.flow.checkpoint_store import CheckpointStore, FileCheckpointStore
 from sandbox_executor.flow.constants import CURRENT_CONTEXT_SCHEMA_VERSION
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageStatus
 
@@ -140,7 +139,7 @@ class FlowCheckpoint:
                 f"Supported version is {CURRENT_CHECKPOINT_SCHEMA_VERSION}."
             )
         if schema_version < CURRENT_CHECKPOINT_SCHEMA_VERSION:
-            data = migrate_checkpoint_data(data, target_version=CURRENT_CHECKPOINT_SCHEMA_VERSION)
+            data = cls.migrate(data, target_version=CURRENT_CHECKPOINT_SCHEMA_VERSION)
 
         context = FlowContext.from_dict(data.get("context", {}))
         if context.admission is None:
@@ -154,14 +153,41 @@ class FlowCheckpoint:
             timestamp=data.get("timestamp", ""),
         )
 
+    def save(self, path: Path | str | None = None, store: CheckpointStore | None = None) -> Path:
+        """Persist this checkpoint using the provided or default FileCheckpointStore."""
+        s = store if store is not None else FileCheckpointStore()
+        if path is None:
+            _, key = _checkpoint_names(self.context.intent_data)
+            target = s.default_path(self.context.target_worktree, key)
+        else:
+            target = Path(path)
+        s.save(target, self.to_dict())
+        self.context.log(f"Checkpoint saved to {target}")
+        return target
+
+    @classmethod
+    def load(cls, path: Path | str, store: CheckpointStore | None = None) -> FlowCheckpoint:
+        """Load and reconstruct FlowCheckpoint from path using the store and schema migration."""
+        s = store if store is not None else FileCheckpointStore()
+        data = s.load(path)
+        return cls.from_dict(data)
+
+    @classmethod
+    def default_path(cls, repo_dir: Path | str, key: str, store: CheckpointStore | None = None) -> Path:
+        """Derive the canonical checkpoint path via the store; ``key`` is the ``_checkpoint_names`` key (the branch for
+        a sub-intent, else the slug), not necessarily the bare intent slug."""
+        s = store if store is not None else FileCheckpointStore()
+        return s.default_path(repo_dir, key)
+
+    @staticmethod
+    def migrate(data: dict[str, Any], target_version: int = CURRENT_CHECKPOINT_SCHEMA_VERSION) -> dict[str, Any]:
+        """Migrate checkpoint data dictionary to target schema version using registered transforms."""
+        return migrate_checkpoint_data(data, target_version)
+
 
 def save_checkpoint(context: FlowContext, filepath: str | None = None) -> str:
-    """Atomically save flow context checkpoint to disk using temporary file replacement."""
-    slug, key = _checkpoint_names(context.intent_data)
-    target_path = filepath or get_default_checkpoint_path(context.target_worktree, key)
-    target_dir = os.path.dirname(os.path.abspath(target_path))
-    os.makedirs(target_dir, exist_ok=True)
-
+    """Atomically save flow context checkpoint to disk using FlowCheckpoint.save."""
+    slug, _ = _checkpoint_names(context.intent_data)
     completed = [
         stage_name
         for stage_name, res in context.stage_results.items()
@@ -179,16 +205,8 @@ def save_checkpoint(context: FlowContext, filepath: str | None = None) -> str:
         completed_stages=completed,
         context=context,
     )
-
-    data = checkpoint.to_dict()
-    # Atomic write pattern: write to NamedTemporaryFile in same dir, then replace
-    with tempfile.NamedTemporaryFile("w", dir=target_dir, delete=False, encoding="utf-8") as tf:
-        json.dump(data, tf, indent=2)
-        temp_name = tf.name
-
-    os.replace(temp_name, target_path)
-    context.log(f"Checkpoint saved to {target_path}")
-    return target_path
+    saved = checkpoint.save(filepath or None)
+    return str(saved)
 
 
 def save_admission(context: FlowContext, admission: dict[str, Any] | None) -> str | None:
@@ -205,8 +223,4 @@ def save_admission(context: FlowContext, admission: dict[str, Any] | None) -> st
 
 def load_checkpoint(filepath: str) -> FlowCheckpoint:
     """Load a flow checkpoint from disk."""
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"Checkpoint file '{filepath}' does not exist.")
-    with open(filepath, encoding="utf-8") as f:
-        data = json.load(f)
-    return FlowCheckpoint.from_dict(data)
+    return FlowCheckpoint.load(filepath)

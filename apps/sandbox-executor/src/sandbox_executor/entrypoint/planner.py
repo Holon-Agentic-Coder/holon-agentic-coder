@@ -356,7 +356,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
         sys.exit(1)
 
     # Proactively check and resolve any stage conflicts
-    from sandbox_executor.flow import check_and_resolve_stage_conflicts
+    from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 
     check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch="main", stage_name="plan")
 

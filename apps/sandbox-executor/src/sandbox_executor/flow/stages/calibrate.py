@@ -30,10 +30,10 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, S
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.ci_final_head import check_final_head_ci, format_final_head_ci, not_pushed_record
 from sandbox_executor.flow.github.ci_reverify import RED, blocked_error, reverify_and_report
+from sandbox_executor.flow.ledger_warning import _warn_ledger_failure
 from sandbox_executor.flow.review.conflict_gate import _stage5_conflict_gate
 from sandbox_executor.flow.review.records import _bounded_error_context
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
-from sandbox_executor.flow.stages.execute import _warn_ledger_failure
 from sandbox_executor.flow.stages.review import _checkout_execution_branch
 from sandbox_executor.git import run_git
 from sandbox_executor.knowledge import (

@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-e3e87f00",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-20T15:16:42.183999+00:00",
+  "updated_ts": "2026-11-20T15:16:42.183999+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-RES-1795186407-bd82ac47"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795184210-review-commits-ledger-rows/P-1795185391-CLA-CO5.5/E-1795185523-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding R3-F2 left open (no evidenced adjudication)",
+    "symptoms": []
+  }
+}

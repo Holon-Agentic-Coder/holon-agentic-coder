@@ -383,20 +383,6 @@ class StandardAgentRunner(AgentRunner):
                 sys.exit(1)
             return
 
-        if self.custom_validator == "gemini":
-            has_key = os.getenv("HOLON_AGENT_KEY")
-            has_gcloud = os.path.exists("/home/holon/.config/gcloud") or os.path.exists(
-                os.path.expanduser("~/.config/gcloud")
-            )
-            if not (has_key or has_gcloud):
-                print(
-                    "Error: Missing required API credentials for agent 'gemini'.\n"
-                    "Please set 'HOLON_AGENT_KEY' or mount active gcloud credentials to '/home/holon/.config/gcloud'.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-            return
-
         if self.custom_validator == "antigravity":
             has_key = os.getenv("HOLON_AGENT_KEY")
             has_session = (
@@ -693,32 +679,6 @@ class ClaudeAgentRunner(StandardAgentRunner):
         return cmd
 
 
-class GeminiAgentRunner(StandardAgentRunner):
-    """Runner for Gemini agent."""
-
-    uses_stdin: bool = True
-
-    def __init__(
-        self,
-        agent_id: str = "gemini",
-        binary_name: str = "gemini",
-        model_flag: str = "--model",
-        **kwargs: Any,
-    ):
-        super().__init__(
-            agent_id=agent_id,
-            binary_name=binary_name,
-            model_flag=model_flag,
-            prefix=kwargs.pop("prefix", None),
-            suffix=kwargs.pop("suffix", ["-p"]),
-            env_mappings=kwargs.pop("env_mappings", None),
-            required_keys=kwargs.pop("required_keys", None),
-            custom_validator=kwargs.pop("custom_validator", "gemini"),
-            bypass_flags=kwargs.pop("bypass_flags", None),
-            **kwargs,
-        )
-
-
 class OpenCodeAgentRunner(StandardAgentRunner):
     """Runner for OpenCode agent."""
 
@@ -788,7 +748,6 @@ class CodexAgentRunner(StandardAgentRunner):
 runners = {
     "pi": PiAgentRunner(),
     "claude": ClaudeAgentRunner(),
-    "gemini": GeminiAgentRunner(),
     "opencode": OpenCodeAgentRunner(),
     "codex": CodexAgentRunner(),
     "antigravity": AntigravityAgentRunner(),

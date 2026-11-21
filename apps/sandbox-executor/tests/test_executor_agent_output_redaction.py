@@ -1,4 +1,4 @@
-"""Tests for ``entrypoint/executor/agent_output.py``: redaction and byte bounds of the captured agent output."""
+"""Tests for ``entrypoint/agent_output_block.py`` and its redaction helpers: redaction and byte bounds of the output."""
 
 import io
 import os

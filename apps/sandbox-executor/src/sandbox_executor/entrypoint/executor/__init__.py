@@ -1,0 +1,161 @@
+"""Sandbox executor entrypoint for Holon Agentic Coder.
+
+Works in place on the host worktree that 'holon execute' and 'holon flow' bind-mount into the container, runs the
+configured agent, captures execution results into the ledger, and commits the execution branch. The container never
+touches the remote: the host fetches the plan and target branches first and pushes the execution branch afterwards.
+
+This package's ``__init__`` is the facade: it owns the constants and `main`, and re-exports every name the former
+``executor.py`` module exposed (the decomposition rule, the agent-output bound, the redactors and the collaborators),
+so existing importers keep working unchanged. The step modules look up the names tests patch here (``run_cmd``,
+``get_runner``, the workspace probes, the authoring turn, the ledger writers and so on) on this package at call time,
+so a patch on ``sandbox_executor.entrypoint.executor.<name>`` reaches every submodule. ``python -m
+sandbox_executor.entrypoint.executor`` runs ``__main__``.
+
+Key environment variables:
+    HOLON_TARGET_WORKTREE: The sandbox mountpoint, which marks the mounted host worktree (required).
+    HOLON_IN_SANDBOX: Set to '1' to explicitly mark sandbox context.
+    HOLON_ROLE: When set, implies sandbox context.
+
+Known limitations:
+    - redact_args: Secret values starting with '-' are not masked to avoid
+      over-masking legitimate flags that immediately follow a secret flag.
+      See _is_secret_flag and the LIMITATION comment in redact_args for details.
+"""
+
+import contextlib as contextlib
+import json as json
+import os as os
+import re as re
+import subprocess as subprocess
+import sys as sys
+import tempfile as tempfile
+import time as time
+import traceback as traceback
+from collections.abc import Callable as Callable
+from dataclasses import dataclass as dataclass
+from datetime import UTC as UTC
+from datetime import datetime as datetime
+from functools import partial as partial
+from typing import Any as Any
+
+from sandbox_executor.agent_runner import get_runner as get_runner
+from sandbox_executor.agent_runner import get_workspace_dir as get_workspace_dir
+from sandbox_executor.artefacts import EXECUTION_SPEC as EXECUTION_SPEC
+from sandbox_executor.artefacts import ArtefactReport as ArtefactReport
+from sandbox_executor.artefacts import execution_write_protocol as execution_write_protocol
+from sandbox_executor.attribution_check import attribution_allows_publish as attribution_allows_publish
+from sandbox_executor.budgets import BudgetBreach as BudgetBreach
+from sandbox_executor.budgets import StageTimer as StageTimer
+from sandbox_executor.budgets import load_budgets as load_budgets
+from sandbox_executor.decomposition_rule import DECISION_DECOMPOSED as DECISION_DECOMPOSED
+from sandbox_executor.decomposition_rule import DECISION_EXECUTE as DECISION_EXECUTE
+from sandbox_executor.decomposition_rule import DECISION_OVER_BUDGET as DECISION_OVER_BUDGET
+from sandbox_executor.decomposition_rule import DecompositionDecision as DecompositionDecision
+from sandbox_executor.decomposition_rule import InvalidPlanDecisionError as InvalidPlanDecisionError
+from sandbox_executor.decomposition_rule import is_placeholder_item as is_placeholder_item
+from sandbox_executor.decomposition_rule import parse_sub_intent_list as parse_sub_intent_list
+from sandbox_executor.decomposition_rule import should_decompose as should_decompose
+from sandbox_executor.entrypoint.agent_output_block import _AGENT_LOG_BYTE_CEILING as _AGENT_LOG_BYTE_CEILING
+from sandbox_executor.entrypoint.agent_output_block import _ANCHOR_CONTEXT_BYTES as _ANCHOR_CONTEXT_BYTES
+from sandbox_executor.entrypoint.agent_output_block import _TRUNCATION_MARKER_RESERVE as _TRUNCATION_MARKER_RESERVE
+from sandbox_executor.entrypoint.agent_output_block import get_agent_log_byte_budget as get_agent_log_byte_budget
+from sandbox_executor.entrypoint.agent_output_block import prepare_agent_output_block as prepare_agent_output_block
+from sandbox_executor.entrypoint.agent_output_block import sanitize_agent_output as sanitize_agent_output
+from sandbox_executor.entrypoint.changed_markdown import changed_markdown_files as changed_markdown_files
+from sandbox_executor.entrypoint.empty_diff_excerpt import report_empty_diff_output as report_empty_diff_output
+from sandbox_executor.entrypoint.execution_args import ExecutionArgs as ExecutionArgs
+from sandbox_executor.entrypoint.execution_args import _parse_review_finding_ids as _parse_review_finding_ids
+from sandbox_executor.entrypoint.execution_args import _parse_review_iteration as _parse_review_iteration
+from sandbox_executor.entrypoint.execution_args import _read_intent_row as _read_intent_row
+from sandbox_executor.entrypoint.execution_args import _read_plan_row as _read_plan_row
+from sandbox_executor.entrypoint.execution_workspace import continuation_note as continuation_note
+from sandbox_executor.entrypoint.execution_workspace import resolve_partial_head as resolve_partial_head
+from sandbox_executor.entrypoint.execution_workspace import validate_mounted_workspace as validate_mounted_workspace
+from sandbox_executor.entrypoint.execution_workspace import workspace_mounted as workspace_mounted
+from sandbox_executor.entrypoint.executor.commands import _CLEAN_GIT_ENV_VARS as _CLEAN_GIT_ENV_VARS
+from sandbox_executor.entrypoint.executor.commands import _FALLBACK_SAFE_DIRECTORIES as _FALLBACK_SAFE_DIRECTORIES
+from sandbox_executor.entrypoint.executor.commands import _MAX_PRINT_LEN as _MAX_PRINT_LEN
+from sandbox_executor.entrypoint.executor.commands import _clip_for_print as _clip_for_print
+from sandbox_executor.entrypoint.executor.commands import _entrypoint_git_runner as _entrypoint_git_runner
+from sandbox_executor.entrypoint.executor.commands import _get_clean_git_env as _get_clean_git_env
+from sandbox_executor.entrypoint.executor.commands import _get_local_safe_directories as _get_local_safe_directories
+from sandbox_executor.entrypoint.executor.commands import _get_repo as _get_repo
+from sandbox_executor.entrypoint.executor.commands import _is_safe_directory as _is_safe_directory
+from sandbox_executor.entrypoint.executor.commands import _safe_float as _safe_float
+from sandbox_executor.entrypoint.executor.commands import _sanitize_string as _sanitize_string
+from sandbox_executor.entrypoint.executor.commands import is_action_logging_enabled as is_action_logging_enabled
+from sandbox_executor.entrypoint.executor.commands import run_cmd as run_cmd
+from sandbox_executor.entrypoint.executor.outcome import _salvage_partial_work as _salvage_partial_work
+from sandbox_executor.entrypoint.executor.outcome import _salvage_pathspec as _salvage_pathspec
+from sandbox_executor.entrypoint.executor.outcome import classify_execution_outcome as classify_execution_outcome
+from sandbox_executor.entrypoint.executor.outcome import finalise_execution_notes as finalise_execution_notes
+from sandbox_executor.entrypoint.executor.pre_push import _conflicted_files as _conflicted_files
+from sandbox_executor.entrypoint.executor.pre_push import _reconcile_conflicted_merge as _reconcile_conflicted_merge
+from sandbox_executor.entrypoint.executor.pre_push import sync_and_reconcile_pre_push as sync_and_reconcile_pre_push
+from sandbox_executor.entrypoint.executor.repair import _clear_abandoned_locks as _clear_abandoned_locks
+from sandbox_executor.entrypoint.executor.repair import _configure_executor_identity as _configure_executor_identity
+from sandbox_executor.entrypoint.executor.repair import _persist_safe_directory as _persist_safe_directory
+from sandbox_executor.entrypoint.executor.repair import _probe_git_repo as _probe_git_repo
+from sandbox_executor.entrypoint.executor.repair import _repair_git_repo as _repair_git_repo
+from sandbox_executor.entrypoint.executor.repair import _restore_head as _restore_head
+from sandbox_executor.entrypoint.executor.run import ExecutionPromptInputs as ExecutionPromptInputs
+from sandbox_executor.entrypoint.executor.run import ExecutionRun as ExecutionRun
+from sandbox_executor.entrypoint.executor.run import build_execution_prompt as build_execution_prompt
+from sandbox_executor.entrypoint.executor.sub_intents import _recorded_decision as _recorded_decision
+from sandbox_executor.entrypoint.executor_test_run import measure_executor_tests as measure_executor_tests
+from sandbox_executor.entrypoint.git_locks import _remove_abandoned_locks as _remove_abandoned_locks
+from sandbox_executor.entrypoint.git_locks import _resolve_local_ref as _resolve_local_ref
+from sandbox_executor.entrypoint.partial_resume import merge_plan_tip as merge_plan_tip
+from sandbox_executor.entrypoint.partial_resume import start_execution_branch as start_execution_branch
+from sandbox_executor.entrypoint.sync_conflict import SyncConflictMessage as SyncConflictMessage
+from sandbox_executor.entrypoint.sync_conflict import record_sync_failure as record_sync_failure
+from sandbox_executor.entrypoint.sync_conflict import superseding_failure_row as superseding_failure_row
+from sandbox_executor.entrypoint.taken_ids import taken_child_ids as taken_child_ids
+from sandbox_executor.formatting import converge_prettier as converge_prettier
+from sandbox_executor.git import GitRepository as GitRepository
+from sandbox_executor.ledger import ActionRecord as ActionRecord
+from sandbox_executor.ledger import LedgerRewriteError as LedgerRewriteError
+from sandbox_executor.ledger import append_action_record as append_action_record
+from sandbox_executor.ledger import atomic_ledger_append as atomic_ledger_append
+from sandbox_executor.ledger import build_execution_id as build_execution_id
+from sandbox_executor.ledger import extract_action_provenance_from_commit as extract_action_provenance_from_commit
+from sandbox_executor.ledger import format_commit_trailers as format_commit_trailers
+from sandbox_executor.ledger import generate_action_id as generate_action_id
+from sandbox_executor.ledger import suppress_ledger_failures as suppress_ledger_failures
+from sandbox_executor.plan_paths import recorded_plan_file as recorded_plan_file
+from sandbox_executor.redaction import _MAX_REDACT_INPUT_LEN as _MAX_REDACT_INPUT_LEN
+from sandbox_executor.redaction import _PROVIDER_TOKEN_RE as _PROVIDER_TOKEN_RE
+from sandbox_executor.redaction import SECRET_FLAGS as SECRET_FLAGS
+from sandbox_executor.redaction import _is_secret_flag as _is_secret_flag
+from sandbox_executor.redaction import redact_agent_secrets as redact_agent_secrets
+from sandbox_executor.redaction import redact_args as redact_args
+from sandbox_executor.redaction import redact_command_args as redact_command_args
+from sandbox_executor.redaction import redact_env_literals as redact_env_literals
+from sandbox_executor.redaction import redact_text as redact_text
+from sandbox_executor.redaction import redact_then_truncate as redact_then_truncate
+from sandbox_executor.turns import AuthoringOutcome as AuthoringOutcome
+from sandbox_executor.turns import record_budget_failure as record_budget_failure
+from sandbox_executor.turns import run_turn as run_turn
+from sandbox_executor.turns import supervise_authoring_turn as supervise_authoring_turn
+
+# Exit status of an executor run that refused an over-budget plan and committed its over_budget row to the execution
+# branch (the host pushes it afterwards). Distinct from 1 (a failed run) so the flow can tell the refusal apart and
+# read that row, while a direct 'holon execute' still exits non-zero. Every other over_budget outcome exits 1.
+OVER_BUDGET_EXIT_CODE = 3
+
+# The repo-local identity of every commit the executor (and the agent it runs) makes inside the container.
+EXECUTOR_GIT_EMAIL = "executor-agent@holon-agentic-coder.com"
+EXECUTOR_GIT_NAME = "Holon Executor Agent"
+EXECUTIONS_LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
+
+
+def main() -> None:
+    """Executor entry point: ``executor.py <plan_branch> [agent_name] [model_name] [partial_execution_branch]``.
+
+    Without a plan branch prints the usage line and exits 1; otherwise runs one `ExecutionRun`, whose exit codes it
+    passes through.
+    """
+    if len(sys.argv) < 2:
+        print("Usage: executor.py <plan_branch> [agent_name] [model_name] [partial_execution_branch]")
+        sys.exit(1)
+    ExecutionRun(ExecutionArgs.from_argv(sys.argv)).run()

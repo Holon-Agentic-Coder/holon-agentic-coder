@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sandbox_executor.entrypoint import executor
 
-from tests.test_executor import _cuts_branch, _run_executor_main, _validate_stub
+from tests.executor_fixtures import _cuts_branch, _run_executor_main, _validate_stub
 
 
 def test_main_decomposed_reads_the_list_the_plan_row_records(tmp_path):

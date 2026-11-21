@@ -80,7 +80,7 @@ class _ReviewTestGate:
         self,
         context: FlowContext,
         repo_dir: str,
-        pr_head: Callable[..., str | None] | None = None,
+        pr_head: Callable[[str], str | None] | None = None,
     ) -> None:
         exec_result = context.stage_results.get("execute")
         self._context = context
@@ -110,10 +110,7 @@ class _ReviewTestGate:
 
     def _get_pr_head(self) -> str | None:
         if self.pr_head is not None:
-            try:
-                return self.pr_head(self._target)
-            except TypeError:
-                return self.pr_head()
+            return self.pr_head(self._target)
         return _default_pr_head(self._repo_dir, self._target)
 
     def accept_resolver_evidence(self, head_sha: str, dispositions: Sequence[Any]) -> None:

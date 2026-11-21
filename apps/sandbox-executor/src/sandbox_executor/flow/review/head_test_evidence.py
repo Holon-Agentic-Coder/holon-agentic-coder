@@ -9,6 +9,7 @@ Pure module with no subprocess calls: decides which test evidence to use for the
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -155,7 +156,5 @@ def _applies(ci_status: dict[str, Any], stage_3_rate: float | None, stage_3_fail
 
 
 def has_pass_marker(text: str) -> bool:
-    import re
-
     clean = text.lower()
     return bool(re.search(r"\bpassed\b", clean)) or "0 failed" in clean

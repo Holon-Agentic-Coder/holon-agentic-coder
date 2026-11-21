@@ -1450,17 +1450,22 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
 
 
 def _report_budgets(env: Mapping[str, str], out: TextIO) -> None:
+    from sandbox_executor.budget_limits import UNLIMITED, format_budget_minutes, unbounded_supervision_warning
     from sandbox_executor.budgets import load_budgets
 
     budgets = load_budgets(env)
     stage_minutes = " ".join(
-        f"{name}={budgets.stage_seconds(name) / 60.0:g}min"
+        f"{name}={format_budget_minutes(budgets.stage_seconds(name))}"
         for name in ("intent", "plan", "execute", "review_iteration", "calibration")
     )
-    print(
-        f"budgets turn={budgets.turn.turn_seconds:g}s stall={budgets.turn.stall_seconds:g}s {stage_minutes}",
-        file=out,
+    turn = UNLIMITED if budgets.turn.turn_seconds is None else f"{budgets.turn.turn_seconds:g}s"
+    override = f" stage_override={UNLIMITED}" if budgets.stage_override_unlimited else ""
+    print(f"budgets turn={turn} stall={budgets.turn.stall_seconds:g}s {stage_minutes}{override}", file=out)
+    unbounded = unbounded_supervision_warning(
+        budgets.turn.turn_seconds, budgets.turn.stall_seconds, budgets.unlimited_stages()
     )
+    if unbounded is not None:
+        print(f"WARNING: {unbounded}", file=out)
 
 
 def _report_gateways(  # noqa: PLR0913

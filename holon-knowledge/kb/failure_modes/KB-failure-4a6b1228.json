@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-4a6b1228",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-21T13:04:24.830464+00:00",
+  "updated_ts": "2026-11-21T13:04:24.830464+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795253315-b174ca16-antigravity-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795222649-antigravity-tmpfs-empty-diff/P-1795222667-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 1 iteration(s): resolver failed: Resolver turn failed: Resolver agent produced no usable output (resolver exit code 1); final verdicts: no reviewer returned a verdict",
+    "symptoms": []
+  }
+}

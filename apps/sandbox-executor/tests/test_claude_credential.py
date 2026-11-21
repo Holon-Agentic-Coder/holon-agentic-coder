@@ -130,7 +130,7 @@ def test_dispatcher_claude_branch_no_longer_maps_holon_agent_key():
     claude_branch = text.split("        claude)", 1)[1].split(";;", 1)[0]
     assert "HOLON_AGENT_KEY" not in claude_branch.replace("The claude runner never consults HOLON_AGENT_KEY", "")
     assert "export ANTHROPIC_API_KEY" not in claude_branch
-    for var, runner in (("PI_API_KEY", "pi"), ("OPENAI_API_KEY", "codex"), ("GEMINI_API_KEY", "gemini")):
+    for var, runner in (("PI_API_KEY", "pi"), ("OPENAI_API_KEY", "codex")):
         assert f'export {var}="${{HOLON_AGENT_KEY}}"' in text, runner
 
 

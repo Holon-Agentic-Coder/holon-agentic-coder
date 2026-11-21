@@ -89,17 +89,18 @@ def _run_stage(worktree: Path, loop) -> tuple[FlowContext, Any, list[list[str]]]
             return ctx, exc, calls
 
 
-def _assert_on_branch_with_the_row_uncommitted(worktree: Path) -> None:
+def _assert_on_branch_with_the_row_committed(worktree: Path) -> None:
+    """The detached HEAD is re-attached first, so the exit commits the row on the branch and leaves a clean tree."""
     assert _git(worktree, "symbolic-ref", "--short", "HEAD") == EXEC
-    assert _git(worktree, "status", "--porcelain") == f"M {LEDGER}"
-    assert '"ACT-REV-1"' in (worktree / LEDGER).read_text(encoding="utf-8")
+    assert _git(worktree, "status", "--porcelain") == ""
+    assert '"ACT-REV-1"' in _git(worktree, "show", f"HEAD:{LEDGER.as_posix()}")
 
 
 def test_after_a_review_iteration_the_worktree_is_on_the_execution_branch(flow_worktree: Path) -> None:
     ctx, result, calls = _run_stage(flow_worktree, _approved_loop)
 
     assert result.status is StageStatus.HALTED_FOR_HUMAN
-    _assert_on_branch_with_the_row_uncommitted(flow_worktree)
+    _assert_on_branch_with_the_row_committed(flow_worktree)
     assert any("Stage 4 review loop left the worktree HEAD detached at" in line for line in ctx.logs)
     assert any(f"re-attached '{EXEC}'" in line for line in ctx.logs)
     # Acceptance criterion 3: the stage itself never checks out a bare commit in the shared worktree.
@@ -113,7 +114,7 @@ def test_a_review_loop_that_raises_still_hands_back_the_execution_branch(flow_wo
     ctx, outcome, _calls = _run_stage(flow_worktree, _crashing_loop)
 
     assert isinstance(outcome, RuntimeError) and "container dispatch crashed" in str(outcome)
-    _assert_on_branch_with_the_row_uncommitted(flow_worktree)
+    _assert_on_branch_with_the_row_committed(flow_worktree)
     assert any("Stage 4 review loop left the worktree HEAD detached at" in line for line in ctx.logs)
 
 

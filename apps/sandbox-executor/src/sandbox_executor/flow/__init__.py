@@ -216,6 +216,7 @@ from sandbox_executor.flow.review.ensemble import (
     _review_base_ref,
     _semantic_pr_text,
 )
+from sandbox_executor.flow.review.git_identity import REVIEW_GIT_ENV
 from sandbox_executor.flow.review.ids import build_review_id
 from sandbox_executor.flow.review.loop import (
     _loop_status,
@@ -276,7 +277,6 @@ from sandbox_executor.flow.stages.intent import _reused_intent_conflict, run_int
 from sandbox_executor.flow.stages.plan import _format_entropy, run_plan_stage
 from sandbox_executor.flow.stages.plan_decision import _backfill_plan_row, _over_budget_failure, _plan_budget_decision
 from sandbox_executor.flow.stages.review import (
-    REVIEW_GIT_ENV,
     TESTS_NOT_MEASURED_ERROR,
     _checkout_execution_branch,
     run_review_stage,

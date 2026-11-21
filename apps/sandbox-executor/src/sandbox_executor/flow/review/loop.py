@@ -372,7 +372,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if reviewer_objected:
             # Fast path on reviewer findings: probe CI once without waiting on pending checks.
             last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-            apply_local_test_evidence(last_ci_status, tests_failed, test_pass_rate, effective_dry_run, False)
+            gate_rate, tests_failed = test_gate.evidence(last_ci_status)
+            apply_local_test_evidence(last_ci_status, tests_failed, gate_rate, effective_dry_run, False)
             ci_wait = ci_wait if last_ci_status.get("pending", 0) else None  # Never keep a stale wait record.
 
             # Include FIND-CI only if CI has already failed or local tests failed; pending checks are omitted.
@@ -409,8 +410,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         else:
             # Fallback for dry runs, dirty mergeability, or infra failures: probe once without waiting.
             last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
+            gate_rate, tests_failed = test_gate.evidence(last_ci_status)
             tests_not_measured |= apply_local_test_evidence(
-                last_ci_status, tests_failed, test_pass_rate, effective_dry_run, True
+                last_ci_status, tests_failed, gate_rate, effective_dry_run, True
             )
             ci_wait = ci_wait if last_ci_status.get("pending", 0) else None  # Never keep a stale wait record.
 
@@ -627,6 +629,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if rejected_now:
             suppressed_ledger_records += recorder.record(iteration, rejected_now)
             record_nit_rejections(rejected_history, rejected_now)
+            test_gate.accept_resolver_evidence(current_sha, rejected_now)
 
         head_changed = bool(resolver_outcome.pushed)
         if applied_now or (head_changed and pending_dispositions):

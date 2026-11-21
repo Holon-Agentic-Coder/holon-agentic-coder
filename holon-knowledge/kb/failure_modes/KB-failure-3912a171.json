@@ -1,0 +1,32 @@
+{
+  "kb_id": "KB-failure-3912a171",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-21T08:08:36.636817+00:00",
+  "updated_ts": "2026-11-21T08:08:36.636817+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-1795245875-9a710423",
+      "ACT-1795239607-c50bfafc",
+      "ACT-1795229762-8102f082"
+    ],
+    "success_count": 0,
+    "failure_count": 3,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "test",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795167346-checkpoint-and-ledger-ownership/P-1795177385-ANA-G3.8F/E-1795177969-ANA-G3.8F/_",
+    "description": "Reproduced failure across 3 executions with identical context.",
+    "action": "Review Loop executed for I-1795167346-checkpoint-and-ledger-ownership/P-1795177385-ANA-G3.8F/E-1795177969-ANA-G3.8F/_",
+    "symptoms": [
+      "Consensus failed: findings=['FIND-CI-020']; Refusing to create or update a PR for 'I-1795167346-checkpoint-and-ledger-ownership/P-1795177385-ANA-G3.8F/E-1795177969-ANA-G3.8F/_': could not verify the execution diff ('I-1795167346-checkpoint-and-ledger-ownership/P-1795177385-ANA-G3.8F/E-1795177969-ANA-G3.8F/_' is not fetched from origin; the host must fetch it before dispatch).; final verdicts: no reviewer returned a verdict"
+    ]
+  }
+}

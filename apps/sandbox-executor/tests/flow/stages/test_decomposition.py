@@ -1191,15 +1191,6 @@ class TestPlanDecomposition:
         assert fallback.plan_branch == "I-9-other/P-1-x/_"
         assert flow_module.PlanDecomposition.from_summary_row(FlowContext(), {"sub_intents": "x"}).items == []
 
-    @pytest.mark.parametrize(
-        ("index", "slug"), [(1, "add-the-parser"), (2, "Add The CLI flag!"), (3, ""), (4, "x" * 200)]
-    )
-    def test_child_branch_is_the_child_progress_name(self, index, slug):
-        decomposition = flow_module.PlanDecomposition(FlowContext(token_reduce=False), [], self.PLAN_BRANCH)
-        assert decomposition.child_branch(index, slug) == flow_module._child_intent_branch(
-            self.PLAN_BRANCH, index, slug
-        )
-
     def test_depth_counts_the_children_one_level_below_the_intent(self):
         ctx = FlowContext(token_reduce=False, intent_data={"sub_intent_depth": 2})
         assert flow_module.PlanDecomposition(ctx, [], "").depth() == 3

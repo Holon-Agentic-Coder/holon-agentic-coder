@@ -11,11 +11,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from sandbox_executor.budgets import MAX_SUB_INTENT_DEPTH
-from sandbox_executor.flow.child_progress import PROGRESS_KEY, _child_intent_branch, _sub_intent_depth, initial_progress
+from sandbox_executor.flow.child_progress import PROGRESS_KEY, _sub_intent_depth, initial_progress
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.stages.children import run_children
-from sandbox_executor.ref_names import FitResult, RefTooLongError
+from sandbox_executor.ref_names import RefTooLongError
 
 
 @dataclass(frozen=True)
@@ -46,10 +46,6 @@ class PlanDecomposition:
             f"Execute stage failed: the plan lists a sub-intent list at depth {depth}, deeper than the limit of "
             f"{MAX_SUB_INTENT_DEPTH}; refusing to recurse further."
         )
-
-    def child_branch(self, index: int, slug: str) -> FitResult:
-        """The fitted bare intent branch of the ``index``-th (1-based) child under the plan branch."""
-        return _child_intent_branch(self.plan_branch, index, slug)
 
     def validation_error(self, payload: dict[str, Any]) -> str | None:
         """The first reason the list cannot run (no items, too deep, no plan branch), or None.

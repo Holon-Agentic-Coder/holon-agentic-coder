@@ -142,7 +142,7 @@ _LAZY_EXPORTS: dict[str, str] = {
         "_decomposition_child_lines _run_decomposed_plan _sub_intent_depth_error format_decomposition_summary"
     ),
     "sandbox_executor.flow.stages.empty_diff_outcome": "empty_diff_failure",
-    "sandbox_executor.flow.stages.execute": "_resumable_partial_branch run_execute_stage",
+    "sandbox_executor.flow.stages.execute": "ExecuteStage ExecuteState _resumable_partial_branch run_execute_stage",
     "sandbox_executor.flow.stages.execute_veto": "execution_veto_error",
     "sandbox_executor.flow.stages.intent": "_reused_intent_conflict run_intent_stage",
     "sandbox_executor.flow.stages.plan": "_format_entropy run_plan_stage",
@@ -211,6 +211,8 @@ __all__ = [
     "CiWaitResult",
     "ConflictResolutionError",
     "DispositionRecorder",
+    "ExecuteStage",
+    "ExecuteState",
     "FileCheckpointStore",
     "FlowCheckpoint",
     "FlowContext",

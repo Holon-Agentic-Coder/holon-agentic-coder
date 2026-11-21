@@ -21,12 +21,6 @@ TEST_SOURCE_REVIEW_LOCAL = "review_local"
 TEST_SOURCE_RESOLVER_EVIDENCE = "resolver_evidence"
 TEST_SOURCE_CI = "ci"
 
-# Public aliases
-STAGE_3 = TEST_SOURCE_STAGE_3
-CI_HEAD = TEST_SOURCE_CI_HEAD
-REVIEW_LOCAL = TEST_SOURCE_REVIEW_LOCAL
-RESOLVER_EVIDENCE = TEST_SOURCE_RESOLVER_EVIDENCE
-
 
 @dataclass(frozen=True)
 class _LocalTestOutcome:
@@ -77,21 +71,14 @@ def _is_ci_head_passing(ci_status: dict[str, Any], current_head: str, pr_head_sh
     return ci_status.get("pending", 0) == 0
 
 
-def _is_stage_3_passing(stage_3_evidence: tuple[float | None, bool], stage_3_head: str, current_head: str) -> bool:
-    rate, failed = stage_3_evidence
-    if failed or rate is None or rate < 1.0:
-        return False
-    return current_head == stage_3_head
-
-
 def _is_stage_3_measured(stage_3_evidence: tuple[float | None, bool], stage_3_head: str, current_head: str) -> bool:
     rate, failed = stage_3_evidence
     if rate is None and not failed:
         return False
-    return current_head == stage_3_head
+    return bool(stage_3_head) and current_head == stage_3_head
 
 
-def choose_evidence(*args: Any, **kwargs: Any) -> str:
+def choose_evidence(inp: HeadEvidenceDecisionInput) -> str:
     """Decide which test evidence source to use for the current head commit.
 
     Applying rules in priority order:
@@ -100,29 +87,14 @@ def choose_evidence(*args: Any, **kwargs: Any) -> str:
     3. Stage 3 on an unchanged head when measured -> stage_3
     4. Otherwise (unmeasured, or head moved) -> review_local
     """
-    if args and isinstance(args[0], HeadEvidenceDecisionInput):
-        inp = args[0]
-        ci_status = inp.ci_status
-        stage_3_evidence = inp.stage_3_evidence
-        stage_3_head = inp.stage_3_head
-        current_head = inp.current_head
-        pr_head_sha = inp.pr_head_sha
-        resolver_heads = inp.resolver_heads
-    else:
-        ci_status = args[0] if len(args) > 0 else kwargs.get("ci_status", {})
-        stage_3_evidence = args[1] if len(args) > 1 else kwargs.get("stage_3_evidence", (None, False))
-        stage_3_head = args[2] if len(args) > 2 else kwargs.get("stage_3_head", "")
-        current_head = args[3] if len(args) > 3 else kwargs.get("current_head", "")
-        pr_head_sha = args[4] if len(args) > 4 else kwargs.get("pr_head_sha")
-        resolver_heads = args[5] if len(args) > 5 else kwargs.get("resolver_heads", frozenset())
-
-    if current_head and current_head in resolver_heads:
+    current_head = inp.current_head
+    if current_head and current_head in inp.resolver_heads:
         return TEST_SOURCE_RESOLVER_EVIDENCE
 
-    if _is_ci_head_passing(ci_status, current_head, pr_head_sha):
+    if _is_ci_head_passing(inp.ci_status, current_head, inp.pr_head_sha):
         return TEST_SOURCE_CI_HEAD
 
-    if _is_stage_3_measured(stage_3_evidence, stage_3_head, current_head):
+    if _is_stage_3_measured(inp.stage_3_evidence, inp.stage_3_head, current_head):
         return TEST_SOURCE_STAGE_3
 
     return TEST_SOURCE_REVIEW_LOCAL
@@ -150,11 +122,7 @@ def _attribute_test_source(
         }
 
 
-def _applies(ci_status: dict[str, Any], stage_3_rate: float | None, stage_3_failed: bool) -> bool:
-    """True when the probe fell back to ``local_tests`` and Stage 3 left the tests unmeasured."""
-    return ci_status.get("source") == "local_tests" and stage_3_rate is None and not stage_3_failed
-
-
 def has_pass_marker(text: str) -> bool:
+    """True when the text reports a pass: the word ``passed`` or a zero failure count (not ``10 failed``)."""
     clean = text.lower()
-    return bool(re.search(r"\bpassed\b", clean)) or "0 failed" in clean
+    return bool(re.search(r"\bpassed\b", clean) or re.search(r"(?<!\d)0 failed\b", clean))

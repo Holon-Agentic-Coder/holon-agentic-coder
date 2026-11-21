@@ -106,7 +106,7 @@ class TestReviewLoopStage:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
-            payload={"test_pass_rate": 1.0, "exit_code": 0},
+            payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
         )
         with (
             patch_lookup_sites(
@@ -145,7 +145,7 @@ class TestReviewLoopStage:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.FAILED,
-            payload={"test_pass_rate": 0.0, "exit_code": 1},
+            payload={"head_sha": "stage3-head", "test_pass_rate": 0.0, "exit_code": 1},
         )
         res = run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=3, dry_run=True)
         assert res["consensus"]["approved"] is False
@@ -165,7 +165,7 @@ class TestReviewLoopStage:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
-            payload={"test_pass_rate": 1.0, "exit_code": 0},
+            payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
         )
 
         with (
@@ -219,7 +219,7 @@ class TestReviewLoopStage:
             captured = capsys.readouterr().out
             assert "Holon Review Loop Summary" in captured
             assert "[REVIEW APPROVED]" in captured
-            assert "holon review approve" in captured
+            assert "To merge manually" not in captured
 
         # Test rejected exit code
         with patch("sandbox_executor.flow.review.cli.run_review_loop") as mock_loop:

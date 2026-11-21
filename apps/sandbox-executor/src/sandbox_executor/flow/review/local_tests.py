@@ -7,9 +7,10 @@ pushes a fix.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from sandbox_executor.entrypoint.test_measurement import TestMeasurement, run_test_task
@@ -19,6 +20,7 @@ from sandbox_executor.flow.review.head_test_evidence import (
     TEST_SOURCE_CI_HEAD,
     TEST_SOURCE_RESOLVER_EVIDENCE,
     TEST_SOURCE_STAGE_3,
+    HeadEvidenceDecisionInput,
     _attribute_test_source,
     _failed,
     _LocalTestOutcome,
@@ -53,9 +55,11 @@ class _ReviewLocalTests:
         return self._cache[head]
 
 
-def _default_pr_head(repo_dir: str, target: str) -> str | None:
+def _default_pr_head(repo_dir: str, target: str, proxy_env: Mapping[str, str] | None = None) -> str | None:
+    """The PR head commit for ``target`` via ``gh``, or None when it cannot be read."""
     if not target or not shutil.which("gh"):
         return None
+    env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
     try:
         proc = subprocess.run(
             ["gh", "pr", "view", target, "--json", "headRefOid"],
@@ -64,11 +68,12 @@ def _default_pr_head(repo_dir: str, target: str) -> str | None:
             text=True,
             check=False,
             timeout=10,
+            env=env,
         )
         if proc.returncode == 0 and proc.stdout:
             data = json.loads(proc.stdout.strip())
             return str(data.get("headRefOid") or "") or None
-    except Exception:
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, AttributeError):
         return None
     return None
 
@@ -81,37 +86,34 @@ class _ReviewTestGate:
         context: FlowContext,
         repo_dir: str,
         pr_head: Callable[[str], str | None] | None = None,
+        target: str = "",
+        proxy_env: Mapping[str, str] | None = None,
     ) -> None:
         exec_result = context.stage_results.get("execute")
         self._context = context
         self._repo_dir = repo_dir
         self.pr_head = pr_head
-        self._target = context.execution_branch or context.intent_branch or ""
+        self._target = target or context.execution_branch or context.intent_branch or ""
+        self._proxy_env = dict(proxy_env or {})
         self._stage_3 = (exec_result.payload if exec_result else None) or {}
         rate, exit_code = _test_evidence(exec_result)
         self.stage_3_evidence = (rate, exit_code != 0 or (rate is not None and rate < 1.0))
-        exec_payload = self._stage_3
-        head_key = (
-            exec_payload.get("head_sha")
-            or exec_payload.get("commit_sha")
-            or exec_payload.get("head")
-            or exec_payload.get("commit")
-            or exec_payload.get("head_oid")
-        )
-        if head_key:
-            self.stage_3_head = str(head_key).strip()
-        else:
-            res = run_git(["rev-parse", "HEAD"], cwd=repo_dir, check=False)
-            self.stage_3_head = res.stdout.strip() if res.returncode == 0 else ""
+        # The commit Stage 3 tested; without one its evidence applies to no head and the gate measures locally.
+        self.stage_3_head = str(self._stage_3.get("head_sha") or "").strip()
 
-        self._tester = _ReviewLocalTests(repo_dir, head_sha=self.stage_3_head)
+        self._tester = _ReviewLocalTests(repo_dir)
         self._resolver_heads: set[str] = set()
         self._logged_evidence: set[tuple[str, str]] = set()
+        self._pr_heads: dict[str, str | None] = {}
 
-    def _get_pr_head(self) -> str | None:
-        if self.pr_head is not None:
-            return self.pr_head(self._target)
-        return _default_pr_head(self._repo_dir, self._target)
+    def _get_pr_head(self, local_head: str) -> str | None:
+        """The PR head commit, looked up once per local head (it only moves when the loop pushes)."""
+        if local_head not in self._pr_heads:
+            if self.pr_head is not None:
+                self._pr_heads[local_head] = self.pr_head(self._target)
+            else:
+                self._pr_heads[local_head] = _default_pr_head(self._repo_dir, self._target, self._proxy_env)
+        return self._pr_heads[local_head]
 
     def accept_resolver_evidence(self, head_sha: str, dispositions: Sequence[Any]) -> None:
         """Confirm a rejected FIND-CI with passing test evidence on this head via local re-measurement."""
@@ -134,6 +136,9 @@ class _ReviewTestGate:
                 break
         if not matches:
             return
+        if self._tester._head() != head_sha:
+            # The resolver pushed: the checkout is no longer the head its evidence describes.
+            return
         outcome = self._tester.measure()
         if not outcome.failed and outcome.rate is not None and not outcome.measurement.run_error:
             self._resolver_heads.add(head_sha)
@@ -144,15 +149,16 @@ class _ReviewTestGate:
             _attribute_test_source(ci_status, self._stage_3, None)
             return self.stage_3_evidence
 
-        current_head = self._tester._head() or self.stage_3_head
-        pr_head_sha = self._get_pr_head()
+        current_head = self._tester._head()
         source = choose_evidence(
-            ci_status,
-            self.stage_3_evidence,
-            self.stage_3_head,
-            current_head,
-            pr_head_sha,
-            frozenset(self._resolver_heads),
+            HeadEvidenceDecisionInput(
+                ci_status=ci_status,
+                stage_3_evidence=self.stage_3_evidence,
+                stage_3_head=self.stage_3_head,
+                current_head=current_head,
+                pr_head_sha=self._get_pr_head(current_head),
+                resolver_heads=frozenset(self._resolver_heads),
+            )
         )
 
         outcome: _LocalTestOutcome | None = None

@@ -60,7 +60,14 @@ def test_unrunnable_local_task_stays_not_measured_with_its_error(tmp_path, monke
 
 
 def test_a_stage_3_rate_skips_the_local_run_and_is_attributed(tmp_path, monkeypatch):
-    payload = {"exit_code": 0, "test_pass_rate": 1.0, "tests_passed": 4, "tests_failed": 0, "tests_errored": 0}
+    payload = {
+        "head_sha": "stage3-head",
+        "exit_code": 0,
+        "test_pass_rate": 1.0,
+        "tests_passed": 4,
+        "tests_failed": 0,
+        "tests_errored": 0,
+    }
     res, calls = _run_without_ci(tmp_path, monkeypatch, _measurement(0.0, 1), payload)
 
     calls.assert_not_called()
@@ -205,3 +212,37 @@ def test_resolver_evidence_accepted_and_cleared_on_head_change(tmp_path, monkeyp
         assert rate2 == 0.5
         assert failed2 is True
         assert probe2["test_source"] == "review_local"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("3 passed", True), ("0 failed", True), ("10 failed", False), ("20 failed, 1 error", False)],
+)
+def test_pass_marker_reads_only_a_zero_failure_count(text, expected):
+    assert local_tests.has_pass_marker(text) is expected
+
+
+def test_resolver_evidence_is_skipped_when_the_checkout_moved(tmp_path, monkeypatch):
+    run = MagicMock(return_value=_measurement(1.0, 0))
+    monkeypatch.setattr(local_tests, "run_measurement", run)
+    ctx = HARNESS._ctx(tmp_path, {"test_pass_rate": 0.5, "tests_failed": 1, "head_sha": "stage3sha"})
+    with patch("sandbox_executor.flow.review.local_tests.run_git") as mock_git:
+        mock_git.return_value = MagicMock(returncode=0, stdout="pushedhead\n")
+        gate = local_tests._ReviewTestGate(ctx, str(tmp_path))
+        disp = [{"id": "FIND-CI-001", "disposition": "rejected", "evidence": "tests/test_app.py::test_ok passed"}]
+        gate.accept_resolver_evidence("prepushhead", disp)
+
+    run.assert_not_called()
+    assert gate._resolver_heads == set()
+
+
+def test_missing_stage_3_head_measures_locally(tmp_path, monkeypatch):
+    run = MagicMock(return_value=_measurement(1.0, 0))
+    monkeypatch.setattr(local_tests, "run_measurement", run)
+    ctx = HARNESS._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": 1.0})
+    gate = local_tests._ReviewTestGate(ctx, str(tmp_path))
+    probe = {"source": "local_tests"}
+    gate.evidence(probe)
+
+    run.assert_called_once()
+    assert probe["test_source"] == "review_local"

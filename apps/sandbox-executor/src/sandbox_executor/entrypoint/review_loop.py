@@ -912,8 +912,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 "[REVIEW APPROVED] Review Loop reached consensus approval; "
                 "the PR is ready for the maintainer to merge (the flow never merges to main)."
             )
-            cmd = loop_res.get("human_approval_command", f"holon review approve {args.target}")
-            print(f"To merge manually, run: {cmd}\n")
+            print()
 
     sys.exit(0 if approved else 1)
 

@@ -44,7 +44,9 @@ class TestStage4LedgerProvenance:
         )
         # The local-tests fallback only passes on a recorded Stage 3 test result.
         ctx.stage_results["execute"] = StageResult(
-            stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 1.0, "exit_code": 0}
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
         )
         mergeability = iter([{"is_dirty": True}, {"is_dirty": False}])
         if posting_side_effect:
@@ -201,7 +203,9 @@ class TestStage4LedgerProvenance:
         caplog.set_level("WARNING")
         ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1/P-2/E-3/_", dry_run=False)
         ctx.stage_results["execute"] = StageResult(
-            stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 1.0, "exit_code": 0}
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
         )
         ledger_path = str(tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl")
         with (

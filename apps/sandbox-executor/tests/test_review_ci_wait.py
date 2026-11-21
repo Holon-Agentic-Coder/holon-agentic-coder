@@ -75,7 +75,9 @@ def _context(tmp_path: Path, payload: dict | None = None) -> FlowContext:
         repo_dir=str(tmp_path), execution_branch=EXEC_TARGET, agent="fake-agent", model="fake-model", token_reduce=False
     )
     ctx.stage_results["execute"] = StageResult(
-        stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload=payload or {"test_pass_rate": 1.0, "exit_code": 0}
+        stage=FlowStage.EXECUTE,
+        status=StageStatus.SUCCESS,
+        payload=payload or {"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
     )
     return ctx
 
@@ -267,7 +269,7 @@ def test_pending_checks_with_failed_local_tests_still_record_the_ci_finding(tmp_
         monkeypatch,
         [PENDING],
         FakeTime(),
-        payload={"test_pass_rate": 0.5, "exit_code": 1},
+        payload={"head_sha": "stage3-head", "test_pass_rate": 0.5, "exit_code": 1},
         ci_wait_budget=30.0,
     )
 
@@ -306,7 +308,7 @@ def test_stale_wait_record_is_cleared_when_a_later_probe_has_settled(tmp_path, m
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
     ):
         res = run_review_loop(
-            _context(tmp_path, {"test_pass_rate": 0.5, "exit_code": 1}),
+            _context(tmp_path, {"head_sha": "stage3-head", "test_pass_rate": 0.5, "exit_code": 1}),
             target=EXEC_TARGET,
             max_iterations=2,
             ensemble_size=1,
@@ -339,7 +341,7 @@ def test_stale_wait_record_is_cleared_when_a_later_iteration_takes_the_objected_
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
     ):
         res = run_review_loop(
-            _context(tmp_path, {"test_pass_rate": 0.5, "exit_code": 1}),
+            _context(tmp_path, {"head_sha": "stage3-head", "test_pass_rate": 0.5, "exit_code": 1}),
             target=EXEC_TARGET,
             max_iterations=2,
             ensemble_size=1,
@@ -379,7 +381,7 @@ def test_spent_wait_is_cleared_when_the_resolver_pushes_a_new_head(tmp_path, mon
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
     ):
         run_review_loop(
-            _context(tmp_path, {"test_pass_rate": 0.5, "exit_code": 1}),
+            _context(tmp_path, {"head_sha": "stage3-head", "test_pass_rate": 0.5, "exit_code": 1}),
             target=EXEC_TARGET,
             max_iterations=2,
             ensemble_size=1,

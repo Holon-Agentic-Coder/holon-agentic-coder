@@ -203,7 +203,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             context.log(f"Warning: Failed to configure token reduction proxy in review loop: {exc}.")
             proxy_env = {}
 
-    test_gate = _ReviewTestGate(context, repo_dir)
+    test_gate = _ReviewTestGate(context, repo_dir, target=review_target, proxy_env=proxy_env)
     test_pass_rate, tests_failed = test_gate.stage_3_evidence
     iteration = first_label - 1
     consensus_reached = False

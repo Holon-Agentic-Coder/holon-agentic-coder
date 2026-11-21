@@ -116,7 +116,7 @@ class TestFlowStages:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
-            payload={"test_pass_rate": 1.0, "exit_code": 0},
+            payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
         )
 
         # The empty-diff guard allows the PR: only an allowed diff can reach consensus.
@@ -186,7 +186,7 @@ class TestFlowStages:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.FAILED,
-            payload={"test_pass_rate": 0.0, "exit_code": 1},
+            payload={"head_sha": "stage3-head", "test_pass_rate": 0.0, "exit_code": 1},
         )
         res = run_review_stage(ctx)
         assert res.status == StageStatus.FAILED
@@ -852,7 +852,9 @@ class TestStageBudgets:
     def test_review_iteration_ceiling_stops_the_loop(self, tmp_path):
         ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-y/E-3-z/_", dry_run=True)
         ctx.stage_results["execute"] = StageResult(
-            stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 0.0, "exit_code": 1}
+            stage=FlowStage.EXECUTE,
+            status=StageStatus.SUCCESS,
+            payload={"head_sha": "stage3-head", "test_pass_rate": 0.0, "exit_code": 1},
         )
         with patch_lookup_sites(
             "sandbox_executor.flow.git_refs.run_git", "sandbox_executor.flow.github.pr.run_git"

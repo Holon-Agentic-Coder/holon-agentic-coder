@@ -345,11 +345,8 @@ def _report_review_outcome(review_res: StageResult | None) -> None:
     if is_approved:
         print(
             "[REVIEW APPROVED] Review Loop reached consensus approval; "
-            "the PR is ready for the maintainer to merge (the flow never merges to main)."
+            "the PR is ready for the maintainer to merge (the flow never merges to main).\n"
         )
-        cmd = review_res.payload.get("human_approval_command")
-        if cmd:
-            print(f"To merge manually, run: {cmd}\n")
     elif review_res.status == StageStatus.HALTED_FOR_HUMAN or review_res.payload.get("halted_for_human"):
         print("[SAFETY HALT] Pipeline safely halted for human review (autonomous merge prohibited).")
         cmd = review_res.payload.get("human_approval_command")

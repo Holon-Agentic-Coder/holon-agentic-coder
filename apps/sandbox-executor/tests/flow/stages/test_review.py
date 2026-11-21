@@ -52,14 +52,14 @@ class TestStage4TestEvidence:
         assert res["ci_checks"]["measured"] is False
 
     def test_recorded_passing_result_approves(self, tmp_path):
-        res = self._loop(self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": 1.0}))
+        res = self._loop(self._ctx(tmp_path, {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 1.0}))
 
         assert res["consensus"]["approved"] is True
         assert res["ci_checks"]["all_passed"] is True
         assert "measured" not in res["ci_checks"]
 
     def test_recorded_failing_result_fails_local_tests(self, tmp_path):
-        res = self._loop(self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": 0.5}))
+        res = self._loop(self._ctx(tmp_path, {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 0.5}))
 
         assert res["consensus"]["approved"] is False
         assert res["ci_checks"]["checks"] == [{"name": "local_tests", "bucket": "fail", "state": "FAILURE"}]
@@ -79,11 +79,11 @@ class TestStage4TestEvidence:
             ),
             ({"exit_code": 0}, {"exit_code": 0, "pass_rate": None, "measured": False, "passed": None}),
             (
-                {"exit_code": 0, "test_pass_rate": 1.0},
+                {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 1.0},
                 {"exit_code": 0, "pass_rate": 1.0, "measured": True, "passed": True},
             ),
             (
-                {"exit_code": 0, "test_pass_rate": 0.5},
+                {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 0.5},
                 {"exit_code": 0, "pass_rate": 0.5, "measured": True, "passed": False},
             ),
             ({"exit_code": 2}, {"exit_code": 2, "pass_rate": None, "measured": False, "passed": False}),
@@ -104,7 +104,7 @@ class TestStage4TestEvidence:
         assert {results[key] for key in ("source", "run_error")} == {None}
 
     def test_review_stage_approval_wording_and_status(self, tmp_path):
-        ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": 1.0})
+        ctx = self._ctx(tmp_path, {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 1.0})
         loop_res = {
             "consensus": {"approved": True, "status": "approved"},
             "mergeability": {"is_dirty": False},
@@ -127,7 +127,7 @@ class TestStage4TestEvidence:
         assert not any("SAFETY HALT" in log for log in ctx.logs)
 
     def test_review_stage_dry_run_wording_and_status(self, tmp_path):
-        ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": 1.0}, dry_run=True)
+        ctx = self._ctx(tmp_path, {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 1.0}, dry_run=True)
         loop_res = {
             "consensus": {"approved": False, "status": "not_measured"},
             "mergeability": {"is_dirty": False},

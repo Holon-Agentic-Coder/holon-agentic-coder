@@ -501,6 +501,47 @@ class TestExecutor(unittest.TestCase):
             argv = [c.args[0] for c in mock_run_cmd.call_args_list if c.args]
         return [r for r in rows if r.get("entry_type") == "summary"], argv
 
+    def _run_main_and_capture_stderr(self, diff_stdout: str, agent_stdout: str = "OK", tip_stdout: str = "tip-sha\n"):
+        """Run executor.main() with custom agent stdout and capture stderr."""
+        mock_runner = MagicMock()
+        mock_runner.get_version.return_value = "1.0.0"
+        mock_runner.build_cmd.return_value = ["agy", "--model", "gemini-3.5-flash", "prompt"]
+
+        def side_effect(args, cwd=None, **kwargs):
+            if _cuts_branch(args):
+                ledger_dir = os.path.join(cwd, "holon-knowledge/ledger")
+                os.makedirs(ledger_dir, exist_ok=True)
+                with open(os.path.join(ledger_dir, "plans.jsonl"), "w") as f:
+                    f.write(json.dumps({"plan_id": "P-123", "intent_branch": "I-456/_", "entropy": 2.0}) + "\n")
+            if args[:3] == ["git", "rev-parse", "HEAD"]:
+                return MagicMock(returncode=0 if tip_stdout else 1, stdout=tip_stdout, stderr="")
+            if "diff" in args and "--name-only" in args:
+                return MagicMock(returncode=0, stdout=diff_stdout, stderr="")
+            if "ls-files" in args and "--others" in args:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if args == ["agy", "--model", "gemini-3.5-flash", "prompt"]:
+                return MagicMock(returncode=0, stdout=agent_stdout, stderr="")
+            return MagicMock(returncode=0, stdout="OK", stderr="")
+
+        stderr_io = io.StringIO()
+        with (
+            patch("sandbox_executor.entrypoint.executor.run_cmd", side_effect=side_effect),
+            patch("sandbox_executor.entrypoint.executor.get_runner", return_value=mock_runner),
+            patch(
+                "sandbox_executor.entrypoint.executor.validate_mounted_workspace",
+                new=lambda *_args: tip_stdout.strip(),
+            ),
+            patch("sys.stderr", stderr_io),
+            tempfile.TemporaryDirectory(prefix="sandbox_executor_test_") as tmp_dir,
+            patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": tmp_dir}),
+            patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
+        ):
+            executor.main()
+            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as ef:
+                rows = [json.loads(line) for line in ef if line.strip()]
+        summaries = [r for r in rows if r.get("entry_type") == "summary"]
+        return summaries, stderr_io.getvalue()
+
     def test_main_empty_diff_records_failed_and_skips_code_commit(self):
         """An agent run that only touches ledgers and plans is recorded as failed, never success."""
         summaries, argv = self._run_main_with_agent_diff(
@@ -545,6 +586,81 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(summaries[0]["failure_reason"], "diff_unverified")
         # Without a plan tip there is no diff base, so nothing is salvaged and nothing is staged wholesale.
         self.assertFalse(any(cmd[:3] == ["git", "add", "-A"] for cmd in argv))
+
+    def test_main_empty_diff_stderr_excerpt_non_empty_output(self):
+        """When empty_diff occurs and agent output is non-empty, a bounded redacted excerpt is printed to stderr."""
+        agent_out = "Starting task\nWaiting for background task...\nTimeout reached without diff."
+        summaries, stderr = self._run_main_and_capture_stderr("plans/P-123.md\0", agent_stdout=agent_out)
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0]["status"], "failed")
+        self.assertEqual(summaries[0]["failure_reason"], "empty_diff")
+        self.assertIn("agent_output_bytes", summaries[0])
+        self.assertNotIn("agent_output_text", summaries[0])
+        for val in summaries[0].values():
+            self.assertNotIn("Timeout reached without diff", str(val))
+        self.assertIn("Error: ", stderr)
+        self.assertIn("Agent output tail (last ", stderr)
+        self.assertIn("Timeout reached without diff.", stderr)
+
+    def test_main_empty_diff_stderr_excerpt_empty_output(self):
+        """When empty_diff occurs and agent output is empty, no excerpt header or tail is printed to stderr."""
+        summaries, stderr = self._run_main_and_capture_stderr("plans/P-123.md\0", agent_stdout="")
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0]["status"], "failed")
+        self.assertEqual(summaries[0]["failure_reason"], "empty_diff")
+        self.assertIn("Error: ", stderr)
+        self.assertNotIn("Agent output tail", stderr)
+
+    def test_main_diff_unverified_no_stderr_excerpt(self):
+        """When failure is diff_unverified, no excerpt is printed to stderr."""
+        summaries, stderr = self._run_main_and_capture_stderr(
+            "src/app.py\0", tip_stdout="", agent_stdout="Some agent output\n"
+        )
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0]["status"], "failed")
+        self.assertEqual(summaries[0]["failure_reason"], "diff_unverified")
+        self.assertIn("Error: ", stderr)
+        self.assertNotIn("Agent output tail", stderr)
+
+    def test_main_success_no_stderr_excerpt(self):
+        """On successful execution, no error or agent output excerpt is printed to stderr."""
+        summaries, stderr = self._run_main_and_capture_stderr(
+            "src/app.py\0", agent_stdout="Agent completed task successfully\n"
+        )
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0]["status"], "success")
+        self.assertNotIn("failure_reason", summaries[0])
+        self.assertNotIn("Error: ", stderr)
+        self.assertNotIn("Agent output tail", stderr)
+        self.assertIn("agent_output_bytes", summaries[0])
+
+    def test_format_empty_diff_excerpt_empty_and_whitespace(self):
+        """Empty and whitespace-only strings return None."""
+        from sandbox_executor.entrypoint.executor import format_empty_diff_excerpt
+
+        self.assertIsNone(format_empty_diff_excerpt("", 0))
+        self.assertIsNone(format_empty_diff_excerpt("   \n\t  \n", 12))
+
+    def test_format_empty_diff_excerpt_bounds_to_500_chars_and_redacts(self):
+        """Long output returns at most 500 characters, retains the tail, and redacts secrets."""
+        from sandbox_executor.entrypoint.executor import EMPTY_DIFF_EXCERPT_CHARS, format_empty_diff_excerpt
+
+        self.assertEqual(EMPTY_DIFF_EXCERPT_CHARS, 500)
+        token = _fake_token("ghp_")
+        head = "HEAD_" * 100
+        tail = "TAIL_" * 100 + f" token={token} END"
+        full = head + tail
+        total_bytes = len(full.encode("utf-8"))
+
+        res = format_empty_diff_excerpt(full, total_bytes)
+        self.assertIsNotNone(res)
+        header, body = res.split("\n", 1)
+        self.assertIn(f"of {total_bytes} bytes, redacted):", header)
+        self.assertLessEqual(len(body), 500)
+        self.assertIn("END", body)
+        self.assertNotIn("HEAD_", body)
+        self.assertNotIn(token, body)
+        self.assertNotIn(token, res)
 
     @patch("sandbox_executor.entrypoint.executor.converge_prettier")
     @patch("sandbox_executor.entrypoint.executor.run_cmd")

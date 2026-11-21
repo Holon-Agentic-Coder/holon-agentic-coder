@@ -534,7 +534,7 @@ def _resolver_turn(
         def build_command(self, prompt: str, model: str) -> list[str]:
             return ["fake-agent", prompt]
 
-    def fake_run_turn(cmd: list[str], cwd: str | None = None) -> TurnResult:
+    def fake_run_turn(cmd: list[str], cwd: str | None = None, **kwargs: object) -> TurnResult:
         if file_payload is not None:
             dispositions_path.write_text(json.dumps(file_payload), encoding="utf-8")
         return TurnResult(returncode=returncode, stdout=stdout, breach=breach)

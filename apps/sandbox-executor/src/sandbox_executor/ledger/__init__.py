@@ -22,6 +22,8 @@ from sandbox_executor.ledger.lock import (
     suppress_ledger_failures,
 )
 from sandbox_executor.ledger.query import (
+    _describe_id_owner,
+    _extract_parent_ref,
     format_query_results_table,
     query_ledger,
     validate_ledger_file_unique_ids,
@@ -102,7 +104,9 @@ __all__ = [
     "PrefixSide",
     "SummaryRecord",
     "_append_only_union",
+    "_describe_id_owner",
     "_disambiguator_counter",
+    "_extract_parent_ref",
     "_first_divergence",
     "_has_conflict_marker_lines",
     "_ledgers_with_conflict_markers",

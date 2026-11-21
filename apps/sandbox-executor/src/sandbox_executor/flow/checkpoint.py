@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL
-from sandbox_executor.flow.checkpoint_discovery import _checkpoint_names, get_default_checkpoint_path
+from sandbox_executor.flow.checkpoint_discovery import _checkpoint_names
 from sandbox_executor.flow.checkpoint_store import CheckpointStore, FileCheckpointStore
 from sandbox_executor.flow.constants import CURRENT_CONTEXT_SCHEMA_VERSION
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageStatus

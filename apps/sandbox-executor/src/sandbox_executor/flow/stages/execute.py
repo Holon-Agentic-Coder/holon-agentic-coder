@@ -28,6 +28,7 @@ from sandbox_executor.flow.git_refs import (
     _track_local_branch,
 )
 from sandbox_executor.flow.host_remote import fetch_base, publish_new_child_branches, remote_error
+from sandbox_executor.flow.partial_head import FAILED_EXECUTION_STATUSES, failed_partial_head
 from sandbox_executor.flow.partial_salvage import salvage_for_resume
 from sandbox_executor.flow.plan_refresh import plan_refresh_stage_failure, refresh_payload
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
@@ -43,9 +44,6 @@ from sandbox_executor.naming import MissingTickerError, model_code, ticker_for
 from sandbox_executor.redaction import redact_agent_secrets
 
 logger = logging.getLogger(__name__)
-
-
-from sandbox_executor.flow.partial_head import FAILED_EXECUTION_STATUSES, failed_partial_head
 
 
 def _resumable_partial_branch(repo_dir: str, branches: set[str]) -> str | None:

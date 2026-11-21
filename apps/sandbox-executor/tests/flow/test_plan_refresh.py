@@ -28,7 +28,8 @@ from sandbox_executor.flow import (
 )
 from sandbox_executor.flow.admission import check_admission
 from sandbox_executor.flow.admission_decision import AdmissionDecision
-from sandbox_executor.flow.checkpoint import get_default_checkpoint_path, load_checkpoint
+from sandbox_executor.flow.checkpoint import load_checkpoint
+from sandbox_executor.flow.checkpoint_discovery import get_default_checkpoint_path
 from sandbox_executor.ledger import build_execution_id
 from sandbox_executor.plan_paths import REFRESH_MERGE_PREFIX
 

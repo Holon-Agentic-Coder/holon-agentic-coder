@@ -8,27 +8,9 @@ from pathlib import Path
 import pytest
 import sandbox_executor.ledger as ledger
 from sandbox_executor.ledger import (
-    ActionRecord,
-    ConflictResolutionError,
-    LedgerLock,
     LedgerReconciler,
-    LedgerRewriteError,
-    SummaryRecord,
-    append_action_record,
-    append_summary_record,
-    format_commit_trailers,
-    format_query_results_table,
-    parse_commit_trailers,
-    query_ledger,
-    reconcile_jsonl_ledger_conflict,
     reconcile_ledger_file,
-    resolve_append_only_conflict,
-    try_append_action_record,
-    try_append_ledger_line,
-    validate_ledger_file_unique_ids,
-    validate_ledger_unique_ids,
 )
-from sandbox_executor.ledger.reconcile import reconcile_ledger_rows
 
 
 def test_package_reexports_all_core_symbols() -> None:
@@ -39,6 +21,8 @@ def test_package_reexports_all_core_symbols() -> None:
         "LedgerRewriteError",
         "ConflictResolutionError",
         "LedgerReconciler",
+        "_describe_id_owner",
+        "_extract_parent_ref",
         "append_action_record",
         "append_summary_record",
         "query_ledger",
@@ -95,12 +79,7 @@ def test_ledger_reconciler_invalid_prefix_side() -> None:
 def test_reconcile_ledger_file_preserves_content_and_atomicity(tmp_path: Path) -> None:
     ledger_file = tmp_path / "test.jsonl"
     conflict_content = (
-        '{"id": "base"}\n'
-        "<<<<<<< HEAD\n"
-        '{"id": "ours_new"}\n'
-        "=======\n"
-        '{"id": "theirs_new"}\n'
-        ">>>>>>> upstream/main\n"
+        '{"id": "base"}\n<<<<<<< HEAD\n{"id": "ours_new"}\n=======\n{"id": "theirs_new"}\n>>>>>>> upstream/main\n'
     )
     ledger_file.write_text(conflict_content, encoding="utf-8")
 
@@ -118,3 +97,21 @@ def test_reconcile_ledger_file_preserves_content_and_atomicity(tmp_path: Path) -
 
 def test_reconcile_nonexistent_file() -> None:
     assert reconcile_ledger_file("/path/to/nonexistent/file.jsonl") is False
+
+
+def test_entrypoints_do_not_import_flow_pipeline_stages_or_cli() -> None:
+    """AST test enforcing container entrypoints do not import flow.pipeline, flow.stages, or cli."""
+    import ast
+
+    entrypoint_dir = Path(__file__).resolve().parent.parent / "src" / "sandbox_executor" / "entrypoint"
+    forbidden = ("sandbox_executor.flow.pipeline", "sandbox_executor.flow.stages", "sandbox_executor.cli")
+
+    for py_file in entrypoint_dir.glob("*.py"):
+        tree = ast.parse(py_file.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert not alias.name.startswith(forbidden), f"{py_file.name} imports forbidden {alias.name}"
+            elif isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                assert not mod.startswith(forbidden), f"{py_file.name} imports from forbidden {mod}"

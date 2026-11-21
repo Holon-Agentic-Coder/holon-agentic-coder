@@ -45,12 +45,12 @@ from sandbox_executor.flow.checkpoint import (
     FlowCheckpoint,
     MigrationTransform,
     _migrate_v0_to_v1,
-    get_default_checkpoint_path,
     load_checkpoint,
     migrate_checkpoint_data,
     save_admission,
     save_checkpoint,
 )
+from sandbox_executor.flow.checkpoint_discovery import get_default_checkpoint_path
 from sandbox_executor.flow.checkpoint_store import CheckpointStore, FileCheckpointStore
 from sandbox_executor.flow.child_progress import _child_intent_branch, _sub_intent_depth
 from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS, CURRENT_CONTEXT_SCHEMA_VERSION
@@ -168,6 +168,7 @@ from sandbox_executor.flow.ledger_reconcile import (
     reconcile_ledger_file,
     resolve_append_only_conflict,
 )
+from sandbox_executor.flow.partial_head import FAILED_EXECUTION_STATUSES, failed_partial_head
 from sandbox_executor.flow.partial_salvage import (
     SalvageError,
     SalvageResult,
@@ -256,7 +257,6 @@ from sandbox_executor.flow.stages.decomposition import (
     _sub_intent_depth_error,
     format_decomposition_summary,
 )
-from sandbox_executor.flow.partial_head import FAILED_EXECUTION_STATUSES, failed_partial_head
 from sandbox_executor.flow.stages.execute import (
     _resumable_partial_branch,
     _warn_ledger_failure,

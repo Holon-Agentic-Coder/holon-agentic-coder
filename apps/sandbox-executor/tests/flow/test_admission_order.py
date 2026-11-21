@@ -11,11 +11,11 @@ from sandbox_executor.flow.admission import check_admission
 from sandbox_executor.flow.admission_order import blocker_is_clear, older_ready_waiter
 from sandbox_executor.flow.admission_state import AdmissionRecord, BlockedBy
 from sandbox_executor.flow.checkpoint import (
-    get_default_checkpoint_path,
     load_checkpoint,
     save_admission,
     save_checkpoint,
 )
+from sandbox_executor.flow.checkpoint_discovery import get_default_checkpoint_path
 from sandbox_executor.flow.in_flight import BlockedWaiter, InFlightFlow
 from sandbox_executor.touch_set import TouchSet, TouchSetEntry
 

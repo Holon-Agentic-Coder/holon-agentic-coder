@@ -270,7 +270,6 @@ def test_host_push_names_a_ref_too_long_rejection(monkeypatch):
 
 _ALLOWED_SUFFIX_BUILDERS = {
     "calibration.py",
-    "entrypoint/executor.py",
     "entrypoint/intent_creator.py",
     "entrypoint/planner.py",
     "flow/child_progress.py",

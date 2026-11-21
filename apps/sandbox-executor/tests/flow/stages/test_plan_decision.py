@@ -305,3 +305,68 @@ class TestStage3ExecutesThePlanRowsDecision:
             assert len(rows) == 2
             assert rows[1]["decision_recorded_by"] == "flow"
             assert {k: rows[1][k] for k in rows[0]} == rows[0]
+
+
+class TestPlanBudget:
+    """PlanBudget owns locating the plan row, reading its decision and the one-time back-fill."""
+
+    SITE = "sandbox_executor.flow.stages.plan_decision"
+    PLAN_BRANCH = "I-1-parent/P-2-agent-model/_"
+
+    def _context(self) -> FlowContext:
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent", "entropy_budget": 5.0})
+        ctx.plan_branch = self.PLAN_BRANCH
+        return ctx
+
+    def _row(self, **fields: Any) -> dict[str, Any]:
+        return {"plan_id": "P-2-agent-model", "intent_branch": "I-1-parent/_", **fields}
+
+    def test_locate_needs_a_plan_branch(self):
+        with patch(f"{self.SITE}._resolve_branch_ref") as resolve:
+            assert plan_decision.PlanBudget.locate(FlowContext(token_reduce=False)) is None
+        resolve.assert_not_called()
+
+    def test_locate_needs_a_resolvable_plan_ref(self):
+        with patch(f"{self.SITE}._resolve_branch_ref", return_value=None):
+            assert plan_decision.PlanBudget.locate(self._context()) is None
+
+    def test_locate_names_the_plan_and_its_ref(self):
+        with patch(f"{self.SITE}._resolve_branch_ref", return_value="refs/remotes/origin/plan"):
+            budget = plan_decision.PlanBudget.locate(self._context())
+        assert budget is not None
+        assert (budget.plan_branch, budget.plan_ref, budget.plan_id) == (
+            self.PLAN_BRANCH,
+            "refs/remotes/origin/plan",
+            "P-2-agent-model",
+        )
+
+    def test_latest_row_is_the_newest_row_of_this_plan(self):
+        budget = plan_decision.PlanBudget(self._context(), self.PLAN_BRANCH, "refs/remotes/origin/plan")
+        rows = [self._row(entropy=1.0), self._row(entropy=2.0), {**self._row(entropy=3.0), "plan_id": "P-9-other"}]
+        with patch(f"{self.SITE}._read_ledger_rows", return_value=rows) as read:
+            assert budget.latest_row() == self._row(entropy=2.0)
+        read.assert_called_once_with(budget.context.target_worktree, "refs/remotes/origin/plan", "plans.jsonl")
+        with patch(f"{self.SITE}._read_ledger_rows", return_value=[]):
+            assert budget.latest_row() is None
+
+    def test_a_recorded_decision_is_returned_without_a_back_fill(self):
+        recorded = should_decompose(self._row(entropy=2.0), "# Plan\n", {"entropy_budget": 5.0})
+        budget = plan_decision.PlanBudget(self._context(), self.PLAN_BRANCH, "refs/remotes/origin/plan")
+        with (
+            patch(f"{self.SITE}._read_ledger_rows", return_value=[self._row(**recorded.to_plan_fields())]),
+            patch(f"{self.SITE}._backfill_plan_row") as backfill,
+        ):
+            assert budget.decision() == recorded
+        backfill.assert_not_called()
+
+    def test_an_undecided_row_is_decided_and_back_filled_once(self):
+        budget = plan_decision.PlanBudget(self._context(), self.PLAN_BRANCH, "refs/remotes/origin/plan")
+        row = self._row(entropy=2.0, plan_file="plans/P-2-agent-model.md")
+        with (
+            patch(f"{self.SITE}._read_ledger_rows", return_value=[row]),
+            patch(f"{self.SITE}._git_show_text", return_value="# Plan\n"),
+            patch(f"{self.SITE}._backfill_plan_row", return_value=None) as backfill,
+        ):
+            decision = budget.decision()
+        assert decision is not None and decision.decision == "execute"
+        backfill.assert_called_once_with(budget.context, row, decision)

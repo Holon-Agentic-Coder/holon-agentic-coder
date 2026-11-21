@@ -7,11 +7,23 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, ActionIndexDatabase
+from sandbox_executor.knowledge.promotion_rules import (
+    ADVISORY_STATES,
+    FAILURE_LADDER_DEFAULT,
+    FAILURE_LADDER_RULES,
+    SUCCESS_LADDER_DEFAULT,
+    SUCCESS_LADDER_RULES,
+    VETO_STATES,
+    LadderEvidence,
+    classify,
+    veto_decay_weight,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +172,146 @@ def format_non_imperative_advisory(
     )
 
 
-def evaluate_action_promotion(  # noqa: C901, PLR0912, PLR0915
+def _empty_evaluation(signature_hash: str) -> PromotionEvaluation:
+    """Return the evaluation of a signature with no recorded trials."""
+    return PromotionEvaluation(
+        signature_hash=signature_hash,
+        context_fingerprint="",
+        success_count=0,
+        failure_count=0,
+        total_trials=0,
+        failure_ladder_state="none",
+        success_ladder_state="none",
+        posterior_mean=0.5,
+        wilson_lower=0.0,
+        wilson_upper=1.0,
+        has_active_veto=False,
+        is_shadow_veto=True,
+        veto_decay_weight=1.0,
+        advisory_text=None,
+    )
+
+
+def _fetch_signature(cur: sqlite3.Cursor, signature_hash: str) -> sqlite3.Row | None:
+    cur.execute(
+        """
+        SELECT signature_hash, context_fingerprint, action_origin,
+               success_count, failure_count, last_seen_ts
+        FROM action_signatures
+        WHERE signature_hash = ?;
+        """,
+        (signature_hash,),
+    )
+    return cur.fetchone()
+
+
+def _fetch_active_veto(cur: sqlite3.Cursor, context_fp: str) -> sqlite3.Row | None:
+    cur.execute(
+        """
+        SELECT context_fingerprint, reproduction_count, state, decay_weight, is_shadow, updated_at
+        FROM active_vetoes
+        WHERE context_fingerprint = ?;
+        """,
+        (context_fp,),
+    )
+    return cur.fetchone()
+
+
+@dataclass(frozen=True)
+class _VetoSubject:
+    """The signature a veto decision is about: its identity, evidence, failure ladder state and enforcement mode."""
+
+    signature_hash: str
+    context_fp: str
+    evidence: LadderEvidence
+    failure_ladder: str
+    enforce_veto: bool
+
+
+def _lift_veto(conn: sqlite3.Connection, context_fp: str) -> None:
+    """Mark the veto on ``context_fp`` lifted: contrary success evidence was recorded."""
+    with conn:
+        conn.execute(
+            """
+            UPDATE active_vetoes
+            SET state = 'lifted', updated_at = ?
+            WHERE context_fingerprint = ?;
+            """,
+            (datetime.now(UTC).isoformat(), context_fp),
+        )
+
+
+def _upsert_veto(conn: sqlite3.Connection, subject: _VetoSubject, decay: float, is_shadow: bool) -> None:
+    """Create or refresh the active veto for the subject's context fingerprint."""
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO active_vetoes (
+                context_fingerprint, signature_hash, reproduction_count,
+                state, decay_weight, is_shadow, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(context_fingerprint) DO UPDATE SET
+                reproduction_count = excluded.reproduction_count,
+                state = excluded.state,
+                decay_weight = excluded.decay_weight,
+                is_shadow = excluded.is_shadow,
+                updated_at = excluded.updated_at;
+            """,
+            (
+                subject.context_fp,
+                subject.signature_hash,
+                subject.evidence.failures,
+                subject.failure_ladder,
+                decay,
+                1 if is_shadow else 0,
+                datetime.now(UTC).isoformat(),
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+
+
+def _apply_veto_policy(
+    conn: sqlite3.Connection, cur: sqlite3.Cursor, subject: _VetoSubject
+) -> tuple[bool, bool, float]:
+    """Lift, raise or skip the subject's veto; return ``(has_active_veto, is_shadow, decay_weight)``.
+
+    Any success lifts an existing veto; otherwise a failure ladder state in ``VETO_STATES`` raises or refreshes one.
+    """
+    is_shadow = not subject.enforce_veto
+    veto_row = _fetch_active_veto(cur, subject.context_fp)
+    if subject.evidence.successes > 0 and veto_row:
+        _lift_veto(conn, subject.context_fp)
+        return False, is_shadow, 1.0
+    if subject.failure_ladder not in VETO_STATES:
+        return False, is_shadow, 1.0
+    decay = veto_decay_weight(veto_row["updated_at"]) if veto_row else 1.0
+    _upsert_veto(conn, subject, decay, is_shadow)
+    return True, is_shadow, decay
+
+
+def _success_advisory(
+    cur: sqlite3.Cursor, context_fp: str, evidence: LadderEvidence, success_ladder: str
+) -> str | None:
+    """Return the non-imperative advisory for a success ladder state in ``ADVISORY_STATES``, else None."""
+    if success_ladder not in ADVISORY_STATES:
+        return None
+    cur.execute(
+        """
+        SELECT action FROM action_records
+        WHERE context_fingerprint = ? AND (verdict = 'success' OR outcome = 'success')
+        LIMIT 1;
+        """,
+        (context_fp,),
+    )
+    sample_act_row = cur.fetchone()
+    sample_act = sample_act_row[0] if sample_act_row else "proven approach"
+    total_trials = evidence.successes + evidence.failures
+    return format_non_imperative_advisory(
+        sample_act, evidence.successes, total_trials, evidence.wilson_lower, success_ladder
+    )
+
+
+def evaluate_action_promotion(
     signature_hash: str,
     index_db: ActionIndexDatabase | None = None,
     enforce_veto: bool = False,
@@ -171,161 +322,31 @@ def evaluate_action_promotion(  # noqa: C901, PLR0912, PLR0915
 
     try:
         cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT signature_hash, context_fingerprint, action_origin,
-                   success_count, failure_count, last_seen_ts
-            FROM action_signatures
-            WHERE signature_hash = ?;
-            """,
-            (signature_hash,),
-        )
-        row = cur.fetchone()
-
+        row = _fetch_signature(cur, signature_hash)
         if not row:
-            return PromotionEvaluation(
-                signature_hash=signature_hash,
-                context_fingerprint="",
-                success_count=0,
-                failure_count=0,
-                total_trials=0,
-                failure_ladder_state="none",
-                success_ladder_state="none",
-                posterior_mean=0.5,
-                wilson_lower=0.0,
-                wilson_upper=1.0,
-                has_active_veto=False,
-                is_shadow_veto=True,
-                veto_decay_weight=1.0,
-                advisory_text=None,
-            )
+            return _empty_evaluation(signature_hash)
 
         context_fp = row["context_fingerprint"]
         successes = row["success_count"]
         failures = row["failure_count"]
-        total_trials = successes + failures
 
         _, _, posterior_mean = compute_beta_posterior(successes, failures)
         wilson_lower, wilson_upper = compute_wilson_score_interval(successes, failures)
+        evidence = LadderEvidence(successes=successes, failures=failures, wilson_lower=wilson_lower)
 
-        # 1. Failure Veto Promotion Ladder
-        if failures == 0:
-            failure_ladder = "none"
-        elif failures == 1 and successes == 0:
-            failure_ladder = "observed"
-        elif failures >= 2 and successes == 0:
-            failure_ladder = "repeated" if failures == 2 else "proven-fail"
-        elif successes > 0 and failures > 0:
-            failure_ladder = "contested"
-        else:
-            failure_ladder = "observed"
+        failure_ladder = classify(FAILURE_LADDER_RULES, evidence, FAILURE_LADDER_DEFAULT)
+        subject = _VetoSubject(signature_hash, context_fp, evidence, failure_ladder, enforce_veto)
+        has_active_veto, is_shadow, veto_decay = _apply_veto_policy(conn, cur, subject)
 
-        # Check existing active veto in table
-        cur.execute(
-            """
-            SELECT context_fingerprint, reproduction_count, state, decay_weight, is_shadow, updated_at
-            FROM active_vetoes
-            WHERE context_fingerprint = ?;
-            """,
-            (context_fp,),
-        )
-        veto_row = cur.fetchone()
-
-        has_active_veto = False
-        is_shadow = not enforce_veto
-        veto_decay = 1.0
-
-        # Automatic lifting: contrary success lifts active veto
-        if successes > 0 and veto_row:
-            with conn:
-                conn.execute(
-                    """
-                    UPDATE active_vetoes
-                    SET state = 'lifted', updated_at = ?
-                    WHERE context_fingerprint = ?;
-                    """,
-                    (datetime.now(UTC).isoformat(), context_fp),
-                )
-            has_active_veto = False
-        elif failure_ladder in ("repeated", "proven-fail"):
-            has_active_veto = True
-            is_shadow = not enforce_veto
-
-            # Compute decay weight over time (exponential decay with 7-day half life)
-            if veto_row and veto_row["updated_at"]:
-                try:
-                    last_up = datetime.fromisoformat(veto_row["updated_at"])
-                    if last_up.tzinfo is None:
-                        last_up = last_up.replace(tzinfo=UTC)
-                    age_hours = (datetime.now(UTC) - last_up).total_seconds() / 3600.0
-                    veto_decay = max(0.01, math.exp(-0.00412 * age_hours))
-                except Exception:
-                    veto_decay = 1.0
-
-            with conn:
-                conn.execute(
-                    """
-                    INSERT INTO active_vetoes (
-                        context_fingerprint, signature_hash, reproduction_count,
-                        state, decay_weight, is_shadow, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(context_fingerprint) DO UPDATE SET
-                        reproduction_count = excluded.reproduction_count,
-                        state = excluded.state,
-                        decay_weight = excluded.decay_weight,
-                        is_shadow = excluded.is_shadow,
-                        updated_at = excluded.updated_at;
-                    """,
-                    (
-                        context_fp,
-                        signature_hash,
-                        failures,
-                        failure_ladder,
-                        veto_decay,
-                        1 if is_shadow else 0,
-                        datetime.now(UTC).isoformat(),
-                        datetime.now(UTC).isoformat(),
-                    ),
-                )
-
-        # 2. Success Evidence Promotion Ladder
-        if successes == 0:
-            success_ladder = "none"
-        elif successes == 1:
-            success_ladder = "observed"
-        elif successes >= 10 and wilson_lower >= 0.85:
-            success_ladder = "proven-success"
-        elif successes >= 5 and wilson_lower >= 0.70:
-            success_ladder = "likely-success"
-        elif successes >= 2:
-            success_ladder = "repeated"
-        else:
-            success_ladder = "observed"
-
-        # Generate non-imperative advisory text if success evidence warrants it
-        advisory_text = None
-        if success_ladder in ("repeated", "likely-success", "proven-success"):
-            # Lookup sample action description
-            cur.execute(
-                """
-                SELECT action FROM action_records
-                WHERE context_fingerprint = ? AND (verdict = 'success' OR outcome = 'success')
-                LIMIT 1;
-                """,
-                (context_fp,),
-            )
-            sample_act_row = cur.fetchone()
-            sample_act = sample_act_row[0] if sample_act_row else "proven approach"
-            advisory_text = format_non_imperative_advisory(
-                sample_act, successes, total_trials, wilson_lower, success_ladder
-            )
+        success_ladder = classify(SUCCESS_LADDER_RULES, evidence, SUCCESS_LADDER_DEFAULT)
+        advisory_text = _success_advisory(cur, context_fp, evidence, success_ladder)
 
         return PromotionEvaluation(
             signature_hash=signature_hash,
             context_fingerprint=context_fp,
             success_count=successes,
             failure_count=failures,
-            total_trials=total_trials,
+            total_trials=successes + failures,
             failure_ladder_state=failure_ladder,
             success_ladder_state=success_ladder,
             posterior_mean=posterior_mean,

@@ -637,3 +637,14 @@ def no_worktrees(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
     if args[:2] != ["worktree", "list"]:
         return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
     return subprocess.CompletedProcess(["git", *args], 0, f"worktree {cwd}\n", "")
+
+
+def seed_base_files(host: Path, paths: list[str]) -> None:
+    """Commit ``paths`` on main and push them, so admission's base listing (``origin/main``) sees them as existing."""
+    _git(host, "checkout", "-q", "main")
+    for rel in paths:
+        (host / rel).parent.mkdir(parents=True, exist_ok=True)
+        (host / rel).write_text(f"# {rel}\n", encoding="utf-8")
+    _git(host, "add", "-A")
+    _git(host, "commit", "-qm", f"seed {len(paths)} base file(s)")
+    _git(host, "push", "-q", "origin", "main")

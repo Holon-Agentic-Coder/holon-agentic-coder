@@ -394,16 +394,20 @@ def test_git_repository_run_failure_raises(plan_repo: Path) -> None:
 
 
 def test_executor_contains_no_raw_git_literals() -> None:
-    """Assert that entrypoint/executor.py contains no raw ['git', ...] literals outside allowed helpers."""
-    executor_path = Path(__file__).resolve().parent.parent / "src" / "sandbox_executor" / "entrypoint" / "executor.py"
-    source = executor_path.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(executor_path))
+    """Assert that every module of the executor package (entrypoint/executor/) has no raw ['git', ...] literals.
+
+    Only the allowed helpers may build one.
+    """
+    executor_dir = Path(__file__).resolve().parent.parent / "src" / "sandbox_executor" / "entrypoint" / "executor"
+    py_files = sorted(executor_dir.glob("*.py"))
+    assert py_files, f"No python files found in the executor package at {executor_dir}"
 
     allowed_functions = {"run_cmd", "_get_local_safe_directories"}
     violations: list[str] = []
 
     class ScopeVisitor(ast.NodeVisitor):
-        def __init__(self) -> None:
+        def __init__(self, file_name: str) -> None:
+            self.file_name = file_name
             self.current_function: str | None = None
 
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -426,8 +430,10 @@ def test_executor_contains_no_raw_git_literals() -> None:
                 and self.current_function not in allowed_functions
             ):
                 func_name = self.current_function or "<module>"
-                violations.append(f"Line {node.lineno} in {func_name}: raw ['git', ...] list literal")
+                violations.append(f"{self.file_name}: Line {node.lineno} in {func_name}: raw ['git', ...] list literal")
             self.generic_visit(node)
 
-    ScopeVisitor().visit(tree)
-    assert not violations, "Raw git command literals found in executor.py:\n" + "\n".join(violations)
+    for py_file in py_files:
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+        ScopeVisitor(py_file.name).visit(tree)
+    assert not violations, "Raw git command literals found in the executor package:\n" + "\n".join(violations)

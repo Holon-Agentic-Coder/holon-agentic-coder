@@ -9,6 +9,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
+from sandbox_executor.budget_limits import UNLIMITED, unlimited_stage_warning
 from sandbox_executor.budgets import (
     MAX_REPLAN_ATTEMPTS,
     MAX_SUB_INTENT_DEPTH,
@@ -74,8 +75,8 @@ class PipelineEngine:
         self._resume_partial_pending = False
         self.worktree_validator: Callable[[str], str | None] | None = None
 
-    def stage_budget_seconds(self, stage: FlowStage, result: StageResult | None = None) -> float:
-        """Ceiling for ``stage``; the review stage gets one review-iteration budget per pass it ran."""
+    def stage_budget_seconds(self, stage: FlowStage, result: StageResult | None = None) -> float | None:
+        """Ceiling for ``stage`` (``None`` when unlimited); the review stage gets one iteration budget per pass."""
         if stage == FlowStage.REVIEW:
             iterations = 1
             if result is not None:
@@ -89,7 +90,8 @@ class PipelineEngine:
                     except (TypeError, ValueError):
                         iterations = 1
             # Same source as run_review_loop's per-iteration timer, so HOLON_STAGE_BUDGET_SECONDS applies to both.
-            return self.budgets.stage_seconds("review_iteration") * iterations
+            per_iteration = self.budgets.stage_seconds("review_iteration")
+            return None if per_iteration is None else per_iteration * iterations
         return self.budgets.stage_seconds(stage.value)
 
     def timed_execute_stage(self, stage: FlowStage) -> StageResult:
@@ -110,6 +112,8 @@ class PipelineEngine:
         remainder would be wrong from the second iteration on (the review loop dispatches no role container).
         """
         timer = StageTimer(stage.value, self.stage_budget_seconds(stage), clock=self.clock)
+        if timer.unlimited:
+            self.context.log(f"WARNING: {unlimited_stage_warning(stage.value)}")
         scope = active_stage_timer(timer) if stage != FlowStage.REVIEW else contextlib.nullcontext(timer)
         try:
             with scope:
@@ -120,6 +124,9 @@ class PipelineEngine:
         budget_seconds = self.stage_budget_seconds(stage, result)
         result.elapsed_seconds = round(elapsed, 3)
         result.budget_seconds = budget_seconds
+        if budget_seconds is None:  # an unlimited stage never overruns; record the budget with the stage
+            result.payload = {**result.payload, "stage_budget": UNLIMITED}
+            return result
         if elapsed > budget_seconds and result.status not in (StageStatus.FAILED, StageStatus.SKIPPED):
             # A decomposed Execute stage spans whole child pipelines, each of whose stages ran under its own budget.
             if stage in self.POST_HOC_BUDGET_EXEMPT or result.payload.get("decomposed"):

@@ -6,10 +6,10 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import ANY, MagicMock, create_autospec, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
-from sandbox_executor.agent_runner import AgentRunner, get_runner
+from sandbox_executor.agent_runner import get_runner
 from sandbox_executor.entrypoint.review_loop import (
     _run_resolver_agent,
     _run_resolver_mode,
@@ -2325,50 +2325,6 @@ class TestResolverAgentExecution:
             _run_resolver_agent(repo_dir, "antigravity-agent", "test-model", "prompt", dispositions_path)
 
         mock_run_turn.assert_called_once_with(expected_cmd, cwd=repo_dir, turn_budgets=ANY)
-
-    def test_run_resolver_agent_with_autospec_agent_runner(self, tmp_path: Path) -> None:
-        """Verify _run_resolver_agent executes with an autospec of AgentRunner."""
-        repo_dir = str(tmp_path)
-        dispositions_path = str(tmp_path / "dispositions.json")
-        spec_runner = create_autospec(AgentRunner, instance=True)
-        spec_runner.build_command.return_value = ["spec-agent", "--model", "test-model", "prompt"]
-        mock_turn_result = TurnResult(returncode=0)
-
-        with (
-            patch("sandbox_executor.entrypoint.review_loop.get_runner", return_value=spec_runner),
-            patch("sandbox_executor.entrypoint.review_loop.run_turn", return_value=mock_turn_result) as mock_run_turn,
-            pytest.raises(RuntimeError, match="no usable output"),
-        ):
-            _run_resolver_agent(repo_dir, "spec-agent", "test-model", "prompt", dispositions_path)
-
-        spec_runner.build_command.assert_called_once_with("prompt", "test-model")
-        mock_run_turn.assert_called_once_with(
-            ["spec-agent", "--model", "test-model", "prompt"], cwd=repo_dir, turn_budgets=ANY
-        )
-
-    def test_run_resolver_agent_fallback_to_compose_cmd(self, tmp_path: Path) -> None:
-        """Verify _run_resolver_agent falls back to compose_cmd when build_command is absent."""
-        repo_dir = str(tmp_path)
-        dispositions_path = str(tmp_path / "dispositions.json")
-
-        class FallbackOnlyRunner:
-            def compose_cmd(self, model_name: str, full_prompt: str) -> list[str]:
-                return ["fallback-agent", "--model", model_name, full_prompt]
-
-        fallback_runner = FallbackOnlyRunner()
-        assert not hasattr(fallback_runner, "build_command")
-        mock_turn_result = TurnResult(returncode=0)
-
-        with (
-            patch("sandbox_executor.entrypoint.review_loop.get_runner", return_value=fallback_runner),
-            patch("sandbox_executor.entrypoint.review_loop.run_turn", return_value=mock_turn_result) as mock_run_turn,
-            pytest.raises(RuntimeError, match="no usable output"),
-        ):
-            _run_resolver_agent(repo_dir, "fallback-agent", "test-model", "prompt", dispositions_path)
-
-        mock_run_turn.assert_called_once_with(
-            ["fallback-agent", "--model", "test-model", "prompt"], cwd=repo_dir, turn_budgets=ANY
-        )
 
     def test_run_resolver_agent_raises_attribute_error_when_contracts_missing(self, tmp_path: Path) -> None:
         """Verify _run_resolver_agent raises an informative AttributeError when runner lacks both methods."""

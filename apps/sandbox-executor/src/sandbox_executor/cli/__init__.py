@@ -45,6 +45,7 @@ from sandbox_executor.agent_runner import (
 from sandbox_executor.budgets import stage_budget_handdown_env
 from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES, resolve_claude_credential
+from sandbox_executor.cli.antigravity_mounts import antigravity_session_mounts
 from sandbox_executor.cli.pi_mounts import get_pi_mounts
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 from sandbox_executor.flow import (
@@ -288,7 +289,7 @@ def find_github_token() -> str | None:
     return None
 
 
-def get_agent_session_mounts(agent_id: str) -> list[str]:  # noqa: C901
+def get_agent_session_mounts(agent_id: str) -> list[str]:
     """Auto-detect and construct session mounts for supported agents."""
     mounts = []
     home = os.path.expanduser("~")
@@ -303,41 +304,27 @@ def get_agent_session_mounts(agent_id: str) -> list[str]:  # noqa: C901
         # If HOLON_AGENT_KEY is supplied, session mount is optional
         has_key = bool(os.getenv("HOLON_AGENT_KEY"))
 
-        # On macOS, ~/.holon/sessions/antigravity is required if not using HOLON_AGENT_KEY
-        if sys.platform == "darwin":
-            if os.path.exists(dedicated_session):
-                mounts.extend(["-v", f"{dedicated_session}:/home/holon/.gemini/antigravity-cli:ro"])
-                mounts.extend(["--tmpfs", "/home/holon/.gemini/config:uid=1000,gid=1000"])
-                mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/log:uid=1000,gid=1000"])
-                mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/cache:uid=1000,gid=1000"])
-                return mounts
-            elif not has_key:
-                print(
-                    "Error: Missing Antigravity sandbox session directory on macOS.\n"
-                    f"The session directory '{dedicated_session}' does not exist.\n\n"
-                    "Please initialise the Antigravity session in an interactive TTY by running:\n\n"
-                    f"  mkdir -p {dedicated_session}\n"
-                    "  docker run -it "
-                    f"-v {dedicated_session}:/home/holon/.gemini/antigravity-cli:rw holon/agent-antigravity agy\n\n"
-                    "After completing interactive authentication, rerun this command.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-
-        # On Linux and other platforms, mount ~/.holon/sessions/antigravity or host ~/.gemini/antigravity-cli
+        # Prefer ~/.holon/sessions/antigravity, then fall back to host ~/.gemini/antigravity-cli
         if os.path.exists(dedicated_session):
-            mounts.extend(["-v", f"{dedicated_session}:/home/holon/.gemini/antigravity-cli:ro"])
-            mounts.extend(["--tmpfs", "/home/holon/.gemini/config:uid=1000,gid=1000"])
-            mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/log:uid=1000,gid=1000"])
-            mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/cache:uid=1000,gid=1000"])
-            return mounts
+            return antigravity_session_mounts(dedicated_session)
+
+        # On macOS, ~/.holon/sessions/antigravity is required if not using HOLON_AGENT_KEY
+        if sys.platform == "darwin" and not has_key:
+            print(
+                "Error: Missing Antigravity sandbox session directory on macOS.\n"
+                f"The session directory '{dedicated_session}' does not exist.\n\n"
+                "Please initialise the Antigravity session in an interactive TTY by running:\n\n"
+                f"  mkdir -p {dedicated_session}\n"
+                "  docker run -it "
+                f"-v {dedicated_session}:/home/holon/.gemini/antigravity-cli:rw holon/agent-antigravity agy\n\n"
+                "After completing interactive authentication, rerun this command.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
         host_agy_cli = os.path.join(home, ".gemini", "antigravity-cli")
         if os.path.exists(host_agy_cli):
-            mounts.extend(["-v", f"{host_agy_cli}:/home/holon/.gemini/antigravity-cli:ro"])
-            mounts.extend(["--tmpfs", "/home/holon/.gemini/config:uid=1000,gid=1000"])
-            mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/log:uid=1000,gid=1000"])
-            mounts.extend(["--tmpfs", "/home/holon/.gemini/antigravity-cli/cache:uid=1000,gid=1000"])
+            return antigravity_session_mounts(host_agy_cli)
 
         return mounts
 

@@ -120,7 +120,7 @@ def test_other_runners_mounts_are_unchanged(
     assert get_agent_session_mounts(agent) == [item.format(home=tmp_path) for item in expected]
 
 
-def test_antigravity_mounts_are_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_antigravity_mounts_keep_credentials_read_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     session = tmp_path / ".holon" / "sessions" / "antigravity"
     session.mkdir(parents=True)
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -135,4 +135,8 @@ def test_antigravity_mounts_are_unchanged(tmp_path: Path, monkeypatch: pytest.Mo
         "/home/holon/.gemini/antigravity-cli/log:uid=1000,gid=1000",
         "--tmpfs",
         "/home/holon/.gemini/antigravity-cli/cache:uid=1000,gid=1000",
+        "--tmpfs",
+        "/home/holon/.gemini/antigravity-cli/brain:uid=1000,gid=1000",
+        "--tmpfs",
+        "/home/holon/.gemini/antigravity-cli/conversations:uid=1000,gid=1000",
     ]

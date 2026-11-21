@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-308f1008",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-21T13:04:24.793004+00:00",
+  "updated_ts": "2026-11-21T13:04:24.793004+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795252518-89a4c817",
+      "ACT-FIND-1795252515-2c727546"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795222649-antigravity-tmpfs-empty-diff/P-1795222667-CLA-CO5.5/E-1795251360-ANA-G3.8F/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R1-001-05",
+    "symptoms": [
+      "Test file already over 1,000 lines grows by 22 lines (1911 to 1933 lines); violates net line delta <= 0 constraint."
+    ]
+  }
+}

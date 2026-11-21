@@ -46,6 +46,7 @@ from sandbox_executor.decomposition_rule import is_placeholder_item as is_placeh
 from sandbox_executor.decomposition_rule import parse_sub_intent_list as parse_sub_intent_list
 from sandbox_executor.decomposition_rule import should_decompose as should_decompose
 from sandbox_executor.entrypoint.changed_markdown import changed_markdown_files
+from sandbox_executor.entrypoint.empty_diff_excerpt import report_empty_diff_output
 from sandbox_executor.entrypoint.execution_workspace import continuation_note as continuation_note
 from sandbox_executor.entrypoint.execution_workspace import (
     resolve_partial_head,
@@ -121,10 +122,7 @@ _CLEAN_GIT_ENV_VARS: tuple[str, ...] = (
 
 def _get_clean_git_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     """Returns a clean environment dictionary with leaked git variables removed."""
-    env = dict(os.environ if base_env is None else base_env)
-    for var in _CLEAN_GIT_ENV_VARS:
-        env.pop(var, None)
-    return env
+    return {k: v for k, v in (os.environ if base_env is None else base_env).items() if k not in _CLEAN_GIT_ENV_VARS}
 
 
 def is_action_logging_enabled(intent_data: dict[str, Any] | None = None) -> bool:
@@ -134,8 +132,8 @@ def is_action_logging_enabled(intent_data: dict[str, Any] | None = None) -> bool
         return flag.lower() in ("1", "true", "yes", "on")
     if os.getenv("HOLON_ACTION_ORIGIN") or os.getenv("HOLON_REVIEW_SEVERITY"):
         return True
-    if intent_data and any(
-        k in intent_data for k in ("action_origin", "review_severity", "review_iteration", "review_finding_ids")
+    if intent_data and (
+        intent_data.keys() & {"action_origin", "review_severity", "review_iteration", "review_finding_ids"}
     ):
         return True
     return "PYTEST_CURRENT_TEST" not in os.environ
@@ -1402,14 +1400,14 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                         summary = empty_diff_summary(plan_branch)
                 if failure_reason:
                     print(f"Error: {summary}", file=sys.stderr)
+                    report_empty_diff_output(failure_reason, agent_output_text, agent_output_bytes)
 
             # Measure the project's tests on the agent's finished work, before anything is staged or committed.
             test_fields = measure_executor_tests(repo_dir, repo, exec_status)
 
             # Format modified/untracked markdown files with prettier
             try:
-                md_files = changed_markdown_files(repo)
-                if md_files:
+                if md_files := changed_markdown_files(repo):
                     converge_prettier(md_files, repo_dir=repo_dir)
                     if is_action_logging_enabled(intent_data):
                         with suppress_ledger_failures():

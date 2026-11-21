@@ -15,9 +15,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from sandbox_executor.flow.admission_order import OwnSet, older_waiter_flows
+from sandbox_executor.flow.admission_order import older_waiter_flows
 from sandbox_executor.flow.admission_state import BlockedBy
-from sandbox_executor.flow.base_files import base_branch_name, list_base_files
+from sandbox_executor.flow.base_files import _base_branch_name, _list_base_files
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.github.merge import GhRunner
 from sandbox_executor.flow.in_flight import (
@@ -31,7 +31,7 @@ from sandbox_executor.flow.in_flight import (
     root_intent,
 )
 from sandbox_executor.touch_set import TouchSet
-from sandbox_executor.touch_set_overlap import changed_files_overlap, declared_overlap
+from sandbox_executor.touch_set_overlap import TouchSetOnBase, changed_files_overlap, declared_overlap
 
 
 @dataclass(frozen=True)
@@ -107,13 +107,13 @@ def decide_admission(context: FlowContext, run_gh: GhRunner | None, run_git: Git
     flows = discover_in_flight_flows(context.target_worktree, own_branch, run_gh, checkpoints=checkpoints)
     if isinstance(flows, AdmissionUnavailable):
         return refusal(context, reason=f"the flows in flight could not be discovered: {flows.reason}")
-    base_files = list_base_files(context.target_worktree, base_branch_name(context), run_git)
+    base_files = _list_base_files(context.target_worktree, _base_branch_name(context), run_git)
     if isinstance(base_files, AdmissionUnavailable):
         return refusal(context, reason=f"the files of the base branch could not be listed: {base_files.reason}")
     waiters = local_blocked_waiters(context.target_worktree, checkpoints)
     pairs = _conflict_pairs(own, flows, base_files)
     if not pairs:
-        older = older_waiter_flows(context.admission, plan_branch, OwnSet(own, base_files), flows, waiters)
+        older = older_waiter_flows(context.admission, plan_branch, TouchSetOnBase(own, base_files), flows, waiters)
         pairs = _conflict_pairs(own, older, base_files)
     if not pairs:
         return AdmissionDecision(admitted=True)

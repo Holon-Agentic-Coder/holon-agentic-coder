@@ -11,7 +11,6 @@ list them. Every deferral points at a strictly older key, a total order, so the 
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 from sandbox_executor.flow import admission_state
@@ -22,16 +21,7 @@ from sandbox_executor.flow.admission_state import (
     BlockedBy,
 )
 from sandbox_executor.flow.in_flight import BlockedWaiter, InFlightFlow, root_intent
-from sandbox_executor.touch_set import TouchSet
-from sandbox_executor.touch_set_overlap import declared_overlap
-
-
-@dataclass(frozen=True)
-class OwnSet:
-    """This flow's declared touch set and the base branch's files it is expanded against."""
-
-    touch_set: TouchSet
-    base_files: frozenset[str]
+from sandbox_executor.touch_set_overlap import TouchSetOnBase
 
 
 def waiter_key(waiter: BlockedWaiter) -> tuple[str, str]:
@@ -52,7 +42,7 @@ def blocker_is_clear(entry: BlockedBy, open_numbers: set[int], busy: set[str], o
 
 def older_ready_waiter(
     own_key: tuple[str, str],
-    own: OwnSet,
+    own: TouchSetOnBase,
     flows: list[InFlightFlow],
     waiters: list[BlockedWaiter],
 ) -> BlockedWaiter | None:
@@ -68,7 +58,7 @@ def older_ready_waiter(
         and waiter.record.blocked_since  # a record without its refusal time has no place in the order
         and waiter_key(waiter) < own_key
         and waiter.declared is not None
-        and declared_overlap(own.touch_set, waiter.declared, own.base_files)
+        and own.overlap(waiter.declared)
         and all(blocker_is_clear(entry, open_numbers, busy, own_plan_branch) for entry in waiter.record.blocked_by)
     ]
     return min(ready, key=waiter_key, default=None)
@@ -77,7 +67,7 @@ def older_ready_waiter(
 def older_waiter_flows(
     admission: dict[str, Any] | None,
     plan_branch: str,
-    own: OwnSet,
+    own: TouchSetOnBase,
     flows: list[InFlightFlow],
     waiters: list[BlockedWaiter],
 ) -> list[InFlightFlow]:

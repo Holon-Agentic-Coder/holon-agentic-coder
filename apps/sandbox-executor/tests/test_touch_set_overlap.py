@@ -7,6 +7,7 @@ import time
 import pytest
 from sandbox_executor.touch_set import TouchSet, TouchSetEntry
 from sandbox_executor.touch_set_overlap import (
+    TouchSetOnBase,
     broad_entries,
     changed_files_overlap,
     declared_overlap,
@@ -72,6 +73,11 @@ def test_expand_touch_set_is_the_union():
 def test_declared_overlap(own, other, expected):
     assert declared_overlap(_set(*own), _set(*other), BASE) == expected
     assert declared_overlap(_set(*other), _set(*own), BASE) == expected
+
+
+def test_touch_set_on_base_overlaps_like_declared_overlap():
+    own = TouchSetOnBase(_set("src/", "src/new.py"), BASE)
+    assert own.overlap(_set("src/app.py", "src/new.py", "src/other_new.py")) == ["src/app.py", "src/new.py"]
 
 
 @pytest.mark.parametrize(

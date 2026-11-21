@@ -10,6 +10,7 @@ Pure logic with no I/O; :mod:`flow.base_files` lists the base files and :mod:`fl
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from sandbox_executor.git import is_metadata_path
 from sandbox_executor.touch_set import TouchSet, TouchSetEntry, code_paths, entry_matches, is_literal_entry
@@ -48,6 +49,18 @@ def changed_files_overlap(own: TouchSet, changed_files: Iterable[str], base_file
         for path in code_paths(list(changed_files))
         if (path in literals if path not in base_files else any(entry_matches(entry, path) for entry in own.entries))
     )
+
+
+@dataclass(frozen=True)
+class TouchSetOnBase:
+    """A flow's declared touch set with the base branch's files it is expanded against (the admitting flow's side)."""
+
+    touch_set: TouchSet
+    base_files: frozenset[str]
+
+    def overlap(self, other: TouchSet) -> list[str]:
+        """The sorted files this set and ``other`` both name (:func:`declared_overlap`)."""
+        return declared_overlap(self.touch_set, other, self.base_files)
 
 
 def broad_entries(touch_set: TouchSet) -> list[str]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
 
 from sandbox_executor.ledger.rows import _REPEAT_CHECKED_ID_KEYS
@@ -79,26 +80,51 @@ def _parse_target_labels(labels: list[str] | str | None) -> list[str]:
     return []
 
 
-def query_ledger(
-    ledger_path: str,
-    *,
-    entry_type: str | None = None,
-    category: str | None = None,
-    labels: list[str] | str | None = None,
-    **filters: Any,
-) -> list[dict[str, Any]]:
-    """Stream and filter execution ledger records."""
+@dataclass(frozen=True, kw_only=True)
+class LedgerQuery:
+    """The filters ``query_ledger`` applies; constructing one with an unknown or misspelt filter raises TypeError.
+
+    Attributes:
+        entry_type: Filter by entry type ('action', 'summary', or 'all'/None).
+        category: Filter by category (e.g. 'code', 'test', 'doc').
+        labels: Filter by labels (matches if any label exists in record).
+        target: Substring match on target or plan_branch.
+        outcome: Match on outcome or status.
+        origin: Match on action_origin.
+        review_severity: Match on review_severity.
+        query: Case-insensitive search across summary/action/target/error fields.
+        limit: Maximum number of matching records to return.
+    """
+
+    entry_type: str | None = None
+    category: str | None = None
+    labels: list[str] | str | None = None
+    target: str | None = None
+    outcome: str | None = None
+    origin: str | None = None
+    review_severity: str | None = None
+    query: str | None = None
+    limit: int | None = None
+
+
+def query_ledger(ledger_path: str, **filters: Any) -> list[dict[str, Any]]:
+    """Stream and filter execution ledger records.
+
+    Args:
+        ledger_path: Path to the execution ledger file (e.g. executions.jsonl).
+        **filters: Keyword filters, the fields of ``LedgerQuery``.
+
+    Returns:
+        List of matching record dictionaries.
+
+    Raises:
+        TypeError: When a filter is not a ``LedgerQuery`` field, so a misspelt filter never silently matches all.
+    """
+    spec = LedgerQuery(**filters)
     if not os.path.exists(ledger_path):
         return []
 
-    target_labels = _parse_target_labels(labels)
-    target = filters.get("target")
-    outcome = filters.get("outcome")
-    origin = filters.get("origin")
-    review_severity = filters.get("review_severity")
-    query = filters.get("query")
-    limit = filters.get("limit")
-
+    target_labels = _parse_target_labels(spec.labels)
     results: list[dict[str, Any]] = []
 
     with open(ledger_path, encoding="utf-8") as f:
@@ -113,20 +139,24 @@ def query_ledger(
                 continue
 
             rec_entry_type = rec.get("entry_type", "summary")
-            if entry_type and entry_type.lower() != "all" and rec_entry_type.lower() != entry_type.lower():
+            if (
+                spec.entry_type
+                and spec.entry_type.lower() != "all"
+                and rec_entry_type.lower() != spec.entry_type.lower()
+            ):
                 continue
 
-            if not _match_category_and_labels(rec, category, target_labels):
+            if not _match_category_and_labels(rec, spec.category, target_labels):
                 continue
 
-            if not _match_outcome_and_origin(rec, outcome, origin, review_severity):
+            if not _match_outcome_and_origin(rec, spec.outcome, spec.origin, spec.review_severity):
                 continue
 
-            if not _match_query_text(rec, query, target):
+            if not _match_query_text(rec, spec.query, spec.target):
                 continue
 
             results.append(rec)
-            if limit is not None and len(results) >= limit:
+            if spec.limit is not None and len(results) >= spec.limit:
                 break
 
     return results
@@ -204,7 +234,19 @@ def validate_ledger_unique_ids(
     id_key: str = "plan_id",
     parent_key: str = "intent_branch",
 ) -> None:
-    """Validate that no plan is recorded twice for one intent at one ledger_revision."""
+    """Validate that no plan is recorded twice for one intent at one ``ledger_revision``.
+
+    Ids are keyed on their full parent path, never the id alone (hexless ids repeat across intents); a superseding row
+    passes. Execution rows are not repeat-checked: reruns and superseding summaries repeat their (plan, id) pair.
+
+    Args:
+        records: An iterable of ledger record dictionaries.
+        id_key: The dictionary key for the identifier (e.g. 'plan_id' or 'execution_id').
+        parent_key: The dictionary key for the parent reference (e.g. 'intent_branch' or 'plan_branch').
+
+    Raises:
+        ValueError: If a plan row repeats an (intent, plan id) pair at the same ledger revision.
+    """
     if id_key not in _REPEAT_CHECKED_ID_KEYS:
         return
     seen: dict[tuple[str, str, int], dict[str, Any]] = {}

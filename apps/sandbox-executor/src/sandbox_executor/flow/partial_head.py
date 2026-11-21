@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-
 from sandbox_executor.flow.git_refs import _latest_execution_summary, _read_ledger_rows
 from sandbox_executor.git import EMPTY_DIFF_STATUS
 
@@ -17,12 +15,7 @@ def failed_partial_head(repo_dir: str, ref: str, execution_id: str) -> str | Non
     Both failure statuses count: ``failure`` (a budget breach, an agent error or any other failure) and
     ``EMPTY_DIFF_STATUS`` (an empty or unverified diff), since either row can carry salvaged partial work.
     """
-    reader = _read_ledger_rows
-    exec_mod = sys.modules.get("sandbox_executor.flow.stages.execute")
-    if exec_mod is not None and hasattr(exec_mod, "_read_ledger_rows"):
-        reader = exec_mod._read_ledger_rows
-
-    row = _latest_execution_summary(reader(repo_dir, ref, "executions.jsonl"), execution_id, ref) or {}
+    row = _latest_execution_summary(_read_ledger_rows(repo_dir, ref, "executions.jsonl"), execution_id, ref) or {}
     partial_head = row.get("partial_head")
     if row.get("status") in ("failure", EMPTY_DIFF_STATUS) and isinstance(partial_head, str) and partial_head:
         return partial_head

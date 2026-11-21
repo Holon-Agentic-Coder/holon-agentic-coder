@@ -475,11 +475,12 @@ split from the former single `flow.py` by moving code only. Three tests guard th
 
 | Module                         | Responsibility                                                                                              |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| `flow/__init__.py`             | Re-exports every engine name through `__all__`, so `from sandbox_executor.flow import ...` still works.     |
+| `flow/__init__.py`             | Re-exports every engine name lazily through `__all__`, so `from sandbox_executor.flow import ...` works.    |
 | `flow/constants.py`            | Constants shared by two or more modules (`CURRENT_CONTEXT_SCHEMA_VERSION`, `CI_REGISTRATION_POLL_SECONDS`). |
 | `flow/context.py`              | The data model: `FlowStage`, `StageStatus`, `StageResult` and `FlowContext`.                                |
 | `flow/checkpoint.py`           | Checkpoint schema migration, `FlowCheckpoint`, and saving and loading checkpoints.                          |
 | `flow/ledger_reconcile.py`     | Resolves conflicts in the append-only JSONL ledgers by a union under the ledger lock.                       |
+| `flow/ledger_warning.py`       | Reports a non-fatal ledger failure, redacted, to the log and the operator-facing context log.               |
 | `flow/ledger_interleave.py`    | Resolves ledger-only merge conflicts: merge-base rows kept as a prefix, appended rows interleaved.          |
 | `flow/child_progress.py`       | Per-child progress of a decomposed Stage 3, origin reconciliation and the next-action decision.             |
 | `flow/stage_conflicts.py`      | The proactive conflict check a stage runs before it pushes.                                                 |
@@ -512,10 +513,13 @@ The `flow/github/`, `flow/review/` and `flow/stages/` packages each have an `__i
 Rules that keep the package healthy:
 
 - **Import direction.** Imports run from the leaves (`constants`, `context`, `checkpoint`) through `dispatch`,
-  `git_refs`, `github/*`, `review/*` and `stages/*` to `pipeline`. No submodule imports `pipeline` at runtime. The one
-  back-edge is bound late: `stages/children.py` runs child flows through `PipelineEngine`, but `pipeline` imports the
-  stages. So `flow/__init__.py` sets `stages.children.PipelineEngine` after it has imported `pipeline`, and
-  `children.py` imports the name only under `TYPE_CHECKING`. `tests/flow/test_package_exports.py` checks the binding.
+  `git_refs`, `github/*`, `review/*` and `stages/*` to `pipeline`. No submodule imports `pipeline` at module level. The
+  one back-edge is deferred: `stages/children.py` runs child flows through `PipelineEngine`, but `pipeline` imports the
+  stages, so `children.py` imports `PipelineEngine` inside the function that runs a child.
+- **The package root defers its re-exports.** `flow/__init__.py` resolves each re-exported name from its owning module
+  on first access (a module `__getattr__`), so importing one flow submodule does not load `pipeline` or `stages/*`. The
+  container entrypoints rely on this: `tests/test_entrypoint_imports.py` checks both their imports and, in a fresh
+  interpreter, the modules that importing each one actually loads.
 - **Tests patch the submodule, not the package.** A name such as `run_git` is looked up in each submodule that imports
   it, so a test patches `sandbox_executor.flow.<module>.<name>` at each submodule its code path crosses. It uses
   `tests/flow/lookup_patch.py` `patch_lookup_sites` when there is more than one, so they share one mock.

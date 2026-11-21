@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import ast
+import subprocess
+import sys
 from pathlib import Path
 
-ENTRYPOINT_DIR = Path(__file__).resolve().parent.parent / "src" / "sandbox_executor" / "entrypoint"
+import pytest
+
+SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+ENTRYPOINT_DIR = SRC_DIR / "sandbox_executor" / "entrypoint"
+ENTRYPOINT_PACKAGE = "sandbox_executor.entrypoint"
 
 FORBIDDEN_MODULES = (
     "sandbox_executor.flow.pipeline",
@@ -14,8 +20,17 @@ FORBIDDEN_MODULES = (
 )
 
 
-def _collect_module_imports(source: str) -> list[tuple[int, str]]:
-    """Return all imported module paths found in Python source code."""
+def _absolute_module(node: ast.ImportFrom, package: str) -> str:
+    """The absolute module an ``ImportFrom`` names, resolving a relative one against ``package``."""
+    if not node.level:
+        return node.module or ""
+    base = package.split(".")
+    base = base[: len(base) - (node.level - 1)]
+    return ".".join([*base, node.module] if node.module else base)
+
+
+def _collect_module_imports(source: str, package: str = ENTRYPOINT_PACKAGE) -> list[tuple[int, str]]:
+    """Return all imported module paths found in Python source code, relative imports resolved against package."""
     tree = ast.parse(source)
     imports: list[tuple[int, str]] = []
     for node in ast.walk(tree):
@@ -23,7 +38,7 @@ def _collect_module_imports(source: str) -> list[tuple[int, str]]:
             for alias in node.names:
                 imports.append((node.lineno, alias.name))
         elif isinstance(node, ast.ImportFrom):
-            mod = node.module or ""
+            mod = _absolute_module(node, package)
             imports.append((node.lineno, mod))
             for alias in node.names:
                 imports.append((node.lineno, f"{mod}.{alias.name}" if mod else alias.name))
@@ -65,3 +80,39 @@ def test_ast_guard_detects_forbidden_imports() -> None:
     assert "sandbox_executor.flow.pipeline" in imports
     assert "sandbox_executor.flow.stages.execute" in imports
     assert "sandbox_executor.flow" in imports
+
+
+def test_ast_guard_resolves_relative_imports() -> None:
+    relative_sample = "from ..flow import pipeline\nfrom ..flow.stages import execute\nfrom . import planner\n"
+    imports = [imp for _, imp in _collect_module_imports(relative_sample)]
+    assert "sandbox_executor.flow.pipeline" in imports
+    assert "sandbox_executor.flow.stages" in imports
+    assert "sandbox_executor.entrypoint.planner" in imports
+
+
+# Modules an entrypoint imports lazily (inside a function) are not loaded by importing the entrypoint itself.
+LAZILY_IMPORTED = (
+    "sandbox_executor.flow.intent_questions",
+    "sandbox_executor.flow.partial_head",
+    "sandbox_executor.flow.stage_conflicts",
+)
+
+
+@pytest.mark.parametrize(
+    "module",
+    sorted(
+        [f"{ENTRYPOINT_PACKAGE}.{path.stem}" for path in ENTRYPOINT_DIR.glob("*.py") if path.stem != "__init__"]
+        + list(LAZILY_IMPORTED)
+    ),
+)
+def test_importing_an_entrypoint_loads_no_host_orchestration(module: str) -> None:
+    """At runtime too: package ``__init__`` side effects must not drag the host engine into an entrypoint."""
+    probe = (
+        "import importlib, sys\n"
+        f"importlib.import_module({module!r})\n"
+        f"print('\\n'.join(sorted(n for n in sys.modules if n.startswith({FORBIDDEN_MODULES!r}))))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], cwd=SRC_DIR, capture_output=True, text=True, check=True, timeout=60
+    )
+    assert result.stdout.split() == []

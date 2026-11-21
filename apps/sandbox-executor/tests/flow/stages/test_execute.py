@@ -54,7 +54,7 @@ class TestStage3PartialResumeDispatch:
             patch(
                 "sandbox_executor.flow.stages.execute._snapshot_child_branches", return_value={self.FAILED, self.OLDER}
             ),
-            patch("sandbox_executor.flow.stages.execute._read_ledger_rows", side_effect=self._rows(with_partial_head)),
+            patch("sandbox_executor.flow.partial_head._read_ledger_rows", side_effect=self._rows(with_partial_head)),
             patch("sandbox_executor.flow.stages.execute._dispatch_role", side_effect=dispatch),
         ):
             if from_stage is None:
@@ -82,14 +82,14 @@ class TestStage3PartialResumeDispatch:
             status = "success" if exec_id.startswith("E-100") else "failure"
             return [{"entry_type": "summary", "execution_id": exec_id, "status": status, "partial_head": "b" * 40}]
 
-        with patch("sandbox_executor.flow.stages.execute._read_ledger_rows", side_effect=read_rows):
+        with patch("sandbox_executor.flow.partial_head._read_ledger_rows", side_effect=read_rows):
             branch = flow_module._resumable_partial_branch(str(tmp_path), {self.FAILED, self.OLDER})
         assert branch == self.OLDER
 
     @pytest.mark.parametrize("status", ["failure", EMPTY_DIFF_STATUS])
     def test_failed_partial_head_accepts_both_failure_statuses(self, tmp_path, status):
         row = {"entry_type": "summary", "execution_id": "E-100", "status": status, "partial_head": "c" * 40}
-        with patch("sandbox_executor.flow.stages.execute._read_ledger_rows", return_value=[row]):
+        with patch("sandbox_executor.flow.partial_head._read_ledger_rows", return_value=[row]):
             assert flow_module.failed_partial_head(str(tmp_path), "refs/remotes/origin/x", "E-100") == "c" * 40
 
     def test_resumable_partial_branch_resumes_an_empty_diff_failed_row(self, tmp_path):
@@ -104,6 +104,6 @@ class TestStage3PartialResumeDispatch:
                 }
             ]
 
-        with patch("sandbox_executor.flow.stages.execute._read_ledger_rows", side_effect=read_rows):
+        with patch("sandbox_executor.flow.partial_head._read_ledger_rows", side_effect=read_rows):
             branch = flow_module._resumable_partial_branch(str(tmp_path), {self.FAILED, self.OLDER})
         assert branch == self.FAILED

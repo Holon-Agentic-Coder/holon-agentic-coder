@@ -2,16 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import time
-
-try:
-    import fcntl
-except ImportError:
-    fcntl = None  # type: ignore[assignment]
-
 from sandbox_executor.ledger.lock import (
     LedgerLock,
     LedgerRewriteError,
@@ -22,6 +12,7 @@ from sandbox_executor.ledger.lock import (
     suppress_ledger_failures,
 )
 from sandbox_executor.ledger.query import (
+    LedgerQuery,
     _describe_id_owner,
     _extract_parent_ref,
     format_query_results_table,
@@ -40,7 +31,6 @@ from sandbox_executor.ledger.reconcile import (
     _append_only_union,
     _has_conflict_marker_lines,
     _ledgers_with_conflict_markers,
-    _parse_ledger_timestamp,
     _resolve_conflicting_ledger,
     _resolve_ledger_under_lock,
     _split_conflict_sides,
@@ -49,7 +39,6 @@ from sandbox_executor.ledger.reconcile import (
     reconcile_jsonl_ledger_conflict,
     reconcile_ledger_content,
     reconcile_ledger_file,
-    reconcile_ledger_rows,
     reconcile_ledgers,
     resolve_append_only_conflict,
 )
@@ -63,6 +52,7 @@ from sandbox_executor.ledger.rows import (
     VALID_OUTCOMES,
     VALID_SEVERITIES,
     ActionRecord,
+    CommitTrailers,
     SummaryRecord,
     _disambiguator_counter,
     _prepare_shape_preserving_action,
@@ -97,8 +87,10 @@ __all__ = [
     "_REPEAT_CHECKED_ID_KEYS",
     "_SECTION_AFTER_MARKER",
     "ActionRecord",
+    "CommitTrailers",
     "ConflictResolutionError",
     "LedgerLock",
+    "LedgerQuery",
     "LedgerReconciler",
     "LedgerRewriteError",
     "PrefixSide",
@@ -110,7 +102,6 @@ __all__ = [
     "_first_divergence",
     "_has_conflict_marker_lines",
     "_ledgers_with_conflict_markers",
-    "_parse_ledger_timestamp",
     "_prepare_shape_preserving_action",
     "_read_ledger_bytes",
     "_report_ledger_failure",
@@ -131,23 +122,17 @@ __all__ = [
     "build_stage_disambiguator",
     "extract_action_provenance_from_commit",
     "extract_valid_ledger_rows",
-    "fcntl",
     "format_commit_trailers",
     "format_query_results_table",
     "generate_action_id",
-    "json",
-    "os",
     "parse_commit_trailers",
     "query_ledger",
     "reconcile_jsonl_ledger_conflict",
     "reconcile_ledger_content",
     "reconcile_ledger_file",
-    "reconcile_ledger_rows",
     "reconcile_ledgers",
     "resolve_append_only_conflict",
-    "subprocess",
     "suppress_ledger_failures",
-    "time",
     "try_append_action_record",
     "try_append_ledger_line",
     "validate_ledger_file_unique_ids",

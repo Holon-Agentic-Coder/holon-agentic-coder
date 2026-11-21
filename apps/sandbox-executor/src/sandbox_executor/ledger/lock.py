@@ -21,12 +21,6 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def _get_ledger_module() -> Any:
-    import sandbox_executor.ledger as _l
-
-    return _l
-
-
 class LedgerLock:
     """Reusable advisory file locking context manager for ledger mutation safety.
 
@@ -58,9 +52,7 @@ class LedgerLock:
         if dirname:
             os.makedirs(dirname, exist_ok=True)
 
-        _l = _get_ledger_module()
-        _fcntl = getattr(_l, "fcntl", fcntl)
-        use_posix_lock = sys.platform != "win32" and _fcntl is not None and hasattr(_fcntl, "flock")
+        use_posix_lock = sys.platform != "win32" and fcntl is not None and hasattr(fcntl, "flock")
         self._file = open(self.filepath, "a", encoding="utf-8")
 
         if not use_posix_lock:
@@ -84,7 +76,7 @@ class LedgerLock:
         delay = self.initial_delay
         while True:
             try:
-                _fcntl.flock(self._fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 self._locked = True
                 break
             except (BlockingIOError, OSError) as e:
@@ -116,15 +108,12 @@ class LedgerLock:
         if self._file is not None and not self._file.closed:
             try:
                 self._file.flush()
-                _l = _get_ledger_module()
-                _os = getattr(_l, "os", os)
-                _fcntl = getattr(_l, "fcntl", fcntl)
                 if self._fd is not None:
                     with contextlib.suppress(OSError):
-                        _os.fsync(self._fd)
+                        os.fsync(self._fd)
                 if self._locked and self._fd is not None:
                     with contextlib.suppress(OSError):
-                        _fcntl.flock(self._fd, _fcntl.LOCK_UN)
+                        fcntl.flock(self._fd, fcntl.LOCK_UN)
                     self._locked = False
             finally:
                 self._file.close()
@@ -186,9 +175,7 @@ def atomic_ledger_append(
         before = _read_ledger_bytes(filepath)
         yield f
         f.flush()
-        _l = _get_ledger_module()
-        assert_fn = getattr(_l, "assert_ledger_prefix", assert_ledger_prefix)
-        assert_fn(filepath, before)
+        assert_ledger_prefix(filepath, before)
 
 
 @contextlib.contextmanager

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -41,41 +42,6 @@ def test_package_reexports_all_core_symbols() -> None:
         assert hasattr(ledger, sym), f"sandbox_executor.ledger is missing symbol '{sym}'"
 
 
-def test_ledger_reconciler_pure_row_reconciliation() -> None:
-    reconciler = LedgerReconciler()
-
-    ours = [
-        {"id": "1", "data": "row1"},
-        {"id": "2", "data": "row2"},
-    ]
-    theirs = [
-        {"id": "1", "data": "row1"},
-        {"id": "3", "data": "row3"},
-    ]
-
-    # Reconciling with ours as prefix keeps ours first, then appends theirs
-    result_ours = reconciler.reconcile_ledger_rows(ours, theirs, prefix_side="ours")
-    assert result_ours == [
-        {"id": "1", "data": "row1"},
-        {"id": "2", "data": "row2"},
-        {"id": "3", "data": "row3"},
-    ]
-
-    # Reconciling with theirs as prefix keeps theirs first, then appends ours
-    result_theirs = reconciler.reconcile_ledger_rows(ours, theirs, prefix_side="theirs")
-    assert result_theirs == [
-        {"id": "1", "data": "row1"},
-        {"id": "3", "data": "row3"},
-        {"id": "2", "data": "row2"},
-    ]
-
-
-def test_ledger_reconciler_invalid_prefix_side() -> None:
-    reconciler = LedgerReconciler()
-    with pytest.raises(ValueError, match="prefix_side must be 'ours' or 'theirs'"):
-        reconciler.reconcile_ledger_rows([], [], prefix_side="invalid")  # type: ignore[arg-type]
-
-
 def test_reconcile_ledger_file_preserves_content_and_atomicity(tmp_path: Path) -> None:
     ledger_file = tmp_path / "test.jsonl"
     conflict_content = (
@@ -99,19 +65,44 @@ def test_reconcile_nonexistent_file() -> None:
     assert reconcile_ledger_file("/path/to/nonexistent/file.jsonl") is False
 
 
-def test_entrypoints_do_not_import_flow_pipeline_stages_or_cli() -> None:
-    """AST test enforcing container entrypoints do not import flow.pipeline, flow.stages, or cli."""
-    import ast
+def test_reconcile_ledgers_skips_an_unreadable_ledger_and_resolves_the_rest(tmp_path: Path) -> None:
+    ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+    ledger_dir.mkdir(parents=True)
+    (ledger_dir / "intents.jsonl").write_bytes(b"\xff\xfe not utf-8\n<<<<<<< HEAD\n")
+    (ledger_dir / "executions.jsonl").write_text(
+        '{"id": "base"}\n<<<<<<< HEAD\n{"id": "ours"}\n=======\n{"id": "theirs"}\n>>>>>>> main\n', encoding="utf-8"
+    )
 
-    entrypoint_dir = Path(__file__).resolve().parent.parent / "src" / "sandbox_executor" / "entrypoint"
-    forbidden = ("sandbox_executor.flow.pipeline", "sandbox_executor.flow.stages", "sandbox_executor.cli")
+    resolved = LedgerReconciler().reconcile_ledgers(str(tmp_path))
 
-    for py_file in entrypoint_dir.glob("*.py"):
-        tree = ast.parse(py_file.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    assert not alias.name.startswith(forbidden), f"{py_file.name} imports forbidden {alias.name}"
-            elif isinstance(node, ast.ImportFrom):
-                mod = node.module or ""
-                assert not mod.startswith(forbidden), f"{py_file.name} imports from forbidden {mod}"
+    assert resolved == [os.path.join("holon-knowledge", "ledger", "executions.jsonl")]
+    assert (ledger_dir / "intents.jsonl").read_bytes() == b"\xff\xfe not utf-8\n<<<<<<< HEAD\n"
+    assert (ledger_dir / "executions.jsonl").read_text(encoding="utf-8") == (
+        '{"id": "base"}\n{"id": "ours"}\n{"id": "theirs"}\n'
+    )
+
+
+def test_reconcile_ledgers_skips_an_unreadable_first_ledger_without_a_conflicted_later_one(tmp_path: Path) -> None:
+    ledger_dir = tmp_path / "holon-knowledge" / "ledger"
+    ledger_dir.mkdir(parents=True)
+    (ledger_dir / "intents.jsonl").write_bytes(b"\xff\xfe\n")
+
+    assert LedgerReconciler().reconcile_ledgers(str(tmp_path)) == []
+
+
+def test_query_ledger_rejects_a_misspelt_filter(tmp_path: Path) -> None:
+    ledger_file = tmp_path / "executions.jsonl"
+    ledger_file.write_text('{"entry_type": "action", "outcome": "success"}\n', encoding="utf-8")
+    assert ledger.query_ledger(str(ledger_file), outcome="success", limit=1) == [
+        {"entry_type": "action", "outcome": "success"}
+    ]
+    with pytest.raises(TypeError):
+        ledger.query_ledger(str(ledger_file), outcom="failure")  # type: ignore[call-arg]
+
+
+def test_format_commit_trailers_rejects_a_misspelt_trailer() -> None:
+    assert ledger.format_commit_trailers(review_disposition="applied", rejection_reason="inaccurate") == (
+        "Action-Origin: initial_implementation\nReview-Disposition: applied\nRejection-Reason: inaccurate"
+    )
+    with pytest.raises(TypeError):
+        ledger.format_commit_trailers(review_dispostion="applied")  # type: ignore[call-arg]

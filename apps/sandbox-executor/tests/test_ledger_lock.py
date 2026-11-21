@@ -296,7 +296,7 @@ def test_try_append_action_record_redacts_credentials_in_failure_warning(
     def _fail(*_args: object, **_kwargs: object) -> None:
         raise OSError(f"remote said {sample_value}")
 
-    monkeypatch.setattr("sandbox_executor.ledger.append_action_record", _fail)
+    monkeypatch.setattr("sandbox_executor.ledger.rows.append_action_record", _fail)
     mirrored: list[str] = []
 
     result = try_append_action_record(

@@ -60,7 +60,7 @@ def _split_conflict_sides(content: str) -> tuple[list[str], list[str]]:
 
 
 def _append_only_union(prefix_lines: list[str], other_lines: list[str]) -> str:
-    """Return the prefix side unchanged, followed by other side's missing lines in original order."""
+    """Return the prefix side unchanged, followed by the other side's missing lines ordered by ``created_at``."""
     return _DEFAULT_RECONCILER._append_only_union(prefix_lines, other_lines)
 
 

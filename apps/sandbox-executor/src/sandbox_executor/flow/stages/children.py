@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import re
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from sandbox_executor.flow.checkpoint import load_checkpoint, save_checkpoint
 from sandbox_executor.flow.child_progress import (
@@ -34,11 +34,6 @@ from sandbox_executor.flow.git_refs import _fetch_refspecs_error
 from sandbox_executor.flow.github.merge import merge_child_pr
 from sandbox_executor.flow.stages.integration import integrate_children
 from sandbox_executor.redaction import redact_agent_secrets
-
-if TYPE_CHECKING:
-    # Bound at runtime by the package __init__, because pipeline imports this module.
-    from sandbox_executor.flow.pipeline import PipelineEngine
-
 
 _PR_URL_RE = re.compile(r"https?://\S+/pull/\d+")
 
@@ -203,6 +198,8 @@ def _run_one_child(context: FlowContext, payload: dict[str, Any], entry: dict[st
         if from_stage == FlowStage.COMPLETED:
             results = child.stage_results
         else:
+            from sandbox_executor.flow.pipeline import PipelineEngine  # pipeline imports this module: import late
+
             results = PipelineEngine(child, from_stage=from_stage).run()
     finally:
         context.logs.extend(f"[sub-intent {entry['slug']}] {line}" for line in child.logs)

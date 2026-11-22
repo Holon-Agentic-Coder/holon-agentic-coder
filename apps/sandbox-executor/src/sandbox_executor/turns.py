@@ -69,6 +69,8 @@ TOOL_CPU_PROGRESS_SECONDS = 0.5
 PS_TIMEOUT_SECONDS = 5.0
 # Real seconds to wait for the pipe readers after the agent exits before treating a descendant as holding them open.
 READER_JOIN_TIMEOUT_SECONDS = 5.0
+# Longest command line quoted in a live-child or background-command warning, so a huge argv cannot flood the log.
+COMMAND_DISPLAY_CHARS = 200
 _TREE_SKIP_DIRS = frozenset({".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache"})
 
 # Agent CLIs report why generation stopped in structured JSON events ({"stopReason": "length"}). Only the quoted JSON
@@ -133,6 +135,7 @@ def _tree_mtime(root: str | None) -> int | None:
 # comes from ``cutime``+``cstime`` in Linux ``/proc``; ``ps`` cannot report it, so it is 0.0 on macOS.
 ProcessTable = dict[int, tuple[int, int, float, float]]
 ToolSampler = Callable[[int], dict[int, float] | None]
+ChildLister = Callable[[int], dict[int, str] | None]
 
 
 def _proc_table(proc_root: str = "/proc") -> ProcessTable | None:
@@ -251,6 +254,36 @@ def process_name(pid: int, proc_root: str = "/proc") -> str | None:
     return os.path.basename(name)[:15] or None
 
 
+def _children_of(table: ProcessTable) -> dict[int, list[int]]:
+    children: dict[int, list[int]] = {}
+    for pid, (ppid, _pgid, _cpu, _reaped) in table.items():
+        children.setdefault(ppid, []).append(pid)
+    return children
+
+
+def _descendant_members(table: ProcessTable, root_pid: int) -> set[int]:
+    """``root_pid``, every process in its process group and every process descended from either."""
+    children = _children_of(table)
+    members = {root_pid} | {pid for pid, (_ppid, pgid, _cpu, _reaped) in table.items() if pgid == root_pid}
+    stack = list(members)
+    while stack:
+        for child in children.get(stack.pop(), ()):
+            if child not in members:
+                members.add(child)
+                stack.append(child)
+    return members
+
+
+def _agent_pids(
+    table: ProcessTable, root_pid: int, name_of: Callable[[int], str | None], agent_names: frozenset[str]
+) -> set[int]:
+    """The agent's own processes: ``root_pid`` and its direct children named in ``agent_names``."""
+    agent_pids = {root_pid}
+    if agent_names:
+        agent_pids |= {pid for pid in _children_of(table).get(root_pid, ()) if name_of(pid) in agent_names}
+    return agent_pids
+
+
 def descendant_cpu_seconds(
     root_pid: int,
     table_source: Callable[[], ProcessTable | None] = process_table,
@@ -270,25 +303,74 @@ def descendant_cpu_seconds(
     table = table_source()
     if table is None:
         return None
-    children: dict[int, list[int]] = {}
-    for pid, (ppid, _pgid, _cpu, _reaped) in table.items():
-        children.setdefault(ppid, []).append(pid)
-    members = {root_pid} | {pid for pid, (_ppid, pgid, _cpu, _reaped) in table.items() if pgid == root_pid}
-    stack = list(members)
-    while stack:
-        for child in children.get(stack.pop(), ()):
-            if child not in members:
-                members.add(child)
-                stack.append(child)
-    agent_pids = {root_pid}
-    if agent_names:
-        agent_pids |= {pid for pid in children.get(root_pid, ()) if name_of(pid) in agent_names}
+    members = _descendant_members(table, root_pid)
+    agent_pids = _agent_pids(table, root_pid, name_of, agent_names)
     sample = {pid: table[pid][2] + table[pid][3] for pid in members - agent_pids if pid in table}
     for pid in agent_pids:
         reaped = table[pid][3] if pid in table else 0.0
         if reaped > 0:
             sample[pid] = reaped
     return sample
+
+
+def process_command(pid: int, proc_root: str = "/proc") -> str | None:
+    """Command line of ``pid`` (``/proc/<pid>/cmdline``, else ``ps -o args=``), cut to ``COMMAND_DISPLAY_CHARS``.
+
+    Returns None when the process is gone or its command line cannot be read.
+    """
+    try:
+        with open(os.path.join(proc_root, str(pid), "cmdline"), "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        raw = None
+    if raw is not None:
+        command = " ".join(part for part in raw.decode("utf-8", errors="replace").split("\0") if part).strip()
+    elif os.path.isdir(proc_root):
+        return None  # /proc exists, so the process has exited
+    else:
+        command = _ps_command(pid)
+    return command[:COMMAND_DISPLAY_CHARS] or None
+
+
+def _ps_command(pid: int) -> str:
+    """``ps -o args=`` for ``pid``; empty when ``ps`` is missing, fails or the process is gone."""
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "args=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=PS_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def descendant_commands(
+    root_pid: int,
+    table_source: Callable[[], ProcessTable | None] = process_table,
+    name_of: Callable[[int], str | None] = process_name,
+    command_of: Callable[[int], str | None] = process_command,
+    agent_names: frozenset[str] = WRAPPED_AGENT_PROCESS_NAMES,
+) -> dict[int, str] | None:
+    """``{pid: command line}`` of every live non-agent process descended from ``root_pid`` or in its process group.
+
+    Uses the same membership and agent rules as :func:`descendant_cpu_seconds`, so a command backgrounded with ``&``
+    is still found after the runner has been reaped (it stays in the runner's process group). Processes whose command
+    line can no longer be read are skipped. Returns None when no process table is available.
+    """
+    table = table_source()
+    if table is None:
+        return None
+    members = _descendant_members(table, root_pid) - _agent_pids(table, root_pid, name_of, agent_names)
+    commands = {pid: command_of(pid) for pid in sorted(members) if pid in table}
+    return {pid: command for pid, command in commands.items() if command}
+
+
+def describe_commands(commands: Mapping[int, str]) -> str:
+    """``"<command> (pid N); <command> (pid M)"`` sorted by pid, for log lines."""
+    return "; ".join(f"{commands[pid]} (pid {pid})" for pid in sorted(commands))
 
 
 def tool_cpu_used(previous: Mapping[int, float], current: Mapping[int, float]) -> float:

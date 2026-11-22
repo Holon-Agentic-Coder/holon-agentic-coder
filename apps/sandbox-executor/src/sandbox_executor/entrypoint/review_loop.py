@@ -33,6 +33,7 @@ from typing import Any
 
 from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
 from sandbox_executor.agent_runner import get_runner, get_workspace_dir
+from sandbox_executor.budgets import load_budgets
 from sandbox_executor.entrypoint.rejected_attempt import (
     clear_rejected_attempts,
     load_rejected_attempt,
@@ -446,7 +447,8 @@ def _run_resolver_agent(
         raise AttributeError(
             f"Runner for agent '{agent_name}' satisfies neither 'build_command' nor 'compose_cmd' contract"
         )
-    outcome = run_turn(cmd, cwd=repo_dir)
+    # Same turn and stall budgets as the executor and planner: HOLON_TURN_*_SECONDS apply to the resolver too.
+    outcome = run_turn(cmd, cwd=repo_dir, turn_budgets=load_budgets(os.environ).turn)
     # A failed turn decides nothing: its exit code is checked before any dispositions file it may have left behind.
     code = getattr(outcome, "returncode", getattr(outcome, "exit_code", 0))
     output = f"{getattr(outcome, 'stdout', '') or ''}\n{getattr(outcome, 'stderr', '') or ''}"

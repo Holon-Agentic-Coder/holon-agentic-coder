@@ -21,14 +21,20 @@ from sandbox_executor.flow.review.head_test_evidence import (
     TEST_SOURCE_RESOLVER_EVIDENCE,
     TEST_SOURCE_STAGE_3,
     HeadEvidenceDecisionInput,
+    _attach_local_counts,
+    _attach_stage_3_counts,
     _attribute_test_source,
     _failed,
+    _has_passing_ci_rejection,
     _LocalTestOutcome,
+    _needs_ci_registration,
+    _needs_pr_head,
     choose_evidence,
-    has_pass_marker,
+)
+from sandbox_executor.flow.review.head_test_evidence import (
+    has_pass_marker as has_pass_marker,
 )
 from sandbox_executor.git import run_git
-from sandbox_executor.resolver_evidence import names_checked_code
 
 # The test run; replaced in tests so no real ``uv run task test`` starts.
 run_measurement: Callable[[str], TestMeasurement] = run_test_task
@@ -117,24 +123,7 @@ class _ReviewTestGate:
 
     def accept_resolver_evidence(self, head_sha: str, dispositions: Sequence[Any]) -> None:
         """Confirm a rejected FIND-CI with passing test evidence on this head via local re-measurement."""
-        if not head_sha:
-            return
-        matches = False
-        for d in dispositions:
-            disp_id = str(getattr(d, "id", None) or (d.get("id") if isinstance(d, dict) else "") or "")
-            disp_val = str(
-                getattr(d, "disposition", None) or (d.get("disposition") if isinstance(d, dict) else "") or ""
-            )
-            ev = str(getattr(d, "evidence", None) or (d.get("evidence") if isinstance(d, dict) else "") or "")
-            if (
-                disp_id.startswith("FIND-CI")
-                and disp_val == "rejected"
-                and names_checked_code(ev)
-                and has_pass_marker(ev)
-            ):
-                matches = True
-                break
-        if not matches:
+        if not head_sha or not _has_passing_ci_rejection(dispositions):
             return
         if self._tester._head() != head_sha:
             # The resolver pushed: the checkout is no longer the head its evidence describes.
@@ -143,6 +132,23 @@ class _ReviewTestGate:
         if not outcome.failed and outcome.rate is not None and not outcome.measurement.run_error:
             self._resolver_heads.add(head_sha)
 
+    def needs_ci_registration(self) -> bool:
+        """True when the current head has neither confirmed resolver evidence nor a Stage 3 measurement."""
+        return _needs_ci_registration(
+            self.stage_3_evidence, self.stage_3_head, self._tester._head(), self._resolver_heads
+        )
+
+    def advance_ledger_head(self, old_head: str, new_head: str) -> None:
+        """Carry head-scoped evidence across a flow-authored ledger commit (no code changed)."""
+        if not old_head or not new_head or old_head == new_head:
+            return
+        if old_head in self._resolver_heads:
+            self._resolver_heads.add(new_head)
+        if old_head in self._tester._cache:
+            self._tester._cache[new_head] = self._tester._cache[old_head]
+        if self.stage_3_head == old_head:
+            self.stage_3_head = new_head
+
     def evidence(self, ci_status: dict[str, Any]) -> tuple[float | None, bool]:
         """The ``(test_pass_rate, tests_failed)`` for the CI gate judging the current head commit."""
         if self._context.dry_run:
@@ -150,43 +156,34 @@ class _ReviewTestGate:
             return self.stage_3_evidence
 
         current_head = self._tester._head()
+        need_pr = _needs_pr_head(ci_status, current_head, self._resolver_heads)
+        pr_head = self._get_pr_head(current_head) if need_pr else ""
         source = choose_evidence(
             HeadEvidenceDecisionInput(
                 ci_status=ci_status,
                 stage_3_evidence=self.stage_3_evidence,
                 stage_3_head=self.stage_3_head,
                 current_head=current_head,
-                pr_head_sha=self._get_pr_head(current_head),
+                pr_head_sha=pr_head,
                 resolver_heads=frozenset(self._resolver_heads),
             )
         )
 
-        outcome: _LocalTestOutcome | None = None
         if source == TEST_SOURCE_RESOLVER_EVIDENCE:
-            rate, failed = 1.0, False
-            detail = "passing run confirmed locally"
+            rate, failed, detail = 1.0, False, "passing run confirmed locally"
+            if (cached := self._tester._cache.get(current_head)) is not None:
+                _attach_local_counts(ci_status, cached)
         elif source == TEST_SOURCE_CI_HEAD:
-            rate, failed = 1.0, False
-            detail = "all_passed=True"
+            rate, failed, detail = 1.0, False, "all_passed=True"
         elif source == TEST_SOURCE_STAGE_3:
             rate, failed = self.stage_3_evidence
             detail = f"rate {rate}, failed={failed}"
-            if self._stage_3 and (
-                self._stage_3.get("test_pass_rate") is not None or self._stage_3.get("test_run_error")
-            ):
-                ci_status["test_counts"] = {
-                    "passed": self._stage_3.get("tests_passed"),
-                    "failed": self._stage_3.get("tests_failed"),
-                    "errored": self._stage_3.get("tests_errored"),
-                }
+            _attach_stage_3_counts(ci_status, self._stage_3)
         else:
             outcome = self._tester.measure()
             rate, failed = outcome.rate, outcome.failed
             detail = outcome.measurement.run_error or f"rate {rate}, failed={failed}"
-            m = outcome.measurement
-            ci_status["test_counts"] = {"passed": m.passed, "failed": m.failed, "errored": m.errored}
-            if m.run_error:
-                ci_status["test_run_error"] = m.run_error
+            _attach_local_counts(ci_status, outcome)
 
         ci_status["test_source"] = source
         ci_status["test_head_sha"] = current_head

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Mapping
 from typing import Any
 
 from sandbox_executor import cli
@@ -338,8 +339,9 @@ def _report_flow_summary(context: Any, result_dict: dict[str, Any], json_output:
 def _report_review_outcome(review_res: StageResult | None) -> None:
     if not review_res:
         return
-    consensus = review_res.payload.get("consensus") or {}
-    is_approved = review_res.status == StageStatus.APPROVED or (
+    raw_consensus = review_res.payload.get("consensus")
+    consensus = raw_consensus if isinstance(raw_consensus, Mapping) else {}
+    is_approved = review_res.status == StageStatus.APPROVED or bool(
         review_res.payload.get("halted_for_human") and consensus.get("approved")
     )
     if is_approved:

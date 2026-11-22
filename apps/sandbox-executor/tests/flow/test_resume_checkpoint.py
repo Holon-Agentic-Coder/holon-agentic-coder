@@ -130,6 +130,7 @@ def test_a_resume_that_cannot_start_leaves_the_checkpoint_byte_for_byte(
     "case",
     [
         (StageStatus.SUCCESS, StageStatus.SUCCESS, "completed", STAGES),
+        (StageStatus.APPROVED, StageStatus.SUCCESS, "completed", STAGES),
         (StageStatus.HALTED_FOR_HUMAN, StageStatus.SUCCESS, "completed", STAGES),
         (StageStatus.SUCCESS, StageStatus.FAILED, "calibrate", STAGES[:4]),
     ],

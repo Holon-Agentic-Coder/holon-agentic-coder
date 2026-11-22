@@ -486,3 +486,102 @@ def test_wait_without_check_names_logs_the_pending_count_change():
         "[Review Loop] CI checks pending: 1 -> 0.",
         "[Review Loop] CI wait settled after 45s: 2 passed, 0 failed, 0 other.",
     ]
+
+
+def test_pending_ci_settling_to_pass_overrides_stale_stage3_failure(tmp_path, monkeypatch):
+    """Pending GitHub CI settles BEFORE test_gate.evidence runs, avoiding false FIND-CI after Stage 3 failure."""
+    fake = FakeTime()
+    with patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"):
+        res = _run_loop(
+            tmp_path,
+            monkeypatch,
+            [PENDING, PASSED],
+            fake,
+            payload={"head_sha": "stage3-head", "test_pass_rate": 0.5, "exit_code": 1},
+            ci_wait_budget=600.0,
+        )
+
+    assert res["consensus"]["approved"] is True
+    assert res["tests_failed"] is False
+    assert res["findings"] == []
+    assert res["ci_wait"] is None
+    assert res["ci_checks"]["test_source"] == "ci_head"
+    assert res["ci_checks"]["test_head_sha"] == "stage3-head"
+
+
+def test_pending_ci_settling_on_moved_head_skips_local_tests_and_keeps_ci_head(tmp_path, monkeypatch):
+    """On a moved head with pending CI, the loop waits for CI first rather than running local tests synchronously."""
+    from sandbox_executor.flow.review import local_tests
+
+    run = MagicMock()
+    monkeypatch.setattr(local_tests, "run_measurement", run)
+    fake = FakeTime()
+    with (
+        patch(
+            "sandbox_executor.flow.review.local_tests.run_git", return_value=MagicMock(returncode=0, stdout="moved\n")
+        ),
+        patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="moved"),
+    ):
+        res = _run_loop(
+            tmp_path,
+            monkeypatch,
+            [PENDING, PASSED],
+            fake,
+            payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
+            ci_wait_budget=600.0,
+        )
+
+    run.assert_not_called()
+    assert res["consensus"]["approved"] is True
+    assert res["ci_checks"]["test_source"] == "ci_head"
+    assert res["ci_checks"]["test_head_sha"] == "moved"
+
+
+def test_ci_registration_runs_on_new_head_after_prior_iteration_local_failure(tmp_path, monkeypatch):
+    """Prior iteration tests_failed must not suppress _wait_for_ci_registration on a resolver-pushed new head."""
+    from sandbox_executor.entrypoint.test_measurement import TestMeasurement
+    from sandbox_executor.flow.review import local_tests
+
+    install_fake_reviewers(monkeypatch)
+    fake = FakeTime()
+    local_only = {"source": "local_tests", "total": 1, "passed": 1, "failed": 0, "pending": 0, "all_passed": True}
+    probes = [dict(local_only), dict(PASSED)]
+    probe = MagicMock(side_effect=lambda *a, **k: dict(probes.pop(0) if probes else PASSED))
+    current_head = {"sha": "head-1"}
+
+    def fake_resolver(**kwargs):
+        del kwargs
+        current_head["sha"] = "head-2"
+        return {"dispositions": [], "head_sha": "head-2", "pushed": True}
+
+    failing_local = TestMeasurement(0.5, 5, 5, 0, 1, None, "")
+    monkeypatch.setattr(local_tests, "run_measurement", MagicMock(return_value=failing_local))
+    with (
+        patch("sandbox_executor.flow.review.loop.shutil.which", return_value="/usr/bin/gh"),
+        patch("sandbox_executor.flow.github.ci.probe_ci_checks", probe),
+        patch("sandbox_executor.flow.review.loop.probe_ci_checks", probe),
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
+        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="head-2"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+        patch("sandbox_executor.flow.review.local_tests._ReviewLocalTests._head", lambda _self: current_head["sha"]),
+        patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="head-2"),
+        patch("sandbox_executor.flow.review.loop._wait_for_ci_registration") as mock_reg,
+    ):
+        res = run_review_loop(
+            _context(tmp_path, {"head_sha": "head-1", "test_pass_rate": None, "exit_code": 0}),
+            target=EXEC_TARGET,
+            max_iterations=2,
+            ensemble_size=1,
+            auto_pr=False,
+            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            run_resolver_fn=fake_resolver,
+            clock=fake.clock,
+            sleep=fake.sleep,
+        )
+
+    assert mock_reg.call_count == 2
+    assert res["consensus"]["approved"] is True
+    assert res["total_iterations"] == 2
+    assert res["ci_checks"]["test_source"] == "ci_head"
+    assert res["ci_checks"]["test_head_sha"] == "head-2"

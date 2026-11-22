@@ -26,8 +26,8 @@ The Holon Flow pipeline executes sequentially through five distinct lifecycle st
 |                           |                      v                                |
 |                           |              +---------------+                        |
 |                           |              | Human-Only    |                        |
-|                           |              | Merge Halt    |                        |
-|                           |              | (Merge Sign)  |                        |
+|                           |              | Merge Boundary|                        |
+|                           |              | (PR Ready)    |                        |
 |                           |              +---------------+                        |
 |                           |                      |                                |
 |                           +--------------------->v                                |
@@ -74,9 +74,11 @@ The Holon Flow pipeline executes sequentially through five distinct lifecycle st
 - **Mergeability Check**: Runs git merge-tree or GitHub CLI checks to detect merge conflicts early.
 - **Review Iterations**: Bounded by `max_review_iterations` (default: 3) to prevent unbounded loops.
 - **Human-Only PR Merging Invariant**:
-  > **SAFETY HALT**: When the review loop achieves consensus approval (100% test pass rate, no merge conflicts, clean
-  > diffs), the pipeline unconditionally transitions to `HALTED_FOR_HUMAN`. Autonomous merging to `main` is strictly
-  > prohibited. The system presents manual approval commands for operator sign-off.
+  > **REVIEW APPROVED**: When the review loop achieves consensus approval (all reviewers approved with zero findings,
+  > mergeable PR, and green head-verified CI or local tests), Stage 4 completes with `StageStatus.APPROVED`
+  > (`halted_for_human=False`, `[REVIEW APPROVED]`) and advances to Stage 5 calibration before leaving the PR ready for
+  > maintainer merge. Autonomous merging to `main` is strictly prohibited; `StageStatus.HALTED_FOR_HUMAN`
+  > (`[SAFETY HALT]`) is reserved for dry-run halts and manual-intervention boundaries.
 - **Bypass**: Can be bypassed using `--skip-review` for rapid prototyping or emergency out-of-band testing.
 
 ### Stage 5: Post-Execution Calibration (`FlowStage.CALIBRATE`)
@@ -181,7 +183,8 @@ The pipeline provides crash resilience and state preservation via atomic checkpo
 
 1. **Human-Only Merging**:
    - The flow runner will never execute `git merge` into `main`.
-   - On consensus, the pipeline outputs `[SAFETY HALT]` with instructions for human operator review.
+   - On consensus approval, the pipeline outputs `[REVIEW APPROVED]` and leaves the PR ready for maintainer merge
+     (`[SAFETY HALT]` applies only to dry-run or safety halts).
 2. **Rebase Collisions**:
    - If upstream changes conflict during execution branch rebase, the pipeline halts with `FAILED` in the execute stage
      and saves checkpoint state.

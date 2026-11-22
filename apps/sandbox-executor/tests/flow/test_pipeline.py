@@ -103,8 +103,8 @@ class TestFlowStages:
     def test_stage4_review_human_only_merge_halt(self, tmp_path):
         """CRITICAL INVARIANT TEST: human-only PR merging rule.
 
-        Ensures autonomous review loop halts unconditionally with HALTED_FOR_HUMAN
-        upon reaching consensus approval, and strictly NEVER executes a git merge to main.
+        Ensures autonomous review loop completes with APPROVED upon reaching
+        consensus approval and strictly NEVER executes a git merge to main.
         """
         ctx = FlowContext(
             repo_dir=str(tmp_path),

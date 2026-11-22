@@ -64,6 +64,24 @@ def test_the_parent_execution_branch_carries_every_record_and_stage_4_halts_at_m
     assert reviews.gh.prs[reviews.reviewed[-1]["number"]]["state"] == "OPEN"
 
 
+def test_the_parent_execution_branch_completes_with_approved_stage_4_at_main(flow_repos, tmp_path):
+    host, origin = flow_repos
+    agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")])
+    ctx = _budget_context(host, agents, 5.0)
+    ctx.skip_review = False
+    with decomposed_flow(origin, tmp_path, review_status=StageStatus.APPROVED) as reviews:
+        results = PipelineEngine(ctx).run()
+
+    assert results["execute"].status == StageStatus.SUCCESS
+    assert results["review"].status == StageStatus.APPROVED
+    assert results["review"].payload["halted_for_human"] is False
+    assert any(
+        "finished at the merge boundary: review approved, PR ready for maintainer merge (stage 'review')" in line
+        for line in ctx.logs
+    )
+    assert reviews.gh.prs[reviews.reviewed[-1]["number"]]["state"] == "OPEN"
+
+
 def test_integration_is_idempotent_on_a_resume(flow_repos, tmp_path):
     host, origin = flow_repos
     ctx, results, _reviews = _run_decomposed(host, origin, tmp_path)

@@ -1,5 +1,5 @@
-"""Stage 4 (Review Loop): run the review loop on the execution branch and halt at consensus approval,
-strictly enforcing the human-only PR merge rule.
+"""Stage 4 (Review Loop): run the review loop on the execution branch and return APPROVED at consensus,
+preserving human-only merge boundaries without merging to main.
 """
 
 from __future__ import annotations

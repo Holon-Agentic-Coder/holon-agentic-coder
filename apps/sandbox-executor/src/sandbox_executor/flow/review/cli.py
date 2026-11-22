@@ -20,7 +20,7 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
 
     Returns:
         int: Process exit code: 0 only when the ensemble verdict is APPROVED and the consensus was approved and
-        posted (human halt), otherwise 1.
+        posted (ready for maintainer merge), otherwise 1.
     """
     target_worktree = getattr(args, "target_worktree", None) or getattr(args, "repo_dir", ".")
     target = getattr(args, "target", "")

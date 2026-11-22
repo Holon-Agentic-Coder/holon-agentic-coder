@@ -97,7 +97,7 @@ class TestReviewLoopStage:
         assert "Review-Severity: clean" in clean_trailers
 
     def test_review_loop_consensus_approval_halts_without_merge(self, tmp_path):
-        """Verify review loop halts with HALTED_FOR_HUMAN and never invokes git merge main."""
+        """Verify review loop approves without halting for human and never invokes git merge main."""
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             execution_branch="I-100-intent/P-200-plan/E-300-exec/_",

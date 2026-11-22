@@ -511,7 +511,7 @@ split from the former single `flow.py` by moving code only. Three tests guard th
 | `flow/stages/children.py`              | Stage 3 child loop: runs, resumes and merges each sub-intent under the plan branch, one after another.           |
 | `flow/stages/integration.py`           | Stage 3 integration: merges the plan branch into the parent execution branch for the combined PR.                |
 | `flow/stages/execute.py`               | Stage 3: dispatches the executor, adopts its branch and resumes failed partial executions.                       |
-| `flow/stages/review.py`                | Stage 4: runs the review loop and halts at consensus approval without merging.                                   |
+| `flow/stages/review.py`                | Stage 4: runs the review loop and completes with APPROVED at consensus without merging.                          |
 | `flow/stages/calibrate.py`             | Stage 5: runs calibration and commits the calibrated artefacts.                                                  |
 | `flow/pipeline.py`                     | `PipelineEngine` and `run_flow_pipeline`, which run the five stages in order with checkpoints.                   |
 

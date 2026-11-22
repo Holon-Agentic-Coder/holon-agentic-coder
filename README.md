@@ -883,9 +883,9 @@ flowchart TD
     H1 -- "No" --> F1["FAILED (Review Rejection)"]
     C2 -- "--skip-calibrate" --> S_SKIP["Stage 5: SKIPPED"]
     C2 -- "default" --> S5["Stage 5: Post-Execution Calibration (/calibrated branch)"]
-    S5 --> HALT["HALTED_FOR_HUMAN (Safety Merge Boundary)"]
-    S_SKIP --> HALT
-    HALT --> DONE["Human Maintainer Merges PR"]
+    S5 --> APPROVED["APPROVED (Ready for Maintainer Merge)"]
+    S_SKIP --> APPROVED
+    APPROVED --> DONE["Human Maintainer Merges PR"]
 ```
 
 ##### Command Options Reference

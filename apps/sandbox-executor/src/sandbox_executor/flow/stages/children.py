@@ -3,7 +3,7 @@
 Children run strictly one after another. Each child is a new intent whose ``target_branch`` and ``parent_intent_id`` are
 the plan branch, so Stage 1 cuts it from the plan branch tip on origin, which already holds every earlier child's merge
 or squash commit. A child is merged into the plan branch (by the guarded :func:`merge_child_pr`) only after its Stage 4
-consensus halt and its Stage 5 calibration; the next child starts only after that merge. Progress is recorded per child
+consensus approval and its Stage 5 calibration; the next child starts only after that merge. Progress is recorded per
 in the Stage 3 payload and checkpointed after every change, so a resume continues where the run stopped and never
 dispatches the parent executor or a child that already has work on origin.
 """
@@ -169,8 +169,8 @@ def _load_child_checkpoint(context: FlowContext, child: FlowContext, entry: dict
 
 
 def _merge_readiness_error(results: dict[str, StageResult]) -> str | None:
-    """Why a child's results are not ready to merge: Stage 4 must have halted at consensus, Stage 5 succeeded or
-    been skipped by flag."""
+    """Why a child's results are not ready to merge: Stage 4 must have reached consensus approval, Stage 5 succeeded
+    or been skipped by flag."""
     review = results.get(FlowStage.REVIEW.value)
     calibrate = results.get(FlowStage.CALIBRATE.value)
     consensus = review.payload.get("consensus") if review is not None else None
@@ -288,7 +288,7 @@ def run_children(context: FlowContext, start_time: str, payload: dict[str, Any])
     (``--from-stage execute``) never re-dispatches a child that already has an execution branch or PR. An exception
     that escaped to the pipeline would store a payload-less failure and overwrite the checkpointed
     ``children_progress``, so it is turned into a Stage 3 failure that keeps the entries' last status instead. Under
-    ``--skip-review`` no child could reach its consensus halt and merge, so the stage is refused first, before any
+    ``--skip-review`` no child could reach consensus approval and merge, so the stage is refused first, before any
     origin lookup or progress change, and keeps its own message.
     """
     if context.skip_review:

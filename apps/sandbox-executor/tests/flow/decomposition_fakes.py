@@ -29,24 +29,37 @@ def parent_ctx(tmp_path: Path) -> FlowContext:
     )
 
 
-def halted_review(number: int | None, url: str | None) -> StageResult:
-    """The Stage 4 result at a consensus halt, with the PR recorded under ``payload["pr"]`` as the real stage does."""
+def halted_review(
+    number: int | None, url: str | None, *, status: StageStatus = StageStatus.HALTED_FOR_HUMAN
+) -> StageResult:
+    """The Stage 4 result at a consensus boundary, recording the PR under ``payload["pr"]`` as the real stage does."""
     pr = {"attempted": True, "success": True, "action": "create", "pr_number": number, "output": url or ""}
     return StageResult(
         stage=FlowStage.REVIEW,
-        status=StageStatus.HALTED_FOR_HUMAN,
-        payload={"consensus": dict(APPROVED), "halted_for_human": True, "pr": pr},
+        status=status,
+        payload={
+            "consensus": dict(APPROVED),
+            "halted_for_human": status == StageStatus.HALTED_FOR_HUMAN,
+            "pr": pr,
+        },
     )
 
 
 class ChildReviews:
-    """Fake ``run_review_stage``: open or reuse the PR, then halt at consensus (or fail for a chosen slug, once)."""
+    """Fake ``run_review_stage``: open or reuse the PR, then end at consensus (or fail for a chosen slug, once)."""
 
-    def __init__(self, gh: FakeGitHub, fail_once_for: str | None = None, bases: dict[str, str] | None = None):
+    def __init__(
+        self,
+        gh: FakeGitHub,
+        fail_once_for: str | None = None,
+        bases: dict[str, str] | None = None,
+        review_status: StageStatus = StageStatus.HALTED_FOR_HUMAN,
+    ):
         self.gh = gh
         self.fail_once_for = fail_once_for
         # PR base per slug, overriding the intent's target_branch (models a mis-recorded or edited base).
         self.bases = bases or {}
+        self.review_status = review_status
         self.reviewed: list[dict[str, Any]] = []
         self.created: list[int] = []
 
@@ -68,7 +81,7 @@ class ChildReviews:
             failed.status, failed.error = StageStatus.FAILED, "Autonomous review requested changes."
             failed.payload.update(halted_for_human=False, consensus={**APPROVED, "approved": False})
             return failed
-        return halted_review(number, self.gh.prs[number]["url"])
+        return halted_review(number, self.gh.prs[number]["url"], status=self.review_status)
 
 
 @contextlib.contextmanager

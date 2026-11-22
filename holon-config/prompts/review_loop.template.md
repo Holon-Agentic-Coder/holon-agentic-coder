@@ -35,7 +35,8 @@ consensus model and post one short consensus review built only from what the rev
    `sandbox_executor.flow.record_review_action()` (or, without a `FlowContext`, the context-free
    `sandbox_executor.ledger.try_append_action_record(..., preserve_shape=True)`), never by writing to the file directly.
 10. **Human-only merging**: never run `gh pr merge`, enable auto-merge or add the PR to a merge queue. Merging remains
-    with the human maintainer; on consensus approval, halt and request human review.
+    with the human maintainer; on consensus approval, complete with `APPROVED` and leave the PR ready for maintainer
+    merge.
 11. **Resolver discipline**: when the resolver container runs on `CHANGES_REQUESTED`, it adjudicates every finding to
     `applied` or `rejected`, runs `uv run task lint` and `uv run task test` before pushing, commits applied fixes with
     the finding ids in the commit message, and never force-pushes or rewrites history.

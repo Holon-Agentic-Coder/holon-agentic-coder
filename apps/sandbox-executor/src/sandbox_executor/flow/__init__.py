@@ -121,9 +121,7 @@ _LAZY_EXPORTS: dict[str, str] = {
         "_review_base_ref _semantic_pr_text"
     ),
     "sandbox_executor.flow.review.git_identity": "REVIEW_GIT_ENV",
-    "sandbox_executor.flow.review.head_test_evidence": (
-        "HeadEvidenceDecisionInput HeadTestEvidence choose_evidence has_pass_marker"
-    ),
+    "sandbox_executor.flow.review.head_test_evidence": ("HeadEvidenceDecisionInput choose_evidence has_pass_marker"),
     "sandbox_executor.flow.review.ids": "build_review_id",
     "sandbox_executor.flow.review.loop": (
         "_loop_status _review_window _reviewers_objected _run_engine_review_loop run_review_loop"
@@ -232,7 +230,6 @@ __all__ = [
     "FlowStage",
     "HeadEvidenceDecisionInput",
     "HeadMoveCheck",
-    "HeadTestEvidence",
     "HostRemoteError",
     "InFlightFlow",
     "IntentQuestions",

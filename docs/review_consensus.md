@@ -25,10 +25,15 @@ important or critical finding counts only with a reason other than `out of scope
 `path:line` or a test; otherwise the finding stays `open` and goes back to the resolver when it is raised again. The
 posted review is headed `APPROVED` only for an `APPROVED` ensemble verdict with every reviewer approved with zero open
 findings and no role at `CHANGES`; its fraction counts only those clean approvals, and the PR review is submitted with
-`--approve` only under the same rule. End-of-flow messages (the `REV-...` summary row, the action event, the Stage 4
-error, the `[SAFETY HALT]` line and the `holon review-loop` summary) state each reviewer's final verdict as
-`Reviewer N VERDICT (critical/important/nit)` and say `not approved: reviewer N final verdict X` for any reviewer that
-did not approve cleanly; such a run never halts as approved and is never described as ready to merge.
+`--approve` only under the same rule. Consensus approval completes Stage 4 with `StageStatus.APPROVED`
+(`halted_for_human=False`), writes `status: "approved"` on the `REV-...` summary row, logs `[REVIEW APPROVED]` in the
+CLI summary and proceeds to Stage 5 calibration without merging to `main`. `StageStatus.HALTED_FOR_HUMAN` and
+`[SAFETY HALT]` apply only to safety halts and dry-run boundaries (legacy `halted_for_human` checkpoints and summary
+rows remain recognised as converged on read). Non-approved runs write `status: "failed"`; end-of-flow messages (the
+`REV-...` summary row, the action event, the Stage 4 error, the `[SAFETY HALT]` line and the `holon review-loop`
+summary) state each reviewer's final verdict as `Reviewer N VERDICT (critical/important/nit)` and say
+`not approved: reviewer N final verdict X` for any reviewer that did not approve cleanly; such a run never approves and
+is never described as ready to merge.
 
 When every reviewer approved cleanly but one of these checks withheld consensus, the Stage 4 error names the blocker
 (`Autonomous review blocked: consensus withheld by ...`) rather than a test failure.
@@ -101,14 +106,25 @@ failure row and ends the loop as `post_failed`.
 
 ## Test evidence and its source
 
-The CI gate reads one test result and names where it came from, in the review evidence and on the posted `Checks` line:
-`stage_3` (the executor's own measurement in its summary row), `ci` (GitHub checks) or `review_local` (the review loop's
-own run). When no CI checks register and Stage 3 recorded no rate, the loop's `local_tests` fallback runs
-`uv run task test` in the review container after the CI-registration wait, once per head commit (the result is cached on
-the head SHA and re-measured only after the resolver pushes a fix). A dry run never runs it. `null` still means "not
-measured" and withholds consensus: a run that could not execute records its `run_error`, and a measured result, passing
-or failing, is never reported as unmeasured. A rate below `1.0`, or a non-zero exit code of a completed run, is a failed
-test result and raises `FIND-CI`.
+The CI gate (`flow/review/head_test_evidence.py` and `flow/review/local_tests.py`) evaluates test evidence for the
+current git `HEAD` commit (after waiting for pending GitHub CI checks to settle) and records `test_source`,
+`test_head_sha` and `test_counts` in the CI evidence and on the posted `Checks` line, selecting the first applicable
+source in strict precedence order:
+
+1. `resolver_evidence`: a `FIND-CI` finding rejected by the resolver with passing code or test evidence on the current
+   head, confirmed by a local `uv run task test` measurement on that head (preserved across loop-authored ledger-only
+   commits).
+2. `ci_head`: green GitHub CI checks (`source == "github_cli"`, `all_passed == True`, `pending == 0`) verified against
+   the PR's `headRefOid` matching the current `HEAD`.
+3. `stage_3`: Stage 3's recorded test result (passing or failing) when `stage_3_head` matches the current `HEAD`.
+4. `review_local`: a local `uv run task test` re-run in the review container, cached per head commit and re-run only
+   when `HEAD` advances (used when Stage 3 recorded no measurement, Stage 3 failed and no newer head-matching green CI
+   or resolver evidence supersedes it, or `HEAD` moved past `stage_3_head`).
+
+A dry run never executes local tests and attributes the Stage 3 or GitHub CI probe (`ci` or `stage_3`). `null` still
+means "not measured" and withholds consensus: a run that could not execute records its `run_error`, and a measured
+result, passing or failing, is never reported as unmeasured. A rate below `1.0`, or a non-zero exit code of a completed
+run, is a failed test result and raises `FIND-CI`.
 
 ## Approval covers one head
 

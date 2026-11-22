@@ -10,10 +10,12 @@ Pure module with no subprocess calls: decides which test evidence to use for the
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from sandbox_executor.entrypoint.test_measurement import TestMeasurement
+from sandbox_executor.resolver_evidence import names_checked_code
 
 TEST_SOURCE_STAGE_3 = "stage_3"
 TEST_SOURCE_CI_HEAD = "ci_head"
@@ -36,17 +38,6 @@ def _failed(measurement: TestMeasurement) -> bool:
     if measurement.run_error:
         return False
     return measurement.exit_code != 0 or (measurement.rate is not None and measurement.rate < 1.0)
-
-
-@dataclass(frozen=True)
-class HeadTestEvidence:
-    """The evaluated test evidence for a specific git head commit."""
-
-    rate: float | None
-    failed: bool
-    source: str
-    head_sha: str
-    detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -76,6 +67,47 @@ def _is_stage_3_measured(stage_3_evidence: tuple[float | None, bool], stage_3_he
     if rate is None and not failed:
         return False
     return bool(stage_3_head) and current_head == stage_3_head
+
+
+def _needs_pr_head(ci_status: dict[str, Any], current_head: str, resolver_heads: frozenset[str] | set[str]) -> bool:
+    """True only when green GitHub CI could decide the head and resolver evidence does not already cover it."""
+    if not current_head or current_head in resolver_heads:
+        return False
+    return (
+        ci_status.get("source") == "github_cli"
+        and bool(ci_status.get("all_passed"))
+        and ci_status.get("pending", 0) == 0
+    )
+
+
+def _needs_ci_registration(
+    stage_3_evidence: tuple[float | None, bool],
+    stage_3_head: str,
+    current_head: str,
+    resolver_heads: frozenset[str] | set[str],
+) -> bool:
+    """True when the current head has neither confirmed resolver evidence nor a Stage 3 measurement."""
+    if current_head and current_head in resolver_heads:
+        return False
+    return not _is_stage_3_measured(stage_3_evidence, stage_3_head, current_head)
+
+
+def _attach_local_counts(ci_status: dict[str, Any], outcome: _LocalTestOutcome) -> None:
+    """Populate ``test_counts`` (and any ``test_run_error``) on ``ci_status`` from a local measurement."""
+    m = outcome.measurement
+    ci_status["test_counts"] = {"passed": m.passed, "failed": m.failed, "errored": m.errored}
+    if m.run_error:
+        ci_status["test_run_error"] = m.run_error
+
+
+def _attach_stage_3_counts(ci_status: dict[str, Any], stage_3: dict[str, Any] | None) -> None:
+    """Populate ``test_counts`` on ``ci_status`` when Stage 3 recorded counts or a run error."""
+    if stage_3 and (stage_3.get("test_pass_rate") is not None or stage_3.get("test_run_error")):
+        ci_status["test_counts"] = {
+            "passed": stage_3.get("tests_passed"),
+            "failed": stage_3.get("tests_failed"),
+            "errored": stage_3.get("tests_errored"),
+        }
 
 
 def choose_evidence(inp: HeadEvidenceDecisionInput) -> str:
@@ -108,21 +140,32 @@ def _attribute_test_source(
         ci_status["test_source"] = TEST_SOURCE_CI
         return
     if review_local is not None:
-        m = review_local.measurement
         ci_status["test_source"] = TEST_SOURCE_REVIEW_LOCAL
-        ci_status["test_counts"] = {"passed": m.passed, "failed": m.failed, "errored": m.errored}
-        if m.run_error:
-            ci_status["test_run_error"] = m.run_error
+        _attach_local_counts(ci_status, review_local)
     elif stage_3 and (stage_3.get("test_pass_rate") is not None or stage_3.get("test_run_error")):
         ci_status["test_source"] = TEST_SOURCE_STAGE_3
-        ci_status["test_counts"] = {
-            "passed": stage_3.get("tests_passed"),
-            "failed": stage_3.get("tests_failed"),
-            "errored": stage_3.get("tests_errored"),
-        }
+        _attach_stage_3_counts(ci_status, stage_3)
 
 
 def has_pass_marker(text: str) -> bool:
     """True when the text reports a pass: the word ``passed`` or a zero failure count (not ``10 failed``)."""
     clean = text.lower()
     return bool(re.search(r"\bpassed\b", clean) or re.search(r"(?<!\d)0 failed\b", clean))
+
+
+def _disp_field(disp: Any, name: str) -> str:
+    return str(getattr(disp, name, None) or (disp.get(name) if isinstance(disp, dict) else "") or "")
+
+
+def _has_passing_ci_rejection(dispositions: Sequence[Any]) -> bool:
+    """True when a disposition rejects a ``FIND-CI`` finding with code/test evidence containing a pass marker."""
+    for disp in dispositions:
+        ev = _disp_field(disp, "evidence")
+        if (
+            _disp_field(disp, "id").startswith("FIND-CI")
+            and _disp_field(disp, "disposition") == "rejected"
+            and names_checked_code(ev)
+            and has_pass_marker(ev)
+        ):
+            return True
+    return False

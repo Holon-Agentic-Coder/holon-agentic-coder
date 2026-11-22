@@ -40,8 +40,8 @@ apps/sandbox-executor/
 - **`flow.py`**: Houses `PipelineEngine`, `FlowContext`, `FlowCheckpoint`, and stage runners (`run_intent_stage`,
   `run_plan_stage`, `run_execute_stage`, `run_review_stage`, `run_calibrate_stage`). Stages 1-3 dispatch the same role
   containers as the per-stage commands (through `cli.dispatch_role_agent`) and adopt the branches they push; the flow
-  never authors plans or code itself. Also manages atomic checkpointing, the empty-diff guard and the human-only merge
-  safety halts.
+  never authors plans or code itself. Also manages atomic checkpointing, the empty-diff guard, consensus approval
+  outcomes (`APPROVED`) and human-only merge boundaries.
 - **`cli.py`**: Entrypoint for all `holon` commands (`flow`, `plan`, `execute`, `review-loop`, `calibrate`, `consult`,
   `record`, `reconcile`, `promote`, `veto`, `stats`, `ledger`). Handles argument parsing, proxy setup, and process
   dispatch.

@@ -148,7 +148,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     the resolver. Only when all reviewers approve cleanly with zero open findings and mergeability is clean does the
     loop wait for CI checks to settle as a post-review safety gate before calling ``decide_consensus()``. Reviewers run
     only inside a sandbox: on the host the loop refuses before any PR, iteration or post. It enforces the
-    human-only PR merge rule by halting at approval without merging.
+    human-only PR merge rule by completing with approved consensus without merging to main.
 
     Args:
         context: Active FlowContext carrying repository and pipeline state.
@@ -204,7 +204,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             proxy_env = {}
 
     test_gate = _ReviewTestGate(context, repo_dir, target=review_target, proxy_env=proxy_env)
-    test_pass_rate, tests_failed = test_gate.stage_3_evidence
+    _, tests_failed = test_gate.stage_3_evidence
     iteration = first_label - 1
     consensus_reached = False
     last_ci_status: dict[str, Any] = {}
@@ -328,6 +328,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         boundary = "" if iteration >= 1 else f"before iteration {iteration + 1}"
         last_commit = None if effective_dry_run else _commit_pending_ledger_rows(context, iteration, boundary)
         resolved_target, prev_head_sha = _advance_past_ledger_commit(resolved_target, prev_head_sha, last_commit)
+        if last_commit is not None:
+            test_gate.advance_ledger_head(last_commit.parent, last_commit.sha)
         iteration += 1
         context.log(f"[Review Loop] Starting review iteration {iteration}/{last_label} for target '{review_target}'.")
         iteration_timer = StageTimer("review", iteration_budget_seconds, clock=clock)
@@ -386,7 +388,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             )
         elif not is_dirty and not missing_ref and not effective_dry_run and infra_error is None:
             # Post-review CI gate on clean review: wait for CI registration and pending checks to settle.
-            if pr_allowed and test_pass_rate is None and not tests_failed and shutil.which("gh"):
+            if pr_allowed and test_gate.needs_ci_registration() and shutil.which("gh"):
                 reg_timeout = iteration_timer.remaining_capped(resolve_ci_registration_timeout(ci_registration_timeout))
                 _wait_for_ci_registration(
                     context,
@@ -397,14 +399,15 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                     ci_poll_interval,
                     clock=clock,
                     sleep=sleep,
+                    probe=probe_ci,
                 )
 
             last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-            gate_rate, tests_failed = test_gate.evidence(last_ci_status)
-            tests_not_measured |= apply_local_test_evidence(last_ci_status, tests_failed, gate_rate, False, True)
             last_ci_status, waited = settle_pending_ci(context, probe_ci, last_ci_status, ci_policy, bool(ci_wait))
             iteration_timer.credit(waited.waited_seconds if waited else 0.0)  # The wait has its own budget.
             ci_wait = waited if waited and waited.exhausted else (ci_wait if last_ci_status.get("pending", 0) else None)
+            gate_rate, tests_failed = test_gate.evidence(last_ci_status)
+            tests_not_measured |= apply_local_test_evidence(last_ci_status, tests_failed, gate_rate, False, True)
             ci_green, ci_finding = gate_ci_flags(last_ci_status, tests_failed)
             ensemble_verdict = decide_returned_consensus(reviewers, ensemble_size, True, ci_green, blockers)
         else:

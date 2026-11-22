@@ -246,3 +246,51 @@ def test_missing_stage_3_head_measures_locally(tmp_path, monkeypatch):
 
     run.assert_called_once()
     assert probe["test_source"] == "review_local"
+
+
+def test_pr_head_is_not_queried_for_non_github_or_resolver_covered_heads(tmp_path, monkeypatch):
+    run = MagicMock(return_value=_measurement(1.0, 0))
+    monkeypatch.setattr(local_tests, "run_measurement", run)
+    pr_head = MagicMock(return_value="head1")
+    ctx = HARNESS._ctx(tmp_path, {"test_pass_rate": 0.5, "tests_failed": 1, "head_sha": "stage3sha"})
+    with patch("sandbox_executor.flow.review.local_tests.run_git") as mock_git:
+        mock_git.return_value = MagicMock(returncode=0, stdout="head1\n")
+        gate = local_tests._ReviewTestGate(ctx, str(tmp_path), pr_head=pr_head)
+
+        # Non-github probe and failing github probe skip pr_head lookup.
+        gate.evidence({"source": "local_tests"})
+        gate.evidence({"source": "github_cli", "all_passed": False, "pending": 0})
+        pr_head.assert_not_called()
+
+        # Accepted resolver head also skips pr_head even when github_cli is green, and attaches test_counts.
+        disp = [{"id": "FIND-CI-001", "disposition": "rejected", "evidence": "tests/test_app.py::test_ok passed"}]
+        gate.accept_resolver_evidence("head1", disp)
+        probe = {"source": "github_cli", "all_passed": True, "pending": 0}
+        rate, failed = gate.evidence(probe)
+
+    pr_head.assert_not_called()
+    assert (rate, failed) == (1.0, False)
+    assert probe["test_source"] == "resolver_evidence"
+    assert probe["test_counts"] == {"passed": 10, "failed": 0, "errored": 0}
+
+
+def test_advance_ledger_head_preserves_resolver_evidence_and_test_counts(tmp_path, monkeypatch):
+    run = MagicMock(return_value=_measurement(1.0, 0))
+    monkeypatch.setattr(local_tests, "run_measurement", run)
+    ctx = HARNESS._ctx(tmp_path, {"test_pass_rate": 0.5, "tests_failed": 1, "head_sha": "stage3sha"})
+    with patch("sandbox_executor.flow.review.local_tests.run_git") as mock_git:
+        mock_git.return_value = MagicMock(returncode=0, stdout="code-sha\n")
+        gate = local_tests._ReviewTestGate(ctx, str(tmp_path))
+        disp = [{"id": "FIND-CI-001", "disposition": "rejected", "evidence": "tests/test_app.py::test_ok passed"}]
+        gate.accept_resolver_evidence("code-sha", disp)
+
+        gate.advance_ledger_head("code-sha", "ledger-sha")
+        mock_git.return_value = MagicMock(returncode=0, stdout="ledger-sha\n")
+        probe = {"source": "local_tests"}
+        rate, failed = gate.evidence(probe)
+
+    run.assert_called_once()
+    assert (rate, failed) == (1.0, False)
+    assert probe["test_source"] == "resolver_evidence"
+    assert probe["test_head_sha"] == "ledger-sha"
+    assert probe["test_counts"] == {"passed": 10, "failed": 0, "errored": 0}

@@ -6,16 +6,13 @@ to a per-head local test run (``review_local``) when Stage 3 failed, was unmeasu
 
 from __future__ import annotations
 
-import json
-import os
-import shutil
-import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from sandbox_executor.entrypoint.test_measurement import TestMeasurement, run_test_task
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.dispatch import _test_evidence
+from sandbox_executor.flow.github.pr_head import pr_head_sha
 from sandbox_executor.flow.review.head_test_evidence import (
     TEST_SOURCE_CI_HEAD,
     TEST_SOURCE_RESOLVER_EVIDENCE,
@@ -64,25 +61,7 @@ class _ReviewLocalTests:
 
 def _default_pr_head(repo_dir: str, target: str, proxy_env: Mapping[str, str] | None = None) -> str | None:
     """The PR head commit for ``target`` via ``gh``, or None when it cannot be read."""
-    if not target or not shutil.which("gh"):
-        return None
-    env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
-    try:
-        proc = subprocess.run(
-            ["gh", "pr", "view", target, "--json", "headRefOid"],
-            cwd=repo_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-            env=env,
-        )
-        if proc.returncode == 0 and proc.stdout:
-            data = json.loads(proc.stdout.strip())
-            return str(data.get("headRefOid") or "") or None
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, AttributeError):
-        return None
-    return None
+    return pr_head_sha(repo_dir, target, proxy_env)
 
 
 class _ReviewTestGate:

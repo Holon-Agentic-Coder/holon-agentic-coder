@@ -76,6 +76,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.github.merge": "BranchMerge merge_branch_detailed",
     "sandbox_executor.flow.github.merge_method": "choose_merge_flag lookup_merge_flag",
+    "sandbox_executor.flow.github.pr_head": "pr_head_sha",
     "sandbox_executor.flow.github.pr": (
         "_resolve_commit_ref check_pr_mergeability create_or_update_pr format_review_git_trailers "
         "generate_semantic_pr_metadata"
@@ -411,6 +412,7 @@ __all__ = [
     "plan_refresh_stage_failure",
     "post_pr_review_consensus",
     "post_stale_signal",
+    "pr_head_sha",
     "prepare_calibrated_branch",
     "probe_ci_checks",
     "publish_calibration",

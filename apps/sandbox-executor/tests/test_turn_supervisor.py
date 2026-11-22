@@ -135,10 +135,15 @@ class Harness:
         self.on_tick = None
         # Fake descendant CPU seconds by pid; None models a host without /proc or ps.
         self.tool_cpu = {}
+        # Fake live non-agent descendant commands by pid, so no test depends on the host process table.
+        self.children = {}
 
     def tool_sampler(self, pid):
         self.sampled_pid = pid
         return None if self.tool_cpu is None else dict(self.tool_cpu)
+
+    def child_lister(self, pid):
+        return None if self.children is None else dict(self.children)
 
     def popen(self, cmd, **kwargs):
         self.proc.popen_kwargs = kwargs
@@ -172,6 +177,7 @@ class Harness:
             killpg=self.killpg,
             getpgid=getpgid or self.getpgid,
             tool_sampler=self.tool_sampler,
+            child_lister=self.child_lister,
         )
 
 

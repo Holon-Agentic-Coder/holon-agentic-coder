@@ -379,9 +379,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             ci_wait = ci_wait if last_ci_status.get("pending", 0) else None  # Never keep a stale wait record.
 
             # Include FIND-CI only if CI has already failed or local tests failed; pending checks are omitted.
-            ci_failed = last_ci_status.get("failed", 0) > 0 or (
-                last_ci_status.get("source") == "local_tests" and tests_failed
-            )
+            ci_failed = last_ci_status.get("failed", 0) > 0 or tests_failed
             ci_finding = ci_failed
             ensemble_verdict = decide_returned_consensus(
                 reviewers, ensemble_size, None if missing_ref else not is_dirty, False if ci_failed else None, blockers

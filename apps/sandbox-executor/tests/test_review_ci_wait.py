@@ -692,3 +692,57 @@ def test_run_review_loop_dry_run_argument_overrides_false_context_dry_run(tmp_pa
     assert res["consensus"]["approved"] is False
     assert res["consensus"]["status"] == "not_measured"
     assert res["ci_checks"]["test_source"] == "ci"
+
+
+def test_objecting_fast_path_with_pending_ci_and_failing_review_local_raises_find_ci(tmp_path, monkeypatch):
+    """F-13: objecting fast path raises FIND-CI alongside reviewer findings when review_local fails under pending CI."""
+    from sandbox_executor.entrypoint.test_measurement import TestMeasurement
+    from sandbox_executor.flow.review import local_tests, loop
+
+    failing = TestMeasurement(0.5, 5, 5, 0, 1, None, "")
+    monkeypatch.setattr(local_tests, "run_measurement", MagicMock(return_value=failing))
+    install_fake_reviewers(monkeypatch)
+    fake = FakeTime()
+    resolver_calls = []
+
+    def fake_resolver(target, iteration, findings, action_ids, rejected_findings):
+        resolver_calls.append({"findings": findings, "iteration": iteration})
+        return {"dispositions": [], "head_sha": target.head_sha, "pushed": False}
+
+    with (
+        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
+        patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value=dict(PENDING)),
+        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="moved"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+        patch(
+            "sandbox_executor.flow.review.local_tests.run_git",
+            return_value=MagicMock(returncode=0, stdout="moved\n"),
+        ),
+        patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="older-pr-head"),
+        patch(
+            "sandbox_executor.flow.review.loop.decide_returned_consensus", wraps=loop.decide_returned_consensus
+        ) as spy_consensus,
+    ):
+        res = run_review_loop(
+            _context(tmp_path, {"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0}),
+            target=EXEC_TARGET,
+            max_iterations=1,
+            ensemble_size=1,
+            auto_pr=False,
+            run_ensemble_fn=FakeEnsemble([objecting_reviewer(1)]),
+            run_resolver_fn=fake_resolver,
+            clock=fake.clock,
+            sleep=fake.sleep,
+        )
+
+    assert fake.sleeps == []
+    assert spy_consensus.call_args.args[3] is False
+    assert res["consensus"]["approved"] is False
+    assert res["tests_failed"] is True
+    assert res["findings"] == ["FIND-CI-001", "FIND-R1-001-01"]
+    assert len(resolver_calls) == 1
+    assert [f.id for f in resolver_calls[0]["findings"]] == ["R1-F1", "FIND-CI-001"]
+    assert res["ci_checks"]["source"] == "github_cli"
+    assert res["ci_checks"]["test_source"] == "review_local"

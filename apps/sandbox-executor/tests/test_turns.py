@@ -7,14 +7,17 @@ and that non-zero container exit error reporting remains clean and unpolluted by
 
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
+from sandbox_executor import turns
 from sandbox_executor.budgets import DEFAULT_TURN_SECONDS, BudgetBreach, StageTimer, TurnBudgets
 from sandbox_executor.cli import _run_docker, run_docker_container
 from sandbox_executor.flow import probe_ci_checks
@@ -247,19 +250,10 @@ class TestUnlimitedAuthoringTurn(unittest.TestCase):
         self.assertEqual(len(outcome.turns), 2)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestBackgroundCommandOnThisHost(unittest.TestCase):
     """A real runner that backgrounds a command and exits is reported with a warning naming the command."""
 
     def test_backgrounded_sleep_is_named_after_the_runner_exits(self) -> None:
-        import contextlib
-        import sys
-
-        from sandbox_executor import turns
-
         if turns.process_table() is None:
             self.skipTest("no /proc and no ps on this host")
         spawn = (
@@ -285,3 +279,7 @@ class TestBackgroundCommandOnThisHost(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("sleep 30", result.background_commands)
         self.assertTrue(any("background" in line and "sleep 30" in line for line in logs.output), logs.output)
+
+
+if __name__ == "__main__":
+    unittest.main()

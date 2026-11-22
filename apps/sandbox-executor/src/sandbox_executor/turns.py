@@ -519,7 +519,12 @@ def _live_children(child_lister: ChildLister | None, pid: int) -> dict[int, str]
 
 
 def _stall_window(budgets: TurnBudgets, streaming: bool, has_live_child: bool) -> float:
-    """The stall window: the non-streaming :func:`silence_window` while the runner has a live child (a tool)."""
+    """The stall window: the non-streaming :func:`silence_window` while the runner has a live child (a tool).
+
+    Any live non-agent descendant counts, including a persistent helper process (a language server, a daemon) the
+    runner keeps for the whole turn; such a helper disables the short streaming stall window, leaving the turn
+    timeout to bound the turn.
+    """
     return silence_window(budgets, streaming and not has_live_child)
 
 

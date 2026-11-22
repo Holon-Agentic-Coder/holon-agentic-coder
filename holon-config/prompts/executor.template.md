@@ -8,7 +8,9 @@ codebase files.
 2. Do NOT merely summarize or discuss the plan in text—you MUST modify the actual files on the filesystem using your
    file creation and editing tools.
 3. Verify from the repository root: run the affected tests with `uv run pytest <paths>` first, then the full suite once
-   with `uv run task test`, and ensure all tests pass.
+   with `uv run task test`, and ensure all tests pass. Run tests and lint in the foreground and wait for the result in
+   the same turn; never background a command (`&`, `nohup` or a background tool option) and end the turn: a backgrounded
+   command cannot report back in the container, and the turn supervisor stops the agent as stalled.
 4. Run tests repeatedly only when the intent requires measuring performance or timing behaviour (test-suite speed, a
    timing-sensitive or flaky test, a stated performance target). Then take N from the plan or the intent, or state N and
    the reason in the execution notes; never open-ended or "many" runs. Each repetition runs with

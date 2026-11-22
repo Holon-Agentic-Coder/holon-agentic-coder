@@ -62,6 +62,10 @@ into their immediate parent. If the step is small, not risky you can propose an 
 - Each repetition runs with `-n auto --dist worksteal`, including runs under CPU load. Serial runs happen only when
   serial behaviour is itself the measurement, and then once. Report each run's pass/fail count and pytest-reported time,
   plus the median.
+- Run tests and lint in the foreground and wait for the result in the same turn; never background a command (`&`,
+  `nohup` or a background tool option) and end the turn: a backgrounded command cannot report back in the container, and
+  the turn supervisor stops the agent as stalled. Plans schedule every test and lint run in the foreground, and the
+  planner follows the same rule for its own commands.
 
 You will be eliminated from the selection process if you:
 

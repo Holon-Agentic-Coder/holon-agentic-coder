@@ -39,7 +39,10 @@ consensus model and post one short consensus review built only from what the rev
     merge.
 11. **Resolver discipline**: when the resolver container runs on `CHANGES_REQUESTED`, it adjudicates every finding to
     `applied` or `rejected`, runs `uv run task lint` and `uv run task test` before pushing, commits applied fixes with
-    the finding ids in the commit message, and never force-pushes or rewrites history.
+    the finding ids in the commit message, and never force-pushes or rewrites history. Run tests and lint in the
+    foreground and wait for the result in the same turn; never background a command (`&`, `nohup` or a background tool
+    option) and end the turn: a backgrounded command cannot report back in the container, and the turn supervisor stops
+    the agent as stalled.
 12. **Lockfile churn is a defect**: a `uv.lock` change that no `pyproject.toml` dependency or `requires-python` change
     explains is a defect; reviewers raise it as an Important finding and the resolver reverts it with
     `git checkout {target_branch} -- uv.lock`, never re-runs `uv` unfrozen, and never commits an incidental rewrite.
@@ -63,7 +66,9 @@ consensus model and post one short consensus review built only from what the rev
    merge, and do not rerun the test suite. Never move or rewrite an existing ledger row.
 3. **Authentic data only**: reviews and scorecards use only authentic data from real runs, diffs and CI. Never use
    synthetic, invented or placeholder figures.
-4. **Test command**: run tests only via `uv run pytest`.
+4. **Test command**: run tests only via `uv run pytest`. Run tests and lint in the foreground and wait for the result in
+   the same turn; never background a command (`&`, `nohup` or a background tool option) and end the turn: a backgrounded
+   command cannot report back in the container, and the turn supervisor stops the agent as stalled.
 
 Review commits carry these RFC 2822 trailers:
 

@@ -11,7 +11,7 @@ from typing import Any
 
 from sandbox_executor import cli
 from sandbox_executor.agent_defaults import Resolution
-from sandbox_executor.cli.commands._flow_resume import discover_resume_checkpoint
+from sandbox_executor.cli.commands._flow_resume import apply_run_switches, discover_resume_checkpoint
 from sandbox_executor.cli.commands._flow_worktree import (
     TARGET_WORKTREE_HELP,
     ensure_flow_worktree,
@@ -30,6 +30,8 @@ from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZ
 logger = logging.getLogger(__name__)
 
 ORDER = 60
+
+_RUN_ONLY = "Applies to this run only; a resume does not inherit it from the checkpoint."
 
 _FROM_STAGE_CHOICES = [s.value for s in FlowStage if s != FlowStage.COMPLETED]
 
@@ -75,7 +77,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Validate stages and branches without executing external agents or git commits.",
+        help=f"Validate stages and branches without executing external agents or git commits. {_RUN_ONLY}",
     )
     parser.add_argument(
         "--json",
@@ -90,18 +92,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
             "Skip pushing git branches to remote origin. Only valid with --dry-run: the intent, plan and "
             "execute stages dispatch role agents that fetch from origin, the review stage reviews the origin "
             "execution branch and the calibrate stage pushes to origin, so any non-dry run, including a "
-            "--from-stage or --checkpoint resume, is rejected before any stage runs."
+            f"--from-stage or --checkpoint resume, is rejected before any stage runs. {_RUN_ONLY}"
         ),
     )
     parser.add_argument(
         "--skip-review",
         action="store_true",
-        help="Skip Stage 4 (review loop) and proceed to calibration.",
+        help=f"Skip Stage 4 (review loop) and proceed to calibration. {_RUN_ONLY}",
     )
     parser.add_argument(
         "--skip-calibrate",
         action="store_true",
-        help="Skip Stage 5 (post-execution calibration report generation).",
+        help=f"Skip Stage 5 (post-execution calibration report generation). {_RUN_ONLY}",
     )
     parser.add_argument(
         "--allow-overlap",
@@ -199,24 +201,17 @@ def _resolve_checkpoint_and_intent(
     return context, intent_data, flow_agent, flow_model
 
 
-def _check_skip_push(args: argparse.Namespace, context: Any | None) -> bool:
-    """Reject --skip-push (given or recorded in the checkpoint) outside a dry run, before any other gate."""
-    effective_dry_run = bool(args.dry_run or (context is not None and context.dry_run))
-    if (args.skip_push or (context is not None and context.skip_push)) and not effective_dry_run:
+def _check_skip_push(args: argparse.Namespace) -> bool:
+    """Reject --skip-push given in this run outside a dry run of this run, before any other gate."""
+    if args.skip_push and not args.dry_run:
         print(f"Error: {cli.SKIP_PUSH_DISPATCH_ERROR}", file=sys.stderr)
         sys.exit(1)
         return False
     return True
 
 
-def _check_dry_run_and_preflight(
-    args: argparse.Namespace,
-    context: Any | None,
-    flow_agent: str,
-    flow_model: str,
-) -> bool:
-    effective_dry_run = bool(args.dry_run or (context is not None and context.dry_run))
-    if effective_dry_run:
+def _check_dry_run_and_preflight(args: argparse.Namespace, flow_agent: str, flow_model: str) -> bool:
+    if args.dry_run:
         logger.info("Pre-flight probe skipped for a dry-run flow (no agent is called).")
     elif not cli.flow_dispatches_agent(args.from_stage):
         logger.info(
@@ -243,15 +238,7 @@ def _update_flow_context(
         context.target_worktree = target_worktree
     context.agent = flow_agent
     context.model = flow_model
-    if args.dry_run:
-        context.dry_run = True
-    if args.skip_push:
-        context.skip_push = True
-    if args.skip_review:
-        context.skip_review = True
-    if args.skip_calibrate:
-        context.skip_calibrate = True
-        context.auto_calibrate = False
+    apply_run_switches(context, args)
     context.allow_overlap = bool(context.allow_overlap or getattr(args, "allow_overlap", False))
     if args.max_review_iterations is not None:
         context.max_review_iterations = args.max_review_iterations
@@ -350,10 +337,10 @@ def run(args: argparse.Namespace) -> int | None:
             return None
         context, intent_data, flow_agent, flow_model = resolved
 
-        if not _check_skip_push(args, context) or not ensure_flow_worktree(args, context, intent_data):
+        if not _check_skip_push(args) or not ensure_flow_worktree(args, context, intent_data):
             return None
 
-        if not _check_dry_run_and_preflight(args, context, flow_agent, flow_model):
+        if not _check_dry_run_and_preflight(args, flow_agent, flow_model):
             return None
         if not redirect_default_branch_target(args, context, intent_data):
             return None

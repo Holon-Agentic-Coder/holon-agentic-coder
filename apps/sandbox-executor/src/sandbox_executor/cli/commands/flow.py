@@ -10,8 +10,11 @@ import sys
 from typing import Any
 
 from sandbox_executor import cli
-from sandbox_executor.agent_defaults import Resolution
-from sandbox_executor.cli.commands._flow_resume import apply_run_switches, discover_resume_checkpoint
+from sandbox_executor.cli.commands._flow_resume import (
+    apply_run_switches,
+    discover_resume_checkpoint,
+    resolve_resumed_runner,
+)
 from sandbox_executor.cli.commands._flow_worktree import (
     TARGET_WORKTREE_HELP,
     ensure_flow_worktree,
@@ -66,12 +69,20 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         ),
     )
     parser.add_argument(
-        "--agent", default=None, help=f"{_AGENT_HELP} A --checkpoint resume keeps the checkpoint's runner by default."
+        "--agent",
+        default=None,
+        help=(
+            f"{_AGENT_HELP} On a resume it applies to every remaining stage and role (Stage 4 reviewers and resolver, "
+            "Stage 5) and is recorded in the checkpoint; without it the checkpoint's runner is kept."
+        ),
     )
     parser.add_argument(
         "--model",
         default=None,
-        help=f"{_MODEL_HELP} A --checkpoint resume keeps the checkpoint's model unless --agent switches the runner.",
+        help=(
+            f"{_MODEL_HELP} On a resume it applies to every remaining stage and role and is recorded in the "
+            "checkpoint; without it the checkpoint's model is kept unless --agent switches the runner."
+        ),
     )
     parser.add_argument("--skip-preflight", action="store_true", help=_SKIP_PREFLIGHT_HELP)
     parser.add_argument(
@@ -183,19 +194,7 @@ def _resolve_checkpoint_and_intent(
         agent_res, model_res = cli.resolve_runner_and_model(args.agent, args.model)
         flow_agent, flow_model = agent_res.value, model_res.value
     else:
-        from_checkpoint = f"recorded in {args.checkpoint}"
-        if args.agent is not None:
-            flow_agent = cli.resolve_agent_runner(args.agent).value
-        else:
-            flow_agent = context.agent
-            logger.info(Resolution(flow_agent, "checkpoint", from_checkpoint).describe("Agent runner"))
-        if args.model is not None or (
-            args.agent is not None and cli.normalise_agent_id(flow_agent) != cli.normalise_agent_id(context.agent)
-        ):
-            flow_model = cli.resolve_model(flow_agent, args.model).value
-        else:
-            flow_model = context.model
-            logger.info(Resolution(flow_model, "checkpoint", from_checkpoint).describe("Model"))
+        flow_agent, flow_model = resolve_resumed_runner(args, context, args.checkpoint)
         intent_data = {}
 
     return context, intent_data, flow_agent, flow_model

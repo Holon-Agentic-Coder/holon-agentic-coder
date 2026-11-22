@@ -125,7 +125,7 @@ class TestStage3PartialResumeDispatch:
 # payload.
 EXECUTE = "sandbox_executor.flow.stages.execute"
 # Where the empty-diff guard looks up its ledger writer; one place to update when that call site moves.
-SUPERSEDING_WRITER = f"{EXECUTE}._append_superseding_execution_row"
+SUPERSEDING_WRITER = "sandbox_executor.flow.stages.empty_diff_outcome._append_superseding_execution_row"
 PLAN = "I-1-x/P-2-claude-agent-claude-opus-5-5/_"
 EXEC_ID = "E-3-claude-agent-claude-opus-5-5"
 EXEC_BRANCH = f"I-1-x/P-2-claude-agent-claude-opus-5-5/{EXEC_ID}/_"

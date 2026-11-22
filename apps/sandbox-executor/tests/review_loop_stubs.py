@@ -4,6 +4,7 @@ A plain helper module (not a test module), so importing it never makes pytest co
 """
 
 import json
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -69,3 +70,47 @@ class _LoopStubs:
     def __exit__(self, *exc):
         for p in reversed(self._patches):
             p.stop()
+
+
+def _loop_ctx(tmp_path: Path, target: str = "feature/x", dry_run: bool = False):
+    from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
+
+    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True, exist_ok=True)
+    ctx = FlowContext(repo_dir=str(tmp_path), execution_branch=target, token_reduce=False, dry_run=dry_run)
+    ctx.stage_results["execute"] = StageResult(
+        stage=FlowStage.EXECUTE,
+        status=StageStatus.SUCCESS,
+        payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
+    )
+    return ctx
+
+
+def _green_loop_patches(verdict=None, post=None, which=None, ci=None):
+    from sandbox_executor.review_target import DiffVerdict
+
+    stack = ExitStack()
+    verify = stack.enter_context(
+        patch(
+            "sandbox_executor.review_target.verify_review_diff",
+            return_value=(verdict or DiffVerdict.VERIFIED, "guard detail"),
+        )
+    )
+    stack.enter_context(patch("sandbox_executor.flow.review.loop.shutil.which", return_value=which))
+    stack.enter_context(
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False})
+    )
+    stack.enter_context(
+        patch(
+            "sandbox_executor.flow.review.loop.probe_ci_checks",
+            return_value=ci or {"all_passed": True, "source": "local_tests"},
+        )
+    )
+    stack.enter_context(patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"))
+    stack.enter_context(patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"))
+    mock_post = stack.enter_context(
+        patch(
+            "sandbox_executor.flow.review.loop.post_pr_review_consensus",
+            **(post or {"return_value": {"dual_posted": True}}),
+        )
+    )
+    return stack, verify, mock_post

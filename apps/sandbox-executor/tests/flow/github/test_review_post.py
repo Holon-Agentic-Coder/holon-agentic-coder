@@ -296,6 +296,7 @@ class TestSemanticPRAndConsensusReview:
         with (
             patch("sandbox_executor.flow.review.loop.check_pr_mergeability") as mock_merge,
             patch("sandbox_executor.flow.review.loop.probe_ci_checks") as mock_ci,
+            patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"),
             patch("sandbox_executor.flow.review.loop.post_pr_review_consensus") as mock_post,
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
             patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),

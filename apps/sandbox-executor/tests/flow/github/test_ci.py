@@ -93,6 +93,10 @@ class TestUnmeasuredTestsStopEarly:
             scoped_sleep_patch("sandbox_executor.flow.review.loop", sleep),
             # No real ``git rev-parse``: keep the test hermetic and fast.
             patch("sandbox_executor.flow.review.local_tests._ReviewLocalTests._head", lambda _self: "stage3-head"),
+            patch(
+                "sandbox_executor.flow.review.local_tests._default_pr_head",
+                return_value="stage3-head" if gh else None,
+            ),
             _verified_diff(),
         ):
             res = run_review_loop(ctx, auto_pr=False, max_iterations=25, **kwargs)

@@ -24,6 +24,7 @@ from sandbox_executor.flow.review.head_test_evidence import (
     _attach_local_counts,
     _attach_stage_3_counts,
     _attribute_test_source,
+    _discard_stale_github_pass,
     _failed,
     _has_passing_ci_rejection,
     _LocalTestOutcome,
@@ -149,9 +150,9 @@ class _ReviewTestGate:
         if self.stage_3_head == old_head:
             self.stage_3_head = new_head
 
-    def evidence(self, ci_status: dict[str, Any]) -> tuple[float | None, bool]:
+    def evidence(self, ci_status: dict[str, Any], dry_run: bool | None = None) -> tuple[float | None, bool]:
         """The ``(test_pass_rate, tests_failed)`` for the CI gate judging the current head commit."""
-        if self._context.dry_run:
+        if bool(dry_run or self._context.dry_run):
             _attribute_test_source(ci_status, self._stage_3, None)
             return self.stage_3_evidence
 
@@ -168,6 +169,7 @@ class _ReviewTestGate:
                 resolver_heads=frozenset(self._resolver_heads),
             )
         )
+        _discard_stale_github_pass(ci_status, source)
 
         if source == TEST_SOURCE_RESOLVER_EVIDENCE:
             rate, failed, detail = 1.0, False, "passing run confirmed locally"

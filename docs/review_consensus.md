@@ -116,10 +116,11 @@ source in strict precedence order:
    commits).
 2. `ci_head`: green GitHub CI checks (`source == "github_cli"`, `all_passed == True`, `pending == 0`) verified against
    the PR's `headRefOid` matching the current `HEAD`.
-3. `stage_3`: Stage 3's recorded test result (passing or failing) when `stage_3_head` matches the current `HEAD`.
+3. `stage_3`: Stage 3's recorded test result (passing or failing) when `stage_3_head` matches the current `HEAD` (a
+   Stage 3 failure on that head raises `FIND-CI` unless `resolver_evidence` or `ci_head` supersedes it).
 4. `review_local`: a local `uv run task test` re-run in the review container, cached per head commit and re-run only
-   when `HEAD` advances (used when Stage 3 recorded no measurement, Stage 3 failed and no newer head-matching green CI
-   or resolver evidence supersedes it, or `HEAD` moved past `stage_3_head`).
+   when `HEAD` advances (used when Stage 3 recorded no measurement, `stage_3_head` is missing, or `HEAD` moved past
+   `stage_3_head`).
 
 A dry run never executes local tests and attributes the Stage 3 or GitHub CI probe (`ci` or `stage_3`). `null` still
 means "not measured" and withholds consensus: a run that could not execute records its `run_error`, and a measured

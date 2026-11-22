@@ -57,6 +57,7 @@ class _LoopStubs:
                 "sandbox_executor.flow.review.loop.check_pr_mergeability", side_effect=lambda *a, **k: dict(self.merge)
             ),
             patch("sandbox_executor.flow.review.loop.probe_ci_checks", side_effect=lambda *a, **k: dict(self.ci)),
+            patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"),
             patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", self.post),
             patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc1234"),
             patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),

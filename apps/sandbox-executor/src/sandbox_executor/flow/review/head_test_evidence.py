@@ -132,6 +132,28 @@ def choose_evidence(inp: HeadEvidenceDecisionInput) -> str:
     return TEST_SOURCE_REVIEW_LOCAL
 
 
+def _discard_stale_github_pass(ci_status: dict[str, Any], source: str | None = None) -> None:
+    """Reset a green github_cli probe when local or Stage 3 evidence governs instead of ci_head."""
+    if source is not None and source not in (TEST_SOURCE_STAGE_3, TEST_SOURCE_REVIEW_LOCAL):
+        return
+    if (
+        ci_status.get("source") == "github_cli"
+        and ci_status.get("all_passed")
+        and not ci_status.get("pending", 0)
+        and not ci_status.get("failed", 0)
+    ):
+        ci_status.update(
+            source="local_tests",
+            total=1,
+            passed=1,
+            failed=0,
+            pending=0,
+            skipped=0,
+            all_passed=True,
+            checks=[{"name": "local_tests", "bucket": "pass", "state": "SUCCESS"}],
+        )
+
+
 def _attribute_test_source(
     ci_status: dict[str, Any], stage_3: dict[str, Any] | None, review_local: _LocalTestOutcome | None
 ) -> None:

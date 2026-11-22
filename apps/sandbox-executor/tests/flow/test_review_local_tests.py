@@ -12,6 +12,8 @@ from sandbox_executor.flow import FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _test_evidence
 from sandbox_executor.flow.review import local_tests
 from sandbox_executor.flow.review.ci_evidence import apply_local_test_evidence
+from sandbox_executor.flow.review.ci_outcome import gate_ci_flags
+from sandbox_executor.review_report import _ci_summary
 
 from tests.flow.github.test_ci import TestUnmeasuredTestsStopEarly as _Harness
 
@@ -294,3 +296,132 @@ def test_advance_ledger_head_preserves_resolver_evidence_and_test_counts(tmp_pat
     assert probe["test_source"] == "resolver_evidence"
     assert probe["test_head_sha"] == "ledger-sha"
     assert probe["test_counts"] == {"passed": 10, "failed": 0, "errored": 0}
+
+
+def _green_github_probe(total: int = 4) -> dict[str, Any]:
+    return {
+        "source": "github_cli",
+        "total": total,
+        "passed": total,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "all_passed": True,
+        "checks": [{"name": f"check-{i}", "bucket": "pass", "state": "SUCCESS"} for i in range(total)],
+    }
+
+
+def test_stale_github_pass_does_not_mask_unmeasured_review_local(tmp_path, monkeypatch):
+    run = MagicMock(return_value=_measurement(None, 127, "uv missing"))
+    monkeypatch.setattr(local_tests, "run_measurement", run)
+    ctx = HARNESS._ctx(tmp_path, {"test_pass_rate": 1.0, "exit_code": 0, "head_sha": "stage3sha"})
+    with patch("sandbox_executor.flow.review.local_tests.run_git") as mock_git:
+        mock_git.return_value = MagicMock(returncode=0, stdout="currenthead999\n")
+        gate = local_tests._ReviewTestGate(ctx, str(tmp_path), pr_head=lambda _t: "olderhead111")
+        probe = _green_github_probe()
+        rate, failed = gate.evidence(probe)
+
+    assert (rate, failed) == (None, False)
+    assert probe["source"] == "local_tests"
+    assert probe["test_source"] == "review_local"
+    assert probe["test_run_error"] == "uv missing"
+    assert apply_local_test_evidence(probe, failed, rate, dry_run=False, unmeasured_blocks=True) is True
+    assert probe["all_passed"] is False
+    assert probe["measured"] is False
+    assert gate_ci_flags(probe, failed) == (None, True)
+    assert _ci_summary(probe) == "CI unmeasured (source: review_local)"
+
+
+@pytest.mark.parametrize(
+    ("stage_3_payload", "local_outcome", "expected_source"),
+    [
+        (
+            {"test_pass_rate": 1.0, "exit_code": 0, "head_sha": "stage3sha"},
+            _measurement(0.5, 1),
+            "review_local",
+        ),
+        (
+            {"test_pass_rate": 0.5, "tests_failed": 1, "exit_code": 1, "head_sha": "currenthead999"},
+            _measurement(1.0, 0),
+            "stage_3",
+        ),
+    ],
+)
+def test_stale_github_pass_does_not_mask_local_or_stage3_failure(
+    tmp_path, monkeypatch, stage_3_payload, local_outcome, expected_source
+):
+    run = MagicMock(return_value=local_outcome)
+    monkeypatch.setattr(local_tests, "run_measurement", run)
+    ctx = HARNESS._ctx(tmp_path, stage_3_payload)
+    with patch("sandbox_executor.flow.review.local_tests.run_git") as mock_git:
+        mock_git.return_value = MagicMock(returncode=0, stdout="currenthead999\n")
+        gate = local_tests._ReviewTestGate(ctx, str(tmp_path), pr_head=lambda _t: "olderhead111")
+        probe = _green_github_probe()
+        rate, failed = gate.evidence(probe)
+
+    assert rate == 0.5
+    assert failed is True
+    assert probe["source"] == "local_tests"
+    assert probe["test_source"] == expected_source
+    assert apply_local_test_evidence(probe, failed, rate, dry_run=False, unmeasured_blocks=False) is False
+    assert probe["all_passed"] is False
+    assert probe["failed"] == 1
+    assert gate_ci_flags(probe, failed) == (False, True)
+    assert _ci_summary(probe) == f"CI 0/1 passed, 1 failing, 0 pending (source: {expected_source})"
+
+
+def test_non_passing_github_probe_is_preserved_when_review_local_runs(tmp_path, monkeypatch):
+    run = MagicMock(return_value=_measurement(1.0, 0))
+    monkeypatch.setattr(local_tests, "run_measurement", run)
+    ctx = HARNESS._ctx(tmp_path, {"test_pass_rate": None, "exit_code": 0, "head_sha": "stage3sha"})
+    pending = {
+        "source": "github_cli",
+        "total": 1,
+        "passed": 0,
+        "failed": 0,
+        "pending": 1,
+        "skipped": 0,
+        "all_passed": False,
+        "checks": [{"name": "ci", "bucket": "pending", "state": "IN_PROGRESS"}],
+    }
+    failing = {
+        "source": "github_cli",
+        "total": 1,
+        "passed": 0,
+        "failed": 1,
+        "pending": 0,
+        "skipped": 0,
+        "all_passed": False,
+        "checks": [{"name": "lint", "bucket": "fail", "state": "FAILURE"}],
+    }
+    with patch("sandbox_executor.flow.review.local_tests.run_git") as mock_git:
+        mock_git.return_value = MagicMock(returncode=0, stdout="currenthead999\n")
+        gate = local_tests._ReviewTestGate(ctx, str(tmp_path), pr_head=lambda _t: "olderhead111")
+        gate.evidence(pending)
+        gate.evidence(failing)
+
+    assert pending["source"] == "github_cli"
+    assert pending["pending"] == 1
+    assert pending["test_source"] == "review_local"
+    assert failing["source"] == "github_cli"
+    assert failing["failed"] == 1
+    assert failing["test_source"] == "review_local"
+
+
+def test_resolver_evidence_preserves_green_github_all_passed(tmp_path, monkeypatch):
+    run = MagicMock(return_value=_measurement(1.0, 0))
+    monkeypatch.setattr(local_tests, "run_measurement", run)
+    ctx = HARNESS._ctx(tmp_path, {"test_pass_rate": 0.5, "tests_failed": 1, "head_sha": "stage3sha"})
+    with patch("sandbox_executor.flow.review.local_tests.run_git") as mock_git:
+        mock_git.return_value = MagicMock(returncode=0, stdout="head1\n")
+        gate = local_tests._ReviewTestGate(ctx, str(tmp_path), pr_head=lambda _t: "olderhead111")
+        disp = [{"id": "FIND-CI-001", "disposition": "rejected", "evidence": "tests/test_app.py::test_ok passed"}]
+        gate.accept_resolver_evidence("head1", disp)
+        probe = _green_github_probe(total=3)
+        rate, failed = gate.evidence(probe)
+
+    assert (rate, failed) == (1.0, False)
+    assert probe["all_passed"] is True
+    assert probe["test_source"] == "resolver_evidence"
+    assert apply_local_test_evidence(probe, failed, rate, dry_run=False, unmeasured_blocks=True) is False
+    assert gate_ci_flags(probe, failed) == (True, False)

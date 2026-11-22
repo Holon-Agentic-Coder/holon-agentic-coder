@@ -497,6 +497,7 @@ class TestReviewLoopEmptyDiffGuard:
                 "sandbox_executor.flow.review.loop.probe_ci_checks",
                 return_value={"all_passed": True, "source": "github_cli"},
             ),
+            patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"),
             patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
         ):
             res = run_review_loop(
@@ -601,6 +602,7 @@ class TestReviewLoopEmptyDiffGuardOrigin:
                 "sandbox_executor.flow.review.loop.probe_ci_checks",
                 return_value={"all_passed": True, "source": "github_cli"},
             ),
+            patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"),
             patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
         ):
             res = run_review_loop(ctx, target=self.EXEC, max_iterations=1, dry_run=False)
@@ -981,6 +983,7 @@ def _green_loop_patches(verdict=None, post=None, which=None, ci=None):
             return_value=ci or {"all_passed": True, "source": "local_tests"},
         )
     )
+    stack.enter_context(patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"))
     stack.enter_context(patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"))
     mock_post = stack.enter_context(
         patch(

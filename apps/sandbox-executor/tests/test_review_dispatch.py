@@ -272,6 +272,7 @@ def test_stage4_canonical_ledger_records_verified_results(tmp_path: Path, monkey
                 "source": "github_cli",
             },
         ),
+        patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"),
         patch(
             "sandbox_executor.flow.review.loop.post_pr_review_consensus",
             return_value={"dual_posted": True, "official_review": {"success": True}},
@@ -329,6 +330,7 @@ def _host_loop_patches():
             "sandbox_executor.flow.review.local_tests.run_git",
             return_value=MagicMock(returncode=0, stdout="a" * 40 + "\n"),
         ),
+        patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="a" * 40),
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
     )
 

@@ -23,7 +23,14 @@ from sandbox_executor.flow import (
 )
 
 from tests.flow.decomposition_fakes import decomposed_flow, parent_ctx
-from tests.flow.helpers import SUB_INTENT_LIST, BudgetRoleAgents, _all_intent_rows, _budget_context, _ledger_rows
+from tests.flow.helpers import (
+    SUB_INTENT_LIST,
+    BudgetRoleAgents,
+    _all_intent_rows,
+    _budget_context,
+    _ledger_rows,
+    stage4_halts_at_consensus,
+)
 from tests.flow.lookup_patch import patch_lookup_sites
 
 
@@ -49,7 +56,6 @@ class TestEntropyBudgetHandoffInFlow:
         assert run_plan_stage(ctx).status == StageStatus.SUCCESS
 
         # A decomposed plan runs its children through their own consensus halt and merge.
-        ctx.skip_review = False
         with decomposed_flow(origin, tmp_path):
             if precheck:
                 res = run_execute_stage(ctx)
@@ -79,7 +85,8 @@ class TestEntropyBudgetHandoffInFlow:
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, "")])
         ctx = _budget_context(host, agents, 16.0)
 
-        results = PipelineEngine(ctx).run()
+        with stage4_halts_at_consensus():
+            results = PipelineEngine(ctx).run()
 
         assert results["execute"].status == StageStatus.SUCCESS
         assert agents.roles() == ["intent-creator", "planner", "executor"]
@@ -90,7 +97,8 @@ class TestEntropyBudgetHandoffInFlow:
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, "")], row_budget=True)
         ctx = _budget_context(host, agents, 16.0)
 
-        results = PipelineEngine(ctx).run()
+        with stage4_halts_at_consensus():
+            results = PipelineEngine(ctx).run()
 
         assert results["execute"].status == StageStatus.SUCCESS
         plan_rows = _ledger_rows(host, f"origin/{ctx.plan_branch}", "plans.jsonl")
@@ -126,7 +134,8 @@ class TestEntropyBudgetHandoffInFlow:
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, ""), (4.0, "")])
         ctx = _budget_context(host, agents, 5.0)
 
-        results = PipelineEngine(ctx).run()
+        with stage4_halts_at_consensus():
+            results = PipelineEngine(ctx).run()
 
         assert results["execute"].status == StageStatus.SUCCESS
         assert ctx.replan_attempts == 1
@@ -136,7 +145,6 @@ class TestEntropyBudgetHandoffInFlow:
         host, origin = flow_repos
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")])
         ctx = _budget_context(host, agents, 5.0)
-        ctx.skip_review = False
 
         with decomposed_flow(origin, tmp_path) as reviews:
             results = PipelineEngine(ctx).run()
@@ -197,7 +205,6 @@ class TestEntropyBudgetHandoffInFlow:
         # Parent and first child both list sub-intents; the two grandchildren and the second child execute.
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (9.0, SUB_INTENT_LIST), (2.0, "")])
         ctx = _budget_context(host, agents, 5.0)
-        ctx.skip_review = False
 
         with decomposed_flow(origin, tmp_path) as reviews:
             results = PipelineEngine(ctx).run()
@@ -256,7 +263,6 @@ class TestEntropyBudgetHandoffInFlow:
         # The first grandchild shares its parent's slug, and a frozen clock creates every intent in the same second.
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (9.0, SUB_INTENT_LIST), (2.0, "")])
         ctx = _budget_context(host, agents, 5.0)
-        ctx.skip_review = False
 
         with (
             patch("sandbox_executor.flow.stages.intent.time.time", return_value=1793098938.0),
@@ -285,7 +291,6 @@ class TestEntropyBudgetHandoffInFlow:
         host, origin = flow_repos
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")])
         ctx = _budget_context(host, agents, 5.0)
-        ctx.skip_review = False
 
         with decomposed_flow(origin, tmp_path) as reviews:
             results = PipelineEngine(ctx).run()
@@ -341,7 +346,6 @@ class TestEntropyBudgetHandoffInFlow:
             tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")], fail_planning_for="add-the-parser"
         )
         ctx = _budget_context(host, agents, 5.0)
-        ctx.skip_review = False
 
         results = PipelineEngine(ctx).run()
 
@@ -416,7 +420,8 @@ class TestEntropyBudgetHandoffInFlow:
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, ""), (4.0, "")])
         ctx = _budget_context(host, agents, 5.0)
 
-        results = PipelineEngine(ctx).run()
+        with stage4_halts_at_consensus():
+            results = PipelineEngine(ctx).run()
 
         assert results["execute"].status == StageStatus.SUCCESS
         assert "entropy 12.6" in (agents.replan_feedback_seen[1] or "")
@@ -503,7 +508,6 @@ class TestEntropyBudgetHandoffInFlow:
             "auto_calibrate": False,
             "token_reduce": True,
             "skip_push": True,
-            "skip_review": True,
             "skip_calibrate": True,
             "max_review_iterations": 7,
             "review_ensemble_size": 5,
@@ -901,6 +905,7 @@ class TestEntropyBudgetHandoffInFlow:
             patch("sandbox_executor.flow.pipeline.run_plan_stage", side_effect=plan),
             patch("sandbox_executor.flow.pipeline.run_execute_stage", side_effect=lambda _c: next(exec_iter)),
             patch("sandbox_executor.flow.pipeline.save_checkpoint", side_effect=snapshot),
+            stage4_halts_at_consensus(),
         ):
             results = PipelineEngine(ctx).run()
         return results, saved
@@ -915,7 +920,7 @@ class TestEntropyBudgetHandoffInFlow:
         )
 
     def test_replan_checkpoints_the_failed_replan(self):
-        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_review=True, skip_calibrate=True)
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_calibrate=True)
         ok = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
         no_plan = StageResult(stage=FlowStage.PLAN, status=StageStatus.FAILED, error="Plan stage failed: no plan")
 
@@ -928,7 +933,7 @@ class TestEntropyBudgetHandoffInFlow:
         assert sum("Entering stage: PLAN" in line for line in ctx.logs) == 2
 
     def test_replan_checkpoints_the_new_execute_result(self):
-        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_review=True, skip_calibrate=True)
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_calibrate=True)
         ok = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
         other = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.FAILED, error="Execute stage failed: push")
 
@@ -941,7 +946,7 @@ class TestEntropyBudgetHandoffInFlow:
         assert sum("Entering stage: EXECUTE" in line for line in ctx.logs) == 2
 
     def test_exhausted_replans_checkpoint_the_final_error(self):
-        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_review=True, skip_calibrate=True)
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_calibrate=True)
         ok = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
         attempts = MAX_REPLAN_ATTEMPTS + 1
 
@@ -957,7 +962,7 @@ class TestEntropyBudgetHandoffInFlow:
         assert any(line.endswith("] " + error) for line in ctx.logs)
 
     def test_decomposed_parent_runs_review_and_calibration_like_an_executed_plan(self):
-        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_review=True, skip_calibrate=True)
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_calibrate=True)
         ok = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
         decomposed = StageResult(
             stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"decomposed": True, "integrated": True}
@@ -965,20 +970,20 @@ class TestEntropyBudgetHandoffInFlow:
 
         results, saved = self._engine_run(ctx, [ok], [decomposed])
 
-        # No decomposed skip any more: Stage 4 and Stage 5 follow the flags as for any execution.
-        assert results["review"].payload == {"skipped_by_flag": True}
+        # No decomposed skip any more: Stage 4 runs and Stage 5 follows its flag as for any execution.
+        assert results["review"].status == StageStatus.HALTED_FOR_HUMAN
         assert results["calibrate"].payload == {"skipped_by_flag": True}
         assert saved[-1]["stage_results"]["calibrate"]["payload"] == {"skipped_by_flag": True}
         assert not any("the plan was decomposed into child pipelines" in line for line in ctx.logs)
 
     def test_undecomposed_success_runs_review_and_calibration_normally(self):
-        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_review=True, skip_calibrate=True)
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_calibrate=True)
         ok = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
         plain = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"execution_id": "E-1"})
 
         results, _saved = self._engine_run(ctx, [ok], [plain])
 
-        assert results["review"].payload == {"skipped_by_flag": True}
+        assert results["review"].status == StageStatus.HALTED_FOR_HUMAN
         assert results["calibrate"].payload == {"skipped_by_flag": True}
 
     @pytest.mark.parametrize(
@@ -1031,7 +1036,8 @@ class TestEntropyBudgetHandoffInFlow:
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, ""), (2.0, "")])
         ctx = _budget_context(host, agents, 5.0, sub_intent_depth=depth)
 
-        results = PipelineEngine(ctx).run()
+        with stage4_halts_at_consensus():
+            results = PipelineEngine(ctx).run()
 
         # The smaller re-plan runs normally, even for a leaf intent at the cap.
         assert results["execute"].status == StageStatus.SUCCESS
@@ -1046,7 +1052,7 @@ class TestEntropyBudgetHandoffInFlow:
         )
 
     def test_replan_feedback_is_removed_when_the_replan_stage_is_interrupted(self):
-        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_review=True, skip_calibrate=True)
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_calibrate=True)
         ok = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
 
         # An interrupt is not converted into a failed stage, so it leaves the re-plan loop by its finally clause.
@@ -1057,7 +1063,7 @@ class TestEntropyBudgetHandoffInFlow:
         assert "replan_feedback" not in ctx.intent_data
 
     def test_a_replan_stage_that_does_not_succeed_ends_the_run_without_executing(self):
-        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_review=True, skip_calibrate=True)
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_calibrate=True)
         ok = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
         skipped = StageResult(stage=FlowStage.PLAN, status=StageStatus.SKIPPED)
 

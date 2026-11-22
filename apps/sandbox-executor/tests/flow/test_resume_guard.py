@@ -65,8 +65,11 @@ def test_an_explicit_checkpoint_path_is_the_one_protected(tmp_path):
     assert str(explicit) in error
 
 
-def test_skipped_stages_defer_to_the_first_stage_that_runs(tmp_path, existing_checkpoint):
-    assert _resume_context_error(_context(tmp_path, skip_review=True, skip_calibrate=True), FlowStage.REVIEW) is None
-    error = _resume_context_error(_context(tmp_path, skip_review=True), FlowStage.REVIEW)
+def test_a_review_resume_checks_stage_4_even_when_calibration_is_skipped(tmp_path, existing_checkpoint):
+    error = _resume_context_error(_context(tmp_path, skip_calibrate=True), FlowStage.REVIEW)
     assert error is not None
-    assert "stage 'calibrate'" in error
+    assert "stage 'review'" in error
+
+
+def test_a_skipped_calibration_resume_has_no_stage_to_check(tmp_path, existing_checkpoint):
+    assert _resume_context_error(_context(tmp_path, skip_calibrate=True), FlowStage.CALIBRATE) is None

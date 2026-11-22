@@ -117,8 +117,8 @@ only accepted with `--dry-run`, which validates without dispatching. See
 # Resume pipeline from a specific stage
 ./holon flow --from-stage execute --checkpoint .holon/flow/checkpoint-my-task.json
 
-# Skip review and calibration stages
-./holon flow intents/quick-task.json --skip-review --skip-calibrate
+# Skip the calibration stage
+./holon flow intents/quick-task.json --skip-calibrate
 ```
 
 ### `holon plan`

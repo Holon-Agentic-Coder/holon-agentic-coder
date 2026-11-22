@@ -186,8 +186,6 @@ class PipelineEngine:
                 return run_execute_stage(self.context, resume_partial=True)
             return run_execute_stage(self.context)
         elif stage == FlowStage.REVIEW:
-            if self.context.skip_review:
-                return _skipped_by_flag(FlowStage.REVIEW)
             return run_review_stage(self.context)
         elif stage == FlowStage.CALIBRATE:
             if self.context.skip_calibrate:
@@ -309,7 +307,7 @@ class PipelineEngine:
         finally:
             restore_starting_branch(self.context)
 
-    def _run_stages(self) -> dict[str, StageResult]:  # noqa: C901, PLR0915
+    def _run_stages(self) -> dict[str, StageResult]:  # noqa: C901
         """Execute the configured pipeline stages sequentially."""
         start_idx = 0
         if self.from_stage:
@@ -339,13 +337,6 @@ class PipelineEngine:
 
         for i in range(start_idx, len(self.STAGE_ORDER)):
             stage = self.STAGE_ORDER[i]
-
-            if stage == FlowStage.REVIEW and self.context.skip_review:
-                self.context.log("Stage 4 (REVIEW) skipped due to --skip-review flag.")
-                result = _skipped_by_flag(FlowStage.REVIEW)
-                self.after_stage(stage, result)
-                self.save_checkpoint()
-                continue
 
             if stage == FlowStage.CALIBRATE and self.context.skip_calibrate:
                 self.context.log("Stage 5 (CALIBRATE) skipped due to --skip-calibrate flag.")
@@ -395,7 +386,7 @@ class PipelineEngine:
 
 
 def _skipped_by_flag(stage: FlowStage) -> StageResult:
-    """The result of Stage 4 or Stage 5 skipped by --skip-review or --skip-calibrate."""
+    """The result of Stage 5 skipped by --skip-calibrate."""
     return StageResult(stage=stage, status=StageStatus.SKIPPED, payload={"skipped_by_flag": True})
 
 

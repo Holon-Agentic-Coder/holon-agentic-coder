@@ -411,10 +411,13 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         else:
             # Fallback for dry runs, dirty mergeability, or infra failures: probe once without waiting.
             last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-            gate_rate, tests_failed = test_gate.evidence(last_ci_status, dry_run=effective_dry_run)
-            tests_not_measured |= apply_local_test_evidence(
-                last_ci_status, tests_failed, gate_rate, effective_dry_run, True
-            )
+            if effective_dry_run or (infra_error is None and not missing_ref):
+                gate_rate, tests_failed = test_gate.evidence(last_ci_status, dry_run=effective_dry_run)
+                tests_not_measured |= apply_local_test_evidence(
+                    last_ci_status, tests_failed, gate_rate, effective_dry_run, True
+                )
+            else:
+                tests_failed = False
             ci_wait = ci_wait if last_ci_status.get("pending", 0) else None  # Never keep a stale wait record.
 
             ci_finding = not last_ci_status.get("all_passed", False) or tests_failed

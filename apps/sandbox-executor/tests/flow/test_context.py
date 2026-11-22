@@ -71,6 +71,17 @@ class TestFlowDataModels:
         assert reconstructed.status == StageStatus.SUCCESS
         assert reconstructed.payload == {"branch": "I-123-test/_"}
 
+    def test_stage_result_summary_line_respects_patched_summary_status_words(self, monkeypatch):
+        from sandbox_executor.flow import context as context_module
+
+        monkeypatch.setattr(
+            context_module,
+            "_SUMMARY_STATUS_WORDS",
+            {**context_module._SUMMARY_STATUS_WORDS, StageStatus.APPROVED: "consented"},
+        )
+        res = StageResult(stage=FlowStage.REVIEW, status=StageStatus.APPROVED)
+        assert res.summary_line() == "review: consented"
+
     def test_flow_context_serialization_and_logging(self):
         ctx = FlowContext(
             repo_dir="/tmp/repo",

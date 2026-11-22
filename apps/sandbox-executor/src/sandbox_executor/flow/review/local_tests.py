@@ -1,7 +1,7 @@
-"""Stage 4 local test measurement: when no CI registers and Stage 3 recorded no rate, run the test task here.
+"""Stage 4 head test gate: judge test evidence for the current head commit via ``choose_evidence``.
 
-The result is cached per head commit, so the review loop measures once per head and re-measures only after the resolver
-pushes a fix.
+Reuses confirmed resolver evidence, green GitHub CI on the PR head SHA, or Stage 3 on an unchanged head, falling back
+to a per-head local test run (``review_local``) when Stage 3 failed, was unmeasured, or the head moved.
 """
 
 from __future__ import annotations
@@ -114,13 +114,13 @@ class _ReviewTestGate:
         self._pr_heads: dict[str, str | None] = {}
 
     def _get_pr_head(self, local_head: str) -> str | None:
-        """The PR head commit, looked up once per local head (it only moves when the loop pushes)."""
-        if local_head not in self._pr_heads:
-            if self.pr_head is not None:
-                self._pr_heads[local_head] = self.pr_head(self._target)
-            else:
-                self._pr_heads[local_head] = _default_pr_head(self._repo_dir, self._target, self._proxy_env)
-        return self._pr_heads[local_head]
+        """The PR head commit; cached once matched to ``local_head`` so stale or failed lookups retry."""
+        if local_head and self._pr_heads.get(local_head) == local_head:
+            return local_head
+        reader = self.pr_head or (lambda t: _default_pr_head(self._repo_dir, t, self._proxy_env))
+        if (sha := reader(self._target)) == local_head and local_head:
+            self._pr_heads[local_head] = sha
+        return sha
 
     def accept_resolver_evidence(self, head_sha: str, dispositions: Sequence[Any]) -> None:
         """Confirm a rejected FIND-CI with passing test evidence on this head via local re-measurement."""

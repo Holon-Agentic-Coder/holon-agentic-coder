@@ -218,7 +218,21 @@ def test_resolver_evidence_accepted_and_cleared_on_head_change(tmp_path, monkeyp
 
 @pytest.mark.parametrize(
     ("text", "expected"),
-    [("3 passed", True), ("0 failed", True), ("10 failed", False), ("20 failed, 1 error", False)],
+    [
+        ("3 passed", True),
+        ("0 failed", True),
+        ("10 passed, 0 failed", True),
+        ("10 failed", False),
+        ("20 failed, 1 error", False),
+        ("1 passed, 10 failed", False),
+        ("1 passed, 1 error", False),
+        ("2 passed, 3 errors", False),
+        ("5 passed, 1 errored", False),
+        ("0 passed", False),
+        ("0 passed, 0 failed", False),
+        ("not passed", False),
+        ("0 failed, 1 error", False),
+    ],
 )
 def test_pass_marker_reads_only_a_zero_failure_count(text, expected):
     assert local_tests.has_pass_marker(text) is expected
@@ -425,3 +439,33 @@ def test_resolver_evidence_preserves_green_github_all_passed(tmp_path, monkeypat
     assert probe["test_source"] == "resolver_evidence"
     assert apply_local_test_evidence(probe, failed, rate, dry_run=False, unmeasured_blocks=True) is False
     assert gate_ci_flags(probe, failed) == (True, False)
+
+
+@pytest.mark.parametrize("first_remote", [None, "olderhead111"])
+def test_pr_head_retries_stale_or_missing_lookup_until_matched(tmp_path, monkeypatch, first_remote):
+    run = MagicMock(return_value=_measurement(0.5, 1))
+    monkeypatch.setattr(local_tests, "run_measurement", run)
+    pr_head = MagicMock(side_effect=[first_remote, "head1", "unexpected-third-call"])
+    ctx = HARNESS._ctx(tmp_path, {"test_pass_rate": 0.5, "tests_failed": 1, "head_sha": "stage3sha"})
+    with patch("sandbox_executor.flow.review.local_tests.run_git") as mock_git:
+        mock_git.return_value = MagicMock(returncode=0, stdout="head1\n")
+        gate = local_tests._ReviewTestGate(ctx, str(tmp_path), pr_head=pr_head)
+
+        rate1, failed1 = gate.evidence(_green_github_probe())
+        assert (rate1, failed1) == (0.5, True)
+        assert pr_head.call_count == 1
+        run.assert_called_once()
+
+        # On unchanged local_head, once GitHub catches up to head1, ci_head succeeds and caches head1.
+        probe2 = _green_github_probe()
+        rate2, failed2 = gate.evidence(probe2)
+        assert (rate2, failed2) == (1.0, False)
+        assert probe2["test_source"] == "ci_head"
+        assert pr_head.call_count == 2
+
+        # Once matched to local_head, subsequent lookups reuse the cached PR head without re-querying.
+        probe3 = _green_github_probe()
+        rate3, failed3 = gate.evidence(probe3)
+        assert (rate3, failed3) == (1.0, False)
+        assert probe3["test_source"] == "ci_head"
+        assert pr_head.call_count == 2

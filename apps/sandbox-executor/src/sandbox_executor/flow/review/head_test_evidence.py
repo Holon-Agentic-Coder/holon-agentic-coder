@@ -170,8 +170,10 @@ def _attribute_test_source(
 
 
 def has_pass_marker(text: str) -> bool:
-    """True when the text reports a pass: the word ``passed`` or a zero failure count (not ``10 failed``)."""
+    """True when the text reports a pass without negated pass phrases or non-zero failures/errors."""
     clean = text.lower()
+    if re.search(r"\b(?:not|0)\s+passed\b", clean) or re.search(r"\b[1-9]\d*\s+(?:failed|errors?|errored)\b", clean):
+        return False
     return bool(re.search(r"\bpassed\b", clean) or re.search(r"(?<!\d)0 failed\b", clean))
 
 

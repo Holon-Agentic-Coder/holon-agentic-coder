@@ -97,7 +97,7 @@ class StageResult:
 
     def summary_line(self) -> str:
         """``stage: status (elapsed min / budget min or unlimited)``, or a bare ``stage: status`` when not timed."""
-        word = SUMMARY_STATUS_WORDS.get(self.status, self.status.value)
+        word = _SUMMARY_STATUS_WORDS.get(self.status, self.status.value)
         if self.elapsed_seconds is None:
             return f"{self.stage.value}: {word}"
         return format_stage_summary(self.stage.value, word, self.elapsed_seconds, self.budget_seconds)

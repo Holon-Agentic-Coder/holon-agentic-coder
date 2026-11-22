@@ -30,8 +30,8 @@ findings and no role at `CHANGES`; its fraction counts only those clean approval
 CLI summary and proceeds to Stage 5 calibration without merging to `main`. `StageStatus.HALTED_FOR_HUMAN` and
 `[SAFETY HALT]` apply only to safety halts and dry-run boundaries (legacy `halted_for_human` checkpoints and summary
 rows remain recognised as converged on read). Non-approved runs write `status: "failed"`; end-of-flow messages (the
-`REV-...` summary row, the action event, the Stage 4 error, the `[SAFETY HALT]` line and the `holon review-loop`
-summary) state each reviewer's final verdict as `Reviewer N VERDICT (critical/important/nit)` and say
+`REV-...` summary row, the action event, the Stage 4 error, the Stage 4 outcome log and the `holon review-loop` summary)
+state each reviewer's final verdict as `Reviewer N VERDICT (critical/important/nit)` and say
 `not approved: reviewer N final verdict X` for any reviewer that did not approve cleanly; such a run never approves and
 is never described as ready to merge.
 

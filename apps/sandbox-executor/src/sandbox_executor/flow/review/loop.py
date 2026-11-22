@@ -45,7 +45,7 @@ from sandbox_executor.flow.review.carried_findings import (
     serialize_open,
     undisposed,
 )
-from sandbox_executor.flow.review.ci_evidence import apply_local_test_evidence
+from sandbox_executor.flow.review.ci_evidence import _apply_guarded_test_evidence
 from sandbox_executor.flow.review.ci_outcome import gate_ci_flags
 from sandbox_executor.flow.review.ci_timing_finding import gh_timing_seams, timing_gate_finding
 from sandbox_executor.flow.review.ensemble import (
@@ -374,8 +374,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if reviewer_objected:
             # Fast path on reviewer findings: probe CI once without waiting on pending checks.
             last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-            gate_rate, tests_failed = test_gate.evidence(last_ci_status, dry_run=effective_dry_run)
-            apply_local_test_evidence(last_ci_status, tests_failed, gate_rate, effective_dry_run, False)
+            tests_failed, _ = _apply_guarded_test_evidence(
+                test_gate, last_ci_status, effective_dry_run, infra_error is not None or missing_ref, False
+            )
             ci_wait = ci_wait if last_ci_status.get("pending", 0) else None  # Never keep a stale wait record.
 
             # Include FIND-CI only if CI has already failed or local tests failed; pending checks are omitted.
@@ -404,20 +405,17 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             last_ci_status, waited = settle_pending_ci(context, probe_ci, last_ci_status, ci_policy, bool(ci_wait))
             iteration_timer.credit(waited.waited_seconds if waited else 0.0)  # The wait has its own budget.
             ci_wait = waited if waited and waited.exhausted else (ci_wait if last_ci_status.get("pending", 0) else None)
-            gate_rate, tests_failed = test_gate.evidence(last_ci_status, dry_run=effective_dry_run)
-            tests_not_measured |= apply_local_test_evidence(last_ci_status, tests_failed, gate_rate, False, True)
+            tests_failed, unmeasured = _apply_guarded_test_evidence(test_gate, last_ci_status, False, False, True)
+            tests_not_measured |= unmeasured
             ci_green, ci_finding = gate_ci_flags(last_ci_status, tests_failed)
             ensemble_verdict = decide_returned_consensus(reviewers, ensemble_size, True, ci_green, blockers)
         else:
             # Fallback for dry runs, dirty mergeability, or infra failures: probe once without waiting.
             last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-            if effective_dry_run or (infra_error is None and not missing_ref):
-                gate_rate, tests_failed = test_gate.evidence(last_ci_status, dry_run=effective_dry_run)
-                tests_not_measured |= apply_local_test_evidence(
-                    last_ci_status, tests_failed, gate_rate, effective_dry_run, True
-                )
-            else:
-                tests_failed = False
+            tests_failed, unmeasured = _apply_guarded_test_evidence(
+                test_gate, last_ci_status, effective_dry_run, infra_error is not None or missing_ref, True
+            )
+            tests_not_measured |= unmeasured
             ci_wait = ci_wait if last_ci_status.get("pending", 0) else None  # Never keep a stale wait record.
 
             ci_finding = not last_ci_status.get("all_passed", False) or tests_failed

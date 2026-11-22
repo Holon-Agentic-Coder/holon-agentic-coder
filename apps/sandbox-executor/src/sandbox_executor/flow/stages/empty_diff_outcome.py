@@ -68,7 +68,7 @@ def _empty_diff_outcome(
         return outcome, False
     superseding = superseding_failure_row(summary_row, EMPTY_DIFF_STATUS, EMPTY_DIFF_FAILURE_REASON, guard_summary)
     write_error = _append_superseding_execution_row(context, exec_branch, superseding)
-    if write_error:
+    if write_error is not None:
         context.log(f"Warning: could not record the empty-diff failure row on '{exec_branch}': {write_error}")
         outcome = (
             f"{agent_exit} and the container recorded status '{container_status}', but recording the "

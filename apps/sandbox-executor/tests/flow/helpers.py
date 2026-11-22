@@ -604,9 +604,9 @@ OTHER_HEAD = "I-200-other/P-201-aaaaaaaa-claude-agent-claude-opus-5-5/E-202-bbbb
 
 
 class FakeGh:
-    """Answers ``gh pr list`` and ``gh pr diff`` from fixed data; ``fail`` makes every call exit 1."""
+    """Answers ``gh pr list`` and ``gh pr diff`` (a patch) from fixed data; ``fail`` makes every call exit 1."""
 
-    def __init__(self, prs: list[dict[str, Any]], diffs: dict[int, list[str]], fail: bool = False):
+    def __init__(self, prs: list[dict[str, Any]], diffs: dict[int, list[str] | str], fail: bool = False):
         self.prs, self.diffs, self.fail = prs, diffs, fail
         self.calls: list[list[str]] = []
 
@@ -616,7 +616,13 @@ class FakeGh:
             return subprocess.CompletedProcess(["gh", *args], 1, "", "HTTP 502")
         if args[:2] == ["pr", "list"]:
             return subprocess.CompletedProcess(["gh", *args], 0, json.dumps(self.prs), "")
-        return subprocess.CompletedProcess(["gh", *args], 0, "\n".join(self.diffs[int(args[2])]), "")
+        diff = self.diffs[int(args[2])]
+        return subprocess.CompletedProcess(["gh", *args], 0, diff if isinstance(diff, str) else patch_of(diff), "")
+
+
+def patch_of(paths: list[str]) -> str:
+    """A ``gh pr diff`` patch modifying each of ``paths`` (a raw patch string is answered as it is)."""
+    return "".join(f"diff --git a/{p} b/{p}\n--- a/{p}\n+++ b/{p}\n@@ -1 +1 @@\n-old\n+new\n" for p in paths)
 
 
 def make_plan_branch(host: Path, plan_branch: str, touch_set: list[dict[str, Any]] | None) -> None:
@@ -637,3 +643,14 @@ def no_worktrees(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
     if args[:2] != ["worktree", "list"]:
         return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
     return subprocess.CompletedProcess(["git", *args], 0, f"worktree {cwd}\n", "")
+
+
+def seed_base_files(host: Path, paths: list[str]) -> None:
+    """Commit ``paths`` on main and push them, so admission's base listing (``origin/main``) sees them as existing."""
+    _git(host, "checkout", "-q", "main")
+    for rel in paths:
+        (host / rel).parent.mkdir(parents=True, exist_ok=True)
+        (host / rel).write_text(f"# {rel}\n", encoding="utf-8")
+    _git(host, "add", "-A")
+    _git(host, "commit", "-qm", f"seed {len(paths)} base file(s)")
+    _git(host, "push", "-q", "origin", "main")

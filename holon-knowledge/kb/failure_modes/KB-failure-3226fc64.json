@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-3226fc64",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-21T13:04:24.577798+00:00",
+  "updated_ts": "2026-11-21T13:04:24.577798+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1795252517-2a90e729",
+      "ACT-REV-1795252515-b85f8610"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795222649-antigravity-tmpfs-empty-diff/P-1795222667-CLA-CO5.5/E-1795251360-ANA-G3.8F/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 evaluation for I-1795222649-antigravity-tmpfs-empty-diff/P-1795222667-CLA-CO5.5/E-1795251360-ANA-G3.8F/_",
+    "symptoms": [
+      "Findings detected: ['FIND-DIRTY-001', 'FIND-R1-001-01', 'FIND-R1-001-02', 'FIND-R1-001-03', 'FIND-R1-001-04', 'FIND-R1-001-05', 'FIND-R1-001-06', 'FIND-R2-001-01']"
+    ]
+  }
+}

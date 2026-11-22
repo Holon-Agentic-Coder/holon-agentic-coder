@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 import pytest
-from sandbox_executor.flow.intent_questions import validate_intent_questions
+from sandbox_executor.flow.intent_questions import (
+    QUESTION_KINDS,
+    IntentQuestions,
+    answered_by_id,
+    answered_by_text,
+    has_inline_answer,
+    is_marked_open,
+    validate_intent_questions,
+)
 
 
 @pytest.mark.parametrize(
@@ -36,3 +44,97 @@ def test_a_question_is_answered_through_its_id_or_text():
     assert validate_intent_questions({"questions": [{"id": "q1"}], "answers": {"q1": "yes"}}) == (True, [])
     intent = {"clarifications": [{"clarification": "Which DB?"}], "answers": [{"question": "Which DB?", "answer": "x"}]}
     assert validate_intent_questions(intent) == (True, [])
+
+
+KINDS = {kind.kind: kind for kind in QUESTION_KINDS}
+
+
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [({"answer": "Postgres"}, True), ({"answer": ""}, False), ({"answer": None}, False), ({}, False)],
+)
+def test_has_inline_answer(item, expected):
+    assert has_inline_answer(item) is expected
+
+
+@pytest.mark.parametrize(
+    ("text", "index", "answers", "expected"),
+    [
+        ("Which DB?", 0, {"Which DB?": "Postgres"}, True),
+        ("Which DB?", 2, {"2": "Postgres"}, True),
+        ("Which DB?", 0, {"Which DB?": ""}, False),
+        ("Which DB?", 0, {"Which DB?": None, "0": None}, False),
+        ("Which DB?", 1, {"0": "Postgres"}, False),
+    ],
+)
+def test_answered_by_text_matches_the_text_or_the_index(text, index, answers, expected):
+    assert answered_by_text(text, index, answers) is expected
+
+
+@pytest.mark.parametrize(
+    ("item", "answers", "expected"),
+    [
+        ({"id": "q1"}, {"q1": "yes"}, True),
+        ({"id": "q1"}, {"q2": "yes"}, False),
+        ({"id": "q1"}, {"3": "yes"}, True),
+        ({}, {"": "yes"}, True),
+    ],
+)
+def test_answered_by_id_matches_the_id_or_the_index(item, answers, expected):
+    assert answered_by_id(item, 3, answers) is expected
+
+
+@pytest.mark.parametrize(("status", "expected"), [("open", True), ("unresolved", True), ("closed", False), ("", False)])
+def test_is_marked_open(status, expected):
+    assert is_marked_open(status) is expected
+
+
+@pytest.mark.parametrize(
+    ("kind", "status", "label"),
+    [
+        ("open_question", "open", "unresolved open_question"),
+        ("open_question", "closed", "missing answer"),
+        ("question", "unresolved", "marked as unresolved"),
+        ("question", "", "unanswered question"),
+        ("clarification", "open", "unresolved clarification"),
+        ("clarification", "", "unanswered clarification"),
+    ],
+)
+def test_question_kind_labels_an_unanswered_item_by_status(kind, status, label):
+    assert KINDS[kind].item_label(status) == label
+
+
+@pytest.mark.parametrize(
+    ("kind", "string_label", "entry_label"),
+    [
+        ("open_question", "unanswered open_question", "unresolved open_question"),
+        ("question", "unanswered question", "unanswered question"),
+        ("clarification", "unanswered clarification", "unresolved clarification"),
+    ],
+)
+def test_question_kind_labels_string_items_and_mapping_entries(kind, string_label, entry_label):
+    assert KINDS[kind].string_label == string_label
+    assert KINDS[kind].entry_label == entry_label
+
+
+def test_question_kinds_are_evaluated_in_order_and_only_clarifications_ignore_ids():
+    assert [kind.field for kind in QUESTION_KINDS] == ["open_questions", "questions", "clarifications"]
+    assert [kind.matches_id for kind in QUESTION_KINDS] == [True, True, False]
+    assert [kind.default_status for kind in QUESTION_KINDS] == ["open", "", ""]
+
+
+def test_intent_questions_reads_answers_from_the_resolved_questions_list():
+    intent = {"resolved_questions": [{"id": "q1", "answer": "yes"}, "Postgres"]}
+    assert IntentQuestions.from_intent(intent).answers == {"q1": "yes", "1": "Postgres"}
+
+
+def test_intent_questions_reports_groups_in_order_and_ignores_other_shapes():
+    intent = {
+        "clarifications": ["Which DB?", 3],
+        "questions": "not a group",
+        "open_questions": [{"question": "Scope?"}],
+    }
+    assert IntentQuestions.from_intent(intent).unresolved() == [
+        "Scope? (unresolved open_question)",
+        "Which DB? (unanswered clarification)",
+    ]

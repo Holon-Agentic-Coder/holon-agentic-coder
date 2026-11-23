@@ -143,6 +143,7 @@ def stage_runner(calls: list[str], thread: FakeThread | None = None) -> object:
     def run(ctx: FlowContext) -> StageResult:
         calls.append("stage")
         with (
+            patch("sandbox_executor.flow.stages.calibrate._stage5_conflict_gate", return_value=None),
             patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
             patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=realistic_calibrate),
             patch("sandbox_executor.flow.stages.calibrate.resolve_stale", side_effect=resolver),
@@ -353,6 +354,7 @@ def test_stage5_supersedes_the_warning_right_after_the_push_and_before_the_final
         return {"state": "success"}
 
     with (
+        patch("sandbox_executor.flow.stages.calibrate._stage5_conflict_gate", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=realistic_calibrate),
         patch("sandbox_executor.flow.stages.calibrate.resolve_stale", side_effect=stage5_resolve_stale(thread)),
@@ -373,6 +375,7 @@ def test_a_failed_publish_leaves_the_warning_open_and_records_no_supersession(re
     move_head(repos)
     post_stale_signal(ctx, report_staleness(ctx), thread.seams(), pr_number="7")
     with (
+        patch("sandbox_executor.flow.stages.calibrate._stage5_conflict_gate", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=realistic_calibrate),
         patch("sandbox_executor.flow.stages.calibrate.publish_calibration", return_value=False),

@@ -253,3 +253,40 @@ def test_an_injected_adapter_reads_the_pr_head_probes_ci_and_dispatches_the_reru
     assert ("rerun_failed", ("100", STEP_LOOKUP_TIMEOUT_SECONDS)) in github.calls
     assert fakes.diff_calls == [(APPROVED, FINAL)]
     assert set(github.methods()) == {"ci_checks", "pr_head_sha", "rerun_failed"}
+
+
+def test_an_adapter_whose_rerun_raises_is_a_failed_dispatch_not_an_unknown_record(tmp_path: Path) -> None:
+    class RaisingRerun(FakeGitHub):
+        def rerun_failed(self, run_id: str, timeout: float = 60) -> bool:
+            self.calls.append(("rerun_failed", (run_id, timeout)))
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    fakes = _timing_failure()
+    github = RaisingRerun(head_sha=FINAL)
+    seams = dataclasses.replace(fakes.seams(), rerun_dispatcher=None, github=github)
+    record = check_final_head_ci(_ctx(tmp_path), str(tmp_path), BRANCH, seams)
+    assert record["state"] == "failed"
+    assert record["timing_rerun"] == {"attempted": False, "reason": "the rerun could not be dispatched"}
+    assert github.methods() == ["rerun_failed"]
+    assert fakes.probes == 1
+
+
+def test_the_default_adapter_is_built_once_over_the_checkout_with_the_seam_proxy_environment(tmp_path: Path) -> None:
+    fakes = RerunFakes(_status([_check("unit", "pass")]))
+    seams = dataclasses.replace(fakes.seams(), proxy_env={"HTTPS_PROXY": "p"})
+    with patch("sandbox_executor.flow.github.ci_final_head.GitHubAdapter") as adapter:
+        record = check_final_head_ci(_ctx(tmp_path), str(tmp_path), BRANCH, seams)
+    assert record["state"] == "success"
+    adapter.assert_called_once_with(str(tmp_path), {"HTTPS_PROXY": "p"})
+
+
+def test_the_registration_wait_polls_the_injected_adapter(tmp_path: Path) -> None:
+    """A first probe without checks enters the registration wait, whose poll must land on the injected adapter."""
+    fakes = RerunFakes(_status([]))
+    github = FakeGitHub(checks_sequence=[None, ci_checks_payload(passed=1)], head_sha=FINAL)
+    seams = dataclasses.replace(fakes.seams(registration_timeout=60.0), probe=None, pr_head=None, github=github)
+    record = check_final_head_ci(_ctx(tmp_path), str(tmp_path), BRANCH, seams)
+    assert record["state"] == "success"
+    # The first probe (no checks), the registration poll (checks registered) and the settled probe.
+    assert github.methods() == ["ci_checks"] * 3
+    assert fakes.sleeps == []

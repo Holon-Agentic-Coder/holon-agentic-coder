@@ -129,7 +129,7 @@ class GitHubAdapter:
     def rerun_failed(self, run_id: str, timeout: float = PR_TIMEOUT_SECONDS) -> bool:
         """``gh run rerun <run_id> --failed``; True only when it exited 0, False when ``gh`` could not be run."""
         result = self._gh(["run", "rerun", run_id, "--failed"], timeout)
-        return result.ok and result.returncode == 0
+        return result.ok
 
     def gh(self, args: list[str], cwd: str | None = None) -> subprocess.CompletedProcess[str]:
         """The guarded merge's ``GhRunner``: ``gh <args>`` in ``cwd`` (default the checkout), no proxy, 120 seconds.

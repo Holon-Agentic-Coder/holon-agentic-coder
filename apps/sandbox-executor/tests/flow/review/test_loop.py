@@ -505,3 +505,45 @@ def test_an_injected_adapter_receives_every_github_call_of_the_loop(tmp_path):
     assert {"open_or_update", "mergeability", "ci_checks", "post_review"} <= set(github.methods())
     assert github.methods()[0] == "open_or_update"
     assert all(args[0] == EXEC_TARGET for name, args in github.calls if name in {"open_or_update", "ci_checks"})
+
+
+def test_an_injected_adapter_supplies_the_proxy_environment_of_the_loop(tmp_path):
+    """With ``github=...`` the loop takes its proxy environment from the adapter and never resolves its own."""
+    from sandbox_executor.flow.review import loop as loop_module
+    from sandbox_executor.review_target import DiffVerdict
+
+    github = FakeGitHub(
+        views=[{"number": 7, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}] * 2,
+        checks=ci_checks_payload(passed=1),
+        head_sha="stage3-head",
+        proxy_env={"HTTPS_PROXY": "http://p"},
+    )
+    with (
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc1234"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+        patch.object(loop_module, "review_proxy_env") as resolve,
+        patch.object(loop_module, "_ReviewTestGate", wraps=loop_module._ReviewTestGate) as gate,
+    ):
+        res = run_review_loop(_ensemble_ctx(tmp_path), max_iterations=1, run_ensemble_fn=FakeEnsemble(), github=github)
+
+    assert res["consensus"]["approved"] is True
+    resolve.assert_not_called()
+    assert gate.call_args.kwargs["proxy_env"] == {"HTTPS_PROXY": "http://p"}
+
+
+def test_an_unavailable_adapter_attempts_no_pr(tmp_path):
+    """Without ``gh`` the loop skips PR creation outright: no PR record and no adapter call for it."""
+    from sandbox_executor.review_target import DiffVerdict
+
+    github = FakeGitHub(available=False)
+    with (
+        patch("shutil.which", return_value=None),
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc1234"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+    ):
+        res = run_review_loop(
+            _ensemble_ctx(tmp_path), max_iterations=1, auto_pr=True, run_ensemble_fn=FakeEnsemble(), github=github
+        )
+
+    assert res["pr"] == {}
+    assert "open_or_update" not in github.methods()

@@ -282,6 +282,14 @@ def _wait_for_rerun_start(probe: Callable[[], dict[str, Any]], names: list[str],
         policy.sleep(max(0.0, min(CI_REGISTRATION_POLL_SECONDS, remaining)))
 
 
+def _dispatch_rerun(check: _FinalHeadCheck, run_id: str) -> bool:
+    """Dispatch one rerun through the check's adapter; any exception is a failed dispatch (fail-closed)."""
+    try:
+        return check.github.rerun_failed(run_id, timeout=STEP_LOOKUP_TIMEOUT_SECONDS)
+    except Exception:
+        return False
+
+
 def _retry_timing_noise(check: _FinalHeadCheck, record: dict[str, Any], ci_status: dict[str, Any]) -> dict[str, Any]:
     """Rerun a timing-gate-only failure on a bookkeeping-only head once and re-classify; anything else is unchanged.
 
@@ -293,8 +301,8 @@ def _retry_timing_noise(check: _FinalHeadCheck, record: dict[str, Any], ci_statu
         return record
     check.context.log(f"Final-head CI: rerunning timing-gate failure on a bookkeeping-only head: {', '.join(run_ids)}")
     seams = check.seams
-    # A failed dispatch (False, including gh missing or a spawn error) is fail-closed.
-    rerun = seams.rerun_dispatcher or functools.partial(check.github.rerun_failed, timeout=STEP_LOOKUP_TIMEOUT_SECONDS)
+    # A failed dispatch (False, including gh missing, a spawn error or any exception) is fail-closed.
+    rerun = seams.rerun_dispatcher or functools.partial(_dispatch_rerun, check)
     if not all(rerun(run_id) for run_id in run_ids):
         return {**record, "timing_rerun": {"attempted": False, "reason": "the rerun could not be dispatched"}}
     probe = seams.probe or check.default_probe()

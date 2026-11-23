@@ -875,11 +875,9 @@ auditability.
 flowchart TD
     S1["Stage 1: Intent Creation (I-{timestamp}-{slug}/_)"] --> S2["Stage 2: Plan Generation (P-{timestamp}-{ticker}-{model code}/_)"]
     S2 --> S3["Stage 3: Plan Execution (E-{timestamp}-{ticker}-{model code}/_)"]
-    S3 --> C1{"Skip Review?"}
-    C1 -- "--skip-review" --> C2{"Skip Calibrate?"}
-    C1 -- "default" --> S4["Stage 4: PR Review Loop (Sandboxed Reviewer Ensemble, CI, Mergeability)"]
+    S3 --> S4["Stage 4: PR Review Loop (Sandboxed Reviewer Ensemble, CI, Mergeability)"]
     S4 --> H1{"Every Reviewer Approved, Mergeable, CI Green?"}
-    H1 -- "Yes" --> C2
+    H1 -- "Yes" --> C2{"Skip Calibrate?"}
     H1 -- "No" --> F1["FAILED (Review Rejection)"]
     C2 -- "--skip-calibrate" --> S_SKIP["Stage 5: SKIPPED"]
     C2 -- "default" --> S5["Stage 5: Post-Execution Calibration (/calibrated branch)"]
@@ -889,6 +887,9 @@ flowchart TD
 ```
 
 ##### Command Options Reference
+
+Stage 4 cannot be skipped by any option: a Stage 4 that fails halts the flow with the failure reported, before
+calibration or any later step runs.
 
 | Option                    | Type       | Default  | Description                                                                                                                                                                                                                                                                   |
 | ------------------------- | ---------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -902,7 +903,6 @@ flowchart TD
 | `--json`                  | Flag       | `False`  | Output pipeline status and stage results in structured JSON format.                                                                                                                                                                                                           |
 | `--target-worktree`       | Path       | `.`      | Repository and base branch to run against. If it has the intent's target branch checked out (normally `main`), the run happens in a dedicated `flow-<slug>` sibling worktree branched off `origin/<target_branch>`; the given worktree is never modified.                     |
 | `--skip-push`             | Flag       | `False`  | Skip pushing git branches to remote origin. Only valid with `--dry-run`: any non-dry run, including a resume from any stage, is rejected before any stage runs.                                                                                                               |
-| `--skip-review`           | Flag       | `False`  | Skip Stage 4 (PR review loop) and proceed to calibration.                                                                                                                                                                                                                     |
 | `--skip-calibrate`        | Flag       | `False`  | Skip Stage 5 (post-execution calibration report generation).                                                                                                                                                                                                                  |
 | `--max-review-iterations` | Integer    | `25`     | Maximum autonomous review loop iterations in Stage 4 (must be `>= 1`, default: `25`). The loop runs at most one iteration: it stops after the first, approved or not (no automatic resolver).                                                                                 |
 | `--ensemble-size`         | Integer    | `3`      | Number of independent reviewer agent turns per iteration; approval needs every reviewer to approve with zero findings (default: 3). Must be `>= 1`. Reviewer turns run only inside a sandbox: on a host, Stage 4 fails closed and the review is run with `holon review-loop`. |
@@ -915,8 +915,8 @@ flowchart TD
 # Standard 5-stage lifecycle execution:
 ./holon flow intents/my-task.json
 
-# Skip review and calibration for rapid testing:
-./holon flow intents/my-task.json --skip-review --skip-calibrate
+# Skip calibration:
+./holon flow intents/my-task.json --skip-calibrate
 
 # Dry-run validation with structured JSON output:
 ./holon flow intents/my-task.json --dry-run --json

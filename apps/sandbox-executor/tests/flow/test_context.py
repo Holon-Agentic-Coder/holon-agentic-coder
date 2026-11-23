@@ -113,7 +113,6 @@ class TestFlowDataModels:
 
     def test_flow_context_new_flags_serialization(self):
         ctx = FlowContext(
-            skip_review=True,
             skip_calibrate=True,
             max_review_iterations=5,
             mitm_web=True,
@@ -121,19 +120,23 @@ class TestFlowDataModels:
             allow_overlap=True,
         )
         d = ctx.to_dict()
-        assert d["skip_review"] is True
         assert d["skip_calibrate"] is True
         assert d["max_review_iterations"] == 5
         assert d["mitm_web"] is True
         assert d["token_reduce"] is True
 
         reconstructed = FlowContext.from_dict(d)
-        assert reconstructed.skip_review is True
         assert reconstructed.skip_calibrate is True
         assert reconstructed.max_review_iterations == 5
         assert reconstructed.mitm_web is True
         assert reconstructed.token_reduce is True
         assert d["allow_overlap"] is True and reconstructed.allow_overlap is True
+
+    def test_legacy_skip_review_key_is_ignored(self):
+        ctx = FlowContext.from_dict({"repo_dir": ".", "skip_review": True, "skip_calibrate": True})
+        assert not hasattr(ctx, "skip_review")
+        assert "skip_review" not in ctx.to_dict()
+        assert ctx.skip_calibrate is True
 
     def test_legacy_checkpoint_loading_defaults(self):
         legacy_data = {
@@ -142,7 +145,6 @@ class TestFlowDataModels:
             "model": "gemini-3.8-flash-medium",
         }
         ctx = FlowContext.from_dict(legacy_data)
-        assert ctx.skip_review is False
         assert ctx.skip_calibrate is False
         assert ctx.max_review_iterations == 25
         assert ctx.mitm_web is False

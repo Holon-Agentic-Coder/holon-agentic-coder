@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-4bf1d238",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T01:13:20.719485+00:00",
+  "updated_ts": "2026-11-23T01:13:20.719485+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-RES-1795395392-94ce4851"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795388497-resume-flags-override-checkpoint/P-1795390638-CLA-CO5.5/E-1795390891-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding R1-F1 left open (no evidenced adjudication)",
+    "symptoms": []
+  }
+}

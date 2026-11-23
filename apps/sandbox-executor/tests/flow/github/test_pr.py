@@ -18,8 +18,12 @@ from sandbox_executor.flow import (
 )
 from sandbox_executor.ledger import parse_commit_trailers
 
+from tests.flow.github.fake_github import FakeGitHub, spawn_failure
 from tests.flow.helpers import _git, _init_mergeability_repo
 from tests.flow.lookup_patch import patch_lookup_sites
+
+# The local git path: gh is missing, so mergeability is decided by git merge-tree.
+NO_GH = FakeGitHub(available=False)
 
 
 class TestReviewMergeabilityGuards:
@@ -57,48 +61,48 @@ class TestReviewMergeabilityGuards:
         assert "DIRTY" in result.error
 
     def test_check_pr_mergeability_via_gh_cli(self):
-        with (
-            patch("shutil.which", return_value="/usr/bin/gh"),
-            patch("subprocess.run") as mock_subproc,
-        ):
-            mock_subproc.return_value = MagicMock(
-                returncode=0,
-                stdout=json.dumps(
-                    {
-                        "number": 42,
-                        "mergeable": "CONFLICTING",
-                        "mergeStateStatus": "DIRTY",
-                        "statusCheckRollup": [],
-                    }
-                ),
-            )
-            res = check_pr_mergeability(".", "my-branch", "main")
-            assert res["is_dirty"] is True
-            assert res["mergeable"] == "CONFLICTING"
-            assert res["merge_state_status"] == "DIRTY"
-            assert res["source"] == "github_cli"
-            assert res["pr_number"] == 42
+        github = FakeGitHub(
+            views=[{"number": 42, "mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY", "statusCheckRollup": []}]
+        )
+        res = check_pr_mergeability(".", "my-branch", "main", github=github)
+        assert res["is_dirty"] is True
+        assert res["mergeable"] == "CONFLICTING"
+        assert res["merge_state_status"] == "DIRTY"
+        assert res["source"] == "github_cli"
+        assert res["pr_number"] == 42
+        assert github.calls == [("mergeability", ("my-branch",))]
 
     def test_check_pr_mergeability_short_circuit_on_gh_error(self):
-        with (
-            patch("shutil.which", return_value="/usr/bin/gh"),
-            patch("subprocess.run") as mock_subproc,
-            patch("sandbox_executor.flow.github.pr.run_git") as mock_git,
-        ):
-            # gh pr view returns error (e.g. no PR found)
-            mock_subproc.return_value = MagicMock(returncode=1, stdout="", stderr="no pull requests found")
+        # gh pr view returns error (e.g. no PR found)
+        github = FakeGitHub(views=[(1, "", "no pull requests found")])
+        with patch("sandbox_executor.flow.github.pr.run_git") as mock_git:
             mock_git.return_value = MagicMock(returncode=0, stdout="")
 
-            res = check_pr_mergeability(".", "my-branch", "main")
+            res = check_pr_mergeability(".", "my-branch", "main", github=github)
             # Should short-circuit and call gh pr view only ONCE, not 3 times
-            assert mock_subproc.call_count == 1
+            assert github.methods() == ["mergeability"]
             assert res["source"] == "git_local"
 
+    def test_check_pr_mergeability_retries_while_github_computes(self):
+        unknown = {"number": 7, "mergeable": "UNKNOWN", "mergeStateStatus": "UNKNOWN", "statusCheckRollup": []}
+        clean = {"number": 7, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "statusCheckRollup": []}
+        github = FakeGitHub(views=[unknown, (0, "", ""), clean])
+        with patch("sandbox_executor.flow.github.pr.time.sleep") as sleep:
+            res = check_pr_mergeability(".", "my-branch", "main", github=github)
+        assert github.methods() == ["mergeability"] * 3
+        assert sleep.call_count == 1
+        assert (res["source"], res["mergeable"], res["pr_number"]) == ("github_cli", "MERGEABLE", 7)
+
+    def test_check_pr_mergeability_falls_back_when_the_view_cannot_run(self):
+        github = FakeGitHub(views=[spawn_failure()])
+        with patch("sandbox_executor.flow.github.pr.run_git", return_value=MagicMock(returncode=1, stdout="")):
+            res = check_pr_mergeability(".", "my-branch", "main", github=github)
+        assert github.methods() == ["mergeability"]
+        assert res["source"] == "git_local"
+
     def test_check_pr_mergeability_local_git_fallback_with_remote_tracking_ref(self):
-        with (
-            patch("shutil.which", return_value=None),
-            patch("sandbox_executor.flow.github.pr.run_git") as mock_git,
-        ):
+        github = FakeGitHub(available=False)
+        with patch("sandbox_executor.flow.github.pr.run_git") as mock_git:
 
             def git_side_effect(args, **kwargs):  # noqa: PLR0911
                 cmd = args[0]
@@ -124,7 +128,8 @@ class TestReviewMergeabilityGuards:
                 return MagicMock(returncode=0, stdout="")
 
             mock_git.side_effect = git_side_effect
-            res = check_pr_mergeability(".", "feature-branch", "main")
+            res = check_pr_mergeability(".", "feature-branch", "main", github=github)
+            assert github.calls == []
             assert res["source"] == "git_local"
             assert res["is_dirty"] is False
             assert res["mergeable"] == "MERGEABLE"
@@ -194,9 +199,10 @@ class TestReviewMergeabilityGuards:
             payload={"test_pass_rate": 1.0, "exit_code": 0},
         )
         with (
-            patch("shutil.which", return_value="/usr/bin/gh"),
+            # Stage-level: the review stage builds its own adapter, so its spawn is patched where the adapter runs it.
+            patch("sandbox_executor.flow.github.adapter.shutil.which", return_value="/usr/bin/gh"),
             patch("sandbox_executor.flow.git_refs.run_git") as mock_git,
-            patch("subprocess.run") as mock_subproc,
+            patch("sandbox_executor.flow.github.adapter.subprocess.run") as mock_subproc,
         ):
             mock_git.return_value = MagicMock(returncode=0, stdout="")
             mock_subproc.return_value = MagicMock(
@@ -244,12 +250,12 @@ class TestMergeabilityRefResolution:
 
     @pytest.fixture(autouse=True)
     def _no_gh(self):
-        # Force the local git path so no test can reach GitHub over the network.
-        with patch("shutil.which", return_value=None) as which:
+        # Force the local git path in the loop-level tests, which build their own adapter, so none reaches GitHub.
+        with patch("sandbox_executor.flow.github.adapter.shutil.which", return_value=None) as which:
             yield which
 
     def test_missing_branch_ref_yields_missing_ref(self, repo: Path):
-        res = check_pr_mergeability(str(repo), "does-not-exist", "main")
+        res = check_pr_mergeability(str(repo), "does-not-exist", "main", github=NO_GH)
         assert res["source"] == "git_local"
         assert res["merge_state_status"] == "MISSING_REF"
         assert res["mergeable"] == "UNKNOWN"
@@ -259,7 +265,7 @@ class TestMergeabilityRefResolution:
         assert res["diagnostics"]["candidates_tried"] == ["does-not-exist", "origin/does-not-exist"]
 
     def test_missing_target_ref_yields_missing_ref(self, repo: Path):
-        res = check_pr_mergeability(str(repo), "clean-feature", "no-such-target")
+        res = check_pr_mergeability(str(repo), "clean-feature", "no-such-target", github=NO_GH)
         assert res["merge_state_status"] == "MISSING_REF"
         assert res["mergeable"] == "UNKNOWN"
         assert res["is_dirty"] is False
@@ -268,13 +274,13 @@ class TestMergeabilityRefResolution:
         assert "cannot evaluate mergeability for ref no-such-target" in res["diagnostics"]["message"]
 
     def test_genuine_conflict_yields_conflicting_dirty(self, repo: Path):
-        res = check_pr_mergeability(str(repo), "conflict-feature", "main")
+        res = check_pr_mergeability(str(repo), "conflict-feature", "main", github=NO_GH)
         assert res["mergeable"] == "CONFLICTING"
         assert res["merge_state_status"] == "DIRTY"
         assert res["is_dirty"] is True
 
     def test_clean_branch_yields_mergeable_clean(self, repo: Path):
-        res = check_pr_mergeability(str(repo), "clean-feature", "main")
+        res = check_pr_mergeability(str(repo), "clean-feature", "main", github=NO_GH)
         assert res["mergeable"] == "MERGEABLE"
         assert res["merge_state_status"] == "CLEAN"
         assert res["is_dirty"] is False
@@ -360,7 +366,7 @@ class TestMergeabilityRefResolution:
 
     def test_non_repository_yields_unknown_not_missing_ref(self, tmp_path: Path):
         # Outside a repository no ref can resolve, so blaming a specific ref would be a misdiagnosis.
-        res = check_pr_mergeability(str(tmp_path), "feature", "main")
+        res = check_pr_mergeability(str(tmp_path), "feature", "main", github=NO_GH)
         assert res["mergeable"] == "UNKNOWN"
         assert res["merge_state_status"] == "UNKNOWN"
         assert res["is_dirty"] is False
@@ -376,7 +382,7 @@ class TestMergeabilityRefResolution:
         _git(repo, "commit", "-q", "-m", "orphan root")
         _git(repo, "checkout", "-q", "-f", "main")
 
-        res = check_pr_mergeability(str(repo), "orphan", "main")
+        res = check_pr_mergeability(str(repo), "orphan", "main", github=NO_GH)
         assert res["mergeable"] == "UNKNOWN"
         assert res["merge_state_status"] == "UNKNOWN"
         assert res["is_dirty"] is False
@@ -385,19 +391,19 @@ class TestMergeabilityRefResolution:
 
     def test_annotated_tag_is_peeled_to_commit(self, repo: Path):
         _git(repo, "tag", "-a", "v-clean", "-m", "annotated tag", "clean-feature")
-        res = check_pr_mergeability(str(repo), "v-clean", "main")
+        res = check_pr_mergeability(str(repo), "v-clean", "main", github=NO_GH)
         assert res["mergeable"] == "MERGEABLE"
         assert res["merge_state_status"] == "CLEAN"
 
     def test_tree_object_ref_yields_missing_ref(self, repo: Path):
         tree_sha = _git(repo, "rev-parse", "main^{tree}")
-        res = check_pr_mergeability(str(repo), tree_sha, "main")
+        res = check_pr_mergeability(str(repo), tree_sha, "main", github=NO_GH)
         assert res["merge_state_status"] == "MISSING_REF"
         assert res["is_dirty"] is False
         assert res["diagnostics"]["ref_role"] == "branch"
 
     def test_empty_branch_resolves_to_head(self, repo: Path):
         _git(repo, "checkout", "-q", "clean-feature")
-        res = check_pr_mergeability(str(repo), "", "main")
+        res = check_pr_mergeability(str(repo), "", "main", github=NO_GH)
         assert res["mergeable"] == "MERGEABLE"
         assert res["merge_state_status"] == "CLEAN"

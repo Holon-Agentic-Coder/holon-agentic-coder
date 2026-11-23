@@ -14,11 +14,13 @@ from sandbox_executor.flow import (
     FlowStage,
     StageResult,
     StageStatus,
+    probe_ci_checks,
     resolve_ci_registration_timeout,
     run_review_loop,
     run_review_stage,
 )
 
+from tests.flow.github.fake_github import FakeGitHub, spawn_failure
 from tests.flow.helpers import _verified_diff
 from tests.flow.lookup_patch import patch_lookup_sites
 from tests.flow.sleep_patch import scoped_sleep_patch
@@ -369,3 +371,44 @@ class TestUnmeasuredTestsStopEarly:
         assert res.payload["halted_for_human"] is False
         assert res.error.startswith("Autonomous review halted: Refusing to create or update a PR for ")
         assert "could not verify the execution diff (fetch failed)" in res.error
+
+
+class TestProbeCiChecks:
+    """``probe_ci_checks`` reads ``gh pr checks`` through the injected adapter and falls back to local tests."""
+
+    def test_checks_are_summarised_from_github(self):
+        checks = [
+            {"name": "unit", "bucket": "pass", "state": "SUCCESS"},
+            {"name": "lint", "bucket": "fail", "state": "FAILURE"},
+        ]
+        github = FakeGitHub(checks=checks)
+        res = probe_ci_checks("/repo", " 42 ", timeout=12.5, github=github)
+        assert github.calls == [("ci_checks", ("42", 12.5))]
+        assert (res["source"], res["total"], res["passed"], res["failed"], res["all_passed"]) == (
+            "github_cli",
+            2,
+            1,
+            1,
+            False,
+        )
+
+    def test_default_timeout_is_thirty_seconds(self):
+        github = FakeGitHub(checks=[{"name": "unit", "bucket": "pass", "state": "SUCCESS"}])
+        probe_ci_checks("/repo", "feature/x", github=github)
+        assert github.calls == [("ci_checks", ("feature/x", 30.0))]
+
+    @pytest.mark.parametrize(
+        "checks",
+        [None, (0, "", ""), (0, "not json", ""), (0, json.dumps({"not": "a list"}), ""), spawn_failure()],
+        ids=["no-checks", "empty", "invalid-json", "not-a-list", "could-not-run"],
+    )
+    def test_unusable_github_answers_fall_back_to_local_tests(self, checks):
+        github = FakeGitHub(checks=checks)
+        assert probe_ci_checks("/repo", "42", github=github)["source"] == "local_tests"
+        assert github.methods() == ["ci_checks"]
+
+    @pytest.mark.parametrize(("available", "target"), [(False, "42"), (True, "  ")])
+    def test_missing_gh_or_target_never_asks_github(self, available, target):
+        github = FakeGitHub(available=available, checks=[{"name": "unit", "bucket": "pass"}])
+        assert probe_ci_checks("/repo", target, github=github)["source"] == "local_tests"
+        assert github.calls == []

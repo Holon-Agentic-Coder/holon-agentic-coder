@@ -625,13 +625,18 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
     for name in list(os.environ):
         monkeypatch.delenv(name)
     failures: list[str] = []
+    collided: list[str] = []
     cases = list(_invalid_value_cases())
     for case_id, env, host_config, credential in cases:
         # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variable to the
         # container unchanged: through the env-file, so neither the argv nor the echo may hold a fragment of it.
         rejected = "TIMEOUT" not in case_id and "BUDGET" not in case_id
         docker = _DockerRecorder()
+        # Each temp name is first drawn sharing a run with the credential, so the masking under the isolated HOME is
+        # what keeps a forwarded run from reading as a leak, not the luck of a random name.
+        colliding = _colliding_temp_names(credential)
         with (
+            patch.object(tempfile, "_get_candidate_names", colliding),
             patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
             patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
             patch.object(subprocess, "run", docker),
@@ -658,10 +663,22 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
         if not rejected:
             forwarded = _forwarded_run_failures(env, docker, credential, str(tmp_path))
             failures.extend(f"{case_id}:{where}" for where in forwarded)
+            if _leaks(out, credential) and _leaks([" ".join(docker.argv)], credential):
+                collided.append(case_id)
     assert len(cases) == (len(INVALID_VALUE_ENV) + len(INVALID_VALUE_HOST_FIELDS)) * MATRIX_SIZE // (
         len(HOSTS) * len(SUFFIXES)
     )
     assert not failures, f"{len(failures)}/{len(cases)} invalid-value cases failed, e.g. {failures[:5]}"
+    assert collided, "no forwarded run drew a temp name sharing a run with its credential"
+
+
+def _colliding_temp_names(credential: str) -> Callable[[], Iterator[str]]:
+    """Return a `tempfile._get_candidate_names` stand-in whose first name shares a 4-character run with `credential`.
+
+    Later draws are random, so a name already taken on disk is retried as usual.
+    """
+    name = re.search(r"[a-z0-9_]{4}", credential.lower()).group() * 2
+    return lambda: itertools.chain([name], tempfile._RandomNameSequence())
 
 
 def _forwarded_run_failures(env: dict[str, str], docker: _DockerRecorder, credential: str, home: str) -> list[str]:
@@ -700,15 +717,28 @@ def test_pi_agent_dir_sharing_a_credential_run_is_not_a_leak(monkeypatch, tmp_pa
 
 @pytest.mark.parametrize(
     "template",
-    ["-v {path}:{mount} -e X={fragment}", "-v {path}{fragment}:{mount}", "-v {fragment}{path}:{mount}"],
-    ids=["elsewhere", "beside-path", "before-path"],
+    [
+        "-v {path}:{mount} -e X={fragment}",
+        "-v {path}{fragment}:{mount}",
+        "-v {fragment}{path}:{mount}",
+        "-v {base}/{fragment}/{name}:{mount}",
+        "{path}",
+    ],
+    ids=["elsewhere", "beside-path", "before-path", "nested", "unmounted"],
 )
 def test_fragment_beside_pi_agent_dir_is_still_a_leak(template, monkeypatch, tmp_path):
-    """A credential fragment in the argv is reported even when glued onto the masked pi-agent dir."""
+    """A credential fragment in the argv is reported even when glued onto the masked pi-agent dir.
+
+    The fragment is slash-free and lower-case, so glued onto the dir it stays in the dir's name; a pi-agent-shaped
+    dir nested deeper than `.holon/tmp` or not mounted at the container agent dir is not masked either.
+    """
     monkeypatch.setenv("HOME", str(tmp_path))
-    path = str(tmp_path / ".holon" / "tmp" / f"holon-pi-agent-{_COLLIDING_TEMP_NAME}")
+    base = str(tmp_path / ".holon" / "tmp")
+    name = f"holon-pi-agent-{_COLLIDING_TEMP_NAME}"
+    path = os.path.join(base, name)
     mount = _PI_AGENT_MOUNT_SUFFIX.removeprefix(":")
-    argv = ["docker", "run", *template.format(path=path, mount=mount, fragment=_COLLIDING_CREDENTIAL[:4]).split()]
+    fragment = _COLLIDING_CREDENTIAL[2:6].lower()
+    argv = ["docker", "run", *template.format(path=path, base=base, name=name, mount=mount, fragment=fragment).split()]
     clean = ["docker", "run", "-v", f"{path}:{mount}"]
     assert _leak_sites({"main-argv": [" ".join(clean)]}, clean, [_COLLIDING_CREDENTIAL]) == []
     assert _leak_sites({"main-argv": [" ".join(argv)]}, argv, [_COLLIDING_CREDENTIAL]) == ["main-argv"]

@@ -44,7 +44,9 @@ class FakeDispatcher:
     def __call__(self, role, runner, model, positional_args, **kwargs) -> int:
         work = Path(kwargs["target_worktree"])
         payload = json.loads(Path(kwargs["result_file"]).read_text(encoding="utf-8"))
-        self.calls.append({"role": role, "tier": positional_args[2], "payload": payload, "app": _app(work)})
+        self.calls.append(
+            {"role": role, "model": model, "tier": positional_args[2], "payload": payload, "app": _app(work)}
+        )
         edit, verdict = self.script.pop(0)
         if edit is not None:
             edit(work)
@@ -132,6 +134,7 @@ def test_lint_failure_then_success_escalates_once(work, pushes):
     dispatcher = FakeDispatcher([(None, "lint_failed"), (_resolve, "resolved")])
     result = _sync(work, dispatcher)
     assert result.status == "merged" and dispatcher.tiers() == [HAIKU, SONNET] and result.attempts == 2
+    assert [call["model"] for call in dispatcher.calls] == [HAIKU, SONNET]  # dispatch carries the attempt tier
 
 
 def test_each_failure_kind_escalates_in_ladder_order(work, pushes):

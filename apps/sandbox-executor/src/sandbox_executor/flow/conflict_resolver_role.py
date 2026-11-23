@@ -19,7 +19,7 @@ import contextlib
 import json
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sandbox_executor.agent_runner import CONFLICT_RESOLVER_ROLE
@@ -131,8 +131,9 @@ class _ConflictCodeResolver:
         path = _transport_file(payload)
         args = [_CONTAINER_TRANSPORT, self.context.agent, attempt.tier, f"--result-file={_CONTAINER_TRANSPORT}"]
         try:
+            tier_context = replace(self.context, model=attempt.tier)
             code = _dispatch_role(
-                self.context, CONFLICT_RESOLVER_ROLE, args, result_file=path, target_worktree=attempt.worktree
+                tier_context, CONFLICT_RESOLVER_ROLE, args, result_file=path, target_worktree=attempt.worktree
             )
             return _read_verdict(path, code)
         except Exception as exc:

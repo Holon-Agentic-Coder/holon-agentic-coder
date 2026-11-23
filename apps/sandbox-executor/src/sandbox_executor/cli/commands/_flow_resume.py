@@ -62,6 +62,22 @@ def apply_run_switches(context: Any, args: argparse.Namespace) -> None:
     context.auto_calibrate = not context.skip_calibrate
 
 
+def apply_proxy_switches(context: Any, spawn_sidecar: bool, attach_running_proxy: bool, mitm_web: bool) -> None:
+    """Set the proxy routing on a resumed ``context`` from this run, logging each dropped stored sidecar opt-in.
+
+    ``spawn_sidecar`` and ``attach_running_proxy`` come from this run's resolved proxy choice, and ``mitm_web`` is
+    kept only when this run passes ``--mitm-web`` and the choice spawns a sidecar, so a checkpoint never spawns one.
+    """
+    for name, given in (("token_reduce", spawn_sidecar), ("mitm_web", mitm_web)):
+        if getattr(context, name) and not given:
+            flag = "--" + name.replace("_", "-")
+            message = f"Resume dropped the stored {name} from the checkpoint: this run did not pass {flag}."
+            logger.warning(message)
+            context.log(message)
+        setattr(context, name, given)
+    context.proxy_attach = attach_running_proxy
+
+
 def resolve_resumed_runner(args: argparse.Namespace, context: Any, checkpoint_path: str) -> tuple[str, str]:
     """The runner and model for a checkpoint resume: ``--agent`` / ``--model`` when given, else the checkpoint's."""
     recorded = f"recorded in {checkpoint_path}"

@@ -6,6 +6,7 @@ daemon or local port 8080 can change an outcome.
 
 import argparse
 import itertools
+import logging
 import shutil
 import socket
 import subprocess
@@ -233,6 +234,27 @@ def test_a_resume_without_the_flag_drops_a_stale_checkpointed_spawn(monkeypatch)
 
     assert resumed is stale
     assert (resumed.token_reduce, resumed.proxy_attach) == (False, False)
+
+
+def test_a_resume_without_the_flag_drops_a_stale_checkpointed_mitm_web(monkeypatch, caplog):
+    _no_proxy_running(monkeypatch)
+    stale = FlowContext(intent_data=_INTENT, token_reduce=True, mitm_web=True)
+
+    with caplog.at_level(logging.WARNING):
+        resumed = _build_flow_context(_flow_args(), stale, _INTENT, "codex", "gpt")
+
+    assert (resumed.token_reduce, resumed.mitm_web, resumed.proxy_attach) == (False, False, False)
+    assert "dropped the stored token_reduce" in caplog.text
+    assert "dropped the stored mitm_web" in caplog.text
+
+
+def test_a_resume_with_mitm_web_keeps_the_dashboard_sidecar(monkeypatch):
+    _no_proxy_running(monkeypatch)
+    stale = FlowContext(intent_data=_INTENT, mitm_web=True)
+
+    resumed = _build_flow_context(_flow_args(mitm_web=True), stale, _INTENT, "codex", "gpt")
+
+    assert (resumed.token_reduce, resumed.mitm_web, resumed.proxy_attach) == (True, True, False)
 
 
 def test_a_resume_with_the_flag_keeps_the_spawn(monkeypatch):

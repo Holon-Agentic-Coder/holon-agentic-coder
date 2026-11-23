@@ -12,6 +12,7 @@ from typing import Any
 
 from sandbox_executor import cli
 from sandbox_executor.cli.commands._flow_resume import (
+    apply_proxy_switches,
     apply_run_switches,
     discover_resume_checkpoint,
     resolve_resumed_runner,
@@ -246,7 +247,8 @@ def _update_flow_context(
     """Apply this run's flags to a resumed context.
 
     The proxy routing is overwritten from this run's ``proxy_choice``, so an opt-out wins and a stale checkpointed
-    ``token_reduce=True`` no longer spawns a sidecar: a resumed run must repeat ``--token-reduce`` to keep one.
+    ``token_reduce=True`` or ``mitm_web=True`` no longer spawns a sidecar: a resumed run must repeat
+    ``--token-reduce`` or ``--mitm-web`` to keep one, and each dropped opt-in is logged.
     """
     target_worktree = getattr(args, "target_worktree", None)
     if target_worktree and target_worktree != ".":
@@ -259,10 +261,12 @@ def _update_flow_context(
         context.max_review_iterations = args.max_review_iterations
     if args.ensemble_size is not None:
         context.review_ensemble_size = args.ensemble_size
-    context.token_reduce = proxy_choice.spawn_sidecar
-    context.proxy_attach = proxy_choice.attach_running_proxy
-    if args.mitm_web:
-        context.mitm_web = True
+    apply_proxy_switches(
+        context,
+        proxy_choice.spawn_sidecar,
+        proxy_choice.attach_running_proxy,
+        bool(args.mitm_web) and proxy_choice.spawn_sidecar,
+    )
 
 
 def _build_flow_context(

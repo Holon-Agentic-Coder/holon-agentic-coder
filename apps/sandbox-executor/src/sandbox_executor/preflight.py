@@ -273,10 +273,9 @@ def build_probe_docker_cmd(
 
     The container keeps its normal entrypoint with no ``HOLON_ROLE``, so the dispatcher maps ``HOLON_AGENT_KEY`` onto
     the vendor variables and then executes the runner binary directly. The mounts, gateway host entries and network
-    isolation come from the same helpers ``run_docker_container`` uses, and so does the credential classifier
-    (``cli.is_secret_env_item``): ``HOLON_AGENT_KEY``, a credential-bearing ``HOLON_AGENT_SETTINGS`` and any other
-    credential-bearing value are returned separately for a 0600 ``--env-file``, never as ``-e`` items that ``ps`` and
-    ``/proc/<pid>/cmdline`` can read.
+    isolation come from the same helpers ``run_docker_container`` uses, and so does the env-file routing rule
+    (``cli.is_env_file_item``): every line-safe ``HOLON_*`` value and any other credential-bearing value are returned
+    separately for a 0600 ``--env-file``, never as ``-e`` items that ``ps`` and ``/proc/<pid>/cmdline`` can read.
 
     Args:
         agent: Runner name.
@@ -293,7 +292,7 @@ def build_probe_docker_cmd(
     from sandbox_executor.cli import (
         _gateway_host_args,
         build_network_isolation_args,
-        is_secret_env_item,
+        is_env_file_item,
     )
 
     agent_id = normalise_agent_id(agent)
@@ -314,7 +313,7 @@ def build_probe_docker_cmd(
     env[SKIP_ENV_VAR] = "1"
     secret_env: dict[str, str] = {}
     for key, value in sorted(env.items()):
-        if is_secret_env_item(key, value):
+        if is_env_file_item(key, value):
             secret_env[key] = value
         else:
             cmd.extend(["-e", f"{key}={value}"])

@@ -196,6 +196,7 @@ __all__ = [
     "get_host_proxy_envs",
     "get_token_reduction_mounts_and_envs",
     "init_project",
+    "is_env_file_item",
     "is_secret_env_item",
     "lift_veto",
     "list_vetoes",
@@ -1118,6 +1119,37 @@ def is_secret_env_item(key: str, value: str) -> bool:
     return is_secret_env_name(key) or redact_command([item]) != item or carries_url_password(value)
 
 
+def is_env_file_item(key: str, value: str) -> bool:
+    """Decide whether a forwarded container variable travels in the 0600 `--env-file` rather than on the argv.
+
+    Every `HOLON_*` value a docker env-file can carry goes there whatever its name or shape, so no setting fed a
+    credential reaches `ps`, /proc/<pid>/cmdline or the `Executing:` echo. Any other name keeps the credential
+    rule of `is_secret_env_item`. A `HOLON_*` value with a line break or a non-UTF-8 byte falls back to that rule
+    too, because a docker env-file can carry neither.
+
+    Args:
+        key: The variable name.
+        value: The variable value.
+
+    Returns:
+        True when the item must be handed over through the `--env-file`.
+    """
+    if key.startswith("HOLON_") and _fits_env_file(value):
+        return True
+    return is_secret_env_item(key, value)
+
+
+def _fits_env_file(value: str) -> bool:
+    """Tell whether a docker env-file line can carry ``value`` verbatim: no line break and valid UTF-8."""
+    if "\n" in value or "\r" in value:
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     role: str,
     image_name: str,
@@ -1154,11 +1186,12 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
 
     # Credentials never go on the docker command line, where `ps` and /proc/<pid>/cmdline can read
     # them: they are collected here and handed over in a 0600 --env-file just before the run. That
-    # includes any value with a URL password (a proxy URL in any scheme, or none), whatever its name.
+    # includes any value with a URL password (a proxy URL in any scheme, or none), whatever its name,
+    # and every forwarded HOLON_* value, whatever its name or shape (see is_env_file_item).
     secret_env: dict[str, str] = {}
 
     def add_env(key: str, value: str) -> None:
-        if is_secret_env_item(key, value):
+        if is_env_file_item(key, value):
             secret_env[key] = value
         else:
             docker_cmd.extend(["-e", f"{key}={value}"])

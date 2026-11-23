@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-e14ca90c",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T01:43:21.920347+00:00",
+  "updated_ts": "2026-11-23T01:43:21.920347+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795267426-9a8d8c1a-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795246931-review-approved-and-fresh-tests/P-1795246949-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 7 iteration(s): resolver failed: Resolver turn failed: Resolver agent timed out: turn stall budget of 90 s exceeded after 90.5 s (resolver exit code 1); output tail: \u2026ts_failed` is set to False. One side effect: if GitHub CI fails, the FIND-CI check names no longer include `local_tests`.\n- **R1-F3:** The CI-registration wait now checks the latest per-head pass rate (`gate_rate`), which starts at the Stage 3 value. The old `test_pass_rate` variable was only used there and is gone.\n\n**Other changes:**\n- **R1-F4:** I reworded the comment on the `_SUMMARY_STATUS_WORDS` alias in `flow/context.py` to say it's read-only and rebinding it has no effect. I kept the alias because `flow/__init__.py` still exports it.\n- **R3-F1:** `.agents/holon_flow.md`, `README.md` (the flowchart) and `docs/review_consensus.md` now describe the `APPROVED` status and the `[REVIEW APPROVED]` line. `HALTED_FOR_HUMAN` and `[SAFETY HALT]` are noted only for dry runs and legacy rows.\n\nAll five are marked `applied` in `.holon/review/iter-7/dispositions.json`. I'll get a notification when `uv run task test` finishes. If any test fails, I'll fix it or change that finding's disposition.; final verdicts: no reviewer returned a verdict",
+    "symptoms": []
+  }
+}

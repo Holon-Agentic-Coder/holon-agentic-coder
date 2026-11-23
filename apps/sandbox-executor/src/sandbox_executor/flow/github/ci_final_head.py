@@ -42,6 +42,7 @@ from sandbox_executor.flow.github.ci_failure_detail import (
 )
 from sandbox_executor.flow.github.ci_reverify import approved_head_of
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, wait_for_pending_ci
+from sandbox_executor.flow.github.pr_head import pr_head_sha
 from sandbox_executor.knowledge import CredentialRedactor
 
 MAX_REASON_CHARS = 300
@@ -69,10 +70,10 @@ class FinalHeadSeams:
 def _git_gh_head(repo_dir: str, branch: str, proxy_env: Mapping[str, str]) -> tuple[Callable[[], str | None], ...]:
     env = {**os.environ, **proxy_env, "DOCKER_CLI_HINTS": "false"}
 
-    def _out(cmd: list[str]) -> str | None:
+    def _local_head() -> str | None:
         try:
             proc = subprocess.run(
-                cmd,
+                ["git", "rev-parse", "HEAD"],
                 cwd=repo_dir,
                 capture_output=True,
                 text=True,
@@ -84,10 +85,7 @@ def _git_gh_head(repo_dir: str, branch: str, proxy_env: Mapping[str, str]) -> tu
             return None
         return proc.stdout.strip() or None if proc.returncode == 0 else None
 
-    return (
-        lambda: _out(["git", "rev-parse", "HEAD"]),
-        lambda: _out(["gh", "pr", "view", branch, "--json", "headRefOid", "--jq", ".headRefOid"]),
-    )
+    return _local_head, lambda: pr_head_sha(repo_dir, branch, proxy_env, STEP_LOOKUP_TIMEOUT_SECONDS)
 
 
 def _wait_for_pr_head(

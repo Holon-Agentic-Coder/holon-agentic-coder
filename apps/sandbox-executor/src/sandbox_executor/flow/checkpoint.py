@@ -16,6 +16,7 @@ from sandbox_executor.flow.checkpoint_discovery import _checkpoint_names
 from sandbox_executor.flow.checkpoint_store import CheckpointStore, FileCheckpointStore
 from sandbox_executor.flow.constants import CURRENT_CONTEXT_SCHEMA_VERSION
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageStatus
+from sandbox_executor.flow.stage_status import REVIEW_BOUNDARY_STATUSES
 
 CURRENT_CHECKPOINT_SCHEMA_VERSION: int = 1
 
@@ -190,7 +191,7 @@ def save_checkpoint(context: FlowContext, filepath: str | None = None) -> str:
     completed = [
         stage_name
         for stage_name, res in context.stage_results.items()
-        if res.status in (StageStatus.SUCCESS, StageStatus.HALTED_FOR_HUMAN)
+        if res.status == StageStatus.SUCCESS or res.status in REVIEW_BOUNDARY_STATUSES
     ]
     current = FlowStage.COMPLETED if len(completed) >= 5 else FlowStage.INTENT
     for candidate in [FlowStage.INTENT, FlowStage.PLAN, FlowStage.EXECUTE, FlowStage.REVIEW, FlowStage.CALIBRATE]:

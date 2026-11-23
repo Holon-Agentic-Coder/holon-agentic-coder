@@ -27,7 +27,7 @@ from sandbox_executor.flow.github.ci_wait import (
 from sandbox_executor.flow.review.ci_outcome import NO_BLOCKER_RECORDED, describe_ci_outcome
 from sandbox_executor.review_target import DiffVerdict
 
-from tests.review_fakes import FakeEnsemble, clean_reviewer, install_fake_reviewers, objecting_reviewer
+from tests.review_fakes import FakeEnsemble, clean_reviewer, failed_reviewer, install_fake_reviewers, objecting_reviewer
 
 EXEC_TARGET = "I-100-intent/P-200-plan/E-300-exec/_"
 CLEAN_MERGE = {"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE"}
@@ -75,7 +75,9 @@ def _context(tmp_path: Path, payload: dict | None = None) -> FlowContext:
         repo_dir=str(tmp_path), execution_branch=EXEC_TARGET, agent="fake-agent", model="fake-model", token_reduce=False
     )
     ctx.stage_results["execute"] = StageResult(
-        stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload=payload or {"test_pass_rate": 1.0, "exit_code": 0}
+        stage=FlowStage.EXECUTE,
+        status=StageStatus.SUCCESS,
+        payload=payload or {"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
     )
     return ctx
 
@@ -267,7 +269,7 @@ def test_pending_checks_with_failed_local_tests_still_record_the_ci_finding(tmp_
         monkeypatch,
         [PENDING],
         FakeTime(),
-        payload={"test_pass_rate": 0.5, "exit_code": 1},
+        payload={"head_sha": "stage3-head", "test_pass_rate": 0.5, "exit_code": 1},
         ci_wait_budget=30.0,
     )
 
@@ -306,7 +308,7 @@ def test_stale_wait_record_is_cleared_when_a_later_probe_has_settled(tmp_path, m
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
     ):
         res = run_review_loop(
-            _context(tmp_path, {"test_pass_rate": 0.5, "exit_code": 1}),
+            _context(tmp_path, {"head_sha": "stage3-head", "test_pass_rate": 0.5, "exit_code": 1}),
             target=EXEC_TARGET,
             max_iterations=2,
             ensemble_size=1,
@@ -339,7 +341,7 @@ def test_stale_wait_record_is_cleared_when_a_later_iteration_takes_the_objected_
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
     ):
         res = run_review_loop(
-            _context(tmp_path, {"test_pass_rate": 0.5, "exit_code": 1}),
+            _context(tmp_path, {"head_sha": "stage3-head", "test_pass_rate": 0.5, "exit_code": 1}),
             target=EXEC_TARGET,
             max_iterations=2,
             ensemble_size=1,
@@ -379,7 +381,7 @@ def test_spent_wait_is_cleared_when_the_resolver_pushes_a_new_head(tmp_path, mon
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
     ):
         run_review_loop(
-            _context(tmp_path, {"test_pass_rate": 0.5, "exit_code": 1}),
+            _context(tmp_path, {"head_sha": "stage3-head", "test_pass_rate": 0.5, "exit_code": 1}),
             target=EXEC_TARGET,
             max_iterations=2,
             ensemble_size=1,
@@ -484,3 +486,450 @@ def test_wait_without_check_names_logs_the_pending_count_change():
         "[Review Loop] CI checks pending: 1 -> 0.",
         "[Review Loop] CI wait settled after 45s: 2 passed, 0 failed, 0 other.",
     ]
+
+
+def test_pending_ci_settling_to_pass_overrides_stale_stage3_failure(tmp_path, monkeypatch):
+    """Pending GitHub CI settles BEFORE test_gate.evidence runs, avoiding false FIND-CI after Stage 3 failure."""
+    fake = FakeTime()
+    with patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"):
+        res = _run_loop(
+            tmp_path,
+            monkeypatch,
+            [PENDING, PASSED],
+            fake,
+            payload={"head_sha": "stage3-head", "test_pass_rate": 0.5, "exit_code": 1},
+            ci_wait_budget=600.0,
+        )
+
+    assert res["consensus"]["approved"] is True
+    assert res["tests_failed"] is False
+    assert res["findings"] == []
+    assert res["ci_wait"] is None
+    assert res["ci_checks"]["test_source"] == "ci_head"
+    assert res["ci_checks"]["test_head_sha"] == "stage3-head"
+
+
+def test_pending_ci_settling_on_moved_head_skips_local_tests_and_keeps_ci_head(tmp_path, monkeypatch):
+    """On a moved head with pending CI, the loop waits for CI first rather than running local tests synchronously."""
+    from sandbox_executor.flow.review import local_tests
+
+    run = MagicMock()
+    monkeypatch.setattr(local_tests, "run_measurement", run)
+    fake = FakeTime()
+    with (
+        patch(
+            "sandbox_executor.flow.review.local_tests.run_git", return_value=MagicMock(returncode=0, stdout="moved\n")
+        ),
+        patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="moved"),
+    ):
+        res = _run_loop(
+            tmp_path,
+            monkeypatch,
+            [PENDING, PASSED],
+            fake,
+            payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
+            ci_wait_budget=600.0,
+        )
+
+    run.assert_not_called()
+    assert res["consensus"]["approved"] is True
+    assert res["ci_checks"]["test_source"] == "ci_head"
+    assert res["ci_checks"]["test_head_sha"] == "moved"
+
+
+def test_ci_registration_runs_on_new_head_after_prior_iteration_local_failure(tmp_path, monkeypatch):
+    """Prior iteration tests_failed must not suppress _wait_for_ci_registration on a resolver-pushed new head."""
+    from sandbox_executor.entrypoint.test_measurement import TestMeasurement
+    from sandbox_executor.flow.review import local_tests
+
+    install_fake_reviewers(monkeypatch)
+    fake = FakeTime()
+    local_only = {"source": "local_tests", "total": 1, "passed": 1, "failed": 0, "pending": 0, "all_passed": True}
+    probes = [dict(local_only), dict(PASSED)]
+    probe = MagicMock(side_effect=lambda *a, **k: dict(probes.pop(0) if probes else PASSED))
+    current_head = {"sha": "head-1"}
+
+    def fake_resolver(**kwargs):
+        del kwargs
+        current_head["sha"] = "head-2"
+        return {"dispositions": [], "head_sha": "head-2", "pushed": True}
+
+    failing_local = TestMeasurement(0.5, 5, 5, 0, 1, None, "")
+    monkeypatch.setattr(local_tests, "run_measurement", MagicMock(return_value=failing_local))
+    with (
+        patch("sandbox_executor.flow.review.loop.shutil.which", return_value="/usr/bin/gh"),
+        patch("sandbox_executor.flow.github.ci.probe_ci_checks", probe),
+        patch("sandbox_executor.flow.review.loop.probe_ci_checks", probe),
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
+        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="head-2"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+        patch("sandbox_executor.flow.review.local_tests._ReviewLocalTests._head", lambda _self: current_head["sha"]),
+        patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="head-2"),
+        patch("sandbox_executor.flow.review.loop._wait_for_ci_registration") as mock_reg,
+    ):
+        res = run_review_loop(
+            _context(tmp_path, {"head_sha": "head-1", "test_pass_rate": None, "exit_code": 0}),
+            target=EXEC_TARGET,
+            max_iterations=2,
+            ensemble_size=1,
+            auto_pr=False,
+            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            run_resolver_fn=fake_resolver,
+            clock=fake.clock,
+            sleep=fake.sleep,
+        )
+
+    assert mock_reg.call_count == 2
+    assert res["consensus"]["approved"] is True
+    assert res["total_iterations"] == 2
+    assert res["ci_checks"]["test_source"] == "ci_head"
+    assert res["ci_checks"]["test_head_sha"] == "head-2"
+
+
+def test_stale_github_ci_cannot_approve_unmeasured_review_local_in_loop(tmp_path, monkeypatch):
+    """F-9: stale green GitHub CI on an older PR head must not mask unmeasured review_local."""
+    from sandbox_executor.entrypoint.test_measurement import TestMeasurement
+    from sandbox_executor.flow.review import local_tests
+
+    unmeasured = TestMeasurement(None, None, None, None, 127, "uv missing", "")
+    monkeypatch.setattr(local_tests, "run_measurement", MagicMock(return_value=unmeasured))
+    fake = FakeTime()
+    with (
+        patch(
+            "sandbox_executor.flow.review.local_tests.run_git",
+            return_value=MagicMock(returncode=0, stdout="moved\n"),
+        ),
+        patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="older-pr-head"),
+    ):
+        res = _run_loop(
+            tmp_path,
+            monkeypatch,
+            [PASSED],
+            fake,
+            payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
+            ci_wait_budget=600.0,
+        )
+
+    assert res["consensus"]["approved"] is False
+    assert res["consensus"]["status"] == "not_measured"
+    assert res["findings"] == ["FIND-CI-001"]
+    assert res["ci_checks"]["source"] == "local_tests"
+    assert res["ci_checks"]["measured"] is False
+    assert res["ci_checks"]["test_source"] == "review_local"
+
+
+@pytest.mark.parametrize("objecting", [False, True], ids=["clean-gate", "objecting-fast-path"])
+def test_stale_github_ci_does_not_drop_failing_review_local_find_ci(tmp_path, monkeypatch, objecting):
+    """F-9: stale green GitHub CI must not suppress FIND-CI when review_local fails on clean or fast path."""
+    from sandbox_executor.entrypoint.test_measurement import TestMeasurement
+    from sandbox_executor.flow.review import local_tests
+
+    failing = TestMeasurement(0.5, 5, 5, 0, 1, None, "")
+    monkeypatch.setattr(local_tests, "run_measurement", MagicMock(return_value=failing))
+    install_fake_reviewers(monkeypatch)
+    fake = FakeTime()
+    reviewer = objecting_reviewer(1) if objecting else clean_reviewer(1)
+    probe = MagicMock(return_value=dict(PASSED))
+    with (
+        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
+        patch("sandbox_executor.flow.review.loop.probe_ci_checks", probe),
+        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="moved"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+        patch(
+            "sandbox_executor.flow.review.local_tests.run_git",
+            return_value=MagicMock(returncode=0, stdout="moved\n"),
+        ),
+        patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="older-pr-head"),
+    ):
+        res = run_review_loop(
+            _context(tmp_path, {"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0}),
+            target=EXEC_TARGET,
+            max_iterations=1,
+            ensemble_size=1,
+            auto_pr=False,
+            run_ensemble_fn=FakeEnsemble([reviewer]),
+            clock=fake.clock,
+            sleep=fake.sleep,
+        )
+
+    assert res["consensus"]["approved"] is False
+    assert res["tests_failed"] is True
+    assert "FIND-CI-001" in res["findings"]
+    assert res["ci_checks"]["source"] == "local_tests"
+    assert res["ci_checks"]["all_passed"] is False
+    assert res["ci_checks"]["failed"] == 1
+    assert res["ci_checks"]["test_source"] == "review_local"
+
+
+def test_run_review_loop_dry_run_argument_overrides_false_context_dry_run(tmp_path, monkeypatch):
+    """F-10: run_review_loop(..., dry_run=True) skips pr_head lookup and local tests even when context.dry_run=False."""
+    from sandbox_executor.entrypoint.test_measurement import TestMeasurement
+    from sandbox_executor.flow.review import local_tests
+
+    install_fake_reviewers(monkeypatch)
+    run = MagicMock(return_value=TestMeasurement(1.0, 1, 0, 0, 0, None, ""))
+    pr_head = MagicMock(return_value="moved")
+    monkeypatch.setattr(local_tests, "run_measurement", run)
+    ctx = _context(tmp_path, {"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0})
+    assert ctx.dry_run is False
+
+    with (
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
+        patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value=dict(PASSED)),
+        patch(
+            "sandbox_executor.flow.review.local_tests.run_git",
+            return_value=MagicMock(returncode=0, stdout="moved\n"),
+        ),
+        patch("sandbox_executor.flow.review.local_tests._default_pr_head", pr_head),
+    ):
+        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1, auto_pr=False, dry_run=True)
+
+    run.assert_not_called()
+    pr_head.assert_not_called()
+    assert res["consensus"]["approved"] is False
+    assert res["consensus"]["status"] == "not_measured"
+    assert res["ci_checks"]["test_source"] == "ci"
+
+
+def test_objecting_fast_path_with_pending_ci_and_failing_review_local_raises_find_ci(tmp_path, monkeypatch):
+    """F-13: objecting fast path raises FIND-CI alongside reviewer findings when review_local fails under pending CI."""
+    from sandbox_executor.entrypoint.test_measurement import TestMeasurement
+    from sandbox_executor.flow.review import local_tests, loop
+
+    failing = TestMeasurement(0.5, 5, 5, 0, 1, None, "")
+    monkeypatch.setattr(local_tests, "run_measurement", MagicMock(return_value=failing))
+    install_fake_reviewers(monkeypatch)
+    fake = FakeTime()
+    resolver_calls = []
+
+    def fake_resolver(target, iteration, findings, action_ids, rejected_findings):
+        resolver_calls.append({"findings": findings, "iteration": iteration})
+        return {"dispositions": [], "head_sha": target.head_sha, "pushed": False}
+
+    with (
+        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
+        patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value=dict(PENDING)),
+        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="moved"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+        patch(
+            "sandbox_executor.flow.review.local_tests.run_git",
+            return_value=MagicMock(returncode=0, stdout="moved\n"),
+        ),
+        patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="older-pr-head"),
+        patch(
+            "sandbox_executor.flow.review.loop.decide_returned_consensus", wraps=loop.decide_returned_consensus
+        ) as spy_consensus,
+    ):
+        res = run_review_loop(
+            _context(tmp_path, {"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0}),
+            target=EXEC_TARGET,
+            max_iterations=1,
+            ensemble_size=1,
+            auto_pr=False,
+            run_ensemble_fn=FakeEnsemble([objecting_reviewer(1)]),
+            run_resolver_fn=fake_resolver,
+            clock=fake.clock,
+            sleep=fake.sleep,
+        )
+
+    assert fake.sleeps == []
+    assert spy_consensus.call_args.args[3] is False
+    assert res["consensus"]["approved"] is False
+    assert res["tests_failed"] is True
+    assert res["findings"] == ["FIND-CI-001", "FIND-R1-001-01"]
+    assert len(resolver_calls) == 1
+    assert [f.id for f in resolver_calls[0]["findings"]] == ["R1-F1", "FIND-CI-001"]
+    assert res["ci_checks"]["source"] == "github_cli"
+    assert res["ci_checks"]["test_source"] == "review_local"
+
+
+def test_fallback_else_skips_local_tests_on_infra_error(tmp_path, monkeypatch):
+    """F-15: infra_error in the fallback branch must not invoke local tests or flag tests_not_measured."""
+    from sandbox_executor.entrypoint.test_measurement import TestMeasurement
+    from sandbox_executor.flow.review import local_tests
+
+    run = MagicMock(return_value=TestMeasurement(None, None, None, None, 127, "uv missing", ""))
+    monkeypatch.setattr(local_tests, "run_measurement", run)
+    install_fake_reviewers(monkeypatch)
+    fake = FakeTime()
+    ctx = _context(tmp_path, {"head_sha": "stage3-head", "test_pass_rate": 0.5, "exit_code": 1})
+    local_probe = {"source": "local_tests", "total": 1, "passed": 1, "failed": 0, "pending": 0, "all_passed": True}
+
+    with (
+        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
+        patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value=dict(local_probe)),
+        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="moved"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+        patch(
+            "sandbox_executor.flow.review.local_tests.run_git",
+            return_value=MagicMock(returncode=0, stdout="moved\n"),
+        ),
+        patch("sandbox_executor.flow.review.ensemble.build_review_request", side_effect=RuntimeError("diff failed")),
+    ):
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=2,
+            ensemble_size=1,
+            auto_pr=False,
+            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            clock=fake.clock,
+            sleep=fake.sleep,
+        )
+
+    run.assert_not_called()
+    assert res["consensus"]["status"] == "failed"
+    assert res["tests_failed"] is False
+    assert "FIND-CI-001" not in res["findings"]
+    assert not any("test results not measured" in log for log in ctx.logs)
+
+
+def test_fallback_else_skips_local_tests_on_missing_ref(tmp_path, monkeypatch):
+    """F-15: missing_ref in the fallback branch must not invoke local tests or report status not_measured."""
+    from sandbox_executor.entrypoint.test_measurement import TestMeasurement
+    from sandbox_executor.flow.review import local_tests
+
+    run = MagicMock(return_value=TestMeasurement(None, None, None, None, 127, "uv missing", ""))
+    monkeypatch.setattr(local_tests, "run_measurement", run)
+    install_fake_reviewers(monkeypatch)
+    fake = FakeTime()
+    ctx = _context(tmp_path, {"head_sha": "stage3-head", "test_pass_rate": 0.5, "exit_code": 1})
+    local_probe = {"source": "local_tests", "total": 1, "passed": 1, "failed": 0, "pending": 0, "all_passed": True}
+    missing_merge = {
+        "is_dirty": False,
+        "merge_state_status": "MISSING_REF",
+        "mergeable": "UNKNOWN",
+        "diagnostics": {"missing_ref": EXEC_TARGET},
+    }
+
+    with (
+        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=missing_merge),
+        patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value=dict(local_probe)),
+        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="moved"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+        patch(
+            "sandbox_executor.flow.review.local_tests.run_git",
+            return_value=MagicMock(returncode=0, stdout="moved\n"),
+        ),
+    ):
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=2,
+            ensemble_size=1,
+            auto_pr=False,
+            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            clock=fake.clock,
+            sleep=fake.sleep,
+        )
+
+    run.assert_not_called()
+    assert res["consensus"]["status"] == "changes_requested"
+    assert res["findings"] == ["FIND-REF-001"]
+    assert res["tests_failed"] is False
+    assert not any("test results not measured" in log for log in ctx.logs)
+
+
+def test_objecting_fast_path_skips_local_tests_on_infra_error(tmp_path, monkeypatch):
+    """F-20: infra_error in the objecting fast-path must not invoke local tests or record FIND-CI."""
+    from sandbox_executor.entrypoint.test_measurement import TestMeasurement
+    from sandbox_executor.flow.review import local_tests
+
+    run = MagicMock(return_value=TestMeasurement(None, None, None, None, 127, "uv missing", ""))
+    monkeypatch.setattr(local_tests, "run_measurement", run)
+    install_fake_reviewers(monkeypatch)
+    fake = FakeTime()
+    ctx = _context(tmp_path, {"head_sha": "stage3-head", "test_pass_rate": 0.5, "exit_code": 1})
+    local_probe = {"source": "local_tests", "total": 1, "passed": 1, "failed": 0, "pending": 0, "all_passed": True}
+
+    with (
+        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("sandbox_executor.flow.review.loop.reviewers_sandboxed", return_value=False),
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
+        patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value=dict(local_probe)),
+        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="moved"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+        patch(
+            "sandbox_executor.flow.review.local_tests.run_git",
+            return_value=MagicMock(returncode=0, stdout="moved\n"),
+        ),
+        patch(
+            "sandbox_executor.flow.review.loop._dispatch_review_ensemble",
+            return_value=([objecting_reviewer(1), failed_reviewer(2)], None, "partial ensemble error"),
+        ),
+    ):
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=2,
+            ensemble_size=2,
+            auto_pr=False,
+            clock=fake.clock,
+            sleep=fake.sleep,
+        )
+
+    run.assert_not_called()
+    assert res["consensus"]["status"] == "failed"
+    assert res["tests_failed"] is False
+    assert "FIND-R1-001-01" in res["findings"]
+    assert "FIND-CI-001" not in res["findings"]
+    assert not any("test results not measured" in log for log in ctx.logs)
+
+
+@pytest.mark.parametrize("reviewer", [objecting_reviewer(1), failed_reviewer(1)], ids=["objecting", "failed"])
+def test_objecting_fast_path_skips_local_tests_on_missing_ref(tmp_path, monkeypatch, reviewer):
+    """F-20: missing_ref in the objecting fast-path must not invoke local tests or record FIND-CI."""
+    from sandbox_executor.entrypoint.test_measurement import TestMeasurement
+    from sandbox_executor.flow.review import local_tests
+
+    run = MagicMock(return_value=TestMeasurement(None, None, None, None, 127, "uv missing", ""))
+    monkeypatch.setattr(local_tests, "run_measurement", run)
+    install_fake_reviewers(monkeypatch)
+    fake = FakeTime()
+    ctx = _context(tmp_path, {"head_sha": "stage3-head", "test_pass_rate": 0.5, "exit_code": 1})
+    local_probe = {"source": "local_tests", "total": 1, "passed": 1, "failed": 0, "pending": 0, "all_passed": True}
+    missing_merge = {
+        "is_dirty": False,
+        "merge_state_status": "MISSING_REF",
+        "mergeable": "UNKNOWN",
+        "diagnostics": {"missing_ref": EXEC_TARGET},
+    }
+
+    with (
+        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=missing_merge),
+        patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value=dict(local_probe)),
+        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="moved"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+        patch(
+            "sandbox_executor.flow.review.local_tests.run_git",
+            return_value=MagicMock(returncode=0, stdout="moved\n"),
+        ),
+    ):
+        res = run_review_loop(
+            ctx,
+            target=EXEC_TARGET,
+            max_iterations=2,
+            ensemble_size=1,
+            auto_pr=False,
+            run_ensemble_fn=FakeEnsemble([reviewer]),
+            clock=fake.clock,
+            sleep=fake.sleep,
+        )
+
+    run.assert_not_called()
+    assert res["tests_failed"] is False
+    assert "FIND-REF-001" in res["findings"]
+    assert "FIND-CI-001" not in res["findings"]
+    assert not any("test results not measured" in log for log in ctx.logs)

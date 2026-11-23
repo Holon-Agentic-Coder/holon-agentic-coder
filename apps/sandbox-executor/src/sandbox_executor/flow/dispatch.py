@@ -25,15 +25,15 @@ def _test_evidence(exec_result: StageResult | None) -> tuple[float | None, int]:
 
 
 def _get_dispatcher(context: FlowContext) -> Callable[..., int]:
-    """Return the role-agent dispatcher, defaulting lazily to cli.dispatch_role_agent.
+    """Return the role-agent dispatcher, defaulting lazily to launcher.role_dispatch.dispatch_role_agent.
 
-    The import is deferred because cli imports this module at load time.
+    The launcher never imports the flow engine; the import is deferred only to keep importing the flow engine light.
     """
     if context.dispatcher is not None:
         return context.dispatcher
-    from sandbox_executor.cli import dispatch_role_agent
+    from sandbox_executor.launcher import role_dispatch
 
-    return dispatch_role_agent
+    return role_dispatch.dispatch_role_agent
 
 
 def _dispatch_role(

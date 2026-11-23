@@ -45,7 +45,7 @@ from sandbox_executor.flow.review.carried_findings import (
     serialize_open,
     undisposed,
 )
-from sandbox_executor.flow.review.ci_evidence import apply_local_test_evidence
+from sandbox_executor.flow.review.ci_evidence import _apply_guarded_test_evidence
 from sandbox_executor.flow.review.ci_outcome import gate_ci_flags
 from sandbox_executor.flow.review.ci_timing_finding import gh_timing_seams, timing_gate_finding
 from sandbox_executor.flow.review.ensemble import (
@@ -148,7 +148,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     the resolver. Only when all reviewers approve cleanly with zero open findings and mergeability is clean does the
     loop wait for CI checks to settle as a post-review safety gate before calling ``decide_consensus()``. Reviewers run
     only inside a sandbox: on the host the loop refuses before any PR, iteration or post. It enforces the
-    human-only PR merge rule by halting at approval without merging.
+    human-only PR merge rule by completing with approved consensus without merging to main.
 
     Args:
         context: Active FlowContext carrying repository and pipeline state.
@@ -194,17 +194,17 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     proxy_env: dict[str, str] = {}
     if context.token_reduce:
         try:
-            from sandbox_executor.cli import get_host_proxy_envs
+            from sandbox_executor.launcher import sidecar
 
-            proxy_env = get_host_proxy_envs()
+            proxy_env = sidecar.get_host_proxy_envs()
             if proxy_env:
                 context.log("Token reduction proxy active for review loop.")
         except Exception as exc:
             context.log(f"Warning: Failed to configure token reduction proxy in review loop: {exc}.")
             proxy_env = {}
 
-    test_gate = _ReviewTestGate(context, repo_dir)
-    test_pass_rate, tests_failed = test_gate.stage_3_evidence
+    test_gate = _ReviewTestGate(context, repo_dir, target=review_target, proxy_env=proxy_env)
+    _, tests_failed = test_gate.stage_3_evidence
     iteration = first_label - 1
     consensus_reached = False
     last_ci_status: dict[str, Any] = {}
@@ -328,6 +328,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         boundary = "" if iteration >= 1 else f"before iteration {iteration + 1}"
         last_commit = None if effective_dry_run else _commit_pending_ledger_rows(context, iteration, boundary)
         resolved_target, prev_head_sha = _advance_past_ledger_commit(resolved_target, prev_head_sha, last_commit)
+        if last_commit is not None:
+            test_gate.advance_ledger_head(last_commit.parent, last_commit.sha)
         iteration += 1
         context.log(f"[Review Loop] Starting review iteration {iteration}/{last_label} for target '{review_target}'.")
         iteration_timer = StageTimer("review", iteration_budget_seconds, clock=clock)
@@ -372,20 +374,20 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if reviewer_objected:
             # Fast path on reviewer findings: probe CI once without waiting on pending checks.
             last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-            apply_local_test_evidence(last_ci_status, tests_failed, test_pass_rate, effective_dry_run, False)
+            tests_failed, _ = _apply_guarded_test_evidence(
+                test_gate, last_ci_status, effective_dry_run, infra_error is not None or missing_ref, False
+            )
             ci_wait = ci_wait if last_ci_status.get("pending", 0) else None  # Never keep a stale wait record.
 
             # Include FIND-CI only if CI has already failed or local tests failed; pending checks are omitted.
-            ci_failed = last_ci_status.get("failed", 0) > 0 or (
-                last_ci_status.get("source") == "local_tests" and tests_failed
-            )
+            ci_failed = last_ci_status.get("failed", 0) > 0 or tests_failed
             ci_finding = ci_failed
             ensemble_verdict = decide_returned_consensus(
                 reviewers, ensemble_size, None if missing_ref else not is_dirty, False if ci_failed else None, blockers
             )
         elif not is_dirty and not missing_ref and not effective_dry_run and infra_error is None:
             # Post-review CI gate on clean review: wait for CI registration and pending checks to settle.
-            if pr_allowed and test_pass_rate is None and not tests_failed and shutil.which("gh"):
+            if pr_allowed and test_gate.needs_ci_registration() and shutil.which("gh"):
                 reg_timeout = iteration_timer.remaining_capped(resolve_ci_registration_timeout(ci_registration_timeout))
                 _wait_for_ci_registration(
                     context,
@@ -396,22 +398,24 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                     ci_poll_interval,
                     clock=clock,
                     sleep=sleep,
+                    probe=probe_ci,
                 )
 
             last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-            gate_rate, tests_failed = test_gate.evidence(last_ci_status)
-            tests_not_measured |= apply_local_test_evidence(last_ci_status, tests_failed, gate_rate, False, True)
             last_ci_status, waited = settle_pending_ci(context, probe_ci, last_ci_status, ci_policy, bool(ci_wait))
             iteration_timer.credit(waited.waited_seconds if waited else 0.0)  # The wait has its own budget.
             ci_wait = waited if waited and waited.exhausted else (ci_wait if last_ci_status.get("pending", 0) else None)
+            tests_failed, unmeasured = _apply_guarded_test_evidence(test_gate, last_ci_status, False, False, True)
+            tests_not_measured |= unmeasured
             ci_green, ci_finding = gate_ci_flags(last_ci_status, tests_failed)
             ensemble_verdict = decide_returned_consensus(reviewers, ensemble_size, True, ci_green, blockers)
         else:
             # Fallback for dry runs, dirty mergeability, or infra failures: probe once without waiting.
             last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-            tests_not_measured |= apply_local_test_evidence(
-                last_ci_status, tests_failed, test_pass_rate, effective_dry_run, True
+            tests_failed, unmeasured = _apply_guarded_test_evidence(
+                test_gate, last_ci_status, effective_dry_run, infra_error is not None or missing_ref, True
             )
+            tests_not_measured |= unmeasured
             ci_wait = ci_wait if last_ci_status.get("pending", 0) else None  # Never keep a stale wait record.
 
             ci_finding = not last_ci_status.get("all_passed", False) or tests_failed
@@ -627,6 +631,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if rejected_now:
             suppressed_ledger_records += recorder.record(iteration, rejected_now)
             record_nit_rejections(rejected_history, rejected_now)
+            test_gate.accept_resolver_evidence(current_sha, rejected_now)
 
         head_changed = bool(resolver_outcome.pushed)
         if applied_now or (head_changed and pending_dispositions):
@@ -789,10 +794,10 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "agent": context.agent,
         "agent_version": "1.4.0",
         "model": context.model,
-        "status": "halted_for_human" if consensus_reached else "failed",
+        "status": "approved" if consensus_reached else "failed",
         "entry_type": "summary",
         "summary": (
-            f"Review Loop reached consensus approval after {iteration} iteration(s) (human-only merge safety halt)"
+            f"Review Loop reached consensus approval after {iteration} iteration(s); PR ready for maintainer merge"
             if consensus_reached
             else f"Review Loop halted without consensus after {iteration} iteration(s)"
             + (f": {'; '.join(halt_reasons)}" if halt_reasons else "")
@@ -850,6 +855,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
     loop_result: dict[str, Any] = {
         "target": review_target,
+        "approved": consensus_reached,
+        "ready_for_maintainer_merge": consensus_reached,
         "consensus": {
             "approved": consensus_reached,
             "score": approval_score,
@@ -858,7 +865,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             "max_review_iterations": last_label,
             "status": consensus_status,
         },
-        "halted_for_human": consensus_reached,
+        "halted_for_human": False,
         "human_merge_gate_enforced": consensus_reached,
         "human_approval_command": f"holon review approve {review_target}",
         "mergeability": last_mergeability,

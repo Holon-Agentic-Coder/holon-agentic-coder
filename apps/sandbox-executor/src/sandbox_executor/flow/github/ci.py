@@ -7,13 +7,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
-import subprocess
 import time
 from collections.abc import Callable
 from typing import Any
 
 from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.flow.github.adapter import GitHubAdapter
 from sandbox_executor.flow.github.ci_policy import _ci_green as _ci_green
 from sandbox_executor.flow.github.ci_policy import (
     _extract_failed_ci_check_names as _extract_failed_ci_check_names,
@@ -28,6 +27,8 @@ def probe_ci_checks(
     branch_or_pr: str,
     timeout: float = 30.0,
     proxy_env: dict[str, str] | None = None,
+    *,
+    github: GitHubAdapter | None = None,
 ) -> dict[str, Any]:
     """Inspect CI check status using GitHub CLI (gh pr checks) with local fallback.
 
@@ -36,6 +37,7 @@ def probe_ci_checks(
         branch_or_pr: Branch name, PR number, or PR URL.
         timeout: Maximum timeout in seconds for gh execution.
         proxy_env: Optional proxy environment variables.
+        github: The GitHub adapter to read the checks through; defaults to one for repo_dir and proxy_env.
 
     Returns:
         dict[str, Any]: Status summary dictionary with keys:
@@ -49,20 +51,11 @@ def probe_ci_checks(
             - checks: list[dict[str, Any]]
     """
     clean_target = str(branch_or_pr).strip()
-    if shutil.which("gh") and clean_target:
-        gh_env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
+    github = github or GitHubAdapter(repo_dir, proxy_env)
+    if clean_target and github.available:
         try:
-            cmd = ["gh", "pr", "checks", clean_target, "--json", "bucket,name,state,event,workflow,link"]
-            proc = subprocess.run(
-                cmd,
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=timeout,
-                env=gh_env,
-            )
-            if proc.returncode == 0 and proc.stdout.strip():
+            proc = github.ci_checks(clean_target, timeout)
+            if proc.ok and proc.stdout.strip():
                 raw_checks = json.loads(proc.stdout)
                 if isinstance(raw_checks, list):
                     return summarise_ci_checks(raw_checks)
@@ -104,6 +97,7 @@ def _wait_for_ci_registration(  # noqa: PLR0913
     poll_interval: float,
     clock: Callable[[], float] | None = None,
     sleep: Callable[[float], None] | None = None,
+    probe: Callable[[], dict[str, Any]] | None = None,
 ) -> None:
     """Poll until GitHub CI checks register on ``review_target`` or ``timeout`` elapses.
 
@@ -116,7 +110,8 @@ def _wait_for_ci_registration(  # noqa: PLR0913
     deadline = clock() + timeout
     context.log(f"[Review Loop] No recorded test result: waiting up to {timeout:g}s for CI checks to register.")
     while True:
-        if probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env).get("source") == "github_cli":
+        status = probe() if probe is not None else probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
+        if status.get("source") == "github_cli":
             context.log("[Review Loop] CI checks registered.")
             return
         remaining = deadline - clock()

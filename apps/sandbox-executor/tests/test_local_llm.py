@@ -9,13 +9,16 @@ import json
 import os
 import secrets
 import stat
+import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-from sandbox_executor import cli, local_llm
+from sandbox_executor import cli, local_llm, token_reduction
 from sandbox_executor.agent_runner import get_runner
+from sandbox_executor.launcher import proxy_paths, sidecar
 
+from tests.env_file_capture import DockerEnvFileRecorder
 from tests.leak_assertions import assert_no_fragment, make_probe
 
 
@@ -414,16 +417,12 @@ class TestLauncherIntegration(unittest.TestCase):
         }
         with (
             patch("shutil.which", side_effect=lambda name: "/usr/bin/docker" if name == "docker" else None),
-            patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
-            patch.object(cli, "get_agent_session_mounts", side_effect=mounts or (lambda agent: [])),
+            patch("subprocess.run", side_effect=(docker := DockerEnvFileRecorder())) as mock_run,
+            patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", side_effect=mounts or (lambda _: [])),
             patch.object(cli.git_flow, "sandbox_worktree_mounts", return_value=[]),
-            patch.object(
-                cli,
-                "get_token_reduction_mounts_and_envs",
-                return_value=([], dict(tr_envs or {})),
-            ),
-            patch.object(cli.tempfile, "mkdtemp", return_value=mkdtemp_dir or self.default_agent_dir),
-            patch.object(cli.shutil, "rmtree") as mock_rmtree,
+            patch.object(sidecar, "get_token_reduction_mounts_and_envs", return_value=([], dict(tr_envs or {}))),
+            patch.object(tempfile, "mkdtemp", return_value=mkdtemp_dir or self.default_agent_dir),
+            patch("shutil.rmtree") as mock_rmtree,
             patch.dict(os.environ, merged_env, clear=True),
         ):
             code = cli.run_docker_container(
@@ -434,18 +433,20 @@ class TestLauncherIntegration(unittest.TestCase):
                 token_reduce=token_reduce,
             )
         args = mock_run.call_args[0][0] if mock_run.called else []
+        self.assertFalse(any(a.startswith("HOLON_") for a in args))  # every HOLON_* item goes in the env-file
+        self.forwarded = docker.env_files[-1] if docker.env_files else {}
         return code, args, mock_rmtree
 
     def test_gateway_host_mapping_is_added_to_every_run(self):
         code, args, _ = self._run({})
         self.assertEqual(code, 0)
         # Emitted on Linux; on Docker Desktop the name already resolves and the flag is a no-op.
-        if cli.sys.platform not in ("darwin", "win32"):
+        if sys.platform not in ("darwin", "win32"):
             self.assertIn("--add-host", args)
             self.assertIn("host.docker.internal:host-gateway", args)
 
     def test_gateway_host_mapping_not_duplicated_with_token_reduce(self):
-        with patch.object(cli.sys, "platform", "linux"):
+        with patch.object(sys, "platform", "linux"):
             code, args, _ = self._run({}, token_reduce=True)
             self.assertEqual(code, 0)
             self.assertEqual(args.count("host.docker.internal:host-gateway"), 1)
@@ -456,12 +457,14 @@ class TestLauncherIntegration(unittest.TestCase):
         # directory; keep them in this test's own directory.
         root = os.path.dirname(self.default_agent_dir)
         with (
-            patch.object(cli, "_find_git_root", return_value=os.path.join(root, "repo")),
-            patch.object(cli.os.path, "expanduser", lambda path: os.path.join(root, "home", path.lstrip("~/"))),
-            patch.object(cli, "generate_root_ca", return_value=("/tmp/mock-ca.crt", "/tmp/mock-ca.key")),
-            patch.object(cli, "_mitm_proxy_ca_paths", return_value=("/tmp/mock-ca.pem", "/tmp/mock-ca-cert.pem")),
-            patch.object(cli.os.path, "isfile", lambda path: True),
-            patch.object(cli, "_wait_for_proxy", lambda *args, **kwargs: True),
+            patch.object(proxy_paths, "_find_git_root", return_value=os.path.join(root, "repo")),
+            patch.object(os.path, "expanduser", lambda path: os.path.join(root, "home", path.lstrip("~/"))),
+            patch.object(token_reduction, "generate_root_ca", return_value=("/tmp/mock-ca.crt", "/tmp/mock-ca.key")),
+            patch.object(
+                proxy_paths, "_mitm_proxy_ca_paths", return_value=("/tmp/mock-ca.pem", "/tmp/mock-ca-cert.pem")
+            ),
+            patch.object(os.path, "isfile", lambda path: True),
+            patch("sandbox_executor.token_reduction.proxy_readiness.wait_for_proxy", lambda *a, **k: True),
             patch("subprocess.run") as mock_subproc,
         ):
             mock_subproc.return_value = MagicMock(returncode=0, stdout="8080\n")
@@ -479,10 +482,9 @@ class TestLauncherIntegration(unittest.TestCase):
             "HOLON_LOCAL_MODELS": "qwen3:test",
             "HOLON_LOCAL_PROVIDER": "vmlx",
         }
-        code, args, _ = self._run(env)
+        code, _args, _ = self._run(env)
         self.assertEqual(code, 0)
-        self.assertIn("-e", args)
-        self.assertIn("HOLON_AGENT_PROVIDER=vmlx", args)
+        self.assertEqual(self.forwarded["HOLON_AGENT_PROVIDER"], "vmlx")
 
     def test_local_provider_defaults_to_local_when_unset(self):
         env = {
@@ -491,10 +493,9 @@ class TestLauncherIntegration(unittest.TestCase):
             "HOLON_LOCAL_MODELS": "qwen3:test",
         }
         with patch.object(local_llm, "host_models_json", return_value=None):
-            code, args, _ = self._run(env)
+            code, _args, _ = self._run(env)
         self.assertEqual(code, 0)
-        self.assertIn("-e", args)
-        self.assertIn("HOLON_AGENT_PROVIDER=local", args)
+        self.assertEqual(self.forwarded["HOLON_AGENT_PROVIDER"], "local")
 
     def test_host_models_json_named_provider_aligns_agent_provider(self):
         host_config = {
@@ -506,10 +507,9 @@ class TestLauncherIntegration(unittest.TestCase):
             }
         }
         with patch.object(local_llm, "host_models_json", return_value=host_config):
-            code, args, _ = self._run({"HOLON_LOCAL_LLM": "1"})
+            code, _args, _ = self._run({"HOLON_LOCAL_LLM": "1"})
         self.assertEqual(code, 0)
-        self.assertEqual(args.count("HOLON_AGENT_PROVIDER=vmlx"), 1)
-        self.assertNotIn("HOLON_AGENT_PROVIDER=local", args)
+        self.assertEqual(self.forwarded["HOLON_AGENT_PROVIDER"], "vmlx")
 
     def test_multiple_local_providers_without_local_or_env_fails(self):
         host_config = {
@@ -531,9 +531,9 @@ class TestLauncherIntegration(unittest.TestCase):
             }
         }
         with patch.object(local_llm, "host_models_json", return_value=host_config):
-            code, args, _ = self._run({"HOLON_LOCAL_LLM": "1"})
+            code, _args, _ = self._run({"HOLON_LOCAL_LLM": "1"})
         self.assertEqual(code, 0)
-        self.assertEqual(args.count("HOLON_AGENT_PROVIDER=local"), 1)
+        self.assertEqual(self.forwarded["HOLON_AGENT_PROVIDER"], "local")
 
     def test_multiple_local_providers_with_env_provider_disambiguates(self):
         host_config = {
@@ -543,9 +543,9 @@ class TestLauncherIntegration(unittest.TestCase):
             }
         }
         with patch.object(local_llm, "host_models_json", return_value=host_config):
-            code, args, _ = self._run({"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_PROVIDER": "ollama"})
+            code, _args, _ = self._run({"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_PROVIDER": "ollama"})
         self.assertEqual(code, 0)
-        self.assertEqual(args.count("HOLON_AGENT_PROVIDER=ollama"), 1)
+        self.assertEqual(self.forwarded["HOLON_AGENT_PROVIDER"], "ollama")
 
     def test_agent_id_normalization_accepts_agent_pi(self):
         env = {

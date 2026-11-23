@@ -6,9 +6,9 @@ import subprocess
 from collections.abc import Iterator
 
 import pytest
-from sandbox_executor import cli
 from sandbox_executor.agent_defaults import detected_harness_markers
 from sandbox_executor.flow.admission import AdmissionDecision
+from sandbox_executor.launcher import env_files, mounts
 
 from tests import network_guard
 from tests.credential_env import CREDENTIAL_ENV_NAMES
@@ -111,7 +111,11 @@ def no_ambient_credentials(monkeypatch):
             continue
         if name in _AMBIENT_CREDENTIAL_NAMES or name.startswith(_AMBIENT_PREFIX):
             monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(cli, "find_github_token", lambda: os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN"))
+
+    def env_token() -> str | None:
+        return os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+
+    monkeypatch.setattr(mounts, "find_github_token", env_token)
 
 
 @pytest.fixture(autouse=True)
@@ -142,7 +146,7 @@ def isolated_env_file_dir(tmp_path_factory, monkeypatch):
     """
     env_dir = tmp_path_factory.mktemp("env-files")
     os.chmod(env_dir, 0o700)
-    monkeypatch.setattr(cli, "env_file_dir", lambda: str(env_dir))
+    monkeypatch.setattr(env_files, "env_file_dir", lambda: str(env_dir))
     return env_dir
 
 
@@ -353,3 +357,15 @@ def stub_review_local_test_measurement(monkeypatch: pytest.MonkeyPatch) -> None:
 
     unmeasured = TestMeasurement(None, None, None, None, 127, "test task not run in this test", "")
     monkeypatch.setattr("sandbox_executor.flow.review.local_tests.run_measurement", lambda _workspace: unmeasured)
+
+
+@pytest.fixture(autouse=True)
+def stub_review_workspace_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Read the review workspace HEAD as ``stage3-head``, the commit test Stage 3 payloads record as tested.
+
+    A test that moves the head patches ``sandbox_executor.flow.review.local_tests.run_git`` itself.
+    """
+    from unittest.mock import MagicMock
+
+    head = MagicMock(returncode=0, stdout="stage3-head\n")
+    monkeypatch.setattr("sandbox_executor.flow.review.local_tests.run_git", lambda *_a, **_k: head)

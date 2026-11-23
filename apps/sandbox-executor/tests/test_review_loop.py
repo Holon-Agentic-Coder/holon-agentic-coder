@@ -28,7 +28,9 @@ from tests.review_loop_stubs import (  # noqa: F401  (_CLEAN_MERGE and _ledger a
     _GREEN_CI,
     EXEC_TARGET,
     _ensemble_ctx,
+    _green_loop_patches,
     _ledger,
+    _loop_ctx,
     _LoopStubs,
     _rows,
 )
@@ -497,6 +499,7 @@ class TestReviewLoopEmptyDiffGuard:
                 "sandbox_executor.flow.review.loop.probe_ci_checks",
                 return_value={"all_passed": True, "source": "github_cli"},
             ),
+            patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"),
             patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
         ):
             res = run_review_loop(
@@ -601,6 +604,7 @@ class TestReviewLoopEmptyDiffGuardOrigin:
                 "sandbox_executor.flow.review.loop.probe_ci_checks",
                 return_value={"all_passed": True, "source": "github_cli"},
             ),
+            patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"),
             patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
         ):
             res = run_review_loop(ctx, target=self.EXEC, max_iterations=1, dry_run=False)
@@ -946,49 +950,6 @@ def test_default_gh_runner_sets_no_repository_env(tmp_path):
 # --------------------------------------------------------------------------------------
 
 
-def _loop_ctx(tmp_path: Path, target: str = "feature/x", dry_run: bool = False):
-    from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
-
-    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True, exist_ok=True)
-    ctx = FlowContext(repo_dir=str(tmp_path), execution_branch=target, token_reduce=False, dry_run=dry_run)
-    ctx.stage_results["execute"] = StageResult(
-        stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 1.0, "exit_code": 0}
-    )
-    return ctx
-
-
-def _green_loop_patches(verdict=None, post=None, which=None, ci=None):
-    from contextlib import ExitStack
-
-    from sandbox_executor.review_target import DiffVerdict
-
-    stack = ExitStack()
-    verify = stack.enter_context(
-        patch(
-            "sandbox_executor.review_target.verify_review_diff",
-            return_value=(verdict or DiffVerdict.VERIFIED, "guard detail"),
-        )
-    )
-    stack.enter_context(patch("sandbox_executor.flow.review.loop.shutil.which", return_value=which))
-    stack.enter_context(
-        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False})
-    )
-    stack.enter_context(
-        patch(
-            "sandbox_executor.flow.review.loop.probe_ci_checks",
-            return_value=ci or {"all_passed": True, "source": "local_tests"},
-        )
-    )
-    stack.enter_context(patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"))
-    mock_post = stack.enter_context(
-        patch(
-            "sandbox_executor.flow.review.loop.post_pr_review_consensus",
-            **(post or {"return_value": {"dual_posted": True}}),
-        )
-    )
-    return stack, verify, mock_post
-
-
 @pytest.mark.parametrize("which", [None, "/usr/bin/gh"], ids=["no-gh", "gh"])
 def test_empty_diff_guard_runs_without_auto_pr_and_without_gh(tmp_path, which):
     from sandbox_executor.flow import run_review_loop
@@ -1124,7 +1085,7 @@ def test_approved_loop_never_merges(tmp_path, gh_write_guard):
         ),
         patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
         patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"),
-        patch("sandbox_executor.flow.github.review_post.subprocess.run", side_effect=_recording_run),
+        patch("sandbox_executor.flow.github.adapter.subprocess.run", side_effect=_recording_run),
     ):
         res = run_review_loop(_loop_ctx(tmp_path), target="feature/x", max_iterations=1)
 
@@ -1155,7 +1116,7 @@ def test_reviewed_commit_lookup_fetches_only_outside_a_mounted_container(tmp_pat
         patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", return_value=(None, None)),
         patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123") as resolve,
         patch(
-            "sandbox_executor.flow.github.review_post.subprocess.run",
+            "sandbox_executor.flow.github.adapter.subprocess.run",
             return_value=MagicMock(returncode=0, stdout=""),
         ),
     ):
@@ -1176,8 +1137,8 @@ def test_mergeability_probe_is_bounded_by_a_subprocess_timeout(tmp_path):
         return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
 
     with (
-        patch("sandbox_executor.flow.github.pr.shutil.which", return_value="/usr/bin/gh"),
-        patch("sandbox_executor.flow.github.pr.subprocess.run", side_effect=_timing_out),
+        patch("sandbox_executor.flow.github.adapter.shutil.which", return_value="/usr/bin/gh"),
+        patch("sandbox_executor.flow.github.adapter.subprocess.run", side_effect=_timing_out),
         patch("sandbox_executor.flow.github.pr.run_git", return_value=MagicMock(returncode=1, stdout="", stderr="")),
     ):
         res = check_pr_mergeability(str(tmp_path), "feature/x", "main")

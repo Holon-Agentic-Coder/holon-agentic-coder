@@ -95,11 +95,16 @@ def test_timeout_resolution(monkeypatch):
 
 
 def test_probe_runs_runner_in_its_container_and_redacts(probe_env):
-    runner_fn = MagicMock(
-        return_value=subprocess.CompletedProcess(
+    env_files: list[list[str]] = []
+
+    def run(cmd, **kwargs):
+        with open(_env_file_of(cmd), encoding="utf-8") as fh:
+            env_files.append(fh.read().splitlines())
+        return subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="429 quota hit for key sk-test-very-secret-value"
         )
-    )
+
+    runner_fn = MagicMock(side_effect=run)
     res = run_preflight_probe("antigravity-agent", "gemini-3.8-flash-medium", timeout=7, runner_fn=runner_fn)
 
     assert res.status is PreflightStatus.QUOTA_EXHAUSTED
@@ -113,8 +118,9 @@ def test_probe_runs_runner_in_its_container_and_redacts(probe_env):
     assert runner_fn.call_args[1]["timeout"] == 7
     assert "holon/agent-antigravity" in cmd
     assert "--cap-drop=ALL" in cmd
-    assert "-e" in cmd and "HOLON_AGENT_ID=antigravity" in cmd
-    assert not any(item.startswith("HOLON_ROLE=") for item in cmd)
+    assert "HOLON_AGENT_ID=antigravity" in env_files[0]
+    assert not any(item.startswith("HOLON_") for item in cmd)
+    assert not any(line.startswith("HOLON_ROLE=") for line in env_files[0])
     tail = cmd[cmd.index("holon/agent-antigravity") + 1 :]
     assert tail[0] == "agy"
     assert tail[tail.index("--model") : tail.index("--model") + 2] == ["--model", "gemini-3.8-flash-medium"]
@@ -155,7 +161,8 @@ def test_probe_keeps_credentials_off_the_docker_argv(probe_env, monkeypatch, iso
     argv = " ".join(seen["cmd"])
     for sample in (agent_probe, settings):
         assert sample not in argv
-    assert "HOLON_SKIP_PREFLIGHT=1" in seen["cmd"]
+    assert "HOLON_SKIP_PREFLIGHT=1" in seen["lines"]
+    assert not any(item.startswith("HOLON_") for item in seen["cmd"])
     assert seen["cmd"][2] == "--env-file"
     assert os.path.dirname(seen["path"]) == str(isolated_env_file_dir)
     assert seen["mode"] == 0o600
@@ -191,6 +198,7 @@ def test_probe_drops_a_stale_retired_repo_url(probe_env, monkeypatch, isolated_e
 def _record_probe(seen):
     def runner_fn(cmd, **kwargs):
         seen["cmd"] = cmd
+        seen["env"] = kwargs.get("env")
         if "--env-file" in cmd:
             with open(_env_file_of(cmd), encoding="utf-8") as fh:
                 seen["lines"] = fh.read().splitlines()
@@ -219,23 +227,77 @@ def test_probe_keeps_url_userinfo_off_the_argv_in_every_shape(  # noqa: PLR0913
 
 
 @pytest.mark.parametrize("value", CREDENTIAL_FREE_URLS)
-def test_probe_keeps_a_credential_free_url_readable_on_the_argv(probe_env, monkeypatch, isolated_env_file_dir, value):
+def test_probe_passes_a_credential_free_url_verbatim_in_the_env_file(
+    probe_env, monkeypatch, isolated_env_file_dir, value
+):
+    """Every forwarded HOLON_* value goes in the env-file, credential or not, and never on the argv."""
     monkeypatch.setenv("HOLON_PROXY_URL", value)
     seen = {}
 
     assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok
 
-    assert f"HOLON_PROXY_URL={value}" in seen["cmd"]
-    assert not any(line.startswith("HOLON_PROXY_URL=") for line in seen.get("lines", []))
+    assert f"HOLON_PROXY_URL={value}" in seen["lines"]
+    assert not any("HOLON_PROXY_URL" in item for item in seen["cmd"])
 
 
-def test_probe_keeps_a_credential_free_multiline_settings_json_on_the_argv(probe_env, monkeypatch):
-    settings = '{\n  "model": "' + make_probe("model") + '"\n}'
+def test_probe_names_a_multiline_settings_json_bare_and_hands_its_value_to_docker(probe_env, monkeypatch):
+    """A docker env-file cannot carry a line break, so a multi-line value goes as `-e NAME` with docker's env."""
+    sample = make_probe("bare")
+    settings = '{\n  "model": "m",\n  "apiKeyHelper": "' + sample + '"\n}'
     monkeypatch.setenv("HOLON_AGENT_SETTINGS", settings)
-    runner_fn = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="OK\n", stderr=""))
-    assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=runner_fn).ok
-    cmd = runner_fn.call_args[0][0]
-    assert f"HOLON_AGENT_SETTINGS={settings}" in cmd
+    seen = {}
+
+    assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok
+
+    assert_no_leak(sample, seen["cmd"])
+    assert seen["cmd"][seen["cmd"].index("HOLON_AGENT_SETTINGS") - 1] == "-e"
+    assert seen["env"]["HOLON_AGENT_SETTINGS"] == settings
+    assert '--settings "${HOLON_AGENT_SETTINGS}"' in seen["cmd"][-1]
+
+
+def test_probe_passes_a_credential_free_single_line_settings_json_in_the_env_file(
+    probe_env, monkeypatch, isolated_env_file_dir
+):
+    settings = '{"model": "' + make_probe("model") + '"}'
+    monkeypatch.setenv("HOLON_AGENT_SETTINGS", settings)
+    seen = {}
+
+    assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok
+
+    assert f"HOLON_AGENT_SETTINGS={settings}" in seen["lines"]
+    assert settings not in " ".join(seen["cmd"])
+    # The runner flag filled from the variable reads it inside the container; the binary stays literal.
+    tail = seen["cmd"][seen["cmd"].index("holon/agent-claude") + 1 :]
+    assert tail[:2] == ["sh", "-c"]
+    assert tail[2].startswith("exec claude ")
+    assert '--settings "${HOLON_AGENT_SETTINGS}"' in tail[2]
+
+
+def test_probe_passes_a_bare_credential_under_a_plain_holon_name_only_in_the_env_file(
+    probe_env, monkeypatch, isolated_env_file_dir
+):
+    """A bare, non-URL credential-shaped value under a name that is not secret-shaped stays off the probe argv."""
+    sample = make_probe("bare")
+    monkeypatch.setenv("HOLON_EXAMPLE_SETTING", sample)
+    seen = {}
+
+    assert run_preflight_probe("antigravity-agent", "gemini-3.8-flash-medium", runner_fn=_record_probe(seen)).ok
+
+    assert_no_leak(sample, seen["cmd"])
+    assert f"HOLON_EXAMPLE_SETTING={sample}" in seen["lines"]
+
+
+def test_probe_keeps_the_runner_binary_literal_without_a_referenced_argument(
+    probe_env, monkeypatch, isolated_env_file_dir
+):
+    """HOLON_AGENT_ID=claude in the env-file does not turn the `claude` binary into a shell reference."""
+    seen = {}
+
+    assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok
+
+    assert "HOLON_AGENT_ID=claude" in seen["lines"]
+    tail = seen["cmd"][seen["cmd"].index("holon/agent-claude") + 1 :]
+    assert tail[0] == "claude"
 
 
 @pytest.mark.parametrize(
@@ -266,14 +328,14 @@ def test_probe_env_file_is_removed_when_the_probe_fails(probe_env, monkeypatch, 
 
 
 def test_probe_returns_unknown_when_the_env_file_dir_cannot_be_created(probe_env, monkeypatch):
-    from sandbox_executor import cli
+    from sandbox_executor.launcher import env_files
 
     _set_probe_values(monkeypatch)
 
     def failing_dir():
         raise PermissionError("env-file dir not creatable")
 
-    monkeypatch.setattr(cli, "env_file_dir", failing_dir)
+    monkeypatch.setattr(env_files, "env_file_dir", failing_dir)
     runner_fn = MagicMock()
     res = run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=runner_fn)
     assert res.status is PreflightStatus.UNKNOWN
@@ -454,7 +516,7 @@ def test_plan_and_execute_abort_before_container_on_failed_probe(probe_env, monk
         patch(
             "sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.QUOTA_EXHAUSTED)
         ) as probe,
-        patch("sandbox_executor.cli.run_docker_container") as docker,
+        patch("sandbox_executor.launcher.containers.run_docker_container") as docker,
     ):
         assert _run_main(["holon", command, target]) == 1
     probe.assert_called_once()
@@ -484,7 +546,7 @@ def test_skip_preflight_bypasses_probe(probe_env, monkeypatch, bypass):
         monkeypatch.setenv("HOLON_SKIP_PREFLIGHT", "1")
     with (
         patch("sandbox_executor.cli.run_preflight_probe") as probe,
-        patch("sandbox_executor.cli.run_docker_container", return_value=0) as docker,
+        patch("sandbox_executor.launcher.containers.run_docker_container", return_value=0) as docker,
     ):
         assert _run_main(argv) == 0
     probe.assert_not_called()
@@ -510,7 +572,7 @@ def test_cli_prints_harness_and_skipped_preflight_info_on_stderr(probe_env, monk
     monkeypatch.setenv("HOLON_MODEL", "claude-opus-5-5")
     with (
         patch("sandbox_executor.cli.run_preflight_probe") as probe,
-        patch("sandbox_executor.cli.run_docker_container", return_value=0),
+        patch("sandbox_executor.launcher.containers.run_docker_container", return_value=0),
     ):
         assert _run_main(["holon", "plan", "I-1/_", "--skip-preflight"]) == 0
     probe.assert_not_called()
@@ -551,7 +613,7 @@ def test_plan_uses_harness_runner_and_explicit_model(probe_env, monkeypatch, hos
     monkeypatch.setenv("HOLON_MODEL", "claude-opus-5-5")
     with (
         patch("sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.OK)),
-        patch("sandbox_executor.cli.run_docker_container", return_value=0) as docker,
+        patch("sandbox_executor.launcher.containers.run_docker_container", return_value=0) as docker,
     ):
         assert _run_main(["holon", "plan", "I-1/_"]) == 0
     docker.assert_called_once_with(
@@ -569,7 +631,7 @@ def test_plan_uses_harness_runner_and_explicit_model(probe_env, monkeypatch, hos
 
 def test_plan_exits_with_error_without_model(probe_env, monkeypatch, capsys):
     monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
-    with patch("sandbox_executor.cli.run_docker_container") as docker:
+    with patch("sandbox_executor.launcher.containers.run_docker_container") as docker:
         assert _run_main(["holon", "plan", "I-1/_", "--skip-preflight"]) == 1
     docker.assert_not_called()
     assert "mandatory" in capsys.readouterr().err
@@ -577,7 +639,7 @@ def test_plan_exits_with_error_without_model(probe_env, monkeypatch, capsys):
 
 def test_execute_with_unmapped_env_runner_fails_before_docker(probe_env, monkeypatch, capsys):
     monkeypatch.setenv("HOLON_AGENT", "foo-agent")
-    with patch("sandbox_executor.cli.run_docker_container") as docker:
+    with patch("sandbox_executor.launcher.containers.run_docker_container") as docker:
         assert _run_main(["holon", "execute", "I-1/P-2/_"]) == 1
     docker.assert_not_called()
     assert "Supported runners" in capsys.readouterr().err
@@ -585,15 +647,16 @@ def test_execute_with_unmapped_env_runner_fails_before_docker(probe_env, monkeyp
 
 def test_run_docker_container_disables_nested_preflight(probe_env):
     with (
-        patch("sandbox_executor.cli.shutil.which", return_value="/usr/bin/docker"),
+        patch("shutil.which", return_value="/usr/bin/docker"),
         patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=[]),
-        patch("sandbox_executor.cli.find_github_token", return_value=None),
-        patch("sandbox_executor.cli.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run,
+        patch("sandbox_executor.launcher.mounts.find_github_token", return_value=None),
+        patch("subprocess.run", side_effect=_record_probe(seen := {})) as run,
     ):
         from sandbox_executor.cli import run_docker_container
 
         assert run_docker_container("planner", "holon/agent-antigravity", [], agent_id="antigravity") == 0
-    assert "HOLON_SKIP_PREFLIGHT=1" in run.call_args[0][0]
+    assert "HOLON_SKIP_PREFLIGHT=1" in seen["lines"]
+    assert not any(item.startswith("HOLON_") for item in run.call_args[0][0])
 
 
 # --- review-loop routing ------------------------------------------------------------------------------------------

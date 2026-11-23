@@ -23,13 +23,18 @@ import json
 import logging
 import os
 import secrets
+import shutil
+import socket
+import subprocess
 import urllib.error
 from collections.abc import Callable, Iterator
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
 import pytest
-from sandbox_executor import cli, local_llm
+from sandbox_executor import cli, local_llm, token_reduction
+from sandbox_executor.launcher import env_files
+from sandbox_executor.token_reduction import proxy_readiness
 
 FRAGMENT_LEN = 4
 _LETTERS = "FGJQVZ"
@@ -134,7 +139,7 @@ def _proxy_attach(value: str) -> list[str]:
                 raise outcome
             return outcome
 
-        with patch.object(cli, "_wait_for_proxy", wait), _captured({"HOLON_PROXY_URL": value}) as out:
+        with patch.object(proxy_readiness, "wait_for_proxy", wait), _captured({"HOLON_PROXY_URL": value}) as out:
             cli._attach_external_proxy()
         texts.extend(out)
     return texts
@@ -285,9 +290,9 @@ def test_no_credential_fragment_in_any_message(entry_point, prefix, monkeypatch)
 
     Each test runs one URL prefix's slice of the matrix, so the parallel runner can spread the slices across workers.
     """
-    monkeypatch.setattr(cli.shutil, "which", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(cli.socket, "create_connection", _refuse)
-    monkeypatch.setattr(cli, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
+    monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(socket, "create_connection", _refuse)
+    monkeypatch.setattr(token_reduction, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
     # `_captured` swaps in an exact environment per case; starting from an empty one keeps each swap cheap.
     for name in list(os.environ):
         monkeypatch.delenv(name)
@@ -389,10 +394,12 @@ class _DockerRecorder:
 
 def _patch_docker_host(monkeypatch) -> None:
     """Stand in a docker binary and empty mount helpers, so `run_docker_container` reaches the echo."""
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
-    monkeypatch.setattr(cli, "get_agent_session_mounts", lambda agent_id: [])
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr("sandbox_executor.launcher.mounts.get_agent_session_mounts", lambda agent_id: [])
     monkeypatch.setattr(cli.git_flow, "sandbox_worktree_mounts", lambda *args, **kwargs: [])
-    monkeypatch.setattr(cli, "get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {}))
+    monkeypatch.setattr(
+        "sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {})
+    )
 
 
 def _delimiter_texts(
@@ -444,7 +451,7 @@ def _run_delimiter_case(value: str) -> tuple[int, _DockerRecorder, list[str], di
     stdout = io.StringIO()
     with (
         patch.dict(os.environ, env),
-        patch.object(cli.subprocess, "run", docker),
+        patch.object(subprocess, "run", docker),
         contextlib.redirect_stdout(stdout),
         contextlib.redirect_stderr(io.StringIO()),
     ):
@@ -490,7 +497,7 @@ def test_env_file_path_sharing_a_part_run_is_not_a_leak(monkeypatch, tmp_path_fa
     parts = _colliding_parts()
     env_dir = tmp_path_factory.mktemp(f"env-{parts[0][:FRAGMENT_LEN].lower()}")
     os.chmod(env_dir, 0o700)
-    monkeypatch.setattr(cli, "env_file_dir", lambda: str(env_dir))
+    monkeypatch.setattr(env_files, "env_file_dir", lambda: str(env_dir))
     value = DELIMITER_FORMS["http"].format(c="[".join(parts))
     _, docker, _, _, echo = _run_delimiter_case(value)
     _assert_collision_forced(docker.argv, echo, str(env_dir), parts[0])
@@ -580,23 +587,25 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
     probe = PreflightResult(
         status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
     )
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
-    monkeypatch.setattr(cli, "get_agent_session_mounts", lambda agent_id: [])
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr("sandbox_executor.launcher.mounts.get_agent_session_mounts", lambda agent_id: [])
     monkeypatch.setattr(cli.git_flow, "sandbox_worktree_mounts", lambda *args, **kwargs: [])
-    monkeypatch.setattr(cli, "get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {}))
+    monkeypatch.setattr(
+        "sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {})
+    )
     for name in list(os.environ):
         monkeypatch.delenv(name)
     failures: list[str] = []
     cases = list(_invalid_value_cases())
     for case_id, env, host_config, credential in cases:
-        # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variables to
-        # the container unchanged (pre-existing behaviour, outside this rule); only its doctor output is checked.
+        # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variable to the
+        # container unchanged: through the env-file, so neither the argv nor the echo may hold a fragment of it.
         rejected = "TIMEOUT" not in case_id and "BUDGET" not in case_id
         docker = _DockerRecorder()
         with (
             patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
             patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
-            patch.object(cli.subprocess, "run", docker),
+            patch.object(subprocess, "run", docker),
             _captured({**env, "HOME": str(tmp_path)}) as out,
         ):
             env_out = io.StringIO()
@@ -612,16 +621,82 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
                         fetch=lambda url, timeout: b"{}",
                     )
                 )
-            if rejected:
-                codes.append(cli.run_docker_container("planner", "img", [], agent_id="pi"))
-        if _leaks(out, credential):
+            codes.append(cli.run_docker_container("planner", "img", [], agent_id="pi"))
+        if _leaks(_without_env_file_path(out, docker.argv), credential):
             failures.append(case_id)
         if rejected and (codes != [1, 1, 1, 1] or docker.argv):
             failures.append(f"{case_id}:not-rejected")
+        if not rejected:
+            failures.extend(f"{case_id}:{where}" for where in _forwarded_run_failures(env, docker, credential))
     assert len(cases) == (len(INVALID_VALUE_ENV) + len(INVALID_VALUE_HOST_FIELDS)) * MATRIX_SIZE // (
         len(HOSTS) * len(SUFFIXES)
     )
     assert not failures, f"{len(failures)}/{len(cases)} invalid-value cases failed, e.g. {failures[:5]}"
+
+
+def _forwarded_run_failures(env: dict[str, str], docker: _DockerRecorder, credential: str) -> list[str]:
+    """Name what is wrong with a run that forwarded every `HOLON_*` variable of `env` to the container."""
+    failures = []
+    if not docker.argv:
+        failures.append("no-run")
+    if _leaks(_without_env_file_path([" ".join(docker.argv)], docker.argv), credential):
+        failures.append("main-argv")
+    failures.extend(f"not-env-file:{name}" for name in env if docker.env_file.get(name) != env[name])
+    return failures
+
+
+# Every forwarded `HOLON_*` name checked by the env-file routing fuzz: the invalid-value names (including the
+# `TIMEOUT` and `BUDGET` ones), names whose value is not secret-shaped, and an arbitrary name.
+FORWARDED_HOLON_NAMES = (
+    *INVALID_VALUE_ENV,
+    "HOLON_AGENT_SETTINGS",
+    "HOLON_AGENT_EFFORT",
+    "HOLON_MODEL",
+    "HOLON_PROXY_URL",
+    "HOLON_EXAMPLE_SETTING",
+)
+
+
+def _run_forwarded_value(name: str, value: str) -> tuple[int, _DockerRecorder, list[str], dict[str, str], list[str]]:
+    """Run the main container and the probe with only `name=value` set (plus the isolated `HOME`)."""
+    from sandbox_executor import preflight
+
+    docker = _DockerRecorder()
+    stdout = io.StringIO()
+    with (
+        patch.dict(os.environ, {name: value, "HOME": os.environ["HOME"]}, clear=True),
+        patch.object(subprocess, "run", docker),
+        contextlib.redirect_stdout(stdout),
+        contextlib.redirect_stderr(io.StringIO()),
+    ):
+        rc = cli.run_docker_container("planner", "img", [], agent_id="claude-agent")
+        probe_argv, probe_env = preflight.build_probe_docker_cmd("claude-agent", "m", "img", "probe", session_mounts=[])
+    echo = [line for line in stdout.getvalue().splitlines() if line.startswith("Executing:")]
+    return rc, docker, probe_argv, probe_env, echo
+
+
+def _forwarded_value_failures(name: str, value: str) -> list[str]:
+    """Name every site where a forwarded `HOLON_*` value shows, or the env-file that lacks it."""
+    rc, docker, probe_argv, probe_env, echo = _run_forwarded_value(name, value)
+    texts = {"main-argv": [" ".join(docker.argv)], "probe-argv": [" ".join(probe_argv)], "echo": echo}
+    failures = _leak_sites(texts, docker.argv, [value])
+    if rc != 0 or not echo:
+        failures.append("no-run")
+    if docker.env_file.get(name) != value or probe_env.get(name) != value:
+        failures.append("not-env-file")
+    return failures
+
+
+@pytest.mark.parametrize("name", FORWARDED_HOLON_NAMES)
+def test_every_forwarded_holon_value_stays_off_argv_and_echo(name, monkeypatch):
+    """A bare credential under any forwarded `HOLON_*` name reaches only the env-file, in the main run and probe."""
+    _patch_docker_host(monkeypatch)
+    failures = [
+        f"{name}:{shape}:{where}"
+        for shape, make in _credential_shapes().items()
+        for where in _forwarded_value_failures(name, make())
+    ]
+    assert not failures, f"{len(failures)} forwarded-value cases failed, e.g. {failures[:20]}"
 
 
 # Base URLs `urlsplit` (or its lazy port check) rejects, or that have no usable `scheme://host`.
@@ -661,7 +736,7 @@ def test_doctor_survives_unparseable_base_url(slot, monkeypatch):  # noqa: C901,
     """
     from sandbox_executor.preflight import PreflightResult, PreflightStatus
 
-    monkeypatch.setattr(cli.shutil, "which", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: None)
     probe = PreflightResult(
         status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
     )

@@ -54,7 +54,7 @@ class FakeGh:
         if verb == ["pr", "view"] and "mergeable" in cmd[-1]:
             return 0, json.dumps({"number": 7, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"})
         if verb == ["pr", "view"]:
-            return 0, json.dumps({"number": 7, "title": "child"})
+            return 0, json.dumps({"number": 7, "title": "child", "headRefOid": "stage3-head"})
         if verb == ["pr", "checks"]:
             returncode, checks = (
                 self._checks_replies.pop(0) if len(self._checks_replies) > 1 else self._checks_replies[0]
@@ -181,7 +181,7 @@ def stacked_repo(tmp_path: Path) -> Path:
 def test_local_mergeability_of_a_stacked_branch_never_needs_main(
     stacked_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("sandbox_executor.flow.github.pr.shutil.which", lambda name: None)
+    monkeypatch.setattr("sandbox_executor.flow.github.adapter.shutil.which", lambda name: None)
 
     clean = check_pr_mergeability(str(stacked_repo), CHILD_EXECUTION_BRANCH, target_branch=PARENT_BRANCH)
     assert (clean["source"], clean["mergeable"], clean["merge_state_status"]) == ("git_local", "MERGEABLE", "CLEAN")

@@ -64,6 +64,8 @@ _LAZY_EXPORTS: dict[str, str] = {
         "_origin_has_branch _read_ledger_rows _resolve_branch_ref _resolve_review_commit _snapshot_child_branches "
         "_sync_local_execution_refs _track_local_branch fast_forward_local_branch"
     ),
+    "sandbox_executor.flow.github.adapter": "GitHubAdapter merge_argv parse_gh_json",
+    "sandbox_executor.flow.github.adapter_runner": "GhResult gh_env spawn_gh",
     "sandbox_executor.flow.github.ci": (
         "CI_REGISTRATION_TIMEOUT_ENV_VAR CI_REGISTRATION_TIMEOUT_SECONDS _wait_for_ci_registration probe_ci_checks "
         "resolve_ci_registration_timeout"
@@ -83,6 +85,7 @@ _LAZY_EXPORTS: dict[str, str] = {
         "gh_view_verdict local_error_result merge_tree_verdict mergeability_result missing_ref_result "
         "not_a_repository_result"
     ),
+    "sandbox_executor.flow.github.pr_head": "pr_head_sha",
     "sandbox_executor.flow.github.pr": (
         "_resolve_commit_ref check_pr_mergeability create_or_update_pr format_review_git_trailers"
     ),
@@ -133,6 +136,7 @@ _LAZY_EXPORTS: dict[str, str] = {
         "_review_base_ref _semantic_pr_text"
     ),
     "sandbox_executor.flow.review.git_identity": "REVIEW_GIT_ENV",
+    "sandbox_executor.flow.review.head_test_evidence": ("HeadEvidenceDecisionInput choose_evidence has_pass_marker"),
     "sandbox_executor.flow.review.ids": "build_review_id",
     "sandbox_executor.flow.review.loop": (
         "_loop_status _review_window _reviewers_objected _run_engine_review_loop run_review_loop"
@@ -173,6 +177,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.stages.plan_support": "dry_run_plan_result plan_id_of plan_metrics replan_feedback_env",
     "sandbox_executor.flow.stages.review": "TESTS_NOT_MEASURED_ERROR _checkout_execution_branch run_review_stage",
+    "sandbox_executor.flow.stages.review_outcome": "ReviewOutcomeContext build_review_stage_outcome",
     "sandbox_executor.flow.stages.stage_support": "consult_knowledge intent_payload_file stage_success",
     "sandbox_executor.flow.stages.sync_conflict": "sync_conflict_result",
     "sandbox_executor.flow.stages.touch_set_guard": (
@@ -246,6 +251,9 @@ __all__ = [
     "FlowCheckpoint",
     "FlowContext",
     "FlowStage",
+    "GhResult",
+    "GitHubAdapter",
+    "HeadEvidenceDecisionInput",
     "HeadMoveCheck",
     "HostRemoteError",
     "InFlightFlow",
@@ -263,6 +271,7 @@ __all__ = [
     "ResolverInput",
     "ResolverOutcome",
     "ReviewAttempt",
+    "ReviewOutcomeContext",
     "SalvageError",
     "SalvageResult",
     "Stage5Outcome",
@@ -359,10 +368,12 @@ __all__ = [
     "blocker_is_clear",
     "build_pr_review_consensus_report",
     "build_review_id",
+    "build_review_stage_outcome",
     "carried_blocker",
     "check_admission",
     "check_and_resolve_stage_conflicts",
     "check_pr_mergeability",
+    "choose_evidence",
     "choose_merge_flag",
     "classify_conflicts",
     "command_failure",
@@ -391,9 +402,11 @@ __all__ = [
     "gate_ci_flags",
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
+    "gh_env",
     "gh_unavailable_outcome",
     "gh_view_verdict",
     "has_inline_answer",
+    "has_pass_marker",
     "head_move_since_calibration",
     "held_execution_failure",
     "hold_unrecorded_executions",
@@ -415,6 +428,7 @@ __all__ = [
     "local_in_flight_flows",
     "local_tests_ci_status",
     "lookup_merge_flag",
+    "merge_argv",
     "merge_branch_detailed",
     "merge_findings",
     "merge_tree_verdict",
@@ -429,6 +443,7 @@ __all__ = [
     "open_flow_pull_requests",
     "other_checkpoints",
     "override_already_recorded",
+    "parse_gh_json",
     "parse_metrics",
     "pending_check_names",
     "plan_id_of",
@@ -437,6 +452,7 @@ __all__ = [
     "post_pr_review_consensus",
     "post_stale_signal",
     "posting_outcome",
+    "pr_head_sha",
     "prepare_calibrated_branch",
     "probe_ci_checks",
     "publish_calibration",
@@ -497,6 +513,7 @@ __all__ = [
     "save_checkpoint",
     "serialize_open",
     "settle_pending_ci",
+    "spawn_gh",
     "stage5_steps",
     "stage_success",
     "stale_calibrated_refs",

@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import logging
-import os
-import shutil
-import subprocess
 from dataclasses import dataclass
 from typing import Any
 
+from sandbox_executor.flow.github.adapter import GitHubAdapter
+from sandbox_executor.flow.github.adapter_runner import GhResult
 from sandbox_executor.flow.github.review_policy import (
     GH_UNAVAILABLE_MESSAGE,
     CommentAttempt,
@@ -37,6 +36,7 @@ def post_pr_review_consensus(  # noqa: PLR0913
     *,
     reviewers: list[ReviewerResult] | None = None,
     title: str | None = None,
+    github: GitHubAdapter | None = None,
 ) -> dict[str, Any]:
     """Post the review consensus to GitHub exactly once and handle the HTTP 422 fallback.
 
@@ -56,6 +56,7 @@ def post_pr_review_consensus(  # noqa: PLR0913
         proxy_env: Optional proxy environment variables.
         reviewers: Reviewer results of the deciding iteration; the report renders only these.
         title: Resolved report title (intent title, else PR title, else PR number or branch).
+        github: The GitHub adapter to post through; defaults to one for repo_dir and proxy_env.
 
     Returns:
         dict[str, Any]: Posting outcome diagnostics. ``official_review`` describes the primary
@@ -76,13 +77,12 @@ def post_pr_review_consensus(  # noqa: PLR0913
         title=title,
     )
 
-    if not shutil.which("gh"):
+    github = github or GitHubAdapter(repo_dir, proxy_env)
+    if not github.available:
         logger.warning(GH_UNAVAILABLE_MESSAGE)
         return gh_unavailable_outcome(clean_target, approved)
 
-    call = _GhCall(
-        repo_dir, clean_target, report_text, {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
-    )
+    call = _GhCall(github, clean_target, report_text)
     # Primary action: a single official review submission carries the consensus report.
     if clean_target:
         review = _submit_review(call, review_flag(approved))
@@ -97,23 +97,28 @@ def post_pr_review_consensus(  # noqa: PLR0913
 class _GhCall:
     """The shared arguments of every ``gh pr`` posting command for one consensus report."""
 
-    repo_dir: str
+    github: GitHubAdapter
     target: str
     report_text: str
-    env: dict[str, str]
+
+    def review(self, flag: str) -> GhResult:
+        """``gh pr review <target> <flag> --body <report>``; raises when ``gh`` could not be run."""
+        return _ran(self.github.post_review(self.target, flag, self.report_text))
+
+    def comment(self) -> GhResult:
+        """``gh pr comment <target> --body <report>``; raises when ``gh`` could not be run."""
+        return _ran(self.github.post_comment(self.target, self.report_text))
 
 
-def _run_gh_pr(call: _GhCall, *args: str) -> subprocess.CompletedProcess[str]:
-    """Run ``gh pr <args[0]> <target> <args[1:]> --body <report>`` in the repository."""
-    return subprocess.run(
-        ["gh", "pr", args[0], call.target, *args[1:], "--body", call.report_text],
-        cwd=call.repo_dir,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
-        env=call.env,
-    )
+class _GhSpawnError(RuntimeError):
+    """``gh`` could not be run to completion (missing binary, ``OSError`` or a timeout); the message is redacted."""
+
+
+def _ran(result: GhResult) -> GhResult:
+    """Return ``result``, or raise :class:`_GhSpawnError` so the posting ladder reports it as an exception."""
+    if result.error:
+        raise _GhSpawnError(result.error)
+    return result
 
 
 def _review_exception(flag: str, self_approval_fallback: bool, exc: Exception) -> ReviewAttempt:
@@ -124,7 +129,7 @@ def _review_exception(flag: str, self_approval_fallback: bool, exc: Exception) -
 def _submit_review(call: _GhCall, flag: str) -> ReviewAttempt:
     """Submit the official review once; on the HTTP 422 self-approval rejection, fall back once to ``--comment``."""
     try:
-        proc = _run_gh_pr(call, "review", flag)
+        proc = call.review(flag)
         if proc.returncode == 0:
             return ReviewAttempt(True, flag, True, False, review_submitted_output(proc.stdout))
         if flag != "--approve" or not is_self_approval_rejection(proc.stderr or ""):
@@ -135,7 +140,7 @@ def _submit_review(call: _GhCall, flag: str) -> ReviewAttempt:
     except Exception as exc:
         return _review_exception(flag, False, exc)
     try:
-        fallback = _run_gh_pr(call, "review", "--comment")
+        fallback = call.review("--comment")
     except Exception as exc:
         return _review_exception("--comment", True, exc)
     if fallback.returncode == 0:
@@ -149,7 +154,7 @@ def _post_discussion_comment(call: _GhCall, review: ReviewAttempt) -> CommentAtt
     if not review.attempted or review.success:
         return CommentAttempt(False, False, comment_not_attempted_output(review.attempted))
     try:
-        proc = _run_gh_pr(call, "comment")
+        proc = call.comment()
         if proc.returncode == 0:
             return CommentAttempt(True, True, comment_posted_output(proc.stdout))
         logger.warning("gh pr comment failed with returncode %s: %s", proc.returncode, proc.stderr)

@@ -5,6 +5,8 @@ import json
 import logging
 import os
 import secrets
+import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -13,7 +15,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from sandbox_executor import cli
+from sandbox_executor import cli, token_reduction
 from sandbox_executor.cli import (
     CONTAINER_CA_BUNDLE_PATH,
     NO_PROXY_HOSTS,
@@ -26,9 +28,11 @@ from sandbox_executor.cli import (
     setup_token_reduction_proxy,
     teardown_token_reduction_proxy,
 )
-from sandbox_executor.token_reduction import ca_generator
+from sandbox_executor.launcher import containers, proxy_attach, proxy_paths, sidecar
+from sandbox_executor.token_reduction import ca_generator, proxy_readiness
 from sandbox_executor.token_reduction.ca_generator import generate_root_ca
 
+from tests.fake_docker import fake_docker_runs
 from tests.leak_assertions import assert_no_fragment, make_probe
 
 _THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60
@@ -148,11 +152,11 @@ def _default_wire_log_dir_in_tmp(tmp_path, monkeypatch):
 @pytest.fixture
 def host_paths(tmp_path, monkeypatch):
     """Keep every host-side write (CA dir, proxy cache, wire logs) inside tmp_path and hand out a real CA."""
-    monkeypatch.setattr(cli.os.path, "expanduser", lambda path: str(tmp_path / "home" / path.lstrip("~/")))
+    monkeypatch.setattr(os.path, "expanduser", lambda path: str(tmp_path / "home" / path.lstrip("~/")))
     # The default wire-log and cache directories sit under the repository root; use a per-test one.
-    monkeypatch.setattr(cli, "_find_git_root", lambda *a, **k: str(tmp_path / "repo"))
+    monkeypatch.setattr(proxy_paths, "_find_git_root", lambda *a, **k: str(tmp_path / "repo"))
     ca_dir = tmp_path / "certs"
-    monkeypatch.setattr(cli, "generate_root_ca", lambda *a, **k: generate_root_ca(cert_dir=str(ca_dir)))
+    monkeypatch.setattr(token_reduction, "generate_root_ca", lambda *a, **k: generate_root_ca(cert_dir=str(ca_dir)))
     return tmp_path
 
 
@@ -281,9 +285,9 @@ def test_ca_generator_detects_poisoned_cache(tmp_path):
 
 
 def test_setup_proxy_addon_missing_raises_file_not_found(host_paths, monkeypatch):
-    monkeypatch.setattr(cli.os.path, "isfile", lambda path: False)
+    monkeypatch.setattr(os.path, "isfile", lambda path: False)
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    fake_docker_runs(monkeypatch, fake)
 
     with pytest.raises(FileNotFoundError) as excinfo:
         setup_token_reduction_proxy()
@@ -293,9 +297,9 @@ def test_setup_proxy_addon_missing_raises_file_not_found(host_paths, monkeypatch
 
 
 def test_setup_proxy_spawn_failure_raises_and_injects_no_dead_proxy(host_paths, monkeypatch):
-    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(os.path, "isfile", lambda path: True)
     fake = FakeDocker(spawn=_completed(returncode=125, stderr="docker: error: image not found"))
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    fake_docker_runs(monkeypatch, fake)
 
     with pytest.raises(RuntimeError) as excinfo:
         setup_token_reduction_proxy()
@@ -312,15 +316,15 @@ def test_setup_proxy_spawn_failure_redacts_dashboard_credentials(host_paths, mon
     pw_sample = make_probe("mitmweb")
     login_sample = make_probe("logintoken")
     monkeypatch.setenv("HOLON_MITM_WEB_PASSWORD", pw_sample)
-    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(os.path, "isfile", lambda path: True)
     # Hermetic: the real host port 8081 may already be bound, which would fail before docker runs.
-    monkeypatch.setattr(cli.socket.socket, "connect_ex", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(socket.socket, "connect_ex", lambda *args, **kwargs: 1)
     stderr = (
         f"Web server listening at http://127.0.0.1:8081/?token={login_sample}\n"
         f"error: invalid option web_password={pw_sample}\nbad value {pw_sample}"
     )
     fake = FakeDocker(spawn=_completed(returncode=1, stderr=stderr))
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    fake_docker_runs(monkeypatch, fake)
 
     with pytest.raises(RuntimeError) as excinfo:
         setup_token_reduction_proxy(mitm_web=True)
@@ -332,10 +336,10 @@ def test_setup_proxy_spawn_failure_redacts_dashboard_credentials(host_paths, mon
 
 
 def test_setup_proxy_readiness_failure_raises_without_proxy_envs(host_paths, monkeypatch):
-    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
-    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: False)
+    monkeypatch.setattr(os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: False)
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    fake_docker_runs(monkeypatch, fake)
 
     with pytest.raises(RuntimeError) as excinfo:
         setup_token_reduction_proxy()
@@ -347,9 +351,9 @@ def test_setup_proxy_readiness_failure_raises_without_proxy_envs(host_paths, mon
 
 
 def test_setup_proxy_missing_published_port_raises(host_paths, monkeypatch):
-    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(os.path, "isfile", lambda path: True)
     fake = FakeDocker(port_stdout="")
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    fake_docker_runs(monkeypatch, fake)
 
     with pytest.raises(RuntimeError) as excinfo:
         setup_token_reduction_proxy()
@@ -358,10 +362,10 @@ def test_setup_proxy_missing_published_port_raises(host_paths, monkeypatch):
 
 
 def test_setup_proxy_success_mounts_only_narrow_ro_cache(host_paths, monkeypatch):
-    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
-    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    monkeypatch.setattr(os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    fake_docker_runs(monkeypatch, fake)
 
     mounts, envs = setup_token_reduction_proxy()
 
@@ -405,10 +409,10 @@ def test_setup_proxy_success_mounts_only_narrow_ro_cache(host_paths, monkeypatch
 
 
 def test_setup_proxy_network_already_exists_is_not_owned(host_paths, monkeypatch):
-    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
-    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    monkeypatch.setattr(os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker(network_stderr="Error response from daemon: network with name x already exists")
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    fake_docker_runs(monkeypatch, fake)
 
     setup_token_reduction_proxy()
 
@@ -420,7 +424,7 @@ def test_setup_proxy_network_already_exists_is_not_owned(host_paths, monkeypatch
 
 def test_teardown_is_noop_when_this_run_created_nothing(monkeypatch):
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    fake_docker_runs(monkeypatch, fake)
 
     teardown_token_reduction_proxy()
 
@@ -444,7 +448,7 @@ def test_host_proxy_env_alone_never_rewrites_sandbox_networking(monkeypatch):
 def test_env_var_opt_in_attempts_configuration(monkeypatch, value):
     monkeypatch.setenv("HOLON_TOKEN_REDUCE", value)
     calls = []
-    monkeypatch.setattr(cli, "_attach_external_proxy", lambda: calls.append(True) or (["--network", "x"], {}))
+    monkeypatch.setattr(proxy_attach, "_attach_external_proxy", lambda: calls.append(True) or (["--network", "x"], {}))
 
     mounts, envs = get_token_reduction_mounts_and_envs(token_reduce=False)
 
@@ -456,7 +460,7 @@ def test_env_var_opt_in_attempts_configuration(monkeypatch, value):
 @pytest.mark.parametrize("value", ["", "0", "false", "off", "http_proxy"])
 def test_env_var_opt_in_requires_truthy_value(monkeypatch, value):
     monkeypatch.setenv("HOLON_TOKEN_REDUCE", value)
-    monkeypatch.setattr(cli, "_attach_external_proxy", lambda: pytest.fail("must not configure"))
+    monkeypatch.setattr(proxy_attach, "_attach_external_proxy", lambda: pytest.fail("must not configure"))
 
     assert get_token_reduction_mounts_and_envs(token_reduce=False) == ([], {})
 
@@ -464,9 +468,9 @@ def test_env_var_opt_in_requires_truthy_value(monkeypatch, value):
 def test_env_var_opt_in_unreachable_proxy_degrades_to_direct_egress(host_paths, monkeypatch, caplog):
     monkeypatch.setenv("HOLON_TOKEN_REDUCE", "1")
     monkeypatch.setenv("HOLON_PROXY_URL", "http://127.0.0.1:9")
-    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: False)
+    monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: False)
 
-    with caplog.at_level(logging.ERROR, logger="sandbox_executor.cli"):
+    with caplog.at_level(logging.ERROR, logger="sandbox_executor.launcher"):
         mounts, envs = get_token_reduction_mounts_and_envs(token_reduce=False)
 
     assert (mounts, envs) == ([], {})
@@ -478,8 +482,8 @@ def test_attach_external_proxy_probes_before_generating_a_ca(host_paths, monkeyp
     """An unreachable proxy must not leave a freshly generated CA behind on a direct-egress run."""
     events: list[str] = []
     monkeypatch.setenv("HOLON_PROXY_URL", "http://127.0.0.1:9")
-    monkeypatch.setattr(cli, "generate_root_ca", lambda: events.append("generate") or ("/host/ca.crt", "/host/ca.key"))
-    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: events.append("probe") or False)
+    monkeypatch.setattr(token_reduction, "generate_root_ca", lambda: events.append("generate") or ("/c.crt", "/c.key"))
+    monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: events.append("probe") or False)
 
     assert cli._attach_external_proxy() == ([], {})
     assert events == ["probe"]
@@ -489,9 +493,9 @@ def test_invalid_proxy_url_warning_masks_userinfo(host_paths, monkeypatch, caplo
     """An unparseable HOLON_PROXY_URL is echoed with its userinfo credential masked."""
     sample = make_probe()
     monkeypatch.setenv("HOLON_PROXY_URL", f"http://alice:{sample}@")
-    monkeypatch.setattr(cli, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
+    monkeypatch.setattr(token_reduction, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
 
-    with caplog.at_level(logging.WARNING, logger="sandbox_executor.cli"):
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.launcher"):
         assert cli._attach_external_proxy() == ([], {})
 
     assert "not a valid proxy URL" in caplog.text
@@ -503,9 +507,9 @@ def test_invalid_proxy_url_warning_masks_userinfo_in_any_scheme(host_paths, monk
     """A schemeless or non-http HOLON_PROXY_URL is echoed with its userinfo password masked."""
     sample = make_probe()
     monkeypatch.setenv("HOLON_PROXY_URL", form.format(v=sample))
-    monkeypatch.setattr(cli, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
+    monkeypatch.setattr(token_reduction, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
 
-    with caplog.at_level(logging.WARNING, logger="sandbox_executor.cli"):
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.launcher"):
         assert cli._attach_external_proxy() == ([], {})
 
     assert "not a valid proxy URL" in caplog.text
@@ -513,9 +517,9 @@ def test_invalid_proxy_url_warning_masks_userinfo_in_any_scheme(host_paths, monk
 
 
 def test_flag_opt_in_sidecar_failure_degrades_to_direct_egress(host_paths, monkeypatch, caplog):
-    monkeypatch.setattr(cli.os.path, "isfile", lambda path: False)
+    monkeypatch.setattr(os.path, "isfile", lambda path: False)
 
-    with caplog.at_level(logging.ERROR, logger="sandbox_executor.cli"):
+    with caplog.at_level(logging.ERROR, logger="sandbox_executor.launcher"):
         mounts, envs = get_token_reduction_mounts_and_envs(token_reduce=True)
 
     assert (mounts, envs) == ([], {})
@@ -529,11 +533,11 @@ def test_flag_opt_in_sidecar_failure_degrades_to_direct_egress(host_paths, monke
 
 
 def test_proxy_gateway_url_is_platform_correct(monkeypatch):
-    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    monkeypatch.setattr(sys, "platform", "darwin")
     assert _proxy_gateway_url() == "http://host.docker.internal:8080"
     assert _gateway_host_args() == []
 
-    monkeypatch.setattr(cli.sys, "platform", "linux")
+    monkeypatch.setattr(sys, "platform", "linux")
     assert _proxy_gateway_url() == "http://172.17.0.1:8080"
     assert _gateway_host_args() == ["--add-host", "host.docker.internal:host-gateway"]
 
@@ -587,22 +591,21 @@ def test_build_proxy_envs_emits_lowercase_proxy_vars_and_no_proxy():
 def _stub_run_preconditions(monkeypatch, teardowns: list[bool]) -> None:
     """Neutralise host discovery and record teardown calls for run_docker_container tests."""
     monkeypatch.setattr(
-        cli, "shutil", SimpleNamespace(which=lambda name: "/usr/bin/docker" if name == "docker" else None)
+        containers, "shutil", SimpleNamespace(which=lambda name: "/usr/bin/docker" if name == "docker" else None)
     )
-    monkeypatch.setattr(cli, "find_github_token", lambda: None)
+    monkeypatch.setattr("sandbox_executor.launcher.mounts.find_github_token", lambda: None)
     monkeypatch.setattr(cli.git_flow, "sandbox_worktree_mounts", lambda *args, **kwargs: [])
     monkeypatch.setattr(
-        cli,
-        "get_token_reduction_mounts_and_envs",
+        "sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs",
         lambda **kwargs: (["--network", "holon-net-x"], {"HTTP_PROXY": "http://holon-proxy-x:8080"}),
     )
-    monkeypatch.setattr(cli, "teardown_token_reduction_proxy", lambda: teardowns.append(True))
+    monkeypatch.setattr(sidecar, "teardown_token_reduction_proxy", lambda: teardowns.append(True))
 
 
 def test_run_docker_container_tears_down_sidecar_on_early_return(monkeypatch, tmp_path):
     teardowns: list[bool] = []
     _stub_run_preconditions(monkeypatch, teardowns)
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=lambda *a, **k: pytest.fail("docker must not run")))
+    fake_docker_runs(monkeypatch, lambda *a, **k: pytest.fail("docker must not run"))
 
     rc = cli.run_docker_container(
         "intent-creator",
@@ -623,7 +626,7 @@ def test_run_docker_container_tears_down_sidecar_when_body_raises(monkeypatch):
     def boom(agent_id):
         raise RuntimeError("session mount exploded")
 
-    monkeypatch.setattr(cli, "get_agent_session_mounts", boom)
+    monkeypatch.setattr("sandbox_executor.launcher.mounts.get_agent_session_mounts", boom)
 
     with pytest.raises(RuntimeError, match="session mount exploded"):
         cli.run_docker_container("planner", "holon/agent-pi", [], agent_id="pi")
@@ -634,7 +637,7 @@ def test_run_docker_container_tears_down_sidecar_when_body_raises(monkeypatch):
 def test_run_docker_container_tears_down_sidecar_after_the_run(monkeypatch):
     teardowns: list[bool] = []
     _stub_run_preconditions(monkeypatch, teardowns)
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=lambda *a, **k: _completed(returncode=7)))
+    fake_docker_runs(monkeypatch, lambda *a, **k: _completed(returncode=7))
 
     assert cli.run_docker_container("planner", "holon/agent-pi", [], agent_id="pi") == 7
     assert teardowns == [True]
@@ -1267,7 +1270,7 @@ def test_ringer_orchestrator():
 def test_cli_token_reduction_mounts(monkeypatch, tmp_path):
     temp_dir = str(tmp_path)
     monkeypatch.setattr(
-        "sandbox_executor.cli.setup_token_reduction_proxy",
+        "sandbox_executor.launcher.sidecar.setup_token_reduction_proxy",
         lambda: (
             ["--network", "holon-net", "-v", f"{temp_dir}/ca.crt:/container/ca.crt:ro"],
             {
@@ -2516,11 +2519,11 @@ def test_dump_wire_transaction_and_flush(tmp_path):
 
 
 def test_cli_mitm_web_configuration(host_paths, monkeypatch):
-    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
-    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
-    monkeypatch.setattr(cli.socket.socket, "connect_ex", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
+    monkeypatch.setattr(socket.socket, "connect_ex", lambda *args, **kwargs: 1)
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    fake_docker_runs(monkeypatch, fake)
 
     setup_token_reduction_proxy(mitm_web=True)
     run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
@@ -2592,12 +2595,12 @@ def test_extract_detailed_token_counts_sse_streams():
 
 
 def test_cli_mitm_web_custom_port(host_paths, monkeypatch):
-    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
-    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
-    monkeypatch.setattr(cli.socket.socket, "connect_ex", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
+    monkeypatch.setattr(socket.socket, "connect_ex", lambda *args, **kwargs: 1)
     monkeypatch.setenv("HOLON_MITM_WEB_PORT", "9090")
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    fake_docker_runs(monkeypatch, fake)
 
     setup_token_reduction_proxy(mitm_web=True)
     run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
@@ -2779,11 +2782,11 @@ def test_ab_measure_all_methods_endpoint_fallback(tmp_path):
 
 def test_cli_directory_permissions_0o775_and_socket_conflict(host_paths, monkeypatch):
     chmod_calls = []
-    monkeypatch.setattr(cli.os, "chmod", lambda path, mode: chmod_calls.append((path, mode)))
-    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
-    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    monkeypatch.setattr(os, "chmod", lambda path, mode: chmod_calls.append((path, mode)))
+    monkeypatch.setattr(os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    fake_docker_runs(monkeypatch, fake)
 
     # Test permissions 0o775
     setup_token_reduction_proxy(mitm_web=False)
@@ -2808,7 +2811,7 @@ def test_cli_directory_permissions_0o775_and_socket_conflict(host_paths, monkeyp
         def connect_ex(self, addr):
             return 0  # In use
 
-    monkeypatch.setattr(cli.socket, "socket", lambda *args, **kwargs: InUseSocket())
+    monkeypatch.setattr(socket, "socket", lambda *args, **kwargs: InUseSocket())
     with pytest.raises(RuntimeError, match="already in use"):
         setup_token_reduction_proxy(mitm_web=True)
 
@@ -2929,7 +2932,6 @@ def test_ab_measure_pricing_and_cache_hit_gate(tmp_path):
 
 def test_setup_token_reduction_proxy_chmod_oserror_fallback(host_paths, monkeypatch):
     """Verifies that OSError on os.chmod is logged and does not halt proxy startup."""
-    from sandbox_executor import cli
 
     original_chmod = os.chmod
 
@@ -2938,11 +2940,11 @@ def test_setup_token_reduction_proxy_chmod_oserror_fallback(host_paths, monkeypa
             raise OSError("Permission denied (mocked)")
         return original_chmod(path, mode)
 
-    monkeypatch.setattr(cli.os, "chmod", fake_chmod)
-    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
-    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    monkeypatch.setattr(os, "chmod", fake_chmod)
+    monkeypatch.setattr(os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    fake_docker_runs(monkeypatch, fake)
 
     # Must complete without raising OSError
     mounts, envs = setup_token_reduction_proxy(mitm_web=False)
@@ -3349,10 +3351,10 @@ def test_ab_measure_local_cache_hit_token_accounting(tmp_path):
 def test_setup_token_reduction_proxy_relative_paths(host_paths, monkeypatch):
     monkeypatch.setenv("WIRE_LOG_DIR", "custom/rel_wire_logs")
     monkeypatch.setenv("CACHE_DIR", "custom/rel_cache")
-    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
-    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
+    monkeypatch.setattr(os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    fake_docker_runs(monkeypatch, fake)
 
     setup_token_reduction_proxy(mitm_web=False)
     teardown_token_reduction_proxy()
@@ -3408,11 +3410,11 @@ def test_mitm_web_password_support(host_paths, monkeypatch):
     from sandbox_executor.cli import setup_token_reduction_proxy, teardown_token_reduction_proxy
 
     monkeypatch.setenv("HOLON_MITM_WEB_PASSWORD", "secretpass123")
-    monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
-    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
-    monkeypatch.setattr(cli.socket.socket, "connect_ex", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
+    monkeypatch.setattr(socket.socket, "connect_ex", lambda *args, **kwargs: 1)
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    fake_docker_runs(monkeypatch, fake)
 
     setup_token_reduction_proxy(mitm_web=True)
     teardown_token_reduction_proxy()
@@ -3472,7 +3474,7 @@ def test_check_wire_log_disk_usage(tmp_path, capsys):
 def test_detect_holon_coherence_explicit_opt_out(monkeypatch, opt_out_val):
     """Explicit opt-out must return False immediately even if socket is active."""
     monkeypatch.setenv("HOLON_TOKEN_REDUCE", opt_out_val)
-    monkeypatch.setattr(cli.socket, "create_connection", lambda *args, **kwargs: True)
+    monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: True)
     assert cli.detect_holon_coherence(token_reduce=True) is False
     assert cli.detect_holon_coherence(token_reduce=False) is False
 
@@ -3481,7 +3483,7 @@ def test_detect_holon_coherence_tcp_listening(monkeypatch):
     """When proxy is listening on TCP, detection returns True unless opted out."""
     monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
     monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
-    monkeypatch.setattr(cli.socket, "create_connection", lambda *args, **kwargs: True)
+    monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: True)
     assert cli.detect_holon_coherence(token_reduce=False) is True
 
 
@@ -3489,15 +3491,15 @@ def test_detect_holon_coherence_docker_image(monkeypatch):
     """When TCP socket fails but docker image is present, returns True."""
     monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
     monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
-    monkeypatch.setattr(cli.socket, "create_connection", MagicMock(side_effect=OSError("connection refused")))
-    monkeypatch.setattr(cli.shutil, "which", lambda cmd: "/usr/bin/docker" if cmd == "docker" else None)
+    monkeypatch.setattr(socket, "create_connection", MagicMock(side_effect=OSError("connection refused")))
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/docker" if cmd == "docker" else None)
 
     def mock_run(cmd, *args, **kwargs):
         if "inspect" in cmd and "holon-coherence:latest" in cmd:
             return SimpleNamespace(returncode=0, stdout="[{}]", stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr="error")
 
-    monkeypatch.setattr(cli.subprocess, "run", mock_run)
+    monkeypatch.setattr(subprocess, "run", mock_run)
     assert cli.detect_holon_coherence(token_reduce=False) is True
 
 
@@ -3505,11 +3507,9 @@ def test_detect_holon_coherence_cli_binary(monkeypatch):
     """When TCP and docker fail but CLI binary is found on PATH, returns True."""
     monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
     monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
-    monkeypatch.setattr(cli.socket, "create_connection", MagicMock(side_effect=OSError("connection refused")))
+    monkeypatch.setattr(socket, "create_connection", MagicMock(side_effect=OSError("connection refused")))
     monkeypatch.setattr(
-        cli.shutil,
-        "which",
-        lambda cmd: "/usr/local/bin/holon-coherence" if cmd == "holon-coherence" else None,
+        shutil, "which", lambda cmd: "/usr/local/bin/holon-coherence" if cmd == "holon-coherence" else None
     )
     assert cli.detect_holon_coherence(token_reduce=False) is True
 
@@ -3518,8 +3518,8 @@ def test_detect_holon_coherence_all_negative(monkeypatch):
     """When all tiers fail, returns False."""
     monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
     monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
-    monkeypatch.setattr(cli.socket, "create_connection", MagicMock(side_effect=OSError("connection refused")))
-    monkeypatch.setattr(cli.shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(socket, "create_connection", MagicMock(side_effect=OSError("connection refused")))
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
     assert cli.detect_holon_coherence(token_reduce=False) is False
 
 
@@ -3552,7 +3552,7 @@ def test_detect_holon_coherence_raw_delimiter_password_never_raises_or_leaks(mon
     monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
     monkeypatch.setenv("HOLON_PROXY_URL", form.format(a=first, b=second))
     probed: list[tuple[str, int]] = []
-    monkeypatch.setattr(cli.socket, "create_connection", lambda host_port, **kwargs: probed.append(host_port) or True)
+    monkeypatch.setattr(socket, "create_connection", lambda host_port, **kwargs: probed.append(host_port) or True)
 
     with caplog.at_level(logging.DEBUG, logger="sandbox_executor"):
         assert cli.detect_holon_coherence(token_reduce=False) is True
@@ -3571,10 +3571,10 @@ def test_detect_holon_coherence_unparseable_proxy_url_warns_masked(monkeypatch, 
     monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
     monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
     monkeypatch.setenv("HOLON_PROXY_URL", form.format(a=first, b=second))
-    monkeypatch.setattr(cli.socket, "create_connection", lambda *args, **kwargs: pytest.fail("must not probe"))
-    monkeypatch.setattr(cli.shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: pytest.fail("must not probe"))
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
 
-    with caplog.at_level(logging.WARNING, logger="sandbox_executor.cli"):
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.launcher"):
         assert cli.detect_holon_coherence(token_reduce=False) is False
 
     assert "not a valid proxy URL" in caplog.text
@@ -3609,8 +3609,8 @@ def test_detect_holon_coherence_digit_head_password_warning_withholds_value(monk
     monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
     monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
     monkeypatch.setenv("HOLON_PROXY_URL", proxy_url)
-    monkeypatch.setattr(cli.socket, "create_connection", lambda *args, **kwargs: pytest.fail("must not probe"))
-    monkeypatch.setattr(cli.shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: pytest.fail("must not probe"))
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
 
     with caplog.at_level(logging.DEBUG, logger="sandbox_executor"):
         assert cli.detect_holon_coherence(token_reduce=False) is False
@@ -3630,8 +3630,8 @@ def test_attach_external_proxy_digit_head_password_messages_withhold_value(  # n
     head = _digit_head(digits)
     proxy_url = form.format(head=head, rest=make_probe("r"))
     monkeypatch.setenv("HOLON_PROXY_URL", proxy_url)
-    monkeypatch.setattr(cli, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
-    monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: pytest.fail("must not probe"))
+    monkeypatch.setattr(token_reduction, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
+    monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: pytest.fail("must not probe"))
 
     with caplog.at_level(logging.DEBUG, logger="sandbox_executor"):
         assert cli._attach_external_proxy() == ([], {})
@@ -3654,9 +3654,9 @@ def test_valid_proxy_url_is_probed_without_an_invalid_url_warning(monkeypatch, c
     monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
     monkeypatch.setenv("HOLON_PROXY_URL", form.format(a=make_probe("a")))
     probed: list[tuple[str, int]] = []
-    monkeypatch.setattr(cli.socket, "create_connection", lambda host_port, **kwargs: probed.append(host_port) or True)
+    monkeypatch.setattr(socket, "create_connection", lambda host_port, **kwargs: probed.append(host_port) or True)
 
-    with caplog.at_level(logging.WARNING, logger="sandbox_executor.cli"):
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.launcher"):
         assert cli.detect_holon_coherence(token_reduce=False) is True
 
     assert probed == [("127.0.0.1", 3128)]
@@ -3667,9 +3667,9 @@ def test_proxy_unreachable_fallback_direct_egress(host_paths, monkeypatch, caplo
     """When proxy TCP probe fails, get_token_reduction_mounts_and_envs returns empty mounts/envs and logs warning."""
     monkeypatch.setenv("HOLON_TOKEN_REDUCE", "1")
     monkeypatch.setenv("HOLON_PROXY_URL", "http://127.0.0.1:8080")
-    monkeypatch.setattr(cli, "_wait_for_proxy", MagicMock(side_effect=OSError("unreachable")))
+    monkeypatch.setattr(proxy_readiness, "wait_for_proxy", MagicMock(side_effect=OSError("unreachable")))
 
-    with caplog.at_level(logging.WARNING, logger="sandbox_executor.cli"):
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.launcher"):
         mounts, envs = cli.get_token_reduction_mounts_and_envs(token_reduce=False)
 
     assert mounts == []

@@ -14,11 +14,13 @@ from sandbox_executor.flow import (
     FlowStage,
     StageResult,
     StageStatus,
+    probe_ci_checks,
     resolve_ci_registration_timeout,
     run_review_loop,
     run_review_stage,
 )
 
+from tests.flow.github.fake_github import FakeGitHub, spawn_failure
 from tests.flow.helpers import _verified_diff
 from tests.flow.lookup_patch import patch_lookup_sites
 from tests.flow.sleep_patch import scoped_sleep_patch
@@ -92,7 +94,11 @@ class TestUnmeasuredTestsStopEarly:
             scoped_sleep_patch("sandbox_executor.flow.github.ci", sleep),
             scoped_sleep_patch("sandbox_executor.flow.review.loop", sleep),
             # No real ``git rev-parse``: keep the test hermetic and fast.
-            patch("sandbox_executor.flow.review.local_tests._ReviewLocalTests._head", lambda self: self._head_sha),
+            patch("sandbox_executor.flow.review.local_tests._ReviewLocalTests._head", lambda _self: "stage3-head"),
+            patch(
+                "sandbox_executor.flow.review.local_tests._default_pr_head",
+                return_value="stage3-head" if gh else None,
+            ),
             _verified_diff(),
         ):
             res = run_review_loop(ctx, auto_pr=False, max_iterations=25, **kwargs)
@@ -141,7 +147,7 @@ class TestUnmeasuredTestsStopEarly:
         assert len(rows) <= 8
 
     def test_recorded_result_skips_the_registration_wait(self, tmp_path):
-        ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": 1.0})
+        ctx = self._ctx(tmp_path, {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 1.0})
 
         res, probe, sleep = self._loop(ctx, lambda *a, **k: dict(self.LOCAL), ci_registration_timeout=600.0)
 
@@ -220,7 +226,7 @@ class TestUnmeasuredTestsStopEarly:
         assert "reported failures" not in res.error
 
     def test_stage4_keeps_the_failure_message_for_measured_failures(self, tmp_path):
-        ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": 0.5})
+        ctx = self._ctx(tmp_path, {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 0.5})
         loop_res = {
             "consensus": {"approved": False, "status": "rejected"},
             "mergeability": {"is_dirty": False},
@@ -298,7 +304,9 @@ class TestUnmeasuredTestsStopEarly:
             assert "could not verify the execution diff" in summaries[0]["summary"]
 
     GREEN_EVIDENCE: ClassVar[list[Any]] = [
-        pytest.param({"exit_code": 0, "test_pass_rate": 1.0}, None, id="stage3-pass-rate-1.0"),
+        pytest.param(
+            {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 1.0}, None, id="stage3-pass-rate-1.0"
+        ),
         pytest.param(
             {"exit_code": 0, "test_pass_rate": None},
             {"source": "github_cli", "all_passed": True, "total": 1, "passed": 1, "pending": 0},
@@ -363,3 +371,44 @@ class TestUnmeasuredTestsStopEarly:
         assert res.payload["halted_for_human"] is False
         assert res.error.startswith("Autonomous review halted: Refusing to create or update a PR for ")
         assert "could not verify the execution diff (fetch failed)" in res.error
+
+
+class TestProbeCiChecks:
+    """``probe_ci_checks`` reads ``gh pr checks`` through the injected adapter and falls back to local tests."""
+
+    def test_checks_are_summarised_from_github(self):
+        checks = [
+            {"name": "unit", "bucket": "pass", "state": "SUCCESS"},
+            {"name": "lint", "bucket": "fail", "state": "FAILURE"},
+        ]
+        github = FakeGitHub(checks=checks)
+        res = probe_ci_checks("/repo", " 42 ", timeout=12.5, github=github)
+        assert github.calls == [("ci_checks", ("42", 12.5))]
+        assert (res["source"], res["total"], res["passed"], res["failed"], res["all_passed"]) == (
+            "github_cli",
+            2,
+            1,
+            1,
+            False,
+        )
+
+    def test_default_timeout_is_thirty_seconds(self):
+        github = FakeGitHub(checks=[{"name": "unit", "bucket": "pass", "state": "SUCCESS"}])
+        probe_ci_checks("/repo", "feature/x", github=github)
+        assert github.calls == [("ci_checks", ("feature/x", 30.0))]
+
+    @pytest.mark.parametrize(
+        "checks",
+        [None, (0, "", ""), (0, "not json", ""), (0, json.dumps({"not": "a list"}), ""), spawn_failure()],
+        ids=["no-checks", "empty", "invalid-json", "not-a-list", "could-not-run"],
+    )
+    def test_unusable_github_answers_fall_back_to_local_tests(self, checks):
+        github = FakeGitHub(checks=checks)
+        assert probe_ci_checks("/repo", "42", github=github)["source"] == "local_tests"
+        assert github.methods() == ["ci_checks"]
+
+    @pytest.mark.parametrize(("available", "target"), [(False, "42"), (True, "  ")])
+    def test_missing_gh_or_target_never_asks_github(self, available, target):
+        github = FakeGitHub(available=available, checks=[{"name": "unit", "bucket": "pass"}])
+        assert probe_ci_checks("/repo", target, github=github)["source"] == "local_tests"
+        assert github.calls == []

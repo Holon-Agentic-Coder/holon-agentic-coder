@@ -26,6 +26,7 @@ from sandbox_executor.flow.child_progress import has_recorded_decomposition
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.resume_guard import _resume_context_error
+from sandbox_executor.flow.stage_status import REVIEW_BOUNDARY_STATUSES
 from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
 from sandbox_executor.flow.stages.children import resume_children
 from sandbox_executor.flow.stages.decomposition import _sub_intent_depth_error
@@ -357,20 +358,27 @@ class PipelineEngine:
                 self.context.log(f"Pipeline halted due to failure in stage '{result.stage.value}'.")
                 break
 
-            # Only Stage 4 (the review consensus halt before merge) may halt; no earlier stage waits for a human.
-            if result.status == StageStatus.HALTED_FOR_HUMAN:
-                if stage == FlowStage.REVIEW:
-                    self._calibrate_after_consensus_halt()
-                self.context.log(
-                    f"Pipeline safely halted for human intervention at stage '{stage.value}'. "
-                    "Halting execution without merging."
-                )
+            # Stage 4 ends at the consensus boundary before merge; no earlier stage halts or waits for human.
+            if result.status in REVIEW_BOUNDARY_STATUSES:
+                self._handle_review_boundary(stage, result)
                 break
 
         return self.context.stage_results
 
+    def _handle_review_boundary(self, stage: FlowStage, result: StageResult) -> None:
+        """Handle calibrate dispatch and logging when Stage 4 ends at the consensus boundary."""
+        if stage == FlowStage.REVIEW:
+            self._calibrate_after_consensus_halt()
+
+        verb = (
+            f"finished at the merge boundary: review approved, PR ready for maintainer merge (stage '{stage.value}')."
+            if result.status == StageStatus.APPROVED
+            else f"safely halted for human intervention at stage '{stage.value}'. Halting execution without merging."
+        )
+        self.context.log(f"Pipeline {verb}")
+
     def _calibrate_after_consensus_halt(self) -> None:
-        """Run Stage 5 (or record it as skipped by --skip-calibrate) after Stage 4 halted at consensus approval."""
+        """Run Stage 5 (or record it as skipped by --skip-calibrate) after Stage 4 ended at the consensus boundary."""
         if self.context.skip_calibrate:
             self._skip_calibration()
         elif self.context.auto_calibrate:
@@ -412,8 +420,8 @@ def run_flow_pipeline(
     finally:
         if context.token_reduce:
             try:
-                from sandbox_executor.cli import teardown_token_reduction_proxy
+                from sandbox_executor.launcher import sidecar
 
-                teardown_token_reduction_proxy()
+                sidecar.teardown_token_reduction_proxy()
             except Exception:
                 pass

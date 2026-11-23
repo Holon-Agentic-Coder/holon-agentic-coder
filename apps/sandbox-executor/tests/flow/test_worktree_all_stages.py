@@ -23,7 +23,7 @@ from sandbox_executor.flow.review.resolver import _push_resolver_head
 from sandbox_executor.flow.stages.intent import run_intent_stage
 from sandbox_executor.review_target import ReviewTarget
 
-from tests.flow.helpers import FakeRoleAgents, _configure_identity, _dispatch_context, _git
+from tests.flow.helpers import FakeRoleAgents, _configure_identity, _dispatch_context, _git, stage4_halts_at_consensus
 from tests.test_host_worktree_sandbox import _host_writable, _mount_pairs
 
 ROLES = ["intent-creator", "planner", "executor", "review-loop"]
@@ -237,7 +237,8 @@ def test_every_stage_completes_when_the_worktrees_origin_is_an_ssh_url(ssh_origi
     agents = FakeRoleAgents(tmp_path, origin)
     ctx = _dispatch_context(host, agents)
 
-    results = PipelineEngine(ctx).run()
+    with stage4_halts_at_consensus():
+        results = PipelineEngine(ctx).run()
 
     for stage in ("intent", "plan", "execute"):
         assert results[stage].status == StageStatus.SUCCESS, results[stage].error
@@ -253,7 +254,8 @@ def test_the_review_resolver_head_is_pushed_by_the_host_through_an_ssh_origin(ss
     host, origin = ssh_origin_host
     agents = FakeRoleAgents(tmp_path, origin)
     ctx = _dispatch_context(host, agents)
-    assert PipelineEngine(ctx).run()["execute"].status == StageStatus.SUCCESS
+    with stage4_halts_at_consensus():
+        assert PipelineEngine(ctx).run()["execute"].status == StageStatus.SUCCESS
     branch = ctx.execution_branch
     old_sha = _git(host, "rev-parse", f"refs/heads/{branch}")
     # The resolver container commits a fix in the mounted worktree; the host pushes that commit.
@@ -273,7 +275,8 @@ def test_a_hostile_resolver_head_sha_is_refused_and_a_diverged_one_is_never_forc
     host, origin = ssh_origin_host
     agents = FakeRoleAgents(tmp_path, origin)
     ctx = _dispatch_context(host, agents)
-    assert PipelineEngine(ctx).run()["execute"].status == StageStatus.SUCCESS
+    with stage4_halts_at_consensus():
+        assert PipelineEngine(ctx).run()["execute"].status == StageStatus.SUCCESS
     branch = ctx.execution_branch
     old_sha = _git(host, "rev-parse", f"refs/heads/{branch}")
     target = ReviewTarget(raw=branch, head_branch=branch, head_sha=old_sha)

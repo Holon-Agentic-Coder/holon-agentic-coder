@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-70e3b28c",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-22T23:37:40.546739+00:00",
+  "updated_ts": "2026-11-22T23:37:40.546739+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1794893314-d27bc56e-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794891082-beadspil/P-1794892061-52a8e074-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 1 iteration(s): resolver failed: Resolver turn failed: Resolver agent exited with code 1; output tail: You've hit your session limit \u00b7 resets 8:40am (UTC); not approved: reviewer 2 final verdict CHANGES_REQUESTED, reviewer 2 Security role CHANGES; final verdicts: Reviewer 1 APPROVED (0/0/0); Reviewer 2 CHANGES_REQUESTED (0/0/1); Reviewer 2 Security role CHANGES; Reviewer 3 APPROVED (0/0/0)",
+    "symptoms": []
+  }
+}

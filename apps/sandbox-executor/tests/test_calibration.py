@@ -1013,7 +1013,7 @@ class TestCLICalibrateCommand(unittest.TestCase):
             mock_run_calibrate.assert_called_once_with(
                 execution_branch="I-123/P-456/E-789/_",
                 target_worktree=".",
-                json_output=True,
+                json_output=False,
                 skip_commit=False,
             )
 

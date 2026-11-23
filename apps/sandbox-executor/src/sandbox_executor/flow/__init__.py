@@ -65,8 +65,11 @@ _LAZY_EXPORTS: dict[str, str] = {
         "_sync_local_execution_refs _track_local_branch fast_forward_local_branch"
     ),
     "sandbox_executor.flow.github.ci": (
-        "CI_REGISTRATION_TIMEOUT_ENV_VAR CI_REGISTRATION_TIMEOUT_SECONDS _ci_green _extract_failed_ci_check_names "
-        "_wait_for_ci_registration probe_ci_checks resolve_ci_registration_timeout"
+        "CI_REGISTRATION_TIMEOUT_ENV_VAR CI_REGISTRATION_TIMEOUT_SECONDS _wait_for_ci_registration probe_ci_checks "
+        "resolve_ci_registration_timeout"
+    ),
+    "sandbox_executor.flow.github.ci_policy": (
+        "_ci_green _extract_failed_ci_check_names local_tests_ci_status summarise_ci_checks"
     ),
     "sandbox_executor.flow.github.ci_final_head": "format_final_head_ci",
     "sandbox_executor.flow.github.ci_reverify": "rerun_note",
@@ -76,9 +79,18 @@ _LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.github.merge": "BranchMerge merge_branch_detailed",
     "sandbox_executor.flow.github.merge_method": "choose_merge_flag lookup_merge_flag",
+    "sandbox_executor.flow.github.mergeability_policy": (
+        "gh_view_verdict local_error_result merge_tree_verdict mergeability_result missing_ref_result "
+        "not_a_repository_result"
+    ),
     "sandbox_executor.flow.github.pr": (
-        "_resolve_commit_ref check_pr_mergeability create_or_update_pr format_review_git_trailers "
-        "generate_semantic_pr_metadata"
+        "_resolve_commit_ref check_pr_mergeability create_or_update_pr format_review_git_trailers"
+    ),
+    "sandbox_executor.flow.github.pr_metadata": "generate_semantic_pr_metadata",
+    "sandbox_executor.flow.github.review_policy": (
+        "CommentAttempt ReviewAttempt comment_failed_output comment_not_attempted_output comment_posted_output "
+        "gh_unavailable_outcome is_self_approval_rejection posting_outcome review_failed_output review_flag "
+        "review_submitted_output"
     ),
     "sandbox_executor.flow.github.review_post": "post_pr_review_consensus",
     "sandbox_executor.flow.host_remote": (
@@ -138,12 +150,15 @@ _LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.review.verdict": "review_loop_approved review_summary_lines",
     "sandbox_executor.flow.review.workspace": "HOST_REVIEW_REFUSAL reviewers_sandboxed",
+    "sandbox_executor.flow.stage5": "Stage5Outcome Stage5Steps run_stage5 standalone_context",
+    "sandbox_executor.flow.stage5_ledger": "already_reconciled recorded_verdicts",
+    "sandbox_executor.flow.stage5_verdict": "resolve_execution_verdict",
     "sandbox_executor.flow.stage_conflict_resolution": "ConflictKind classify_conflicts resolve_classified_conflicts",
     "sandbox_executor.flow.stage_conflicts": (
         "ConflictDetection check_and_resolve_stage_conflicts detect_stage_conflicts"
     ),
     "sandbox_executor.flow.stages.calibrate": (
-        "_commit_stage5_promoted_artifacts _commit_stage5_reconciliation run_calibrate_stage"
+        "_commit_stage5_promoted_artifacts _commit_stage5_reconciliation run_calibrate_stage stage5_steps"
     ),
     "sandbox_executor.flow.stages.children": "_PR_URL_RE _child_context _child_review_pr",
     "sandbox_executor.flow.stages.decomposition": "PlanDecomposition _run_decomposed_plan _sub_intent_depth_error",
@@ -220,6 +235,7 @@ __all__ = [
     "CheckpointStore",
     "CiWaitPolicy",
     "CiWaitResult",
+    "CommentAttempt",
     "ConflictDetection",
     "ConflictKind",
     "ConflictResolutionError",
@@ -246,8 +262,11 @@ __all__ = [
     "RerunSeams",
     "ResolverInput",
     "ResolverOutcome",
+    "ReviewAttempt",
     "SalvageError",
     "SalvageResult",
+    "Stage5Outcome",
+    "Stage5Steps",
     "StageResult",
     "StageStatus",
     "WorktreeCheckpoint",
@@ -332,6 +351,7 @@ __all__ = [
     "admission_lock_path",
     "admission_stage_failure",
     "admitted_record",
+    "already_reconciled",
     "answered_by_id",
     "answered_by_text",
     "base_branch_name",
@@ -346,6 +366,9 @@ __all__ = [
     "choose_merge_flag",
     "classify_conflicts",
     "command_failure",
+    "comment_failed_output",
+    "comment_not_attempted_output",
+    "comment_posted_output",
     "consult_knowledge",
     "create_or_update_pr",
     "decide_admission",
@@ -368,6 +391,8 @@ __all__ = [
     "gate_ci_flags",
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
+    "gh_unavailable_outcome",
+    "gh_view_verdict",
     "has_inline_answer",
     "head_move_since_calibration",
     "held_execution_failure",
@@ -380,18 +405,25 @@ __all__ = [
     "is_calibration_path",
     "is_marked_open",
     "is_pending_only",
+    "is_self_approval_rejection",
     "is_terminal_verdict",
     "leftover_paths",
     "list_base_files",
     "load_checkpoint",
     "local_blocked_waiters",
+    "local_error_result",
     "local_in_flight_flows",
+    "local_tests_ci_status",
     "lookup_merge_flag",
     "merge_branch_detailed",
     "merge_findings",
+    "merge_tree_verdict",
+    "mergeability_result",
     "migrate_checkpoint_data",
+    "missing_ref_result",
     "new_local_child_branches",
     "next_poll_interval",
+    "not_a_repository_result",
     "older_ready_waiter",
     "older_waiter_flows",
     "open_flow_pull_requests",
@@ -404,6 +436,7 @@ __all__ = [
     "plan_refresh_stage_failure",
     "post_pr_review_consensus",
     "post_stale_signal",
+    "posting_outcome",
     "prepare_calibrated_branch",
     "probe_ci_checks",
     "publish_calibration",
@@ -421,6 +454,7 @@ __all__ = [
     "record_review_action",
     "record_starting_branch",
     "recorded_test_pass_rate",
+    "recorded_verdicts",
     "redact_agent_secrets",
     "refresh_already_recorded",
     "refresh_due",
@@ -437,9 +471,13 @@ __all__ = [
     "resolve_carried_first",
     "resolve_ci_registration_timeout",
     "resolve_classified_conflicts",
+    "resolve_execution_verdict",
     "restore_starting_branch",
     "review_calibration_freshness",
+    "review_failed_output",
+    "review_flag",
     "review_loop_approved",
+    "review_submitted_output",
     "review_summary_lines",
     "reviewers_sandboxed",
     "root_intent",
@@ -452,14 +490,18 @@ __all__ = [
     "run_review_loop",
     "run_review_loop_cli",
     "run_review_stage",
+    "run_stage5",
     "salvage_for_resume",
     "salvage_leftovers",
     "save_admission",
     "save_checkpoint",
     "serialize_open",
     "settle_pending_ci",
+    "stage5_steps",
     "stage_success",
     "stale_calibrated_refs",
+    "standalone_context",
+    "summarise_ci_checks",
     "superseding_failure_row",
     "sync_conflict_result",
     "sync_execution_ref",

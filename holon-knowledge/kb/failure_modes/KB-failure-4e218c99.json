@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-4e218c99",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-22T23:37:40.554240+00:00",
+  "updated_ts": "2026-11-22T23:37:40.554240+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1794893355-e26c5787-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794891078-s5rerun/P-1794891094-eede5d91-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 2 iteration(s): not approved: reviewer 1 final verdict FAILED, reviewer 2 final verdict FAILED, reviewer 3 final verdict FAILED; final verdicts: Reviewer 1 FAILED (0/0/0); Reviewer 2 FAILED (0/0/0); Reviewer 3 FAILED (0/0/0)",
+    "symptoms": []
+  }
+}

@@ -317,10 +317,9 @@ between host and container nor a concurrent run under the same parent branch can
 the same review loop and calibration code as `holon review-loop` and `holon calibrate`. Because Stages 1-3 leave the
 host checkout where `holon flow` started, Stages 4 and 5 each first check out the adopted execution branch (and fail if
 it cannot, for example because local changes would be overwritten; nothing is discarded), so the review loop's ledger
-rows and the Stage 5 calibration report and ledger reconciliation land on that branch even under `--skip-review` or a
-resume that enters at Stage 5. The conflict probes of Stages 2-5 name the branch each stage works from (Stage 1 has none
-yet), and the review records the execution branch's tip, freshly fetched from `origin`, as the reviewed commit, never
-the operator's `HEAD`.
+rows and the Stage 5 calibration report and ledger reconciliation land on that branch even on a resume that enters at
+Stage 5. The conflict probes of Stages 2-5 name the branch each stage works from (Stage 1 has none yet), and the review
+records the execution branch's tip, freshly fetched from `origin`, as the reviewed commit, never the operator's `HEAD`.
 
 Stage 5 also syncs with `origin` before it reads or branches anything, because containers and out-of-band conflict
 resolution push to `origin/<execution_branch>` without moving the local ref (`flow/calibrate_sync.py` owns this):
@@ -363,9 +362,8 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
     next child start, so it is cut from a tip that already holds every earlier child's merge or squash commit. The first
     child that fails or is not ready marks its progress `failed`; one refused only by the merge guard stays
     `review_done` with a `merge_error`, so a resume retries just the merge. Either way the parent's Stage 3 fails,
-    naming the child; later children do not start. Under `--skip-review` no child could reach consensus approval, so a
-    decomposed Stage 3 (fresh or resumed) fails before any child is dispatched and asks for a re-run without the flag.
-    `--dry-run` and `--skip-push` likewise fail at the first child (no consensus approval, no PR number to merge).
+    naming the child; later children do not start.
+    `--dry-run` and `--skip-push` fail at the first child (no consensus approval, no PR number to merge).
   - **The combined PR.** After the last child merged, Stage 3 merges the plan branch into the parent execution branch
     with a merge commit and appends a superseding `decomposed` summary row with `integrated: true`, the `plan_branch`
     and the list of `children` (slug, intent and execution branch, PR number and URL, merge commit). The parent's own

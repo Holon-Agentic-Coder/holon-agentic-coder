@@ -95,11 +95,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         ),
     )
     parser.add_argument(
-        "--skip-review",
-        action="store_true",
-        help="Skip Stage 4 (review loop) and proceed to calibration.",
-    )
-    parser.add_argument(
         "--skip-calibrate",
         action="store_true",
         help="Skip Stage 5 (post-execution calibration report generation).",
@@ -248,8 +243,6 @@ def _update_flow_context(
         context.dry_run = True
     if args.skip_push:
         context.skip_push = True
-    if args.skip_review:
-        context.skip_review = True
     if args.skip_calibrate:
         context.skip_calibrate = True
         context.auto_calibrate = False
@@ -281,7 +274,6 @@ def _build_flow_context(
             model=flow_model,
             dry_run=args.dry_run,
             skip_push=args.skip_push,
-            skip_review=args.skip_review,
             skip_calibrate=args.skip_calibrate,
             auto_calibrate=not args.skip_calibrate,
             max_review_iterations=args.max_review_iterations,

@@ -18,19 +18,19 @@ The Holon Flow pipeline executes sequentially through five distinct lifecycle st
 |  [Stage 1: Intent] --> [Stage 2: Plan] --> [Stage 3: Execute]                    |
 |                                                  |                                |
 |                                                  v                                |
-|                           +------------- [Stage 4: Review] <---+                  |
-|                           |                      |             | (revisions)      |
-|          (--skip-review)  |       [Consensus]    v             |                  |
-|                           |             [Stage 5: Calibrate] --+                  |
-|                           |                      |                                |
-|                           |                      v                                |
-|                           |              +---------------+                        |
-|                           |              | Human-Only    |                        |
-|                           |              | Merge Boundary|                        |
-|                           |              | (PR Ready)    |                        |
-|                           |              +---------------+                        |
-|                           |                      |                                |
-|                           +--------------------->v                                |
+|                                          [Stage 4: Review] <---+                  |
+|                                                  |             | (revisions)      |
+|                                   [Consensus]    v             |                  |
+|                                         [Stage 5: Calibrate] --+                  |
+|                                                  |                                |
+|                                                  v                                |
+|                                          +---------------+                        |
+|                                          | Human-Only    |                        |
+|                                          | Merge Boundary    |                        |
+|                                          | (PR Ready)    |                        |
+|                                          +---------------+                        |
+|                                                  |                                |
+|                                                  v                                |
 |                                             [Completed]                           |
 +-----------------------------------------------------------------------------------+
 ```
@@ -79,7 +79,7 @@ The Holon Flow pipeline executes sequentially through five distinct lifecycle st
   > (`halted_for_human=False`, `[REVIEW APPROVED]`) and advances to Stage 5 calibration before leaving the PR ready for
   > maintainer merge. Autonomous merging to `main` is strictly prohibited; `StageStatus.HALTED_FOR_HUMAN`
   > (`[SAFETY HALT]`) is reserved for dry-run halts and manual-intervention boundaries.
-- **Bypass**: Can be bypassed using `--skip-review` for rapid prototyping or emergency out-of-band testing.
+- **No Bypass**: Stage 4 cannot be skipped; every execution goes through the review loop.
 
 ### Stage 5: Post-Execution Calibration (`FlowStage.CALIBRATE`)
 
@@ -111,7 +111,7 @@ The pipeline provides crash resilience and state preservation via atomic checkpo
   ./holon flow --checkpoint .holon/flow/checkpoint-my-task.json --from-stage review
   ```
 
-- **CLI Overrides**: Explicit CLI flags (such as `--skip-review`, `--skip-calibrate`, `--token-reduce`) override loaded
+- **CLI Overrides**: Explicit CLI flags (such as `--skip-calibrate`, `--skip-push`, `--token-reduce`) override loaded
   checkpoint defaults during resumption.
 
 ---
@@ -137,7 +137,6 @@ The pipeline provides crash resilience and state preservation via atomic checkpo
 | `--json`                  | Flag       | `False`                   | Output pipeline status and stage payloads in structured JSON format to stdout.        |
 | `--repo-dir`              | String     | `.`                       | Target repository directory path.                                                     |
 | `--skip-push`             | Flag       | `False`                   | Skip pushing local git branches to remote origin during stages.                       |
-| `--skip-review`           | Flag       | `False`                   | Skip Stage 4 (PR review loop) and proceed directly to calibration.                    |
 | `--skip-calibrate`        | Flag       | `False`                   | Skip Stage 5 (post-execution calibration report generation).                          |
 | `--max-review-iterations` | Integer    | `25`                      | Maximum autonomous review loop iterations in Stage 4. Must be `>= 1` (default: `25`). |
 | `--token-reduce`          | Flag       | `False`                   | Enable mitmproxy token reduction sidecar for caching and context compression.         |
@@ -153,10 +152,10 @@ The pipeline provides crash resilience and state preservation via atomic checkpo
 ./holon flow intents/my-feature.json
 ```
 
-### Rapid Prototype Run (Skip Review & Calibration)
+### Rapid Prototype Run (Skip Calibration)
 
 ```bash
-./holon flow intents/quick-fix.json --skip-review --skip-calibrate
+./holon flow intents/quick-fix.json --skip-calibrate
 ```
 
 ### Dry-Run Validation

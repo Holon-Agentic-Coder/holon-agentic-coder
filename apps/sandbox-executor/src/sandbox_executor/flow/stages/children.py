@@ -68,7 +68,6 @@ def _child_context(context: FlowContext, intent_data: dict[str, Any]) -> FlowCon
         auto_calibrate=context.auto_calibrate,
         token_reduce=context.token_reduce,
         skip_push=context.skip_push,
-        skip_review=context.skip_review,
         skip_calibrate=context.skip_calibrate,
         max_review_iterations=context.max_review_iterations,
         review_ensemble_size=context.review_ensemble_size,
@@ -287,16 +286,8 @@ def run_children(context: FlowContext, start_time: str, payload: dict[str, Any])
     Reconciling first (origin wins) means even a fresh Stage 3 entered without the parent checkpoint
     (``--from-stage execute``) never re-dispatches a child that already has an execution branch or PR. An exception
     that escaped to the pipeline would store a payload-less failure and overwrite the checkpointed
-    ``children_progress``, so it is turned into a Stage 3 failure that keeps the entries' last status instead. Under
-    ``--skip-review`` no child could reach consensus approval and merge, so the stage is refused first, before any
-    origin lookup or progress change, and keeps its own message.
+    ``children_progress``, so it is turned into a Stage 3 failure that keeps the entries' last status instead.
     """
-    if context.skip_review:
-        error = (
-            "Execute stage failed: the plan was decomposed, but --skip-review skips each sub-intent's Stage 4, so no "
-            "child could reach consensus and be merged into the plan branch; re-run without --skip-review."
-        )
-        return _stage_failure(context, FlowStage.EXECUTE, start_time, error, **payload)
     try:
         for note in reconcile_with_origin(context.target_worktree, payload[PROGRESS_KEY], str(payload["plan_branch"])):
             context.log(f"Stage 3: {note} (origin wins).")

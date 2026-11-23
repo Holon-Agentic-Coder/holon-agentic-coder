@@ -52,7 +52,6 @@ def _migrate_v0_to_v1(data: dict[str, Any]) -> dict[str, Any]:
     context.setdefault("auto_calibrate", True)
     context.setdefault("token_reduce", False)
     context.setdefault("skip_push", False)
-    context.setdefault("skip_review", False)
     context.setdefault("skip_calibrate", False)
     context.setdefault("max_review_iterations", 25)
     context.setdefault("mitm_web", False)

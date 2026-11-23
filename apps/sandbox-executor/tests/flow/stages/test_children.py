@@ -30,9 +30,7 @@ from tests.flow.helpers import SUB_INTENT_LIST, BudgetRoleAgents, _budget_contex
 
 def _decomposed_context(host: Path, origin: Path, tmp_path: Path) -> tuple[FlowContext, BudgetRoleAgents]:
     agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")])
-    ctx = _budget_context(host, agents, 5.0)
-    ctx.skip_review = False
-    return ctx, agents
+    return _budget_context(host, agents, 5.0), agents
 
 
 def _is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
@@ -469,29 +467,6 @@ class TestChildLoopWithStubbedPipelines:
         assert res.status == StageStatus.SUCCESS
         assert [c.intent_data["slug"] for c in children] == ["second"]
         assert [e["status"] for e in res.payload["children_progress"]] == ["merged", "merged"]
-
-    def test_skip_review_refuses_a_decomposed_plan_before_any_child_is_dispatched(self):
-        res, _ctx, children = self._run_children(
-            {"slug": "parent"}, self._ROW, intent_branch="I-1-parent/_", skip_review=True
-        )
-
-        assert res.status == StageStatus.FAILED
-        assert "--skip-review skips each sub-intent's Stage 4" in (res.error or "")
-        assert children == []
-        # The recorded decomposition survives for a resume without the flag.
-        assert [e["status"] for e in res.payload["children_progress"]] == ["pending"]
-
-    def test_skip_review_refusal_does_no_origin_lookup_and_keeps_its_message(self):
-        reconcile = Mock(side_effect=RuntimeError("origin down"))
-        res, _ctx, children = self._run_children(
-            {"slug": "parent"}, self._ROW, intent_branch="I-1-parent/_", skip_review=True, reconcile=reconcile
-        )
-
-        reconcile.assert_not_called()
-        assert res.status == StageStatus.FAILED
-        assert "--skip-review skips each sub-intent's Stage 4" in (res.error or "")
-        assert "origin down" not in (res.error or "")
-        assert children == []
 
     def test_a_failing_checkpoint_save_in_the_exception_path_keeps_the_original_failure(self):
         with (

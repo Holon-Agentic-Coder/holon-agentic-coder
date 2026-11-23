@@ -79,14 +79,13 @@ class TestFlowResumptionAndErrorHandling:
         # Following stages must not have executed
         assert "plan" not in results
 
-    def test_pipeline_engine_skip_review(self, tmp_path):
+    def test_pipeline_engine_runs_review_in_dry_run(self, tmp_path):
         ledger_dir = tmp_path / "holon-knowledge" / "ledger"
         ledger_dir.mkdir(parents=True)
 
         ctx = FlowContext(
             repo_dir=str(tmp_path),
-            intent_data={"slug": "skip-rev-flow", "goal": "Skip review"},
-            skip_review=True,
+            intent_data={"slug": "review-runs-flow", "goal": "Review always runs"},
             auto_calibrate=True,
             dry_run=True,
         )
@@ -95,10 +94,61 @@ class TestFlowResumptionAndErrorHandling:
         results = engine.run()
 
         assert "review" in results
-        assert results["review"].status == StageStatus.SKIPPED
-        assert results["review"].payload.get("skipped_by_flag") is True
-        assert "calibrate" in results
-        assert results["calibrate"].status == StageStatus.SUCCESS
+        assert results["review"].status != StageStatus.SKIPPED
+        assert results["review"].payload.get("skipped_by_flag") is None
+        assert results["review"].status == StageStatus.HALTED_FOR_HUMAN
+
+    def test_stage4_failure_halts_before_calibration(self, tmp_path):
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={"slug": "review-fails", "goal": "Review fails"},
+            intent_branch="I-1-review-fails/_",
+            plan_branch="I-1-review-fails/P-2-plan/_",
+            execution_branch="I-1-review-fails/P-2-plan/E-3-exec/_",
+            dry_run=True,
+        )
+        failed = StageResult(stage=FlowStage.REVIEW, status=StageStatus.FAILED, error="Review loop stalled")
+
+        with (
+            patch("sandbox_executor.flow.pipeline.run_review_stage", return_value=failed) as review,
+            patch("sandbox_executor.flow.pipeline.run_calibrate_stage") as calibrate,
+        ):
+            results = PipelineEngine(ctx, from_stage=FlowStage.REVIEW).run()
+
+        review.assert_called_once()
+        calibrate.assert_not_called()
+        assert results["review"].status == StageStatus.FAILED
+        assert results["review"].error == "Review loop stalled"
+        assert "calibrate" not in results
+        assert any("Pipeline halted due to failure in stage 'review'" in line for line in ctx.logs)
+
+    def test_legacy_checkpoint_with_skip_review_resumes_into_stage4(self, tmp_path):
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={"slug": "legacy-skip-review", "goal": "Legacy checkpoint"},
+            intent_branch="I-1-legacy-skip-review/_",
+            plan_branch="I-1-legacy-skip-review/P-2-plan/_",
+            execution_branch="I-1-legacy-skip-review/P-2-plan/E-3-exec/_",
+            skip_calibrate=True,
+            dry_run=True,
+        )
+        for stage in (FlowStage.INTENT, FlowStage.PLAN, FlowStage.EXECUTE):
+            ctx.stage_results[stage.value] = StageResult(stage=stage, status=StageStatus.SUCCESS)
+        path = Path(save_checkpoint(ctx))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["context"]["skip_review"] = True  # The key a checkpoint written before --skip-review was removed carries.
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+        loaded = load_checkpoint(str(path))
+        assert loaded.current_stage == FlowStage.REVIEW
+        assert "skip_review" not in loaded.context.to_dict()
+        halted = StageResult(stage=FlowStage.REVIEW, status=StageStatus.HALTED_FOR_HUMAN)
+        with patch("sandbox_executor.flow.pipeline.run_review_stage", return_value=halted) as review:
+            results = PipelineEngine(loaded.context, from_stage=loaded.current_stage, checkpoint_path=str(path)).run()
+
+        review.assert_called_once()
+        assert results["review"].status == StageStatus.HALTED_FOR_HUMAN
+        assert results["review"].payload.get("skipped_by_flag") is None
 
     def test_pipeline_engine_skip_calibrate(self, tmp_path):
         ledger_dir = tmp_path / "holon-knowledge" / "ledger"
@@ -118,24 +168,6 @@ class TestFlowResumptionAndErrorHandling:
         assert "calibrate" in results
         assert results["calibrate"].status == StageStatus.SKIPPED
         assert results["calibrate"].payload.get("skipped_by_flag") is True
-
-    def test_pipeline_engine_skip_review_and_calibrate(self, tmp_path):
-        ledger_dir = tmp_path / "holon-knowledge" / "ledger"
-        ledger_dir.mkdir(parents=True)
-
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            intent_data={"slug": "skip-both-flow", "goal": "Skip both"},
-            skip_review=True,
-            skip_calibrate=True,
-            dry_run=True,
-        )
-
-        engine = PipelineEngine(ctx)
-        results = engine.run()
-
-        assert results["review"].status == StageStatus.SKIPPED
-        assert results["calibrate"].status == StageStatus.SKIPPED
 
     def test_review_stage_records_max_review_iterations(self, tmp_path):
         ctx = FlowContext(

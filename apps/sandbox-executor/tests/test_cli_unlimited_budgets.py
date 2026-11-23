@@ -19,7 +19,7 @@ _WORKTREE_MOUNTS = ["-v", f"/work/flow-x:{SANDBOX_WORKSPACE_MOUNT}"]
 
 class TestUnlimitedDockerHandDown(unittest.TestCase):
     @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
-    @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
+    @patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_run_docker_container_hands_down_an_unlimited_stage(

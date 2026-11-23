@@ -9,12 +9,14 @@ import json
 import os
 import secrets
 import stat
+import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-from sandbox_executor import cli, local_llm
+from sandbox_executor import cli, local_llm, token_reduction
 from sandbox_executor.agent_runner import get_runner
+from sandbox_executor.launcher import proxy_paths, sidecar
 
 from tests.env_file_capture import DockerEnvFileRecorder
 from tests.leak_assertions import assert_no_fragment, make_probe
@@ -417,11 +419,11 @@ class TestLauncherIntegration(unittest.TestCase):
         with (
             patch("shutil.which", side_effect=lambda name: "/usr/bin/docker" if name == "docker" else None),
             patch("subprocess.run", side_effect=docker) as mock_run,
-            patch.object(cli, "get_agent_session_mounts", side_effect=mounts or (lambda agent: [])),
+            patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", side_effect=mounts or (lambda _: [])),
             patch.object(cli.git_flow, "sandbox_worktree_mounts", return_value=[]),
-            patch.object(cli, "get_token_reduction_mounts_and_envs", return_value=([], dict(tr_envs or {}))),
-            patch.object(cli.tempfile, "mkdtemp", return_value=mkdtemp_dir or self.default_agent_dir),
-            patch.object(cli.shutil, "rmtree") as mock_rmtree,
+            patch.object(sidecar, "get_token_reduction_mounts_and_envs", return_value=([], dict(tr_envs or {}))),
+            patch.object(tempfile, "mkdtemp", return_value=mkdtemp_dir or self.default_agent_dir),
+            patch("shutil.rmtree") as mock_rmtree,
             patch.dict(os.environ, merged_env, clear=True),
         ):
             code = cli.run_docker_container(
@@ -441,12 +443,12 @@ class TestLauncherIntegration(unittest.TestCase):
         code, args, _ = self._run({})
         self.assertEqual(code, 0)
         # Emitted on Linux; on Docker Desktop the name already resolves and the flag is a no-op.
-        if cli.sys.platform not in ("darwin", "win32"):
+        if sys.platform not in ("darwin", "win32"):
             self.assertIn("--add-host", args)
             self.assertIn("host.docker.internal:host-gateway", args)
 
     def test_gateway_host_mapping_not_duplicated_with_token_reduce(self):
-        with patch.object(cli.sys, "platform", "linux"):
+        with patch.object(sys, "platform", "linux"):
             code, args, _ = self._run({}, token_reduce=True)
             self.assertEqual(code, 0)
             self.assertEqual(args.count("host.docker.internal:host-gateway"), 1)
@@ -457,12 +459,14 @@ class TestLauncherIntegration(unittest.TestCase):
         # directory; keep them in this test's own directory.
         root = os.path.dirname(self.default_agent_dir)
         with (
-            patch.object(cli, "_find_git_root", return_value=os.path.join(root, "repo")),
-            patch.object(cli.os.path, "expanduser", lambda path: os.path.join(root, "home", path.lstrip("~/"))),
-            patch.object(cli, "generate_root_ca", return_value=("/tmp/mock-ca.crt", "/tmp/mock-ca.key")),
-            patch.object(cli, "_mitm_proxy_ca_paths", return_value=("/tmp/mock-ca.pem", "/tmp/mock-ca-cert.pem")),
-            patch.object(cli.os.path, "isfile", lambda path: True),
-            patch.object(cli, "_wait_for_proxy", lambda *args, **kwargs: True),
+            patch.object(proxy_paths, "_find_git_root", return_value=os.path.join(root, "repo")),
+            patch.object(os.path, "expanduser", lambda path: os.path.join(root, "home", path.lstrip("~/"))),
+            patch.object(token_reduction, "generate_root_ca", return_value=("/tmp/mock-ca.crt", "/tmp/mock-ca.key")),
+            patch.object(
+                proxy_paths, "_mitm_proxy_ca_paths", return_value=("/tmp/mock-ca.pem", "/tmp/mock-ca-cert.pem")
+            ),
+            patch.object(os.path, "isfile", lambda path: True),
+            patch("sandbox_executor.token_reduction.proxy_readiness.wait_for_proxy", lambda *a, **k: True),
             patch("subprocess.run") as mock_subproc,
         ):
             mock_subproc.return_value = MagicMock(returncode=0, stdout="8080\n")

@@ -605,7 +605,7 @@ def test_f_review_loop_dispatch_runs_one_docker_run_with_no_volume_and_no_root_i
 
     env = {key: value for key, value in os.environ.items() if key in ("PATH", "HOME") or key.startswith("GIT_")}
     with (
-        patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[]),
+        patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=[]),
         patch("subprocess.run", side_effect=record),
         patch("shutil.which", side_effect=lambda name: "/usr/bin/docker" if name == "docker" else real_which(name)),
         patch.dict(os.environ, env, clear=True),
@@ -798,7 +798,7 @@ def _docker_runs(
         else patch("sandbox_executor.git_flow.sandbox_worktree_mounts", return_value=list(mounts))
     )
     with (
-        patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"]),
+        patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=["-v", "/mock:/mock"]),
         patch("subprocess.run", side_effect=docker),
         patch("shutil.which", return_value="/usr/bin/docker"),
         patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": "/home/dev/own-checkout"}, clear=True),

@@ -23,13 +23,18 @@ import json
 import logging
 import os
 import secrets
+import shutil
+import socket
+import subprocess
 import urllib.error
 from collections.abc import Callable, Iterator
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
 import pytest
-from sandbox_executor import cli, local_llm
+from sandbox_executor import cli, local_llm, token_reduction
+from sandbox_executor.launcher import env_files
+from sandbox_executor.token_reduction import proxy_readiness
 
 FRAGMENT_LEN = 4
 _LETTERS = "FGJQVZ"
@@ -134,7 +139,7 @@ def _proxy_attach(value: str) -> list[str]:
                 raise outcome
             return outcome
 
-        with patch.object(cli, "_wait_for_proxy", wait), _captured({"HOLON_PROXY_URL": value}) as out:
+        with patch.object(proxy_readiness, "wait_for_proxy", wait), _captured({"HOLON_PROXY_URL": value}) as out:
             cli._attach_external_proxy()
         texts.extend(out)
     return texts
@@ -285,9 +290,9 @@ def test_no_credential_fragment_in_any_message(entry_point, prefix, monkeypatch)
 
     Each test runs one URL prefix's slice of the matrix, so the parallel runner can spread the slices across workers.
     """
-    monkeypatch.setattr(cli.shutil, "which", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(cli.socket, "create_connection", _refuse)
-    monkeypatch.setattr(cli, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
+    monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(socket, "create_connection", _refuse)
+    monkeypatch.setattr(token_reduction, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
     # `_captured` swaps in an exact environment per case; starting from an empty one keeps each swap cheap.
     for name in list(os.environ):
         monkeypatch.delenv(name)
@@ -389,10 +394,12 @@ class _DockerRecorder:
 
 def _patch_docker_host(monkeypatch) -> None:
     """Stand in a docker binary and empty mount helpers, so `run_docker_container` reaches the echo."""
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
-    monkeypatch.setattr(cli, "get_agent_session_mounts", lambda agent_id: [])
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr("sandbox_executor.launcher.mounts.get_agent_session_mounts", lambda agent_id: [])
     monkeypatch.setattr(cli.git_flow, "sandbox_worktree_mounts", lambda *args, **kwargs: [])
-    monkeypatch.setattr(cli, "get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {}))
+    monkeypatch.setattr(
+        "sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {})
+    )
 
 
 def _delimiter_texts(
@@ -444,7 +451,7 @@ def _run_delimiter_case(value: str) -> tuple[int, _DockerRecorder, list[str], di
     stdout = io.StringIO()
     with (
         patch.dict(os.environ, env),
-        patch.object(cli.subprocess, "run", docker),
+        patch.object(subprocess, "run", docker),
         contextlib.redirect_stdout(stdout),
         contextlib.redirect_stderr(io.StringIO()),
     ):
@@ -490,7 +497,7 @@ def test_env_file_path_sharing_a_part_run_is_not_a_leak(monkeypatch, tmp_path_fa
     parts = _colliding_parts()
     env_dir = tmp_path_factory.mktemp(f"env-{parts[0][:FRAGMENT_LEN].lower()}")
     os.chmod(env_dir, 0o700)
-    monkeypatch.setattr(cli, "env_file_dir", lambda: str(env_dir))
+    monkeypatch.setattr(env_files, "env_file_dir", lambda: str(env_dir))
     value = DELIMITER_FORMS["http"].format(c="[".join(parts))
     _, docker, _, _, echo = _run_delimiter_case(value)
     _assert_collision_forced(docker.argv, echo, str(env_dir), parts[0])
@@ -580,10 +587,12 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
     probe = PreflightResult(
         status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
     )
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
-    monkeypatch.setattr(cli, "get_agent_session_mounts", lambda agent_id: [])
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr("sandbox_executor.launcher.mounts.get_agent_session_mounts", lambda agent_id: [])
     monkeypatch.setattr(cli.git_flow, "sandbox_worktree_mounts", lambda *args, **kwargs: [])
-    monkeypatch.setattr(cli, "get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {}))
+    monkeypatch.setattr(
+        "sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {})
+    )
     for name in list(os.environ):
         monkeypatch.delenv(name)
     failures: list[str] = []
@@ -596,7 +605,7 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
         with (
             patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
             patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
-            patch.object(cli.subprocess, "run", docker),
+            patch.object(subprocess, "run", docker),
             _captured({**env, "HOME": str(tmp_path)}) as out,
         ):
             env_out = io.StringIO()
@@ -656,7 +665,7 @@ def _run_forwarded_value(name: str, value: str) -> tuple[int, _DockerRecorder, l
     stdout = io.StringIO()
     with (
         patch.dict(os.environ, {name: value, "HOME": os.environ["HOME"]}, clear=True),
-        patch.object(cli.subprocess, "run", docker),
+        patch.object(subprocess, "run", docker),
         contextlib.redirect_stdout(stdout),
         contextlib.redirect_stderr(io.StringIO()),
     ):
@@ -727,7 +736,7 @@ def test_doctor_survives_unparseable_base_url(slot, monkeypatch):  # noqa: C901,
     """
     from sandbox_executor.preflight import PreflightResult, PreflightStatus
 
-    monkeypatch.setattr(cli.shutil, "which", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: None)
     probe = PreflightResult(
         status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
     )

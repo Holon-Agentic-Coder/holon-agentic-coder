@@ -275,7 +275,7 @@ def build_probe_docker_cmd(
     The container keeps its normal entrypoint with no ``HOLON_ROLE``, so the dispatcher maps ``HOLON_AGENT_KEY`` onto
     the vendor variables and then executes the runner binary directly. The mounts, gateway host entries and network
     isolation come from the same helpers ``run_docker_container`` uses, and so does the env-file routing rule
-    (``cli.is_env_file_item``): every ``HOLON_*`` value and any other credential-bearing value are returned
+    (``env_files.is_env_file_item``): every ``HOLON_*`` value and any other credential-bearing value are returned
     separately, never as ``-e KEY=VALUE`` items that ``ps`` and ``/proc/<pid>/cmdline`` can read. A ``HOLON_*`` value
     no env-file line can carry is named by a bare ``-e NAME`` and set in the docker client env by the caller.
 
@@ -288,16 +288,11 @@ def build_probe_docker_cmd(
 
     Returns:
         The docker argv, free of credential values, and the variables kept off it (empty when there are none): the
-        caller hands the ``cli.is_passthrough_env_item`` ones over in the docker client env and the rest with
-        ``cli.write_env_file`` and ``--env-file``.
+        caller hands the ``env_files.is_passthrough_env_item`` ones over in the docker client env and the rest with
+        ``env_files.write_env_file`` and ``--env-file``.
     """
     from sandbox_executor.agent_runner import RETIRED_ENV_VARS, runners
-    from sandbox_executor.cli import (
-        _gateway_host_args,
-        build_network_isolation_args,
-        is_env_file_item,
-        is_passthrough_env_item,
-    )
+    from sandbox_executor.launcher import env_files, mounts, proxy_paths
 
     agent_id = normalise_agent_id(agent)
     cmd = ["docker", "run", "--rm", "-i", "--name", container_name]
@@ -317,16 +312,16 @@ def build_probe_docker_cmd(
     env[SKIP_ENV_VAR] = "1"
     secret_env: dict[str, str] = {}
     for key, value in sorted(env.items()):
-        if is_passthrough_env_item(key, value):
+        if env_files.is_passthrough_env_item(key, value):
             secret_env[key] = value
             cmd.extend(["-e", key])
-        elif is_env_file_item(key, value):
+        elif env_files.is_env_file_item(key, value):
             secret_env[key] = value
         else:
             cmd.extend(["-e", f"{key}={value}"])
-    cmd.extend(_gateway_host_args())
+    cmd.extend(proxy_paths._gateway_host_args())
     cmd.extend(session_mounts)
-    cmd.extend(build_network_isolation_args())
+    cmd.extend(mounts.build_network_isolation_args())
     cmd.append(image)
     cmd.extend(_reference_secret_args(runners[agent_id].compose_cmd(model, PROBE_PROMPT), secret_env))
     return cmd, secret_env
@@ -427,10 +422,10 @@ def run_preflight_probe(  # noqa: PLR0911
             PreflightStatus.UNKNOWN, agent, model, image, hint="'docker' CLI command not found. Please install Docker."
         )
 
-    from sandbox_executor.cli import get_agent_session_mounts
+    from sandbox_executor.launcher import env_files, mounts
 
     try:
-        session_mounts = get_agent_session_mounts(agent)
+        session_mounts = mounts.get_agent_session_mounts(agent)
     except SystemExit:
         return _result(
             PreflightStatus.NOT_LOGGED_IN,
@@ -452,17 +447,15 @@ def run_preflight_probe(  # noqa: PLR0911
     container_name = f"holon-preflight-{uuid.uuid4().hex[:12]}"
     docker_cmd, secret_env = build_probe_docker_cmd(agent, model, image, container_name, session_mounts)
 
-    from sandbox_executor.cli import env_file_dir, is_passthrough_env_item, sweep_stale_env_files, write_env_file
-
-    passthrough_env = {key: value for key, value in secret_env.items() if is_passthrough_env_item(key, value)}
+    passthrough_env = {key: value for key, value in secret_env.items() if env_files.is_passthrough_env_item(key, value)}
     file_env = {key: value for key, value in secret_env.items() if key not in passthrough_env}
     if passthrough_env:
         run = functools.partial(run, env={**os.environ, **passthrough_env})
     env_file: str | None = None
     if file_env:
         try:
-            sweep_stale_env_files(env_file_dir())
-            env_file = write_env_file(file_env)
+            env_files.sweep_stale_env_files(env_files.env_file_dir())
+            env_file = env_files.write_env_file(file_env)
         except (ValueError, OSError) as exc:
             return _result(PreflightStatus.UNKNOWN, agent, model, image, output=str(exc))
         # Right after `docker run`, as in run_docker_container; docker reads the file on the client side.

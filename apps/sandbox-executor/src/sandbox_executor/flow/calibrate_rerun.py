@@ -1,13 +1,13 @@
 """Stage 5 rerun on a moved pull-request head: detection, bounded rerun and the stale signal.
 
-A calibration report covers exactly one execution head. When the pull request head moves after Stage 5 (a conflict
-merge with main, a resolver push, a review-loop re-run), the report no longer names the head that merges, so the two
-re-entrant trigger sites (the pipeline's Stage 5 block and the review loop's report-back gate) call into this module:
-it detects the move, keeps one stale comment on the pull request through ``calibrate_stale_warning`` (superseded
-once the report is fresh) and reruns Stage 5, bounded by ``MAX_RERUN_ATTEMPTS``. Invariant: a calibration commit is
-never, by itself, a head move — Stage 5's own report, reconciliation and promotion commits are discounted, so a rerun
-can never trigger another rerun (the no-loop guarantee). Merging stays with the human maintainer; this module only
-refreshes the report a human reads.
+A calibration report covers exactly one execution head. When the pull request's own change moves after Stage 5 (a
+resolver push, a review-loop re-run, a conflict merge that touches the PR's files), the report no longer covers the
+head that merges, so the two re-entrant trigger sites (the pipeline's Stage 5 block and the review loop's report-back
+gate) call into this module: it detects the move (``calibrate_staleness``), reruns Stage 5, bounded by
+``MAX_RERUN_ATTEMPTS``, and keeps one stale comment on the pull request through ``calibrate_stale_warning`` only when
+the stale report stays. Invariant: a calibration commit, a ledger-only commit and a merge of the target that leaves
+the PR-own change unchanged are never, by themselves, a head move, so a rerun can never trigger another rerun (the
+no-loop guarantee). Merging stays with the human maintainer; this module only refreshes the report a human reads.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from sandbox_executor.calibration import parse_evaluated_commit_sha, read_git_file
-from sandbox_executor.flow.calibrate_rebuild import is_ancestor, is_calibration_commit
+from sandbox_executor.flow.base_files import base_branch_name
 from sandbox_executor.flow.calibrate_stale_warning import (
     StaleRange,
     WarningSeams,
@@ -27,6 +27,7 @@ from sandbox_executor.flow.calibrate_stale_warning import (
     resolve_stale,
     warn_stale,
 )
+from sandbox_executor.flow.calibrate_staleness import HeadMoveCheck, head_move_since_calibration
 from sandbox_executor.flow.context import FlowContext, StageResult, StageStatus
 from sandbox_executor.flow.github.approval_invalidation import (
     CommentEditor,
@@ -42,16 +43,6 @@ from sandbox_executor.plan_paths import calibration_report_candidates, split_pla
 logger = logging.getLogger(__name__)
 
 MAX_RERUN_ATTEMPTS = 2
-
-
-@dataclass(frozen=True)
-class HeadMoveCheck:
-    """Whether the pull-request head moved past the head the calibration report evaluated, and why."""
-
-    moved: bool
-    evaluated_sha: str = ""
-    current_head: str = ""
-    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -78,41 +69,18 @@ def _warning_seams(seams: RerunSeams | None) -> WarningSeams:
     return WarningSeams(comments=seams.comments, poster=seams.poster, editor=seams.editor)
 
 
-def _same_commit(first: str, second: str) -> bool:
-    """Whether two SHAs (either may be abbreviated) name the same commit."""
-    return bool(first and second) and (first.startswith(second) or second.startswith(first))
-
-
-def head_move_since_calibration(repo_dir: str, evaluated_sha: str, current_head: str) -> HeadMoveCheck:
-    """Whether ``current_head`` moved past ``evaluated_sha``, discounting trailing calibration-only commits.
-
-    An evaluated SHA that is not an ancestor of the head (a force push or rewritten history) is always a move, and
-    so is any merge commit or non-calibration commit between the two. A range git cannot walk counts as a move
-    (conservative), with the reason naming the gap.
-    """
-    if not evaluated_sha or not current_head:
-        return HeadMoveCheck(False, evaluated_sha, current_head, "the evaluated SHA or the current head is unknown")
-    if _same_commit(evaluated_sha, current_head):
-        return HeadMoveCheck(False, evaluated_sha, current_head, "the head is the evaluated commit")
-    if not is_ancestor(repo_dir, evaluated_sha, current_head):
-        return HeadMoveCheck(True, evaluated_sha, current_head, "the evaluated commit is not an ancestor of the head")
-    listed = run_git(["rev-list", f"{evaluated_sha}..{current_head}", "--"], cwd=repo_dir, check=False)
-    if listed.returncode != 0 or not isinstance(listed.stdout, str):
-        return HeadMoveCheck(True, evaluated_sha, current_head, "the commits past the evaluated commit are unreadable")
-    foreign = [sha for sha in listed.stdout.split() if not is_calibration_commit(repo_dir, sha)]
-    if foreign:
-        reason = f"{len(foreign)} non-calibration commit(s) landed after the evaluated commit"
-        return HeadMoveCheck(True, evaluated_sha, current_head, reason)
-    return HeadMoveCheck(False, evaluated_sha, current_head, "only calibration commits follow the evaluated commit")
+def _fetch_tolerantly(repo_dir: str, branch: str) -> None:
+    """Refresh ``origin/<branch>``; a failed fetch is only logged, the staleness check then reads the ref it has."""
+    try:
+        fetch_base(repo_dir, branch, DEFAULT_REMOTE)
+    except HostRemoteError as exc:
+        logger.debug("Could not fetch origin/%s before the staleness check: %s", branch, exc)
 
 
 def _origin_head(context: FlowContext) -> str:
     """The origin head of the execution branch after a tolerant fetch; the local ref, then '', when origin lacks it."""
     branch, repo_dir = context.execution_branch or "", context.target_worktree
-    try:
-        fetch_base(repo_dir, branch, DEFAULT_REMOTE)
-    except HostRemoteError as exc:
-        logger.debug("Could not fetch origin/%s before the staleness check: %s", branch, exc)
+    _fetch_tolerantly(repo_dir, branch)
     for ref in (f"refs/remotes/{DEFAULT_REMOTE}/{branch}", f"refs/heads/{branch}"):
         res = run_git(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=repo_dir, check=False)
         if res.returncode == 0 and isinstance(res.stdout, str) and res.stdout.strip():
@@ -158,7 +126,9 @@ def report_staleness(context: FlowContext, seams: RerunSeams | None = None) -> H
     evaluated = parse_evaluated_commit_sha(content)
     if not evaluated:
         return HeadMoveCheck(False, current_head=current, reason=f"no evaluated commit SHA in {report_rel}")
-    return head_move_since_calibration(context.target_worktree, evaluated, current)
+    target = base_branch_name(context)
+    _fetch_tolerantly(context.target_worktree, target)  # a target ref that is behind reads as stale, never as fresh
+    return head_move_since_calibration(context.target_worktree, evaluated, current, target)
 
 
 def _safe_staleness(context: FlowContext, seams: RerunSeams | None) -> HeadMoveCheck:

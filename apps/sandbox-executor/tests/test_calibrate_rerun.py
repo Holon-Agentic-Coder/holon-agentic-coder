@@ -31,6 +31,8 @@ from sandbox_executor.flow.calibrate_stale_warning import (
     stale_body,
 )
 from sandbox_executor.flow.github.approval_invalidation import CommentRecord
+from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of
+from sandbox_executor.flow.review.conflict_merge import _merge_target_ledger_only
 from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
 
 from tests.test_calibrate_sync import CALIBRATED, EXEC, commit_file, git, make_repos
@@ -79,7 +81,7 @@ def test_calibration_commits_alone_are_not_a_move(repo: Path) -> None:
     head = git(repo, "rev-parse", "HEAD")
     check = head_move_since_calibration(str(repo), evaluated, head)
     assert check.moved is False
-    assert "only calibration commits" in check.reason
+    assert check.reason == "only calibration and ledger commits landed after the evaluated commit"
 
 
 def test_a_foreign_commit_between_the_calibration_commits_is_a_move(repo: Path) -> None:
@@ -89,7 +91,9 @@ def test_a_foreign_commit_between_the_calibration_commits_is_a_move(repo: Path) 
     head = git(repo, "rev-parse", "HEAD")
     check = head_move_since_calibration(str(repo), evaluated, head)
     assert check.moved is True
-    assert "non-calibration commit" in check.reason
+    assert check.reason.startswith(
+        "1 commit(s) landed after the evaluated commit"
+    )  # the calibration commit is not counted
 
 
 def test_a_calibration_subject_on_a_foreign_path_is_a_move(repo: Path) -> None:
@@ -98,14 +102,16 @@ def test_a_calibration_subject_on_a_foreign_path_is_a_move(repo: Path) -> None:
     assert head_move_since_calibration(str(repo), evaluated, git(repo, "rev-parse", "HEAD")).moved is True
 
 
-def test_a_merge_commit_is_always_a_move(repo: Path) -> None:
+def test_a_merge_is_a_move_when_the_pr_own_change_cannot_be_shown_unchanged(repo: Path) -> None:
     evaluated = git(repo, "rev-parse", "HEAD")
     git(repo, "checkout", "-qb", "side")
     commit_calibration(repo)
     git(repo, "checkout", "-q", "main")
     commit_calibration(repo, rel="holon-knowledge/ledger/executions.jsonl", subject="chore(calibration): record rows")
     git(repo, "merge", "-q", "--no-ff", "-m", "chore(calibration): merge side", "side")
-    assert head_move_since_calibration(str(repo), evaluated, git(repo, "rev-parse", "HEAD")).moved is True
+    check = head_move_since_calibration(str(repo), evaluated, git(repo, "rev-parse", "HEAD"))  # no target ref
+    assert check.moved is True
+    assert check.reason.startswith("1 commit(s) landed") and "could not be compared" in check.reason
 
 
 def test_a_non_ancestor_evaluated_sha_is_a_move(repo: Path) -> None:
@@ -127,11 +133,157 @@ def test_an_unknown_sha_is_unmoved_with_the_gap_named(repo: Path) -> None:
 # --- Bounded rerun and stale signal, on the flow-shaped harness (bare origin, host worktree, pushing clone). ---
 
 LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
+TARGET_REF = "refs/remotes/origin/main"
 
 
 @pytest.fixture
 def repos(tmp_path: Path) -> SimpleNamespace:
     return make_repos(tmp_path)
+
+
+def ledger_row(repo: Path, label: str, subject: str = "chore(review): record review rows") -> str:
+    """A ledger-only commit, as the review loop and the engine add: one appended row, no code."""
+    path = repo / LEDGER_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"execution_id": label}) + "\n")
+    git(repo, "add", LEDGER_REL)
+    git(repo, "commit", "-qm", subject)
+    return git(repo, "rev-parse", "HEAD")
+
+
+def advance_main(repos: SimpleNamespace, name: str, text: str = "y\n") -> None:
+    """Commit ``name`` and one ledger row on origin's main from the second clone, leaving it on the execution branch."""
+    other = repos.other
+    git(other, "checkout", "-q", "main")
+    git(other, "pull", "-q", "--ff-only", "origin", "main")
+    commit_file(other, name, text)
+    ledger_row(other, f"E-main-{name}", subject=f"chore: record {name} on main")
+    git(other, "push", "-q", "origin", "main")
+    git(other, "checkout", "-q", EXEC)
+    git(other, "fetch", "-q", "origin")
+
+
+def merge_main(repos: SimpleNamespace, ledger_only: bool = False) -> str:
+    """Merge origin/main into the second clone's execution branch the way the conflict gate does."""
+    outcome = _merge_target_ledger_only(str(repos.other), TARGET_REF, "Merge main into the execution branch")
+    assert (outcome.merged, outcome.ledger_only) == (True, ledger_only), outcome
+    return git(repos.other, "rev-parse", "HEAD")
+
+
+def pr258_history(repos: SimpleNamespace) -> SimpleNamespace:
+    """The history of PR #258 on origin: a report on E, then a ledger-only merge of main and bookkeeping commits."""
+    other = repos.other
+    evaluated = commit_file(other, "feature.py", "x = 1\n")
+    commit_calibration(other, text=f"# Calibration Report for {PLAN_ID}\n\n- **Evaluated Commit SHA:** {evaluated}\n")
+    advance_main(repos, "main-only.txt")
+    ledger_row(other, "E-pr")  # both sides now append to the ledger, so the merge conflicts there and nowhere else
+    merge = merge_main(repos, ledger_only=True)
+    ledger_row(other, "E-review")
+    head = commit_calibration(other, rel="holon-knowledge/kb/k.json", subject="chore(calibration): record knowledge")
+    git(other, "push", "-q", "origin", EXEC)
+    return SimpleNamespace(evaluated=evaluated, merge=merge, head=head)
+
+
+def test_the_pr_own_fingerprint_is_unchanged_across_a_pr258_shaped_history(repos: SimpleNamespace) -> None:
+    """The hypothesis of the staleness rule: the approval fingerprint of E equals that of the merged head."""
+    history = pr258_history(repos)
+    other = str(repos.other)
+    assert len(git(repos.other, "rev-list", "--parents", "-n", "1", history.merge).split()) == 3  # a real merge
+    before = approval_fingerprint_of(other, history.evaluated, "main")
+    assert before is not None
+    assert approval_fingerprint_of(other, history.head, "main") == before
+    advance_main(repos, "main-later.txt")  # the target ref moves past the merged commit
+    assert approval_fingerprint_of(other, history.evaluated, "main") == before
+    assert approval_fingerprint_of(other, history.head, "main") == before
+
+
+def predicate(repos: SimpleNamespace, evaluated: str, target: str | None = "main") -> HeadMoveCheck:
+    """The staleness verdict in the second clone, from ``evaluated`` to its checked-out execution head."""
+    return head_move_since_calibration(str(repos.other), evaluated, git(repos.other, "rev-parse", "HEAD"), target)
+
+
+def test_a_clean_merge_of_a_target_that_touched_other_files_is_unmoved(repos: SimpleNamespace) -> None:
+    evaluated = commit_file(repos.other, "feature.py", "x = 1\n")
+    advance_main(repos, "main-only.txt")
+    merge_main(repos)
+    check = predicate(repos, evaluated)
+    assert check.moved is False
+    assert (
+        check.reason == "the pull request's own change is unchanged (1 commit(s) after the evaluated commit discounted)"
+    )
+
+
+def test_a_merge_with_ledger_only_conflicts_is_unmoved_and_never_counts_the_targets_commits(
+    repos: SimpleNamespace,
+) -> None:
+    history = pr258_history(repos)
+    in_range = git(repos.other, "rev-list", "--count", f"{history.evaluated}..{history.head}")
+    check = predicate(repos, history.evaluated)
+    assert check.moved is False
+    # First-parent only: the report commit, the PR's ledger row, the merge, the review row and the knowledge commit.
+    assert (in_range, check.reason) == (
+        "7",
+        "the pull request's own change is unchanged (5 commit(s) after the evaluated commit discounted)",
+    )
+
+
+def test_a_merge_that_brings_a_target_change_to_a_pr_file_is_a_move(repos: SimpleNamespace) -> None:
+    lines = ["a", "b", "c", "d", "e", "f", "g", "h"]
+    advance_main(repos, "shared.py", "\n".join(lines) + "\n")
+    merge_main(repos)  # the execution branch now holds the shared file
+    evaluated = commit_file(repos.other, "shared.py", "\n".join(["from the pr", *lines[1:]]) + "\n")
+    advance_main(repos, "shared.py", "\n".join([*lines[:-1], "from main"]) + "\n")
+    merge_main(repos)  # clean: the two edits do not overlap, but the PR's file is no longer what the report saw
+    check = predicate(repos, evaluated)
+    assert check.moved is True
+    assert check.reason == "1 commit(s) after the evaluated commit changed the pull request's own change"
+
+
+def test_a_review_ledger_row_commit_after_the_evaluated_commit_is_unmoved(repos: SimpleNamespace) -> None:
+    evaluated = commit_file(repos.other, "feature.py")
+    ledger_row(repos.other, "E-review")
+    ledger_row(repos.other, "E-engine", subject="record the execution")  # path-based: no subject is required
+    check = predicate(repos, evaluated, target=None)
+    assert (check.moved, check.reason) == (
+        False,
+        "only calibration and ledger commits landed after the evaluated commit",
+    )
+
+
+def test_a_calibration_commit_after_the_evaluated_commit_is_unmoved(repos: SimpleNamespace) -> None:
+    evaluated = commit_file(repos.other, "feature.py")
+    commit_calibration(repos.other)
+    assert predicate(repos, evaluated).moved is False
+
+
+def test_a_code_push_is_a_move_and_the_reason_counts_exactly_one_commit(repos: SimpleNamespace) -> None:
+    evaluated = commit_file(repos.other, "feature.py")
+    commit_calibration(repos.other)
+    ledger_row(repos.other, "E-review")
+    commit_file(repos.other, "resolver-fix.py")
+    commit_calibration(repos.other, rel="holon-knowledge/kb/k.json")
+    check = predicate(repos, evaluated)
+    assert check.moved is True
+    assert check.reason == "1 commit(s) after the evaluated commit changed the pull request's own change"
+
+
+def test_a_merge_with_no_target_branch_given_is_a_move(repos: SimpleNamespace) -> None:
+    evaluated = commit_file(repos.other, "feature.py", "x = 1\n")
+    advance_main(repos, "main-only.txt")
+    merge_main(repos)
+    check = predicate(repos, evaluated, target=None)
+    assert check.moved is True
+    assert "could not be compared" in check.reason
+
+
+def test_report_staleness_reads_a_pr258_shaped_history_as_unmoved(repos: SimpleNamespace) -> None:
+    history = pr258_history(repos)
+    ctx = FlowContext(target_worktree=str(repos.host), execution_branch=EXEC, agent="a", model="m")
+    ctx.intent_data = {"target_branch": "main"}
+    check = report_staleness(ctx)  # fetches the execution branch and the target into the host worktree
+    assert (check.moved, check.evaluated_sha, check.current_head) == (False, history.evaluated, history.head)
+    assert "own change is unchanged" in check.reason
 
 
 def realistic_calibrate(**kwargs: object) -> SimpleNamespace:

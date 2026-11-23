@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 from sandbox_executor.calibration import is_calibration_stale
-from sandbox_executor.calibration_evaluated_sha import evaluated_code_commit, is_calibration_commit
+from sandbox_executor.calibration_evaluated_sha import (
+    evaluated_code_commit,
+    is_calibration_commit,
+    is_ledger_only_commit,
+)
 
 REPORT = "plans/I-1-x/P-2-x_calibration.md"
 LEDGER = "holon-knowledge/ledger/executions.jsonl"
@@ -103,3 +107,33 @@ def test_a_report_is_fresh_on_its_own_calibration_commits(repo: Path) -> None:
     assert is_calibration_stale(report, target_worktree=str(repo))[0] is False
     commit(repo, "feat: more code", "src/b.py")
     assert is_calibration_stale(report, target_worktree=str(repo))[0] is True
+
+
+def test_a_commit_that_only_appends_to_a_ledger_is_ledger_only(repo: Path) -> None:
+    review_rows = commit(repo, "chore(review): record review rows", LEDGER, "holon-knowledge/ledger/reviews.jsonl")
+    assert is_ledger_only_commit(str(repo), review_rows)
+    assert is_ledger_only_commit(str(repo), commit(repo, "any subject", LEDGER))  # path-based, no subject required
+
+
+def test_a_commit_with_a_ledger_file_and_a_code_file_is_not_ledger_only(repo: Path) -> None:
+    assert not is_ledger_only_commit(str(repo), commit(repo, "chore(review): rows and a fix", LEDGER, "src/a.py"))
+
+
+def test_a_merge_commit_is_not_ledger_only(repo: Path) -> None:
+    commit(repo, "chore(review): record review rows", LEDGER)
+    git(repo, "checkout", "-q", "main")
+    commit(repo, "chore: main ledger", "holon-knowledge/ledger/actions.jsonl")
+    git(repo, "checkout", "-q", "exec")
+    git(repo, "merge", "-q", "--no-ff", "-m", "Merge main", "main")
+    assert not is_ledger_only_commit(str(repo), "HEAD")
+
+
+def test_a_commit_under_holon_knowledge_but_outside_the_ledger_is_not_ledger_only(repo: Path) -> None:
+    assert not is_ledger_only_commit(str(repo), commit(repo, "chore: knowledge", "holon-knowledge/kb/k.json"))
+    assert not is_ledger_only_commit(str(repo), commit(repo, "chore: lookalike", "holon-knowledge/ledger-notes.md"))
+
+
+def test_an_empty_commit_and_an_unknown_commit_are_not_ledger_only(repo: Path) -> None:
+    git(repo, "commit", "-q", "--allow-empty", "-m", "chore(review): nothing")
+    assert not is_ledger_only_commit(str(repo), "HEAD")
+    assert not is_ledger_only_commit(str(repo), "0" * 40)

@@ -15,15 +15,19 @@ SYNC_CONFLICT_STATUS = "sync_conflict"
 
 _EARLIEST = datetime.min.replace(tzinfo=UTC)
 
+# 'halted_for_human' is kept for historical ledger rows.
+CONVERGED_SUMMARY_STATUSES: frozenset[str] = frozenset({"success", "approved", "halted_for_human"})
+
 
 def is_converged_record(record: dict[str, Any]) -> bool:
     """True for a summary row that ends a run successfully.
 
-    ``success`` and ``halted_for_human`` do; so does the superseding ``decomposed`` row Stage 3 writes once every child
-    merged and the plan branch was integrated (``integrated: true``), which carries no ``exit_code``.
+    ``success``, ``approved`` and legacy ``halted_for_human`` do; so does the superseding ``decomposed`` row Stage 3
+    writes once every child merged and the plan branch was integrated (``integrated: true``), which carries no
+    ``exit_code``.
     """
     status = str(record.get("status", "success"))
-    return status in ("success", "halted_for_human") or (status == "decomposed" and record.get("integrated") is True)
+    return status in CONVERGED_SUMMARY_STATUSES or (status == "decomposed" and record.get("integrated") is True)
 
 
 def record_exit_code(record: dict[str, Any]) -> int:

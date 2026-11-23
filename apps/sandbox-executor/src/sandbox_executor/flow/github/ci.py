@@ -104,6 +104,7 @@ def _wait_for_ci_registration(  # noqa: PLR0913
     poll_interval: float,
     clock: Callable[[], float] | None = None,
     sleep: Callable[[float], None] | None = None,
+    probe: Callable[[], dict[str, Any]] | None = None,
 ) -> None:
     """Poll until GitHub CI checks register on ``review_target`` or ``timeout`` elapses.
 
@@ -116,7 +117,8 @@ def _wait_for_ci_registration(  # noqa: PLR0913
     deadline = clock() + timeout
     context.log(f"[Review Loop] No recorded test result: waiting up to {timeout:g}s for CI checks to register.")
     while True:
-        if probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env).get("source") == "github_cli":
+        status = probe() if probe is not None else probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
+        if status.get("source") == "github_cli":
             context.log("[Review Loop] CI checks registered.")
             return
         remaining = deadline - clock()

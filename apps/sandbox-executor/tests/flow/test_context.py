@@ -43,10 +43,12 @@ class TestFlowDataModels:
         assert StageStatus.SUCCESS.value == "success"
         assert StageStatus.FAILED.value == "failed"
         assert StageStatus.HALTED_FOR_HUMAN.value == "halted_for_human"
+        assert StageStatus.APPROVED.value == "approved"
         assert StageStatus.SKIPPED.value == "skipped"
 
         assert StageStatus.from_str("pending") == StageStatus.PENDING
         assert StageStatus.from_str("HALTED_FOR_HUMAN") == StageStatus.HALTED_FOR_HUMAN
+        assert StageStatus.from_str("APPROVED") == StageStatus.APPROVED
         with pytest.raises(ValueError, match="Unknown StageStatus"):
             StageStatus.from_str("unknown_status")
 
@@ -68,6 +70,17 @@ class TestFlowDataModels:
         assert reconstructed.stage == FlowStage.INTENT
         assert reconstructed.status == StageStatus.SUCCESS
         assert reconstructed.payload == {"branch": "I-123-test/_"}
+
+    def test_stage_result_summary_line_respects_patched_summary_status_words(self, monkeypatch):
+        from sandbox_executor.flow import context as context_module
+
+        monkeypatch.setattr(
+            context_module,
+            "_SUMMARY_STATUS_WORDS",
+            {**context_module._SUMMARY_STATUS_WORDS, StageStatus.APPROVED: "consented"},
+        )
+        res = StageResult(stage=FlowStage.REVIEW, status=StageStatus.APPROVED)
+        assert res.summary_line() == "review: consented"
 
     def test_flow_context_serialization_and_logging(self):
         ctx = FlowContext(

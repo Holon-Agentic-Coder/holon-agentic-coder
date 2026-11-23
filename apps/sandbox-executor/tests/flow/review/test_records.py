@@ -56,7 +56,7 @@ class TestStage4LedgerProvenance:
         else:
             posting = {"return_value": {"dual_posted": True, "official_review": {"success": True}}}
         with (
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+            patch("shutil.which", return_value=None),
             patch(
                 "sandbox_executor.flow.review.loop.check_pr_mergeability",
                 side_effect=lambda *a, **k: next(mergeability),
@@ -187,7 +187,7 @@ class TestStage4LedgerProvenance:
     def test_dry_run_suppresses_appends_visibly(self, tmp_path):
         ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1/P-2/E-3/_", dry_run=True)
         with (
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+            patch("shutil.which", return_value=None),
             patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
             patch(
                 "sandbox_executor.flow.review.loop.probe_ci_checks",
@@ -209,7 +209,7 @@ class TestStage4LedgerProvenance:
         )
         ledger_path = str(tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl")
         with (
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+            patch("shutil.which", return_value=None),
             patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
             patch(
                 "sandbox_executor.flow.review.loop.probe_ci_checks",
@@ -240,7 +240,7 @@ class TestStage4LedgerProvenance:
         ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1/P-2/E-3/_", dry_run=False)
         try:
             with (
-                patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+                patch("shutil.which", return_value=None),
                 patch_lookup_sites(
                     "sandbox_executor.flow.review.loop.check_pr_mergeability",
                     "sandbox_executor.flow.stage_conflicts.check_pr_mergeability",
@@ -295,7 +295,7 @@ def test_a_stage_4_exit_by_raise_commits_the_rows_the_loop_recorded(tmp_path):
         "entry_type": "action",
     }
 
-    def recording_then_raising(context):
+    def recording_then_raising(context, *, github=None):
         record_review_action(context, exec_file, row)
         raise RuntimeError("review loop crashed")
 

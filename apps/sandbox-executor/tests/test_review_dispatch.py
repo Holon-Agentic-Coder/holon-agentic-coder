@@ -315,7 +315,7 @@ def _host_loop_patches():
         "checks": [],
     }
     return (
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("shutil.which", return_value=None),
         patch("sandbox_executor.flow.review.loop.check_pr_mergeability", side_effect=lambda *a, **k: dict(clean_merge)),
         patch("sandbox_executor.flow.review.loop.probe_ci_checks", side_effect=lambda *a, **k: dict(green_ci)),
         patch(

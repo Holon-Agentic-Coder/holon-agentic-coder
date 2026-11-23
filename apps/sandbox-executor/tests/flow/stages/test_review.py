@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, run_review_loop, run_review_stage
 
+from tests.flow.github.fake_github import FakeGitHub
 from tests.flow.helpers import _verified_diff
 
 
@@ -29,7 +30,7 @@ class TestStage4TestEvidence:
 
     def _loop(self, ctx: FlowContext) -> dict[str, Any]:
         with (
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+            patch("shutil.which", return_value=None),
             patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
             patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
             _verified_diff(),
@@ -145,3 +146,21 @@ class TestStage4TestEvidence:
         assert res.payload["halted_for_human"] is True
         assert any("SAFETY HALT" in log for log in ctx.logs)
         assert any("Dry-run review loop finished; consensus not measured and not approved." in log for log in ctx.logs)
+
+
+def test_the_review_stage_builds_one_adapter_and_hands_it_to_the_loop(tmp_path):
+    """Stage 4 constructs exactly one ``GitHubAdapter`` over the worktree and passes that instance to the loop."""
+    ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-a-b/E-3-a-b/_", token_reduce=False)
+    loop_res = {"consensus": {"approved": False, "status": "failed"}, "mergeability": {"is_dirty": False}}
+    github = FakeGitHub()
+    with (
+        patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
+        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
+        patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github) as adapter,
+        patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res) as loop,
+    ):
+        run_review_stage(ctx)
+
+    adapter.assert_called_once_with(ctx.target_worktree, {})
+    assert loop.call_args.kwargs["github"] is github

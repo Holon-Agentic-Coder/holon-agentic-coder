@@ -1077,7 +1077,7 @@ def test_approved_loop_never_merges(tmp_path, gh_write_guard):
 
     with (
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "ok")),
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value="/usr/bin/gh"),
+        patch("shutil.which", return_value="/usr/bin/gh"),
         patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
         patch(
             "sandbox_executor.flow.review.loop.probe_ci_checks",
@@ -1105,7 +1105,7 @@ def test_reviewed_commit_lookup_fetches_only_outside_a_mounted_container(tmp_pat
 
     with (
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "ok")),
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value="/usr/bin/gh"),
+        patch("shutil.which", return_value="/usr/bin/gh"),
         patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
         patch(
             "sandbox_executor.flow.review.loop.probe_ci_checks",

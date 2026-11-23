@@ -168,7 +168,7 @@ def test_resolver_rejected_find_ci_survives_ledger_commit_on_next_iteration(tmp_
     with (
         patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", return_value=(target_obj, None)),
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 file")),
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("shutil.which", return_value=None),
         patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
         patch(
             "sandbox_executor.flow.review.loop.probe_ci_checks",

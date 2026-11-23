@@ -88,7 +88,7 @@ def _run_loop(tmp_path: Path, monkeypatch, probes: list[dict], fake: FakeTime, p
     script = list(probes)
     probe = MagicMock(side_effect=lambda *a, **k: dict(script.pop(0) if len(script) > 1 else script[0]))
     with (
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("shutil.which", return_value=None),
         patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
         patch("sandbox_executor.flow.review.loop.probe_ci_checks", probe),
         patch(
@@ -300,7 +300,7 @@ def test_stale_wait_record_is_cleared_when_a_later_probe_has_settled(tmp_path, m
     probe = MagicMock(side_effect=lambda *a, **k: dict(script.pop(0) if len(script) > 1 else script[0]))
     resolver = MagicMock(return_value=MagicMock(returncode=0))
     with (
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("shutil.which", return_value=None),
         patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
         patch("sandbox_executor.flow.review.loop.probe_ci_checks", probe),
         patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
@@ -333,7 +333,7 @@ def test_stale_wait_record_is_cleared_when_a_later_iteration_takes_the_objected_
     probe = MagicMock(side_effect=lambda *a, **k: dict(script.pop(0) if len(script) > 1 else script[0]))
     rounds = iter([[clean_reviewer(1)], [objecting_reviewer(1)], [objecting_reviewer(1)]])
     with (
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("shutil.which", return_value=None),
         patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
         patch("sandbox_executor.flow.review.loop.probe_ci_checks", probe),
         patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
@@ -373,7 +373,7 @@ def test_spent_wait_is_cleared_when_the_resolver_pushes_a_new_head(tmp_path, mon
     probe = MagicMock(side_effect=lambda *a, **k: dict(PENDING))
     resolver = MagicMock(return_value={"dispositions": [], "head_sha": "newhead1", "pushed": True})
     with (
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("shutil.which", return_value=None),
         patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
         patch("sandbox_executor.flow.review.loop.probe_ci_checks", probe),
         patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
@@ -557,7 +557,7 @@ def test_ci_registration_runs_on_new_head_after_prior_iteration_local_failure(tm
     failing_local = TestMeasurement(0.5, 5, 5, 0, 1, None, "")
     monkeypatch.setattr(local_tests, "run_measurement", MagicMock(return_value=failing_local))
     with (
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value="/usr/bin/gh"),
+        patch("shutil.which", return_value="/usr/bin/gh"),
         patch("sandbox_executor.flow.github.ci.probe_ci_checks", probe),
         patch("sandbox_executor.flow.review.loop.probe_ci_checks", probe),
         patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
@@ -632,7 +632,7 @@ def test_stale_github_ci_does_not_drop_failing_review_local_find_ci(tmp_path, mo
     reviewer = objecting_reviewer(1) if objecting else clean_reviewer(1)
     probe = MagicMock(return_value=dict(PASSED))
     with (
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("shutil.which", return_value=None),
         patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
         patch("sandbox_executor.flow.review.loop.probe_ci_checks", probe),
         patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
@@ -710,7 +710,7 @@ def test_objecting_fast_path_with_pending_ci_and_failing_review_local_raises_fin
         return {"dispositions": [], "head_sha": target.head_sha, "pushed": False}
 
     with (
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("shutil.which", return_value=None),
         patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
         patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value=dict(PENDING)),
         patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
@@ -761,7 +761,7 @@ def test_fallback_else_skips_local_tests_on_infra_error(tmp_path, monkeypatch):
     local_probe = {"source": "local_tests", "total": 1, "passed": 1, "failed": 0, "pending": 0, "all_passed": True}
 
     with (
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("shutil.which", return_value=None),
         patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
         patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value=dict(local_probe)),
         patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
@@ -810,7 +810,7 @@ def test_fallback_else_skips_local_tests_on_missing_ref(tmp_path, monkeypatch):
     }
 
     with (
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("shutil.which", return_value=None),
         patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=missing_merge),
         patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value=dict(local_probe)),
         patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
@@ -852,7 +852,7 @@ def test_objecting_fast_path_skips_local_tests_on_infra_error(tmp_path, monkeypa
     local_probe = {"source": "local_tests", "total": 1, "passed": 1, "failed": 0, "pending": 0, "all_passed": True}
 
     with (
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("shutil.which", return_value=None),
         patch("sandbox_executor.flow.review.loop.reviewers_sandboxed", return_value=False),
         patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=dict(CLEAN_MERGE)),
         patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value=dict(local_probe)),
@@ -906,7 +906,7 @@ def test_objecting_fast_path_skips_local_tests_on_missing_ref(tmp_path, monkeypa
     }
 
     with (
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        patch("shutil.which", return_value=None),
         patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=missing_merge),
         patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value=dict(local_probe)),
         patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),

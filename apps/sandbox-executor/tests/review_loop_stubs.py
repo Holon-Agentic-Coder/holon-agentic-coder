@@ -53,7 +53,7 @@ class _LoopStubs:
         from sandbox_executor.review_target import DiffVerdict
 
         self._patches = [
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+            patch("shutil.which", return_value=None),
             patch(
                 "sandbox_executor.flow.review.loop.check_pr_mergeability", side_effect=lambda *a, **k: dict(self.merge)
             ),
@@ -95,7 +95,7 @@ def _green_loop_patches(verdict=None, post=None, which=None, ci=None):
             return_value=(verdict or DiffVerdict.VERIFIED, "guard detail"),
         )
     )
-    stack.enter_context(patch("sandbox_executor.flow.review.loop.shutil.which", return_value=which))
+    stack.enter_context(patch("shutil.which", return_value=which))
     stack.enter_context(
         patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False})
     )

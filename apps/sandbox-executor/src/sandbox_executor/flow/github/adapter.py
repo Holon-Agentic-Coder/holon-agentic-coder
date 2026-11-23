@@ -1,8 +1,9 @@
 """The repository-scoped GitHub adapter: the ``flow/github`` module that spawns ``gh`` for PR create/update, CI
-checks, mergeability, PR head lookups, review and comment posting, and the guarded merge's ``gh`` runner (whose
-``gh pr merge`` argv only :func:`merge_argv` builds). The remaining direct ``gh pr`` caller is
+checks, mergeability, PR head lookups, review and comment posting, failed-run reruns, and the guarded merge's ``gh``
+runner (whose ``gh pr merge`` argv only :func:`merge_argv` builds). The review stage builds one adapter and hands it
+to the review loop; :mod:`.ci_final_head` takes one through its seams. The remaining direct ``gh pr`` caller is
 :mod:`.approval_invalidation`, whose comment lister and poster still run ``gh pr view`` and ``gh pr comment``;
-:mod:`.ci_failure_detail`, :mod:`.ci_final_head` and :mod:`.ci_slowest_tests` still spawn ``gh run`` themselves.
+:mod:`.ci_failure_detail` and :mod:`.ci_slowest_tests` still spawn ``gh run`` and ``gh api`` themselves.
 
 Each method is a thin argv builder over one spawn (:func:`.adapter_runner.spawn_gh`), with the timeouts of the call
 sites it replaced: 60 seconds for PR views, edits, creates, reviews and comments, the caller's timeout for
@@ -124,6 +125,11 @@ class GitHubAdapter:
     def post_comment(self, target: str, body: str) -> GhResult:
         """``gh pr comment <target> --body <body>``."""
         return self._gh(["pr", "comment", target, "--body", body], PR_TIMEOUT_SECONDS)
+
+    def rerun_failed(self, run_id: str, timeout: float = PR_TIMEOUT_SECONDS) -> bool:
+        """``gh run rerun <run_id> --failed``; True only when it exited 0, False when ``gh`` could not be run."""
+        result = self._gh(["run", "rerun", run_id, "--failed"], timeout)
+        return result.ok and result.returncode == 0
 
     def gh(self, args: list[str], cwd: str | None = None) -> subprocess.CompletedProcess[str]:
         """The guarded merge's ``GhRunner``: ``gh <args>`` in ``cwd`` (default the checkout), no proxy, 120 seconds.

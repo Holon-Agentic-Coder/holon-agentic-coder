@@ -23,6 +23,7 @@ from sandbox_executor.flow import (
 )
 from sandbox_executor.review_target import ReviewTarget
 
+from tests.flow.github.fake_github import FakeGitHub, ci_checks_payload
 from tests.flow.helpers import _git, _review_loop_gh_stubs
 from tests.flow.lookup_patch import patch_lookup_sites
 from tests.review_fakes import FakeEnsemble, clean_reviewer, objecting_reviewer
@@ -482,3 +483,24 @@ class TestReviewLoopCommitsItsLedgerRows:
         assert res["consensus"]["iterations"] == 3
         assert _git(work, "status", "--porcelain") == ""
         assert len(ledger_commits(work)) == 3
+
+
+def test_an_injected_adapter_receives_every_github_call_of_the_loop(tmp_path):
+    """``run_review_loop(github=...)`` routes PR, mergeability, CI and posting through that one adapter."""
+    from sandbox_executor.review_target import DiffVerdict
+
+    github = FakeGitHub(
+        views=[{"number": 7, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}] * 2,
+        checks=ci_checks_payload(passed=1),
+    )
+    with (
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc1234"),
+        patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+    ):
+        res = run_review_loop(_ensemble_ctx(tmp_path), max_iterations=1, run_ensemble_fn=FakeEnsemble(), github=github)
+
+    assert res["consensus"]["approved"] is True
+    assert {"open_or_update", "mergeability", "ci_checks", "post_review"} <= set(github.methods())
+    assert github.methods()[0] == "open_or_update"
+    assert all(args[0] == EXEC_TARGET for name, args in github.calls if name in {"open_or_update", "ci_checks"})

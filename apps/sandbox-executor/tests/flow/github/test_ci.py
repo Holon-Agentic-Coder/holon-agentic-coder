@@ -82,7 +82,7 @@ class TestUnmeasuredTestsStopEarly:
         probe = MagicMock(side_effect=probe_side_effect)
         sleep = MagicMock()
         with (
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=gh),
+            patch("shutil.which", return_value=gh),
             patch_lookup_sites(
                 "sandbox_executor.flow.github.ci.probe_ci_checks",
                 "sandbox_executor.flow.review.loop.probe_ci_checks",
@@ -260,7 +260,7 @@ class TestUnmeasuredTestsStopEarly:
         sleep = MagicMock()
         wait = MagicMock(wraps=flow_module._wait_for_ci_registration)
         with (
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value="/usr/bin/gh"),
+            patch("shutil.which", return_value="/usr/bin/gh"),
             patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
             patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(has_diff, detail)),
@@ -319,7 +319,7 @@ class TestUnmeasuredTestsStopEarly:
         probe = MagicMock(return_value=dict(ci or self.LOCAL))
         post = MagicMock(return_value={"dual_posted": True})
         with (
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value="/usr/bin/gh"),
+            patch("shutil.which", return_value="/usr/bin/gh"),
             patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
             patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(None, "fetch failed")),

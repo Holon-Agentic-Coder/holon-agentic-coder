@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from unittest.mock import patch
 
 from sandbox_executor.flow import FlowContext
 from sandbox_executor.flow.context import FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.github import ci_reverify
+from sandbox_executor.flow.github.ci_failure_detail import STEP_LOOKUP_TIMEOUT_SECONDS
 from sandbox_executor.flow.github.ci_final_head import FinalHeadSeams, check_final_head_ci
 from sandbox_executor.flow.github.ci_reverify import reverify_and_report, reverify_final_head
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy
+
+from tests.flow.github.fake_github import FakeGitHub, ci_checks_payload
 
 BRANCH = "I-1-x/P-2-y/E-3-z/_"
 GATE = "CI Timing Gate (compare with main)"
@@ -232,3 +236,20 @@ def test_checks_that_never_reregister_get_no_second_dispatch(tmp_path: Path) -> 
     assert fakes.dispatched == ["42"]
     assert fakes.sleeps
     assert fakes.now >= 60.0
+
+
+def test_an_injected_adapter_reads_the_pr_head_probes_ci_and_dispatches_the_rerun(tmp_path: Path) -> None:
+    """With ``FinalHeadSeams(github=...)`` and no other gh seam, every gh call of the check goes through the adapter."""
+    fakes = RerunFakes(_status([]), steps={"macos-unit": [GATE]})
+    github = FakeGitHub(
+        checks_sequence=[ci_checks_payload(failed=1, names=["macos-unit"]), ci_checks_payload(passed=1)],
+        head_sha=FINAL,
+    )
+    seams = dataclasses.replace(fakes.seams(), probe=None, pr_head=None, rerun_dispatcher=None, github=github)
+    record = check_final_head_ci(_ctx(tmp_path), str(tmp_path), BRANCH, seams)
+    assert record["state"] == "success"
+    assert record["timing_rerun"] == {"attempted": True, "run_ids": ["100"], "outcome": "success"}
+    assert ("pr_head_sha", (BRANCH, STEP_LOOKUP_TIMEOUT_SECONDS)) in github.calls
+    assert ("rerun_failed", ("100", STEP_LOOKUP_TIMEOUT_SECONDS)) in github.calls
+    assert fakes.diff_calls == [(APPROVED, FINAL)]
+    assert set(github.methods()) == {"ci_checks", "pr_head_sha", "rerun_failed"}

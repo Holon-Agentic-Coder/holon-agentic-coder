@@ -14,9 +14,9 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-from sandbox_executor import cli, local_llm, token_reduction
+from sandbox_executor import cli, local_llm
 from sandbox_executor.agent_runner import get_runner
-from sandbox_executor.launcher import proxy_paths, sidecar
+from sandbox_executor.launcher import proxy_paths, root_ca, sidecar
 
 from tests.env_file_capture import DockerEnvFileRecorder
 from tests.leak_assertions import assert_no_fragment, make_probe
@@ -459,12 +459,12 @@ class TestLauncherIntegration(unittest.TestCase):
         with (
             patch.object(proxy_paths, "_find_git_root", return_value=os.path.join(root, "repo")),
             patch.object(os.path, "expanduser", lambda path: os.path.join(root, "home", path.lstrip("~/"))),
-            patch.object(token_reduction, "generate_root_ca", return_value=("/tmp/mock-ca.crt", "/tmp/mock-ca.key")),
+            patch.object(root_ca, "generate_root_ca", return_value=("/tmp/mock-ca.crt", "/tmp/mock-ca.key")),
             patch.object(
                 proxy_paths, "_mitm_proxy_ca_paths", return_value=("/tmp/mock-ca.pem", "/tmp/mock-ca-cert.pem")
             ),
             patch.object(os.path, "isfile", lambda path: True),
-            patch("sandbox_executor.token_reduction.proxy_readiness.wait_for_proxy", lambda *a, **k: True),
+            patch("sandbox_executor.launcher.proxy_readiness.wait_for_proxy", lambda *a, **k: True),
             patch("subprocess.run") as mock_subproc,
         ):
             mock_subproc.return_value = MagicMock(returncode=0, stdout="8080\n")

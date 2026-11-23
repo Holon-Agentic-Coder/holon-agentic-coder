@@ -389,7 +389,7 @@ def test_check_prerequisites_fails_when_openssl_missing(tmp_path: pathlib.Path) 
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
     assert result.returncode == 2  # make exits 2 when a recipe fails
     assert "openssl not found" in result.stdout
-    assert "ca_generator.py" in result.stdout
+    assert "launcher/root_ca.py" in result.stdout
     assert "sudo apt install openssl" in result.stdout
 
 
@@ -486,7 +486,7 @@ def test_check_prerequisites_warns_when_the_gate_is_satisfied_by_libressl(
 ) -> None:
     """LibreSSL satisfies `command -v openssl` but cannot build this repository's Root CA.
 
-    ca_generator.py passes -addext three times and LibreSSL does not support it, so a green
+    launcher/root_ca_openssl.py passes -addext three times and LibreSSL does not support it, so a green
     tick here can still precede a failing CA step. The remedy is deliberately advisory - the
     intent asked for a presence-and-version report, so failing the run for a non-OpenSSL
     build would exceed it - but it must not stay silent, which is what this test pins.

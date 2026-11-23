@@ -21,7 +21,9 @@ The audit evaluated all components across the system:
 - Agent execution entrypoints and runtime adapters (`agent_runner.py`, `executor.py`, `planner.py`,
   `intent_creator.py`).
 - Network interception, TLS trust store provisioning, and token reduction sidecars (`ca_generator.py`,
-  `token_reduction/`, `role_dispatcher.sh`).
+  `token_reduction/`, `role_dispatcher.sh`). At the time of this audit those modules lived in
+  `sandbox_executor/token_reduction/`; Root CA generation now lives in `launcher/root_ca.py` and the proxy addon in
+  holon-coherence.
 - Container build configurations, permissions, and containment boundaries (`Dockerfile`).
 
 ### High-Level Posture

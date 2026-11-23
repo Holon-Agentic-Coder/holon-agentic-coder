@@ -1,4 +1,4 @@
-"""HTTP-level readiness probe for the mitmproxy sidecar."""
+"""Host-side HTTP readiness probe for the holon-coherence proxy sidecar or an attached proxy."""
 
 import socket
 import time

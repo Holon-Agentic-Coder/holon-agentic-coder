@@ -19,8 +19,8 @@ import pytest
 COMPLEXITY_RULES: frozenset[str] = frozenset({"C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915"})
 
 # Baseline established for intent I-1793334797-hac-ruff-complexity-gate-with-inline-baseline
-BASELINE_COMPLEXITY_NOQA_COUNT: int = 179
-BASELINE_ANNOTATED_FUNCTIONS_COUNT: int = 90
+BASELINE_COMPLEXITY_NOQA_COUNT: int = 142
+BASELINE_ANNOTATED_FUNCTIONS_COUNT: int = 73
 
 NOQA_DIRECTIVE_PATTERN = re.compile(r"#\s*noqa(?::\s*([A-Za-z0-9_,\s]+))?", re.IGNORECASE)
 DEF_LINE_PATTERN = re.compile(r"^\s*(?:async\s+)?def\b")
@@ -102,23 +102,6 @@ BASELINE_SNAPSHOT: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("sandbox_executor/review_ensemble.py", ("PLR0913",)),
     ("sandbox_executor/review_ensemble.py", ("PLR0913",)),
     ("sandbox_executor/review_ensemble.py", ("PLR0913",)),
-    ("sandbox_executor/token_reduction/hybrid_cache.py", ("C901", "PLR0912")),
-    ("sandbox_executor/token_reduction/hybrid_cache.py", ("C901", "PLR0912")),
-    ("sandbox_executor/token_reduction/mitm_addon.py", ("C901",)),
-    ("sandbox_executor/token_reduction/mitm_addon.py", ("C901", "PLR0912")),
-    ("sandbox_executor/token_reduction/mitm_addon.py", ("C901", "PLR0912", "PLR0915")),
-    ("sandbox_executor/token_reduction/mitm_addon.py", ("C901", "PLR0912", "PLR0915")),
-    ("sandbox_executor/token_reduction/mitm_addon.py", ("C901", "PLR0912", "PLR0915")),
-    ("sandbox_executor/token_reduction/mitm_addon.py", ("C901", "PLR0912", "PLR0915")),
-    ("sandbox_executor/token_reduction/mitm_addon.py", ("C901", "PLR0912", "PLR0915")),
-    ("sandbox_executor/token_reduction/mitm_addon.py", ("PLR0911",)),
-    ("sandbox_executor/token_reduction/mitm_addon.py", ("PLR0913",)),
-    ("sandbox_executor/token_reduction/payload_cleaner.py", ("C901", "PLR0912")),
-    ("sandbox_executor/token_reduction/payload_cleaner.py", ("C901", "PLR0912")),
-    ("sandbox_executor/token_reduction/payload_cleaner.py", ("C901", "PLR0912")),
-    ("sandbox_executor/token_reduction/payload_cleaner.py", ("C901", "PLR0912")),
-    ("sandbox_executor/token_reduction/payload_cleaner.py", ("C901", "PLR0912")),
-    ("sandbox_executor/token_reduction/payload_cleaner.py", ("C901", "PLR0912", "PLR0915")),
     ("sandbox_executor/turns.py", ("C901", "PLR0912", "PLR0913", "PLR0915")),
     ("sandbox_executor/turns.py", ("PLR0913",)),
     ("sandbox_executor/turns.py", ("PLR0913",)),

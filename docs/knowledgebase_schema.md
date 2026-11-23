@@ -50,34 +50,28 @@ The KB enables:
 
 ## Storage format
 
-### Recommended format: Structured JSON files + index
+### Recommended format: Structured JSON files with a derived index
 
 ```
 holon-knowledge/kb/
 ├── patterns/
 │   ├── pattern_001.json
-│   ├── pattern_002.json
-│   └── index.json
+│   └── pattern_002.json
 ├── tactics/
 │   ├── tactic_001.json
-│   ├── tactic_002.json
-│   └── index.json
+│   └── tactic_002.json
 ├── failure_modes/
 │   ├── failure_001.json
-│   ├── failure_002.json
-│   └── index.json
+│   └── failure_002.json
 ├── estimators/
 │   ├── p_success_v1.json
 │   ├── p_success_v2.json
 │   ├── entropy_v1.json
-│   ├── learning_value_v1.json
-│   └── index.json
+│   └── learning_value_v1.json
 ├── routing_heuristics/
-│   ├── routing_v1.json
-│   └── index.json
+│   └── routing_v1.json
 ├── modules/
-│   ├── module_001.json  # reusable code modules
-│   └── index.json
+│   └── module_001.json  # reusable code modules
 └── meta.json  # KB-level metadata
 ```
 
@@ -85,7 +79,7 @@ holon-knowledge/kb/
 
 - Git-friendly (diffs, merges, history).
 - Human-readable (easy to review).
-- Queryable (via index or simple file search).
+- Queryable (via the derived index or simple file search).
 
 ---
 
@@ -529,36 +523,41 @@ def get_active_estimator(metric_name):
 
 ---
 
-## KB index structure
+## KB index (derived)
 
-Each KB subdirectory has an `index.json` for fast lookup:
+No `index.json` is stored or committed: the former per-subfolder `index.json` paths are git-ignored. The index of a
+subfolder is derived on demand by `sandbox_executor.knowledge.wisdom.load_index(subfolder)`, which globs the `KB-*.json`
+entry files of that subfolder (without recursing) and reads each entry's own fields:
+
+- `kb_id`, `file` (the entry file name), `kb_type`, `status`, `created_ts` and `tags` (`[]` when absent).
+- Entries are sorted by `created_ts`, then by `kb_id`.
+- Unreadable or malformed entry files are logged and skipped, so one bad file never hides the rest.
+
+Writing an entry writes only that entry's own file, so concurrent PRs that add different entries never conflict on a
+shared aggregate. The stored-only fields of the old file (`index_version`, the top-level `updated_ts` and `tag_index`)
+are no longer kept.
+
+Example `load_index("holon-knowledge/kb/patterns")` result:
 
 ```json
-{
-  "index_version": "1.0",
-  "updated_ts": "2026-02-24T10:00:00Z",
-  "entries": [
-    {
-      "kb_id": "KB-pattern-001",
-      "file": "pattern_001.json",
-      "tags": ["metrics", "estimator", "bootstrap"],
-      "status": "active",
-      "created_ts": "2026-02-24T05:30:00Z"
-    },
-    {
-      "kb_id": "KB-pattern-002",
-      "file": "pattern_002.json",
-      "tags": ["git", "rebase", "conflict"],
-      "status": "active",
-      "created_ts": "2026-02-24T06:00:00Z"
-    }
-  ],
-  "tag_index": {
-    "metrics": ["KB-pattern-001"],
-    "git": ["KB-pattern-002"],
-    "rebase": ["KB-pattern-002"]
+[
+  {
+    "kb_id": "KB-pattern-001",
+    "file": "KB-pattern-001.json",
+    "kb_type": "pattern",
+    "status": "active",
+    "created_ts": "2026-02-24T05:30:00+00:00",
+    "tags": ["metrics", "estimator", "bootstrap"]
+  },
+  {
+    "kb_id": "KB-pattern-002",
+    "file": "KB-pattern-002.json",
+    "kb_type": "pattern",
+    "status": "active",
+    "created_ts": "2026-02-24T06:00:00+00:00",
+    "tags": ["git", "rebase", "conflict"]
   }
-}
+]
 ```
 
 ---

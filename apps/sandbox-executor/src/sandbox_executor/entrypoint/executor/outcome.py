@@ -14,6 +14,7 @@ from sandbox_executor.artefacts import ArtefactReport
 from sandbox_executor.budgets import BudgetBreach
 from sandbox_executor.entrypoint.changed_markdown import changed_markdown_files
 from sandbox_executor.entrypoint.empty_diff_excerpt import report_empty_diff_output
+from sandbox_executor.entrypoint.execution_workspace import format_skipped_scratch_message, unstage_sidecar_scratch
 from sandbox_executor.entrypoint.executor.commands import _entrypoint_git_runner, _get_repo, is_action_logging_enabled
 from sandbox_executor.entrypoint.executor.repair import _configure_executor_identity, _probe_git_repo, _repair_git_repo
 from sandbox_executor.ledger import (
@@ -107,6 +108,8 @@ def _salvage_partial_work(
     """
     repo = _get_repo(repo_dir)
     repo.add(_salvage_pathspec(notes_rel), all_files=True, check=False)
+    if skipped := unstage_sidecar_scratch(repo):
+        print(format_skipped_scratch_message(skipped), file=sys.stderr)
     staged = repo.diff(cached=True, quiet=True)
     if staged.returncode != 0:
         _configure_executor_identity(repo_dir)

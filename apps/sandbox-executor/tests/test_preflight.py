@@ -266,14 +266,14 @@ def test_probe_env_file_is_removed_when_the_probe_fails(probe_env, monkeypatch, 
 
 
 def test_probe_returns_unknown_when_the_env_file_dir_cannot_be_created(probe_env, monkeypatch):
-    from sandbox_executor import cli
+    from sandbox_executor.launcher import env_files
 
     _set_probe_values(monkeypatch)
 
     def failing_dir():
         raise PermissionError("env-file dir not creatable")
 
-    monkeypatch.setattr(cli, "env_file_dir", failing_dir)
+    monkeypatch.setattr(env_files, "env_file_dir", failing_dir)
     runner_fn = MagicMock()
     res = run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=runner_fn)
     assert res.status is PreflightStatus.UNKNOWN

@@ -97,7 +97,7 @@ class TestReviewLoopStage:
         assert "Review-Severity: clean" in clean_trailers
 
     def test_review_loop_consensus_approval_halts_without_merge(self, tmp_path):
-        """Verify review loop halts with HALTED_FOR_HUMAN and never invokes git merge main."""
+        """Verify review loop approves without halting for human and never invokes git merge main."""
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
@@ -106,7 +106,7 @@ class TestReviewLoopStage:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
-            payload={"test_pass_rate": 1.0, "exit_code": 0},
+            payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
         )
         with (
             patch_lookup_sites(
@@ -130,7 +130,8 @@ class TestReviewLoopStage:
                 assert "merge" not in args, f"HUMAN-ONLY MERGE RULE VIOLATED: merge invoked with args {args}"
 
         assert res["consensus"]["approved"] is True
-        assert res["halted_for_human"] is True
+        assert res["halted_for_human"] is False
+        assert res["approved"] is True
         assert res["human_merge_gate_enforced"] is True
         assert "holon review approve" in res["human_approval_command"]
 
@@ -144,7 +145,7 @@ class TestReviewLoopStage:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.FAILED,
-            payload={"test_pass_rate": 0.0, "exit_code": 1},
+            payload={"head_sha": "stage3-head", "test_pass_rate": 0.0, "exit_code": 1},
         )
         res = run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=3, dry_run=True)
         assert res["consensus"]["approved"] is False
@@ -164,7 +165,7 @@ class TestReviewLoopStage:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
-            payload={"test_pass_rate": 1.0, "exit_code": 0},
+            payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
         )
 
         with (
@@ -189,7 +190,7 @@ class TestReviewLoopStage:
         assert action_records[0]["review_iteration"] == 1
 
         assert len(summary_records) >= 1
-        assert summary_records[0]["status"] == "halted_for_human"
+        assert summary_records[0]["status"] == "approved"
         assert summary_records[0]["total_iterations"] == 1
         assert summary_records[0]["trailers"]["action_origin"] == "pr_review"
 
@@ -217,8 +218,8 @@ class TestReviewLoopStage:
             assert code == 0
             captured = capsys.readouterr().out
             assert "Holon Review Loop Summary" in captured
-            assert "[SAFETY HALT]" in captured
-            assert "holon review approve" in captured
+            assert "[REVIEW APPROVED]" in captured
+            assert "To merge manually" not in captured
 
         # Test rejected exit code
         with patch("sandbox_executor.flow.review.cli.run_review_loop") as mock_loop:

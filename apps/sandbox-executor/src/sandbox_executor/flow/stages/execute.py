@@ -45,7 +45,7 @@ from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
 from sandbox_executor.flow.stages.token_scope_guard import token_scope_failure
 from sandbox_executor.flow.stages.touch_set_guard import touch_set_violation_result
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
-from sandbox_executor.git import changed_paths
+from sandbox_executor.git import changed_paths, run_git
 from sandbox_executor.ledger import build_execution_id
 from sandbox_executor.naming import MissingTickerError, model_code, ticker_for
 from sandbox_executor.redaction import redact_agent_secrets
@@ -410,6 +410,9 @@ class ExecuteStage:
             return violation
         end_time = _utc_now()
         context.log(f"Stage 3 completed: Execution branch '{state.exec_branch}' changes {len(state.changed)} path(s).")
+        # The commit Stage 3 tested, so Stage 4 applies its test evidence only to an unchanged head.
+        tip = run_git(["rev-parse", "--verify", f"{state.exec_ref}^{{commit}}"], cwd=state.repo_dir, check=False)
+        tested_head = tip.stdout.strip() if tip.returncode == 0 else ""
         result = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
@@ -419,6 +422,7 @@ class ExecuteStage:
             payload={
                 **state.base_payload,
                 "changed_files": len(state.changed),
+                "head_sha": tested_head,
                 **_recorded_test_fields(summary_row),
             },
         )

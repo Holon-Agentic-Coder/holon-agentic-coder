@@ -54,7 +54,7 @@ class FakeGh:
         if verb == ["pr", "view"] and "mergeable" in cmd[-1]:
             return 0, json.dumps({"number": 7, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"})
         if verb == ["pr", "view"]:
-            return 0, json.dumps({"number": 7, "title": "child"})
+            return 0, json.dumps({"number": 7, "title": "child", "headRefOid": "stage3-head"})
         if verb == ["pr", "checks"]:
             returncode, checks = (
                 self._checks_replies.pop(0) if len(self._checks_replies) > 1 else self._checks_replies[0]

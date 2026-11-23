@@ -351,25 +351,26 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
     `target_branch` and its `parent_intent_id`, never the intent branch and never `main`. Stage 1 cuts the child from
     `origin/{plan branch}`, so it starts from the plan branch tip as it stands then. The plan branch comes from the flow
     context, else from the decision record; when neither is known, Stage 3 fails rather than fall back.
-  - **One after another, each merged before the next.** A child is ready to merge when its own Stage 4 halted at
-    consensus approval and its Stage 5 succeeded (or was skipped by flag). The flow then merges the child's PR into the
-    plan branch with `flow/github/merge.py`: a merge commit when the repository allows it, otherwise a squash
-    (`gh pr merge --merge` or `--squash`, always with `--match-head-commit`; a failed merge-method lookup or neither
-    method allowed refuses), CI green and `MERGEABLE`, after first merging the plan branch into the child head if it
-    moved; a base of `main`, `master`, the repository default branch or anything other than the plan branch is refused,
-    as is a PR head that is protected or is not the child's recorded execution branch (see
-    [Safety](safety.md#sub-intent-merge-rules)). Only after that merge does the next child start, so it is cut from a
-    tip that already holds every earlier child's merge or squash commit. The first child that fails or is not ready
-    marks its progress `failed`; one refused only by the merge guard stays `review_done` with a `merge_error`, so a
-    resume retries just the merge. Either way the parent's Stage 3 fails, naming the child; later children do not start.
-    `--dry-run` and `--skip-push` fail at the first child (no consensus approval, no PR number to merge).
+  - **One after another, each merged before the next.** A child is ready to merge when its own Stage 4 reached consensus
+    approval (`StageStatus.APPROVED`, or legacy `StageStatus.HALTED_FOR_HUMAN`) and its Stage 5 succeeded (or was
+    skipped by flag). The flow then merges the child's PR into the plan branch with `flow/github/merge.py`: a merge
+    commit when the repository allows it, otherwise a squash (`gh pr merge --merge` or `--squash`, always with
+    `--match-head-commit`; a failed merge-method lookup or neither method allowed refuses), CI green and `MERGEABLE`,
+    after first merging the plan branch into the child head if it moved; a base of `main`, `master`, the repository
+    default branch or anything other than the plan branch is refused, as is a PR head that is protected or is not the
+    child's recorded execution branch (see [Safety](safety.md#sub-intent-merge-rules)). Only after that merge does the
+    next child start, so it is cut from a tip that already holds every earlier child's merge or squash commit. The first
+    child that fails or is not ready marks its progress `failed`; one refused only by the merge guard stays
+    `review_done` with a `merge_error`, so a resume retries just the merge. Either way the parent's Stage 3 fails,
+    naming the child; later children do not start. `--dry-run` and `--skip-push` fail at the first child (no consensus
+    approval, no PR number to merge).
   - **The combined PR.** After the last child merged, Stage 3 merges the plan branch into the parent execution branch
     with a merge commit and appends a superseding `decomposed` summary row with `integrated: true`, the `plan_branch`
     and the list of `children` (slug, intent and execution branch, PR number and URL, merge commit). The parent's own
     Stage 4 and Stage 5 then run as for any execution: Stage 4 raises and reviews one combined PR from the parent
     execution branch into the intent's `target_branch`, carrying the parent plan, the parent execution record and every
-    child's plan, execution record and code, and halts for the human when that target is `main`. A child that itself
-    decomposed is merged into this plan branch through its own combined PR in the same way.
+    child's plan, execution record and code, and completes `APPROVED` for maintainer merge when that target is `main`. A
+    child that itself decomposed is merged into this plan branch through its own combined PR in the same way.
   - **Resume.** Per-child progress (`children_progress`: intent branch, execution branch, PR, status and merge commit)
     lives in the parent's Stage 3 payload and is checkpointed after every change, and each child keeps its own
     checkpoint keyed on its branch. Resuming a decomposed Stage 3 never dispatches the parent executor: the recorded
@@ -455,15 +456,14 @@ The guarantee has these deliberate limits:
   its `executions.jsonl` summary row (bounded by `HOLON_TEST_MEASUREMENT_TIMEOUT_SECONDS`, default 900). Stage 3 carries
   them; when the row records no rate, it is `null` ("not measured"). A measured rate below `1.0`, or a non-zero test
   exit code, is a failed test result that Stage 3 and Stage 4 treat as failed. Stage 4 reports `test_results` with its
-  `source` and counts (`pass_rate: null`, `measured: false`, `passed: null` when unmeasured). When no CI checks register
-  and Stage 3 recorded no rate, the review loop's `local_tests` fallback runs the test task in the review container
-  (once per head commit, re-measured only after the resolver pushes) and attributes the result to `review_local` in the
-  CI evidence and the posted `Checks` line (`stage_3` and `ci` are the other sources). Only when that run cannot execute
-  does the fallback report `NOT_MEASURED` and withhold consensus instead of passing. Before its first iteration the loop
-  waits for CI checks to register on the PR (when `gh` is available; up to `HOLON_CI_REGISTRATION_TIMEOUT` seconds,
-  default 180, `0` disables the wait), without consuming review iterations or writing ledger rows. If none register, the
-  loop stops after that single iteration with consensus status `not_measured` (one iteration's review rows and one
-  summary row, not rows for every iteration), Stage 4 fails with
+  `source` and counts (`pass_rate: null`, `measured: false`, `passed: null` when unmeasured). The Stage 4 test gate
+  judges the current `HEAD` commit, never reusing stale Stage 3 results across commits, by the precedence in
+  [Test evidence and its source](review_consensus.md#test-evidence-and-its-source); only when `review_local` cannot
+  execute does it report `NOT_MEASURED` and withhold consensus. Before a clean gate's CI probe, when the head lacks
+  confirmed resolver or Stage 3 evidence, the loop waits for CI checks to register on the PR (when `gh` is available; up
+  to `HOLON_CI_REGISTRATION_TIMEOUT` seconds, default 180, `0` disables the wait), without consuming review iterations
+  or writing ledger rows. If none register and `review_local` cannot run, the loop stops after that single iteration
+  with consensus status `not_measured` (one iteration's review rows and one summary row), Stage 4 fails with
   `test results not measured: no recorded Stage 3 test result and no CI checks`, and the pipeline halts before Stage 5
   calibration runs. Checks that registered but are still pending are waited out on their own CI wait budget (see
   [CI wait budget and outcomes](#ci-wait-budget-and-outcomes)), never the iteration's `review_iteration` budget.
@@ -587,12 +587,12 @@ job. It never offers a rerun. When the tests cannot be fetched, the finding says
 `pytest --durations=10`. Stage 5 never reruns CI, never changes the 300 s timing limit, and the merge stays with the
 human maintainer.
 
-#### Safety Halt & Merge Boundary
+#### Approval & Merge Boundary
 
-Merging to `main` is strictly reserved for the human maintainer. Upon successful consensus approval in Stage 4 and
-calibration report inclusion in Stage 5, the automated flow halts and requests human review and merge. Autonomous
-merging to `main` is strictly forbidden. This Stage 4 consensus stop is the only halt in the flow: no earlier stage
-waits for a human, and merging the PR is the only human step.
+Merging to `main` is reserved for the human maintainer. On Stage 4 consensus approval (`StageStatus.APPROVED`,
+`[REVIEW APPROVED]`) and Stage 5 calibration, the flow completes and leaves the PR ready for human merge; it never
+merges itself. `StageStatus.HALTED_FOR_HUMAN` (`[SAFETY HALT]`) is reserved for dry-run and manual-intervention halts;
+no earlier stage waits for a human, and merging the PR is the only human step.
 
 ---
 

@@ -361,3 +361,15 @@ def stub_review_local_test_measurement(monkeypatch: pytest.MonkeyPatch) -> None:
 
     unmeasured = TestMeasurement(None, None, None, None, 127, "test task not run in this test", "")
     monkeypatch.setattr("sandbox_executor.flow.review.local_tests.run_measurement", lambda _workspace: unmeasured)
+
+
+@pytest.fixture(autouse=True)
+def stub_review_workspace_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Read the review workspace HEAD as ``stage3-head``, the commit test Stage 3 payloads record as tested.
+
+    A test that moves the head patches ``sandbox_executor.flow.review.local_tests.run_git`` itself.
+    """
+    from unittest.mock import MagicMock
+
+    head = MagicMock(returncode=0, stdout="stage3-head\n")
+    monkeypatch.setattr("sandbox_executor.flow.review.local_tests.run_git", lambda *_a, **_k: head)

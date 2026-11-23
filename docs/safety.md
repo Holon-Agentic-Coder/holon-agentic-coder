@@ -355,7 +355,7 @@ the plan branch that listed it, and only when every rule holds:
   branch, whose base is not the expected plan branch, or whose expected plan branch is itself one of those. It reads the
   default branch from `gh repo view`; when that lookup fails the merge is refused, never guessed as `main`. The check
   runs before anything is written and again, on a freshly read PR, immediately before the merge.
-- **Ready to merge.** The child's Stage 4 halted at consensus approval and its Stage 5 completed; the PR is open,
+- **Ready to merge.** The child's Stage 4 reached consensus approval and its Stage 5 completed; the PR is open,
   `MERGEABLE`, and its checks are green on the exact head that is merged (no checks counts as not green).
 - **Up to date.** When the plan branch moved after the child was cut, it is merged into the child head first; the merge
   waits, bounded, for mergeability and CI on that new head, including for checks that have not registered on it yet.

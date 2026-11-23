@@ -92,7 +92,11 @@ class TestUnmeasuredTestsStopEarly:
             scoped_sleep_patch("sandbox_executor.flow.github.ci", sleep),
             scoped_sleep_patch("sandbox_executor.flow.review.loop", sleep),
             # No real ``git rev-parse``: keep the test hermetic and fast.
-            patch("sandbox_executor.flow.review.local_tests._ReviewLocalTests._head", lambda self: self._head_sha),
+            patch("sandbox_executor.flow.review.local_tests._ReviewLocalTests._head", lambda _self: "stage3-head"),
+            patch(
+                "sandbox_executor.flow.review.local_tests._default_pr_head",
+                return_value="stage3-head" if gh else None,
+            ),
             _verified_diff(),
         ):
             res = run_review_loop(ctx, auto_pr=False, max_iterations=25, **kwargs)
@@ -141,7 +145,7 @@ class TestUnmeasuredTestsStopEarly:
         assert len(rows) <= 8
 
     def test_recorded_result_skips_the_registration_wait(self, tmp_path):
-        ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": 1.0})
+        ctx = self._ctx(tmp_path, {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 1.0})
 
         res, probe, sleep = self._loop(ctx, lambda *a, **k: dict(self.LOCAL), ci_registration_timeout=600.0)
 
@@ -220,7 +224,7 @@ class TestUnmeasuredTestsStopEarly:
         assert "reported failures" not in res.error
 
     def test_stage4_keeps_the_failure_message_for_measured_failures(self, tmp_path):
-        ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": 0.5})
+        ctx = self._ctx(tmp_path, {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 0.5})
         loop_res = {
             "consensus": {"approved": False, "status": "rejected"},
             "mergeability": {"is_dirty": False},
@@ -298,7 +302,9 @@ class TestUnmeasuredTestsStopEarly:
             assert "could not verify the execution diff" in summaries[0]["summary"]
 
     GREEN_EVIDENCE: ClassVar[list[Any]] = [
-        pytest.param({"exit_code": 0, "test_pass_rate": 1.0}, None, id="stage3-pass-rate-1.0"),
+        pytest.param(
+            {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 1.0}, None, id="stage3-pass-rate-1.0"
+        ),
         pytest.param(
             {"exit_code": 0, "test_pass_rate": None},
             {"source": "github_cli", "all_passed": True, "total": 1, "passed": 1, "pending": 0},

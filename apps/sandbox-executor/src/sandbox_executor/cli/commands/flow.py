@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Mapping
 from typing import Any
 
 from sandbox_executor import cli
@@ -27,7 +28,7 @@ from sandbox_executor.cli.options import (
     _TOKEN_REDUCE_HELP,
     add_target_worktree_option,
 )
-from sandbox_executor.flow import FlowContext, FlowStage, format_final_head_ci
+from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, format_final_head_ci
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 
 logger = logging.getLogger(__name__)
@@ -326,11 +327,27 @@ def _report_flow_summary(context: Any, result_dict: dict[str, Any], json_output:
         print(line)
     if decomposition_lines:
         print()
-    review_res = context.stage_results.get("review")
-    if review_res and review_res.payload.get("halted_for_human"):
+    _report_review_outcome(context.stage_results.get("review"))
+
+
+def _report_review_outcome(review_res: StageResult | None) -> None:
+    if not review_res:
+        return
+    raw_consensus = review_res.payload.get("consensus")
+    consensus = raw_consensus if isinstance(raw_consensus, Mapping) else {}
+    is_approved = review_res.status == StageStatus.APPROVED or bool(
+        review_res.payload.get("halted_for_human") and consensus.get("approved")
+    )
+    if is_approved:
+        print(
+            "[REVIEW APPROVED] Review Loop reached consensus approval; "
+            "the PR is ready for the maintainer to merge (the flow never merges to main).\n"
+        )
+    elif review_res.status == StageStatus.HALTED_FOR_HUMAN or review_res.payload.get("halted_for_human"):
         print("[SAFETY HALT] Pipeline safely halted for human review (autonomous merge prohibited).")
-        if review_res.payload.get("human_approval_command"):
-            print(f"To approve manually, run: {review_res.payload['human_approval_command']}\n")
+        cmd = review_res.payload.get("human_approval_command")
+        if cmd:
+            print(f"To approve manually, run: {cmd}\n")
 
 
 def run(args: argparse.Namespace) -> int | None:

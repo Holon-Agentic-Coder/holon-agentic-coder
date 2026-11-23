@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-8fa5d6ae",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T01:43:21.911520+00:00",
+  "updated_ts": "2026-11-23T01:43:21.911520+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795265561-eec25c53-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 3,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795246931-review-approved-and-fresh-tests/P-1795246949-CLA-CO5.5/_",
+    "description": "Reproduced failure across 3 executions with identical context.",
+    "action": "Review Loop halted without consensus after 7 iteration(s): resolver failed: Resolver turn failed: Resolver agent timed out: turn stall budget of 90 s exceeded after 90.4 s (resolver exit code 1); output tail: The full test suite is still running in the background; I'll report the result when it finishes.; not approved: reviewer 1 final verdict CHANGES_REQUESTED, reviewer 1 Engineering role CHANGES, reviewer 3 final verdict CHANGES_REQUESTED, reviewer 3 Documentation role CHANGES; final verdicts: Reviewer 1 CHANGES_REQUESTED (0/1/3); Reviewer 1 Engineering role CHANGES; Reviewer 2 APPROVED (0/0/0); Reviewer 3 CHANGES_REQUESTED (0/0/1); Reviewer 3 Documentation role CHANGES",
+    "symptoms": []
+  }
+}

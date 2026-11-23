@@ -395,7 +395,7 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
   otherwise (see
   [Entropy Budget and Decomposition Evaluation](executor/execution_architecture_specification.md#5-entropy-budget-and-decomposition-evaluation)).
 
-The guarantee has five deliberate limits:
+The guarantee has these deliberate limits:
 
 - **No fabricated plans.** If no planner agent produced `plans/I-.../P-*.md` on a plan branch under the intent branch,
   Stage 2 fails; the flow never writes a plan from a template.

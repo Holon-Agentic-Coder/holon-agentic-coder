@@ -190,6 +190,7 @@ from sandbox_executor.launcher.role_dispatch import (
     RoleLaunchOptions as RoleLaunchOptions,
 )
 from sandbox_executor.launcher.role_dispatch import dispatch_role_agent, resolve_role_image
+from sandbox_executor.launcher.root_ca import generate_root_ca as generate_root_ca
 from sandbox_executor.launcher.sidecar import (
     _sidecar_state,
     detect_holon_coherence,
@@ -238,7 +239,6 @@ from sandbox_executor.redaction import (
 )
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 from sandbox_executor.scaffold import init_project
-from sandbox_executor.token_reduction import generate_root_ca as generate_root_ca
 
 logger = logging.getLogger(__name__)
 

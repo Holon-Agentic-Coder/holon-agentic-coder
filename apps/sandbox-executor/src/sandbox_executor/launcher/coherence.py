@@ -6,8 +6,7 @@ import shutil
 import socket
 import subprocess
 
-from sandbox_executor import token_reduction
-from sandbox_executor.launcher import proxy_paths
+from sandbox_executor.launcher import proxy_paths, root_ca
 from sandbox_executor.launcher.proxy_paths import PROXY_LISTEN_PORT
 
 logger = logging.getLogger(__name__)
@@ -153,7 +152,7 @@ def get_host_proxy_envs() -> dict[str, str]:
     ca_cert_path = os.path.join(ca_dir, "mitmproxy-ca-cert.pem")
     if not os.path.exists(ca_cert_path):
         try:
-            ca_cert_path, _ = token_reduction.generate_root_ca()
+            ca_cert_path, _ = root_ca.generate_root_ca()
         except Exception:
             return {}
 

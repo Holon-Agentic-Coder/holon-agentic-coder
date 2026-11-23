@@ -10,8 +10,15 @@ import subprocess
 import uuid
 from dataclasses import dataclass
 
-from sandbox_executor import token_reduction
-from sandbox_executor.launcher import coherence, messages, proxy_attach, proxy_paths, proxy_readiness, sidecar_plan
+from sandbox_executor.launcher import (
+    coherence,
+    messages,
+    proxy_attach,
+    proxy_paths,
+    proxy_readiness,
+    root_ca,
+    sidecar_plan,
+)
 from sandbox_executor.launcher.coherence import _TRUTHY_ENV_VALUES
 from sandbox_executor.launcher.coherence import detect_holon_coherence as detect_holon_coherence
 from sandbox_executor.launcher.coherence import get_host_proxy_envs as get_host_proxy_envs
@@ -47,7 +54,7 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
     container_name, network_name = _sidecar_names()
     addon_path = sidecar_plan._mitm_addon_path()
 
-    ca_cert_path, ca_key_path = token_reduction.generate_root_ca()
+    ca_cert_path, ca_key_path = root_ca.generate_root_ca()
 
     proxy_cache_dir, mitm_ca_combined, mitm_ca_cert, host_wire_log_dir, host_cache_dir = sidecar_plan._proxy_host_dirs(
         ca_cert_path, ca_key_path

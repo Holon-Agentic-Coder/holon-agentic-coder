@@ -2,7 +2,7 @@
 
 Every scenario drives a public entry point re-exported by `sandbox_executor.cli` and patches only stdlib module
 attributes (`subprocess.run`, `shutil.which`, `socket.create_connection`, `tempfile.mkstemp`, `sys.stdin`,
-`sys.platform`) or domain modules (`git_flow`, `token_reduction.ca_generator`), never a `cli.<function>` name, so the
+`sys.platform`) or domain modules (`git_flow`, `launcher.root_ca`), never a `cli.<function>` name, so the
 same assertions hold wherever the launch code lives. Each launch pins the docker argv (the redacted `Executing:` line
 included), the sorted `--env-file` lines and the exit code, after run-specific paths are swapped for placeholders.
 """
@@ -24,7 +24,7 @@ import pytest
 from sandbox_executor import cli, git_flow
 from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.budgets import StageTimer, active_stage_timer
-from sandbox_executor.token_reduction import ca_generator
+from sandbox_executor.launcher import root_ca
 
 # Synthetic credentials only: a fixed filler after each real-looking prefix.
 GITHUB_TOKEN = "ghp_" + "A1b2C3d4" * 5
@@ -103,7 +103,7 @@ def launch_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(git_flow, "sandbox_worktree_mounts", fake_worktree_mounts)
-    monkeypatch.setattr(ca_generator, "_ensure_root_ca", fake_ca)
+    monkeypatch.setattr(root_ca, "_ensure_root_ca", fake_ca)
     return state
 
 

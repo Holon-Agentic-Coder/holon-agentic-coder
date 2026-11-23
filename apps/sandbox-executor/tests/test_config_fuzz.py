@@ -310,10 +310,10 @@ def _run_path(ws: _Workspace) -> tuple[int, str, list[str]]:
         patch.dict(os.environ, ws.env, clear=True),
         patch("shutil.which", side_effect=lambda name: "/usr/bin/docker" if name == "docker" else None),
         patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
-        patch.object(cli, "get_agent_session_mounts", return_value=[]),
+        patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=[]),
         patch.object(cli.git_flow, "sandbox_worktree_mounts", return_value=[]),
-        patch.object(cli, "get_token_reduction_mounts_and_envs", return_value=([], {})),
-        patch.object(cli.tempfile, "mkdtemp", return_value=stage_dir),
+        patch("sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs", return_value=([], {})),
+        patch.object(tempfile, "mkdtemp", return_value=stage_dir),
         contextlib.redirect_stdout(out),
         contextlib.redirect_stderr(err),
     ):

@@ -194,9 +194,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     proxy_env: dict[str, str] = {}
     if context.token_reduce:
         try:
-            from sandbox_executor.cli import get_host_proxy_envs
+            from sandbox_executor.launcher import sidecar
 
-            proxy_env = get_host_proxy_envs()
+            proxy_env = sidecar.get_host_proxy_envs()
             if proxy_env:
                 context.log("Token reduction proxy active for review loop.")
         except Exception as exc:

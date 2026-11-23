@@ -166,7 +166,7 @@ class FlowContext:
     review_iterations_done: int = 0
     # Stage 4 findings a halted pass left without a disposition; a resume sends them to the resolver first.
     carried_review_findings: list[dict[str, Any]] = field(default_factory=list)
-    # Role-agent dispatcher for Stages 1-3; None means cli.dispatch_role_agent. Never checkpointed.
+    # Role-agent dispatcher for Stages 1-3; None means launcher.role_dispatch.dispatch_role_agent. Never checkpointed.
     dispatcher: Callable[..., int] | None = field(default=None, repr=False, compare=False)
     checkpoint_path: str | None = field(default=None, repr=False)  # The engine's --checkpoint path; never checkpointed.
 
@@ -182,9 +182,9 @@ class FlowContext:
     def __post_init__(self) -> None:
         """Resolve dynamic defaults such as proxy auto-detection."""
         if self.token_reduce is None:
-            from sandbox_executor.cli import detect_holon_coherence
+            from sandbox_executor.launcher import sidecar
 
-            self.token_reduce = detect_holon_coherence()
+            self.token_reduce = sidecar.detect_holon_coherence()
 
     def log(self, message: str) -> None:
         """Append a timestamped, secret-redacted message to context logs."""

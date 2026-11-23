@@ -137,7 +137,7 @@ class TestReviewMergeabilityGuards:
 
     def test_flow_context_token_reduce_auto_detection(self, monkeypatch):
         """Verify FlowContext defaults token_reduce=True when proxy is detected and preserves False when opted out."""
-        with patch("sandbox_executor.cli.detect_holon_coherence", return_value=True):
+        with patch("sandbox_executor.launcher.sidecar.detect_holon_coherence", return_value=True):
             ctx = FlowContext()
             assert ctx.token_reduce is True
 
@@ -158,7 +158,7 @@ class TestReviewMergeabilityGuards:
             "SSL_CERT_FILE": "/tmp/mitmproxy-ca-cert.pem",
         }
         monkeypatch.setattr(
-            "sandbox_executor.cli.get_host_proxy_envs",
+            "sandbox_executor.launcher.sidecar.get_host_proxy_envs",
             lambda: host_proxy_envs,
         )
 

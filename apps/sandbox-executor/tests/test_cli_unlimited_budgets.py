@@ -3,13 +3,14 @@
 import io
 import os
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from sandbox_executor import cli, local_llm
 from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.budgets import StageTimer, active_stage_timer
 from sandbox_executor.cli import run_docker_container
 
+from tests.env_file_capture import DockerEnvFileRecorder
 from tests.test_local_llm import HEALTH_WARM, _fetcher
 
 # What git_flow.sandbox_worktree_mounts returns for a valid worktree, reduced to its bind mount.
@@ -25,13 +26,14 @@ class TestUnlimitedDockerHandDown(unittest.TestCase):
         self, mock_which, mock_run, mock_mounts, mock_worktree_mounts
     ):
         # An unlimited host stage replaces any forwarded host value with the sentinel the container honours.
-        mock_run.return_value = MagicMock(returncode=0)
+        # Every HOLON_* item travels in the env-file, which is removed when the run returns.
+        docker = mock_run.side_effect = DockerEnvFileRecorder()
         timer = StageTimer("execute", None, clock=lambda: 1000.0)
         with patch.dict(os.environ, {"HOLON_STAGE_BUDGET_SECONDS": "9999"}, clear=True):
             with active_stage_timer(timer):
                 run_docker_container("planner", "holon/agent-pi", ["branch"], agent_id="pi")
-            budget_args = [a for a in mock_run.call_args[0][0] if a.startswith("HOLON_STAGE_BUDGET_SECONDS=")]
-            self.assertEqual(budget_args, ["HOLON_STAGE_BUDGET_SECONDS=unlimited"])
+            self.assertEqual(docker.env_files[-1]["HOLON_STAGE_BUDGET_SECONDS"], "unlimited")
+            self.assertFalse(any("HOLON_STAGE_BUDGET_SECONDS" in a for a in mock_run.call_args[0][0]))
 
 
 class TestUnlimitedDoctor(unittest.TestCase):

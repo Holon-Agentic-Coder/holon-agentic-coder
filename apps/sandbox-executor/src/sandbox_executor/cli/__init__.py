@@ -92,6 +92,8 @@ from sandbox_executor.launcher.env_files import (
 )
 from sandbox_executor.launcher.env_files import (
     env_file_dir,
+    is_env_file_item,
+    is_passthrough_env_item,
     is_secret_env_item,
     sweep_stale_env_files,
     write_env_file,
@@ -326,6 +328,8 @@ __all__ = [
     "get_host_proxy_envs",
     "get_token_reduction_mounts_and_envs",
     "init_project",
+    "is_env_file_item",
+    "is_passthrough_env_item",
     "is_secret_env_item",
     "lift_veto",
     "list_vetoes",

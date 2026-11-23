@@ -1,6 +1,6 @@
-"""Property fuzz: malformed ``models.json`` and settings never crash ``holon doctor`` or the run path.
+"""Malformed ``models.json`` and settings never crash ``holon doctor`` or the run path.
 
-A generated matrix of malformed documents (bad encodings, lone surrogate escapes, oversized and non-finite numbers,
+A fixed matrix of malformed documents (bad encodings, lone surrogate escapes, oversized and non-finite numbers,
 deep nesting, a wrong type at every level, missing fields), malformed numeric environment values and string settings
 holding text that cannot be encoded as UTF-8 (a lone surrogate, or a non-UTF-8 byte as decoded by ``surrogateescape``)
 is thrown at:
@@ -13,9 +13,10 @@ is thrown at:
 
 stdout, stderr and the log are strict UTF-8 byte streams (``errors="strict"``), like a real terminal or pipe, so text
 that a ``StringIO`` would accept but a terminal cannot encode fails the case. Every document and value carries a
-runtime-built fake credential; no fragment of it may reach stdout, stderr or a log line. The credential uses letters
-that occur in no message (``FGJQVZ``) and is compared case-insensitively. Failures are collected and reported by case
-id only, never by value.
+fake credential drawn from a generator seeded by ``seeded_secrets`` (a fixed default seed; set
+``CREDENTIAL_TEST_SEED=<n>`` to rerun a seed, or ``CREDENTIAL_TEST_SEED=random`` for a stress run); no fragment of it
+may reach stdout, stderr or a log line. The credential uses letters that occur in no message (``FGJQVZ``) and is
+compared case-insensitively. Failures are collected and reported by case id and seed, never by value.
 """
 
 import argparse
@@ -24,7 +25,6 @@ import io
 import json
 import logging
 import os
-import secrets
 import tempfile
 from collections.abc import Callable, Iterator
 from unittest.mock import MagicMock, patch
@@ -32,13 +32,17 @@ from unittest.mock import MagicMock, patch
 from sandbox_executor import budget_limits, budgets, cli, local_llm
 from sandbox_executor.preflight import PreflightResult, PreflightStatus
 
+from tests import seeded_secrets
+
 _FRAGMENT = 6
 _LOOPBACK = "http://127.0.0.1:8081/v1"
 
 
-def _credential() -> str:
+def _credential(label: str) -> str:
+    """Return the fake credential of the test named `label`, drawn from its seeded generator."""
     alphabet = "FGJQVZ0123456789"
-    return "sk-" + "".join(secrets.choice(alphabet) for _ in range(32))
+    rng = seeded_secrets.generator(f"malformed-config:{label}")
+    return "sk-" + "".join(rng.choice(alphabet) for _ in range(32))
 
 
 def _leaks(text: str, credential: str) -> bool:
@@ -48,7 +52,7 @@ def _leaks(text: str, credential: str) -> bool:
 
 
 def _valid_model(credential: str) -> dict:
-    return {"id": "fuzz-model", "contextWindow": 32768, "maxTokens": 4096, "note": credential}
+    return {"id": "sample-model", "contextWindow": 32768, "maxTokens": 4096, "note": credential}
 
 
 def _valid_provider(credential: str) -> dict:
@@ -247,9 +251,9 @@ class _Workspace:
             local_llm.ENV_PI_AGENT_DIR: self.agent_dir,
             local_llm.ENV_LOCAL_MODE: "1",
             local_llm.ENV_LOCAL_BASE_URL: f"http://user:{credential}@localhost:8082/v1",
-            local_llm.ENV_LOCAL_MODELS: "fuzz-synth",
+            local_llm.ENV_LOCAL_MODELS: "sample-synth",
             local_llm.ENV_LOCAL_CONTEXT_WINDOW: "32768",
-            "GITHUB_TOKEN": "fuzz-placeholder",
+            "GITHUB_TOKEN": "sample-placeholder",
             **extra_env,
         }
 
@@ -348,7 +352,7 @@ def _assert_handdown_finite(argv: list[str]) -> None:
 
 
 def test_malformed_models_json_never_crashes_doctor_or_run_path():
-    credential = _credential()
+    credential = _credential("malformed_models_json_never_crashes_doctor_or_run_path")
     failures: list[str] = []
     cases = 0
     with tempfile.TemporaryDirectory() as root:
@@ -378,11 +382,11 @@ def test_malformed_models_json_never_crashes_doctor_or_run_path():
             _check(f"{case}/doctor-json", failures, lambda: doctor(True))
             _check(f"{case}/run", failures, run)
     assert cases >= 150, f"matrix shrank to {cases} documents"
-    assert not failures, f"{len(failures)} failures:\n" + "\n".join(failures)
+    assert not failures, f"{len(failures)} failures ({seeded_secrets.seed_note()}):\n" + "\n".join(failures)
 
 
 def test_malformed_numeric_env_never_crashes_doctor_or_run_path():
-    credential = _credential()
+    credential = _credential("malformed_numeric_env_never_crashes_doctor_or_run_path")
     failures: list[str] = []
     valid = json.dumps({"providers": {"p": _valid_provider(credential)}}).encode()
     with tempfile.TemporaryDirectory() as root:
@@ -415,7 +419,7 @@ def test_malformed_numeric_env_never_crashes_doctor_or_run_path():
                 _check(f"{case}/doctor-text", failures, lambda: doctor(False))
                 _check(f"{case}/doctor-json", failures, lambda: doctor(True))
                 _check(f"{case}/run", failures, run)
-    assert not failures, f"{len(failures)} failures:\n" + "\n".join(failures)
+    assert not failures, f"{len(failures)} failures ({seeded_secrets.seed_note()}):\n" + "\n".join(failures)
 
 
 _STRING_VARS = (
@@ -437,7 +441,7 @@ def _unencodable_values(var: str) -> list[str]:
         local_llm.ENV_LOCAL_BASE_URL: "http://localhost:8082/v1",
         local_llm.ENV_HOST_LOCAL_HOSTS: "localhost:8082",
         local_llm.ENV_REASONING_MODE: "off",
-    }.get(var, "fuzz-value")
+    }.get(var, "sample-value")
     values = []
     for bad in (os.fsdecode(b"\xff"), os.fsdecode(b"\x80"), os.fsdecode(b"\xed\xa0\x80")):
         values.extend((base + bad, base[:4] + bad + base[4:]))
@@ -446,7 +450,7 @@ def _unencodable_values(var: str) -> list[str]:
 
 def test_unencodable_string_env_never_crashes_doctor_or_run_path():
     """A string ``HOLON_*`` setting that cannot be encoded as UTF-8 is a clean, value-free error naming the variable."""
-    credential = _credential()
+    credential = _credential("unencodable_string_env_never_crashes_doctor_or_run_path")
     failures: list[str] = []
     valid = json.dumps({"providers": {"p": _valid_provider(credential)}}).encode()
     with tempfile.TemporaryDirectory() as root:
@@ -475,4 +479,4 @@ def test_unencodable_string_env_never_crashes_doctor_or_run_path():
                     _check(f"{case}/doctor-text", failures, lambda: doctor(False))
                     _check(f"{case}/doctor-json", failures, lambda: doctor(True))
                     _check(f"{case}/run", failures, run)
-    assert not failures, f"{len(failures)} failures:\n" + "\n".join(failures)
+    assert not failures, f"{len(failures)} failures ({seeded_secrets.seed_note()}):\n" + "\n".join(failures)

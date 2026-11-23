@@ -48,23 +48,6 @@ class CarryOver:
     fingerprint: str
 
 
-def _gate_record(review_target: str, gate: Any) -> dict[str, Any]:
-    """The ACT row recording a blocked approval; its ``error_context`` is redacted."""
-    return {
-        "action_id": generate_action_id("ACT-GATE"),
-        "execution_id": f"REV-GATE-{int(datetime.now(UTC).timestamp())}",
-        "action": f"Approved consensus not posted for {review_target}: the head conflicts with the target branch",
-        "category": "code",
-        "target": review_target,
-        "outcome": "failure",
-        "entry_type": "action",
-        "action_origin": "pr_review",
-        "labels": ["review", "conflict-gate"],
-        "error_context": redact_agent_secrets(str(gate.blocked_reason)),
-        "created_at": datetime.now(UTC).isoformat(),
-    }
-
-
 def decide_carry_over(
     repo_dir: str, consensus_data: Mapping[str, Any], merged_head: str, target_branch: str
 ) -> CarryOver | None:

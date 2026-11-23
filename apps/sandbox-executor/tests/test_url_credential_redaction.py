@@ -733,6 +733,36 @@ def test_pi_agent_dir_sharing_a_credential_run_is_not_a_leak(monkeypatch, tmp_pa
     assert _forwarded_run_failures(env, docker, _COLLIDING_CREDENTIAL, str(tmp_path)) == []
 
 
+# A temp name with no character of `_LETTERS`, so only the HOME path below can share a run with the credential.
+_NEUTRAL_TEMP_NAME = "abcdehik"
+
+
+def test_home_path_sharing_a_credential_run_is_not_a_leak(monkeypatch, tmp_path):
+    """An isolated HOME whose path shares a run with the credential is not a leak through the masked pi-agent dir.
+
+    pytest's run directory (`pytest-<N>`, which grows when the suite is rerun) or a random macOS `/var/folders` prefix
+    sits in front of every pi-agent mount path; the whole fixture path is masked, so it cannot read as a fragment.
+    """
+    _patch_docker_host(monkeypatch)
+    monkeypatch.setattr(tempfile, "_get_candidate_names", lambda: itertools.repeat(_NEUTRAL_TEMP_NAME))
+    home = tmp_path / f"home-{_LETTERS[3:]}{_LETTERS[0]}".lower()
+    home.mkdir()
+    env = {**_LOCAL_ENV, "HOLON_TURN_TIMEOUT_SECONDS": f"socks5://{_COLLIDING_CREDENTIAL}@127.0.0.1/v1"}
+    docker = _DockerRecorder()
+    with (
+        patch.object(local_llm, "host_models_json", lambda *_a, **_k: None),
+        patch.object(subprocess, "run", docker),
+        _captured({**env, "HOME": str(home)}) as out,
+    ):
+        cli.run_docker_container("planner", "img", [], agent_id="pi")
+    pi_dir = str(home / ".holon" / "tmp" / f"holon-pi-agent-{_NEUTRAL_TEMP_NAME}")
+    assert f"{pi_dir}{_PI_AGENT_MOUNT_SUFFIX}" in docker.argv, "the run must mount the pi-agent dir under HOME"
+    assert _leaks([" ".join(docker.argv)], _COLLIDING_CREDENTIAL), "the unmasked argv must share a run"
+    assert _leaks(out, _COLLIDING_CREDENTIAL), "the unmasked echo must share a run"
+    assert not _leaks(_without_fixture_paths(out, docker.argv, str(home)), _COLLIDING_CREDENTIAL)
+    assert _forwarded_run_failures(env, docker, _COLLIDING_CREDENTIAL, str(home)) == []
+
+
 @pytest.mark.parametrize(
     "template",
     [

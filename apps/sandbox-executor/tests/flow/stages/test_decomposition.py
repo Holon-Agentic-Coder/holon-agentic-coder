@@ -551,7 +551,7 @@ class TestEntropyBudgetHandoffInFlow:
             assert getattr(defaults, name) != value, f"{name}: parent value must differ from the default"
 
         # Pin proxy detection to the opposite of the parent's token_reduce so a dropped copy cannot pass by detection.
-        with patch("sandbox_executor.cli.detect_holon_coherence", return_value=False):
+        with patch("sandbox_executor.launcher.sidecar.detect_holon_coherence", return_value=False):
             child = flow_module._child_context(parent, child_intent)
 
         assert set(expected) == {f.name for f in dataclasses.fields(FlowContext)}, "classify every new field"

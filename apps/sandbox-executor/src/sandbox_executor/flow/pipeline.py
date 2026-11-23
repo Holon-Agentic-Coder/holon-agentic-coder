@@ -419,8 +419,8 @@ def run_flow_pipeline(
     finally:
         if context.token_reduce:
             try:
-                from sandbox_executor.cli import teardown_token_reduction_proxy
+                from sandbox_executor.launcher import sidecar
 
-                teardown_token_reduction_proxy()
+                sidecar.teardown_token_reduction_proxy()
             except Exception:
                 pass

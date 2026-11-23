@@ -69,6 +69,11 @@ def launch_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any
     """Hermetic launch surroundings: fake docker, a temp home, a fixed platform and a recording `subprocess.run`."""
     home = tmp_path / "home"
     home.mkdir()
+    # The suite-wide isolation keeps the harness's own HOLON_* names (a simulated sandbox sets HOLON_ROLE and
+    # HOLON_IN_SANDBOX); the launch forwards every HOLON_* variable, so each scenario starts from none.
+    for name in list(os.environ):
+        if name.startswith("HOLON_"):
+            monkeypatch.delenv(name)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(sys, "stdin", io.StringIO())

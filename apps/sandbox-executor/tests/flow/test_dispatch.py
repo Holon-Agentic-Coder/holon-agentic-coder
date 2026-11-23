@@ -648,7 +648,7 @@ class TestFlowRoleDispatch:
         monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
         monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
         monkeypatch.setenv("HOLON_MODEL", "gemini-3.8-flash-medium")
-        with patch("sandbox_executor.cli.detect_holon_coherence", return_value=True):
+        with patch("sandbox_executor.launcher.sidecar.detect_holon_coherence", return_value=True):
             dispatcher = MagicMock(return_value=0)
             ctx = FlowContext(repo_dir=".", dispatcher=dispatcher)
             flow_module._dispatch_role(ctx, "planner", ["I-1-x/_"])
@@ -725,11 +725,11 @@ class TestFlowRoleDispatch:
         assert results["execute"].status == StageStatus.SUCCESS
         dispatcher.assert_not_called()
 
-    def test_default_dispatcher_is_cli_dispatch_role_agent(self, flow_repos, tmp_path):
+    def test_default_dispatcher_is_launcher_dispatch_role_agent(self, flow_repos, tmp_path):
         host, origin = flow_repos
         agents = FakeRoleAgents(tmp_path, origin)
         ctx = _dispatch_context(host, None)
-        with patch("sandbox_executor.cli.dispatch_role_agent", side_effect=agents) as mock_dispatch:
+        with patch("sandbox_executor.launcher.role_dispatch.dispatch_role_agent", side_effect=agents) as mock_dispatch:
             res = run_intent_stage(ctx)
         assert res.status == StageStatus.SUCCESS
         mock_dispatch.assert_called_once()
@@ -771,7 +771,7 @@ class TestFlowDispatchMergeInteractions:
 
         with (
             patch("sandbox_executor.cli.run_preflight_probe", order.probe),
-            patch("sandbox_executor.cli.dispatch_role_agent", order.dispatch),
+            patch("sandbox_executor.launcher.role_dispatch.dispatch_role_agent", order.dispatch),
             patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
             patch("sys.argv", ["holon", "flow", str(intent_file), "--target-worktree", str(host)]),
             pytest.raises(SystemExit),

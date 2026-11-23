@@ -266,14 +266,14 @@ def test_probe_env_file_is_removed_when_the_probe_fails(probe_env, monkeypatch, 
 
 
 def test_probe_returns_unknown_when_the_env_file_dir_cannot_be_created(probe_env, monkeypatch):
-    from sandbox_executor import cli
+    from sandbox_executor.launcher import env_files
 
     _set_probe_values(monkeypatch)
 
     def failing_dir():
         raise PermissionError("env-file dir not creatable")
 
-    monkeypatch.setattr(cli, "env_file_dir", failing_dir)
+    monkeypatch.setattr(env_files, "env_file_dir", failing_dir)
     runner_fn = MagicMock()
     res = run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=runner_fn)
     assert res.status is PreflightStatus.UNKNOWN
@@ -454,7 +454,7 @@ def test_plan_and_execute_abort_before_container_on_failed_probe(probe_env, monk
         patch(
             "sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.QUOTA_EXHAUSTED)
         ) as probe,
-        patch("sandbox_executor.cli.run_docker_container") as docker,
+        patch("sandbox_executor.launcher.containers.run_docker_container") as docker,
     ):
         assert _run_main(["holon", command, target]) == 1
     probe.assert_called_once()
@@ -484,7 +484,7 @@ def test_skip_preflight_bypasses_probe(probe_env, monkeypatch, bypass):
         monkeypatch.setenv("HOLON_SKIP_PREFLIGHT", "1")
     with (
         patch("sandbox_executor.cli.run_preflight_probe") as probe,
-        patch("sandbox_executor.cli.run_docker_container", return_value=0) as docker,
+        patch("sandbox_executor.launcher.containers.run_docker_container", return_value=0) as docker,
     ):
         assert _run_main(argv) == 0
     probe.assert_not_called()
@@ -510,7 +510,7 @@ def test_cli_prints_harness_and_skipped_preflight_info_on_stderr(probe_env, monk
     monkeypatch.setenv("HOLON_MODEL", "claude-opus-5-5")
     with (
         patch("sandbox_executor.cli.run_preflight_probe") as probe,
-        patch("sandbox_executor.cli.run_docker_container", return_value=0),
+        patch("sandbox_executor.launcher.containers.run_docker_container", return_value=0),
     ):
         assert _run_main(["holon", "plan", "I-1/_", "--skip-preflight"]) == 0
     probe.assert_not_called()
@@ -551,7 +551,7 @@ def test_plan_uses_harness_runner_and_explicit_model(probe_env, monkeypatch, hos
     monkeypatch.setenv("HOLON_MODEL", "claude-opus-5-5")
     with (
         patch("sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.OK)),
-        patch("sandbox_executor.cli.run_docker_container", return_value=0) as docker,
+        patch("sandbox_executor.launcher.containers.run_docker_container", return_value=0) as docker,
     ):
         assert _run_main(["holon", "plan", "I-1/_"]) == 0
     docker.assert_called_once_with(
@@ -569,7 +569,7 @@ def test_plan_uses_harness_runner_and_explicit_model(probe_env, monkeypatch, hos
 
 def test_plan_exits_with_error_without_model(probe_env, monkeypatch, capsys):
     monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
-    with patch("sandbox_executor.cli.run_docker_container") as docker:
+    with patch("sandbox_executor.launcher.containers.run_docker_container") as docker:
         assert _run_main(["holon", "plan", "I-1/_", "--skip-preflight"]) == 1
     docker.assert_not_called()
     assert "mandatory" in capsys.readouterr().err
@@ -577,7 +577,7 @@ def test_plan_exits_with_error_without_model(probe_env, monkeypatch, capsys):
 
 def test_execute_with_unmapped_env_runner_fails_before_docker(probe_env, monkeypatch, capsys):
     monkeypatch.setenv("HOLON_AGENT", "foo-agent")
-    with patch("sandbox_executor.cli.run_docker_container") as docker:
+    with patch("sandbox_executor.launcher.containers.run_docker_container") as docker:
         assert _run_main(["holon", "execute", "I-1/P-2/_"]) == 1
     docker.assert_not_called()
     assert "Supported runners" in capsys.readouterr().err
@@ -585,10 +585,10 @@ def test_execute_with_unmapped_env_runner_fails_before_docker(probe_env, monkeyp
 
 def test_run_docker_container_disables_nested_preflight(probe_env):
     with (
-        patch("sandbox_executor.cli.shutil.which", return_value="/usr/bin/docker"),
+        patch("shutil.which", return_value="/usr/bin/docker"),
         patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=[]),
-        patch("sandbox_executor.cli.find_github_token", return_value=None),
-        patch("sandbox_executor.cli.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run,
+        patch("sandbox_executor.launcher.mounts.find_github_token", return_value=None),
+        patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run,
     ):
         from sandbox_executor.cli import run_docker_container
 

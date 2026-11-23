@@ -6,10 +6,10 @@ import subprocess
 from collections.abc import Iterator
 
 import pytest
-from sandbox_executor import cli
 from sandbox_executor.agent_defaults import detected_harness_markers
 from sandbox_executor.flow.admission import AdmissionDecision
 from sandbox_executor.flow.github import token_scopes
+from sandbox_executor.launcher import env_files, mounts
 
 from tests import network_guard
 from tests.credential_env import CREDENTIAL_ENV_NAMES
@@ -116,10 +116,14 @@ def no_ambient_credentials(monkeypatch):
             continue
         if name in _AMBIENT_CREDENTIAL_NAMES or name.startswith(_AMBIENT_PREFIX):
             monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(cli, "find_github_token", lambda: os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN"))
     # The token scope report (holon doctor, the Stage 3 pre-flight) never runs the real `gh` nor calls the GitHub API.
     monkeypatch.setattr(token_scopes, "_run_gh", lambda argv: subprocess.CompletedProcess(argv, 1, "", "gh disabled"))
     monkeypatch.setattr(token_scopes, "_urllib_fetch", _no_github_api)
+
+    def env_token() -> str | None:
+        return os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+
+    monkeypatch.setattr(mounts, "find_github_token", env_token)
 
 
 @pytest.fixture(autouse=True)
@@ -150,7 +154,7 @@ def isolated_env_file_dir(tmp_path_factory, monkeypatch):
     """
     env_dir = tmp_path_factory.mktemp("env-files")
     os.chmod(env_dir, 0o700)
-    monkeypatch.setattr(cli, "env_file_dir", lambda: str(env_dir))
+    monkeypatch.setattr(env_files, "env_file_dir", lambda: str(env_dir))
     return env_dir
 
 

@@ -274,7 +274,7 @@ def build_probe_docker_cmd(
     The container keeps its normal entrypoint with no ``HOLON_ROLE``, so the dispatcher maps ``HOLON_AGENT_KEY`` onto
     the vendor variables and then executes the runner binary directly. The mounts, gateway host entries and network
     isolation come from the same helpers ``run_docker_container`` uses, and so does the credential classifier
-    (``cli.is_secret_env_item``): ``HOLON_AGENT_KEY``, a credential-bearing ``HOLON_AGENT_SETTINGS`` and any other
+    (``env_files.is_secret_env_item``): ``HOLON_AGENT_KEY``, a credential-bearing ``HOLON_AGENT_SETTINGS`` and any other
     credential-bearing value are returned separately for a 0600 ``--env-file``, never as ``-e`` items that ``ps`` and
     ``/proc/<pid>/cmdline`` can read.
 
@@ -287,14 +287,10 @@ def build_probe_docker_cmd(
 
     Returns:
         The docker argv, free of credential values, and the variables the caller must hand over with
-        ``cli.write_env_file`` and ``--env-file`` (empty when there are none).
+        ``launcher.env_files.write_env_file`` and ``--env-file`` (empty when there are none).
     """
     from sandbox_executor.agent_runner import RETIRED_ENV_VARS, runners
-    from sandbox_executor.cli import (
-        _gateway_host_args,
-        build_network_isolation_args,
-        is_secret_env_item,
-    )
+    from sandbox_executor.launcher import env_files, mounts, proxy_paths
 
     agent_id = normalise_agent_id(agent)
     cmd = ["docker", "run", "--rm", "-i", "--name", container_name]
@@ -314,13 +310,13 @@ def build_probe_docker_cmd(
     env[SKIP_ENV_VAR] = "1"
     secret_env: dict[str, str] = {}
     for key, value in sorted(env.items()):
-        if is_secret_env_item(key, value):
+        if env_files.is_secret_env_item(key, value):
             secret_env[key] = value
         else:
             cmd.extend(["-e", f"{key}={value}"])
-    cmd.extend(_gateway_host_args())
+    cmd.extend(proxy_paths._gateway_host_args())
     cmd.extend(session_mounts)
-    cmd.extend(build_network_isolation_args())
+    cmd.extend(mounts.build_network_isolation_args())
     cmd.append(image)
     cmd.extend(_reference_secret_args(runners[agent_id].compose_cmd(model, PROBE_PROMPT), secret_env))
     return cmd, secret_env
@@ -418,10 +414,10 @@ def run_preflight_probe(  # noqa: PLR0911
             PreflightStatus.UNKNOWN, agent, model, image, hint="'docker' CLI command not found. Please install Docker."
         )
 
-    from sandbox_executor.cli import get_agent_session_mounts
+    from sandbox_executor.launcher import env_files, mounts
 
     try:
-        session_mounts = get_agent_session_mounts(agent)
+        session_mounts = mounts.get_agent_session_mounts(agent)
     except SystemExit:
         return _result(
             PreflightStatus.NOT_LOGGED_IN,
@@ -443,13 +439,11 @@ def run_preflight_probe(  # noqa: PLR0911
     container_name = f"holon-preflight-{uuid.uuid4().hex[:12]}"
     docker_cmd, secret_env = build_probe_docker_cmd(agent, model, image, container_name, session_mounts)
 
-    from sandbox_executor.cli import env_file_dir, sweep_stale_env_files, write_env_file
-
     env_file: str | None = None
     if secret_env:
         try:
-            sweep_stale_env_files(env_file_dir())
-            env_file = write_env_file(secret_env)
+            env_files.sweep_stale_env_files(env_files.env_file_dir())
+            env_file = env_files.write_env_file(secret_env)
         except (ValueError, OSError) as exc:
             return _result(PreflightStatus.UNKNOWN, agent, model, image, output=str(exc))
         # Right after `docker run`, as in run_docker_container; docker reads the file on the client side.

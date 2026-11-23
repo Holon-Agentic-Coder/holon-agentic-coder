@@ -1,0 +1,34 @@
+{
+  "kb_id": "KB-failure-c0aa7a42",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T10:20:54.966155+00:00",
+  "updated_ts": "2026-11-23T10:20:54.966155+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-1795425186-dbd11c4c",
+      "ACT-1795425181-a22b1a40",
+      "ACT-1795423804-c8261d9d",
+      "ACT-1795423782-d4b05938",
+      "ACT-1795422462-5c2ce6d3"
+    ],
+    "success_count": 0,
+    "failure_count": 7,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "test",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795420649-no-fallback-calibration-report/P-1795421790-CLA-CO5.5/E-1795421974-CLA-CO5.5/_",
+    "description": "Reproduced failure across 7 executions with identical context.",
+    "action": "Review Loop executed for I-1795420649-no-fallback-calibration-report/P-1795421790-CLA-CO5.5/E-1795421974-CLA-CO5.5/_",
+    "symptoms": [
+      "Consensus failed: findings=['FIND-DIRTY-003']; final verdicts: Reviewer 1 APPROVED (0/0/0); Reviewer 2 APPROVED (0/0/0); Reviewer 3 APPROVED (0/0/0)"
+    ]
+  }
+}

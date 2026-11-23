@@ -154,6 +154,8 @@ def test_an_out_of_set_edit_is_reverted_and_the_next_tier_sees_markers(work, pus
 
 
 def test_tampering_stops_after_one_dispatch(work, pushes):
+    head = _git(work, "rev-parse", "HEAD")
+
     def commit(work: Path) -> None:
         _resolve(work)
         _git(work, "commit", "-qam", "agent commit")
@@ -162,6 +164,9 @@ def test_tampering_stops_after_one_dispatch(work, pushes):
     result = _sync(work, dispatcher)
     assert result.status == "blocked" and dispatcher.tiers() == [HAIKU]
     assert result.test_result.startswith("tampered") and pushes == []
+    assert not _merging(work) and _git(work, "rev-parse", "HEAD~1") == head  # the agent commit is gone
+    assert _git(work, "diff", "--name-only", "HEAD~1", "HEAD") == LEDGER
+    assert result.head_after == _git(work, "rev-parse", "HEAD")
 
 
 def test_exhaustion_fails_closed_without_a_push(work, pushes):

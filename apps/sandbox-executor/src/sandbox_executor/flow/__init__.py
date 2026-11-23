@@ -255,6 +255,7 @@ __all__ = [
     "deserialize_carried",
     "detect_stage_conflicts",
     "discard_empty_calibrated_branch",
+    "discard_tampered",
     "discover_in_flight_flows",
     "doctor_lines",
     "dry_run_plan_result",

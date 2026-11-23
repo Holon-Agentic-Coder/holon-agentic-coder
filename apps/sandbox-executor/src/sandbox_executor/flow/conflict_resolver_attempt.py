@@ -2,11 +2,13 @@
 
 Before an attempt the guard snapshots the index (every stage entry), the untracked files, ``HEAD`` and ``MERGE_HEAD``.
 After it, any change to the index, ``HEAD`` or ``MERGE_HEAD`` (or a merge no longer in progress) is tampering: the
-agent ran a git write, and the caller fails closed at once. Worktree edits outside the conflict set (tests included)
-and new untracked files are out of set; conflict markers left in the set fail the attempt too. A failed attempt is
-reset: out-of-set edits are reverted, only the listed new files are deleted, and the conflict paths get their merge
-state back (``git checkout -m``, or the surviving side's stage blob for a modify/delete conflict, which ``checkout -m``
-cannot recreate). Paths are compared exactly as git reports them, so a rename counts as out of set.
+agent ran a git write, and the caller fails closed at once, first moving a ``HEAD`` the agent advanced (an agent
+commit) back to the pre-attempt head so no unverified commit stays on the flow branch. Worktree edits outside the
+conflict set (tests included) and new untracked files are out of set; conflict markers left in the set fail the
+attempt too. A failed attempt is reset: out-of-set edits are reverted, only the listed new files are deleted, and the
+conflict paths get their merge state back (``git checkout -m``, or the surviving side's stage blob for a modify/delete
+conflict, which ``checkout -m`` cannot recreate). Paths are compared exactly as git reports them, so a rename counts as
+out of set.
 """
 
 from __future__ import annotations
@@ -141,6 +143,18 @@ def reset_attempt(worktree: str, paths: list[str], check: AttemptCheck) -> str:
     if failed or missing:
         return f"could not restore the merge state of {', '.join(sorted(set(failed) | set(missing)))}"
     return ""
+
+
+def discard_tampered(worktree: str, before: MergeSnapshot) -> str:
+    """Move ``HEAD`` back to the pre-attempt head when the agent moved it; return why it could not, or ``""``.
+
+    The hard reset also drops the merge state, which the fail-closed caller would abort anyway.
+    """
+    head = _git_out(worktree, "rev-parse", "-q", "--verify", "HEAD").strip()
+    if not before.head or head == before.head:
+        return ""
+    res = run_git(["reset", "-q", "--hard", before.head], cwd=worktree, check=False)
+    return "" if res.returncode == 0 else f"could not restore HEAD to {before.head[:12]}"
 
 
 def save_attempt_diff(worktree: str, paths: list[str], label: str) -> str:

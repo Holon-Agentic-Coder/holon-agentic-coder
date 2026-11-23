@@ -4,10 +4,10 @@
 runner's tier ladder: dispatch one attempt, check it with the host guard (``conflict_resolver_attempt``), and stage it
 only when the container verdict is ``resolved`` and the guard finds nothing wrong. Failed lint, failed tests,
 cannot-decide, an agent failure or a rejected edit saves the attempt's diff, resets the merge and moves up exactly one
-tier. Tampering (a git write by the agent), a failed reset or a failed staging stops at once. The top tier failing
-returns ``resolved=False``, so ``merge_target`` aborts the merge, records the blocked ``target_sync`` row and pushes
-nothing. A conflict set holding the frozen module budget file is blocked before any dispatch unless the intent carries
-``module_budget_change``.
+tier. Tampering (a git write by the agent; a moved ``HEAD`` is reset to the pre-attempt head), a failed reset or a
+failed staging stops at once. The top tier failing returns ``resolved=False``, so ``merge_target`` aborts the merge,
+records the blocked ``target_sync`` row and pushes nothing. A conflict set holding the frozen module budget file is
+blocked before any dispatch unless the intent carries ``module_budget_change``.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from sandbox_executor.agent_runner import CONFLICT_RESOLVER_ROLE
 from sandbox_executor.flow.conflict_resolver_attempt import (
     MergeSnapshot,
     check_attempt,
+    discard_tampered,
     reset_attempt,
     save_attempt_diff,
     snapshot_merge,
@@ -144,7 +145,9 @@ class _ConflictCodeResolver:
         verdict = self._dispatch(attempt)
         check = check_attempt(attempt.worktree, attempt.paths, attempt.before)
         if check.tampered:
-            return CodeResolution(False, attempt.tier, attempt.number, _bounded(f"tampered: {check.reason}")), False
+            restore_error = discard_tampered(attempt.worktree, attempt.before)
+            detail = "; ".join(part for part in (f"tampered: {check.reason}", restore_error) if part)
+            return CodeResolution(False, attempt.tier, attempt.number, _bounded(detail)), False
         if verdict["verdict"] == "resolved" and check.ok:
             error = stage_resolution(attempt.worktree, attempt.paths)
             if error:

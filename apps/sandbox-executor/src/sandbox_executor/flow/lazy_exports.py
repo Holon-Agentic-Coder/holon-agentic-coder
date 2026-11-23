@@ -46,7 +46,8 @@ LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.conflict_classes_resolve": "MechanicalResolution resolve_mechanical resolve_path",
     "sandbox_executor.flow.conflict_classes_tokens": "python_lines unchanged_outside",
     "sandbox_executor.flow.conflict_resolver_attempt": (
-        "AttemptCheck MergeSnapshot check_attempt reset_attempt save_attempt_diff snapshot_merge stage_resolution"
+        "AttemptCheck MergeSnapshot check_attempt discard_tampered reset_attempt save_attempt_diff snapshot_merge "
+        "stage_resolution"
     ),
     "sandbox_executor.flow.conflict_resolver_role": "conflict_code_resolver",
     "sandbox_executor.flow.conflict_resolver_tiers": "next_tier tier_ladder",

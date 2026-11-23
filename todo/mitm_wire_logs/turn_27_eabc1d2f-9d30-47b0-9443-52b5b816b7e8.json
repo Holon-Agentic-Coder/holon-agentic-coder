@@ -1,0 +1,53 @@
+{
+  "turn_id": 27,
+  "flow_id": "eabc1d2f-9d30-47b0-9443-52b5b816b7e8",
+  "agent_id": "agy",
+  "agent_role": "executor",
+  "timestamp": "2026-11-23T06:03:55.603482Z",
+  "provider": "anthropic",
+  "endpoint": "https://api.anthropic.com/api/claude_code/policy_limits",
+  "headers": {
+    "accept": "application/json, text/plain, */*",
+    "user-agent": "claude-code/2.1.302",
+    "cache-control": "no-cache",
+    "pragma": "no-cache",
+    "if-none-match": "\"sha256:a555659ec240462d66a6a547c3e8f7feb7e0e913ad1315e41dfec1e4d4ef3e53\"",
+    "authorization": "[REDACTED]",
+    "anthropic-beta": "oauth-2025-04-20",
+    "accept-encoding": "gzip, compress, deflate, br",
+    "host": "api.anthropic.com",
+    "connection": "close"
+  },
+  "raw_request": {},
+  "cleaned_request": {},
+  "delta": {
+    "raw_chars": 0,
+    "cleaned_chars": 0,
+    "chars_saved": 0,
+    "tool_outputs_omitted": 0,
+    "turns_summarized": 0,
+    "cache_control_injected": 0
+  },
+  "mode": "optimized",
+  "cache_action": "MISS",
+  "response": {
+    "status": 304,
+    "usage": {
+      "input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_tokens": 0
+    },
+    "content": "None"
+  },
+  "timing": {
+    "ttft_ms": null,
+    "total_ms": 271.91,
+    "streaming": false,
+    "generation_ms": null,
+    "prefill_tps": null,
+    "tail_prefill_tps": null,
+    "decode_tps": null
+  }
+}

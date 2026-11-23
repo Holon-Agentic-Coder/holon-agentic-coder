@@ -492,6 +492,9 @@ split from the former single `flow.py` by moving code only. Three tests guard th
 | `flow/host_remote.py`                  | Host-side fetch of the base and push of the committed branch; containers never touch the remote.                 |
 | `flow/git_refs.py`                     | Branch fetches, child-branch discovery, ledger readers, execution refs and the effective diff.                   |
 | `flow/partial_head.py`                 | Recovers the `partial_head` of a failed execution from the branch's latest execution summary row.                |
+| `flow/github/adapter.py`               | `GitHubAdapter`: the repository-scoped `gh` argv builders for PRs, CI checks, reviews, comments and merges.      |
+| `flow/github/adapter_runner.py`        | The single `gh` spawn behind `GitHubAdapter` (`spawn_gh`), its `GhResult` and the proxy environment.             |
+| `flow/github/pr_head.py`               | `pr_head_sha`: the PR head commit as GitHub reports it, read once through `GitHubAdapter`.                       |
 | `flow/github/pr.py`                    | Mergeability checks, review git trailers, semantic PR metadata and creating the PR.                              |
 | `flow/github/ci.py`                    | Probes CI checks and waits for them to register and settle.                                                      |
 | `flow/github/review_post.py`           | Posts the Stage 4 consensus review to the pull request.                                                          |

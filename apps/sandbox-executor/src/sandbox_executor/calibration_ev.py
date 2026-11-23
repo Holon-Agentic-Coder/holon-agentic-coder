@@ -2,8 +2,10 @@
 
 Computes Clean / Intrinsic EV, Observed EV with intermediate failures,
 and Bug EV Drag to distinguish pipeline/environment failures from agent delivery.
-The final row is the latest in flow order (created_at instant first, ledger_revision as the tie-break); see
-``calibration_outcome``.
+Only the plan's Stage 3 execution rows feed it (``calibration_rows``), the latest row of each execution id: Clean EV
+credits the delivery when one of them delivered (``calibration_outcome.has_delivered``), and Observed EV drops to the
+cost when an execution failure stays unresolved (``calibration_outcome.has_unresolved_failure``). Stage 4 and Stage 5
+rows never add drag.
 """
 
 from __future__ import annotations
@@ -13,11 +15,11 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from sandbox_executor.calibration_outcome import (
+    has_delivered,
     has_unresolved_failure,
-    is_converged_record,
-    record_exit_code,
-    summary_row_order_key,
+    latest_row_per_execution,
 )
+from sandbox_executor.calibration_rows import is_execution_row
 from sandbox_executor.plan_paths import plan_branch_of
 
 
@@ -45,6 +47,26 @@ def is_matching_record(record: dict[str, Any], execution_id: str, plan_branch: s
     return record.get("entry_type", "summary") == "summary" and (recorded == wanted if wanted and recorded else same_id)
 
 
+def is_matching_execution_record(record: dict[str, Any], execution_id: str, plan_branch: str) -> bool:
+    """True for a Stage 3 execution summary row of this plan (``is_matching_record`` and ``is_execution_row``)."""
+    return is_matching_record(record, execution_id, plan_branch) and is_execution_row(record, execution_id)
+
+
+def dual_ev_rows(
+    records: list[dict[str, Any]], execution_id: str, plan_branch: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The rows the dual EV scores: the latest Stage 3 execution row of each execution id (in flow order), and the
+    plan's summary rows (any stage) that resolve a ``sync_conflict``. With no execution row of the plan, every
+    execution summary row is used (legacy ledgers); the plan rows then fall back to those execution rows.
+    """
+    matching = [r for r in records if is_matching_execution_record(r, execution_id, plan_branch)]
+    if not matching:
+        matching = [r for r in records if r.get("entry_type", "summary") == "summary" and is_execution_row(r)]
+    execution_rows = latest_row_per_execution(matching)
+    plan_rows = [r for r in records if is_matching_record(r, execution_id, plan_branch)] or execution_rows
+    return execution_rows, plan_rows
+
+
 def evaluate_dual_ev_outcomes(
     records: list[dict[str, Any]],
     execution_id: str,
@@ -52,33 +74,22 @@ def evaluate_dual_ev_outcomes(
     predicted_impact: float,
     cost_effort: float,
 ) -> DualEVMetrics:
-    """Evaluate dual actual EV outcomes and bug drag across matching summary records."""
-    matching = [r for r in records if is_matching_record(r, execution_id, plan_branch)]
-    if not matching:
-        matching = [r for r in records if r.get("entry_type", "summary") == "summary"]
-    if not matching:
-        p_c = 1.0
+    """Evaluate dual actual EV outcomes and bug drag across the plan's Stage 3 execution rows (``dual_ev_rows``).
+
+    With no execution row at all the run scores as a clean success.
+    """
+    sorted_records, plan_rows = dual_ev_rows(records, execution_id, plan_branch)
+    if not sorted_records:
         imp_c = float(predicted_impact)
-        c_ev = round((imp_c * p_c) - cost_effort, 2)
-        return DualEVMetrics(
-            ev_clean=c_ev,
-            ev_with_bugs=c_ev,
-            p_success_clean=p_c,
-            p_success_with_bugs=p_c,
-            impact_clean=imp_c,
-            impact_with_bugs=imp_c,
-            bug_ev_drag=0.0,
-        )
+        c_ev = round(imp_c - cost_effort, 2)
+        return DualEVMetrics(c_ev, c_ev, 1.0, 1.0, imp_c, imp_c, 0.0)
 
-    sorted_records = sorted(matching, key=summary_row_order_key)
-    final_record = sorted_records[-1]
-
-    is_converged = is_converged_record(final_record) and record_exit_code(final_record) == 0
+    is_converged = has_delivered(sorted_records, plan_rows)
     p_clean = 1.0 if is_converged else 0.0
     imp_clean = float(predicted_impact) if is_converged else 0.0
     ev_clean = round((imp_clean * p_clean) - cost_effort, 2)
 
-    if has_unresolved_failure(sorted_records):
+    if has_unresolved_failure(sorted_records, plan_rows):
         p_bugs, imp_bugs = 0.0, 0.0
         ev_bugs = round(0.0 - cost_effort, 2)
     else:

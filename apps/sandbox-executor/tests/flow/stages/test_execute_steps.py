@@ -15,6 +15,7 @@ from tests.flow.stages.test_execute import (
     EXEC_BRANCH,
     EXEC_ID,
     EXECUTE,
+    NOTHING_KEPT,
     PLAN,
     REMOTE_FAILURE,
     SUB_INTENT,
@@ -221,8 +222,8 @@ class TestDispatchExecutor:
 
     def test_stops_on_a_push_error(self, ctx):
         _, result = self._dispatch(ctx, push_fails=True)
-        assert result is not None and result.error == f"Execute stage failed: {REMOTE_FAILURE}"
-        assert result.payload == {"exit_code": 0}
+        assert result is not None and result.error == f"Execute stage failed: {REMOTE_FAILURE}. {NOTHING_KEPT}"
+        assert result.payload == {"exit_code": 0, "recovery_refs": [], "recovery_pushed": False}
 
     def test_stops_on_a_held_unrecorded_branch(self, ctx):
         _, result = self._dispatch(ctx, held={EXEC_BRANCH})

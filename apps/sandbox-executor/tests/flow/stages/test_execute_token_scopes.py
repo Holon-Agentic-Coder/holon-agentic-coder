@@ -7,16 +7,24 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from sandbox_executor.flow import StageStatus
+from sandbox_executor.flow.execution_recovery import RecoveredExecution
 from sandbox_executor.flow.github.token_scopes import REFRESH_COMMAND, TokenScopeReport, scope_report
+from sandbox_executor.flow.host_remote import HostRemoteError
 from sandbox_executor.flow.stages.token_scope_guard import declared_paths, token_scope_failure
 from sandbox_executor.touch_set import TouchSet, TouchSetEntry
 
-from tests.flow.stages.test_execute import run_stage3, stage3_context
+from tests.flow.stages.test_execute import EXEC_BRANCH, EXEC_ID, run_stage3, stage3_context
 
 SENTINEL = "ghp_TESTSENTINEL"
 SCOPE_REPORT = "sandbox_executor.flow.github.token_scopes.scope_report"
 TOUCH_SET_READER = "sandbox_executor.flow.stages.token_scope_guard.read_plan_touch_set"
 WORKFLOW = ".github/workflows/ci.yml"
+
+
+def workflow_refusal(*_args: object) -> None:
+    raise HostRemoteError(
+        "push", EXEC_BRANCH, "origin", "refusing to allow an OAuth App to update workflow without `workflow` scope"
+    )
 
 
 def _touch_set(*paths: str) -> TouchSet:
@@ -100,3 +108,19 @@ def test_declared_paths_tolerates_an_unreadable_touch_set(tmp_path):
     ctx = stage3_context(tmp_path, intent_data={"slug": "x", "scope": ["a.py", 3]})
     with patch(TOUCH_SET_READER, side_effect=RuntimeError("no git")):
         assert declared_paths(ctx) == ["a.py"]
+
+
+def test_a_rejected_push_names_the_recovery_ref_in_the_stage_error(tmp_path):
+    """Stage level: a refused host push fails with the recovery ref the commits were kept on."""
+    kept = RecoveredExecution(EXEC_BRANCH, f"refs/holon/recovery/{EXEC_ID}", "a" * 40, None)
+    ctx = stage3_context(tmp_path)
+    with (
+        patch(TOUCH_SET_READER, return_value=None),
+        patch("sandbox_executor.flow.execution_recovery.keep_rejected_executions", return_value=[kept]) as keep,
+    ):
+        result, _ = run_stage3(ctx, publish_new_child_branches={"side_effect": workflow_refusal})
+    assert result.status == StageStatus.FAILED
+    assert "refs/holon/recovery/" in str(result.error) and REFRESH_COMMAND in str(result.error)
+    assert result.payload["recovery_refs"] == [f"refs/holon/recovery/{EXEC_ID}"]
+    assert result.payload["recovery_pushed"] is False
+    keep.assert_called_once()

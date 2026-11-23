@@ -20,6 +20,13 @@ from sandbox_executor.flow.calibrate_rerun import (
     rerun_calibration,
     review_calibration_freshness,
 )
+from sandbox_executor.flow.calibrate_stale_warning import (
+    STALE_MARKER,
+    STALE_MARKER_FAMILY,
+    SUPERSEDED_MARKER_PREFIX,
+    resolve_stale,
+)
+from sandbox_executor.flow.github.approval_invalidation import CommentRecord
 from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
 
 from tests.test_calibrate_sync import CALIBRATED, EXEC, commit_file, git, make_repos
@@ -185,10 +192,45 @@ def approve_pr(ctx: FlowContext, number: str = "7") -> None:
     )
 
 
+class FakeThread:
+    """An in-memory PR comment thread behind the records lister, poster and editor seams; no network."""
+
+    def __init__(self, *bodies: str) -> None:
+        self.records = [CommentRecord(f"IC_{n}", body) for n, body in enumerate(bodies)]
+        self.posted: list[str] = []
+        self.edits: list[tuple[str, str]] = []
+
+    def comments(self, pr_number: str) -> list[CommentRecord]:
+        return list(self.records)
+
+    def poster(self, pr_number: str, body: str) -> bool:
+        self.posted.append(body)
+        self.records.append(CommentRecord(f"IC_{len(self.records)}", body))
+        return True
+
+    def editor(self, comment_id: str, body: str) -> bool:
+        index = next((i for i, record in enumerate(self.records) if comment_id and record.id == comment_id), None)
+        if index is None:
+            return False
+        self.edits.append((comment_id, body))
+        self.records[index] = CommentRecord(comment_id, body)
+        return True
+
+    def seams(self) -> RerunSeams:
+        return RerunSeams(comments=self.comments, poster=self.poster, editor=self.editor)
+
+    def stale_bodies(self) -> list[str]:
+        return [record.body for record in self.records if STALE_MARKER_FAMILY in record.body]
+
+
+def recording_thread() -> tuple[RerunSeams, FakeThread]:
+    thread = FakeThread()
+    return thread.seams(), thread
+
+
 def recording_seams() -> tuple[RerunSeams, list[str]]:
-    posted: list[str] = []
-    seams = RerunSeams(lister=lambda pr: list(posted), poster=lambda pr, body: posted.append(body) or True)
-    return seams, posted
+    seams, thread = recording_thread()
+    return seams, thread.posted
 
 
 def exec_ledger(repos: SimpleNamespace) -> str:
@@ -255,29 +297,114 @@ def test_a_head_that_outruns_both_attempts_marks_the_payload_stale(repos: Simple
     assert "not ready to merge" in line and "covers" in line
 
 
-def test_the_stale_signal_posts_once_per_pair_and_clears_after_the_rerun(repos: SimpleNamespace) -> None:
+def test_the_stale_signal_is_superseded_by_the_rerun_and_the_refreshed_note_posts_once(repos: SimpleNamespace) -> None:
     ctx, result, _, run = calibrated_flow(repos)
     approve_pr(ctx)
-    seams, posted = recording_seams()
+    seams, thread = recording_thread()
     move_head(repos)
     refreshed = rerun_calibration(ctx, result, run, seams=seams)
     assert refreshed.status == StageStatus.SUCCESS
-    stale_comments = [body for body in posted if "Calibration report is stale" in body]
-    cleared_comments = [body for body in posted if "Calibration refreshed" in body]
+    stale_comments = [body for body in thread.posted if "Calibration report is stale" in body]
+    cleared_comments = [body for body in thread.posted if "Calibration refreshed" in body]
     assert (len(stale_comments), len(cleared_comments)) == (1, 1)
     assert "do not merge on this report" in stale_comments[0]
     assert refreshed.payload["calibrated_head"][:7] in cleared_comments[0]
+    (warning,) = thread.stale_bodies()
+    assert "superseded" in warning and "do not merge" not in warning
+    assert f"{SUPERSEDED_MARKER_PREFIX}{refreshed.payload['calibrated_head']} -->" in warning
     assert rerun_calibration(ctx, refreshed, run, seams=seams) is refreshed
-    assert len(posted) == 2  # nothing new on a repeated check
+    assert (len(thread.posted), len(thread.edits)) == (2, 1)  # nothing new on a repeated check
 
 
 def test_a_still_stale_head_never_duplicates_the_stale_comment(repos: SimpleNamespace) -> None:
     ctx, result, _, _ = calibrated_flow(repos)
     approve_pr(ctx)
-    seams, posted = recording_seams()
-    move_head(repos)
+    seams, thread = recording_thread()
+    new_head = move_head(repos)
     rerun_calibration(ctx, result, lambda context: result, seams=seams)
-    assert len([body for body in posted if "Calibration report is stale" in body]) == 1
+    (warning,) = thread.stale_bodies()
+    assert "Calibration report is stale" in warning and new_head[:7] in warning
+    assert len(thread.posted) == 1
+
+
+def stale_check(evaluated: str, head: str) -> HeadMoveCheck:
+    return HeadMoveCheck(True, evaluated, head, "non-calibration commits landed")
+
+
+def pr_context(tmp_path: Path) -> FlowContext:
+    return FlowContext(target_worktree=str(tmp_path), execution_branch=EXEC, agent="a", model="m")
+
+
+def test_a_stale_warning_followed_by_a_fresh_calibration_is_superseded_naming_the_evaluated_sha(
+    tmp_path: Path,
+) -> None:
+    from sandbox_executor.flow.calibrate_rerun import _warning_seams, post_stale_signal
+
+    ctx, thread = pr_context(tmp_path), FakeThread()
+    post_stale_signal(ctx, stale_check("a" * 40, "b" * 40), thread.seams(), pr_number="7")
+    fresh = "c" * 40
+
+    resolved = resolve_stale(ctx, "7", fresh, _warning_seams(thread.seams()))
+
+    assert resolved == {"posted": False, "edited": 1, "reason": "superseded"}
+    (warning,) = thread.stale_bodies()
+    assert "superseded by the fresh calibration report" in warning and f"`{fresh[:7]}`" in warning
+    assert STALE_MARKER in warning and f"{SUPERSEDED_MARKER_PREFIX}{fresh} -->" in warning
+    assert "do not merge" not in warning
+    assert resolve_stale(ctx, "7", fresh, _warning_seams(thread.seams()))["edited"] == 0  # idempotent
+    assert (len(thread.posted), len(thread.edits)) == (1, 1)
+
+
+def test_a_stale_warning_followed_by_more_commits_leaves_exactly_one_updated_warning(tmp_path: Path) -> None:
+    from sandbox_executor.flow.calibrate_rerun import post_stale_signal
+
+    ctx, thread = pr_context(tmp_path), FakeThread()
+    first = post_stale_signal(ctx, stale_check("a" * 40, "b" * 40), thread.seams(), pr_number="7")
+    second = post_stale_signal(ctx, stale_check("a" * 40, "d" * 40), thread.seams(), pr_number="7")
+    third = post_stale_signal(ctx, stale_check("a" * 40, "d" * 40), thread.seams(), pr_number="7")
+
+    assert (first["posted"], second["edited"], third["edited"]) == (True, 1, 0)
+    (warning,) = thread.stale_bodies()
+    assert "`ddddddd`" in warning and "`bbbbbbb`" not in warning
+    assert "do not merge on this report" in warning
+    assert (len(thread.posted), len(thread.edits)) == (1, 1)
+
+
+def test_a_legacy_per_pair_warning_is_edited_in_place_not_duplicated(tmp_path: Path) -> None:
+    from sandbox_executor.flow.calibrate_rerun import post_stale_signal
+
+    legacy = f"## ⚠️ Calibration report is stale\n\nold\n\n<!-- holon-calibration-stale:{'a' * 40}:{'b' * 40} -->"
+    ctx, thread = pr_context(tmp_path), FakeThread("unrelated review comment", legacy)
+
+    signal = post_stale_signal(ctx, stale_check("a" * 40, "e" * 40), thread.seams(), pr_number="7")
+
+    assert (signal["posted"], signal["edited"]) == (False, 1)
+    assert thread.posted == []
+    assert [record.id for record in thread.records if STALE_MARKER in record.body] == ["IC_1"]
+    assert thread.records[0].body == "unrelated review comment"
+
+
+def test_a_current_report_posts_no_warning(repos: SimpleNamespace) -> None:
+    ctx, result, calls, run = calibrated_flow(repos)
+    approve_pr(ctx)
+    seams, thread = recording_thread()
+    assert rerun_calibration(ctx, result, run, seams=seams) is result
+    assert review_calibration_freshness(ctx, "7", run_stage=run, seams=seams) is None
+    assert (thread.posted, thread.edits, len(calls)) == ([], [], 1)
+
+
+def test_a_current_report_supersedes_a_leftover_warning(repos: SimpleNamespace) -> None:
+    from sandbox_executor.flow.calibrate_stale_warning import StaleRange, stale_body
+
+    ctx, _, _, run = calibrated_flow(repos)
+    thread = FakeThread(stale_body(StaleRange("a" * 40, "b" * 40, "an earlier flow")))
+    evaluated = report_staleness(ctx).evaluated_sha
+
+    assert review_calibration_freshness(ctx, "7", run_stage=run, seams=thread.seams()) is None
+
+    (warning,) = thread.stale_bodies()
+    assert f"{SUPERSEDED_MARKER_PREFIX}{evaluated} -->" in warning
+    assert thread.posted == []
 
 
 def test_flow_summary_renders_covering_and_unrefreshed_states() -> None:

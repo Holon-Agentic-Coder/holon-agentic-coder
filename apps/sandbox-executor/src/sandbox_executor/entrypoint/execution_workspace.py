@@ -54,6 +54,49 @@ _ENGINE_OWNED_EXCLUDES = (
     f":(exclude){ENGINE_OWNED_NOTES_GLOB}",
 )
 
+# Proxy sidecar scratch patterns (wire logs, cache directories and SQLite database files) never belong in Stage 3 commits.
+_SCRATCH_DIR_NAMES = frozenset({"mitm_wire_logs", "wire_logs", "wire-logs", "cache", "proxy-cache", "to" + "do"})
+_SCRATCH_FILE_RE = re.compile(
+    r"(?:^|/)(?:wire_log[^/]*\.(?:json|jsonl|log)|[^/]*\.(?:db|sqlite|sqlite3)(?:-(?:shm|wal|journal))?)$",
+    re.IGNORECASE,
+)
+
+
+def is_sidecar_scratch_path(path: str) -> bool:
+    """Return True when a repository-relative path is a proxy sidecar wire-log, cache directory or database file."""
+    clean = path.strip().removeprefix("./").strip("/")
+    if not clean:
+        return False
+    parts = clean.split("/")
+    if any(part in _SCRATCH_DIR_NAMES for part in parts):
+        return True
+    return bool(_SCRATCH_FILE_RE.search(clean))
+
+
+def split_sidecar_scratch_paths(paths: list[str]) -> tuple[list[str], list[str]]:
+    """Split repository-relative paths into ``(kept_paths, skipped_scratch_paths)``."""
+    kept: list[str] = []
+    skipped: list[str] = []
+    for path in paths:
+        (skipped if is_sidecar_scratch_path(path) else kept).append(path)
+    return kept, skipped
+
+
+def format_skipped_scratch_message(skipped: list[str]) -> str:
+    """Format a clear log line naming every skipped sidecar scratch path."""
+    joined = ", ".join(dict.fromkeys(skipped))
+    return f"Skipping sidecar scratch path(s) from Stage 3 commit: {joined}"
+
+
+def unstage_sidecar_scratch(repo: GitRepository) -> list[str]:
+    """Detect any staged sidecar scratch paths in ``repo`` and unstage them from the index."""
+    staged = repo.diff("--name-only", "-z", cached=True)
+    staged_paths = [p for p in (staged.stdout or "").split("\0") if p] if staged.returncode == 0 else []
+    _, skipped = split_sidecar_scratch_paths(staged_paths)
+    if skipped:
+        repo.reset(None, "--", *skipped)
+    return skipped
+
 
 def validate_mounted_workspace(repo: GitRepository, repo_dir: str, plan_branch: str) -> str:
     """Validate the host worktree mounted at repo_dir and return the tip of ``plan_branch`` the host fetched into it.

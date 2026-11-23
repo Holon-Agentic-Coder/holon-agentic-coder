@@ -36,6 +36,9 @@ _LAZY_EXPORTS: dict[str, str] = {
         "HeadMoveCheck RerunSeams head_move_since_calibration post_stale_signal report_staleness rerun_calibration "
         "review_calibration_freshness"
     ),
+    "sandbox_executor.flow.calibrate_stale_warning": (
+        "StaleRange WarningSeams post_refreshed refreshed_body resolve_stale stale_body superseded_body warn_stale"
+    ),
     "sandbox_executor.flow.calibrate_sync": (
         "CalibrationSyncError discard_empty_calibrated_branch prepare_calibrated_branch publish_calibration "
         "record_starting_branch restore_starting_branch sync_execution_ref"
@@ -57,6 +60,9 @@ _LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.execution_publish": (
         "held_execution_failure hold_unrecorded_executions publish_with_first_row unrecorded_executions"
     ),
+    "sandbox_executor.flow.execution_recovery": (
+        "RecoveredExecution keep_rejected_executions rejected_push_error rejected_push_failure rejected_push_recovery"
+    ),
     "sandbox_executor.flow.git_refs": (
         "EXECUTOR_GIT_ENV _append_ledger_row _append_superseding_execution_row _discover_child_branch "
         "_execution_effective_diff _execution_parent_plan_branch _fetch_branch_prefix _fetch_branch_prefix_error "
@@ -66,6 +72,11 @@ _LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.github.adapter": "GitHubAdapter merge_argv parse_gh_json",
     "sandbox_executor.flow.github.adapter_runner": "GhResult gh_env spawn_gh",
+    "sandbox_executor.flow.github.token_scopes": (
+        "TokenScopeReport doctor_lines fetch_scopes resolve_github_token scope_report token_type touches_workflows "
+        "workflow_scope_error"
+    ),
+    "sandbox_executor.flow.github.approval_invalidation": "CommentRecord gh_comment_editor gh_comment_records",
     "sandbox_executor.flow.github.ci": (
         "CI_REGISTRATION_TIMEOUT_ENV_VAR CI_REGISTRATION_TIMEOUT_SECONDS _wait_for_ci_registration probe_ci_checks "
         "resolve_ci_registration_timeout"
@@ -180,6 +191,9 @@ _LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.stages.review_outcome": "ReviewOutcomeContext build_review_stage_outcome",
     "sandbox_executor.flow.stages.stage_support": "consult_knowledge intent_payload_file stage_success",
     "sandbox_executor.flow.stages.sync_conflict": "sync_conflict_result",
+    "sandbox_executor.flow.stages.token_scope_guard": (
+        "declared_paths push_url pushes_over_https_github token_scope_failure"
+    ),
     "sandbox_executor.flow.stages.touch_set_guard": (
         "superseding_failure_row touch_set_replan_exhausted touch_set_replan_feedback touch_set_violation "
         "touch_set_violation_result"
@@ -241,6 +255,7 @@ __all__ = [
     "CiWaitPolicy",
     "CiWaitResult",
     "CommentAttempt",
+    "CommentRecord",
     "ConflictDetection",
     "ConflictKind",
     "ConflictResolutionError",
@@ -267,6 +282,7 @@ __all__ = [
     "PlanStage",
     "PrefixSide",
     "QuestionKind",
+    "RecoveredExecution",
     "RerunSeams",
     "ResolverInput",
     "ResolverOutcome",
@@ -278,6 +294,9 @@ __all__ = [
     "Stage5Steps",
     "StageResult",
     "StageStatus",
+    "StaleRange",
+    "TokenScopeReport",
+    "WarningSeams",
     "WorktreeCheckpoint",
     "_append_ledger_row",
     "_append_only_union",
@@ -383,11 +402,13 @@ __all__ = [
     "consult_knowledge",
     "create_or_update_pr",
     "decide_admission",
+    "declared_paths",
     "describe_ci_outcome",
     "deserialize_carried",
     "detect_stage_conflicts",
     "discard_empty_calibrated_branch",
     "discover_in_flight_flows",
+    "doctor_lines",
     "dry_run_plan_result",
     "empty_diff_failure",
     "execution_veto_error",
@@ -395,6 +416,7 @@ __all__ = [
     "failed_partial_head",
     "fast_forward_local_branch",
     "fetch_base",
+    "fetch_scopes",
     "format_decomposition_summary",
     "format_final_head_ci",
     "format_refusal",
@@ -402,6 +424,8 @@ __all__ = [
     "gate_ci_flags",
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
+    "gh_comment_editor",
+    "gh_comment_records",
     "gh_env",
     "gh_unavailable_outcome",
     "gh_view_verdict",
@@ -420,6 +444,7 @@ __all__ = [
     "is_pending_only",
     "is_self_approval_rejection",
     "is_terminal_verdict",
+    "keep_rejected_executions",
     "leftover_paths",
     "list_base_files",
     "load_checkpoint",
@@ -450,6 +475,7 @@ __all__ = [
     "plan_metrics",
     "plan_refresh_stage_failure",
     "post_pr_review_consensus",
+    "post_refreshed",
     "post_stale_signal",
     "posting_outcome",
     "pr_head_sha",
@@ -460,6 +486,8 @@ __all__ = [
     "publish_with_first_row",
     "push_branch",
     "push_commit",
+    "push_url",
+    "pushes_over_https_github",
     "read_plan_touch_set",
     "read_worktree_checkpoint",
     "rebuild_calibrated_branch",
@@ -476,7 +504,11 @@ __all__ = [
     "refresh_due",
     "refresh_payload",
     "refresh_plan_branch",
+    "refreshed_body",
     "refusal",
+    "rejected_push_error",
+    "rejected_push_failure",
+    "rejected_push_recovery",
     "remote_error",
     "render_reviewer_summary_line",
     "replan_feedback_env",
@@ -488,6 +520,8 @@ __all__ = [
     "resolve_ci_registration_timeout",
     "resolve_classified_conflicts",
     "resolve_execution_verdict",
+    "resolve_github_token",
+    "resolve_stale",
     "restore_starting_branch",
     "review_calibration_freshness",
     "review_failed_output",
@@ -511,26 +545,34 @@ __all__ = [
     "salvage_leftovers",
     "save_admission",
     "save_checkpoint",
+    "scope_report",
     "serialize_open",
     "settle_pending_ci",
     "spawn_gh",
     "stage5_steps",
     "stage_success",
+    "stale_body",
     "stale_calibrated_refs",
     "standalone_context",
     "summarise_ci_checks",
+    "superseded_body",
     "superseding_failure_row",
     "sync_conflict_result",
     "sync_execution_ref",
+    "token_scope_failure",
+    "token_type",
     "touch_set_replan_exhausted",
     "touch_set_replan_feedback",
     "touch_set_violation",
     "touch_set_violation_result",
+    "touches_workflows",
     "undisposed",
     "unrecorded_executions",
     "utc_now",
     "validate_intent_questions",
     "wait_for_pending_ci",
     "waiter_key",
+    "warn_stale",
+    "workflow_scope_error",
     "worktree_checkpoints",
 ]

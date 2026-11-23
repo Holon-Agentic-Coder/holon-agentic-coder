@@ -1,4 +1,8 @@
-"""What one mitmproxy sidecar run needs: its addon, host directories, dashboard port and `docker run` argv."""
+"""What one holon-coherence proxy sidecar run needs: its image, host directories, dashboard port and `docker run` argv.
+
+The sidecar runs the holon-coherence image's own entrypoint (``holon-coherence start``), which loads the mitmproxy addon
+installed in that image; this repository mounts no addon or source tree into it.
+"""
 
 import logging
 import os
@@ -18,7 +22,7 @@ class _SidecarPlan:
 
     container_name: str
     network_name: str
-    addon_path: str
+    image: str
     proxy_cache_dir: str
     mitm_ca_combined: str
     mitm_ca_cert: str
@@ -26,22 +30,6 @@ class _SidecarPlan:
     host_cache_dir: str
     web_port: int
     mitm_web: bool
-
-
-def _package_dir() -> str:
-    """The ``sandbox_executor`` package directory (this module sits one level below it)."""
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-def _mitm_addon_path() -> str:
-    """The mitmproxy addon script the sidecar loads; raises FileNotFoundError when it is missing."""
-    addon_path = os.path.join(_package_dir(), "token_reduction", "mitm_addon.py")
-    if not os.path.isfile(addon_path):
-        raise FileNotFoundError(
-            f"mitmproxy addon script not found at '{addon_path}'. Token reduction cannot start its proxy "
-            "without it; re-run without --token-reduce to execute with direct egress."
-        )
-    return addon_path
 
 
 def _proxy_host_dirs(ca_cert_path: str, ca_key_path: str) -> tuple[str, str, str, str, str]:
@@ -110,10 +98,32 @@ def _dashboard_port(mitm_web: bool) -> int:
     return web_port
 
 
-def _sidecar_command(plan: _SidecarPlan) -> list[str]:
-    """The `docker run` argv that starts the mitmproxy sidecar described by ``plan``."""
-    src_dir = os.path.abspath(os.path.join(_package_dir(), ".."))
+#: Env var the holon-coherence image reads the mitmweb dashboard password from; forwarded value-less so it never
+#: appears in the `docker run` argv.
+COHERENCE_WEB_PASSWORD_ENV = "HOLON_COHERENCE_WEB_PASSWORD"
 
+
+def _dashboard_password(plan: _SidecarPlan) -> str | None:
+    """The mitmweb dashboard password from ``HOLON_MITM_WEB_PASSWORD``, or None without a dashboard or password."""
+    if not plan.mitm_web:
+        return None
+    return os.getenv("HOLON_MITM_WEB_PASSWORD") or None
+
+
+def _sidecar_spawn_env(plan: _SidecarPlan) -> dict[str, str] | None:
+    """The environment for the `docker run` process: the launcher's own plus the dashboard password, if any.
+
+    None means "inherit unchanged". The password travels only through this environment, which Docker copies into the
+    container for the value-less ``-e HOLON_COHERENCE_WEB_PASSWORD`` flag.
+    """
+    password = _dashboard_password(plan)
+    if password is None:
+        return None
+    return {**os.environ, COHERENCE_WEB_PASSWORD_ENV: password}
+
+
+def _sidecar_command(plan: _SidecarPlan) -> list[str]:
+    """The `docker run` argv that starts the holon-coherence proxy sidecar described by ``plan``."""
     docker_run_proxy = [
         "docker",
         "run",
@@ -142,16 +152,21 @@ def _sidecar_command(plan: _SidecarPlan) -> list[str]:
     passive_val = "1" if os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES else "0"
     docker_run_proxy.extend(
         [
+            # Tells `holon-coherence start` it already runs inside the container, so it starts mitmproxy directly.
             "-e",
-            "PYTHONPATH=/tmp/src",
+            "HOLON_IN_CONTAINER=1",
             "-e",
             "WIRE_LOG_DIR=/tmp/wire_logs",
             "-e",
             "CACHE_DIR=/tmp/cache",
             "-e",
             f"HOLON_PASSIVE_MONITORING={passive_val}",
-            "-v",
-            f"{src_dir}:/tmp/src:ro",
+        ]
+    )
+    if _dashboard_password(plan) is not None:
+        docker_run_proxy.extend(["-e", COHERENCE_WEB_PASSWORD_ENV])
+    docker_run_proxy.extend(
+        [
             "-v",
             f"{plan.proxy_cache_dir}:/home/mitmproxy/.holon/proxy-cache:ro",
             "-v",
@@ -161,22 +176,17 @@ def _sidecar_command(plan: _SidecarPlan) -> list[str]:
             "-v",
             f"{plan.mitm_ca_cert}:{MITM_PROXY_CA_DIR}/mitmproxy-ca-cert.pem:ro",
             "-v",
-            f"{plan.addon_path}:/tmp/mitm_addon.py:ro",
-            "-v",
             f"{plan.host_wire_log_dir}:/tmp/wire_logs",
-            "mitmproxy/mitmproxy:12.2.3",
-            "mitmweb" if plan.mitm_web else "mitmdump",
-            "-s",
-            "/tmp/mitm_addon.py",
-            "--listen-port",
+            plan.image,
+            # `start` accepts no mitmproxy `--set`, so the old `stream_large_bodies=1m` is gone: the 256m-capped proxy
+            # now buffers whole bodies. Accepted in the plan; pinned by test_launcher_coherence_contract.
+            "start",
+            "--port",
             str(PROXY_LISTEN_PORT),
-            "--set",
-            "stream_large_bodies=1m",
         ]
     )
     if plan.mitm_web:
-        docker_run_proxy.extend(["--web-host", "0.0.0.0", "--web-port", str(plan.web_port)])
-        web_password = os.getenv("HOLON_MITM_WEB_PASSWORD")
-        if web_password:
-            docker_run_proxy.extend(["--set", f"web_password={web_password}"])
+        # `start` has no `--web-host`: in-container it always runs mitmweb with `--web-host 0.0.0.0`, which the
+        # loopback-only `-p 127.0.0.1:<port>:<port>` publish above relies on (see test_launcher_coherence_contract).
+        docker_run_proxy.extend(["--web", "--web-port", str(plan.web_port)])
     return docker_run_proxy

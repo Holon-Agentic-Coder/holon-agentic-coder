@@ -22,6 +22,7 @@ from sandbox_executor.flow.admission import admission_stage_failure
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _dispatch_role, _recorded_test_fields, _stage_failure
 from sandbox_executor.flow.execution_publish import held_execution_failure, hold_unrecorded_executions
+from sandbox_executor.flow.execution_recovery import rejected_push_failure, rejected_push_recovery
 from sandbox_executor.flow.git_refs import (
     _discover_child_branch,
     _fetch_branch_prefix_error,
@@ -41,6 +42,7 @@ from sandbox_executor.flow.stages.empty_diff_outcome import empty_diff_failure
 from sandbox_executor.flow.stages.execute_veto import execution_veto_error
 from sandbox_executor.flow.stages.plan_decision import _over_budget_failure, _plan_budget_decision
 from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
+from sandbox_executor.flow.stages.token_scope_guard import token_scope_failure
 from sandbox_executor.flow.stages.touch_set_guard import touch_set_violation_result
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.git import changed_paths, run_git
@@ -126,6 +128,7 @@ class ExecuteStage:
         """The guarding steps, in run order; :meth:`record_execution` follows the last."""
         return (
             self.preflight,
+            self.check_token_scopes,
             self.admit_and_refresh_plan,
             self.resume_point,
             self.salvage_partial,
@@ -200,6 +203,10 @@ class ExecuteStage:
         context.stage_results["execute"] = result
         return result
 
+    def check_token_scopes(self) -> StageResult | None:
+        """Refuse a plan touching ``.github/workflows/**`` whose GitHub token lacks the ``workflow`` scope."""
+        return token_scope_failure(self.context, self.state.start_time)
+
     def admit_and_refresh_plan(self) -> StageResult | None:
         """Resolve stage conflicts, refuse a plan the budget decision rejects, then run admission and plan refresh."""
         context, state = self.context, self.state
@@ -265,21 +272,20 @@ class ExecuteStage:
         """Run the executor container, then push each new execution branch that carries its ledger row."""
         context, state = self.context, self.state
         state.exit_code = exit_code = _dispatch_role(context, "executor", state.executor_args)
-        # The container only commits. The host pushes each execution branch it committed that carries its ledger row, a
-        # failed one included, so the failure row and any partial work reach origin for a resume; a row-less one stays.
+        # The container only commits; the host pushes each committed branch with its ledger row, failed ones included.
         left_alone = hold_unrecorded_executions(context, state.plan_prefix, state.existing_executions)
         state.push_error = remote_error(publish_new_child_branches, state.repo_dir, state.plan_prefix, "E", left_alone)
         held = left_alone - state.existing_executions
+        exit_failed = exit_code not in (0, OVER_BUDGET_EXIT_CODE)  # an over-budget exit's committed row decides
+        log = context.log if held or exit_failed else None  # a failure below returns before the recovery error
+        recovery = rejected_push_recovery(state.repo_dir, state.plan_prefix, left_alone, state.push_error, log)
         if held_failure := held_execution_failure(context, state.start_time, held, exit_code):
             return held_failure
-        # The executor exits OVER_BUDGET_EXIT_CODE only once its over_budget row is committed; that row decides.
-        if exit_code not in (0, OVER_BUDGET_EXIT_CODE):
+        if exit_failed:
             return self._fail(
                 f"Execute stage failed: executor agent exited with code {exit_code}.", exit_code=exit_code
             )
-        if state.push_error is not None:
-            return self._fail(f"Execute stage failed: {state.push_error}", exit_code=exit_code)
-        return None
+        return rejected_push_failure(context, state.start_time, recovery, exit_code)
 
     def adopt_execution_branch(self) -> StageResult | None:
         """Find the executor's new execution branch on origin, track it locally and read its summary row."""

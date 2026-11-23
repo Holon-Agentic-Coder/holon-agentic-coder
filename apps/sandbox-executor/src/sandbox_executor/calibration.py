@@ -22,16 +22,7 @@ from datetime import UTC, datetime
 from typing import Any, Unpack
 
 from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL
-from sandbox_executor.calibration_diff import (
-    DIFF_BASE_FIRST_PARENT,
-    DIFF_BASE_MERGE_BASE,
-    DIFF_BASE_PLAN,
-    DIFF_BASE_TARGET_MERGE_BASE,
-    intent_target_branch,
-    merge_history,
-    patch_diff_range,
-    target_branch_refs,
-)
+from sandbox_executor.calibration_diff import execution_patch_numstat, patch_size_base_line
 from sandbox_executor.calibration_ev import (
     evaluate_dual_ev_outcomes,
     format_dual_ev_derivation_lines,
@@ -794,30 +785,8 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     # 2. Compute patch size via git diff from the merge-base with the intent's target branch (fail loudly on non-zero
     # exit); the plan branch and its fallbacks apply only when no target branch resolves
     intent_branch = extract_branch_components(plan_branch)["intent_branch"] if plan_branch else ""
-    fallback_refs = (intent_branch, "main") if plan_branch else ()
-    target_refs = (
-        target_branch_refs(intent_target_branch(intent_branch, target_ref, target_worktree)) if execution_branch else ()
-    )
-    base_rev, target_rev, diff_base = patch_diff_range(
-        plan_branch if execution_branch else "", target_ref, target_worktree, fallback_refs, target_refs
-    )
-    exec_meta["diff_base"] = diff_base
-    diff_range = f"{base_rev}...{target_rev}" if base_rev else f"{target_rev}~1..{target_rev}"
-    res = run_git(
-        ["diff", "--numstat", diff_range, "--"],
-        cwd=target_worktree,
-        check=False,
-        timeout=30,
-    )
-    if res.returncode != 0:
-        error_message = res.stderr.strip()
-        raise RuntimeError(
-            f"Git diff failed between '{base_rev or f'{target_rev}~1'}' and '{target_rev}' "
-            f"with exit code {res.returncode}: {error_message}"
-        )
-
-    if diff_base in (DIFF_BASE_PLAN, DIFF_BASE_TARGET_MERGE_BASE):
-        exec_meta.update(merge_history(base_rev, target_rev, target_worktree))
+    res, patch_meta = execution_patch_numstat(plan_branch, execution_branch, target_ref, target_worktree, intent_branch)
+    exec_meta.update(patch_meta)
 
     actual.files_changed = 0
     actual.insertions = 0
@@ -963,17 +932,6 @@ def compute_calibration_deltas(
     }
 
     return deltas, accuracy_ratings, bias_directions
-
-
-def patch_size_base_line(report_data: dict[str, Any]) -> str:
-    """The report's ``Patch Size Base`` line: the ``diff_base`` label, and the merge-base SHA the diff started from."""
-    label = report_data["diff_base"]
-    line = f"- **Patch Size Base:** `{label}`"
-    if label == DIFF_BASE_TARGET_MERGE_BASE and report_data.get("merge_base_sha"):
-        line += f" (merge-base `{report_data['merge_base_sha']}` with the target branch)"
-    elif label in (DIFF_BASE_MERGE_BASE, DIFF_BASE_FIRST_PARENT):
-        line += " (not measured against the plan branch)"
-    return line
 
 
 def format_markdown_report(report_data: dict[str, Any]) -> str:

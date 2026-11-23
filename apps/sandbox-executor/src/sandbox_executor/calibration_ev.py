@@ -52,6 +52,21 @@ def is_matching_execution_record(record: dict[str, Any], execution_id: str, plan
     return is_matching_record(record, execution_id, plan_branch) and is_execution_row(record, execution_id)
 
 
+def dual_ev_rows(
+    records: list[dict[str, Any]], execution_id: str, plan_branch: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The rows the dual EV scores: the latest Stage 3 execution row of each execution id (in flow order), and the
+    plan's summary rows (any stage) that resolve a ``sync_conflict``. With no execution row of the plan, every
+    execution summary row is used (legacy ledgers); the plan rows then fall back to those execution rows.
+    """
+    matching = [r for r in records if is_matching_execution_record(r, execution_id, plan_branch)]
+    if not matching:
+        matching = [r for r in records if r.get("entry_type", "summary") == "summary" and is_execution_row(r)]
+    execution_rows = latest_row_per_execution(matching)
+    plan_rows = [r for r in records if is_matching_record(r, execution_id, plan_branch)] or execution_rows
+    return execution_rows, plan_rows
+
+
 def evaluate_dual_ev_outcomes(
     records: list[dict[str, Any]],
     execution_id: str,
@@ -59,30 +74,15 @@ def evaluate_dual_ev_outcomes(
     predicted_impact: float,
     cost_effort: float,
 ) -> DualEVMetrics:
-    """Evaluate dual actual EV outcomes and bug drag across the plan's Stage 3 execution summary rows.
+    """Evaluate dual actual EV outcomes and bug drag across the plan's Stage 3 execution rows (``dual_ev_rows``).
 
-    With no execution row of the plan, every execution summary row is used (legacy ledgers); with none at all the run
-    scores as a clean success.
+    With no execution row at all the run scores as a clean success.
     """
-    matching = [r for r in records if is_matching_execution_record(r, execution_id, plan_branch)]
-    if not matching:
-        matching = [r for r in records if r.get("entry_type", "summary") == "summary" and is_execution_row(r)]
-    if not matching:
-        p_c = 1.0
+    sorted_records, plan_rows = dual_ev_rows(records, execution_id, plan_branch)
+    if not sorted_records:
         imp_c = float(predicted_impact)
-        c_ev = round((imp_c * p_c) - cost_effort, 2)
-        return DualEVMetrics(
-            ev_clean=c_ev,
-            ev_with_bugs=c_ev,
-            p_success_clean=p_c,
-            p_success_with_bugs=p_c,
-            impact_clean=imp_c,
-            impact_with_bugs=imp_c,
-            bug_ev_drag=0.0,
-        )
-
-    sorted_records = latest_row_per_execution(matching)
-    plan_rows = [r for r in records if is_matching_record(r, execution_id, plan_branch)] or sorted_records
+        c_ev = round(imp_c - cost_effort, 2)
+        return DualEVMetrics(c_ev, c_ev, 1.0, 1.0, imp_c, imp_c, 0.0)
 
     is_converged = has_delivered(sorted_records, plan_rows)
     p_clean = 1.0 if is_converged else 0.0

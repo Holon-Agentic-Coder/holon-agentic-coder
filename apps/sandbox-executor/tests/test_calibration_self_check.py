@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from sandbox_executor.calibration import run_calibrate
+from sandbox_executor.calibration_ev import evaluate_dual_ev_outcomes
 from sandbox_executor.calibration_self_check import (
     FALLBACK_REPORT_MARKER,
     CalibrationSelfCheckError,
@@ -67,6 +68,20 @@ def test_drag_without_an_unresolved_execution_failure() -> None:
 def test_drag_with_an_unresolved_execution_failure_is_consistent() -> None:
     records = [_row(EXEC_ID, "success", 1), _row("E-4-sc", "failed", 2, summary="3 tests failed")]
     assert self_check_report(dataclasses.replace(CONSISTENT, bug_ev_drag=50.0, records=records)) == []
+
+
+def test_drag_from_the_legacy_fallback_rows_is_consistent() -> None:
+    # No execution row of the plan: the dual EV scores every execution row, so the self-check must see the same rows
+    other_plan = {"plan_branch": "I-8-o/P-9-o/_"}
+    records = [
+        {**_row("E-7-other", "success", 1), **other_plan},
+        _row("REV-1", "approved", 2),
+        {**_row("E-9-other", "failed", 3, summary="3 tests failed"), **other_plan},
+    ]
+    metrics = evaluate_dual_ev_outcomes(records, EXEC_ID, PLAN, predicted_impact=50.0, cost_effort=5.0)
+    assert metrics.bug_ev_drag > 0
+    inputs = dataclasses.replace(CONSISTENT, bug_ev_drag=metrics.bug_ev_drag, records=records)
+    assert self_check_report(inputs) == []
 
 
 def test_counted_target_only_file() -> None:

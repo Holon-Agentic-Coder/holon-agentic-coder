@@ -6,7 +6,9 @@ compares against ``git merge-base base head``, which is derived from the current
 arrived only through a merge of the target branch into the execution branch are never counted. The plan-branch base
 below is used when no target branch resolves, when the target already contains the execution head, or when the plan
 branch (or, when it is gone, the first resolvable fallback branch) already contains the target merge-base: its base is
-then the newer one.
+then the newer one. Known limitation: once the PR is merged into the target with a merge commit, a re-run falls back
+to the plan-branch base, so files the execution branch took in from the target since the plan branch are counted
+again; calibrate before the merge (as Stage 5 does) for a target-relative patch size.
 
 A decomposed flow calibrates nested branches such as ``I-.../P-.../E-.../_``. Every revision handed to git here is a
 fully qualified ref or a SHA, followed by ``--`` where git accepts one, so a plan branch the host cannot resolve never
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 from typing import Any
 
 from sandbox_executor.git import run_git
@@ -189,3 +192,46 @@ def merge_history(base_rev: str, target_rev: str, target_worktree: str) -> dict[
         "merge_base_sha": res_mb.stdout.strip(),
         "merged_commit_count": merged_commit_count,
     }
+
+
+def execution_patch_numstat(
+    plan_branch: str, execution_branch: str, target_ref: str, target_worktree: str, intent_branch: str
+) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+    """Run ``git diff --numstat`` over the execution's patch range (``patch_diff_range``).
+
+    The intent's target branch is tried first; the plan branch, then ``intent_branch`` and ``main``, apply only when no
+    target branch resolves. Returns the git result and the ``diff_base`` label (with ``merge_history`` for a plan or
+    target merge-base).
+
+    Raises:
+        RuntimeError: If ``git diff`` exits non-zero.
+    """
+    fallback_refs = (intent_branch, DEFAULT_TARGET_BRANCH) if plan_branch else ()
+    target_refs = (
+        target_branch_refs(intent_target_branch(intent_branch, target_ref, target_worktree)) if execution_branch else ()
+    )
+    base_rev, target_rev, diff_base = patch_diff_range(
+        plan_branch if execution_branch else "", target_ref, target_worktree, fallback_refs, target_refs
+    )
+    patch_meta: dict[str, Any] = {"diff_base": diff_base}
+    diff_range = f"{base_rev}...{target_rev}" if base_rev else f"{target_rev}~1..{target_rev}"
+    res = run_git(["diff", "--numstat", diff_range, "--"], cwd=target_worktree, check=False, timeout=30)
+    if res.returncode != 0:
+        raise RuntimeError(
+            f"Git diff failed between '{base_rev or f'{target_rev}~1'}' and '{target_rev}' "
+            f"with exit code {res.returncode}: {res.stderr.strip()}"
+        )
+    if diff_base in (DIFF_BASE_PLAN, DIFF_BASE_TARGET_MERGE_BASE):
+        patch_meta.update(merge_history(base_rev, target_rev, target_worktree))
+    return res, patch_meta
+
+
+def patch_size_base_line(report_data: dict[str, Any]) -> str:
+    """The report's ``Patch Size Base`` line: the ``diff_base`` label, and the merge-base SHA the diff started from."""
+    label = report_data["diff_base"]
+    line = f"- **Patch Size Base:** `{label}`"
+    if label == DIFF_BASE_TARGET_MERGE_BASE and report_data.get("merge_base_sha"):
+        line += f" (merge-base `{report_data['merge_base_sha']}` with the target branch)"
+    elif label in (DIFF_BASE_MERGE_BASE, DIFF_BASE_FIRST_PARENT):
+        line += " (not measured against the plan branch)"
+    return line

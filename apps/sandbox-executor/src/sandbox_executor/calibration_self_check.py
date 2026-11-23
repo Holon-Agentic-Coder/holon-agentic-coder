@@ -22,9 +22,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypedDict
 
 from sandbox_executor.calibration_diff import DIFF_BASE_TARGET_MERGE_BASE
-from sandbox_executor.calibration_ev import is_matching_execution_record, is_matching_record
+from sandbox_executor.calibration_ev import dual_ev_rows
 from sandbox_executor.calibration_evaluated_sha import is_calibration_commit
-from sandbox_executor.calibration_outcome import has_unresolved_failure, latest_row_per_execution
+from sandbox_executor.calibration_outcome import has_unresolved_failure
 from sandbox_executor.git import is_metadata_path, run_git
 from sandbox_executor.git_revisions import qualify_branch_revision
 
@@ -80,9 +80,8 @@ def same_commit(first: str | None, second: str | None) -> bool:
 
 
 def _has_unresolved_execution_failure(inputs: SelfCheckInputs) -> bool:
-    rows = [r for r in inputs.records if is_matching_execution_record(r, inputs.execution_id, inputs.plan_branch)]
-    plan_rows = [r for r in inputs.records if is_matching_record(r, inputs.execution_id, inputs.plan_branch)]
-    return has_unresolved_failure(latest_row_per_execution(rows), plan_rows or rows)
+    # The same rows evaluate_dual_ev_outcomes scores, so a drag it reports always has its failure row here
+    return has_unresolved_failure(*dual_ev_rows(inputs.records, inputs.execution_id, inputs.plan_branch))
 
 
 def self_check_report(inputs: SelfCheckInputs) -> list[str]:

@@ -18,6 +18,8 @@ from sandbox_executor.flow import (
     StageStatus,
     adopt_existing_plan,
     plan_candidates,
+    publish_planned_branches,
+    record_plan_branch,
     run_intent_stage,
     run_plan_stage,
 )
@@ -105,6 +107,10 @@ class TestKillWindowResume:
         origin_before = _plan_branches(origin)
         assert len(origin_before) == 1
         pushed_branch = origin_before[0]
+        killed_cp = load_checkpoint(str(cp_path))
+        assert killed_cp.current_stage == FlowStage.PLAN
+        assert killed_cp.context.plan_branch == pushed_branch
+        assert "plan" not in killed_cp.completed_stages
 
         resumed_ctx, resumed_agents, results = _resume_from_plan(cp_path, tmp_path, origin, clock_offset=10)
 
@@ -355,5 +361,92 @@ class TestStage2AdoptionWiring:
         assert f"host push of '{local_branch}'" in (res.error or "")
         assert ctx.plan_branch is None
         assert "planner" not in agents.roles()
+
+
+class TestRecordPlanBranchBeforePush:
+    """Step 4 tests: checkpoint records plan_branch before host push, restores live context and strips replan_feedback."""
+
+    def test_checkpoint_records_plan_branch_before_failed_push(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        cp_path = tmp_path / "checkpoint.json"
+        ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin), checkpoint_path=str(cp_path))
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        _git(host, "config", "remote.origin.pushurl", "https://127.0.0.1:9/unreachable/repo.git")
+
+        res = run_plan_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert "host push of" in (res.error or "")
+        assert _plan_branches(origin) == []
+        (local_branch,) = _plan_branches(host)
+        recorded_cp = load_checkpoint(str(cp_path))
+        assert recorded_cp.current_stage == FlowStage.PLAN
+        assert recorded_cp.context.plan_branch == local_branch
+        assert "plan" not in recorded_cp.completed_stages
+        assert ctx.plan_branch is None
+
+    def test_save_error_fails_stage2_before_push_and_next_run_adopts_without_planner(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        cp_path = tmp_path / "checkpoint.json"
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(host, agents, checkpoint_path=str(cp_path))
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+
+        with patch(
+            "sandbox_executor.flow.stages.plan_resume.save_checkpoint",
+            side_effect=OSError("disk full"),
+        ):
+            res = run_plan_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        (local_branch,) = _plan_branches(host)
+        assert str(cp_path) in (res.error or "")
+        assert local_branch in (res.error or "")
+        assert _plan_branches(origin) == []
+        assert ctx.plan_branch is None
+
+        agents.calls.clear()
+        res_retry = run_plan_stage(ctx)
+        assert res_retry.status == StageStatus.SUCCESS
+        assert "planner" not in agents.roles()
+        assert ctx.plan_branch == local_branch
+        assert _plan_branches(origin) == [local_branch]
+
+    def test_replan_record_never_persists_replan_feedback_and_restores_live_context(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        cp_path = tmp_path / "checkpoint.json"
+        ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin), checkpoint_path=str(cp_path))
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        ctx.plan_branch = "I-1-old/P-1-CLA-CO5.5/_"
+        ctx.stage_results["plan"] = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
+        ctx.intent_data["replan_feedback"] = "over budget: shrink plan"
+        new_branch = f"{ctx.intent_branch.removesuffix('/_')}/P-2-CLA-CO5.5/_"
+
+        err = record_plan_branch(ctx, new_branch)
+
+        assert err is None
+        saved_cp = load_checkpoint(str(cp_path))
+        assert saved_cp.current_stage == FlowStage.PLAN
+        assert saved_cp.context.plan_branch == new_branch
+        assert "plan" not in saved_cp.completed_stages
+        assert "replan_feedback" not in saved_cp.context.intent_data
+        # Live context was restored in full:
+        assert ctx.plan_branch == "I-1-old/P-1-CLA-CO5.5/_"
+        assert ctx.stage_results["plan"].status == StageStatus.SUCCESS
+        assert ctx.intent_data["replan_feedback"] == "over budget: shrink plan"
+
+    def test_successful_stage2_leaves_live_context_with_plan_branch_and_success_result(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        cp_path = tmp_path / "checkpoint.json"
+        ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin), checkpoint_path=str(cp_path))
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+
+        res = run_plan_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        assert ctx.plan_branch is not None
+        assert ctx.stage_results["plan"].status == StageStatus.SUCCESS
+        assert publish_planned_branches is not None
+
 
 

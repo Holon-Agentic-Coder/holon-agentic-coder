@@ -18,9 +18,13 @@ from sandbox_executor.flow.git_refs import (
     _snapshot_child_branches,
     _track_local_branch,
 )
-from sandbox_executor.flow.host_remote import new_local_child_branches, publish_new_child_branches, remote_error
+from sandbox_executor.flow.host_remote import new_local_child_branches, remote_error
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
-from sandbox_executor.flow.stages.plan_resume import AMBIGUOUS_PLAN_BRANCHES_HINT, adopt_existing_plan
+from sandbox_executor.flow.stages.plan_resume import (
+    AMBIGUOUS_PLAN_BRANCHES_HINT,
+    adopt_existing_plan,
+    publish_planned_branches,
+)
 from sandbox_executor.flow.stages.plan_support import (
     dry_run_plan_result,
     plan_metrics,
@@ -82,11 +86,10 @@ class PlanStage:
 
     def produce(self) -> StageResult | None:
         """Run the planner (or adopt an existing complete plan branch) and read back its plan."""
-        for step in (self.prepare, self.adopt_existing):
-            if (failure := step()) is not None:
-                return failure
-        steps = (self.read_plan,) if self.plan_branch else (self.dispatch_planner, self.adopt_plan_branch, self.read_plan)
-        for step in steps:
+        if (failure := self.prepare() or self.adopt_existing()) is not None:
+            return failure
+        tail = (self.read_plan,) if self.plan_branch else (self.dispatch_planner, self.adopt_plan_branch, self.read_plan)
+        for step in tail:
             if (failure := step()) is not None:
                 return failure
         return None
@@ -105,8 +108,7 @@ class PlanStage:
                 f"Plan stage failed: could not fetch origin branches under {self.intent_prefix} before dispatching "
                 "the planner."
             )
-        local_plans = set(new_local_child_branches(self.repo_dir, self.intent_prefix, "P", set()))
-        self.existing_plans = existing_plans | local_plans
+        self.existing_plans = existing_plans | set(new_local_child_branches(self.repo_dir, self.intent_prefix, "P", set()))
         return None
 
     def dispatch_planner(self) -> StageResult | None:
@@ -117,8 +119,8 @@ class PlanStage:
             attempt_before = snapshot_plan_attempt(self.repo_dir, context.intent_branch)
             exit_code = _dispatch_role(context, "planner", [context.intent_branch, context.agent, context.model])
         # The host pushes every plan branch the container committed, a failed planner's salvage commit included.
-        push_error = remote_error(
-            publish_new_child_branches, self.repo_dir, self.intent_prefix, "P", self.existing_plans
+        push_error = publish_planned_branches(
+            context, self.intent_prefix, self.existing_plans, self.preferred_suffix, remote_error
         )
         if exit_code != 0:
             # A failed attempt leaves no untracked plan file, and its own failure detail (an API error) names the cause.

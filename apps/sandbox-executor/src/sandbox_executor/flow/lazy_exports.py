@@ -146,7 +146,8 @@ LAZY_EXPORTS: dict[str, str] = {
         "PlanBudget _backfill_plan_row _over_budget_failure _plan_budget_decision"
     ),
     "sandbox_executor.flow.stages.plan_resume": (
-        "AMBIGUOUS_PLAN_BRANCHES_HINT PlanCandidate adopt_existing_plan plan_candidates"
+        "AMBIGUOUS_PLAN_BRANCHES_HINT PlanCandidate adopt_existing_plan plan_candidates "
+        "publish_planned_branches record_plan_branch"
     ),
     "sandbox_executor.flow.stages.plan_support": (
         "dry_run_plan_result plan_id_of plan_metrics plan_stage_payload replan_feedback_env"

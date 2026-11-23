@@ -1,4 +1,4 @@
-"""Shape-matrix fuzz: no message built from a URL-valued setting echoes any part of its credential.
+"""URL credential redaction: no message built from a URL-valued setting echoes a 4-character fragment of its credential.
 
 The rule under test: a warning, error, exception, log line or `--json` field may name the variable
 and a host that was validated after the userinfo was removed with the shared last-`@` rule
@@ -9,12 +9,13 @@ rendering) must not hold any 4-character fragment of the credential. The #94 sit
 `holon doctor` (environment section, text and `--json`), the gateway probe (probe URL, cache line,
 fetch errors, `redact_url`) and the model envelope lines.
 
-Credentials are built at runtime from letters that occur in no message built by the code (`FGJQVZ`)
-and digits, and compared case-insensitively, so a 4-character check cannot match ordinary output.
-The only incidental random text in the checked output, the exact `--env-file` path that `mkstemp`
-creates and the pi-agent session dir that `mkdtemp` creates, is masked before the fragment check, so a
-random temp path cannot cause a false leak.
-Failure messages name the case id only, never the value.
+The matrices are fixed shape matrices, not property tests: every credential and every temp name a case draws comes
+from a generator seeded by `seeded_secrets` (a fixed default seed; set `CREDENTIAL_TEST_SEED=<n>` to rerun a seed, or
+`CREDENTIAL_TEST_SEED=random` for a stress run). Credentials are built from letters that occur in no message built by
+the code (`FGJQVZ`) and digits, and compared case-insensitively, so a 4-character check cannot match ordinary output.
+The only incidental random text in the checked output, the exact `--env-file` path that `mkstemp` creates and the
+pi-agent session dir that `mkdtemp` creates, is masked before the fragment check, so a random temp path cannot cause a
+false leak. Failure messages name the case id and the seed, never the value.
 """
 
 import argparse
@@ -24,8 +25,8 @@ import itertools
 import json
 import logging
 import os
+import random
 import re
-import secrets
 import shutil
 import socket
 import subprocess
@@ -38,6 +39,8 @@ from urllib.parse import urlsplit
 import pytest
 from sandbox_executor import cli, local_llm
 from sandbox_executor.launcher import env_files, proxy_readiness, root_ca
+
+from tests import seeded_secrets
 
 FRAGMENT_LEN = 4
 _LETTERS = "FGJQVZ"
@@ -56,35 +59,39 @@ SUFFIXES = {"none": "", "path": "/v1", "double-slash-path": "//v1"}
 USERINFO = {"user-password": "alice:{c}", "token-only": "{c}"}
 
 
-def _letters(n: int = 12) -> str:
-    return "".join(secrets.choice(_LETTERS) for _ in range(n))
+def _letters(rng: random.Random, n: int = 12) -> str:
+    return "".join(rng.choice(_LETTERS) for _ in range(n))
 
 
-def _digit_head(n: int) -> str:
+def _digit_head(rng: random.Random, n: int) -> str:
     # The first digit keeps every head of 5 digits or fewer inside the valid port range.
-    return secrets.choice("234") + "".join(secrets.choice(_DIGITS) for _ in range(n - 1))
+    return rng.choice("234") + "".join(rng.choice(_DIGITS) for _ in range(n - 1))
 
 
-def _credential_shapes() -> dict[str, Callable[[], str]]:
-    shapes: dict[str, Callable[[], str]] = {
+def _credential_shapes() -> dict[str, Callable[[random.Random], str]]:
+    """Map each credential shape id to a builder that draws one credential of that shape from a generator."""
+    shapes: dict[str, Callable[[random.Random], str]] = {
         "plain": _letters,
-        "double-slash": lambda: _letters(6) + "//" + _letters(6),
-        "percent-encoded": lambda: _letters(6) + "%2F" + _letters(6),
+        "double-slash": lambda rng: _letters(rng, 6) + "//" + _letters(rng, 6),
+        "percent-encoded": lambda rng: _letters(rng, 6) + "%2F" + _letters(rng, 6),
     }
     for n in range(1, 8):
         for name, delim in (("slash", "/"), ("query", "?"), ("fragment", "#"), ("colon", ":")):
-            shapes[f"digits{n}-{name}"] = lambda n=n, d=delim: _digit_head(n) + d + _letters()
+            shapes[f"digits{n}-{name}"] = lambda rng, n=n, d=delim: _digit_head(rng, n) + d + _letters(rng)
     return shapes
 
 
-def matrix() -> Iterator[tuple[str, str, str]]:
-    """Yield `(case_id, value, credential)` for every prefix x userinfo x credential x host x suffix."""
+def matrix(rng: random.Random) -> Iterator[tuple[str, str, str]]:
+    """Yield `(case_id, value, credential)` for every prefix x userinfo x credential x host x suffix.
+
+    Every credential is drawn from `rng`, so one generator state gives one matrix.
+    """
     for p_id, prefix in PREFIXES.items():
         for u_id, userinfo in USERINFO.items():
             for c_id, make in _credential_shapes().items():
                 for h_id, host in HOSTS.items():
                     for s_id, suffix in SUFFIXES.items():
-                        credential = make()
+                        credential = make(rng)
                         value = f"{prefix}{userinfo.format(c=credential)}@{host}{suffix}"
                         yield f"{p_id}/{u_id}/{c_id}/{h_id}/{s_id}", value, credential
 
@@ -288,7 +295,7 @@ def _leaks(texts: list[str], credential: str) -> bool:
 
 @pytest.mark.parametrize("prefix", sorted(PREFIXES))
 @pytest.mark.parametrize("entry_point", sorted(ENTRY_POINTS))
-def test_no_credential_fragment_in_any_message(entry_point, prefix, monkeypatch):
+def test_no_url_credential_fragment_in_any_message(entry_point, prefix, monkeypatch):
     """Every matrix case leaves no credential fragment in logs, stdout, stderr or exception text.
 
     Each test runs one URL prefix's slice of the matrix, so the parallel runner can spread the slices across workers.
@@ -300,10 +307,12 @@ def test_no_credential_fragment_in_any_message(entry_point, prefix, monkeypatch)
     for name in list(os.environ):
         monkeypatch.delenv(name)
     run = ENTRY_POINTS[entry_point]
-    cases = [case for case in matrix() if case[0].startswith(f"{prefix}/")]
+    rng = seeded_secrets.generator(f"url-redaction:{entry_point}-{prefix}")
+    cases = [case for case in matrix(rng) if case[0].startswith(f"{prefix}/")]
     failures = [case_id for case_id, value, credential in cases if _leaks(run(value), credential)]
     assert not failures, (
-        f"{len(failures)}/{len(cases)} cases leaked a credential fragment, e.g. {failures[:5]} ALL={failures}"
+        f"{len(failures)}/{len(cases)} cases leaked a credential fragment, e.g. {failures[:5]} ALL={failures} "
+        f"{seeded_secrets.seed_note()}"
     )
 
 
@@ -311,9 +320,9 @@ def _refuse(*_args, **_kwargs):
     raise OSError("connection refused")
 
 
-def test_matrix_covers_every_shape():
+def test_url_credential_matrix_covers_every_shape():
     """The matrix is the full cross product and its ids are unique."""
-    ids = [case_id for case_id, _, _ in matrix()]
+    ids = [case_id for case_id, _, _ in matrix(seeded_secrets.generator("url-redaction:matrix"))]
     assert len(ids) == MATRIX_SIZE == len(set(ids))
 
 
@@ -331,7 +340,8 @@ def test_unambiguous_host_is_still_shown(form, expected):
     """A value whose userinfo boundary is unambiguous keeps its validated host in messages."""
     from sandbox_executor.redaction import trusted_url_authority
 
-    assert trusted_url_authority(form.format(c=_letters())) == expected
+    rng = seeded_secrets.generator(f"url-redaction:unambiguous:{form}")
+    assert trusted_url_authority(form.format(c=_letters(rng))) == expected, seeded_secrets.seed_note()
 
 
 @pytest.mark.parametrize(
@@ -351,7 +361,10 @@ def test_ambiguous_or_invalid_host_is_withheld(form):
     """An `@` left after the userinfo, a bad port or a non-host authority shows nothing."""
     from sandbox_executor.redaction import trusted_url_authority
 
-    assert trusted_url_authority(form.format(c=_letters(), d=_digit_head(4))) is None
+    rng = seeded_secrets.generator(f"url-redaction:ambiguous:{form}")
+    assert trusted_url_authority(form.format(c=_letters(rng), d=_digit_head(rng, 4))) is None, (
+        seeded_secrets.seed_note()
+    )
 
 
 # Every RFC 3986 gen-delim and sub-delim, plus `"` (not RFC-valid raw, but seen in real values). A
@@ -369,14 +382,14 @@ DELIMITER_FORMS = {
 }
 
 
-def _delimiter_cases() -> Iterator[tuple[str, str, list[str]]]:
-    """Yield `(case_id, value, parts)`: each delimiter between two runtime-built password parts."""
+def _delimiter_cases(rng: random.Random) -> Iterator[tuple[str, str, list[str]]]:
+    """Yield `(case_id, value, parts)`: each delimiter between two password parts drawn from `rng`."""
     for f_id, form in DELIMITER_FORMS.items():
         for delim in URL_DELIMITERS:
             if "alice:" not in form and delim in "/?#":
                 # A bare user with a raw `/`, `?` or `#` reads as host + path (`https://host/p@x`).
                 continue
-            parts = [_letters(), _letters()]
+            parts = [_letters(rng), _letters(rng)]
             yield f"{f_id}/{delim!r}", form.format(c=delim.join(parts)), parts
 
 
@@ -507,10 +520,10 @@ def test_every_delimiter_in_a_password_stays_off_argv_and_echo(monkeypatch):
     _patch_docker_host(monkeypatch)
     failures = [
         f"{case_id}:{where}"
-        for case_id, value, parts in _delimiter_cases()
+        for case_id, value, parts in _delimiter_cases(seeded_secrets.generator("url-redaction:delimiters"))
         for where in _delimiter_case_failures(case_id, value, parts)
     ]
-    assert not failures, f"{len(failures)} delimiter cases failed, e.g. {failures[:40]}"
+    assert not failures, f"{len(failures)} delimiter cases failed, e.g. {failures[:40]} {seeded_secrets.seed_note()}"
 
 
 def _colliding_parts() -> list[str]:
@@ -595,9 +608,9 @@ _LOCAL_ENV = {
 }
 
 
-def _invalid_value_cases() -> Iterator[tuple[str, dict[str, str], dict | None, str]]:
+def _invalid_value_cases(rng: random.Random) -> Iterator[tuple[str, dict[str, str], dict | None, str]]:
     """Yield `(case_id, env, host_config, credential)`: every credential shape in every invalid-value slot."""
-    for case_id, value, credential in matrix():
+    for case_id, value, credential in matrix(rng):
         if not case_id.endswith("/ipv4/path"):
             continue
         for name in INVALID_VALUE_ENV:
@@ -608,8 +621,12 @@ def _invalid_value_cases() -> Iterator[tuple[str, dict[str, str], dict | None, s
             yield f"host:{field}/{case_id}", dict(_LOCAL_ENV), host_config, credential
 
 
-def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, tmp_path):
-    """Doctor (environment section, text and `--json`) and the run path withhold an invalid value."""
+def test_credential_in_invalid_envelope_value_never_echoed(monkeypatch, tmp_path):
+    """Doctor (environment section, text and `--json`) and the run path withhold an invalid value.
+
+    The isolated `HOME` is `tmp_path`, whose basename pytest derives from this test's name; that name holds no run of 4
+    characters from the credential alphabet (`fgjqvz2347`), so the `HOME` path itself cannot read as a fragment.
+    """
     from sandbox_executor.preflight import PreflightResult, PreflightStatus
 
     probe = PreflightResult(
@@ -625,7 +642,7 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
         monkeypatch.delenv(name)
     failures: list[str] = []
     collided: list[str] = []
-    cases = list(_invalid_value_cases())
+    cases = list(_invalid_value_cases(seeded_secrets.generator("url-redaction:invalid-envelope")))
     for case_id, env, host_config, credential in cases:
         # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variable to the
         # container unchanged: through the env-file, so neither the argv nor the echo may hold a fragment of it.
@@ -633,7 +650,7 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
         docker = _DockerRecorder()
         # Each temp name is first drawn sharing a run with the credential, so the masking under the isolated HOME is
         # what keeps a forwarded run from reading as a leak, not the luck of a random name.
-        colliding = _colliding_temp_names(credential)
+        colliding = _colliding_temp_names(credential, seeded_secrets.generator(f"url-redaction:temp-names:{case_id}"))
         with (
             patch.object(tempfile, "_get_candidate_names", colliding),
             patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
@@ -667,17 +684,19 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
     assert len(cases) == (len(INVALID_VALUE_ENV) + len(INVALID_VALUE_HOST_FIELDS)) * MATRIX_SIZE // (
         len(HOSTS) * len(SUFFIXES)
     )
-    assert not failures, f"{len(failures)}/{len(cases)} invalid-value cases failed, e.g. {failures[:5]}"
+    assert not failures, (
+        f"{len(failures)}/{len(cases)} invalid-value cases failed, e.g. {failures[:5]} {seeded_secrets.seed_note()}"
+    )
     assert collided, "no forwarded run drew a temp name sharing a run with its credential"
 
 
-def _colliding_temp_names(credential: str) -> Callable[[], Iterator[str]]:
+def _colliding_temp_names(credential: str, rng: random.Random) -> Callable[[], Iterator[str]]:
     """Return a `tempfile._get_candidate_names` stand-in whose first name shares a 4-character run with `credential`.
 
-    Later draws are random, so a name already taken on disk is retried as usual.
+    Later draws come from `rng`, so a name already taken on disk is retried as usual and still reproducibly.
     """
     name = re.search(r"[a-z0-9_]{4}", credential.lower()).group() * 2
-    return lambda: itertools.chain([name], tempfile._RandomNameSequence())
+    return lambda: itertools.chain([name], seeded_secrets.name_sequence(rng))
 
 
 def _forwarded_run_failures(env: dict[str, str], docker: _DockerRecorder, credential: str, home: str) -> list[str]:
@@ -743,7 +762,7 @@ def test_fragment_beside_pi_agent_dir_is_still_a_leak(template, monkeypatch, tmp
     assert _leak_sites({"main-argv": [" ".join(argv)]}, argv, [_COLLIDING_CREDENTIAL]) == ["main-argv"]
 
 
-# Every forwarded `HOLON_*` name checked by the env-file routing fuzz: the invalid-value names (including the
+# Every forwarded `HOLON_*` name checked by the env-file routing matrix: the invalid-value names (including the
 # `TIMEOUT` and `BUDGET` ones), names whose value is not secret-shaped, and an arbitrary name.
 FORWARDED_HOLON_NAMES = (
     *INVALID_VALUE_ENV,
@@ -789,12 +808,15 @@ def _forwarded_value_failures(name: str, value: str) -> list[str]:
 def test_every_forwarded_holon_value_stays_off_argv_and_echo(name, monkeypatch):
     """A bare credential under any forwarded `HOLON_*` name reaches only the env-file, in the main run and probe."""
     _patch_docker_host(monkeypatch)
+    rng = seeded_secrets.generator(f"url-redaction:forwarded:{name}")
     failures = [
         f"{name}:{shape}:{where}"
         for shape, make in _credential_shapes().items()
-        for where in _forwarded_value_failures(name, make())
+        for where in _forwarded_value_failures(name, make(rng))
     ]
-    assert not failures, f"{len(failures)} forwarded-value cases failed, e.g. {failures[:20]}"
+    assert not failures, (
+        f"{len(failures)} forwarded-value cases failed, e.g. {failures[:20]} {seeded_secrets.seed_note()}"
+    )
 
 
 # Base URLs `urlsplit` (or its lazy port check) rejects, or that have no usable `scheme://host`.
@@ -810,7 +832,7 @@ _GOOD_HOST_URL = "http://127.0.0.1:8000/v1"
 _GOOD_LOCAL_URL = "http://127.0.0.1:8001/v1"
 
 
-def _unparseable_cases() -> Iterator[tuple[str, str, str, bool]]:
+def _unparseable_cases(rng: random.Random) -> Iterator[tuple[str, str, str, bool]]:
     """Yield `(case_id, value, credential, plain)`: every form with no userinfo and with each credential shape.
 
     `plain` marks values whose userinfo boundary is unambiguous, so the parse failure is the only problem and the
@@ -820,7 +842,7 @@ def _unparseable_cases() -> Iterator[tuple[str, str, str, bool]]:
     for f_id, form in UNPARSEABLE_FORMS.items():
         yield f"{f_id}/no-userinfo", form.format(u=""), "", True
         for c_id, make in _credential_shapes().items():
-            credential = make()
+            credential = make(rng)
             plain = c_id in ("plain", "percent-encoded")
             yield f"{f_id}/{c_id}", form.format(u=f"alice:{credential}@"), credential, plain
 
@@ -841,7 +863,7 @@ def test_doctor_survives_unparseable_base_url(slot, monkeypatch):  # noqa: C901,
     source = "HOLON_LOCAL_BASE_URL" if slot == "HOLON_LOCAL_BASE_URL" else "host models.json provider 'vmlx' baseUrl"
     expected = f"WARNING: {source} is not a parseable URL, so its server is not probed (value withheld)"
     failures: list[str] = []
-    cases = list(_unparseable_cases())
+    cases = list(_unparseable_cases(seeded_secrets.generator(f"url-redaction:unparseable:{slot}")))
     for case_id, value, credential, plain in cases:
         host_url, local_url = (_GOOD_HOST_URL, value) if slot == "HOLON_LOCAL_BASE_URL" else (value, _GOOD_LOCAL_URL)
         env = {
@@ -903,4 +925,6 @@ def test_doctor_survives_unparseable_base_url(slot, monkeypatch):  # noqa: C901,
         if not credential and any(value in text for text in texts):
             failures.append(f"{case_id}:value-echoed")
     assert len(cases) == len(UNPARSEABLE_FORMS) * (1 + len(_credential_shapes()))
-    assert not failures, f"{len(failures)}/{len(cases)} unparseable-URL cases failed, e.g. {failures[:5]}"
+    assert not failures, (
+        f"{len(failures)}/{len(cases)} unparseable-URL cases failed, e.g. {failures[:5]} {seeded_secrets.seed_note()}"
+    )

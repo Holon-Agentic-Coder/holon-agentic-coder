@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Any
 
 from sandbox_executor.flow.conflict_classes_lists import appended_list_union
+from sandbox_executor.flow.conflict_classes_tokens import python_lines
 from sandbox_executor.git import run_git
 
 TIMESTAMP_KEYS = frozenset({"created_at", "updated_at", "last_seen", "timestamp"})
@@ -84,18 +85,21 @@ def _is_timestamp_only(sides: ConflictSides) -> bool:
     return _without_timestamps(ours) == _without_timestamps(theirs)
 
 
-def _indent(line: str, python: bool) -> str:
-    return line[: len(line) - len(line.lstrip())] if python else ""
+def _indent(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
 
 
-def _normalised_lines(text: str, python: bool) -> list[str]:
-    """Non-blank lines with whitespace collapsed; for Python, leading indentation kept and import blocks sorted.
+def _normalised_lines(text: str, python: bool) -> list[str] | None:
+    """Non-blank lines with interior whitespace collapsed and leading indentation kept; Python import blocks sorted.
 
-    Python indentation is semantic, so a re-indent is a real change and never counts as mechanical.
+    Indentation is semantic in Python, YAML and Makefiles, so a re-indent is a real change and never mechanical. Python
+    is compared token by token, so whitespace inside a string literal stays significant; ``None`` if it won't tokenize.
     """
-    lines = [_indent(line, python) + " ".join(line.split()) for line in text.splitlines() if line.strip()]
     if not python:
-        return lines
+        return [_indent(line) + " ".join(line.split()) for line in text.splitlines() if line.strip()]
+    lines = python_lines(text)
+    if lines is None:
+        return None
     result: list[str] = []
     block: list[str] = []
     for line in [*lines, ""]:
@@ -112,7 +116,8 @@ def _is_delete_vs_touch(sides: ConflictSides) -> bool:
     if sides.theirs is not None or sides.base is None or sides.ours is None:
         return False
     python = sides.path.endswith(".py")
-    return _normalised_lines(sides.base, python) == _normalised_lines(sides.ours, python)
+    base = _normalised_lines(sides.base, python)
+    return base is not None and base == _normalised_lines(sides.ours, python)
 
 
 def _is_appended_list(sides: ConflictSides) -> bool:

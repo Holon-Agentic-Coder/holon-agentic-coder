@@ -160,6 +160,27 @@ def test_list_union_layouts(base, ours, theirs, expected):
     assert result == (theirs if expected is None else expected)
 
 
+@pytest.mark.parametrize(
+    "ours",
+    [
+        "# flow note\nX = [\n    'a',\n    'b',\n]\n",
+        "X = [\n    'a',  # flow note\n    'b',\n]\n",
+        "X = [\n    'a',\n    'b',  # flow note\n]\n",
+        "X = [  # pragma: no cover\n    'a',\n    'b',\n]\n",
+    ],
+)
+def test_list_union_refuses_to_drop_a_flow_side_comment(ours):
+    assert appended_list_union("X = [\n    'a',\n]\n", ours, "X = [\n    'a',\n    'c',\n]\n") is None
+
+
+def test_list_union_keeps_a_base_comment_after_the_last_entry():
+    base = "X = [\n    'a',  # note\n]\n"
+    ours = "X = [\n    'a',  # note\n    'b',\n]\n"
+    theirs = "X = [\n    'a',  # note\n    'c',\n]\n"
+
+    assert appended_list_union(base, ours, theirs) == "X = [\n    'a',  # note\n    'c',\n    'b',\n]\n"
+
+
 def test_list_union_refuses_a_removed_entry():
     assert appended_list_union("X = ['a', 'b']\n", "X = ['a']\n", "X = ['a', 'b', 'c']\n") is None
 
@@ -174,6 +195,24 @@ def test_a_target_deletion_against_a_branch_reindent_is_code(tmp_path: Path):
     assert classified == [("old.py", ConflictClass.CODE)]
     assert outcome.code_paths == ["old.py"]
     assert (work / "old.py").read_text(encoding="utf-8") == reindented
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "edited"),
+    [
+        ("old.py", "x = 'a b'\n", "x = 'a  b'\n"),
+        ("old.py", "x = 1  # keep\n", "x = 1  # changed\n"),
+        ("conf.yaml", "a:\n  b: 1\nc: 2\n", "a:\n  b: 1\n  c: 2\n"),
+        ("Makefile", "all:\n\techo hi\n", "all:\necho hi\n"),
+    ],
+)
+def test_a_target_deletion_against_a_string_comment_or_indent_edit_is_code(tmp_path: Path, path, source, edited):
+    work, paths = _conflicted(tmp_path, {path: source}, {path: edited}, {path: None})
+
+    classified, outcome = _classify_and_resolve(work, paths)
+
+    assert classified == [(path, ConflictClass.CODE)]
+    assert outcome.code_paths == [path]
 
 
 def test_a_failed_delete_resolution_restores_the_unmerged_stages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

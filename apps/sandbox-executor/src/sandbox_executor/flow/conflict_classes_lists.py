@@ -2,8 +2,9 @@
 
 ``appended_list_union`` checks this with ``ast`` (every other top-level statement identical on all three sides, and
 each side's literal is the base literal plus appended entries) and returns the target file with the flow branch's
-new entries appended in branch order. The result is re-parsed and compared with the target before it is returned;
-any doubt returns ``None``, which leaves the path to the code resolver.
+new entries appended in branch order. The flow branch's copy minus those entries must match the base token for token,
+comments included. The result is re-parsed and compared with the target; any doubt returns ``None``, which leaves the
+path to the code resolver.
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ from __future__ import annotations
 import ast
 import copy
 from dataclasses import dataclass
+
+from sandbox_executor.flow.conflict_classes_tokens import unchanged_outside
 
 _Literal = ast.List | ast.Dict
 
@@ -97,6 +100,12 @@ def _entry_segments(side: _ListSide, literal: _Literal, indexes: list[int]) -> l
     return segments
 
 
+def _appended_nodes(literal: _Literal, prefix: int) -> list[tuple[ast.expr | None, ast.expr]]:
+    if isinstance(literal, ast.List):
+        return [(element, element) for element in literal.elts[prefix:]]
+    return list(zip(literal.keys[prefix:], literal.values[prefix:], strict=True))
+
+
 def _line_end(data: bytes, pos: int) -> int:
     """The offset of the newline ending the line at ``pos`` (the end of ``data`` on its last line)."""
     newline = data.find(b"\n", pos)
@@ -181,7 +190,8 @@ def appended_list_union(base_text: str, ours_text: str, theirs_text: str) -> str
     prefix = len(base_entries)
     branch_only = _branch_only(prefix, ours_entries, theirs_entries)
     appended_only = ours_entries[:prefix] == base_entries and theirs_entries[:prefix] == base_entries
-    if not appended_only or _overlapping_keys(ours_lit, theirs_lit, branch_only):
+    unchanged = unchanged_outside(base_text, ours_text, _appended_nodes(ours_lit, prefix))  # keeps flow comments
+    if not appended_only or not unchanged or _overlapping_keys(ours_lit, theirs_lit, branch_only):
         return None
     if not branch_only:
         return theirs_text

@@ -153,6 +153,7 @@ def _guarded(request: SyncRequest, probe: TargetProbe, step: _Step, *, record_bl
 def _commit_blocked_row(request: SyncRequest, result: SyncResult) -> SyncResult:
     """Commit the blocked row alone (not pushed), so the next merge of a target that changed the ledger can start."""
     message = f"sync: record blocked target sync of {result.target_sha[:12]}"
+    run_git(["add", "--", request.ledger_path], cwd=request.worktree, check=False)  # the row may create the ledger
     commit = run_git(["commit", "-q", "-m", message, "--", request.ledger_path], cwd=request.worktree, check=False)
     if commit.returncode != 0:
         logger.warning("Could not commit the blocked target_sync row: %s", (commit.stderr or "").strip())

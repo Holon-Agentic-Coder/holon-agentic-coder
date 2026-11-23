@@ -44,6 +44,7 @@ LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.conflict_classes_lists": "appended_list_union",
     "sandbox_executor.flow.conflict_classes_resolve": "MechanicalResolution resolve_mechanical resolve_path",
+    "sandbox_executor.flow.conflict_classes_tokens": "python_lines unchanged_outside",
     "sandbox_executor.flow.constants": "CI_REGISTRATION_POLL_SECONDS CURRENT_CONTEXT_SCHEMA_VERSION",
     "sandbox_executor.flow.context": (
         "_SUMMARY_STATUS_WORDS FlowContext FlowStage StageResult StageStatus _support_legacy_repo_dir"

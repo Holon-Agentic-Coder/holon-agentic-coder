@@ -162,6 +162,18 @@ def test_a_code_conflict_with_the_default_resolver_blocks_cleanly(repos):
     assert _git(work, "status", "--porcelain") == ""
 
 
+def test_a_blocked_row_that_creates_the_ledger_is_committed(tmp_path: Path):
+    _, work = build_flow_repos(tmp_path, {"src/app.py": "x = 0\n"})
+    _code_conflict(work)
+
+    result = sync_with_target(_request(work))
+
+    assert result.status == "blocked"
+    assert _git(work, "diff", "--name-only", "HEAD~1", "HEAD") == LEDGER
+    assert [row["outcome"] for row in _sync_rows(work)] == ["blocked"]
+    assert _git(work, "status", "--porcelain") == ""
+
+
 def test_uncommitted_ledger_rows_block_the_sync_before_it_merges_or_commits(repos, git_calls):
     _, work = repos
     commit_on(work, "main", {"docs/new.md": "n\n"}, "target")

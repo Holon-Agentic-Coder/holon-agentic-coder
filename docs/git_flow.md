@@ -362,8 +362,8 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
     next child start, so it is cut from a tip that already holds every earlier child's merge or squash commit. The first
     child that fails or is not ready marks its progress `failed`; one refused only by the merge guard stays
     `review_done` with a `merge_error`, so a resume retries just the merge. Either way the parent's Stage 3 fails,
-    naming the child; later children do not start.
-    `--dry-run` and `--skip-push` fail at the first child (no consensus approval, no PR number to merge).
+    naming the child; later children do not start. `--dry-run` and `--skip-push` fail at the first child (no consensus
+    approval, no PR number to merge).
   - **The combined PR.** After the last child merged, Stage 3 merges the plan branch into the parent execution branch
     with a merge commit and appends a superseding `decomposed` summary row with `integrated: true`, the `plan_branch`
     and the list of `children` (slug, intent and execution branch, PR number and URL, merge commit). The parent's own

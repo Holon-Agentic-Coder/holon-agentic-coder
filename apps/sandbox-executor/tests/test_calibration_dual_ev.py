@@ -144,8 +144,8 @@ class TestCalibrationDualEV(unittest.TestCase):
             self.assertEqual(actual.p_success, 0.0, marker)
             self.assertEqual(actual.p_success_clean, 0.0, marker)
 
-    def test_intermediate_failure_with_converged_recovery(self) -> None:
-        """Intermediate failed summary row followed by converged recovery produces positive bug drag."""
+    def test_recovered_review_failure_adds_no_drag(self) -> None:
+        """A failed Stage 4 (``REV-``) row between Stage 3 success and a later success is not a delivery failure."""
         records = [
             {
                 "entry_type": "summary",
@@ -187,13 +187,10 @@ class TestCalibrationDualEV(unittest.TestCase):
         self.assertEqual(metrics.ev_clean, 45.0)
         self.assertGreater(metrics.ev_clean, 0.0)
 
-        self.assertEqual(metrics.p_success_with_bugs, 0.0)
-        self.assertEqual(metrics.impact_with_bugs, 0.0)
-        self.assertEqual(metrics.ev_with_bugs, -5.0)
-        self.assertLess(metrics.ev_with_bugs, 0.0)
-
-        self.assertEqual(metrics.bug_ev_drag, 50.0)
-        self.assertEqual(metrics.bug_ev_drag, round(metrics.ev_clean - metrics.ev_with_bugs, 2))
+        self.assertEqual(metrics.p_success_with_bugs, 1.0)
+        self.assertEqual(metrics.impact_with_bugs, 50.0)
+        self.assertEqual(metrics.ev_with_bugs, metrics.ev_clean)
+        self.assertEqual(metrics.bug_ev_drag, 0.0)
 
     def test_converged_failure_run(self) -> None:
         """Run that fails without subsequent recovery sets clean and observed EV to drag penalty."""
@@ -265,7 +262,7 @@ class TestCalibrationDualEV(unittest.TestCase):
         self.assertIn("\\text{Bug EV Drag}", report)
 
     def test_parse_actual_metrics_dual_ev_integration(self) -> None:
-        """parse_actual_metrics correctly ingests intermediate failure and computes dual EV."""
+        """parse_actual_metrics ignores an intermediate Stage 4 failure: no drag, Stage 3 row sets the outcome."""
         predicted = PredictedMetrics(p_success=0.95, entropy=1.0, impact=50.0, cost=4.0, learning_value=2.0, ev=46.0)
         jsonl = (
             '{"entry_type": "summary", "execution_id": "E-int-1", "plan_branch": "I-t/P-t/_", '
@@ -287,20 +284,21 @@ class TestCalibrationDualEV(unittest.TestCase):
             patch("subprocess.run", side_effect=mock_subp),
         ):
             actual, _meta = parse_actual_metrics("E-int-1", "I-t/P-t/_", predicted)
+            self.assertEqual(actual.exit_code, 0)
             self.assertEqual(actual.p_success_clean, 1.0)
-            self.assertEqual(actual.p_success_with_bugs, 0.0)
+            self.assertEqual(actual.p_success_with_bugs, 1.0)
             self.assertEqual(actual.impact_clean, 50.0)
-            self.assertEqual(actual.impact_with_bugs, 0.0)
+            self.assertEqual(actual.impact_with_bugs, 50.0)
             self.assertGreater(actual.ev_clean, 0.0)
-            self.assertLess(actual.ev_with_bugs, 0.0)
-            self.assertEqual(actual.bug_ev_drag, round(actual.ev_clean - actual.ev_with_bugs, 2))
+            self.assertEqual(actual.ev_with_bugs, actual.ev_clean)
+            self.assertEqual(actual.bug_ev_drag, 0.0)
             # Backward compatibility invariants
             self.assertEqual(actual.p_success, actual.p_success_clean)
             self.assertEqual(actual.ev, actual.ev_clean)
             self.assertEqual(actual.impact, actual.impact_clean)
 
     def test_parse_actual_metrics_dual_ev_with_approved_recovery(self) -> None:
-        """parse_actual_metrics treats Stage 4 ``approved`` summary rows (without exit_code) as converged recovery."""
+        """A Stage 4 ``failed`` then ``approved`` pair after a Stage 3 success adds no drag."""
         predicted = PredictedMetrics(p_success=0.95, entropy=1.0, impact=50.0, cost=4.0, learning_value=2.0, ev=46.0)
         jsonl = (
             '{"entry_type": "summary", "execution_id": "E-int-2", "plan_branch": "I-t/P-t/_", '
@@ -323,8 +321,8 @@ class TestCalibrationDualEV(unittest.TestCase):
             actual, _meta = parse_actual_metrics("E-int-2", "I-t/P-t/_", predicted)
         self.assertEqual(actual.exit_code, 0)
         self.assertEqual(actual.p_success_clean, 1.0)
-        self.assertEqual(actual.p_success_with_bugs, 0.0)
-        self.assertEqual(actual.bug_ev_drag, round(actual.ev_clean - actual.ev_with_bugs, 2))
+        self.assertEqual(actual.p_success_with_bugs, 1.0)
+        self.assertEqual(actual.bug_ev_drag, 0.0)
 
     def test_code_gate_compliance(self) -> None:
         """Assert module size budgets and complexity limits are strictly respected."""

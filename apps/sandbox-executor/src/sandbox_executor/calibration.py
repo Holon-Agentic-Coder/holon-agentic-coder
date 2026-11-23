@@ -44,6 +44,7 @@ from sandbox_executor.calibration_predicted import (
     read_plans_rows,
     select_plans_row,
 )
+from sandbox_executor.calibration_rows import is_execution_row
 from sandbox_executor.calibration_touch_set import touch_set_metrics, touch_set_report_lines
 from sandbox_executor.git import METADATA_PATH_PREFIXES as METADATA_PATH_PREFIXES
 from sandbox_executor.git import is_metadata_path, run_git
@@ -759,7 +760,8 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
                     records = disk_records
                     matching = disk_matching
 
-    best_record = latest_summary_row(matching)
+    # Only a Stage 3 execution row sets exit_code and p_success: a Stage 4 or Stage 5 row describes a later stage.
+    best_record = latest_summary_row([r for r in matching if is_execution_row(r, execution_id)])
 
     if best_record is not None:
         exec_meta = best_record

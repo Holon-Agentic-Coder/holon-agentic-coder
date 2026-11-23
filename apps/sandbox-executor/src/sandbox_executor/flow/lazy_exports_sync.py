@@ -24,6 +24,10 @@ SYNC_LAZY_EXPORTS: dict[str, str] = {
         "TargetProbe TargetProbeError merge_tree_conflicts parse_merge_tree_paths probe_target"
     ),
     "sandbox_executor.flow.target_sync": "sync_with_target",
+    "sandbox_executor.flow.target_sync_hooks": (
+        "ENV_TARGET_MERGED_NOTICE active_flow_branch at_flow_start at_stage_boundary at_turn_boundary "
+        "consume_target_merge_notice format_target_merge_notice"
+    ),
     "sandbox_executor.flow.target_sync_merge": (
         "abort_merge complete_merge merge_in_progress merge_target merge_verification_error unmerged_paths"
     ),

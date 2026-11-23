@@ -624,8 +624,9 @@ def _invalid_value_cases(rng: random.Random) -> Iterator[tuple[str, dict[str, st
 def test_credential_in_invalid_envelope_value_never_echoed(monkeypatch, tmp_path):
     """Doctor (environment section, text and `--json`) and the run path withhold an invalid value.
 
-    The isolated `HOME` is `tmp_path`, whose basename pytest derives from this test's name; that name holds no run of 4
-    characters from the credential alphabet (`fgjqvz2347`), so the `HOME` path itself cannot read as a fragment.
+    The isolated `HOME` is `tmp_path`, and the pi-agent session dir is created under it; its parent `pytest-<N>` and the
+    temp name can share a 4-character run with the credential, so what keeps the `HOME` path from reading as a fragment
+    is that the whole pi-agent mount path is masked, not the choice of `tmp_path` basename.
     """
     from sandbox_executor.preflight import PreflightResult, PreflightStatus
 

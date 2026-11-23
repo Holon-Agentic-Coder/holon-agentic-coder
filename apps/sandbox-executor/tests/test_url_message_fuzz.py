@@ -11,21 +11,25 @@ fetch errors, `redact_url`) and the model envelope lines.
 
 Credentials are built at runtime from letters that occur in no message built by the code (`FGJQVZ`)
 and digits, and compared case-insensitively, so a 4-character check cannot match ordinary output.
-The one incidental random text in the checked output, the exact `--env-file` path that `mkstemp`
-creates, is masked before the fragment check, so a random temp path cannot cause a false leak.
+The only incidental random text in the checked output, the exact `--env-file` path that `mkstemp`
+creates and the pi-agent session dir that `mkdtemp` creates, is masked before the fragment check, so a
+random temp path cannot cause a false leak.
 Failure messages name the case id only, never the value.
 """
 
 import argparse
 import contextlib
 import io
+import itertools
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import socket
 import subprocess
+import tempfile
 import urllib.error
 from collections.abc import Callable, Iterator
 from unittest.mock import patch
@@ -419,26 +423,51 @@ def _delimiter_texts(
 
 
 ENV_FILE_PLACEHOLDER = "<env-file>"
+PI_AGENT_DIR_PLACEHOLDER = "<pi-agent-dir>"
+_PI_AGENT_MOUNT_SUFFIX = f":{local_llm.CONTAINER_AGENT_DIR}:rw"
+# `mkdtemp(prefix="holon-pi-agent-", dir="~/.holon/tmp")` names: the prefix and exactly 8 random `[a-z0-9_]` characters.
+_PI_AGENT_DIR_NAME = re.compile(r"holon-pi-agent-[a-z0-9_]{8}")
 
 
-def _without_env_file_path(texts: list[str], argv: list[str]) -> list[str]:
-    """Replace the exact `--env-file` path of `argv` in `texts` with a placeholder, and nothing else.
+def _fixture_paths(argv: list[str], home: str) -> dict[str, str]:
+    """Map each fixture-owned temp path `argv` names to its placeholder: the `--env-file` path and the pi-agent dir.
 
-    The path comes from `mkstemp` in a fixture-owned directory, so its random characters can share a
-    4-letter run with a password part without any part having leaked.
+    The env-file comes from `mkstemp` and the pi-agent session dir from `mkdtemp` under the isolated HOME's
+    `.holon/tmp`; their random characters can share a 4-letter run with a credential without any of it having leaked.
+    Only a mount host path of the exact `mkdtemp` shape directly under `home`'s `.holon/tmp` counts, so text glued
+    onto it is still checked.
     """
-    if "--env-file" not in argv:
-        return list(texts)
-    path = argv[argv.index("--env-file") + 1]
-    return [text.replace(path, ENV_FILE_PLACEHOLDER) for text in texts]
+    paths = {}
+    if "--env-file" in argv:
+        paths[argv[argv.index("--env-file") + 1]] = ENV_FILE_PLACEHOLDER
+    base_tmp = os.path.join(home, ".holon", "tmp")
+    for arg in argv:
+        host = arg.removesuffix(_PI_AGENT_MOUNT_SUFFIX)
+        if host != arg and os.path.dirname(host) == base_tmp and _PI_AGENT_DIR_NAME.fullmatch(os.path.basename(host)):
+            paths[host] = PI_AGENT_DIR_PLACEHOLDER
+    return paths
+
+
+def _without_fixture_paths(texts: list[str], argv: list[str], home: str | None = None) -> list[str]:
+    """Replace each exact fixture-owned temp path of `argv` in `texts` with its placeholder, and nothing else.
+
+    `home` is the isolated HOME the run used; it defaults to the current one.
+    """
+    paths = _fixture_paths(argv, home or os.path.expanduser("~"))
+    masked = []
+    for text in texts:
+        for path in sorted(paths, key=len, reverse=True):
+            text = text.replace(path, paths[path])
+        masked.append(text)
+    return masked
 
 
 def _leak_sites(texts: dict[str, list[str]], argv: list[str], parts: list[str]) -> list[str]:
-    """Name each checked text that holds a fragment of any password part once the env-file path is masked."""
+    """Name each checked text that holds a fragment of any password part once the fixture temp paths are masked."""
     return [
         where
         for where, text in texts.items()
-        if any(_leaks(_without_env_file_path(text, argv), part) for part in parts)
+        if any(_leaks(_without_fixture_paths(text, argv), part) for part in parts)
     ]
 
 
@@ -622,27 +651,67 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
                     )
                 )
             codes.append(cli.run_docker_container("planner", "img", [], agent_id="pi"))
-        if _leaks(_without_env_file_path(out, docker.argv), credential):
+        if _leaks(_without_fixture_paths(out, docker.argv, str(tmp_path)), credential):
             failures.append(case_id)
         if rejected and (codes != [1, 1, 1, 1] or docker.argv):
             failures.append(f"{case_id}:not-rejected")
         if not rejected:
-            failures.extend(f"{case_id}:{where}" for where in _forwarded_run_failures(env, docker, credential))
+            forwarded = _forwarded_run_failures(env, docker, credential, str(tmp_path))
+            failures.extend(f"{case_id}:{where}" for where in forwarded)
     assert len(cases) == (len(INVALID_VALUE_ENV) + len(INVALID_VALUE_HOST_FIELDS)) * MATRIX_SIZE // (
         len(HOSTS) * len(SUFFIXES)
     )
     assert not failures, f"{len(failures)}/{len(cases)} invalid-value cases failed, e.g. {failures[:5]}"
 
 
-def _forwarded_run_failures(env: dict[str, str], docker: _DockerRecorder, credential: str) -> list[str]:
-    """Name what is wrong with a run that forwarded every `HOLON_*` variable of `env` to the container."""
+def _forwarded_run_failures(env: dict[str, str], docker: _DockerRecorder, credential: str, home: str) -> list[str]:
+    """Name what is wrong with a run, under the isolated `home`, that forwarded every `HOLON_*` variable of `env`."""
     failures = []
     if not docker.argv:
         failures.append("no-run")
-    if _leaks(_without_env_file_path([" ".join(docker.argv)], docker.argv), credential):
+    if _leaks(_without_fixture_paths([" ".join(docker.argv)], docker.argv, home), credential):
         failures.append("main-argv")
     failures.extend(f"not-env-file:{name}" for name in env if docker.env_file.get(name) != env[name])
     return failures
+
+
+# A temp name sharing a 4-letter run with the credential below; mkstemp and mkdtemp both draw it.
+_COLLIDING_TEMP_NAME = "zq" + _LETTERS.lower()
+_COLLIDING_CREDENTIAL = "3/" + _LETTERS * 2
+
+
+def test_pi_agent_dir_sharing_a_credential_run_is_not_a_leak(monkeypatch, tmp_path):
+    """A forwarded budget value whose credential shares a run with the random pi-agent dir name is not a leak."""
+    _patch_docker_host(monkeypatch)
+    monkeypatch.setattr(tempfile, "_get_candidate_names", lambda: itertools.repeat(_COLLIDING_TEMP_NAME))
+    env = {**_LOCAL_ENV, "HOLON_TURN_TIMEOUT_SECONDS": f"socks5://{_COLLIDING_CREDENTIAL}@127.0.0.1/v1"}
+    docker = _DockerRecorder()
+    with (
+        patch.object(local_llm, "host_models_json", lambda *_a, **_k: None),
+        patch.object(subprocess, "run", docker),
+        _captured({**env, "HOME": str(tmp_path)}),
+    ):
+        cli.run_docker_container("planner", "img", [], agent_id="pi")
+    pi_dir = str(tmp_path / ".holon" / "tmp" / f"holon-pi-agent-{_COLLIDING_TEMP_NAME}")
+    assert f"{pi_dir}{_PI_AGENT_MOUNT_SUFFIX}" in docker.argv, "the run must mount the forced pi-agent dir"
+    assert _leaks([" ".join(docker.argv)], _COLLIDING_CREDENTIAL), "the unmasked argv must share a run"
+    assert _forwarded_run_failures(env, docker, _COLLIDING_CREDENTIAL, str(tmp_path)) == []
+
+
+@pytest.mark.parametrize(
+    "template",
+    ["-v {path}:{mount} -e X={fragment}", "-v {path}{fragment}:{mount}", "-v {fragment}{path}:{mount}"],
+    ids=["elsewhere", "beside-path", "before-path"],
+)
+def test_fragment_beside_pi_agent_dir_is_still_a_leak(template, monkeypatch, tmp_path):
+    """A credential fragment in the argv is reported even when glued onto the masked pi-agent dir."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    path = str(tmp_path / ".holon" / "tmp" / f"holon-pi-agent-{_COLLIDING_TEMP_NAME}")
+    mount = _PI_AGENT_MOUNT_SUFFIX.removeprefix(":")
+    argv = ["docker", "run", *template.format(path=path, mount=mount, fragment=_COLLIDING_CREDENTIAL[:4]).split()]
+    clean = ["docker", "run", "-v", f"{path}:{mount}"]
+    assert _leak_sites({"main-argv": [" ".join(clean)]}, clean, [_COLLIDING_CREDENTIAL]) == []
+    assert _leak_sites({"main-argv": [" ".join(argv)]}, argv, [_COLLIDING_CREDENTIAL]) == ["main-argv"]
 
 
 # Every forwarded `HOLON_*` name checked by the env-file routing fuzz: the invalid-value names (including the

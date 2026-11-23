@@ -200,8 +200,6 @@ class ExecuteStage:
         """Resolve stage conflicts, refuse a plan the budget decision rejects, then run admission and plan refresh."""
         context, state = self.context, self.state
         state.target_branch = context.intent_data.get("target_branch", "main")
-        if (sync_err := at_stage_boundary(context, FlowStage.EXECUTE, SyncBoundary.STAGE_START)) is not None:
-            return sync_err
         check_and_resolve_stage_conflicts(
             state.repo_dir, target_branch=state.target_branch, stage_name="execute", branch=context.plan_branch
         )

@@ -1,8 +1,8 @@
 """Flow boundary hooks for ``sync_with_target``: flow start, stage start/end, turn boundaries, and merge notices.
 
 Maps ``FlowContext`` and ``FlowStage`` to :class:`SyncRequest`, caches :class:`TargetProbe` and merged target changes
-in transient attributes on ``context``, exports ``HOLON_TARGET_MERGED_NOTICE`` for role containers, and converts
-blocked syncs into :class:`StageResult` failures.
+in transient attributes on ``context``, exports the notice for role containers, and converts blocked syncs into
+:class:`StageResult` failures.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from sandbox_executor.flow.target_sync import sync_with_target
 from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest, SyncResult
 from sandbox_executor.git import run_git
 
-ENV_TARGET_MERGED_NOTICE = "HOLON_TARGET_MERGED_NOTICE"
 _PROBE_ATTR = "_last_target_probe"
 _NOTICE_ATTR = "_pending_target_merge_notice"
 _LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
@@ -38,13 +37,12 @@ def format_target_merge_notice(target_sha: str, changed_paths: tuple[str, ...] |
 
 
 def consume_target_merge_notice(context: FlowContext | None = None) -> str:
-    """Return and clear the pending target-merge notice from ``context`` or ``HOLON_TARGET_MERGED_NOTICE``."""
-    notice = ""
-    if context is not None:
-        notice = str(getattr(context, _NOTICE_ATTR, "") or "").strip()
-        setattr(context, _NOTICE_ATTR, "")
-    env_notice = os.environ.pop(ENV_TARGET_MERGED_NOTICE, "").strip()
-    return notice or env_notice
+    """Return and clear the pending target-merge notice from ``context``."""
+    if context is None:
+        return ""
+    notice = str(getattr(context, _NOTICE_ATTR, "") or "").strip()
+    setattr(context, _NOTICE_ATTR, "")
+    return notice
 
 
 def _checked_out_branch(worktree: str) -> str:
@@ -53,7 +51,7 @@ def _checked_out_branch(worktree: str) -> str:
 
 
 def active_flow_branch(context: FlowContext, stage: FlowStage) -> str:
-    """Select the active flow branch for ``stage``, falling back to the checked-out branch when not on target."""
+    """Select the active flow branch for ``stage`` from ``context``."""
     candidates_by_stage: dict[FlowStage, tuple[str | None, ...]] = {
         FlowStage.INTENT: (context.intent_branch,),
         FlowStage.PLAN: (context.plan_branch, context.intent_branch),
@@ -64,8 +62,7 @@ def active_flow_branch(context: FlowContext, stage: FlowStage) -> str:
     for branch in candidates_by_stage.get(stage, ()):
         if branch:
             return branch
-    current = _checked_out_branch(context.target_worktree)
-    return current if current and current != base_branch_name(context) else ""
+    return ""
 
 
 def _execution_id_of(branch: str, stage: FlowStage, boundary: SyncBoundary) -> str:

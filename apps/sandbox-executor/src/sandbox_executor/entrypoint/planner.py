@@ -448,10 +448,13 @@ Include metrics in this format:
             f.write(get_file_structure(repo_dir))
 
             if replan_feedback:
-                f.write(build_replan_paragraph(replan_feedback, entropy_budget))
-            merged_notice = os.environ.pop("HOLON_TARGET_MERGED_NOTICE", "").strip()
-            if merged_notice:
-                f.write(f"\n\n{merged_notice}\n")
+                if "## Target branch merged" in replan_feedback:
+                    parts = replan_feedback.split("## Target branch merged", 1)
+                    if parts[0].strip():
+                        f.write(build_replan_paragraph(parts[0].strip(), entropy_budget))
+                    f.write(f"\n\n## Target branch merged{parts[1]}\n")
+                else:
+                    f.write(build_replan_paragraph(replan_feedback, entropy_budget))
 
         with open(intent_file, "w") as f:
             json.dump({**intent_data, "replan_feedback": replan_feedback} if replan_feedback else intent_data, f)
@@ -497,7 +500,7 @@ Include metrics in this format:
                 cwd=repo_dir,
                 stdin_file=prompt_file if getattr(runner, "uses_stdin", False) else None,
                 prompt_file=prompt_file,
-                on_turn_boundary=lambda _turn_idx: os.environ.pop("HOLON_TARGET_MERGED_NOTICE", "").strip() or None,
+                on_turn_boundary=lambda _turn_idx: None,
             )
         except Exception as e:
             agent_error = f"Exception running agent: {e}"

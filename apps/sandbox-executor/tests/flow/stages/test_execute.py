@@ -411,10 +411,22 @@ class TestStage3ExitsAfterDispatch:
         record = mocks["_run_decomposed_plan"].call_args.args[2]
         assert record["plan_branch"] == PLAN and record["decomposition_decision"] == DECISION_DECOMPOSED
 
-    def test_a_sync_conflict_row_completes_for_review(self, tmp_path):
+    def test_a_sync_conflict_row_resolves_and_completes_for_review(self, tmp_path):
         row = summary_row("sync_conflict", conflicted_paths=["src/app.py"])
         result, mocks = run_stage3(stage3_context(tmp_path), _read_ledger_rows={"return_value": [row]})
         assert result.status == StageStatus.SUCCESS
+        assert result.payload["sync_conflict_resolved"] is True
+        assert result.payload["conflicted_paths"] == ["src/app.py"]
+        mocks["changed_paths"].assert_called_once()
+
+    def test_a_blocked_sync_conflict_row_fails_closed(self, tmp_path):
+        row = summary_row("sync_conflict", conflicted_paths=["src/app.py"])
+        blocked = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.FAILED, error="Execute stage failed: blocked")
+        with patch("sandbox_executor.flow.stages.sync_conflict.at_stage_boundary", return_value=blocked):
+            result, mocks = run_stage3(stage3_context(tmp_path), _read_ledger_rows={"return_value": [row]})
+        assert result.status == StageStatus.FAILED
+        assert result.payload["sync_conflict"] is True
+        assert result.payload["conflicted_paths"] == ["src/app.py"]
         mocks["changed_paths"].assert_not_called()
 
     def test_an_unresolvable_plan_branch_fails_the_diff_check(self, tmp_path):

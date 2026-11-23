@@ -237,14 +237,17 @@ def _merge_ready_child(context: FlowContext, payload: dict[str, Any], entry: dic
 
 def _advance_child(context: FlowContext, start_time: str, payload: dict[str, Any], entry: dict[str, Any]) -> str | None:
     """Take one child from wherever its progress says it is to merged; return why it stopped, or None."""
-    if (turn_err := at_turn_boundary(context, FlowStage.EXECUTE, int(entry["index"]))) is not None:
-        return turn_err.error or "target sync blocked at sub-intent boundary"
     action = next_child_action(entry, checkpoint_exists(context, entry))
     if action == "skip":
         # A child promoted to merged by origin reconciliation has no merged summary yet; record it.
         merged = {"index": entry["index"], "merged": True, "merge_commit": entry.get("merge_commit")}
         _set_child_summary(payload, merged)
         return None
+    if (
+        int(entry["index"]) > 1
+        and (turn_err := at_turn_boundary(context, FlowStage.EXECUTE, int(entry["index"]))) is not None
+    ):
+        return turn_err.error or "target sync blocked at sub-intent boundary"
     if action in ("dispatch", "resume"):
         entry["status"] = IN_PROGRESS
         _save_progress(context, start_time, payload)

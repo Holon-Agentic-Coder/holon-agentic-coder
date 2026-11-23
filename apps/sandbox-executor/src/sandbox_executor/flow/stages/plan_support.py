@@ -26,6 +26,25 @@ def plan_id_of(plan_branch: str) -> str:
     return plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
 
 
+def plan_stage_payload(
+    context: FlowContext,
+    plan_branch: str,
+    plan_file: str,
+    metrics: dict[str, Any],
+    consulted_ids: list[str],
+) -> dict[str, Any]:
+    """Log Stage 2 completion and build the Stage 2 success payload dictionary for ``plan_branch``."""
+    ev_text = f"{metrics['ev']:.2f}" if isinstance(metrics.get("ev"), int | float) else "n/a"
+    context.log(f"Stage 2 completed: planner agent produced '{plan_file}' on '{plan_branch}' (EV={ev_text}).")
+    return {
+        "plan_id": plan_id_of(plan_branch),
+        "plan_branch": plan_branch,
+        "plan_file": plan_file,
+        "metrics": metrics,
+        "consulted_knowledge_ids": consulted_ids,
+    }
+
+
 def dry_run_plan_result(
     context: FlowContext, start_time: str, plan_branch: str, consulted_ids: list[str]
 ) -> StageResult:

@@ -70,6 +70,7 @@ from sandbox_executor.knowledge import (
 )
 from sandbox_executor.knowledge.consult import format_consult_results_table
 from sandbox_executor.knowledge.stats import format_stats_dashboard
+from sandbox_executor.launcher import proxy_readiness
 
 # The container plumbing lives in sandbox_executor.launcher; every name it took from this module stays importable here.
 # `name as name` marks a re-export this module no longer uses itself.
@@ -178,6 +179,7 @@ from sandbox_executor.launcher.proxy_paths import (
 from sandbox_executor.launcher.proxy_paths import (
     _run_docker as _run_docker,
 )
+from sandbox_executor.launcher.proxy_readiness import PROXY_READY_TIMEOUT_SECONDS as PROXY_READY_TIMEOUT_SECONDS
 from sandbox_executor.launcher.role_dispatch import (
     INTENT_CREATOR_AGENT_ID as INTENT_CREATOR_AGENT_ID,
 )
@@ -188,6 +190,7 @@ from sandbox_executor.launcher.role_dispatch import (
     RoleLaunchOptions as RoleLaunchOptions,
 )
 from sandbox_executor.launcher.role_dispatch import dispatch_role_agent, resolve_role_image
+from sandbox_executor.launcher.root_ca import generate_root_ca as generate_root_ca
 from sandbox_executor.launcher.sidecar import (
     _sidecar_state,
     detect_holon_coherence,
@@ -236,9 +239,6 @@ from sandbox_executor.redaction import (
 )
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 from sandbox_executor.scaffold import init_project
-from sandbox_executor.token_reduction import generate_root_ca as generate_root_ca
-from sandbox_executor.token_reduction import proxy_readiness
-from sandbox_executor.token_reduction.proxy_readiness import PROXY_READY_TIMEOUT_SECONDS as PROXY_READY_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 

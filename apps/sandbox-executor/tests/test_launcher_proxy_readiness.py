@@ -5,7 +5,7 @@ import threading
 import time
 
 import pytest
-from sandbox_executor.token_reduction import proxy_readiness
+from sandbox_executor.launcher import proxy_readiness
 
 
 class _LoopbackListener:

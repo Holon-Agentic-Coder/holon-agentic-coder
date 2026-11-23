@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from sandbox_executor.calibration import LEDGER_EXECUTIONS_REL, CalibrationFormatError, CalibrationSelfCheckError
+from sandbox_executor.calibration import LEDGER_EXECUTIONS_REL
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.github.ci_reverify import approved_head_of
 from sandbox_executor.flow.stage5_ledger import recorded_verdicts
@@ -33,8 +33,6 @@ class Stage5Steps:
     commit_reconciliation: Callable[[FlowContext, str], None]
     commit_promoted: Callable[[FlowContext, str, int], None]
     warn_ledger_failure: Callable[[FlowContext, str, str, BaseException], None]
-    # The flow's fallback report on a calibration exception; None re-raises it (the CLI fails loudly).
-    on_calibrate_error: Callable[[FlowContext, Exception], dict[str, Any]] | None = None
 
 
 @dataclass
@@ -142,31 +140,23 @@ def run_stage5(
 ) -> Stage5Outcome:
     """Run Stage 5: calibrate, then reconcile and commit, then promote and commit.
 
-    ``LedgerRewriteError``, ``CalibrationFormatError`` and ``CalibrationSelfCheckError`` always propagate. Any other
-    calibration exception goes to ``steps.on_calibrate_error`` when set (its fallback report is used and nothing is
-    committed), else re-raises.
+    Every calibration exception propagates: no report is substituted and nothing is reconciled, promoted or
+    committed (the flow's calibrate stage fails closed; ``holon calibrate`` fails loudly).
     ``report_only`` stops after the calibration report; a None ``verdict`` (CLI only) skips reconciliation and
     promotion.
     """
     outcome = Stage5Outcome(report_only=report_only)
-    try:
-        report = steps.calibrate(
-            execution_branch=context.execution_branch,
-            target_worktree=context.target_worktree,
-            json_output=False,
-            skip_commit=context.dry_run,
-            log_fn=context.log,
-            approved_head=approved_head_of(context),
-        )
-        context.calibrated_branch = report.calibrated_branch
-        outcome.report_dict = report.to_dict()
-        outcome.calibration_succeeded = True
-    except (LedgerRewriteError, CalibrationFormatError, CalibrationSelfCheckError):
-        raise
-    except Exception as e:
-        if steps.on_calibrate_error is None:
-            raise
-        outcome.report_dict = steps.on_calibrate_error(context, e)
+    report = steps.calibrate(
+        execution_branch=context.execution_branch,
+        target_worktree=context.target_worktree,
+        json_output=False,
+        skip_commit=context.dry_run,
+        log_fn=context.log,
+        approved_head=approved_head_of(context),
+    )
+    context.calibrated_branch = report.calibrated_branch
+    outcome.report_dict = report.to_dict()
+    outcome.calibration_succeeded = True
     if report_only:
         outcome.reconciliation = _reconciliation("skipped_report_only", verdict)
         return outcome

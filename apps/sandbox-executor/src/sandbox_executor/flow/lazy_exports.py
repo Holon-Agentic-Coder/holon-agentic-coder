@@ -19,6 +19,10 @@ LAZY_EXPORTS: dict[str, str] = {
         "holds_only_calibration_commits is_ancestor is_calibration_commit is_calibration_path "
         "rebuild_calibrated_branch stale_calibrated_refs"
     ),
+    "sandbox_executor.flow.calibrate_retry": (
+        "CalibrateFailure CalibrationRetriesExhausted RetryKind call_with_retries classify_calibrate_error "
+        "redacted_cause"
+    ),
     "sandbox_executor.flow.calibrate_rerun": (
         "HeadMoveCheck RerunSeams head_move_since_calibration post_stale_signal report_staleness rerun_calibration "
         "review_calibration_freshness"

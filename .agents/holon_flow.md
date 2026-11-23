@@ -15,7 +15,7 @@ The Holon Flow pipeline executes sequentially through five distinct lifecycle st
 +-----------------------------------------------------------------------------------+
 |                                 Holon Flow Pipeline                               |
 |                                                                                   |
-|  [Stage 1: Intent] --> [Stage 2: Plan] --> [Stage 3: Execute]                    |
+|  [Stage 1: Intent] --> [Stage 2: Plan] --> [Stage 3: Execute]                     |
 |                                                  |                                |
 |                                                  v                                |
 |                                          [Stage 4: Review] <---+                  |
@@ -26,7 +26,8 @@ The Holon Flow pipeline executes sequentially through five distinct lifecycle st
 |                                                  v                                |
 |                                          +---------------+                        |
 |                                          | Human-Only    |                        |
-|                                          | Merge Boundary    |                        |
+|                                          | Merge         |                        |
+|                                          | Boundary      |                        |
 |                                          | (PR Ready)    |                        |
 |                                          +---------------+                        |
 |                                                  |                                |

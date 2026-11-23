@@ -60,12 +60,19 @@ _LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.execution_publish": (
         "held_execution_failure hold_unrecorded_executions publish_with_first_row unrecorded_executions"
     ),
+    "sandbox_executor.flow.execution_recovery": (
+        "RecoveredExecution keep_rejected_executions rejected_push_error rejected_push_failure rejected_push_recovery"
+    ),
     "sandbox_executor.flow.git_refs": (
         "EXECUTOR_GIT_ENV _append_ledger_row _append_superseding_execution_row _discover_child_branch "
         "_execution_effective_diff _execution_parent_plan_branch _fetch_branch_prefix _fetch_branch_prefix_error "
         "_fetch_refspecs_error _git_show_text _has_origin_remote _latest_execution_summary _list_child_branches "
         "_origin_has_branch _read_ledger_rows _resolve_branch_ref _resolve_review_commit _snapshot_child_branches "
         "_sync_local_execution_refs _track_local_branch fast_forward_local_branch"
+    ),
+    "sandbox_executor.flow.github.token_scopes": (
+        "TokenScopeReport doctor_lines fetch_scopes resolve_github_token scope_report token_type touches_workflows "
+        "workflow_scope_error"
     ),
     "sandbox_executor.flow.github.approval_invalidation": "CommentRecord gh_comment_editor gh_comment_records",
     "sandbox_executor.flow.github.ci": (
@@ -183,6 +190,9 @@ _LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.stages.review_outcome": "ReviewOutcomeContext build_review_stage_outcome",
     "sandbox_executor.flow.stages.stage_support": "consult_knowledge intent_payload_file stage_success",
     "sandbox_executor.flow.stages.sync_conflict": "sync_conflict_result",
+    "sandbox_executor.flow.stages.token_scope_guard": (
+        "declared_paths push_url pushes_over_https_github token_scope_failure"
+    ),
     "sandbox_executor.flow.stages.touch_set_guard": (
         "superseding_failure_row touch_set_replan_exhausted touch_set_replan_feedback touch_set_violation "
         "touch_set_violation_result"
@@ -270,6 +280,7 @@ __all__ = [
     "PlanStage",
     "PrefixSide",
     "QuestionKind",
+    "RecoveredExecution",
     "RerunSeams",
     "ResolverInput",
     "ResolverOutcome",
@@ -281,6 +292,7 @@ __all__ = [
     "StageResult",
     "StageStatus",
     "StaleRange",
+    "TokenScopeReport",
     "WarningSeams",
     "WithdrawalSeams",
     "WorktreeCheckpoint",
@@ -388,11 +400,13 @@ __all__ = [
     "consult_knowledge",
     "create_or_update_pr",
     "decide_admission",
+    "declared_paths",
     "describe_ci_outcome",
     "deserialize_carried",
     "detect_stage_conflicts",
     "discard_empty_calibrated_branch",
     "discover_in_flight_flows",
+    "doctor_lines",
     "dry_run_plan_result",
     "empty_diff_failure",
     "execution_veto_error",
@@ -401,6 +415,7 @@ __all__ = [
     "failed_runs_of",
     "fast_forward_local_branch",
     "fetch_base",
+    "fetch_scopes",
     "format_decomposition_summary",
     "format_final_head_ci",
     "format_merged_head_ci",
@@ -434,6 +449,7 @@ __all__ = [
     "is_review_restart",
     "is_terminal_verdict",
     "latest_checks_for_head",
+    "keep_rejected_executions",
     "leftover_paths",
     "list_base_files",
     "load_checkpoint",
@@ -468,6 +484,8 @@ __all__ = [
     "publish_with_first_row",
     "push_branch",
     "push_commit",
+    "push_url",
+    "pushes_over_https_github",
     "read_plan_touch_set",
     "read_worktree_checkpoint",
     "rebuild_calibrated_branch",
@@ -486,6 +504,9 @@ __all__ = [
     "refresh_plan_branch",
     "refreshed_body",
     "refusal",
+    "rejected_push_error",
+    "rejected_push_failure",
+    "rejected_push_recovery",
     "remote_error",
     "render_reviewer_summary_line",
     "render_withdrawal",
@@ -498,6 +519,7 @@ __all__ = [
     "resolve_ci_registration_timeout",
     "resolve_classified_conflicts",
     "resolve_execution_verdict",
+    "resolve_github_token",
     "resolve_stale",
     "restore_starting_branch",
     "review_calibration_freshness",
@@ -519,6 +541,7 @@ __all__ = [
     "salvage_leftovers",
     "save_admission",
     "save_checkpoint",
+    "scope_report",
     "serialize_open",
     "settle_pending_ci",
     "skipped_record",
@@ -532,10 +555,13 @@ __all__ = [
     "superseding_failure_row",
     "sync_conflict_result",
     "sync_execution_ref",
+    "token_scope_failure",
+    "token_type",
     "touch_set_replan_exhausted",
     "touch_set_replan_feedback",
     "touch_set_violation",
     "touch_set_violation_result",
+    "touches_workflows",
     "undisposed",
     "unrecorded_executions",
     "utc_now",
@@ -546,5 +572,6 @@ __all__ = [
     "withdraw_consensus",
     "withdrawal_marker",
     "withdrawn_consensus_of",
+    "workflow_scope_error",
     "worktree_checkpoints",
 ]

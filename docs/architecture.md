@@ -495,15 +495,20 @@ split from the former single `flow.py` by moving code only. Three tests guard th
 | `flow/github/adapter.py`               | `GitHubAdapter`: the repository-scoped `gh` argv builders for PRs, CI checks, reviews, comments and merges.      |
 | `flow/github/adapter_runner.py`        | The single `gh` spawn behind `GitHubAdapter` (`spawn_gh`), its `GhResult` and the proxy environment.             |
 | `flow/github/pr_head.py`               | `pr_head_sha`: the PR head commit as GitHub reports it, read once through `GitHubAdapter`.                       |
-| `flow/github/pr.py`                    | Mergeability checks, review git trailers, semantic PR metadata and creating the PR.                              |
+| `flow/github/pr.py`                    | Mergeability checks, review git trailers and creating the PR.                                                    |
+| `flow/github/pr_metadata.py`           | I/O-free semantic PR metadata: the Conventional Commits title and the structured markdown body.                  |
+| `flow/github/mergeability_policy.py`   | I/O-free mergeability verdicts from `gh pr view` and `git merge-tree`, and the merge refusal verdict.            |
 | `flow/github/ci.py`                    | Probes CI checks and waits for them to register and settle.                                                      |
+| `flow/github/ci_policy.py`             | I/O-free CI verdict: summarises `gh pr checks` JSON and recorded test results into a CI status.                  |
 | `flow/github/review_post.py`           | Posts the Stage 4 consensus review to the pull request.                                                          |
+| `flow/github/review_policy.py`         | I/O-free review posting decisions: the review flag, the 422 self-approval fallback and outcome texts.            |
 | `flow/github/merge.py`                 | The guarded child merge into the plan branch and its fail-closed refusal check.                                  |
 | `flow/review/workspace.py`             | The sandbox guard for reviewer turns and the persistent review session volume.                                   |
 | `flow/review/records.py`               | Refused-review results, review action rows in the ledger and the reviewer summary line.                          |
 | `flow/review/ensemble.py`              | Dispatches the reviewer ensemble for one review iteration.                                                       |
 | `flow/review/resolver.py`              | The resolver pass: filters adjudicated findings and records finding dispositions.                                |
 | `flow/review/head_test_evidence.py`    | Pure current-head test evidence selection (`resolver_evidence`, `ci_head`, `stage_3`, `review_local`).           |
+| `flow/review/proxy_env.py`             | `review_proxy_env`: the token-reduction proxy environment of Stage 4, resolved once for its adapter.             |
 | `flow/review/loop.py`                  | The review-resolve iteration loop and the engine's Stage 4 pass window.                                          |
 | `flow/review/cli.py`                   | The `holon review-loop` CLI entry and the review loop summary helpers.                                           |
 | `flow/stages/intent.py`                | Stage 1 (`IntentStage`): dispatches the intent creator and verifies its branch.                                  |

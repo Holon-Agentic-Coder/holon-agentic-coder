@@ -36,39 +36,16 @@ from tests.review_loop_stubs import (  # noqa: F401  (_CLEAN_MERGE and _ledger a
     _GREEN_CI,
     EXEC_TARGET,
     _ensemble_ctx,
+    _green_github,
     _green_loop_patches,
+    _green_patches,
     _ledger,
     _loop_ctx,
     _LoopStubs,
+    _posts,
+    _pr_opens,
     _rows,
 )
-
-
-def _green_github(**kwargs) -> FakeGitHub:
-    """A ``FakeGitHub`` with a clean PR and one passing GitHub check."""
-    return FakeGitHub(**{"standing_view": merge_view(), "checks": ci_checks_payload(passed=1), **kwargs})
-
-
-def _pr_opens(github: FakeGitHub) -> list[tuple]:
-    """The ``open_or_update`` calls the loop made, as ``(branch, base, title, body)``."""
-    return [args for name, args in github.calls if name == "open_or_update"]
-
-
-def _posts(github: FakeGitHub) -> list[tuple]:
-    """The ``post_review`` calls the loop made, as ``(target, flag, body)``."""
-    return [args for name, args in github.calls if name == "post_review"]
-
-
-def _green_patches(verdict=None, which=None, ci=None, failure: GhResult | None = None):
-    """``_green_loop_patches`` with a fake that has ``gh`` (``shutil.which`` still fences the other gh callers).
-
-    ``failure`` makes the review and the last-resort discussion comment both fail with that result.
-    """
-    stack, verify, github = _green_loop_patches(verdict=verdict, which=which, ci=ci)
-    github.available = True
-    if failure is not None:
-        github.review_results, github.comment_result = [failure], failure
-    return stack, verify, github
 
 
 @pytest.fixture(autouse=True)

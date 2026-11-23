@@ -8,7 +8,9 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.flow.github.fake_github import FakeGitHub, checks_for, merge_view, view_for
+from sandbox_executor.flow.github.adapter_runner import GhResult
+
+from tests.flow.github.fake_github import FakeGitHub, checks_for, ci_checks_payload, merge_view, view_for
 
 EXEC_TARGET = "I-100-intent/P-200-plan/E-300-exec/_"
 _CLEAN_MERGE = {"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE"}
@@ -116,4 +118,31 @@ def _green_loop_patches(verdict=None, post=None, which=None, ci=None):
     stack.enter_context(patch("shutil.which", return_value=which))
     stack.enter_context(patch("sandbox_executor.flow.review.loop.GitHubAdapter", return_value=github))
     stack.enter_context(patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"))
+    return stack, verify, github
+
+
+def _green_github(**kwargs) -> FakeGitHub:
+    """A ``FakeGitHub`` with a clean PR and one passing GitHub check."""
+    return FakeGitHub(**{"standing_view": merge_view(), "checks": ci_checks_payload(passed=1), **kwargs})
+
+
+def _pr_opens(github: FakeGitHub) -> list[tuple]:
+    """The ``open_or_update`` calls the loop made, as ``(branch, base, title, body)``."""
+    return [args for name, args in github.calls if name == "open_or_update"]
+
+
+def _posts(github: FakeGitHub) -> list[tuple]:
+    """The ``post_review`` calls the loop made, as ``(target, flag, body)``."""
+    return [args for name, args in github.calls if name == "post_review"]
+
+
+def _green_patches(verdict=None, which=None, ci=None, failure: GhResult | None = None):
+    """``_green_loop_patches`` with a fake that has ``gh`` (``shutil.which`` still fences the other gh callers).
+
+    ``failure`` makes the review and the last-resort discussion comment both fail with that result.
+    """
+    stack, verify, github = _green_loop_patches(verdict=verdict, which=which, ci=ci)
+    github.available = True
+    if failure is not None:
+        github.review_results, github.comment_result = [failure], failure
     return stack, verify, github

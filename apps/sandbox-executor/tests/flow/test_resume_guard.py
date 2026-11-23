@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from sandbox_executor.flow import FlowContext, FlowStage
 from sandbox_executor.flow.checkpoint import save_checkpoint
-from sandbox_executor.flow.resume_guard import REQUIRED_BRANCH, _resume_context_error
+from sandbox_executor.flow.resume_guard import REQUIRED_BRANCH, _resume_context_error, _resume_sync_request
 from sandbox_executor.flow.target_sync_merge import SYNC_MERGE_PREFIX, merge_in_progress
 
 from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
@@ -120,3 +120,12 @@ def test_a_run_from_stage_one_never_adopts(tmp_path):
 
     assert _resume_context_error(_context(work), None) is None
     assert _merging(work)
+
+
+def test_an_execution_branch_of_only_placeholders_falls_back_to_the_checked_out_branch(tmp_path):
+    work = _flow_repo_with_interrupted_merge(tmp_path)
+    context = _context(work, **{**ALL_BRANCHES, "execution_branch": "_"})
+
+    request = _resume_sync_request(context, FlowStage.REVIEW)
+
+    assert request is not None and request.execution_id == "E-3-z"

@@ -114,8 +114,8 @@ def _commit_and_push(request: SyncRequest, probe: TargetProbe, result: SyncResul
     result = replace(result, head_after=head_after, changed_paths=tuple(p for p in changed.split("\0") if p))
     try:
         push_commit(request.worktree, head_after, request.branch)
-    except HostRemoteError as exc:
-        return replace(result, status="blocked", error=str(exc))
+    except (HostRemoteError, TimeoutError, OSError) as exc:
+        return replace(result, status="blocked", error=str(exc) or f"push failed: {type(exc).__name__}")
     return result
 
 
@@ -143,6 +143,9 @@ def _guarded(request: SyncRequest, probe: TargetProbe, step: _Step, *, record_bl
     except Exception as exc:
         logger.warning("Target sync of %s aborted: %s", request.branch, exc)
         result = replace(started, status="blocked", error=str(exc))
+        head = _git_out(request.worktree, "rev-parse", "HEAD").strip()
+        if head and head != probe.head_sha and not merge_in_progress(request.worktree):
+            return replace(result, head_after=head)  # the merge commit (with its row) already landed
     if result.status == "blocked" and not result.ledger_row_id:
         abort_merge(request.worktree)
         result = replace(result, head_after=probe.head_sha)

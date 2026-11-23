@@ -46,7 +46,8 @@ def _resume_sync_request(context: FlowContext, start_stage: FlowStage) -> SyncRe
     branch = (res.stdout or "").strip() if res.returncode == 0 and isinstance(res.stdout, str) else ""
     if not branch:
         return None
-    segments = [part for part in (context.execution_branch or branch).split("/") if part != "_"]
+    segments = [part for part in (context.execution_branch or "").split("/") if part != "_"]
+    segments = segments or [part for part in branch.split("/") if part != "_"] or [branch]
     execution_id = next((part for part in reversed(segments) if part.startswith("E-")), segments[-1])
     ledger_path = os.path.join(worktree, "holon-knowledge", "ledger", "executions.jsonl")
     target = base_branch_name(context)

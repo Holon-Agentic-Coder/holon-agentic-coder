@@ -237,12 +237,16 @@ def test_a_resolver_error_aborts_the_merge_and_blocks(repos):
     assert _git(work, "status", "--porcelain") == ""
 
 
-def test_a_push_failure_keeps_the_local_merge_and_blocks_with_one_row(repos, monkeypatch):
+@pytest.mark.parametrize(
+    "error",
+    [host_remote.HostRemoteError("push", FLOW_BRANCH, "origin", "rejected"), TimeoutError("push rejected: timed out")],
+)
+def test_a_push_failure_keeps_the_local_merge_and_blocks_with_one_row(repos, monkeypatch, error):
     _, work = repos
     commit_on(work, "main", {"docs/new.md": "n\n"}, "target")
 
     def refuse(*_args, **_kwargs):
-        raise host_remote.HostRemoteError("push", FLOW_BRANCH, "origin", "rejected")
+        raise error
 
     monkeypatch.setattr(target_sync_merge, "push_commit", refuse)
 
@@ -262,3 +266,20 @@ def test_a_merged_sync_supersedes_the_latest_sync_conflict_row(repos):
     sync_with_target(_request(work))
 
     assert _sync_rows(work)[0]["supersedes"] == "E-3-z@r2"
+
+
+def test_an_error_after_the_merge_commit_adds_no_second_row(repos, monkeypatch):
+    _, work = repos
+    commit_on(work, "main", {"docs/new.md": "n\n"}, "target")
+
+    def crash(*_args, **_kwargs):
+        raise RuntimeError("unexpected push crash")
+
+    monkeypatch.setattr(target_sync_merge, "push_commit", crash)
+
+    result = sync_with_target(_request(work))
+
+    assert result.status == "blocked" and "unexpected push crash" in result.error
+    assert result.head_after == _git(work, "rev-parse", "HEAD") != result.head_before
+    assert len(_sync_rows(work)) == 1
+    assert _git(work, "status", "--porcelain") == ""

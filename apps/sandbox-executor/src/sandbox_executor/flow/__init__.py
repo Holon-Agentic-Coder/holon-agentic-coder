@@ -64,6 +64,8 @@ _LAZY_EXPORTS: dict[str, str] = {
         "_origin_has_branch _read_ledger_rows _resolve_branch_ref _resolve_review_commit _snapshot_child_branches "
         "_sync_local_execution_refs _track_local_branch fast_forward_local_branch"
     ),
+    "sandbox_executor.flow.github.adapter": "GitHubAdapter parse_gh_json",
+    "sandbox_executor.flow.github.adapter_runner": "GhResult gh_env spawn_gh",
     "sandbox_executor.flow.github.ci": (
         "CI_REGISTRATION_TIMEOUT_ENV_VAR CI_REGISTRATION_TIMEOUT_SECONDS _wait_for_ci_registration probe_ci_checks "
         "resolve_ci_registration_timeout"
@@ -249,6 +251,8 @@ __all__ = [
     "FlowCheckpoint",
     "FlowContext",
     "FlowStage",
+    "GhResult",
+    "GitHubAdapter",
     "HeadEvidenceDecisionInput",
     "HeadMoveCheck",
     "HostRemoteError",
@@ -398,6 +402,7 @@ __all__ = [
     "gate_ci_flags",
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
+    "gh_env",
     "gh_unavailable_outcome",
     "gh_view_verdict",
     "has_inline_answer",
@@ -437,6 +442,7 @@ __all__ = [
     "open_flow_pull_requests",
     "other_checkpoints",
     "override_already_recorded",
+    "parse_gh_json",
     "parse_metrics",
     "pending_check_names",
     "plan_id_of",
@@ -506,6 +512,7 @@ __all__ = [
     "save_checkpoint",
     "serialize_open",
     "settle_pending_ci",
+    "spawn_gh",
     "stage5_steps",
     "stage_success",
     "stale_calibrated_refs",

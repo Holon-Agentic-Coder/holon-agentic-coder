@@ -16,7 +16,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sandbox_executor.entrypoint.execution_workspace import ENGINE_OWNED_LEDGER_PATHS, ENGINE_OWNED_NOTES_GLOB
+from sandbox_executor.entrypoint.execution_workspace import (
+    ENGINE_OWNED_LEDGER_PATHS,
+    ENGINE_OWNED_NOTES_GLOB,
+    format_skipped_scratch_message,
+    split_sidecar_scratch_paths,
+)
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.execution_publish import publish_with_first_row
 from sandbox_executor.flow.git_refs import (
@@ -55,12 +60,7 @@ def _excluded_pathspecs(exec_id: str | None) -> list[str]:
     return ["--", ".", *(f":(exclude,literal){path}" for path in paths)]
 
 
-def leftover_paths(repo_dir: str, exec_id: str | None = None) -> list[str]:
-    """Paths with uncommitted edits, deletions or non-ignored untracked files, minus engine-owned files.
-
-    The three ledgers and the execution notes of ``exec_id`` are excluded; with no ``exec_id`` every notes file under
-    ``executions/`` is treated as engine-owned.
-    """
+def _status_paths(repo_dir: str, exec_id: str | None = None) -> tuple[list[str], list[str]]:
     spec = _excluded_pathspecs(exec_id)
     if exec_id is None:
         spec.append(f":(exclude){ENGINE_OWNED_NOTES_GLOB}")
@@ -69,7 +69,12 @@ def leftover_paths(repo_dir: str, exec_id: str | None = None) -> list[str]:
     )
     if res.returncode != 0 or not isinstance(res.stdout, str):
         raise SalvageError(f"could not read the worktree status: {redact_agent_secrets((res.stderr or '').strip())}")
-    return [entry[3:] for entry in res.stdout.split("\0") if entry]
+    return split_sidecar_scratch_paths([entry[3:] for entry in res.stdout.split("\0") if entry])
+
+
+def leftover_paths(repo_dir: str, exec_id: str | None = None) -> list[str]:
+    """Paths with uncommitted edits, deletions or non-ignored untracked files, minus engine-owned and scratch files."""
+    return _status_paths(repo_dir, exec_id)[0]
 
 
 def _current_branch(repo_dir: str) -> str | None:
@@ -80,11 +85,7 @@ def _current_branch(repo_dir: str) -> str | None:
 
 
 def _salvage_branch(repo_dir: str, plan_prefix: str) -> tuple[str, str]:
-    """The failed execution branch of this plan the dirty worktree is on, with its execution id.
-
-    Raises:
-        SalvageError: If HEAD is detached, or on the plan branch, ``main`` or another intent's branch.
-    """
+    """The failed execution branch of this plan the dirty worktree is on, with its execution id."""
     branch = _current_branch(repo_dir)
     match = _EXECUTION_BRANCH.search(branch) if branch else None
     if not branch or not match or not branch.startswith(f"{plan_prefix}/E-"):
@@ -96,8 +97,8 @@ def _salvage_branch(repo_dir: str, plan_prefix: str) -> tuple[str, str]:
     return branch, match.group(1)
 
 
-def _commit_leftovers(repo_dir: str, plan_branch: str, exec_id: str, files: list[str]) -> str:
-    spec = _excluded_pathspecs(exec_id)
+def _commit_leftovers(repo_dir: str, plan_branch: str, exec_id: str, files: list[str], skipped: list[str]) -> str:
+    spec = [*_excluded_pathspecs(exec_id), *(f":(exclude,literal){path}" for path in skipped)]
     run_git(["add", "--all", *spec], cwd=repo_dir)
     env = {**os.environ, **EXECUTOR_GIT_ENV}
     message = f"execute: {exec_id} partial work (interrupted) for plan {plan_branch}"
@@ -173,16 +174,12 @@ def _unrecorded_salvage_commit(repo_dir: str, branch: str, exec_id: str) -> tupl
 
 
 def salvage_leftovers(context: FlowContext, plan_prefix: str) -> SalvageResult:
-    """Commit the worktree's leftovers as partial work, publish the branch and record it in ``executions.jsonl``.
-
-    Returns an empty result, touching nothing, when only engine-owned files (or nothing) are dirty and no earlier
-    salvage commit awaits publishing; one whose push or ledger append failed is retried from its local commit.
-
-    Raises:
-        SalvageError: If the worktree is on the wrong branch or the commit, push or ledger append fails.
-    """
+    """Commit the worktree's leftovers as partial work, publish the branch and record it in ``executions.jsonl``."""
     repo_dir = context.target_worktree
-    if not leftover_paths(repo_dir):
+    initial_files, initial_skipped = _status_paths(repo_dir)
+    if initial_skipped:
+        context.log(format_skipped_scratch_message(initial_skipped))
+    if not initial_files:
         try:
             branch, exec_id = _salvage_branch(repo_dir, plan_prefix)
             pending = _unrecorded_salvage_commit(repo_dir, branch, exec_id)
@@ -194,11 +191,11 @@ def salvage_leftovers(context: FlowContext, plan_prefix: str) -> SalvageResult:
         _publish_partial(context, (branch, exec_id), sha, plan_prefix, len(files))
         return SalvageResult(branch=branch, sha=sha, files=files)
     branch, exec_id = _salvage_branch(repo_dir, plan_prefix)
-    files = leftover_paths(repo_dir, exec_id)
+    files, skipped = _status_paths(repo_dir, exec_id)
     if not files:
         return SalvageResult()
     try:
-        sha = _commit_leftovers(repo_dir, context.plan_branch or plan_prefix, exec_id, files)
+        sha = _commit_leftovers(repo_dir, context.plan_branch or plan_prefix, exec_id, files, skipped)
     except RuntimeError as exc:
         raise SalvageError(
             f"could not commit the partial work on '{branch}': {redact_agent_secrets(str(exc))}"

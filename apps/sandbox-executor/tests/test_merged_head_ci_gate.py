@@ -147,16 +147,23 @@ def test_check_runs_are_parsed_from_the_api_with_their_actions_run_id() -> None:
 
 def test_probe_reads_the_exact_sha_and_fails_closed_on_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[list[str]] = []
-    out = json.dumps({"id": 1, "name": "unit", "status": "completed", "conclusion": "success", "head_sha": MERGED})
+    run = {"id": 1, "name": "unit", "status": "completed", "conclusion": "success", "head_sha": MERGED}
+    outputs = {"check-runs": json.dumps({**run, "check_suite_id": 5}), "check-suites": json.dumps({"id": 5})}
 
     def fake_run(argv: list[str], **_: Any) -> SimpleNamespace:
         calls.append(argv)
-        return SimpleNamespace(returncode=0, stdout=out, stderr="")
+        out = outputs[argv[3].rsplit("/", 1)[1]]
+        return SimpleNamespace(returncode=0, stdout=out.replace('"id": 5}', '"id": 5, "status": "completed"}'))
 
     monkeypatch.setattr(ci_head_checks.subprocess, "run", fake_run)
-    assert probe_head_checks(str(tmp_path), MERGED) == [check(run_id=None)]
+    expected = check(run_id=None, check_suite_id=5, suite_status="completed")
+    assert probe_head_checks(str(tmp_path), MERGED) == [expected]
     assert calls[0][:3] == ["gh", "api", "--paginate"]
     assert calls[0][3] == f"repos/{{owner}}/{{repo}}/commits/{MERGED}/check-runs"
+    assert calls[1][3] == f"repos/{{owner}}/{{repo}}/commits/{MERGED}/check-suites"
+
+    outputs["check-suites"] = ""  # a suite the endpoint does not list never counts as completed
+    assert probe_head_checks(str(tmp_path), MERGED) == [{**expected, "suite_status": ""}]
 
     monkeypatch.setattr(ci_head_checks.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1, stdout=""))
     assert probe_head_checks(str(tmp_path), MERGED) is None
@@ -195,6 +202,22 @@ def test_a_transient_probe_failure_keeps_polling_until_the_checks_settle(tmp_pat
     record = _gate(tmp_path, fakes)
     assert record["state"] == "passed"
     assert len(fakes.probed) == 3
+
+
+def test_a_needs_job_registering_after_every_visible_run_completed_keeps_the_head_pending(tmp_path: Path) -> None:
+    build = check("build", check_suite_id=7, suite_status="in_progress")
+    deploy = check("deploy", "failure", check_run_id=2, check_suite_id=7, suite_status="completed")
+    assert classify_head_checks([build]) == "pending"  # the needs: job has no check run yet
+    fakes = Fakes([build], [{**build, "suite_status": "completed"}, deploy])
+    record = _gate(tmp_path, fakes)
+    assert record["state"] == "failed"
+    assert [run["name"] for run in record["runs"]] == ["build", "deploy"]
+    assert len(fakes.probed) == 2
+
+
+def test_a_suite_still_running_past_the_budget_is_pending(tmp_path: Path) -> None:
+    record = _gate(tmp_path, Fakes([check(check_suite_id=7, suite_status="queued")]), budget=30.0)
+    assert record["state"] == "pending" and "unit" in record["reason"]
 
 
 def test_pending_past_the_budget_is_pending_never_passed(tmp_path: Path) -> None:
@@ -359,13 +382,16 @@ def test_an_unreadable_head_fails_stage5_closed(tmp_path: Path) -> None:
     assert fakes.probed == []
 
 
-def test_a_withdrawn_consensus_is_never_calibrated_on_resume(tmp_path: Path) -> None:
+def test_a_withdrawn_consensus_restarts_stage4_on_resume_without_a_second_withdrawal(tmp_path: Path) -> None:
     ctx = _approved_ctx(tmp_path)
     consensus = {**ctx.stage_results["review"].payload["consensus"], "approved": False}
-    consensus["withdrawn"] = {"merged_head": MERGED, "approved_head": APPROVED, "action_id": "ACT-WITHDRAW-1"}
-    ctx.stage_results["review"].payload["consensus"] = consensus
+    withdrawn = {"merged_head": MERGED, "approved_head": APPROVED, "action_id": "ACT-WITHDRAW-1"}
+    ctx.stage_results["review"].payload["consensus"] = {**consensus, "withdrawn": withdrawn}
     fakes = Fakes([check()])
-    stopped, _ = stage5_merged_head_gate(ctx, _seams(fakes))
-    assert stopped is not None and stopped.status == StageStatus.FAILED
-    assert "withdrawn" in str(stopped.error)
+    stopped, record = stage5_merged_head_gate(ctx, _seams(fakes))
+    assert stopped is not None and stopped.status == StageStatus.SKIPPED
+    assert stopped.payload["review_restart"] is True
+    assert stopped.payload["consensus_withdrawal"] == withdrawn
+    assert record["head_sha"] == MERGED and record["state"] == "failed"
     assert fakes.probed == []
+    assert not (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").exists()

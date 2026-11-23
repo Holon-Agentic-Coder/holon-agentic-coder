@@ -86,7 +86,7 @@ def _decide(context: FlowContext, start: str, record: dict[str, Any], seams: Mer
     if record["state"] == PASSED:
         return None
     if record["state"] == FAILED:
-        withdrawal = withdraw_consensus(context, record, seams.withdrawal)
+        withdrawal = withdraw_consensus(context, record, seams.withdrawal, context.merged_head_restart_allowed)
         end = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         payload = {"review_restart": True, "merged_head_ci": record, "consensus_withdrawal": withdrawal}
         return StageResult(FlowStage.CALIBRATE, StageStatus.SKIPPED, start, end, payload=payload)
@@ -103,10 +103,11 @@ def stage5_merged_head_gate(
     """Gate Stage 5 on CI of the head it would calibrate: (the result that stops Stage 5 or None, the CI record)."""
     seams, start = seams or MergedHeadSeams(), datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     withdrawn = withdrawn_consensus_of(context)
-    if withdrawn and not (context.dry_run or context.skip_push):
-        record = skipped_record(withdrawn.get("merged_head"), "consensus withdrawn")
-        reason = "Calibrate stage refused: the Stage 4 approval was withdrawn; Stage 4 must approve the new head first."
-        return _stage_failure(context, FlowStage.CALIBRATE, start, reason, merged_head_ci=record), record
+    if withdrawn and not (context.dry_run or context.skip_push):  # A resume after the withdrawal: restart Stage 4.
+        record = {**skipped_record(withdrawn.get("merged_head"), "consensus withdrawn"), "state": FAILED}
+        context.log("Calibrate stage: the Stage 4 approval was withdrawn; Stage 4 must approve the new head first.")
+        payload = {"review_restart": True, "merged_head_ci": record, "consensus_withdrawal": withdrawn}
+        return StageResult(FlowStage.CALIBRATE, StageStatus.SKIPPED, start, start, payload=payload), record
     skip = _skip_reason(context)
     if skip:
         context.log(f"Merged-head CI gate skipped: {skip}.")
@@ -147,6 +148,7 @@ def _run_calibrate(
     restarts: int,
 ) -> StageResult:
     """Run and record Stage 5; a restart request past the cap becomes a FAILED Stage 5 (nothing was calibrated)."""
+    context.merged_head_restart_allowed = restarts < MAX_MERGED_HEAD_REVIEW_RESTARTS
     result = run_stage(FlowStage.CALIBRATE)
     if is_review_restart(result) and restarts >= MAX_MERGED_HEAD_REVIEW_RESTARTS:
         head = (result.payload.get("merged_head_ci") or {}).get("head_sha")

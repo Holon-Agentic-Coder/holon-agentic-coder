@@ -164,8 +164,8 @@ class Flow:
         self.published.append(record["head_sha"])
         return StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS, payload={"merged_head_ci": record})
 
-    def run(self, ctx: FlowContext, checkpoint: Path) -> None:
-        engine = PipelineEngine(ctx, from_stage="review", checkpoint_path=str(checkpoint))
+    def run(self, ctx: FlowContext, checkpoint: Path, from_stage: str = "review") -> None:
+        engine = PipelineEngine(ctx, from_stage=from_stage, checkpoint_path=str(checkpoint))
         with (
             patch("sandbox_executor.flow.pipeline.run_review_stage", side_effect=self.run_review),
             patch("sandbox_executor.flow.pipeline.run_calibrate_stage", side_effect=self.run_calibrate),
@@ -207,6 +207,23 @@ def test_pipeline_stops_after_the_cap_and_never_reports_the_withdrawn_approval_r
     assert ctx.stage_results["calibrate"].status == StageStatus.FAILED
     assert not any("PR ready for maintainer merge" in line for line in ctx.logs)
     assert len(flow.comments) == 1  # once per merged head
+    rows = [row for row in _ledger_rows(tmp_path) if "consensus-withdrawn" in row.get("labels", [])]
+    assert [row["review_restarted"] for row in rows] == [True] * MAX_MERGED_HEAD_REVIEW_RESTARTS + [False]
+    assert "the review was not restarted and the flow stopped" in rows[-1]["error_context"]
+
+
+def test_a_resumed_stage5_with_a_withdrawn_consensus_restarts_stage4(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path, auto_calibrate=True)
+    review = _review()
+    review.payload["consensus"].update(approved=False, withdrawn={"merged_head": MERGED_RED, "approved_head": APPROVED})
+    ctx.stage_results["review"] = review
+    flow = Flow({MERGED_GREEN: "success"}, [MERGED_GREEN], [MERGED_RED])
+    flow.run(ctx, tmp_path / "checkpoint.json", from_stage="calibrate")
+
+    assert flow.iterations_at_entry == [0]  # Stage 4 re-ran for the new head
+    assert flow.published == [MERGED_GREEN]
+    assert flow.comments == [] and _ledger_rows(tmp_path) == []  # no second withdrawal
+    assert ctx.stage_results["calibrate"].status == StageStatus.SUCCESS
 
 
 def test_the_checkpoint_after_a_restart_carries_iteration_zero(tmp_path: Path) -> None:

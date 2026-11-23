@@ -151,6 +151,7 @@ def test_the_review_state_is_reset_for_a_fresh_stage4(tmp_path: Path) -> None:
         "merged_head": MERGED,
         "approved_head": APPROVED,
         "action_id": withdrawal["action_id"],
+        "review_restarted": True,
     }
 
 
@@ -159,6 +160,13 @@ def test_render_names_both_heads_and_each_failing_run() -> None:
     assert "an earlier commit" in body
     assert "- unit (run 12): timed_out" in body
     assert body.endswith(withdrawal_marker(MERGED))
+    assert "The review restarts at iteration 1" in body
+
+
+def test_at_the_restart_cap_the_comment_says_the_flow_stopped() -> None:
+    body = render_withdrawal(APPROVED, MERGED, [], restart=False)
+    assert "restarts at iteration 1" not in body
+    assert "the review was not restarted and the flow stopped" in body
 
 
 def test_only_failed_runs_are_named_never_pending_or_cancelled_ones() -> None:

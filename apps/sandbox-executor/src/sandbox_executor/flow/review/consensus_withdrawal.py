@@ -65,8 +65,16 @@ def failed_runs_of(record: Mapping[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def render_withdrawal(approved_head: str | None, merged_head: str, failed_runs: list[Mapping[str, Any]]) -> str:
-    """The comment body: the withdrawn approval, the merged head, each failing check and the restart."""
+def _next_step(restart: bool) -> str:
+    if restart:
+        return "The review restarts at iteration 1 for the new head"
+    return "The review restart cap was reached, so the review was not restarted and the flow stopped"
+
+
+def render_withdrawal(
+    approved_head: str | None, merged_head: str, failed_runs: list[Mapping[str, Any]], restart: bool = True
+) -> str:
+    """The comment body: the withdrawn approval, the merged head, each failing check and the restart (or the stop)."""
     covered = f"`{short_sha(approved_head)}`" if approved_head else "an earlier commit"
     marker = withdrawal_marker(merged_head)
     lines = [
@@ -76,7 +84,7 @@ def render_withdrawal(approved_head: str | None, merged_head: str, failed_runs: 
         "",
         *(f"- {run.get('name')} (run {run.get('run_id') or 'n/a'}): {run.get('conclusion')}" for run in failed_runs),
         "",
-        "No calibration commit was pushed for this head. The review restarts at iteration 1 for the new head; "
+        f"No calibration commit was pushed for this head. {_next_step(restart)}; "
         "merging stays with a human maintainer.",
     ]
     text = CredentialRedactor.redact_text("\n".join(lines))[: MAX_COMMENT_CHARS - len(marker) - 2]
@@ -84,11 +92,12 @@ def render_withdrawal(approved_head: str | None, merged_head: str, failed_runs: 
 
 
 def _withdrawal_row(
-    context: FlowContext, approved: str | None, merged: str, failed: list[dict[str, Any]]
+    context: FlowContext, approved: str | None, merged: str, failed: list[dict[str, Any]], restart: bool
 ) -> dict[str, Any]:
-    """The ACT row recording the withdrawn approval; free text is redacted and bounded."""
+    """The ACT row recording the withdrawn approval and whether the review restarts; free text is redacted."""
     named = ", ".join(f"{run.get('name')}: {run.get('conclusion')}" for run in failed) or "no check named"
     detail = f"CI failed on merged head {merged} after the approval of {approved or 'an earlier head'}: {named}"
+    detail += f". {_next_step(restart)}."
     return {
         "action_id": generate_action_id("ACT-WITHDRAW"),
         "execution_id": f"REV-WITHDRAW-{int(datetime.now(UTC).timestamp())}",
@@ -103,6 +112,7 @@ def _withdrawal_row(
         "approved_head": approved,
         "merged_head": merged,
         "failed_runs": failed,
+        "review_restarted": restart,
         "created_at": datetime.now(UTC).isoformat(),
     }
 
@@ -142,21 +152,24 @@ def _reset_review(context: FlowContext, withdrawn: dict[str, Any]) -> None:
 
 
 def withdraw_consensus(
-    context: FlowContext, record: Mapping[str, Any], seams: WithdrawalSeams | None = None
+    context: FlowContext, record: Mapping[str, Any], seams: WithdrawalSeams | None = None, restart: bool = True
 ) -> dict[str, Any]:
-    """Record, announce and reset a consensus whose merged head failed CI; returns the withdrawal record."""
+    """Record, announce and reset a consensus whose merged head failed CI; returns the withdrawal record.
+
+    ``restart`` is False at the review restart cap, so the comment and the row say the flow stopped instead.
+    """
     from sandbox_executor.flow.review.records import record_review_action  # Lazy: records imports review_report.
 
     approved, merged = approved_head_of(context), str(record.get("head_sha") or "")
     pr_target = approval_pr_number(context) or context.execution_branch
     failed = failed_runs_of(record)
     ledger_path = os.path.join(context.target_worktree, "holon-knowledge", "ledger", "executions.jsonl")
-    row = record_review_action(context, ledger_path, _withdrawal_row(context, approved, merged, failed))
+    row = record_review_action(context, ledger_path, _withdrawal_row(context, approved, merged, failed, restart))
     action_id = (row or {}).get("action_id")
     comment = _post_once(
-        context, pr_target, render_withdrawal(approved, merged, failed), merged, seams or WithdrawalSeams()
+        context, pr_target, render_withdrawal(approved, merged, failed, restart), merged, seams or WithdrawalSeams()
     )
-    withdrawn = {"merged_head": merged, "approved_head": approved, "action_id": action_id}
+    withdrawn = {"merged_head": merged, "approved_head": approved, "action_id": action_id, "review_restarted": restart}
     _reset_review(context, withdrawn)
     context.log(
         f"Consensus withdrawn: the approval of {short_sha(approved)} no longer stands because CI failed on merged "

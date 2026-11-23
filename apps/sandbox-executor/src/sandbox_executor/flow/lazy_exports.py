@@ -68,9 +68,10 @@ LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.github.ci_final_head": "format_final_head_ci",
     "sandbox_executor.flow.github.ci_head_checks": (
-        "CancelledReruns classify_head_checks gh_head_checks_probe gh_run_rerunner is_cancelled is_failed is_pending "
-        "latest_checks_for_head parse_check_runs probe_head_checks"
+        "classify_head_checks gh_head_checks_probe is_cancelled is_failed is_pending latest_checks_for_head "
+        "parse_check_runs parse_suite_statuses probe_head_checks suite_pending with_suite_status"
     ),
+    "sandbox_executor.flow.github.ci_head_reruns": "CancelledReruns gh_run_rerunner",
     "sandbox_executor.flow.github.ci_reverify": "rerun_note",
     "sandbox_executor.flow.github.ci_wait": (
         "CiWaitPolicy CiWaitResult is_pending_only next_poll_interval pending_check_names settle_pending_ci "

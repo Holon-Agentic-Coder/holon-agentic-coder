@@ -23,16 +23,16 @@ from sandbox_executor.flow.github.ci import resolve_ci_registration_timeout
 from sandbox_executor.flow.github.ci_head_checks import (
     FAILED,
     PASSED,
-    CancelledReruns,
     HeadCheck,
     HeadChecksProbe,
     RunRerunner,
     classify_head_checks,
     gh_head_checks_probe,
-    gh_run_rerunner,
     is_cancelled,
     is_pending,
+    suite_pending,
 )
+from sandbox_executor.flow.github.ci_head_reruns import CancelledReruns, gh_run_rerunner
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, next_poll_interval
 from sandbox_executor.flow.review.consensus_withdrawal import WithdrawalSeams
 from sandbox_executor.knowledge import CredentialRedactor
@@ -106,7 +106,9 @@ def _poll_head(context: FlowContext, repo_dir: str, head_sha: str, seams: Merged
         if probed is not None and not checks and now >= registration:
             return gate_record("unknown", head_sha, [], reruns.run_ids, "no check run on the head could be read")
         if probed is not None and now >= deadline:
-            names = ", ".join(str(c.get("name")) for c in checks if is_pending(c) or is_cancelled(c))
+            names = ", ".join(
+                str(c.get("name")) for c in checks if is_pending(c) or is_cancelled(c) or suite_pending(c)
+            )
             reason = f"checks still unsettled when the CI wait budget ran out: {names}"
             return gate_record("pending", head_sha, checks, reruns.run_ids, reason)
         until = registration if probed is not None and not checks else deadline  # A failed probe keeps polling.

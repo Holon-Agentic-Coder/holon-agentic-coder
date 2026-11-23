@@ -67,6 +67,7 @@ def _child_context(context: FlowContext, intent_data: dict[str, Any]) -> FlowCon
         dry_run=context.dry_run,
         auto_calibrate=context.auto_calibrate,
         token_reduce=context.token_reduce,
+        proxy_attach=context.proxy_attach,
         skip_push=context.skip_push,
         skip_calibrate=context.skip_calibrate,
         max_review_iterations=context.max_review_iterations,

@@ -22,6 +22,7 @@ from sandbox_executor.flow import (
     run_plan_stage,
     save_checkpoint,
 )
+from sandbox_executor.launcher.coherence import FlowProxyChoice
 
 from tests.flow.github.fake_github import FakeGitHub
 from tests.flow.helpers import (
@@ -35,6 +36,8 @@ from tests.flow.helpers import (
     stage4_halts_at_consensus,
 )
 from tests.flow.lookup_patch import patch_lookup_sites
+
+_NO_PROXY = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
 
 
 class TestFlowRoleDispatch:
@@ -642,19 +645,25 @@ class TestFlowRoleDispatch:
         assert _git(host, "rev-parse", f"refs/heads/{branch}") == _git(host, "rev-parse", f"origin/{branch}")
         assert not any("Warning" in line for line in ctx.logs)
 
-    def test_flow_auto_detects_token_reduction_but_manual_commands_require_opt_in(self, monkeypatch):
-        """Documented limit of the equivalence guarantee: only 'holon flow' auto-detects holon-coherence."""
+    def test_flow_attaches_a_detected_proxy_but_manual_commands_require_opt_in(self, monkeypatch):
+        """Documented limit of the equivalence guarantee: only 'holon flow' attaches to a detected running proxy.
+
+        Detection never asks for a spawned sidecar: the flow dispatches ``proxy_attach=True`` with
+        ``token_reduce=False``, so both paths spawn only on an explicit opt-in.
+        """
         from sandbox_executor import flow as flow_module
 
         monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
         monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
         monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
         monkeypatch.setenv("HOLON_MODEL", "gemini-3.8-flash-medium")
-        with patch("sandbox_executor.launcher.sidecar.detect_holon_coherence", return_value=True):
+        detected = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=True)
+        with patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=detected):
             dispatcher = MagicMock(return_value=0)
             ctx = FlowContext(repo_dir=".", dispatcher=dispatcher)
             flow_module._dispatch_role(ctx, "planner", ["I-1-x/_"])
-            assert dispatcher.call_args.kwargs["token_reduce"] is True
+            assert dispatcher.call_args.kwargs["token_reduce"] is False
+            assert dispatcher.call_args.kwargs["proxy_attach"] is True
 
             with (
                 patch("sandbox_executor.cli.dispatch_role_agent", return_value=0) as mock_dispatch,
@@ -774,7 +783,7 @@ class TestFlowDispatchMergeInteractions:
         with (
             patch("sandbox_executor.cli.run_preflight_probe", order.probe),
             patch("sandbox_executor.launcher.role_dispatch.dispatch_role_agent", order.dispatch),
-            patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
+            patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY),
             patch("sys.argv", ["holon", "flow", str(intent_file), "--target-worktree", str(host)]),
             pytest.raises(SystemExit),
         ):

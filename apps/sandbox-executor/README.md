@@ -86,17 +86,152 @@ enforcement:
 - **Credentials Off the Command Line**: The GitHub token and other credential variables reach the container through a
   temporary `0600` docker `--env-file` (in the `0700` directory `~/.holon/tmp/env-files`) that is removed after the run;
   the pre-flight readiness probe (`holon doctor`, and before `holon plan` / `execute` / `flow`) uses the same env-file
-  and classifier for `HOLON_AGENT_KEY` and a credential-bearing `HOLON_AGENT_SETTINGS`. No role container runs git
-  against a remote, so no git credential-helper (`GIT_CONFIG_*`) is injected and no `ssh-agent` socket is mounted;
-  `GITHUB_TOKEN` is forwarded for `gh` API calls only. The old repository URL variable `HOLON_REPO_URL` was removed: a
-  stale value in the environment is ignored, neither forwarded nor an error. Every echoed command is masked through the
-  shared `sandbox_executor.redaction` patterns, always before any length clamp. Known gap: the mitmweb dashboard
-  password is still on the sidecar's command line. See
+  and classifier for `HOLON_AGENT_KEY`, a credential-bearing `HOLON_AGENT_SETTINGS` and `HOLON_AGENT_OAUTH_TOKEN` (the
+  claude OAuth token now has its own route; see [Configuration Files](#3-configuration-files-holonenv-and-repoenv)). No
+  role container runs git against a remote, so no git credential-helper (`GIT_CONFIG_*`) is injected and no `ssh-agent`
+  socket is mounted; `GITHUB_TOKEN` is forwarded for `gh` API calls only. The old repository URL variable
+  `HOLON_REPO_URL` was removed: a stale value in the environment is ignored, neither forwarded nor an error. Every
+  echoed command is masked through the shared `sandbox_executor.redaction` patterns, always before any length clamp.
+  Known gap: the mitmweb dashboard password is still on the sidecar's command line. See
   [Agent Credentials](../../docs/executor/agent_credentials_requirements.md#host-side-fetch-and-push).
 
 ---
 
-## 3. CLI Subcommands Reference
+## 3. Configuration Files (`~/.holon/.env` and `<repo>/.env`)
+
+Persistent `HOLON_*` settings live in two dotenv layers, resolved once per `holon` invocation by
+`sandbox_executor.config_env`:
+
+- the user-wide file `~/.holon/.env`, mode `0600`;
+- the project file `<repo-root>/.env` (the first directory upwards with a `.git` file or directory), which `holon init`
+  git-ignores. `holon init` also scaffolds a commented `.env.example` and never creates `.env` itself.
+
+**Precedence.** Each variable resolves on its own. From broadest to most specific: built-in defaults, the user-wide
+file, the project file, the process environment, explicit CLI flags (`--agent`, `--model` and the other flags). The most
+specific layer that defines a key wins; a broader layer only supplies keys the more specific layers leave unset. The
+file values are applied to the host process environment as fill-only values, so an exported variable or a flag always
+wins.
+
+**Format.** A strict `KEY=VALUE` subset: blank lines, lines whose first non-space character is `#`, an optional pair of
+single or double quotes whose content is taken literally, and an inline ` #` comment after an unquoted value. A shell
+`export ` prefix is rejected. Nothing is expanded (`"$HOME"` stays `$HOME`) and nothing is executed. A malformed line is
+skipped with a warning that names the file and the line number, never the line.
+
+**Empty values.** `KEY=` means "not set in this layer": the next broader layer with a non-empty value, or the built-in
+default, supplies the key, so an empty line copied from `.env.example` never blanks a user-wide setting. The empty layer
+is still reported among the shadowed layers as `<layer> (empty)`. A key that every defining layer leaves empty is unset.
+
+**Accepted keys.** Only `HOLON_*` keys (`^HOLON_[A-Z0-9_]+$`) and `GITHUB_TOKEN` are accepted. Every host-set key
+(listed after the key table, among them `HOLON_ROLE`, `HOLON_CONFIG_RESOLVED`, `HOLON_SKIP_PREFLIGHT`,
+`HOLON_IN_SANDBOX` and `HOLON_TARGET_WORKTREE`) and the retired `HOLON_REPO_URL` are refused. The project `.env` is
+repository-controlled, so it may not set a token-file reference or a host-reach key either:
+`HOLON_ANTIGRAVITY_SESSION_DIR` (a host directory mounted into the container), `HOLON_AGENT_SETTINGS` and
+`HOLON_AGENT_CONFIG` (runner settings that can redirect the API endpoint), `HOLON_TOKEN_REDUCE`,
+`HOLON_PASSIVE_MONITORING`, `HOLON_PROXY_URL`, `HOLON_PROXY_PORT` (the credential-bearing proxy and its routing),
+`HOLON_MITM_USER`, `HOLON_MITM_WEB_PORT` and `HOLON_MITM_WEB_PASSWORD` (the proxy sidecar user and dashboard),
+`HOLON_COHERENCE_IMAGE` (the proxy sidecar image, which sees agent credentials), `HOLON_LOCAL_BASE_URL`,
+`HOLON_HOST_LOCAL_HOSTS`, `HOLON_ROOT_CA_PATH` and `HOLON_CA_BUNDLE_PATH` (the trusted CA), `HOLON_SECRET_BUNDLE_PATH`
+(a file the role dispatcher reads or writes), and the credentials `GITHUB_TOKEN`, `HOLON_AGENT_OAUTH_TOKEN` and
+`HOLON_AGENT_KEY` are set only in `~/.holon/.env` or the process environment. Any other refused key draws
+`Warning: <file>: ignoring <KEY>: <reason>.`, which names the key and never the value.
+
+**Warnings.** A layer or token file with group or other permission bits draws
+`Warning: <path> has mode 0NNN; expected 0600. The file is left unchanged.` A project `.env` that holds a secret key and
+is tracked by git draws `Warning: <path> is tracked by git and holds secret keys (<KEYS>); untrack it.` Warnings go to
+stderr on every invocation and appear under `holon doctor`.
+
+**Secrets by file.** A credential is referenced by the path of its token file, never pasted in:
+
+| file key                       | value key                 | in-container variable     |
+| ------------------------------ | ------------------------- | ------------------------- |
+| `HOLON_AGENT_OAUTH_TOKEN_FILE` | `HOLON_AGENT_OAUTH_TOKEN` | `CLAUDE_CODE_OAUTH_TOKEN` |
+
+Only `~/.holon/.env` and the process environment may name a token file: the project `.env` is repository-controlled, so
+a file key there is ignored with `Warning: <file>: ignoring <KEY>: ...` and nothing is read. The token file (for example
+`~/.holon/secrets/claude-oauth-token`, mode `0600`) is read on the host. Its value travels only in the `0600` docker
+`--env-file`, and the image's `role_dispatcher.sh` exports it as `CLAUDE_CODE_OAUTH_TOKEN` for the claude runner. An
+explicit `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` wins over it, and it wins over the default secrets file. It is
+no longer carried inside `HOLON_AGENT_SETTINGS`. The mapping lives in the image, so rebuild the images
+(`build_all_images.sh`) after upgrading; an old image fails visibly in `holon doctor` as "not logged in".
+
+**Inheritance.** Every role container (intent creator, planner, executor, review loop, and the runs calibration drives)
+and the pre-flight probe receive the effective values through the `0600` env-file, never as `-e KEY=value` on the argv,
+together with `HOLON_CONFIG_RESOLVED=1`. A nested `holon` that sees the marker reads no layer file and reports every key
+as `process (inherited)`.
+
+**Reporting.** `holon doctor` lists every effective setting as `KEY = value   [source; shadows ...]`, and under
+`configuration.settings` with `--json` (`key`, `value`, `display`, `source`, `shadowed`, `secret`). A secret is shown
+only as `set (<layer>)`, a key that every layer leaves empty as `unset (<layer>)`. Like every other doctor message, a
+value that could carry a credential or is invalid is withheld as `set (<layer>; value withheld)`: a numeric key
+(`_SECONDS`, `_MINUTES`, `_TIMEOUT`, `_TOKENS`, `_WINDOW`, `_BYTES`, `_PORT`) shows only a finite decimal or
+`unlimited`, and any other key only a short plain value with no URL authority, `@`, token-like run or non-finite number.
+
+Supported keys (secret keys are also every key ending in `_TOKEN`, `_KEY`, `_PASSWORD` or `_SECRET`, except `*_FILE`):
+
+| key                                           | default                                                        | secret | purpose                                                                                                |
+| --------------------------------------------- | -------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------ |
+| `HOLON_AGENT`                                 | the harness agent detected from the runtime                    | no     | Agent runner (`claude`, `pi`, `codex`, `opencode`, `antigravity`).                                     |
+| `HOLON_MODEL`                                 | unset                                                          | no     | Model the runner uses.                                                                                 |
+| `HOLON_AGENT_EFFORT`                          | `medium`                                                       | no     | Reasoning effort passed to the claude runner.                                                          |
+| `HOLON_AGENT_OAUTH_TOKEN_FILE`                | unset                                                          | no     | Path of a file holding the claude subscription token; read on the host into `HOLON_AGENT_OAUTH_TOKEN`. |
+| `HOLON_AGENT_OAUTH_TOKEN`                     | unset                                                          | yes    | Claude subscription token; prefer `HOLON_AGENT_OAUTH_TOKEN_FILE`.                                      |
+| `HOLON_AGENT_KEY`                             | unset                                                          | yes    | API key of a runner other than claude.                                                                 |
+| `HOLON_AGENT_SETTINGS`                        | unset                                                          | yes    | Extra claude `--settings` JSON (attribution); no longer needed for the token.                          |
+| `HOLON_AGENT_PROVIDER`                        | unset; in host-local mode `HOLON_LOCAL_PROVIDER`, else `local` | no     | Provider of the pi runner.                                                                             |
+| `HOLON_AGENT_MODE`                            | unset                                                          | no     | `--agent` value of the opencode runner.                                                                |
+| `HOLON_AGENT_OSS_MODE`                        | unset                                                          | no     | Pass `--oss` to the codex runner when `1` or `true`.                                                   |
+| `HOLON_AGENT_LOCAL_PROVIDER`                  | unset                                                          | no     | `--local-provider` value of the codex runner.                                                          |
+| `HOLON_AGENT_CONFIG`                          | unset                                                          | no     | `-c` value of the codex runner.                                                                        |
+| `HOLON_AGENT_SKIP_PERMISSIONS`                | `true`                                                         | no     | Run the agent with its permission prompts bypassed.                                                    |
+| `HOLON_AGENT_LOG_BYTES`                       | `65536`                                                        | no     | Bytes of agent output kept in execution logs.                                                          |
+| `HOLON_SECRET_BUNDLE_PATH`                    | `/run/secrets/holon_auth.json`                                 | no     | Secret bundle read inside the container.                                                               |
+| `HOLON_ROOT_CA_PATH`                          | `/usr/local/share/ca-certificates/holon-root-ca.crt`           | no     | Holon Root CA trusted inside the container when present.                                               |
+| `HOLON_CA_BUNDLE_PATH`                        | `/home/holon/.holon-ca-bundle.crt`                             | no     | Merged CA bundle the role dispatcher writes inside the container.                                      |
+| `GITHUB_TOKEN`                                | `gh auth token`                                                | yes    | GitHub token for pushes and pull requests.                                                             |
+| `HOLON_TURN_TIMEOUT_SECONDS`                  | `3600`                                                         | no     | Wall-clock ceiling of one agent turn.                                                                  |
+| `HOLON_TURN_STALL_SECONDS`                    | `90`                                                           | no     | Silence after which a turn counts as stalled.                                                          |
+| `HOLON_STAGE_BUDGET_INTENT_MINUTES`           | `10`                                                           | no     | Budget of the intent stage.                                                                            |
+| `HOLON_STAGE_BUDGET_PLAN_MINUTES`             | `35`                                                           | no     | Budget of the plan stage.                                                                              |
+| `HOLON_STAGE_BUDGET_EXECUTE_MINUTES`          | `45`                                                           | no     | Budget of the execute stage.                                                                           |
+| `HOLON_STAGE_BUDGET_REVIEW_ITERATION_MINUTES` | `120`                                                          | no     | Budget of one review iteration.                                                                        |
+| `HOLON_STAGE_BUDGET_CALIBRATION_MINUTES`      | `10`                                                           | no     | Budget of the calibration stage.                                                                       |
+| `HOLON_REVIEW_CI_WAIT_SECONDS`                | `1800`                                                         | no     | Wait for pending CI checks after the reviewers ran.                                                    |
+| `HOLON_REVIEW_QUOTA_WAIT_SECONDS`             | `900`                                                          | no     | Longest wait for a reviewer quota reset.                                                               |
+| `HOLON_CI_REGISTRATION_TIMEOUT`               | `180`                                                          | no     | Wait for CI checks to register on a pushed head.                                                       |
+| `HOLON_TEST_MEASUREMENT_TIMEOUT_SECONDS`      | `900`                                                          | no     | Ceiling of one measured test run.                                                                      |
+| `HOLON_GIT_LOCK_AGE_SECONDS`                  | `60`                                                           | no     | Age after which a stale git lock is removed.                                                           |
+| `HOLON_PREFLIGHT_TIMEOUT`                     | `60`                                                           | no     | Timeout of the pre-flight readiness probe.                                                             |
+| `HOLON_TOKEN_REDUCE`                          | unset                                                          | no     | Enable the token-reduction proxy when `1` or `true`.                                                   |
+| `HOLON_PROXY_URL`                             | the host gateway on port `8080`                                | no     | External token-reduction proxy to attach to.                                                           |
+| `HOLON_COHERENCE_IMAGE`                       | a local image, else the GHCR image                             | no     | Image of the token-reduction proxy sidecar.                                                            |
+| `HOLON_PROXY_PORT`                            | `8080`                                                         | no     | Port of the token-reduction proxy.                                                                     |
+| `HOLON_PASSIVE_MONITORING`                    | unset                                                          | no     | Run the proxy in passive monitoring mode.                                                              |
+| `HOLON_MITM_USER`                             | unset                                                          | no     | User of the mitmweb dashboard.                                                                         |
+| `HOLON_MITM_WEB_PORT`                         | `8081`                                                         | no     | Port of the mitmweb dashboard.                                                                         |
+| `HOLON_MITM_WEB_PASSWORD`                     | unset                                                          | yes    | Password of the mitmweb dashboard.                                                                     |
+| `HOLON_LOCAL_LLM`                             | unset                                                          | no     | Enable host-local models for the pi runner.                                                            |
+| `HOLON_LOCAL_PROVIDER`                        | unset                                                          | no     | Host-local provider to select.                                                                         |
+| `HOLON_LOCAL_MODELS`                          | unset                                                          | no     | Host-local models to expose.                                                                           |
+| `HOLON_LOCAL_BASE_URL`                        | unset                                                          | no     | Base URL of the host-local server.                                                                     |
+| `HOLON_LOCAL_CONTEXT_WINDOW`                  | unset                                                          | no     | Context window of host-local models.                                                                   |
+| `HOLON_HOST_LOCAL_HOSTS`                      | unset                                                          | no     | Extra hosts allowed as host-local endpoints.                                                           |
+| `HOLON_CONTEXT_RESERVE_TOKENS`                | `4096`                                                         | no     | Tokens reserved out of a host-local context window.                                                    |
+| `HOLON_REASONING_MODE`                        | unset                                                          | no     | Reasoning mode of host-local models.                                                                   |
+| `HOLON_ACTION_LOGGING`                        | unset                                                          | no     | Record agent actions when `1` or `true` (alias `HOLON_RECORD_ACTIONS`).                                |
+| `HOLON_RECORD_ACTIONS`                        | unset                                                          | no     | Alias of `HOLON_ACTION_LOGGING`.                                                                       |
+| `HOLON_ATTRIBUTION_STRICT`                    | unset                                                          | no     | Fail, rather than warn, on a commit attribution problem.                                               |
+| `HOLON_ANTIGRAVITY_SESSION_DIR`               | `~/.holon/sessions/antigravity`                                | no     | Session directory mounted for the antigravity runner.                                                  |
+
+Set by the host for role containers (or by a maintainer for one run), not in layer files: `HOLON_ROLE`,
+`HOLON_CONFIG_RESOLVED`, `HOLON_SKIP_PREFLIGHT`, `HOLON_IN_SANDBOX`, `HOLON_AGENT_ID`, `HOLON_TARGET_WORKTREE`,
+`HOLON_TARGET_BRANCH`, `HOLON_STAGE_BUDGET_SECONDS`, `HOLON_REVIEW_ITERATION`, `HOLON_REVIEW_FINDING_IDS`,
+`HOLON_REVIEW_SEVERITY`, `HOLON_ACTION_ORIGIN`, `HOLON_PR_HEAD_SHA`, `HOLON_REPLAN_FEEDBACK`,
+`HOLON_ALLOW_MODULE_BUDGET_CHANGE`, `HOLON_REPO_URL`, `HOLON_COHERENCE_WEB_PASSWORD` (the launcher derives it from
+`HOLON_MITM_WEB_PASSWORD` for the proxy sidecar).
+
+---
+
+## 4. CLI Subcommands Reference
 
 The package provides the unified `holon` CLI command.
 
@@ -429,7 +564,7 @@ Queries and filters immutable audit ledger entries:
 
 ---
 
-## 4. Development Workflows & Testing
+## 5. Development Workflows & Testing
 
 All commands must be executed strictly from the repository root using `uv`:
 

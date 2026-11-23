@@ -187,6 +187,10 @@ class FakeGitHub:
         """Answer ``gh pr view <target> --json headRefOid`` with ``head_sha``; a non-positive timeout reads nothing."""
         return None if self._call("pr_head_sha", target, timeout) or not target or timeout <= 0 else self.head_sha
 
+    def rerun_run(self, run_id: str, timeout: float = 30.0) -> bool:
+        """Answer ``gh run rerun <run_id>`` (the whole run) with ``rerun_ok``."""
+        return not self._call("rerun_run", run_id, timeout) and self.rerun_ok
+
     def rerun_failed(self, run_id: str, timeout: float = 60) -> bool:
         """Answer ``gh run rerun <run_id> --failed`` with ``rerun_ok``."""
         return not self._call("rerun_failed", run_id, timeout) and self.rerun_ok

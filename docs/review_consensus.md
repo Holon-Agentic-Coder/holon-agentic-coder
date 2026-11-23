@@ -135,6 +135,73 @@ When Stage 5 later finds CI red on a different head, one follow-up comment says 
 [Final-head CI check](git_flow.md#final-head-ci-check-stage-5)). A later green head needs its own approval, which names
 its own head.
 
+## CI gate on the merged head
+
+Stage 5 pushes no calibration commit until CI has passed on the head it would calibrate. After the conflict gate, it
+compares the execution head with the approved head. If the head is unchanged, or moved only by non-merge commits that
+touch `plans/`, `executions/` or `holon-knowledge/` (the ledger rows Stage 4 commits on exit), Stage 5 relies on the
+Stage 4 CI result and runs immediately. Any other head, for example one with `origin/main` merged in, waits for every
+check run on exactly that SHA, read from the GitHub check-runs API for the commit.
+
+- Only `success`, `neutral` and `skipped` pass. Runs registered against another SHA (superseded) are ignored, and the
+  newest run per check suite and check name counts.
+- A `cancelled` or `stale` run is never treated as passed. It is re-triggered once per run id; a second cancellation, or
+  a cancelled check with no Actions run, fails Stage 5 closed.
+- Checks still pending when the CI wait budget runs out, or no readable checks, also fail Stage 5 closed. Nothing is
+  pushed and the approval is not withdrawn, because no check failed.
+- A failed check withdraws the consensus. A new ledger row (labels `consensus-withdrawn` and `merged-head-ci`) records
+  it, and no earlier row is edited. One PR comment per merged head says the approval was withdrawn. The pipeline then
+  restarts Stage 4 at iteration 1, with a fresh reviewer ensemble, for the new head. It does this at most 3 times; after
+  that, Stage 5 fails and nothing is calibrated.
+
+The Stage 5 log names the head SHA, the run ids and the conclusions it relied on. Dry runs and `--skip-push` skip the
+gate.
+
+## Approval carry-over across target merges
+
+An approval is bound to the PR's own change as well as to the SHA the reviewers saw. Stage 4 records a change
+fingerprint with every approval, so a merge of the target branch that only resolved ledger rows does not send the PR
+back through a full review. The fingerprint never stands in for CI.
+
+The fingerprint (`flow/review/approval_fingerprint.py`) covers the diff from `merge-base(head, origin/<target>)` to the
+head. It excludes `holon-knowledge/**` (the ledgers and the knowledge base) and the Stage 5 calibration reports
+(`plans/**/*_calibration.md`). It hashes `git patch-id --stable` of that diff together with the sorted status, mode,
+blob and path of each changed file, so mode-only and binary changes count. It is written as `pf1:` and 40 hex
+characters; the `pf1` prefix keeps a later reduction from ever matching an old fingerprint. An empty PR-own change or
+unreadable git gives no fingerprint, and a missing fingerprint never matches.
+
+The post-time conflict gate keeps the approval when:
+
+- the head conflicted with the target branch and the gate merged it cleanly, or with ledger-only conflicts resolved
+  mechanically; and
+- the merged head's fingerprint equals the fingerprint recorded with the approval.
+
+It keeps the gate's block, and the approval must be re-earned, when:
+
+- a code conflict aborts the merge (a knowledge-base file conflict also aborts: only ledger conflicts are
+  auto-resolved);
+- a push after the approval changed a PR-own file, so the fingerprint differs;
+- the target branch edited a file the PR also changes, even in lines the PR did not touch: the hunk context or the file
+  blob differs, which costs a re-review but never misses one;
+- the approval has no fingerprint (a checkpoint from before this change).
+
+Each carry-over is logged with both SHAs and the fingerprint, and appends exactly one ledger row (`ACT-CARRY`, labels
+`review`, `conflict-gate` and `approval-carry-over`, fields `approved_head`, `merged_head` and `approval_fingerprint`).
+No earlier row is edited, and a re-run on the merged head probes clean and writes no second row. Stage 5's own conflict
+gate records the same row when its merge keeps the change.
+
+The approval stamp names the head, the fingerprint and the CI result at that head, for example "Covers head `def5678`;
+change fingerprint `pf1:0123456789ab`; carried over from `abc1234` (same change); CI at that commit: not measured." A
+carried approval never shows the earlier head's green CI: its CI result is "not measured" until Stage 5 measures it.
+
+The consensus keeps `target_commit` as the SHA the reviewers saw and adds `carried_from` and `carried_to`, so the CI
+gate on the merged head still sees a moved head. It waits for every check on the new SHA, and withdraws the consensus
+and restarts Stage 4 when one fails, exactly as for any merged head. In Stage 5 a head whose fingerprint differs from
+the approved one is not covered: the consensus is withdrawn, with the reason "PR-own change changed since approval" in
+the ledger row and the PR comment, and Stage 4 reviews the change again, within the same limit of 3 restarts. The
+automatic timing-gate rerun of the final-head CI check stays limited to bookkeeping-only moves; a merged target branch
+is not one.
+
 ## Resolver pre-push verification
 
 Before the resolver commits a fix it runs, in order: `uv run task lint`, a Prettier check of the Markdown files it

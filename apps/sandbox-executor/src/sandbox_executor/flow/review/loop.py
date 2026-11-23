@@ -37,6 +37,7 @@ from sandbox_executor.flow.review.adjudication import (
     _filter_adjudicated_findings,
     record_nit_rejections,
 )
+from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of, approval_record
 from sandbox_executor.flow.review.carried_findings import (
     CarriedPass,
     carried_blocker,
@@ -691,6 +692,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         logger.debug("Could not resolve the reviewed commit for %s: %s", review_target, exc)
 
     review_data = dataclasses.replace(collect_review_data(reviewers), dispositions=tuple(all_dispositions))
+    base_branch = (resolved_target.base_branch if resolved_target else None) or target_branch
+    fingerprint = approval_fingerprint_of(repo_dir, current_commit_sha, base_branch) if consensus_reached else None
     consensus_data = {
         "approved": consensus_reached,
         "status": consensus_status,
@@ -712,9 +715,10 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "review_data": review_data_summary(review_data, all_dispositions),
         "dispositions": [serialize_finding_disposition(d) for d in all_dispositions],
         "no_convergence": no_convergence,
-        "base_branch": (resolved_target.base_branch if resolved_target else None) or target_branch,
+        "base_branch": base_branch,
         "intent_data": context.intent_data,
         "target_commit": current_commit_sha,
+        "approval_fingerprint": fingerprint,
         "pr_url": (
             pr_res.get("pr_url") or (pr_res.get("output") if str(pr_res.get("output", "")).startswith("http") else None)
         ),
@@ -862,6 +866,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             "passes": passes,
             "max_review_iterations": last_label,
             "status": consensus_status,
+            **approval_record(consensus_data),  # Stage 5 compares the head it calibrates with the approved one.
         },
         "halted_for_human": False,
         "human_merge_gate_enforced": consensus_reached,

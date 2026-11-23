@@ -106,7 +106,7 @@ class TestOrderingByInstant(unittest.TestCase):
 
 
 class TestRealFailureStillCounts(unittest.TestCase):
-    def test_failed_row_superseded_by_converged_row_is_a_bug(self) -> None:
+    def test_review_approval_does_not_turn_a_failed_execution_into_a_delivery(self) -> None:
         for resolved_status in ("halted_for_human", "approved"):
             with self.subTest(resolved_status=resolved_status):
                 rows = [
@@ -114,9 +114,40 @@ class TestRealFailureStillCounts(unittest.TestCase):
                     _row(resolved_status, "2026-11-20T02:00:00Z", execution_id="REV-1"),
                 ]
                 metrics = _evaluate(rows)
-                self.assertEqual(metrics.p_success_clean, 1.0)
+                self.assertEqual(metrics.p_success_clean, 0.0)
                 self.assertEqual(metrics.p_success_with_bugs, 0.0)
                 self.assertEqual(metrics.ev_with_bugs, -COST)
+                self.assertEqual(metrics.bug_ev_drag, 0.0)
+
+    def test_failed_execution_attempt_after_delivery_is_a_bug(self) -> None:
+        rows = [
+            _row("success", "2026-11-20T01:00:00Z", execution_id="E-1", exit_code=0),
+            _row("failed", "2026-11-20T02:00:00Z", execution_id="E-2", exit_code=1, summary="3 tests failed"),
+        ]
+        metrics = _evaluate(rows)
+        self.assertEqual(metrics.p_success_clean, 1.0)
+        self.assertEqual(metrics.p_success_with_bugs, 0.0)
+        self.assertEqual(metrics.bug_ev_drag, IMPACT)
+
+    def test_failed_execution_resolved_by_a_later_delivery_is_not_a_bug(self) -> None:
+        rows = [
+            _row("failed", "2026-11-20T01:00:00Z", execution_id="E-1", exit_code=1),
+            _row("success", "2026-11-20T02:00:00Z", execution_id="E-2", exit_code=0),
+        ]
+        metrics = _evaluate(rows)
+        self.assertEqual(metrics.p_success_with_bugs, 1.0)
+        self.assertEqual(metrics.bug_ev_drag, 0.0)
+
+
+class TestSupersedingRevision(unittest.TestCase):
+    def test_later_revision_of_the_same_execution_replaces_its_success(self) -> None:
+        rows = [
+            _row("success", "2026-11-20T01:00:00Z", execution_id="E-1", exit_code=0, ledger_revision=1),
+            _row("failed", "2026-11-20T02:00:00Z", execution_id="E-1", exit_code=1, ledger_revision=2),
+        ]
+        metrics = _evaluate(rows)
+        self.assertEqual(metrics.p_success_clean, 0.0)
+        self.assertEqual(metrics.bug_ev_drag, 0.0)
 
 
 class TestParseActualMetricsFinalRow(unittest.TestCase):

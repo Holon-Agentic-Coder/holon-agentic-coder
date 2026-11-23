@@ -1,0 +1,107 @@
+"""The documented keys of the layered configuration: one table for the README, ``.env.example`` and the tests.
+
+Data only. Whether a key is secret is decided by ``config_env.is_secret_key``, never restated here.
+"""
+
+from __future__ import annotations
+
+# (key, built-in default, purpose) for every key an operator may set in ~/.holon/.env or <repo>/.env.
+DOCUMENTED_KEYS: tuple[tuple[str, str, str], ...] = (
+    (
+        "HOLON_AGENT",
+        "the harness agent detected from the runtime",
+        "Agent runner (`claude`, `pi`, `codex`, `opencode`, `antigravity`).",
+    ),
+    ("HOLON_MODEL", "unset", "Model the runner uses."),
+    ("HOLON_AGENT_EFFORT", "`medium`", "Reasoning effort passed to the claude runner."),
+    (
+        "HOLON_AGENT_OAUTH_TOKEN_FILE",
+        "unset",
+        "Path of a file holding the claude subscription token; read on the host into `HOLON_AGENT_OAUTH_TOKEN`.",
+    ),
+    ("HOLON_AGENT_OAUTH_TOKEN", "unset", "Claude subscription token; prefer `HOLON_AGENT_OAUTH_TOKEN_FILE`."),
+    ("HOLON_AGENT_KEY", "unset", "API key of a runner other than claude."),
+    ("HOLON_AGENT_SETTINGS", "unset", "Extra claude `--settings` JSON (attribution); no longer needed for the token."),
+    (
+        "HOLON_AGENT_PROVIDER",
+        "unset; in host-local mode `HOLON_LOCAL_PROVIDER`, else `local`",
+        "Provider of the pi runner.",
+    ),
+    ("HOLON_AGENT_MODE", "unset", "`--agent` value of the opencode runner."),
+    ("HOLON_AGENT_OSS_MODE", "unset", "Pass `--oss` to the codex runner when `1` or `true`."),
+    ("HOLON_AGENT_LOCAL_PROVIDER", "unset", "`--local-provider` value of the codex runner."),
+    ("HOLON_AGENT_CONFIG", "unset", "`-c` value of the codex runner."),
+    ("HOLON_AGENT_SKIP_PERMISSIONS", "`true`", "Run the agent with its permission prompts bypassed."),
+    ("HOLON_AGENT_LOG_BYTES", "`65536`", "Bytes of agent output kept in execution logs."),
+    ("HOLON_SECRET_BUNDLE_PATH", "`/run/secrets/holon_auth.json`", "Secret bundle read inside the container."),
+    (
+        "HOLON_ROOT_CA_PATH",
+        "`/usr/local/share/ca-certificates/holon-root-ca.crt`",
+        "Holon Root CA trusted inside the container when present.",
+    ),
+    (
+        "HOLON_CA_BUNDLE_PATH",
+        "`/home/holon/.holon-ca-bundle.crt`",
+        "Merged CA bundle the role dispatcher writes inside the container.",
+    ),
+    ("GITHUB_TOKEN", "`gh auth token`", "GitHub token for pushes and pull requests."),
+    ("HOLON_TURN_TIMEOUT_SECONDS", "`3600`", "Wall-clock ceiling of one agent turn."),
+    ("HOLON_TURN_STALL_SECONDS", "`90`", "Silence after which a turn counts as stalled."),
+    ("HOLON_STAGE_BUDGET_INTENT_MINUTES", "`10`", "Budget of the intent stage."),
+    ("HOLON_STAGE_BUDGET_PLAN_MINUTES", "`35`", "Budget of the plan stage."),
+    ("HOLON_STAGE_BUDGET_EXECUTE_MINUTES", "`45`", "Budget of the execute stage."),
+    ("HOLON_STAGE_BUDGET_REVIEW_ITERATION_MINUTES", "`120`", "Budget of one review iteration."),
+    ("HOLON_STAGE_BUDGET_CALIBRATION_MINUTES", "`10`", "Budget of the calibration stage."),
+    ("HOLON_REVIEW_CI_WAIT_SECONDS", "`1800`", "Wait for pending CI checks after the reviewers ran."),
+    ("HOLON_REVIEW_QUOTA_WAIT_SECONDS", "`900`", "Longest wait for a reviewer quota reset."),
+    ("HOLON_CI_REGISTRATION_TIMEOUT", "`180`", "Wait for CI checks to register on a pushed head."),
+    ("HOLON_TEST_MEASUREMENT_TIMEOUT_SECONDS", "`900`", "Ceiling of one measured test run."),
+    ("HOLON_GIT_LOCK_AGE_SECONDS", "`60`", "Age after which a stale git lock is removed."),
+    ("HOLON_PREFLIGHT_TIMEOUT", "`60`", "Timeout of the pre-flight readiness probe."),
+    ("HOLON_TOKEN_REDUCE", "unset", "Enable the token-reduction proxy when `1` or `true`."),
+    ("HOLON_PROXY_URL", "the host gateway on port `8080`", "External token-reduction proxy to attach to."),
+    ("HOLON_COHERENCE_IMAGE", "a local image, else the GHCR image", "Image of the token-reduction proxy sidecar."),
+    ("HOLON_PROXY_PORT", "`8080`", "Port of the token-reduction proxy."),
+    ("HOLON_PASSIVE_MONITORING", "unset", "Run the proxy in passive monitoring mode."),
+    ("HOLON_MITM_USER", "unset", "User of the mitmweb dashboard."),
+    ("HOLON_MITM_WEB_PORT", "`8081`", "Port of the mitmweb dashboard."),
+    ("HOLON_MITM_WEB_PASSWORD", "unset", "Password of the mitmweb dashboard."),
+    ("HOLON_LOCAL_LLM", "unset", "Enable host-local models for the pi runner."),
+    ("HOLON_LOCAL_PROVIDER", "unset", "Host-local provider to select."),
+    ("HOLON_LOCAL_MODELS", "unset", "Host-local models to expose."),
+    ("HOLON_LOCAL_BASE_URL", "unset", "Base URL of the host-local server."),
+    ("HOLON_LOCAL_CONTEXT_WINDOW", "unset", "Context window of host-local models."),
+    ("HOLON_HOST_LOCAL_HOSTS", "unset", "Extra hosts allowed as host-local endpoints."),
+    ("HOLON_CONTEXT_RESERVE_TOKENS", "`4096`", "Tokens reserved out of a host-local context window."),
+    ("HOLON_REASONING_MODE", "unset", "Reasoning mode of host-local models."),
+    ("HOLON_ACTION_LOGGING", "unset", "Record agent actions when `1` or `true` (alias `HOLON_RECORD_ACTIONS`)."),
+    ("HOLON_RECORD_ACTIONS", "unset", "Alias of `HOLON_ACTION_LOGGING`."),
+    ("HOLON_ATTRIBUTION_STRICT", "unset", "Fail, rather than warn, on a commit attribution problem."),
+    (
+        "HOLON_ANTIGRAVITY_SESSION_DIR",
+        "`~/.holon/sessions/antigravity`",
+        "Session directory mounted for the antigravity runner.",
+    ),
+)
+
+# Keys the host sets for a role container, or a maintainer sets for one run; a layer file never needs them, and the
+# reserved ones among them (see ``config_env.RESERVED_KEYS``) are refused there.
+HOST_SET_KEYS: tuple[str, ...] = (
+    "HOLON_ROLE",
+    "HOLON_CONFIG_RESOLVED",
+    "HOLON_SKIP_PREFLIGHT",
+    "HOLON_IN_SANDBOX",
+    "HOLON_AGENT_ID",
+    "HOLON_TARGET_WORKTREE",
+    "HOLON_TARGET_BRANCH",
+    "HOLON_STAGE_BUDGET_SECONDS",
+    "HOLON_REVIEW_ITERATION",
+    "HOLON_REVIEW_FINDING_IDS",
+    "HOLON_REVIEW_SEVERITY",
+    "HOLON_ACTION_ORIGIN",
+    "HOLON_PR_HEAD_SHA",
+    "HOLON_REPLAN_FEEDBACK",
+    "HOLON_ALLOW_MODULE_BUDGET_CHANGE",
+    "HOLON_REPO_URL",
+    "HOLON_COHERENCE_WEB_PASSWORD",
+)

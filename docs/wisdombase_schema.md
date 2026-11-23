@@ -35,7 +35,7 @@ The WB enables:
 
 ## Storage format
 
-### Recommended format: Structured JSON files + index
+### Recommended format: Structured JSON files with a derived index
 
 ```
 holon-knowledge/wb/
@@ -49,10 +49,14 @@ holon-knowledge/wb/
 │   └── calibration_heuristics.json
 ├── heuristics/
 │   ├── zero_shot_priors.json
-│   ├── impact_baselines.json
-│   └── index.json
+│   └── impact_baselines.json
 └── meta.json  # WB-level versioning and metadata
 ```
+
+No `index.json` is stored or committed; the former `heuristics/index.json` path is git-ignored. The index is derived on
+demand by `sandbox_executor.knowledge.wisdom.load_index(subfolder)`, which globs the `WB-*.json` entry files of the
+subfolder and returns `wb_id`, `file`, `wb_type`, `status` and `created_ts` for each, sorted by `created_ts` then
+`wb_id`. Writing a rule writes only its own entry file.
 
 ---
 

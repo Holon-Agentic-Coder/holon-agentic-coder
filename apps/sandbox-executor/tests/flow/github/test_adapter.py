@@ -180,6 +180,38 @@ def test_rerun_failed_pins_argv_cwd_env_and_timeout_and_reads_the_exit_code():
     assert run.calls[1][1]["timeout"] == 60
 
 
+def test_rerun_run_reruns_the_whole_run_without_failed_and_reads_the_exit_code():
+    run = RecordingRun((0, "", ""), (1, "", "cannot rerun"))
+    github = _adapter(run)
+    assert github.rerun_run("77") is True
+    _assert_pr_call(run.calls[0], ["gh", "run", "rerun", "77"], 30.0)
+    assert github.rerun_run("77", 5) is False
+    assert run.calls[1][1]["timeout"] == 5
+
+
+def test_rerun_run_is_false_when_gh_is_missing_or_cannot_be_spawned():
+    run = RecordingRun()
+    assert _adapter(run, which=lambda _: None).rerun_run("1") is False
+    assert run.calls == []
+    assert _adapter(RecordingRun(OSError("exec failed"))).rerun_run("1") is False
+    assert _adapter(RecordingRun(subprocess.TimeoutExpired(["gh"], 30))).rerun_run("1") is False
+
+
+def test_gh_run_rerunner_dispatches_through_the_injected_adapter_and_builds_one_from_the_proxy_env():
+    from sandbox_executor.flow.github.ci_head_reruns import gh_run_rerunner
+
+    from tests.flow.github.fake_github import FakeGitHub
+
+    fake = FakeGitHub()
+    assert gh_run_rerunner("/repo", PROXY, fake)("9") is True
+    assert fake.methods() == ["rerun_run"]
+    run = RecordingRun((0, "", ""))
+    built = GitHubAdapter("/repo", PROXY, run=run)
+    assert gh_run_rerunner("/repo", PROXY, built)("9") is True
+    _assert_pr_call(run.calls[0], ["gh", "run", "rerun", "9"], 30.0)
+    assert gh_run_rerunner("/repo", PROXY, FakeGitHub(rerun_ok=False))("9") is False
+
+
 def test_rerun_failed_is_false_when_gh_is_missing_or_cannot_be_spawned():
     run = RecordingRun()
     assert _adapter(run, which=lambda _: None).rerun_failed("1", 10) is False

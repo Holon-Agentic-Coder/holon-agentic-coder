@@ -27,6 +27,9 @@ from sandbox_executor.git_flow import (
     normalise_base_branch,
     repository_default_branch,
 )
+from sandbox_executor.launcher.coherence import FlowProxyChoice
+
+_NO_PROXY = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
 
 _SLUG = "redirect-me"
 _FLOW_RUNNER_ARGS = ["--agent", "antigravity-agent", "--model", "gemini-3.8-flash-medium", "--dry-run", "--json"]
@@ -342,6 +345,7 @@ def _run_direct(argv: list[str]) -> tuple[int, str, list[MagicMock]]:
     with (
         patch.dict(os.environ, env, clear=True),
         patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
+        patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY),
         patch("sandbox_executor.flow.run_review_loop_cli", return_value=0) as local_review,
         patch("sandbox_executor.cli.run_docker_container", return_value=0) as docker,
         patch("sandbox_executor.git_flow.fetch_origin_branch"),

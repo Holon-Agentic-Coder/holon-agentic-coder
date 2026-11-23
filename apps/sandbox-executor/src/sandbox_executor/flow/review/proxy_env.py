@@ -6,8 +6,8 @@ from sandbox_executor.flow.context import FlowContext
 
 
 def review_proxy_env(context: FlowContext) -> dict[str, str]:
-    """The host proxy environment when ``context.token_reduce`` is set, else empty; a failure warns and is empty."""
-    if not context.token_reduce:
+    """The host proxy environment when ``token_reduce`` or ``proxy_attach`` is set on the context, else empty."""
+    if not (context.token_reduce or getattr(context, "proxy_attach", False)):
         return {}
     try:
         from sandbox_executor.launcher import sidecar

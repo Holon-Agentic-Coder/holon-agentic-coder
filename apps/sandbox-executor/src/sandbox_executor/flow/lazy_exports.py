@@ -1,9 +1,13 @@
-"""The table of names :mod:`sandbox_executor.flow` re-exports lazily, kept apart so the package stays within budget.
+"""The flow package's re-export table: owning module -> the space-separated names ``sandbox_executor.flow`` exports.
 
-Only data lives here: importing it loads no flow submodule.
+Kept out of ``flow/__init__.py`` so the package module stays within its line budget; it imports nothing, so loading it
+never pulls in a flow submodule.
 """
 
-# Owning module -> the space-separated names this package re-exports from it.
+from __future__ import annotations
+
+from sandbox_executor.flow.lazy_exports_review import REVIEW_LAZY_EXPORTS
+
 LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.entrypoint.planner": "parse_metrics",
     "sandbox_executor.flow.admission": "admission_stage_failure check_admission format_refusal record_admission",
@@ -70,6 +74,11 @@ LAZY_EXPORTS: dict[str, str] = {
         "_ci_green _extract_failed_ci_check_names local_tests_ci_status summarise_ci_checks"
     ),
     "sandbox_executor.flow.github.ci_final_head": "format_final_head_ci",
+    "sandbox_executor.flow.github.ci_head_checks": (
+        "classify_head_checks gh_head_checks_probe is_cancelled is_failed is_pending latest_checks_for_head "
+        "parse_check_runs parse_suite_statuses probe_head_checks suite_pending with_suite_status"
+    ),
+    "sandbox_executor.flow.github.ci_head_reruns": "CancelledReruns gh_run_rerunner",
     "sandbox_executor.flow.github.ci_reverify": "rerun_note",
     "sandbox_executor.flow.github.ci_wait": (
         "CiWaitPolicy CiWaitResult is_pending_only next_poll_interval pending_check_names settle_pending_ci "
@@ -121,36 +130,10 @@ LAZY_EXPORTS: dict[str, str] = {
         "PLAN_REFRESH_KIND PlanRefresh plan_refresh_stage_failure record_plan_refresh refresh_already_recorded "
         "refresh_due refresh_payload refresh_plan_branch"
     ),
-    "sandbox_executor.flow.review.adjudication": "_augment_pr_text_with_rejected _filter_adjudicated_findings",
-    "sandbox_executor.flow.review.carried_findings": (
-        "CarriedPass carried_blocker deserialize_carried merge_findings resolve_carried_first serialize_open undisposed"
-    ),
-    "sandbox_executor.flow.review.ci_outcome": "describe_ci_outcome gate_ci_flags",
-    "sandbox_executor.flow.review.cli": "run_review_loop_cli",
-    "sandbox_executor.flow.review.ensemble": (
-        "_ENGINE_PASSES_PER_DISPATCH _dispatch_review_ensemble _ensemble_iteration _resolve_reviewed_target "
-        "_review_base_ref _semantic_pr_text"
-    ),
-    "sandbox_executor.flow.review.git_identity": "REVIEW_GIT_ENV",
     "sandbox_executor.flow.review.head_test_evidence": ("HeadEvidenceDecisionInput choose_evidence has_pass_marker"),
-    "sandbox_executor.flow.review.ids": "build_review_id",
-    "sandbox_executor.flow.review.loop": (
-        "_loop_status _review_window _reviewers_objected _run_engine_review_loop run_review_loop"
+    "sandbox_executor.flow.review_restart": (
+        "approval_stands calibrate_with_review_restart is_review_restart stage5_merged_head_gate"
     ),
-    "sandbox_executor.flow.review.posting": "is_terminal_verdict",
-    "sandbox_executor.flow.review.proxy_env": "review_proxy_env",
-    "sandbox_executor.flow.review.records": (
-        "_SEVERITY_RANK POSTING_ERROR_CONTEXT_MAX_CHARS _attach_transported_detail _bounded_error_context "
-        "_posting_failure_context _record_infrastructure_findings _record_reviewer_rows _refused_review_result "
-        "_review_row _reviewer_finding_ids _reviewer_summary _worst_severity record_review_action "
-        "render_reviewer_summary_line"
-    ),
-    "sandbox_executor.flow.review.resolver": (
-        "DispositionRecorder ResolverInput ResolverOutcome _dispatch_review_resolver _invoke_resolver_pass "
-        "_lookup_introducing_action_id"
-    ),
-    "sandbox_executor.flow.review.verdict": "review_loop_approved review_summary_lines",
-    "sandbox_executor.flow.review.workspace": "HOST_REVIEW_REFUSAL reviewers_sandboxed",
     "sandbox_executor.flow.stage5": "Stage5Outcome Stage5Steps run_stage5 standalone_context",
     "sandbox_executor.flow.stage5_ledger": "already_reconciled recorded_verdicts",
     "sandbox_executor.flow.stage5_verdict": "resolve_execution_verdict",
@@ -189,4 +172,5 @@ LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.git": "run_git",
     "sandbox_executor.redaction": "redact_agent_secrets",
     "sandbox_executor.review_report": "build_pr_review_consensus_report",
+    **REVIEW_LAZY_EXPORTS,
 }

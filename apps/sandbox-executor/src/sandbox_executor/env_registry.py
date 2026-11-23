@@ -1,0 +1,880 @@
+"""Every ``HOLON_*`` environment variable the executor, role containers, runners, entrypoint scripts and CI read.
+
+Data only: the typed reference behind ``docs/environment_variables.md``, kept in two-way agreement with the source tree
+and that document by ``tests/test_environment_reference.py``. Nothing in the product imports this module;
+``config_env_keys.py`` remains the source of the layered-configuration defaults, and whether a name is secret is decided
+by ``config_env.is_secret_key`` (the test asserts the ``secret`` flags here agree with it).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Literal
+
+ReadSide = Literal["host", "container", "both", "ci", "ci and container"]
+Forwarding = Literal["env-file", "argv", "not forwarded"]
+
+_BOOLEAN = "boolean: `1`, `true`, `yes`, `on` (any case)"
+_OTHER_IS_OFF = "any other value is off"
+_SECONDS = "seconds, a positive number"
+_BUDGETS_DOC = "`docs/budgets.md`"
+_CREDENTIALS_DOC = "`docs/executor/agent_credentials_requirements.md`"
+_LOCAL_DOC = "host-local models (`local_llm.py`)"
+_PROXY_DOC = "`docs/optimisation/token_reduction_architecture.md`"
+_AGENTS_DOC = "`docs/agents.md`"
+_PASSED_THROUGH = "passed through unvalidated; the runner CLI rejects it"
+_LOCAL_CONFIG_ERROR = "configuration error naming the variable, never the value"
+_STAGE_MINUTES = "minutes, a positive number up to 7 days, or `unlimited`"
+_STAGE_INVALID = "warning naming the variable; the default is kept"
+
+
+class Area(StrEnum):
+    """The sections of the reference, in document order."""
+
+    RUNNER_AND_AGENT = "runner and agent"
+    BUDGETS = "budgets"
+    TOKEN_REDUCTION_AND_PROXY = "token reduction and proxy"
+    GIT = "git"
+    LEDGER_AND_ACTIONS = "ledger and actions"
+    REVIEW_LOOP = "review loop"
+    LOGGING = "logging"
+    CI_ONLY = "CI-only"
+
+
+@dataclass(frozen=True, slots=True)
+class EnvironmentVariable:
+    """One ``HOLON_*`` variable: what it does, what it accepts and where it is read and forwarded.
+
+    ``forwarding`` describes how the value reaches a role or sidecar container: ``env-file`` is the 0600 docker
+    env-file every forwarded ``HOLON_*`` value goes through (a value no env-file line can carry goes as a passthrough
+    ``-e NAME`` instead), ``argv`` is an explicit ``-e`` item on the sidecar command line. ``internal`` marks a variable
+    the host or a maintainer sets, not an operator setting.
+    """
+
+    name: str
+    area: Area
+    purpose: str
+    value_type: str
+    default: str
+    when_unset: str
+    when_invalid: str
+    read_side: ReadSide
+    since: str
+    forwarding: Forwarding = "env-file"
+    secret: bool = False
+    internal: bool = False
+
+
+ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
+    # --- runner and agent -------------------------------------------------------------------------------------------
+    EnvironmentVariable(
+        name="HOLON_AGENT",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Agent runner used when `--agent` is not given.",
+        value_type="runner name: `claude`, `pi`, `codex`, `opencode`, `antigravity`",
+        default="the harness agent detected from the runtime",
+        when_unset="harness detection (off inside a sandbox), else the run fails asking for `--agent`",
+        when_invalid="an unknown runner name fails the run",
+        read_side="host",
+        since=_AGENTS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_AGENT_CONFIG",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="`-c` value of the codex runner; refused in a project `.env`.",
+        value_type="string",
+        default="unset",
+        when_unset="no `-c` flag",
+        when_invalid=_PASSED_THROUGH,
+        read_side="container",
+        since=_AGENTS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_AGENT_EFFORT",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Reasoning effort passed to the claude runner as `--effort`.",
+        value_type="string, for example `low`, `medium`, `high`",
+        default="`medium`",
+        when_unset="`medium`",
+        when_invalid=_PASSED_THROUGH,
+        read_side="container",
+        since=_AGENTS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_AGENT_ID",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Runner id of the role container; the role dispatcher keys its credential mapping on it.",
+        value_type="normalised runner id",
+        default="set by the host for every role container and probe",
+        when_unset="the role dispatcher maps no credential",
+        when_invalid="an unknown id maps no credential",
+        read_side="container",
+        since=_CREDENTIALS_DOC,
+        internal=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_AGENT_KEY",
+        area=Area.RUNNER_AND_AGENT,
+        purpose=(
+            "API key of a runner other than claude; the role dispatcher exports it as the vendor variable. "
+            "Never used by claude and dropped from its container; refused in a project `.env`."
+        ),
+        value_type="string (credential)",
+        default="unset",
+        when_unset="the runner needs session credentials or the secret bundle",
+        when_invalid="the provider rejects it and the pre-flight probe reports an invalid credential",
+        read_side="both",
+        since=_CREDENTIALS_DOC,
+        secret=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_AGENT_LOCAL_PROVIDER",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="`--local-provider` value of the codex runner.",
+        value_type="string",
+        default="unset",
+        when_unset="no `--local-provider` flag",
+        when_invalid=_PASSED_THROUGH,
+        read_side="container",
+        since=_AGENTS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_AGENT_MODE",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="`--agent` value of the opencode runner.",
+        value_type="string",
+        default="unset",
+        when_unset="no `--agent` flag",
+        when_invalid=_PASSED_THROUGH,
+        read_side="container",
+        since=_AGENTS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_AGENT_OAUTH_TOKEN",
+        area=Area.RUNNER_AND_AGENT,
+        purpose=(
+            "Claude subscription token; the role dispatcher exports it as `CLAUDE_CODE_OAUTH_TOKEN`. "
+            "Prefer `HOLON_AGENT_OAUTH_TOKEN_FILE`; refused in a project `.env`."
+        ),
+        value_type="string (credential)",
+        default="unset",
+        when_unset="claude uses `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` or its secrets file",
+        when_invalid="a value not shaped like a subscription token warns once and is forwarded all the same",
+        read_side="both",
+        since=_CREDENTIALS_DOC,
+        secret=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_AGENT_OAUTH_TOKEN_FILE",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="File holding the claude subscription token; read on the host into `HOLON_AGENT_OAUTH_TOKEN`.",
+        value_type="file path (`~` expanded)",
+        default="unset",
+        when_unset="no token file is read",
+        when_invalid="a missing, unreadable or empty file warns and sets no token; loose permissions warn",
+        read_side="host",
+        since=_CREDENTIALS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_AGENT_OSS_MODE",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Pass `--oss` to the codex runner, which then needs no `HOLON_AGENT_KEY`.",
+        value_type="`1` or `true`",
+        default="unset",
+        when_unset="no `--oss` flag",
+        when_invalid=_OTHER_IS_OFF,
+        read_side="both",
+        since=_AGENTS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_AGENT_PROVIDER",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="`--provider` value of the pi runner.",
+        value_type="string",
+        default="unset; in host-local mode `HOLON_LOCAL_PROVIDER`, else `local`",
+        when_unset="no `--provider` flag, except the host-local default",
+        when_invalid=_PASSED_THROUGH,
+        read_side="both",
+        since=_AGENTS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_AGENT_SETTINGS",
+        area=Area.RUNNER_AND_AGENT,
+        purpose=(
+            "Extra claude `--settings` (attribution), merged with attribution-off settings; "
+            "no longer needed for the token; refused in a project `.env`."
+        ),
+        value_type="JSON object or path of a JSON settings file",
+        default="unset",
+        when_unset="attribution-off settings only",
+        when_invalid="warning; attribution-off settings only",
+        read_side="both",
+        since=_CREDENTIALS_DOC,
+        secret=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_AGENT_SKIP_PERMISSIONS",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Run the agent with its permission prompts bypassed.",
+        value_type=_BOOLEAN,
+        default="`true`",
+        when_unset="prompts are bypassed",
+        when_invalid="any other value keeps the prompts on",
+        read_side="container",
+        since=_AGENTS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_ANTIGRAVITY_SESSION_DIR",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Host session directory mounted for the antigravity runner; refused in a project `.env`.",
+        value_type="directory path",
+        default="`~/.holon/sessions/antigravity`",
+        when_unset="the default directory, else `~/.gemini/antigravity-cli`",
+        when_invalid="a missing directory without `HOLON_AGENT_KEY` fails the run on macOS",
+        read_side="host",
+        since=_AGENTS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_CONFIG_RESOLVED",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Marks a role container whose configuration the host resolved; a nested holon reads no layer file.",
+        value_type="`1`",
+        default="set to `1` by the host for role containers",
+        when_unset="layer files are read",
+        when_invalid="any value other than `1` reads layer files",
+        read_side="container",
+        since="layered configuration (`config_env.py`)",
+        internal=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_CONTEXT_RESERVE_TOKENS",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Tokens reserved out of a host-local model's context window.",
+        value_type="positive integer",
+        default="`4096`",
+        when_unset="`4096`",
+        when_invalid=_LOCAL_CONFIG_ERROR,
+        read_side="both",
+        since=_LOCAL_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_HOST_LOCAL_HOSTS",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Extra hosts allowed as host-local endpoints besides loopback; refused in a project `.env`.",
+        value_type="comma-separated host names or authorities",
+        default="unset",
+        when_unset="only loopback endpoints are allowed",
+        when_invalid="a non-UTF-8 value is a configuration error; empty entries are dropped",
+        read_side="both",
+        since=_LOCAL_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_IN_SANDBOX",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Marks a sandbox context explicitly; disables harness detection and the sandbox heuristic.",
+        value_type="`1`, `true` or `yes`",
+        default="unset",
+        when_unset="`HOLON_ROLE`, `/.dockerenv` or a heuristic decides (the heuristic warns)",
+        when_invalid="any other value is no signal",
+        read_side="container",
+        since="`apps/sandbox-executor/README.md`",
+        internal=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_LOCAL_BASE_URL",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Base URL of a host-local server, used with `HOLON_LOCAL_MODELS`; refused in a project `.env`.",
+        value_type="URL",
+        default="unset",
+        when_unset="the host pi `models.json` is used",
+        when_invalid="not a URL, or neither loopback nor in `HOLON_HOST_LOCAL_HOSTS`: configuration error",
+        read_side="both",
+        since=_LOCAL_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_LOCAL_CONTEXT_WINDOW",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Context window of host-local models whose entry names none.",
+        value_type="positive integer",
+        default="unset",
+        when_unset="a model without `contextWindow` is rejected",
+        when_invalid=_LOCAL_CONFIG_ERROR,
+        read_side="both",
+        since=_LOCAL_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_LOCAL_LLM",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Enable host-local models for the pi runner.",
+        value_type=_BOOLEAN,
+        default="unset",
+        when_unset="off",
+        when_invalid=_OTHER_IS_OFF,
+        read_side="both",
+        since=_LOCAL_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_LOCAL_MODELS",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Model ids served at `HOLON_LOCAL_BASE_URL`.",
+        value_type="comma-separated model ids",
+        default="unset",
+        when_unset="a configuration error when `HOLON_LOCAL_BASE_URL` is set",
+        when_invalid="empty entries are dropped",
+        read_side="both",
+        since=_LOCAL_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_LOCAL_PROVIDER",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Host-local provider to select; also the default `HOLON_AGENT_PROVIDER` of a host-local pi run.",
+        value_type="provider name",
+        default="unset",
+        when_unset="`HOLON_AGENT_PROVIDER`, else `local`",
+        when_invalid="an unknown provider fails the host-local configuration",
+        read_side="both",
+        since=_LOCAL_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_MODEL",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Model the runner uses when `--model` is not given.",
+        value_type="model name",
+        default="unset",
+        when_unset="the run fails: the model is mandatory",
+        when_invalid="model validation or the pre-flight probe fails the run",
+        read_side="host",
+        since=_AGENTS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_PREFLIGHT_TIMEOUT",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Timeout of the pre-flight readiness probe.",
+        value_type=_SECONDS,
+        default="`60`",
+        when_unset="`60`",
+        when_invalid="non-numeric, zero or negative keeps `60`",
+        read_side="host",
+        since="`holon doctor`",
+    ),
+    EnvironmentVariable(
+        name="HOLON_REASONING_MODE",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Reasoning mode of host-local models.",
+        value_type="`off`, `minimal`, `low`, `medium` or `high`",
+        default="unset",
+        when_unset="the host model entry's mode, else `off`",
+        when_invalid=_LOCAL_CONFIG_ERROR,
+        read_side="both",
+        since=_LOCAL_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_REPLAN_FEEDBACK",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Re-plan feedback the flow hands to the planner container; never written to a ledger.",
+        value_type="free text",
+        default="set by the flow for a re-plan",
+        when_unset="no feedback in the planner prompt",
+        when_invalid="not validated",
+        read_side="container",
+        since=_BUDGETS_DOC,
+        internal=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_ROLE",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Role the container runs; the role dispatcher starts its entrypoint. Also marks a sandbox.",
+        value_type="`intent-creator`, `planner`, `executor` or `review-loop`",
+        default="set by the host for every role container",
+        when_unset="the image runs the given command (the pre-flight probe)",
+        when_invalid="any other value runs the given command",
+        read_side="container",
+        since="`apps/sandbox-executor/entrypoint/role_dispatcher.sh`",
+        internal=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_SECRET_BUNDLE_PATH",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Secret bundle read inside the container for the runner's API key; refused in a project `.env`.",
+        value_type="file path (JSON)",
+        default="`/run/secrets/holon_auth.json`",
+        when_unset="the default path",
+        when_invalid="a missing or unreadable bundle supplies no key",
+        read_side="both",
+        since=_CREDENTIALS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_SKIP_PREFLIGHT",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Skip the pre-flight readiness probe, as `--skip-preflight`; the host sets `1` for role containers.",
+        value_type=_BOOLEAN,
+        default="unset",
+        when_unset="the probe runs",
+        when_invalid="any other value runs the probe",
+        read_side="both",
+        since="`holon doctor`",
+    ),
+    # --- budgets ----------------------------------------------------------------------------------------------------
+    EnvironmentVariable(
+        name="HOLON_STAGE_BUDGET_CALIBRATION_MINUTES",
+        area=Area.BUDGETS,
+        purpose="Wall-clock budget of the calibration stage.",
+        value_type=_STAGE_MINUTES,
+        default="`10`",
+        when_unset="`10`",
+        when_invalid=_STAGE_INVALID,
+        read_side="host",
+        since=_BUDGETS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_STAGE_BUDGET_EXECUTE_MINUTES",
+        area=Area.BUDGETS,
+        purpose="Wall-clock budget of the execute stage.",
+        value_type=_STAGE_MINUTES,
+        default="`45`",
+        when_unset="`45`",
+        when_invalid=_STAGE_INVALID,
+        read_side="host",
+        since=_BUDGETS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_STAGE_BUDGET_INTENT_MINUTES",
+        area=Area.BUDGETS,
+        purpose="Wall-clock budget of the intent stage.",
+        value_type=_STAGE_MINUTES,
+        default="`10`",
+        when_unset="`10`",
+        when_invalid=_STAGE_INVALID,
+        read_side="host",
+        since=_BUDGETS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_STAGE_BUDGET_PLAN_MINUTES",
+        area=Area.BUDGETS,
+        purpose="Wall-clock budget of the plan stage.",
+        value_type=_STAGE_MINUTES,
+        default="`35`",
+        when_unset="`35`",
+        when_invalid=_STAGE_INVALID,
+        read_side="host",
+        since=_BUDGETS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_STAGE_BUDGET_REVIEW_ITERATION_MINUTES",
+        area=Area.BUDGETS,
+        purpose="Wall-clock budget of each review-loop iteration.",
+        value_type=_STAGE_MINUTES,
+        default="`120`",
+        when_unset="`120`",
+        when_invalid=_STAGE_INVALID,
+        read_side="host",
+        since=_BUDGETS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_STAGE_BUDGET_SECONDS",
+        area=Area.BUDGETS,
+        purpose=(
+            "Exact stage ceiling replacing every per-stage value; the host hands a role container its remaining "
+            "stage time through it."
+        ),
+        value_type="seconds, a positive number up to 7 days, or `unlimited`",
+        default="unset",
+        when_unset="the per-stage budgets apply",
+        when_invalid="warning naming the variable; the per-stage budgets apply",
+        read_side="both",
+        since=_BUDGETS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_TEST_MEASUREMENT_TIMEOUT_SECONDS",
+        area=Area.BUDGETS,
+        purpose="Ceiling of one measured test run inside the executor.",
+        value_type=_SECONDS,
+        default="`900`",
+        when_unset="`900`",
+        when_invalid="non-numeric, zero or negative keeps `900`",
+        read_side="container",
+        since=_BUDGETS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_TURN_STALL_SECONDS",
+        area=Area.BUDGETS,
+        purpose="Silence after which a streaming agent turn counts as stalled.",
+        value_type="seconds, zero or positive, up to 7 days; `0` disables stall detection",
+        default="`90`",
+        when_unset="`90`",
+        when_invalid=_STAGE_INVALID,
+        read_side="both",
+        since=_BUDGETS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_TURN_TIMEOUT_SECONDS",
+        area=Area.BUDGETS,
+        purpose="Wall-clock ceiling of one agent turn.",
+        value_type="seconds, a positive number up to 7 days, or `unlimited`",
+        default="`3600`",
+        when_unset="`3600`",
+        when_invalid=_STAGE_INVALID,
+        read_side="both",
+        since=_BUDGETS_DOC,
+    ),
+    # --- token reduction and proxy ----------------------------------------------------------------------------------
+    EnvironmentVariable(
+        name="HOLON_CA_BUNDLE_PATH",
+        area=Area.TOKEN_REDUCTION_AND_PROXY,
+        purpose=(
+            "Merged CA bundle the role dispatcher writes and exports as `SSL_CERT_FILE`; refused in a project `.env`."
+        ),
+        value_type="file path",
+        default="`/home/holon/.holon-ca-bundle.crt`",
+        when_unset="the default path",
+        when_invalid="an unwritable path warns; clients use the image's default store",
+        read_side="container",
+        since=_PROXY_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_COHERENCE_IMAGE",
+        area=Area.TOKEN_REDUCTION_AND_PROXY,
+        purpose="Image of the token-reduction proxy sidecar; refused in a project `.env`.",
+        value_type="container image reference",
+        default="a local image, else the GHCR image",
+        when_unset="a local image, else the GHCR image",
+        when_invalid="the sidecar fails to start and the run reports it",
+        read_side="host",
+        since=_PROXY_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_COHERENCE_WEB_PASSWORD",
+        area=Area.TOKEN_REDUCTION_AND_PROXY,
+        purpose="mitmweb dashboard password inside the proxy sidecar, derived from `HOLON_MITM_WEB_PASSWORD`.",
+        value_type="string (credential)",
+        default="unset",
+        when_unset="the dashboard has no password",
+        when_invalid="not validated",
+        read_side="container",
+        since=_PROXY_DOC,
+        forwarding="argv",
+        secret=True,
+        internal=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_IN_CONTAINER",
+        area=Area.TOKEN_REDUCTION_AND_PROXY,
+        purpose="Tells the proxy sidecar it runs in a container.",
+        value_type="`1`",
+        default="set to `1` by the host on the sidecar command line",
+        when_unset="not applicable: always set",
+        when_invalid="not applicable: always `1`",
+        read_side="container",
+        since=_PROXY_DOC,
+        forwarding="argv",
+        internal=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_MITM_USER",
+        area=Area.TOKEN_REDUCTION_AND_PROXY,
+        purpose="`--user` of the proxy sidecar, for example the host `uid:gid`; refused in a project `.env`.",
+        value_type="docker `--user` value",
+        default="unset",
+        when_unset="the image's default user",
+        when_invalid="docker refuses to start the sidecar",
+        read_side="host",
+        since=_PROXY_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_MITM_WEB_PASSWORD",
+        area=Area.TOKEN_REDUCTION_AND_PROXY,
+        purpose="Password of the mitmweb dashboard (`--mitm-web`); refused in a project `.env`.",
+        value_type="string (credential)",
+        default="unset",
+        when_unset="the dashboard has no password",
+        when_invalid="not validated",
+        read_side="host",
+        since=_PROXY_DOC,
+        secret=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_MITM_WEB_PORT",
+        area=Area.TOKEN_REDUCTION_AND_PROXY,
+        purpose="Port of the mitmweb dashboard; refused in a project `.env`.",
+        value_type="TCP port",
+        default="`8081`",
+        when_unset="`8081`",
+        when_invalid="warning; `8081`",
+        read_side="host",
+        since=_PROXY_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_PASSIVE_MONITORING",
+        area=Area.TOKEN_REDUCTION_AND_PROXY,
+        purpose="Run the proxy in passive monitoring mode; also opts in to the proxy; refused in a project `.env`.",
+        value_type=_BOOLEAN,
+        default="unset",
+        when_unset="off",
+        when_invalid=_OTHER_IS_OFF,
+        read_side="host",
+        since=_PROXY_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_PROXY_PORT",
+        area=Area.TOKEN_REDUCTION_AND_PROXY,
+        purpose="Local port of the token-reduction proxy probed on `127.0.0.1`; refused in a project `.env`.",
+        value_type="TCP port",
+        default="`8080`",
+        when_unset="`8080`",
+        when_invalid="a non-integer keeps `8080`",
+        read_side="host",
+        since=_PROXY_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_PROXY_URL",
+        area=Area.TOKEN_REDUCTION_AND_PROXY,
+        purpose="Already-running token-reduction proxy to attach to; refused in a project `.env`.",
+        value_type="proxy URL",
+        default="the host gateway on port `8080`",
+        when_unset="the host gateway (`host.docker.internal` on macOS and Windows, `172.17.0.1` on Linux)",
+        when_invalid="warning without the value; the URL is ignored",
+        read_side="host",
+        since=_PROXY_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_ROOT_CA_PATH",
+        area=Area.TOKEN_REDUCTION_AND_PROXY,
+        purpose="Holon Root CA trusted inside the container when present; refused in a project `.env`.",
+        value_type="file path",
+        default="`/usr/local/share/ca-certificates/holon-root-ca.crt`",
+        when_unset="the default path",
+        when_invalid="a missing file adds no CA",
+        read_side="container",
+        since=_PROXY_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_TOKEN_REDUCE",
+        area=Area.TOKEN_REDUCTION_AND_PROXY,
+        purpose=(
+            "Opt in to the token-reduction proxy without `--token-reduce` (attaches, never starts one), "
+            "or opt out even with the flag; refused in a project `.env`."
+        ),
+        value_type="`1`, `true`, `yes`, `on` opt in; `0`, `false`, `no`, `off` opt out",
+        default="unset",
+        when_unset="no explicit choice; the flags decide",
+        when_invalid="any other value is no explicit choice",
+        read_side="host",
+        since=_PROXY_DOC,
+    ),
+    # --- git --------------------------------------------------------------------------------------------------------
+    EnvironmentVariable(
+        name="HOLON_ATTRIBUTION_STRICT",
+        area=Area.GIT,
+        purpose="Fail the push, rather than warn, when a commit carries an attribution trailer.",
+        value_type=_BOOLEAN,
+        default="unset",
+        when_unset="findings warn only",
+        when_invalid=_OTHER_IS_OFF,
+        read_side="container",
+        since="`docs/executor/stage3_push_safeguards.md`",
+    ),
+    EnvironmentVariable(
+        name="HOLON_GIT_LOCK_AGE_SECONDS",
+        area=Area.GIT,
+        purpose="Age after which a stale git lock file is removed.",
+        value_type=_SECONDS,
+        default="`60`",
+        when_unset="`60`",
+        when_invalid="non-numeric, zero or negative keeps `60`",
+        read_side="container",
+        since="`docs/git_flow.md`",
+    ),
+    EnvironmentVariable(
+        name="HOLON_PR_HEAD_SHA",
+        area=Area.GIT,
+        purpose="Pull-request head commit compared with the calibrated commit; a mismatch logs a warning.",
+        value_type="commit SHA",
+        default="unset",
+        when_unset="no comparison",
+        when_invalid="any mismatch logs a warning",
+        read_side="host",
+        since="`docs/git_flow.md`",
+        internal=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_REPO_URL",
+        area=Area.GIT,
+        purpose="Retired: refused in layer files and never forwarded; the host does every fetch and push.",
+        value_type="ignored",
+        default="unset",
+        when_unset="no effect",
+        when_invalid="ignored",
+        read_side="host",
+        since="`agent_runner.RETIRED_ENV_VARS`",
+        forwarding="not forwarded",
+        internal=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_TARGET_BRANCH",
+        area=Area.GIT,
+        purpose="Branch the executor's pre-push checks compare against.",
+        value_type="branch name",
+        default="the intent's `target_branch`, else `main`",
+        when_unset="the intent's `target_branch`, else `main`",
+        when_invalid="not validated; used as given",
+        read_side="container",
+        since="`docs/executor/stage3_push_safeguards.md`",
+        internal=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_TARGET_WORKTREE",
+        area=Area.GIT,
+        purpose="Worktree the runner works in; the host pins it to the sandbox workspace mount.",
+        value_type="directory path",
+        default="set by the host when a worktree is mounted",
+        when_unset="sandbox detection, then the current directory",
+        when_invalid="git commands fail in the missing directory",
+        read_side="both",
+        since="`docs/git_flow.md`",
+        internal=True,
+    ),
+    # --- ledger and actions -----------------------------------------------------------------------------------------
+    EnvironmentVariable(
+        name="HOLON_ACTION_LOGGING",
+        area=Area.LEDGER_AND_ACTIONS,
+        purpose="Record discrete agent actions in `executions.jsonl`; alias `HOLON_RECORD_ACTIONS`.",
+        value_type=_BOOLEAN,
+        default="unset",
+        when_unset="`HOLON_RECORD_ACTIONS`, else on (off under pytest)",
+        when_invalid="any other set value turns action logging off",
+        read_side="container",
+        since="`docs/ledger_schema.md`",
+    ),
+    EnvironmentVariable(
+        name="HOLON_ACTION_ORIGIN",
+        area=Area.LEDGER_AND_ACTIONS,
+        purpose="Origin recorded on the run's actions, for example `pr_review`; implies action logging.",
+        value_type="string",
+        default="unset",
+        when_unset="the intent's `action_origin`",
+        when_invalid="not validated",
+        read_side="container",
+        since="`docs/ledger_schema.md`",
+        internal=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_RECORD_ACTIONS",
+        area=Area.LEDGER_AND_ACTIONS,
+        purpose="Alias of `HOLON_ACTION_LOGGING`, read only when that is unset.",
+        value_type=_BOOLEAN,
+        default="unset",
+        when_unset="on (off under pytest)",
+        when_invalid="any other set value turns action logging off",
+        read_side="container",
+        since="`docs/ledger_schema.md`",
+    ),
+    # --- review loop ------------------------------------------------------------------------------------------------
+    EnvironmentVariable(
+        name="HOLON_CI_REGISTRATION_TIMEOUT",
+        area=Area.REVIEW_LOOP,
+        purpose="Wait for CI checks to register on a pushed head.",
+        value_type="seconds, zero or positive; `0` disables the wait",
+        default="`180`",
+        when_unset="`180`",
+        when_invalid="non-numeric or negative keeps `180`",
+        read_side="host",
+        since="`docs/git_flow.md`",
+    ),
+    EnvironmentVariable(
+        name="HOLON_REVIEW_CI_WAIT_SECONDS",
+        area=Area.REVIEW_LOOP,
+        purpose="Wait for pending CI checks after the reviewers ran, per wait.",
+        value_type="seconds, a positive number up to 7 days",
+        default="`1800`",
+        when_unset="`1800`",
+        when_invalid="warning naming the variable; `1800` is kept",
+        read_side="host",
+        since=_BUDGETS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_REVIEW_FINDING_IDS",
+        area=Area.REVIEW_LOOP,
+        purpose="Review finding ids the resolver addresses, recorded on its actions.",
+        value_type="finding ids",
+        default="unset",
+        when_unset="the intent's `review_finding_ids`",
+        when_invalid="not validated",
+        read_side="container",
+        since="`docs/review_consensus.md`",
+        internal=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_REVIEW_ITERATION",
+        area=Area.REVIEW_LOOP,
+        purpose="Review-loop iteration recorded on the resolver's actions.",
+        value_type="iteration number",
+        default="unset",
+        when_unset="the intent's `review_iteration`",
+        when_invalid="not validated",
+        read_side="container",
+        since="`docs/review_consensus.md`",
+        internal=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_REVIEW_QUOTA_WAIT_SECONDS",
+        area=Area.REVIEW_LOOP,
+        purpose="Longest wait for a reviewer quota reset; a later reset is not waited for.",
+        value_type="seconds, zero or positive",
+        default="`900`",
+        when_unset="`900`",
+        when_invalid="non-numeric keeps `900`; a negative value means no wait",
+        read_side="host",
+        since="`docs/review_consensus.md`",
+    ),
+    EnvironmentVariable(
+        name="HOLON_REVIEW_SEVERITY",
+        area=Area.REVIEW_LOOP,
+        purpose="Severity of the review finding being resolved, recorded on actions; implies action logging.",
+        value_type="severity, for example `critical`",
+        default="unset",
+        when_unset="the intent's `review_severity`",
+        when_invalid="not validated",
+        read_side="container",
+        since="`docs/review_consensus.md`",
+        internal=True,
+    ),
+    # --- logging ----------------------------------------------------------------------------------------------------
+    EnvironmentVariable(
+        name="HOLON_AGENT_LOG_BYTES",
+        area=Area.LOGGING,
+        purpose="Bytes of agent output kept, after redaction, in execution logs.",
+        value_type="positive integer",
+        default="`65536`",
+        when_unset="`65536`",
+        when_invalid="non-integer, zero or negative keeps `65536`; above the redaction limit is clamped with a warning",
+        read_side="container",
+        since="`apps/sandbox-executor/README.md`",
+    ),
+    # --- CI-only ----------------------------------------------------------------------------------------------------
+    EnvironmentVariable(
+        name="HOLON_ALLOW_MODULE_BUDGET_CHANGE",
+        area=Area.CI_ONLY,
+        purpose=(
+            "Lets `scripts/check_module_budgets.py` accept a change to the frozen module budgets. CI sets it from a "
+            "pull-request label; the flow sets it for a role container only when the intent quotes the maintainer."
+        ),
+        value_type="`1`",
+        default="unset",
+        when_unset="any change to the budget configuration fails the check",
+        when_invalid="any value other than `1` does not authorise",
+        read_side="ci and container",
+        since="`holon-config/hygiene/module_budgets.json`",
+        internal=True,
+    ),
+)
+
+
+def registry_names() -> frozenset[str]:
+    """Every registered variable name."""
+    return frozenset(variable.name for variable in ENVIRONMENT_VARIABLES)
+
+
+def by_area() -> dict[Area, tuple[EnvironmentVariable, ...]]:
+    """The registered variables grouped by area, in document order; an area without variables maps to ``()``."""
+    return {area: tuple(v for v in ENVIRONMENT_VARIABLES if v.area is area) for area in Area}

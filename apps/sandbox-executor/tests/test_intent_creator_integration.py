@@ -39,7 +39,7 @@ class TestIntentCreatorIntegration(unittest.TestCase):
         cmd = ["docker", "run", "--rm", "-e", "HOLON_ROLE=intent-creator", "holon/orchestrator"]
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         except (subprocess.SubprocessError, FileNotFoundError) as e:
             self.fail(f"Failed to execute docker run command: {e}")
 

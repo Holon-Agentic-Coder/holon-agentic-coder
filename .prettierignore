@@ -2,3 +2,4 @@ holon-coherence/
 .pytest_cache/
 .ruff_cache/
 .venv/
+apps/sandbox-executor/tests/fixtures/*_expected.md

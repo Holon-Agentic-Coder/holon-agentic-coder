@@ -327,6 +327,8 @@ def test_every_stage4_dispatch_reviews_the_flow_worktree_in_place(tmp_path: Path
             patch("sandbox_executor.flow.review.resolver.push_commit") as host_push,
             # The ledger commits run git by design; tests/flow/review/test_ledger_commit.py covers them with real git.
             patch("sandbox_executor.flow.review.loop._commit_pending_ledger_rows", return_value=None),
+            # So does the approval fingerprint; tests/test_approval_fingerprint.py covers it with real git.
+            patch("sandbox_executor.flow.review.loop.approval_fingerprint_of", return_value=None),
         ):
             # The old stubs had no gh but GitHub-sourced CI; without auto_pr the fake opens no PR, as before.
             res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=5, auto_pr=False)

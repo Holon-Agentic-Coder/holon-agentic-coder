@@ -31,6 +31,7 @@ from sandbox_executor.flow.github.adapter_runner import (
 
 PR_TIMEOUT_SECONDS = 60
 MERGE_TIMEOUT_SECONDS = 120
+RERUN_RUN_TIMEOUT_SECONDS = 30.0
 CI_CHECK_FIELDS = "bucket,name,state,event,workflow,link"
 MERGEABILITY_FIELDS = "number,mergeable,mergeStateStatus,statusCheckRollup"
 #: The only ``gh pr merge`` method flags the adapter runs; never ``--rebase``, ``--auto`` or ``--admin``.
@@ -130,6 +131,10 @@ class GitHubAdapter:
         """``gh run rerun <run_id> --failed``; True only when it exited 0, False when ``gh`` could not be run."""
         result = self._gh(["run", "rerun", run_id, "--failed"], timeout)
         return result.ok
+
+    def rerun_run(self, run_id: str, timeout: float = RERUN_RUN_TIMEOUT_SECONDS) -> bool:
+        """``gh run rerun <run_id>`` (the whole run: a cancelled run has no failed jobs); True only on exit 0."""
+        return self._gh(["run", "rerun", run_id], timeout).ok
 
     def gh(self, args: list[str], cwd: str | None = None) -> subprocess.CompletedProcess[str]:
         """The guarded merge's ``GhRunner``: ``gh <args>`` in ``cwd`` (default the checkout), no proxy, 120 seconds.

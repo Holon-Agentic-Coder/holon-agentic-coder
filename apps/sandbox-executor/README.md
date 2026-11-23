@@ -121,9 +121,13 @@ skipped with a warning that names the file and the line number, never the line.
 default, supplies the key, so an empty line copied from `.env.example` never blanks a user-wide setting. The empty layer
 is still reported among the shadowed layers as `<layer> (empty)`. A key that every defining layer leaves empty is unset.
 
-**Accepted keys.** Only `HOLON_*` keys (`^HOLON_[A-Z0-9_]+$`) and `GITHUB_TOKEN` are accepted. The host-owned
-`HOLON_ROLE`, `HOLON_CONFIG_RESOLVED`, `HOLON_SKIP_PREFLIGHT` and the retired `HOLON_REPO_URL` are refused. Any other
-key draws `Warning: <file>: ignoring <KEY>: <reason>.`, which names the key and never the value.
+**Accepted keys.** Only `HOLON_*` keys (`^HOLON_[A-Z0-9_]+$`) and `GITHUB_TOKEN` are accepted. Every host-set key
+(listed after the key table, among them `HOLON_ROLE`, `HOLON_CONFIG_RESOLVED`, `HOLON_SKIP_PREFLIGHT`,
+`HOLON_IN_SANDBOX` and `HOLON_TARGET_WORKTREE`) and the retired `HOLON_REPO_URL` are refused. The project `.env` is
+repository-controlled, so it may not set a token-file reference or a host-reach key either:
+`HOLON_ANTIGRAVITY_SESSION_DIR` (a host directory mounted into the container), `HOLON_TOKEN_REDUCE`, `HOLON_PROXY_URL`,
+`HOLON_LOCAL_BASE_URL` and `HOLON_HOST_LOCAL_HOSTS` are set only in `~/.holon/.env` or the process environment. Any
+other refused key draws `Warning: <file>: ignoring <KEY>: <reason>.`, which names the key and never the value.
 
 **Warnings.** A layer or token file with group or other permission bits draws
 `Warning: <path> has mode 0NNN; expected 0600. The file is left unchanged.` A project `.env` that holds a secret key and

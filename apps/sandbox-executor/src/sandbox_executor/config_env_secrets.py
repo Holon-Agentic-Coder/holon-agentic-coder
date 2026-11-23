@@ -21,6 +21,15 @@ from sandbox_executor import claude_credential
 SECRET_FILE_MAPPINGS: tuple[tuple[str, str, str], ...] = (
     ("HOLON_AGENT_OAUTH_TOKEN_FILE", "HOLON_AGENT_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
 )
+# Keys that reach the host or carry credential-bearing egress (a host directory mounted into the container, a proxy, a
+# host-local endpoint); like a token-file reference they may not come from a repository-controlled project layer.
+PROJECT_REFUSED_KEYS: tuple[str, ...] = (
+    "HOLON_ANTIGRAVITY_SESSION_DIR",
+    "HOLON_TOKEN_REDUCE",
+    "HOLON_PROXY_URL",
+    "HOLON_LOCAL_BASE_URL",
+    "HOLON_HOST_LOCAL_HOSTS",
+)
 _GIT_TIMEOUT_SECONDS = 10.0
 
 
@@ -55,25 +64,26 @@ def expand_secret_files(layer_values: Mapping[str, str], origin: str) -> tuple[d
     return values, warnings
 
 
-def drop_file_references(layer_values: Mapping[str, str], origin: str) -> tuple[dict[str, str], list[str]]:
-    """Drop the token-file references of a repository-controlled layer, which could name any file on the host.
+def drop_host_references(layer_values: Mapping[str, str], origin: str) -> tuple[dict[str, str], list[str]]:
+    """Drop the token-file references and host-reach keys of a repository-controlled layer.
 
-    Only the user layer and the process environment may reference a token file; a project ``.env`` can be committed.
+    A token-file reference could name any file on the host, and a ``PROJECT_REFUSED_KEYS`` key could mount a host
+    directory or route credentials through an arbitrary proxy; only the user layer and the process environment may set
+    them, because a project ``.env`` can be committed.
 
     Args:
         layer_values: The accepted keys of the layer.
         origin: The layer file, named in warnings.
 
     Returns:
-        The layer values without the file keys, and one warning per non-empty reference dropped (key only).
+        The layer values without those keys, and one warning per non-empty key dropped (key only).
     """
     values = dict(layer_values)
     warnings: list[str] = []
-    for file_key, _value_key, _container_key in SECRET_FILE_MAPPINGS:
-        if values.pop(file_key, ""):
+    for key in (*(file_key for file_key, _value_key, _container_key in SECRET_FILE_MAPPINGS), *PROJECT_REFUSED_KEYS):
+        if values.pop(key, ""):
             warnings.append(
-                f"Warning: {origin}: ignoring {file_key}: a token file may only be named in ~/.holon/.env or the "
-                "process environment."
+                f"Warning: {origin}: ignoring {key}: it may only be set in ~/.holon/.env or the process environment."
             )
     return values, warnings
 

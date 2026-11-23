@@ -10,9 +10,12 @@ The empty layer is still listed among the shadowed layers as ``<layer> (empty)``
 that every defining layer leaves empty is unset (value None) and is never exported.
 
 Only ``HOLON_*`` keys (``^HOLON_[A-Z0-9_]+$``) and ``GITHUB_TOKEN`` are accepted; the host-owned keys in
-``RESERVED_KEYS`` are refused. A rejected key draws a warning naming the key, never the value. The format is a strict
-``KEY=VALUE`` subset: comments, blank lines and optional single or double quotes whose content is taken literally; a
-shell ``export`` prefix is rejected. Nothing is expanded and nothing is executed.
+``RESERVED_KEYS`` (every host-set key) are refused. The project file, which a repository can commit, may not set a
+token-file reference or a host-reach key (``config_env_secrets.PROJECT_REFUSED_KEYS``: a mounted host directory, a
+proxy or a host-local endpoint); only ``~/.holon/.env`` and the process environment may. A rejected key draws a
+warning naming the key, never the value. The format is a strict ``KEY=VALUE`` subset: comments, blank lines and
+optional single or double quotes whose content is taken literally; a shell ``export`` prefix is rejected. Nothing is
+expanded and nothing is executed.
 
 A role container receives ``HOLON_CONFIG_RESOLVED=1``; an invocation that sees it reads no layer file and reports
 every key as inherited from the process environment.
@@ -27,7 +30,7 @@ from pathlib import Path
 
 from sandbox_executor import budgets, config_env_secrets, preflight
 from sandbox_executor.agent_runner import RETIRED_ENV_VARS
-from sandbox_executor.config_env_keys import DOCUMENTED_KEYS
+from sandbox_executor.config_env_keys import DOCUMENTED_KEYS, HOST_SET_KEYS
 from sandbox_executor.config_env_model import EffectiveConfig, ParsedLayer, ResolvedSetting
 from sandbox_executor.config_env_parse import parse_env_text
 
@@ -36,7 +39,8 @@ FILE_LAYERS = ("user", "project")
 _APPLIED_LAYERS = (*FILE_LAYERS, "process")
 RESOLVED_MARKER = "HOLON_CONFIG_RESOLVED"
 ALLOWED_NON_HOLON_KEYS = frozenset({"GITHUB_TOKEN"})
-RESERVED_KEYS = frozenset({"HOLON_ROLE", RESOLVED_MARKER, preflight.SKIP_ENV_VAR}) | RETIRED_ENV_VARS
+# Every host-set key: a layer value would forge a sandbox signal (HOLON_IN_SANDBOX) or a host-owned run parameter.
+RESERVED_KEYS = frozenset({"HOLON_ROLE", RESOLVED_MARKER, preflight.SKIP_ENV_VAR, *HOST_SET_KEYS}) | RETIRED_ENV_VARS
 SECRET_KEYS = frozenset(
     {"HOLON_AGENT_OAUTH_TOKEN", "HOLON_AGENT_KEY", "GITHUB_TOKEN", "HOLON_AGENT_SETTINGS", "HOLON_MITM_WEB_PASSWORD"}
 )
@@ -187,7 +191,7 @@ def load_effective_config(environ: Mapping[str, str] | None = None, cwd: str | N
         # Only the keys the file itself holds: a token-file path is not a secret, the token it names is not tracked.
         secret_keys = [key for key, value in parsed.items() if value and is_secret_key(key)]
         warnings.extend(config_env_secrets.tracked_secret_warning(str(project_path), secret_keys))
-        project, reference_warnings = config_env_secrets.drop_file_references(parsed, str(project_path))
+        project, reference_warnings = config_env_secrets.drop_host_references(parsed, str(project_path))
         warnings.extend(reference_warnings)
     # An exported token-file reference is a process-layer setting, read like the file layers' references.
     process = _expand({k: v for k, v in environ.items() if accept_key(k) is None}, "process environment", warnings)

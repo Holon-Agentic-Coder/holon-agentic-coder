@@ -10,7 +10,7 @@ import re
 import subprocess
 
 import pytest
-from sandbox_executor import claude_credential, config_env, config_env_report
+from sandbox_executor import claude_credential, config_env, config_env_report, config_env_secrets
 from sandbox_executor.config_env import project_env_path, user_env_path
 from sandbox_executor.config_env_keys import HOST_SET_KEYS
 from sandbox_executor.scaffold import init_project
@@ -331,6 +331,24 @@ def test_project_token_file_reference_is_ignored_with_a_warning(layers, tmp_path
     assert len(config.warnings) == 1
     assert "ignoring HOLON_AGENT_OAUTH_TOKEN_FILE" in config.warnings[0] and "tracked" not in config.warnings[0]
     assert_no_fragment(config.warnings[0], token)
+
+
+@pytest.mark.parametrize("key", config_env_secrets.PROJECT_REFUSED_KEYS)
+def test_project_host_reach_key_is_ignored_with_a_warning(layers, key):
+    probe = make_probe("h")
+    config = layers.load(user=f"{key}=user-value\n", project=f"{key}={probe}\n")
+    assert setting(config, key) == ("user-value", "user", ())
+    assert config.warnings == [
+        f"Warning: {layers.project}: ignoring {key}: it may only be set in ~/.holon/.env or the process environment."
+    ]
+    assert_no_fragment(config.warnings[0], probe)
+
+
+@pytest.mark.parametrize("key", HOST_SET_KEYS)
+def test_every_host_set_key_is_reserved(layers, key):
+    config = layers.load(project=f"{key}=1\n")
+    assert key not in config.settings
+    assert any(f"ignoring {key}: the host owns this key" in w for w in config.warnings)
 
 
 def test_project_token_file_reference_does_not_displace_the_user_reference(layers, tmp_path):

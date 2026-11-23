@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ import pytest
 from sandbox_executor.flow import run_review_loop
 from sandbox_executor.flow.review.posting import PostFacts, decide_post
 
+from tests.flow.github.fake_github import spawn_failure
 from tests.review_fakes import FakeEnsemble, clean_reviewer, failed_reviewer, objecting_reviewer
 from tests.test_review_dispatch import EXEC_TARGET
 from tests.test_review_loop import _ensemble_ctx, _ledger, _LoopStubs, _rows
@@ -27,31 +29,32 @@ def _run(tmp_path: Path, ensemble: FakeEnsemble, **kwargs: Any):
     stubs = params.pop("stubs", None) or _LoopStubs()
     with stubs as active:
         res = run_review_loop(ctx, target=EXEC_TARGET, **params)
-    return res, active.post, ctx
+    return res, active, ctx
 
 
-def _not_posted(tmp_path: Path, post, ctx, reason: str) -> None:
-    post.assert_not_called()
+def _not_posted(tmp_path: Path, stubs: _LoopStubs, ctx, reason: str) -> None:
+    assert stubs.posts() == []
     assert not _rows(tmp_path, "ACT-POST")
     assert any("Not posting a review consensus" in line and reason in line for line in ctx.logs)
 
 
 def test_clean_approval_posts_exactly_once(tmp_path):
-    res, post, _ = _run(tmp_path, FakeEnsemble([clean_reviewer(1)]))
+    res, stubs, _ = _run(tmp_path, FakeEnsemble([clean_reviewer(1)]))
 
     assert res["consensus"]["approved"] is True
-    assert post.call_count == 1
+    assert len(stubs.posts()) == 1
     assert len(_rows(tmp_path, "ACT-POST")) == 1
 
 
 def test_iteration_cap_with_open_findings_posts_changes_requested_once(tmp_path):
     ensemble = FakeEnsemble([objecting_reviewer(1)])
-    res, post, _ = _run(tmp_path, ensemble, run_resolver_fn=_rejecting_resolver)
+    res, stubs, _ = _run(tmp_path, ensemble, run_resolver_fn=_rejecting_resolver)
 
     assert len(ensemble.calls) == 2
     assert res["consensus"]["approved"] is False
-    assert post.call_count == 1
-    assert post.call_args.kwargs["consensus_data"]["ensemble_verdict"] == "CHANGES_REQUESTED"
+    assert len(stubs.posts()) == 1
+    ((_, flag, body),) = stubs.posts()
+    assert flag == "--comment" and "**Ensemble Consensus Verdict**: `CHANGES_REQUESTED`" in body
     assert len(_rows(tmp_path, "ACT-POST")) == 1
 
 
@@ -59,35 +62,37 @@ def test_resolver_error_posts_nothing_and_writes_no_act_post(tmp_path):
     def failing_resolver(target, iteration, findings, action_ids, rejected_findings):
         return {"dispositions": [], "head_sha": target.head_sha, "pushed": False, "error": "gate failed"}
 
-    res, post, ctx = _run(
+    res, stubs, ctx = _run(
         tmp_path, FakeEnsemble([objecting_reviewer(1)]), max_iterations=3, run_resolver_fn=failing_resolver
     )
 
     assert "gate failed" in res["resolver_error"]
-    _not_posted(tmp_path, post, ctx, "halted")
+    _not_posted(tmp_path, stubs, ctx, "halted")
 
 
 def test_no_convergence_halt_posts_nothing(tmp_path):
     ensemble = FakeEnsemble([objecting_reviewer(1)])
-    res, post, ctx = _run(tmp_path, ensemble, max_iterations=6, run_resolver_fn=_rejecting_resolver)
+    res, stubs, ctx = _run(tmp_path, ensemble, max_iterations=6, run_resolver_fn=_rejecting_resolver)
 
     assert res["no_convergence"] is True
-    _not_posted(tmp_path, post, ctx, "halted")
+    _not_posted(tmp_path, stubs, ctx, "halted")
 
 
 def test_stopping_before_the_cap_without_a_resolver_pass_posts_nothing(tmp_path):
     stubs = _LoopStubs(merge={"is_dirty": True, "merge_state_status": "DIRTY", "mergeable": "CONFLICTING"})
-    _, post, ctx = _run(tmp_path, FakeEnsemble([clean_reviewer(1)]), max_iterations=5, stubs=stubs)
+    _, stubs, ctx = _run(tmp_path, FakeEnsemble([clean_reviewer(1)]), max_iterations=5, stubs=stubs)
 
-    _not_posted(tmp_path, post, ctx, "before the iteration cap")
+    _not_posted(tmp_path, stubs, ctx, "before the iteration cap")
 
 
 def test_a_post_that_raises_writes_one_failure_row_and_fails_closed(tmp_path):
     stubs = _LoopStubs()
-    stubs.post.side_effect = RuntimeError("gh exploded")
-    res, post, _ = _run(tmp_path, FakeEnsemble([clean_reviewer(1)]), stubs=stubs)
+    # gh cannot be run for the review nor the last-resort comment, so the post raises inside the posting ladder.
+    stubs.github.review_results = [spawn_failure("gh exploded")]
+    stubs.github.comment_result = spawn_failure("gh exploded")
+    res, stubs, _ = _run(tmp_path, FakeEnsemble([clean_reviewer(1)]), stubs=stubs)
 
-    assert post.call_count == 1
+    assert len(stubs.posts()) == 1
     rows = _rows(tmp_path, "ACT-POST")
     assert [row["outcome"] for row in rows] == ["failure"]
     assert res["consensus"]["status"] == "post_failed"
@@ -106,23 +111,23 @@ def test_skip_post_posts_nothing(tmp_path):
             skip_post=True,
         )
 
-    stubs.post.assert_not_called()
+    assert stubs.posts() == []
     assert not _rows(tmp_path, "ACT-POST")
 
 
 def test_no_completed_reviewer_posts_nothing(tmp_path):
-    _, post, ctx = _run(tmp_path, FakeEnsemble([failed_reviewer(1)]), max_iterations=1)
+    _, stubs, ctx = _run(tmp_path, FakeEnsemble([failed_reviewer(1)]), max_iterations=1)
 
-    _not_posted(tmp_path, post, ctx, "")
+    _not_posted(tmp_path, stubs, ctx, "")
 
 
 @pytest.mark.parametrize("reason", ["reviewer crashed", "reviewer turn timed out", "reviewer stalled"])
 def test_a_failed_reviewer_turn_at_the_cap_posts_nothing(tmp_path, reason):
     ensemble = FakeEnsemble([clean_reviewer(1), failed_reviewer(2, reason)])
-    res, post, ctx = _run(tmp_path, ensemble, max_iterations=1, ensemble_size=2)
+    res, stubs, ctx = _run(tmp_path, ensemble, max_iterations=1, ensemble_size=2)
 
     assert res["ensemble_verdict"] == "FAILED"
-    _not_posted(tmp_path, post, ctx, "failed verdict")
+    _not_posted(tmp_path, stubs, ctx, "failed verdict")
     summary = _summary_row(tmp_path)
     assert summary["status"] == "failed"
     assert "failed verdict" in summary["review_post_withheld"]
@@ -130,34 +135,43 @@ def test_a_failed_reviewer_turn_at_the_cap_posts_nothing(tmp_path, reason):
 
 def test_a_resumed_pass_with_a_failed_reviewer_turn_posts_nothing(tmp_path):
     ensemble = FakeEnsemble([clean_reviewer(1), failed_reviewer(2, "reviewer turn timed out")])
-    _, post, ctx = _run(tmp_path, ensemble, max_iterations=1, ensemble_size=2, first_iteration=3)
+    _, stubs, ctx = _run(tmp_path, ensemble, max_iterations=1, ensemble_size=2, first_iteration=3)
 
-    _not_posted(tmp_path, post, ctx, "failed verdict")
+    _not_posted(tmp_path, stubs, ctx, "failed verdict")
 
 
 def test_a_review_iteration_budget_breach_at_the_cap_posts_nothing(tmp_path):
     ticks = itertools.count(step=10_000.0)
     ensemble = FakeEnsemble([objecting_reviewer(1)])
-    res, post, ctx = _run(tmp_path, ensemble, max_iterations=1, clock=lambda: next(ticks), sleep=lambda _: None)
+    res, stubs, ctx = _run(tmp_path, ensemble, max_iterations=1, clock=lambda: next(ticks), sleep=lambda _: None)
 
     assert res["budget_breach"]["budget_name"] == "review_iteration"
-    _not_posted(tmp_path, post, ctx, "halted")
+    _not_posted(tmp_path, stubs, ctx, "halted")
 
 
 def test_an_unresolved_ref_at_the_cap_posts_nothing(tmp_path):
-    stubs = _LoopStubs(merge={"is_dirty": False, "merge_state_status": "MISSING_REF", "mergeable": "UNKNOWN"})
-    _, post, ctx = _run(tmp_path, FakeEnsemble([objecting_reviewer(1)]), max_iterations=1, stubs=stubs)
+    # GitHub has no PR view, so mergeability falls back to local git, where the target branch does not exist.
+    _init_repo_without_target(tmp_path)
+    stubs = _LoopStubs()
+    stubs.github.standing_view = None
+    _, stubs, ctx = _run(tmp_path, FakeEnsemble([objecting_reviewer(1)]), max_iterations=1, stubs=stubs)
 
-    _not_posted(tmp_path, post, ctx, "halted")
+    _not_posted(tmp_path, stubs, ctx, "halted")
     assert "halted" in _summary_row(tmp_path)["review_post_withheld"]
 
 
 def test_a_cap_with_every_reviewer_completed_posts_once_with_no_withheld_reason(tmp_path):
-    res, post, _ = _run(tmp_path, FakeEnsemble([objecting_reviewer(1)]), max_iterations=1)
+    res, stubs, _ = _run(tmp_path, FakeEnsemble([objecting_reviewer(1)]), max_iterations=1)
 
     assert res["ensemble_verdict"] == "CHANGES_REQUESTED"
-    assert post.call_count == 1
+    assert len(stubs.posts()) == 1
     assert _summary_row(tmp_path)["review_post_withheld"] is None
+
+
+def _init_repo_without_target(path: Path) -> None:
+    git = ["git", "-c", "user.email=t@holon.test", "-c", "user.name=T", "-c", "commit.gpgsign=false"]
+    subprocess.run(["git", "init", "-q", "-b", "main", str(path)], check=True)
+    subprocess.run([*git, "-C", str(path), "commit", "-q", "--allow-empty", "-m", "base"], check=True)
 
 
 def _summary_row(tmp_path: Path) -> dict[str, Any]:

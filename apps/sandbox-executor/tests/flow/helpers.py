@@ -28,7 +28,7 @@ from sandbox_executor.review_ensemble import (
 from sandbox_executor.review_report import ROLES_CLOSE, ROLES_OPEN
 from sandbox_executor.review_target import DiffVerdict
 
-from tests.flow.lookup_patch import patch_lookup_sites
+from tests.flow.github.fake_github import FakeGitHub, merge_view
 
 _REAL_RESOLVE_REVIEWED_TARGET = flow_module._resolve_reviewed_target
 
@@ -51,36 +51,23 @@ def stage4_halts_at_consensus() -> Iterator[MagicMock]:
 
 
 @contextmanager
-def _review_loop_gh_stubs() -> Iterator[None]:
-    """Stub every review-loop helper that shells out to ``gh``, so an approving loop issues no real gh call."""
+def _review_loop_gh_stubs() -> Iterator[FakeGitHub]:
+    """Inject a clean ``FakeGitHub`` (no CI checks, so CI falls back to local tests) at the stage and the loop.
+
+    The stage-conflict probe keeps its own clean stand-in; the loop must post exactly one review through the fake.
+    """
     clean_merge = {"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE", "source": "github_cli"}
-    local_ci = {
-        "source": "local_tests",
-        "total": 1,
-        "passed": 1,
-        "failed": 0,
-        "pending": 0,
-        "skipped": 0,
-        "all_passed": True,
-        "checks": [{"name": "local_tests", "bucket": "pass", "state": "SUCCESS"}],
-    }
+    github = FakeGitHub(standing_view=merge_view())
     with (
-        patch_lookup_sites(
-            "sandbox_executor.flow.review.loop.check_pr_mergeability",
+        patch(
             "sandbox_executor.flow.stage_conflicts.check_pr_mergeability",
             side_effect=lambda *a, **k: dict(clean_merge),
         ),
-        patch(
-            "sandbox_executor.flow.review.loop.probe_ci_checks",
-            side_effect=lambda *a, **k: json.loads(json.dumps(local_ci)),
-        ),
-        patch(
-            "sandbox_executor.flow.review.loop.post_pr_review_consensus",
-            return_value={"dual_posted": True, "official_review": {"success": True}},
-        ) as mock_post,
+        patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github),
+        patch("sandbox_executor.flow.review.loop.GitHubAdapter", return_value=github),
     ):
-        yield
-    mock_post.assert_called_once()
+        yield github
+    assert github.methods().count("post_review") == 1
 
 
 class SteppingClock:

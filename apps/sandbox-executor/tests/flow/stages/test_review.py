@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, run_review_loop, run_review_stage
 
+from tests.flow.github.fake_github import FakeGitHub, merge_view
 from tests.flow.helpers import _verified_diff
 
 
@@ -28,13 +29,11 @@ class TestStage4TestEvidence:
         return ctx
 
     def _loop(self, ctx: FlowContext) -> dict[str, Any]:
-        with (
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
-            patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
-            _verified_diff(),
-        ):
-            return run_review_loop(ctx, auto_pr=False, max_iterations=1)
+        # A clean PR with no CI checks reported (CI falls back to local tests); the post succeeds on the fake.
+        github = FakeGitHub(standing_view=merge_view())
+        with patch("shutil.which", return_value=None), _verified_diff():
+            # No CI registration wait: these tests are about Stage 3 evidence, as when gh was absent.
+            return run_review_loop(ctx, auto_pr=False, max_iterations=1, ci_registration_timeout=0, github=github)
 
     def test_local_tests_fallback_without_recorded_result_is_not_measured_and_never_approves(self, tmp_path):
         res = self._loop(self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": None}))
@@ -145,3 +144,21 @@ class TestStage4TestEvidence:
         assert res.payload["halted_for_human"] is True
         assert any("SAFETY HALT" in log for log in ctx.logs)
         assert any("Dry-run review loop finished; consensus not measured and not approved." in log for log in ctx.logs)
+
+
+def test_the_review_stage_builds_one_adapter_and_hands_it_to_the_loop(tmp_path):
+    """Stage 4 constructs exactly one ``GitHubAdapter`` over the worktree and passes that instance to the loop."""
+    ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-a-b/E-3-a-b/_", token_reduce=False)
+    loop_res = {"consensus": {"approved": False, "status": "failed"}, "mergeability": {"is_dirty": False}}
+    github = FakeGitHub()
+    with (
+        patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
+        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
+        patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github) as adapter,
+        patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res) as loop,
+    ):
+        run_review_stage(ctx)
+
+    adapter.assert_called_once_with(ctx.target_worktree, {})
+    assert loop.call_args.kwargs["github"] is github

@@ -251,7 +251,7 @@ def test_review_loop_halts_when_the_resolver_cannot_run_uv(tmp_path: Path) -> No
     assert not [r for r in _rows(tmp_path, "ACT-RES") if r.get("review_disposition") == "applied"]
     summary = [r for r in map(json.loads, _ledger_lines(tmp_path)) if r.get("entry_type") == "summary"]
     assert "resolver failed: Resolver pre-push verification could not run" in summary[-1]["summary"]
-    stubs.post.assert_not_called()
+    assert stubs.posts() == []
     assert not _rows(tmp_path, "ACT-POST")
     assert any("Not posting a review consensus" in line and "halted" in line for line in ctx.logs)
 
@@ -284,7 +284,7 @@ def test_incident_failed_resolver_never_turns_a_dissent_into_unanimous_approval(
     assert res["consensus"]["approved"] is False
     assert res["ensemble_verdict"] == str(ConsensusVerdict.CHANGES_REQUESTED)
     assert "uv" in res["resolver_error"]
-    stubs.post.assert_not_called()
+    assert stubs.posts() == []
     assert not _rows(tmp_path, "ACT-POST")
 
 

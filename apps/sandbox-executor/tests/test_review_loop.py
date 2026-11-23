@@ -18,8 +18,16 @@ from sandbox_executor.entrypoint.review_loop import (
 from sandbox_executor.entrypoint.review_loop import (
     main as review_loop_main,
 )
+from sandbox_executor.flow.github.adapter_runner import GhResult
 from sandbox_executor.turns import TurnResult
 
+from tests.flow.github.fake_github import (
+    FakeGitHub,
+    checks_for,
+    ci_checks_payload,
+    merge_view,
+    spawn_failure,
+)
 from tests.flow.lookup_patch import patch_lookup_sites
 from tests.leak_assertions import assert_no_fragment, make_gh_probe
 from tests.review_fakes import install_fake_reviewers
@@ -28,10 +36,14 @@ from tests.review_loop_stubs import (  # noqa: F401  (_CLEAN_MERGE and _ledger a
     _GREEN_CI,
     EXEC_TARGET,
     _ensemble_ctx,
+    _green_github,
     _green_loop_patches,
+    _green_patches,
     _ledger,
     _loop_ctx,
     _LoopStubs,
+    _posts,
+    _pr_opens,
     _rows,
 )
 
@@ -490,26 +502,21 @@ class TestReviewLoopEmptyDiffGuard:
         from sandbox_executor.flow import FlowContext, run_review_loop
 
         ctx = FlowContext(repo_dir=str(repo), execution_branch=self.EXEC, token_reduce=False)
-        with (
-            patch("shutil.which", return_value="/usr/bin/gh"),
-            patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}) as mock_pr,
-            patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
-            patch_lookup_sites(
-                "sandbox_executor.flow.github.ci.probe_ci_checks",
-                "sandbox_executor.flow.review.loop.probe_ci_checks",
-                return_value={"all_passed": True, "source": "github_cli"},
-            ),
-            patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"),
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
-        ):
+        github = _green_github(head_sha="stage3-head")
+        with patch("shutil.which", return_value="/usr/bin/gh"):
             res = run_review_loop(
-                ctx, target=self.EXEC, max_iterations=1, dry_run=False, first_iteration=first_iteration
+                ctx,
+                target=self.EXEC,
+                max_iterations=1,
+                dry_run=False,
+                first_iteration=first_iteration,
+                github=github,
             )
-        return res, mock_pr
+        return res, github
 
     def test_empty_execution_branch_gets_no_pr(self, tmp_path: Path):
-        res, mock_pr = self._run(self._repo(tmp_path, change_source=False))
-        mock_pr.assert_not_called()
+        res, github = self._run(self._repo(tmp_path, change_source=False))
+        assert _pr_opens(github) == []
         assert res["consensus"]["approved"] is False
         assert res["pr"]["reason"] == "empty_diff"
         # The refusal speaks the same units as every other result: a passes key (0 dispatches) beside the label budget.
@@ -523,8 +530,8 @@ class TestReviewLoopEmptyDiffGuard:
 
     def test_resumed_empty_diff_refusal_reports_the_checkpointed_label(self, tmp_path: Path):
         """The refusal follows the 'iterations = label of latest pass' convention on a resumed engine run."""
-        res, mock_pr = self._run(self._repo(tmp_path, change_source=False), first_iteration=4)
-        mock_pr.assert_not_called()
+        res, github = self._run(self._repo(tmp_path, change_source=False), first_iteration=4)
+        assert _pr_opens(github) == []
         assert res["consensus"]["approved"] is False
         # first_iteration=4 means 3 passes already ran; the refusal reports that label, 0 passes, label budget 4.
         assert res["consensus"]["iterations"] == 3
@@ -533,16 +540,15 @@ class TestReviewLoopEmptyDiffGuard:
         assert res["max_iterations"] == 4
 
     def test_non_empty_execution_branch_still_gets_pr(self, tmp_path: Path):
-        res, mock_pr = self._run(self._repo(tmp_path, change_source=True))
-        mock_pr.assert_called_once()
-        assert mock_pr.call_args.kwargs["branch"] == self.EXEC
+        res, github = self._run(self._repo(tmp_path, change_source=True))
+        assert [args[0] for args in _pr_opens(github)] == [self.EXEC]
         assert res["consensus"]["approved"] is True
 
     def test_unverifiable_diff_skips_pr(self, tmp_path: Path):
         repo = tmp_path / "not-a-repo"
         repo.mkdir()
-        res, mock_pr = self._run(repo)
-        mock_pr.assert_not_called()
+        res, github = self._run(repo)
+        assert _pr_opens(github) == []
         assert res["pr"]["reason"] == "diff_unverified"
         # Green CI cannot turn the refusal into approval; the loop fails closed with the refusal as its error.
         assert res["consensus"]["approved"] is False
@@ -595,29 +601,18 @@ class TestReviewLoopEmptyDiffGuardOrigin:
         from sandbox_executor.flow import FlowContext, run_review_loop
 
         ctx = FlowContext(repo_dir=str(host), execution_branch=self.EXEC, token_reduce=False)
-        with (
-            patch("shutil.which", return_value="/usr/bin/gh"),
-            patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}) as mock_pr,
-            patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
-            patch_lookup_sites(
-                "sandbox_executor.flow.github.ci.probe_ci_checks",
-                "sandbox_executor.flow.review.loop.probe_ci_checks",
-                return_value={"all_passed": True, "source": "github_cli"},
-            ),
-            patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"),
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
-        ):
-            res = run_review_loop(ctx, target=self.EXEC, max_iterations=1, dry_run=False)
-        return res, mock_pr
+        github = _green_github(head_sha="stage3-head")
+        with patch("shutil.which", return_value="/usr/bin/gh"):
+            res = run_review_loop(ctx, target=self.EXEC, max_iterations=1, dry_run=False, github=github)
+        return res, github
 
     def test_unfetched_host_with_non_empty_origin_branch_gets_pr(self, tmp_path: Path):
         _origin, container, host = self._setup(tmp_path)
         self._commit(container, "app.py", "x = 2\n", "implement")
         self._git(container, "push", "-q", "origin", self.EXEC)
-        res, mock_pr = self._run(host)
-        mock_pr.assert_called_once()
-        assert mock_pr.call_args.kwargs["branch"] == self.EXEC
-        assert res["pr"] == {"success": True}
+        res, github = self._run(host)
+        assert [args[0] for args in _pr_opens(github)] == [self.EXEC]
+        assert res["pr"]["success"] is True
 
     def test_stale_empty_local_branch_follows_non_empty_origin(self, tmp_path: Path):
         _origin, container, host = self._setup(tmp_path)
@@ -626,9 +621,9 @@ class TestReviewLoopEmptyDiffGuardOrigin:
         self._git(host, "fetch", "-q", "origin", f"+refs/heads/{self.EXEC}:refs/heads/{self.EXEC}")
         self._commit(container, "app.py", "x = 2\n", "implement")
         self._git(container, "push", "-q", "origin", self.EXEC)
-        res, mock_pr = self._run(host)
-        mock_pr.assert_called_once()
-        assert res["pr"] == {"success": True}
+        res, github = self._run(host)
+        assert len(_pr_opens(github)) == 1
+        assert res["pr"]["success"] is True
 
     def test_empty_origin_branch_is_refused_despite_unpushed_local_commit(self, tmp_path: Path):
         _origin, container, host = self._setup(tmp_path)
@@ -638,8 +633,8 @@ class TestReviewLoopEmptyDiffGuardOrigin:
         self._git(host, "fetch", "-q", "origin", self.PLAN)
         self._git(host, "checkout", "-q", self.EXEC)
         self._commit(host, "app.py", "x = 3\n", "unpushed local change")
-        res, mock_pr = self._run(host)
-        mock_pr.assert_not_called()
+        res, github = self._run(host)
+        assert _pr_opens(github) == []
         assert res["pr"]["reason"] == "empty_diff"
         assert res["consensus"]["approved"] is False
 
@@ -648,8 +643,8 @@ class TestReviewLoopEmptyDiffGuardOrigin:
         self._git(host, "fetch", "-q", "origin", f"+refs/heads/{self.PLAN}:refs/heads/{self.EXEC}")
         self._git(host, "checkout", "-q", self.EXEC)
         self._commit(host, "app.py", "x = 4\n", "never pushed")
-        res, mock_pr = self._run(host)
-        mock_pr.assert_not_called()
+        res, github = self._run(host)
+        assert _pr_opens(github) == []
         assert res["pr"]["reason"] == "diff_unverified"
 
     def test_fetch_error_is_redacted(self, tmp_path: Path):
@@ -777,8 +772,9 @@ def _ledger_rows(repo_dir: Path) -> list[dict]:
 
 
 def _run_entrypoint(repo_dir: Path, target: str, fake_git: FakeGitCommands, *extra: str):
-    """Run the entrypoint main() with fakes at the gh, run_cmd and loop seams; returns (exit, loop, post)."""
+    """Run the entrypoint main() with fakes at the gh, run_cmd and loop seams; returns (exit, loop, github, gh)."""
     run_gh, gh_calls = _fake_gh()
+    github = FakeGitHub()
     (repo_dir / ".git").mkdir(exist_ok=True)
     loop_result = {
         "target": target,
@@ -791,11 +787,11 @@ def _run_entrypoint(repo_dir: Path, target: str, fake_git: FakeGitCommands, *ext
         patch(f"{ENTRYPOINT}.run_cmd", side_effect=fake_git),
         patch(f"{ENTRYPOINT}.check_and_resolve_stage_conflicts"),
         patch(f"{ENTRYPOINT}.run_review_loop", return_value=loop_result) as mock_loop,
-        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus") as mock_post,
+        patch("sandbox_executor.flow.review.loop.GitHubAdapter", return_value=github),
         pytest.raises(SystemExit) as exit_info,
     ):
         review_loop_main()
-    return exit_info.value.code, mock_loop, mock_post, gh_calls
+    return exit_info.value.code, mock_loop, github, gh_calls
 
 
 #: git verbs that would change, re-create or network-sync the mounted host worktree during preparation.
@@ -839,11 +835,11 @@ def test_stale_mounted_head_is_refused_rather_than_reviewed_as_the_pr_head(tmp_p
     stale = "f" * 40
     fake_git = FakeGitCommands(heads=[stale], branch="feature/x")
 
-    code, mock_loop, mock_post, _gh = _run_entrypoint(tmp_path, "90", fake_git)
+    code, mock_loop, github, _gh = _run_entrypoint(tmp_path, "90", fake_git)
 
     assert code == 1
     mock_loop.assert_not_called()
-    mock_post.assert_not_called()
+    assert _posts(github) == []
     (row,) = _ledger_rows(tmp_path)
     assert row["action"] == "Review Loop preparation (validate) failed for 90"
     assert f"mounted workspace HEAD {stale} is not the review head {PR_HEAD_SHA}" in row["error_context"]
@@ -875,11 +871,11 @@ def test_unreadable_mounted_head_exits_one_posts_nothing_and_writes_one_failure_
     (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
     fake_git = FakeGitCommands(fail_on=("rev-parse",))
 
-    code, mock_loop, mock_post, _gh = _run_entrypoint(tmp_path, "90", fake_git)
+    code, mock_loop, github, _gh = _run_entrypoint(tmp_path, "90", fake_git)
 
     assert code == 1
     mock_loop.assert_not_called()
-    mock_post.assert_not_called()
+    assert _posts(github) == []
     rows = _ledger_rows(tmp_path)
     assert len(rows) == 1
     assert rows[0]["action_id"].startswith("ACT-REV-")
@@ -955,14 +951,14 @@ def test_empty_diff_guard_runs_without_auto_pr_and_without_gh(tmp_path, which):
     from sandbox_executor.flow import run_review_loop
     from sandbox_executor.review_target import DiffVerdict
 
-    stack, verify, mock_post = _green_loop_patches(verdict=DiffVerdict.EMPTY, which=which)
+    stack, verify, github = _green_patches(verdict=DiffVerdict.EMPTY, which=which)
     with stack:
         res = run_review_loop(_loop_ctx(tmp_path), target="feature/x", auto_pr=False, max_iterations=1)
 
     verify.assert_called_once()
     assert res["consensus"]["approved"] is False
     assert res["consensus"]["status"] == "rejected"
-    mock_post.assert_not_called()
+    assert _posts(github) == []
 
 
 def test_empty_diff_guard_runs_for_a_pr_number_target(tmp_path):
@@ -970,21 +966,21 @@ def test_empty_diff_guard_runs_for_a_pr_number_target(tmp_path):
     from sandbox_executor.review_target import DiffVerdict, ReviewTarget
 
     resolved = ReviewTarget(raw="90", head_branch="feature/x", head_sha=PR_HEAD_SHA, pr_number=90)
-    stack, verify, mock_post = _green_loop_patches(verdict=DiffVerdict.EMPTY)
+    stack, verify, github = _green_patches(verdict=DiffVerdict.EMPTY)
     with stack, patch("sandbox_executor.review_target.resolve_review_target", return_value=resolved) as resolve:
         res = run_review_loop(_loop_ctx(tmp_path, "90"), target="90", auto_pr=False, max_iterations=1)
 
     resolve.assert_called_once_with(str(tmp_path), "90", run_gh=None)
     assert verify.call_args.args[1] == resolved
     assert res["consensus"]["approved"] is False
-    mock_post.assert_not_called()
+    assert _posts(github) == []
 
 
 def test_unresolvable_pr_target_fails_closed_without_posting(tmp_path):
     from sandbox_executor.flow import run_review_loop
     from sandbox_executor.review_target import ReviewTargetError
 
-    stack, verify, mock_post = _green_loop_patches()
+    stack, verify, github = _green_patches()
     with (
         stack,
         patch("sandbox_executor.review_target.resolve_review_target", side_effect=ReviewTargetError("gh missing")),
@@ -995,25 +991,22 @@ def test_unresolvable_pr_target_fails_closed_without_posting(tmp_path):
     assert res["consensus"]["approved"] is False
     assert res["consensus"]["status"] == "failed"
     assert "gh missing" in res["error"]
-    mock_post.assert_not_called()
+    assert _posts(github) == []
 
 
 @pytest.mark.parametrize(
-    "post",
-    [
-        {"return_value": {"dual_posted": False, "error": "HTTP 502"}},
-        {"side_effect": RuntimeError("HTTP 502")},
-    ],
+    "failure",
+    [GhResult(True, 1, "", "HTTP 502"), spawn_failure("HTTP 502")],
     ids=["returned-failure", "raised"],
 )
-def test_failed_post_makes_the_loop_non_approved(tmp_path, post):
+def test_failed_post_makes_the_loop_non_approved(tmp_path, failure):
     from sandbox_executor.flow import run_review_loop
 
-    stack, _verify, mock_post = _green_loop_patches(post=post)
+    stack, _verify, github = _green_patches(failure=failure)
     with stack:
         res = run_review_loop(_loop_ctx(tmp_path), target="feature/x", auto_pr=False, max_iterations=1)
 
-    mock_post.assert_called_once()
+    assert len(_posts(github)) == 1
     assert res["consensus"]["approved"] is False
     assert res["consensus"]["status"] == "post_failed"
     assert res["consensus"]["score"] == 0.0
@@ -1037,8 +1030,8 @@ def test_failed_post_makes_the_cli_exit_one(tmp_path, capsys):
         repo_dir=str(tmp_path), target="feature/x", auto_pr=False, dry_run=False, json=False, max_iterations=1
     )
     (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
-    post = {"return_value": {"dual_posted": False, "error": "HTTP 502"}}  # measured CI, so the post is attempted
-    stack, _verify, _post = _green_loop_patches(post=post, ci=_GREEN_CI)
+    # Measured CI, so the post is attempted.
+    stack, _verify, _github = _green_patches(ci=_GREEN_CI, failure=GhResult(True, 1, "", "HTTP 502"))
     with stack:
         code = run_review_loop_cli(args)
 
@@ -1051,14 +1044,21 @@ def test_failed_post_makes_the_cli_exit_one(tmp_path, capsys):
 def test_dry_run_is_never_approved(tmp_path):
     from sandbox_executor.flow import run_review_loop
 
-    stack, verify, mock_post = _green_loop_patches()
+    stack, verify, github = _green_patches()
     with stack:
         res = run_review_loop(_loop_ctx(tmp_path, dry_run=True), target="feature/x", dry_run=True, max_iterations=1)
 
     verify.assert_not_called()
-    mock_post.assert_not_called()
+    assert _posts(github) == []
     assert res["consensus"]["approved"] is False
     assert res["consensus"]["status"] == "not_measured"
+
+
+#: ``gh pr checks`` reports one passing check; ``gh pr view`` (the PR number and mergeability reads) a clean PR.
+_GH_GREEN_ANSWERS = {
+    ("pr", "checks"): json.dumps(ci_checks_payload(passed=1)),
+    ("pr", "view"): json.dumps(merge_view()),
+}
 
 
 def test_approved_loop_never_merges(tmp_path, gh_write_guard):
@@ -1072,20 +1072,14 @@ def test_approved_loop_never_merges(tmp_path, gh_write_guard):
     def _recording_run(argv, *args, **kwargs):
         if isinstance(argv, list) and argv and argv[0] == "gh":
             gh_calls.append(list(argv))
-            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout=_GH_GREEN_ANSWERS.get(tuple(argv[1:3]), ""), stderr="")
         return real_run(argv, *args, **kwargs)
 
     with (
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "ok")),
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value="/usr/bin/gh"),
-        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
-        patch(
-            "sandbox_executor.flow.review.loop.probe_ci_checks",
-            return_value={"all_passed": True, "source": "github_cli"},
-        ),
-        patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
+        patch("shutil.which", return_value="/usr/bin/gh"),
         patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"),
-        patch("sandbox_executor.flow.github.review_post.subprocess.run", side_effect=_recording_run),
+        patch("sandbox_executor.flow.github.adapter.subprocess.run", side_effect=_recording_run),
     ):
         res = run_review_loop(_loop_ctx(tmp_path), target="feature/x", max_iterations=1)
 
@@ -1105,18 +1099,12 @@ def test_reviewed_commit_lookup_fetches_only_outside_a_mounted_container(tmp_pat
 
     with (
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "ok")),
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value="/usr/bin/gh"),
-        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
-        patch(
-            "sandbox_executor.flow.review.loop.probe_ci_checks",
-            return_value={"all_passed": True, "source": "github_cli"},
-        ),
-        patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
+        patch("shutil.which", return_value="/usr/bin/gh"),
         patch("sandbox_executor.flow.review.loop.workspace_mounted", return_value=mounted),
         patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", return_value=(None, None)),
         patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123") as resolve,
         patch(
-            "sandbox_executor.flow.github.review_post.subprocess.run",
+            "sandbox_executor.flow.github.adapter.subprocess.run",
             return_value=MagicMock(returncode=0, stdout=""),
         ),
     ):
@@ -1137,8 +1125,8 @@ def test_mergeability_probe_is_bounded_by_a_subprocess_timeout(tmp_path):
         return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
 
     with (
-        patch("sandbox_executor.flow.github.pr.shutil.which", return_value="/usr/bin/gh"),
-        patch("sandbox_executor.flow.github.pr.subprocess.run", side_effect=_timing_out),
+        patch("sandbox_executor.flow.github.adapter.shutil.which", return_value="/usr/bin/gh"),
+        patch("sandbox_executor.flow.github.adapter.subprocess.run", side_effect=_timing_out),
         patch("sandbox_executor.flow.github.pr.run_git", return_value=MagicMock(returncode=1, stdout="", stderr="")),
     ):
         res = check_pr_mergeability(str(tmp_path), "feature/x", "main")
@@ -1165,7 +1153,7 @@ def _loop(tmp_path: Path, ensemble, *, size: int = 3, merge=None, ci=None, **ctx
         res = run_review_loop(
             ctx, target=EXEC_TARGET, max_iterations=budget, ensemble_size=size, run_ensemble_fn=ensemble
         )
-    return res, stubs.post, ctx
+    return res, stubs.github, ctx
 
 
 def _cli(tmp_path: Path, ensemble, **stub_kwargs) -> int:
@@ -1208,8 +1196,9 @@ def test_three_clean_reviewers_with_mergeable_pr_and_green_ci_approve(tmp_path):
     assert rows[0]["review_counts"] == {"critical": 0, "important": 0, "nit": 0}
     assert not _rows(tmp_path, "ACT-FIND")
     assert not _rows(tmp_path, "ACT-RES")
-    post.assert_called_once()
-    assert [r.index for r in post.call_args.kwargs["reviewers"]] == [1, 2, 3]
+    ((_target, flag, body),) = _posts(post)
+    assert flag == "--approve"
+    assert [n for n in (1, 2, 3, 4) if f"**Reviewer {n}**" in body] == [1, 2, 3]
 
 
 def test_stage4_action_event_rewrite_propagates_instead_of_warning(tmp_path):
@@ -1238,7 +1227,8 @@ def test_report_names_the_commit_the_reviewers_saw_even_when_the_branch_moves(tm
     res, post, _ = _loop(tmp_path, FakeEnsemble())
 
     assert res["consensus"]["approved"] is True
-    assert post.call_args.kwargs["consensus_data"]["target_commit"] == FAKE_HEAD_SHA
+    ((_target, _flag, body),) = _posts(post)
+    assert f"at `{FAKE_HEAD_SHA[:8]}`" in body and "`abc1234`" not in body
 
 
 def test_cli_exits_zero_only_for_the_clean_ensemble(tmp_path, capsys):
@@ -1298,7 +1288,7 @@ def test_any_blocking_reviewer_outcome_stops_after_one_iteration_and_records_row
     assert all(r["review_verdict"] is None and r["error_context"] for r in failed_rows)
     assert not _rows(tmp_path, "ACT-RES")
     posted = case in ("changes-requested", "approved-with-a-nit")  # at the cap only a terminal verdict posts
-    assert post.called is posted is bool(_rows(tmp_path, "ACT-POST"))
+    assert bool(_posts(post)) is posted is bool(_rows(tmp_path, "ACT-POST"))
 
 
 @pytest.mark.parametrize(
@@ -1323,7 +1313,9 @@ def test_changes_requested_maps_to_its_own_status_and_carries_reviewer_summaries
     assert "FIND-R2-001-01" in res["findings"]
     assert res["reviewers"][1]["verdict"] == "CHANGES_REQUESTED"
     assert "report_text" not in json.dumps(res)
-    assert post.call_args.kwargs["consensus_data"]["ensemble_verdict"] == "CHANGES_REQUESTED"
+    ((_target, flag, body),) = _posts(post)
+    assert flag == "--comment"
+    assert "**Ensemble Consensus Verdict**: `CHANGES_REQUESTED`" in body
 
 
 @pytest.mark.parametrize(
@@ -1385,7 +1377,7 @@ def test_host_run_dispatches_review_loop_container_when_unsandboxed(tmp_path, mo
     assert res["consensus"]["approved"] is True
     assert res["total_iterations"] == 1
     ensemble.assert_not_called()
-    stubs.post.assert_called_once()
+    assert len(stubs.posts()) == 1
     assert len(_rows(tmp_path, "ACT-REV")) >= 3
     assert len(_rows(tmp_path, "ACT-POST")) == 1
 
@@ -1400,6 +1392,7 @@ def test_stage4_on_the_host_fails_closed_when_container_dispatch_fails(tmp_path,
     ctx = _ensemble_ctx(tmp_path, plan_branch="I-100-intent/P-200-plan/_", dispatcher=dispatcher)
     with (
         _LoopStubs() as stubs,
+        patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=stubs.github),
         patch("sandbox_executor.flow.review.loop.run_ensemble", ensemble),
         patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
         patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
@@ -1414,7 +1407,7 @@ def test_stage4_on_the_host_fails_closed_when_container_dispatch_fails(tmp_path,
     dispatcher.assert_called_once()
     assert dispatcher.call_args[0][0] == "review-loop"
     ensemble.assert_not_called()
-    stubs.post.assert_not_called()
+    assert stubs.posts() == []
 
 
 def test_stage4_threads_the_flow_ensemble_size_and_reports_reviewer_objections(tmp_path):
@@ -1473,7 +1466,7 @@ def test_unresolvable_target_fails_closed_without_reviewers_or_post(tmp_path, mo
     assert res["consensus"]["status"] == "failed"
     assert res["error"] == "Could not resolve x"
     ensemble.assert_not_called()
-    post.assert_not_called()
+    assert _posts(post) == []
 
 
 def test_a_failing_diff_fails_the_iteration_and_posts_nothing(tmp_path, monkeypatch):
@@ -1490,7 +1483,7 @@ def test_a_failing_diff_fails_the_iteration_and_posts_nothing(tmp_path, monkeypa
     assert "git diff exited 128" in res["error"]
     assert res["total_iterations"] == 1
     ensemble.assert_not_called()
-    post.assert_not_called()
+    assert _posts(post) == []
     assert not _rows(tmp_path, "ACT-POST")
 
 
@@ -1501,7 +1494,7 @@ def test_dry_run_never_dispatches_reviewers(tmp_path):
     assert res["consensus"]["approved"] is False
     assert res["consensus"]["status"] == "not_measured"
     ensemble.assert_not_called()
-    post.assert_not_called()
+    assert _posts(post) == []
 
 
 def test_entrypoint_exits_one_when_the_consensus_lacks_an_approved_ensemble_verdict(tmp_path):
@@ -1580,7 +1573,6 @@ def _leave_findings_open(target, iteration, findings, action_ids, rejected_findi
 def test_host_dispatch_label_flows_into_ledger_rows_and_the_posted_heading(tmp_path, monkeypatch):
     from sandbox_executor.flow import run_review_loop
     from sandbox_executor.review_ensemble import ConsensusVerdict, serialize_review_outcome
-    from sandbox_executor.review_report import build_review_consensus_report
 
     from tests.review_fakes import objecting_reviewer
 
@@ -1617,9 +1609,7 @@ def test_host_dispatch_label_flows_into_ledger_rows_and_the_posted_heading(tmp_p
     rev_rows = _rows(tmp_path, "ACT-REV")
     assert rev_rows
     assert {r["review_iteration"] for r in rev_rows} == {4}
-    consensus_data = stubs.post.call_args.kwargs["consensus_data"]
-    assert consensus_data["iterations"] == 4
-    body = build_review_consensus_report(str(tmp_path), EXEC_TARGET, consensus_data, [objecting_reviewer(1)])
+    ((_target, _flag, body),) = stubs.posts()
     assert body.startswith("## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration 4)")
 
 
@@ -1961,8 +1951,11 @@ def test_post_pr_review_consensus_called_only_once_at_loop_exit(tmp_path):
             "pushed": True,
         }
 
+    from sandbox_executor.flow.github import review_post
+
     ctx = _ensemble_ctx(tmp_path)
-    with _LoopStubs() as stubs:
+    report = MagicMock(wraps=review_post.build_pr_review_consensus_report)
+    with _LoopStubs() as stubs, patch.object(review_post, "build_pr_review_consensus_report", report):
         res = run_review_loop(
             ctx,
             target=EXEC_TARGET,
@@ -1974,9 +1967,8 @@ def test_post_pr_review_consensus_called_only_once_at_loop_exit(tmp_path):
 
     assert res["consensus"]["iterations"] == 3
     assert res["consensus"]["approved"] is True
-    assert stubs.post.call_count == 1
-    call_consensus_data = stubs.post.call_args.kwargs["consensus_data"]
-    assert call_consensus_data["iterations"] == 3
+    assert len(stubs.posts()) == 1
+    assert report.call_args.kwargs["consensus_data"]["iterations"] == 3
 
 
 def test_review_findings_with_pending_ci_bypasses_wait_and_omits_find_ci(tmp_path):
@@ -2064,17 +2056,10 @@ def test_clean_review_with_pending_ci_waits_for_settlement_and_approves_when_gre
         {"source": "github_cli", "pending": 1, "failed": 0, "passed": 0, "all_passed": False, "total": 1},
         {"source": "github_cli", "pending": 0, "failed": 0, "passed": 1, "all_passed": True, "total": 1},
     ]
-    probe_mock = MagicMock(side_effect=ci_sequence)
-
     ctx = _ensemble_ctx(tmp_path)
-    with (
-        _LoopStubs(),
-        patch_lookup_sites(
-            "sandbox_executor.flow.github.ci.probe_ci_checks",
-            "sandbox_executor.flow.review.loop.probe_ci_checks",
-            probe_mock,
-        ),
-    ):
+    with _LoopStubs() as stubs:
+        # The first read is the CI registration wait's (Stage 3 recorded no head), then the gate's probes.
+        stubs.github.checks_sequence = [checks_for(status) for status in ci_sequence[:1] + ci_sequence]
         res = run_review_loop(
             ctx,
             target=EXEC_TARGET,
@@ -2106,17 +2091,10 @@ def test_clean_review_with_pending_ci_dispatches_resolver_when_ci_fails(tmp_path
         {"source": "github_cli", "pending": 1, "failed": 0, "passed": 0, "all_passed": False, "total": 1},
         {"source": "github_cli", "pending": 0, "failed": 1, "passed": 0, "all_passed": False, "total": 1},
     ]
-    probe_mock = MagicMock(side_effect=ci_sequence)
-
     ctx = _ensemble_ctx(tmp_path)
-    with (
-        _LoopStubs(),
-        patch_lookup_sites(
-            "sandbox_executor.flow.github.ci.probe_ci_checks",
-            "sandbox_executor.flow.review.loop.probe_ci_checks",
-            probe_mock,
-        ),
-    ):
+    with _LoopStubs() as stubs:
+        # The first read is the CI registration wait's (Stage 3 recorded no head), then the gate's probes.
+        stubs.github.checks_sequence = [checks_for(status) for status in ci_sequence[:1] + ci_sequence]
         res = run_review_loop(
             ctx,
             target=EXEC_TARGET,
@@ -2223,9 +2201,10 @@ def test_review_resolver_adjudicates_ci_failure_and_converges_to_approval(tmp_pa
         "checks": [{"name": "lint", "bucket": "pass", "state": "SUCCESS"}],
     }
 
-    probe_mock = MagicMock(side_effect=[ci_iteration_1, ci_iteration_2])
     ctx = _ensemble_ctx(tmp_path)
-    with _LoopStubs(), patch("sandbox_executor.flow.review.loop.probe_ci_checks", probe_mock):
+    with _LoopStubs() as stubs:
+        # The first read is the CI registration wait's (Stage 3 recorded no head), then the gate's probes.
+        stubs.github.checks_sequence = [checks_for(ci) for ci in (ci_iteration_1, ci_iteration_1, ci_iteration_2)]
         res = run_review_loop(
             ctx,
             target=EXEC_TARGET,

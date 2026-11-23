@@ -63,14 +63,19 @@ LAZY_EXPORTS: dict[str, str] = {
         "_origin_has_branch _read_ledger_rows _resolve_branch_ref _resolve_review_commit _snapshot_child_branches "
         "_sync_local_execution_refs _track_local_branch fast_forward_local_branch"
     ),
+    "sandbox_executor.flow.github.adapter": "GitHubAdapter merge_argv parse_gh_json",
+    "sandbox_executor.flow.github.adapter_runner": "GhResult gh_env spawn_gh",
     "sandbox_executor.flow.github.token_scopes": (
         "TokenScopeReport doctor_lines fetch_scopes resolve_github_token scope_report token_type touches_workflows "
         "workflow_scope_error"
     ),
     "sandbox_executor.flow.github.approval_invalidation": "CommentRecord gh_comment_editor gh_comment_records",
     "sandbox_executor.flow.github.ci": (
-        "CI_REGISTRATION_TIMEOUT_ENV_VAR CI_REGISTRATION_TIMEOUT_SECONDS _ci_green _extract_failed_ci_check_names "
-        "_wait_for_ci_registration probe_ci_checks resolve_ci_registration_timeout"
+        "CI_REGISTRATION_TIMEOUT_ENV_VAR CI_REGISTRATION_TIMEOUT_SECONDS _wait_for_ci_registration probe_ci_checks "
+        "resolve_ci_registration_timeout"
+    ),
+    "sandbox_executor.flow.github.ci_policy": (
+        "_ci_green _extract_failed_ci_check_names local_tests_ci_status summarise_ci_checks"
     ),
     "sandbox_executor.flow.github.ci_final_head": "format_final_head_ci",
     "sandbox_executor.flow.github.ci_head_checks": (
@@ -85,10 +90,19 @@ LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.github.merge": "BranchMerge merge_branch_detailed",
     "sandbox_executor.flow.github.merge_method": "choose_merge_flag lookup_merge_flag",
+    "sandbox_executor.flow.github.mergeability_policy": (
+        "gh_view_verdict local_error_result merge_tree_verdict mergeability_result missing_ref_result "
+        "not_a_repository_result"
+    ),
     "sandbox_executor.flow.github.pr_head": "pr_head_sha",
     "sandbox_executor.flow.github.pr": (
-        "_resolve_commit_ref check_pr_mergeability create_or_update_pr format_review_git_trailers "
-        "generate_semantic_pr_metadata"
+        "_resolve_commit_ref check_pr_mergeability create_or_update_pr format_review_git_trailers"
+    ),
+    "sandbox_executor.flow.github.pr_metadata": "generate_semantic_pr_metadata",
+    "sandbox_executor.flow.github.review_policy": (
+        "CommentAttempt ReviewAttempt comment_failed_output comment_not_attempted_output comment_posted_output "
+        "gh_unavailable_outcome is_self_approval_rejection posting_outcome review_failed_output review_flag "
+        "review_submitted_output"
     ),
     "sandbox_executor.flow.github.review_post": "post_pr_review_consensus",
     "sandbox_executor.flow.host_remote": (

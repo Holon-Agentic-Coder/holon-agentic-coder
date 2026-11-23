@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from unittest.mock import patch
 
 from sandbox_executor.flow import FlowContext
 from sandbox_executor.flow.context import FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.github import ci_reverify
+from sandbox_executor.flow.github.ci_failure_detail import STEP_LOOKUP_TIMEOUT_SECONDS
 from sandbox_executor.flow.github.ci_final_head import FinalHeadSeams, check_final_head_ci
 from sandbox_executor.flow.github.ci_reverify import reverify_and_report, reverify_final_head
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy
+
+from tests.flow.github.fake_github import FakeGitHub, ci_checks_payload
 
 BRANCH = "I-1-x/P-2-y/E-3-z/_"
 GATE = "CI Timing Gate (compare with main)"
@@ -232,3 +236,57 @@ def test_checks_that_never_reregister_get_no_second_dispatch(tmp_path: Path) -> 
     assert fakes.dispatched == ["42"]
     assert fakes.sleeps
     assert fakes.now >= 60.0
+
+
+def test_an_injected_adapter_reads_the_pr_head_probes_ci_and_dispatches_the_rerun(tmp_path: Path) -> None:
+    """With ``FinalHeadSeams(github=...)``, the PR-head read, the CI probes and the rerun go through the adapter."""
+    fakes = RerunFakes(_status([]), steps={"macos-unit": [GATE]})
+    github = FakeGitHub(
+        checks_sequence=[ci_checks_payload(failed=1, names=["macos-unit"]), ci_checks_payload(passed=1)],
+        head_sha=FINAL,
+    )
+    seams = dataclasses.replace(fakes.seams(), probe=None, pr_head=None, rerun_dispatcher=None, github=github)
+    record = check_final_head_ci(_ctx(tmp_path), str(tmp_path), BRANCH, seams)
+    assert record["state"] == "success"
+    assert record["timing_rerun"] == {"attempted": True, "run_ids": ["100"], "outcome": "success"}
+    assert ("pr_head_sha", (BRANCH, STEP_LOOKUP_TIMEOUT_SECONDS)) in github.calls
+    assert ("rerun_failed", ("100", STEP_LOOKUP_TIMEOUT_SECONDS)) in github.calls
+    assert fakes.diff_calls == [(APPROVED, FINAL)]
+    assert set(github.methods()) == {"ci_checks", "pr_head_sha", "rerun_failed"}
+
+
+def test_an_adapter_whose_rerun_raises_is_a_failed_dispatch_not_an_unknown_record(tmp_path: Path) -> None:
+    class RaisingRerun(FakeGitHub):
+        def rerun_failed(self, run_id: str, timeout: float = 60) -> bool:
+            self.calls.append(("rerun_failed", (run_id, timeout)))
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    fakes = _timing_failure()
+    github = RaisingRerun(head_sha=FINAL)
+    seams = dataclasses.replace(fakes.seams(), rerun_dispatcher=None, github=github)
+    record = check_final_head_ci(_ctx(tmp_path), str(tmp_path), BRANCH, seams)
+    assert record["state"] == "failed"
+    assert record["timing_rerun"] == {"attempted": False, "reason": "the rerun could not be dispatched"}
+    assert github.methods() == ["rerun_failed"]
+    assert fakes.probes == 1
+
+
+def test_the_default_adapter_is_built_once_over_the_checkout_with_the_seam_proxy_environment(tmp_path: Path) -> None:
+    fakes = RerunFakes(_status([_check("unit", "pass")]))
+    seams = dataclasses.replace(fakes.seams(), proxy_env={"HTTPS_PROXY": "p"})
+    with patch("sandbox_executor.flow.github.ci_final_head.GitHubAdapter") as adapter:
+        record = check_final_head_ci(_ctx(tmp_path), str(tmp_path), BRANCH, seams)
+    assert record["state"] == "success"
+    adapter.assert_called_once_with(str(tmp_path), {"HTTPS_PROXY": "p"})
+
+
+def test_the_registration_wait_polls_the_injected_adapter(tmp_path: Path) -> None:
+    """A first probe without checks enters the registration wait, whose poll must land on the injected adapter."""
+    fakes = RerunFakes(_status([]))
+    github = FakeGitHub(checks_sequence=[None, ci_checks_payload(passed=1)], head_sha=FINAL)
+    seams = dataclasses.replace(fakes.seams(registration_timeout=60.0), probe=None, pr_head=None, github=github)
+    record = check_final_head_ci(_ctx(tmp_path), str(tmp_path), BRANCH, seams)
+    assert record["state"] == "success"
+    # The first probe (no checks), the registration poll (checks registered) and the settled probe.
+    assert github.methods() == ["ci_checks"] * 3
+    assert fakes.sleeps == []

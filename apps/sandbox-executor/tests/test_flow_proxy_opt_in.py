@@ -248,6 +248,29 @@ def test_a_resume_without_the_flag_drops_a_stale_checkpointed_mitm_web(monkeypat
     assert "dropped the stored mitm_web" in caplog.text
 
 
+def test_an_opt_out_on_a_fresh_run_drops_mitm_web_without_a_resume_warning(monkeypatch, caplog):
+    monkeypatch.setenv("HOLON_TOKEN_REDUCE", "0")
+
+    with caplog.at_level(logging.WARNING):
+        built = _build_flow_context(_flow_args(mitm_web=True), None, _INTENT, "codex", "gpt")
+
+    assert (built.token_reduce, built.mitm_web, built.proxy_attach) == (False, False, False)
+    assert "Resume dropped" not in caplog.text
+
+
+def test_an_opt_out_on_a_resume_with_mitm_web_reports_the_override(monkeypatch, caplog):
+    monkeypatch.setenv("HOLON_TOKEN_REDUCE", "0")
+    stale = FlowContext(intent_data=_INTENT, token_reduce=True, mitm_web=True)
+
+    with caplog.at_level(logging.WARNING):
+        resumed = _build_flow_context(_flow_args(mitm_web=True), stale, _INTENT, "codex", "gpt")
+
+    assert (resumed.token_reduce, resumed.mitm_web, resumed.proxy_attach) == (False, False, False)
+    assert "Resume dropped" not in caplog.text
+    assert "opt-out overrides the stored mitm_web" in caplog.text
+    assert "opt-out overrides the stored token_reduce" in caplog.text
+
+
 def test_a_resume_with_mitm_web_keeps_the_dashboard_sidecar(monkeypatch):
     _no_proxy_running(monkeypatch)
     stale = FlowContext(intent_data=_INTENT, mitm_web=True)

@@ -266,6 +266,7 @@ def _update_flow_context(
         proxy_choice.spawn_sidecar,
         proxy_choice.attach_running_proxy,
         bool(args.mitm_web) and proxy_choice.spawn_sidecar,
+        (bool(args.token_reduce or args.mitm_web), bool(args.mitm_web)),
     )
 
 
@@ -292,7 +293,7 @@ def _build_flow_context(
             review_ensemble_size=args.ensemble_size or DEFAULT_ENSEMBLE_SIZE,
             token_reduce=proxy_choice.spawn_sidecar,
             proxy_attach=proxy_choice.attach_running_proxy,
-            mitm_web=args.mitm_web,
+            mitm_web=bool(args.mitm_web) and proxy_choice.spawn_sidecar,
             allow_overlap=bool(getattr(args, "allow_overlap", False)),
             **kw,
         )

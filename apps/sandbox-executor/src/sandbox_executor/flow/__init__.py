@@ -35,6 +35,7 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    "AMBIGUOUS_PLAN_BRANCHES_HINT",
     "CHECKPOINT_MIGRATION_REGISTRY",
     "CI_REGISTRATION_POLL_SECONDS",
     "CI_REGISTRATION_TIMEOUT_ENV_VAR",
@@ -95,6 +96,7 @@ __all__ = [
     "MigrationTransform",
     "PipelineEngine",
     "PlanBudget",
+    "PlanCandidate",
     "PlanDecomposition",
     "PlanRefresh",
     "PlanStage",
@@ -198,6 +200,7 @@ __all__ = [
     "admission_lock_path",
     "admission_stage_failure",
     "admitted_record",
+    "adopt_existing_plan",
     "already_reconciled",
     "answered_by_id",
     "answered_by_text",
@@ -304,6 +307,7 @@ __all__ = [
     "parse_metrics",
     "parse_suite_statuses",
     "pending_check_names",
+    "plan_candidates",
     "plan_id_of",
     "plan_metrics",
     "plan_refresh_stage_failure",

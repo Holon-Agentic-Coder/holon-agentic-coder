@@ -13,8 +13,11 @@ from sandbox_executor.flow import (
     FlowContext,
     FlowStage,
     PipelineEngine,
+    PlanCandidate,
     StageResult,
     StageStatus,
+    adopt_existing_plan,
+    plan_candidates,
     run_intent_stage,
     run_plan_stage,
 )
@@ -23,8 +26,10 @@ from sandbox_executor.naming import model_code, ticker_for
 
 from tests.flow.helpers import (
     FakeRoleAgents,
+    _append_jsonl,
     _dispatch_context,
     _git,
+    _push_child_branch,
     stage4_halts_at_consensus,
 )
 
@@ -160,3 +165,126 @@ class TestKillWindowResume:
         assert new_branch != stale_branch
         assert resumed_ctx.plan_branch == new_branch
         assert any(stale_branch in line and "ignored" in line.lower() for line in resumed_ctx.logs)
+
+
+class TestPlanCandidatesAndAdoption:
+    """Step 2 unit tests: candidate discovery, completeness checks, numeric timestamp ordering and adoption."""
+
+    def test_branch_without_plans_jsonl_row_is_incomplete(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin))
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        intent_prefix = ctx.intent_branch.removesuffix("/_")
+        stale = _push_child_branch(tmp_path, origin, ctx.intent_branch, "P-1000-CLA-CO5.5")
+        _git(host, "fetch", "-q", "origin")
+
+        candidates = plan_candidates(str(host), intent_prefix)
+
+        assert [c.branch for c in candidates] == [stale]
+        assert candidates[0].published is True
+        assert candidates[0].complete is False
+        assert candidates[0].missing == "no plans.jsonl row"
+
+    def test_branch_whose_row_names_an_absent_plan_file_is_incomplete(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin))
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        intent_prefix = ctx.intent_branch.removesuffix("/_")
+        plan_id = "P-1000-CLA-CO5.5"
+        plan_branch = f"{intent_prefix}/{plan_id}/_"
+        _git(host, "checkout", "-q", "-B", plan_branch, f"refs/remotes/origin/{ctx.intent_branch}")
+        _append_jsonl(
+            host / "holon-knowledge/ledger/plans.jsonl",
+            {"plan_id": plan_id, "intent_branch": ctx.intent_branch, "plan_file": f"plans/{plan_id}.md"},
+        )
+        _git(host, "add", "-A")
+        _git(host, "commit", "-q", "-m", "row without plan file")
+
+        candidates = plan_candidates(str(host), intent_prefix)
+
+        assert len(candidates) == 1
+        assert candidates[0] == PlanCandidate(
+            branch=plan_branch,
+            ref=f"refs/heads/{plan_branch}",
+            published=False,
+            missing="plan file not found",
+        )
+        assert candidates[0].complete is False
+
+    def test_fake_planner_branch_is_complete_locally_and_when_pushed(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        intent_prefix = ctx.intent_branch.removesuffix("/_")
+        agents("planner", ctx.agent, ctx.model, [ctx.intent_branch, ctx.agent, ctx.model], target_worktree=str(host))
+
+        (local_cand,) = plan_candidates(str(host), intent_prefix)
+        assert local_cand.complete is True
+        assert local_cand.published is False
+        assert local_cand.ref == f"refs/heads/{local_cand.branch}"
+
+        _git(host, "push", "-q", "origin", local_cand.branch)
+        (pushed_cand,) = plan_candidates(str(host), intent_prefix)
+        assert pushed_cand.complete is True
+        assert pushed_cand.published is True
+        assert pushed_cand.ref == f"refs/remotes/origin/{local_cand.branch}"
+
+    def test_candidates_order_by_numeric_timestamp_then_branch_name(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin))
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        intent_prefix = ctx.intent_branch.removesuffix("/_")
+        for plan_id in ("P-1000-CLA-CO5.5", "P-999-ZZZ-CO5.5", "P-1000-ANA-G4A"):
+            _git(host, "branch", f"{intent_prefix}/{plan_id}/_", f"refs/remotes/origin/{ctx.intent_branch}")
+
+        candidates = plan_candidates(str(host), intent_prefix)
+
+        assert [c.branch for c in candidates] == [
+            f"{intent_prefix}/P-999-ZZZ-CO5.5/_",
+            f"{intent_prefix}/P-1000-ANA-G4A/_",
+            f"{intent_prefix}/P-1000-CLA-CO5.5/_",
+        ]
+
+    def test_adopt_existing_plan_returns_empty_with_no_or_only_incomplete_candidates_or_replan_feedback(
+        self, flow_repos, tmp_path
+    ):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        intent_prefix = ctx.intent_branch.removesuffix("/_")
+
+        assert adopt_existing_plan(ctx, intent_prefix) == ("", None)
+
+        _push_child_branch(tmp_path, origin, ctx.intent_branch, "P-1000-CLA-CO5.5")
+        _git(host, "fetch", "-q", "origin")
+        assert adopt_existing_plan(ctx, intent_prefix) == ("", None)
+
+        agents("planner", ctx.agent, ctx.model, [ctx.intent_branch, ctx.agent, ctx.model], target_worktree=str(host))
+        ctx.intent_data["replan_feedback"] = "over budget: write a smaller plan"
+        assert adopt_existing_plan(ctx, intent_prefix) == ("", None)
+
+    def test_adopt_existing_plan_publishes_local_only_complete_branch_and_reports_push_errors(
+        self, flow_repos, tmp_path
+    ):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        intent_prefix = ctx.intent_branch.removesuffix("/_")
+        agents("planner", ctx.agent, ctx.model, [ctx.intent_branch, ctx.agent, ctx.model], target_worktree=str(host))
+        (local_branch,) = _plan_branches(host)
+
+        _git(host, "config", "remote.origin.pushurl", "https://127.0.0.1:9/unreachable/repo.git")
+        adopted, err = adopt_existing_plan(ctx, intent_prefix)
+        assert adopted == ""
+        assert err is not None and f"host push of '{local_branch}'" in err
+        assert _plan_branches(origin) == []
+
+        _git(host, "config", "--unset", "remote.origin.pushurl")
+        adopted, err = adopt_existing_plan(ctx, intent_prefix)
+        assert err is None
+        assert adopted == local_branch
+        assert _plan_branches(origin) == [local_branch]
+

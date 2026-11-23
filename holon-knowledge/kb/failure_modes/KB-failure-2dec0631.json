@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-2dec0631",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T10:20:55.243827+00:00",
+  "updated_ts": "2026-11-23T10:20:55.243827+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795425186-79dc818a-claude-agent",
+      "REV-1795425181-cf3b099d-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 3,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795420649-no-fallback-calibration-report/P-1795421790-CLA-CO5.5/_",
+    "description": "Reproduced failure across 3 executions with identical context.",
+    "action": "Review Loop halted without consensus after 3 iteration(s); final verdicts: Reviewer 1 APPROVED (0/0/0); Reviewer 2 APPROVED (0/0/0); Reviewer 3 APPROVED (0/0/0)",
+    "symptoms": []
+  }
+}

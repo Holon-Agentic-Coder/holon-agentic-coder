@@ -440,7 +440,8 @@ or `github_token=none (set GITHUB_TOKEN or run gh auth login)`. A classic (`ghp_
 come from the `X-OAuth-Scopes` header of one `GET https://api.github.com/user`. When they are known and lack `workflow`,
 a `WARNING` line says that plans touching `.github/workflows/**` will fail before Stage 3 and names the fix,
 `gh auth refresh -h github.com -s workflow` (a token set in the environment must instead be regenerated with the
-`workflow` scope). A fine-grained (`github_pat_`) or app (`ghs_`) token carries no scopes header, so its scopes are
-`unverifiable` and a `WARNING` line asks for the Workflows read/write permission; a failed request is unverifiable too.
-These warnings never change the doctor's exit code. The same report drives the Stage 3 token scope pre-flight (see
+`workflow` scope). A fine-grained (`github_pat_`), app (`ghs_`) or user-to-server (`ghu_`) token is not governed by
+OAuth scopes (nor is an empty scopes header from any other non-classic token), so its scopes are `unverifiable` and a
+`WARNING` line asks for the Workflows read/write permission; a failed request is unverifiable too. These warnings never
+change the doctor's exit code. The same report drives the Stage 3 token scope pre-flight (see
 [git_flow.md](../git_flow.md#flow-equivalence-guarantee)).

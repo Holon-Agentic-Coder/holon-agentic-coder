@@ -439,8 +439,10 @@ The guarantee has these deliberate limits:
   `flow/github/token_scopes.py`). A token whose `X-OAuth-Scopes` header lacks `workflow`, or no token at all, fails the
   stage before admission, the plan refresh and the executor container (`dispatched: false`, `token_scope: "missing"`,
   `workflow_paths`), naming `gh auth refresh -h github.com -s workflow` (or `gh auth login -h github.com -s workflow`).
-  A fine-grained or app token, or a failed scope request, is unverifiable: the stage logs a note and goes on. Plans that
-  touch no workflow path make no request. The token value is never logged or put in an error.
+  A fine-grained, app or user-to-server token, or a failed scope request, is unverifiable: the stage logs a note and
+  goes on. The check runs only when the worktree's remote pushes over HTTPS to github.com (`git remote get-url --push`);
+  an SSH push is authorised by the host's key, not the token, so it is skipped with a note. Plans that touch no workflow
+  path make no request. The token value is never logged or put in an error.
 - **A refused push keeps the commits.** When the host's Stage 3 push is refused, every new execution branch's tip is
   pinned under `refs/holon/recovery/<execution id>` in the worktree's repository, so it survives worktree removal and
   branch deletion, and a fast-forward-only push to `origin` `holon-recovery/<execution id>` is attempted (it succeeds

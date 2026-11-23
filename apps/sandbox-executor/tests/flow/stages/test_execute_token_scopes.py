@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,7 +11,12 @@ from sandbox_executor.flow import StageStatus
 from sandbox_executor.flow.execution_recovery import RecoveredExecution
 from sandbox_executor.flow.github.token_scopes import REFRESH_COMMAND, TokenScopeReport, scope_report
 from sandbox_executor.flow.host_remote import HostRemoteError
-from sandbox_executor.flow.stages.token_scope_guard import declared_paths, token_scope_failure
+from sandbox_executor.flow.stages.token_scope_guard import (
+    declared_paths,
+    push_url,
+    pushes_over_https_github,
+    token_scope_failure,
+)
 from sandbox_executor.touch_set import TouchSet, TouchSetEntry
 
 from tests.flow.stages.test_execute import EXEC_BRANCH, EXEC_ID, run_stage3, stage3_context
@@ -18,6 +24,8 @@ from tests.flow.stages.test_execute import EXEC_BRANCH, EXEC_ID, run_stage3, sta
 SENTINEL = "ghp_TESTSENTINEL"
 SCOPE_REPORT = "sandbox_executor.flow.github.token_scopes.scope_report"
 TOUCH_SET_READER = "sandbox_executor.flow.stages.token_scope_guard.read_plan_touch_set"
+PUSH_URL = "sandbox_executor.flow.stages.token_scope_guard.push_url"
+HTTPS_ORIGIN = "https://github.com/o/r.git"
 WORKFLOW = ".github/workflows/ci.yml"
 
 
@@ -31,11 +39,21 @@ def _touch_set(*paths: str) -> TouchSet:
     return TouchSet(tuple(TouchSetEntry(path) for path in paths))
 
 
-def _run(tmp_path, report: TokenScopeReport, touch_set: TouchSet | None, scope: list[str] | None = None):
+def _run(
+    tmp_path,
+    report: TokenScopeReport,
+    touch_set: TouchSet | None,
+    scope: list[str] | None = None,
+    url: str = HTTPS_ORIGIN,
+):
     intent = {"slug": "x", **({"scope": scope} if scope is not None else {})}
     ctx = stage3_context(tmp_path, intent_data=intent)
     report_fn = MagicMock(return_value=report)
-    with patch(TOUCH_SET_READER, return_value=touch_set), patch(SCOPE_REPORT, report_fn):
+    with (
+        patch(TOUCH_SET_READER, return_value=touch_set),
+        patch(SCOPE_REPORT, report_fn),
+        patch(PUSH_URL, return_value=url),
+    ):
         result, mocks = run_stage3(ctx)
     return ctx, result, mocks, report_fn
 
@@ -97,11 +115,43 @@ def test_the_real_report_over_a_failed_request_leaks_no_token(tmp_path, caplog):
     def failing_fetch(url, headers, timeout):
         raise OSError(f"blocked {headers['Authorization']}")
 
-    with patch(TOUCH_SET_READER, return_value=None):
+    with patch(TOUCH_SET_READER, return_value=None), patch(PUSH_URL, return_value=HTTPS_ORIGIN):
         result = token_scope_failure(ctx, "2026-11-23T00:00:00Z", lambda: scope_report(fetch=failing_fetch))
     assert result is None
     assert all(SENTINEL not in line for line in ctx.logs) and SENTINEL not in caplog.text
     assert any("could not be verified" in line for line in ctx.logs)
+
+
+@pytest.mark.parametrize("url", ["git@github.com:o/r.git", "ssh://git@github.com/o/r.git", ""])
+def test_a_remote_not_pushing_over_https_github_skips_the_pre_flight(tmp_path, url):
+    report = TokenScopeReport("classic", "GITHUB_TOKEN", ("repo",))
+    ctx, result, mocks, report_fn = _run(tmp_path, report, _touch_set(WORKFLOW), url=url)
+    assert result.status == StageStatus.SUCCESS
+    report_fn.assert_not_called()
+    mocks["_dispatch_role"].assert_called_once()
+    assert any("does not push over HTTPS" in line for line in ctx.logs)
+
+
+@pytest.mark.parametrize(
+    ("url", "https"),
+    [
+        ("https://github.com/o/r.git", True),
+        ("https://x-access-token@GitHub.com/o/r", True),
+        ("git@github.com:o/r.git", False),
+        ("https://gitlab.com/o/r.git", False),
+        ("", False),
+    ],
+)
+def test_pushes_over_https_github(url, https):
+    assert pushes_over_https_github(url) is https
+
+
+def test_push_url_reads_the_remote_push_url(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "add", "origin", "git@github.com:o/r.git"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "set-url", "--push", "origin", HTTPS_ORIGIN], check=True)
+    assert push_url(str(tmp_path)) == HTTPS_ORIGIN
+    assert push_url(str(tmp_path), "missing") == ""
 
 
 def test_declared_paths_tolerates_an_unreadable_touch_set(tmp_path):

@@ -2,8 +2,9 @@
 
 Pushing a commit that changes ``.github/workflows/**`` needs the ``workflow`` scope. A classic or ``gh`` OAuth token
 lists its scopes in the ``X-OAuth-Scopes`` header of any API response, so one ``GET /user`` tells them apart. A
-fine-grained or app token carries no scopes header (its permissions are per repository), so its scopes are reported
-as unverifiable rather than missing, and a network or HTTP failure is unverifiable too.
+fine-grained, app or user-to-server token's permissions are per repository or per app, not OAuth scopes, so its
+scopes are reported as unverifiable rather than missing (as is an empty scopes header from any token that is not a
+classic or OAuth one), and a network or HTTP failure is unverifiable too.
 
 The token value never leaves this module's functions: reports and messages carry only its type label and source.
 """
@@ -35,7 +36,8 @@ _TOKEN_TYPES = (
     ("ghs_", "app"),
     ("ghu_", "user-to-server"),
 )
-_UNVERIFIABLE_TYPES = frozenset({"fine-grained", "app"})
+_UNVERIFIABLE_TYPES = frozenset({"fine-grained", "app", "user-to-server"})
+_SCOPED_TYPES = frozenset({"classic", "oauth"})
 
 #: Runs ``gh auth token``-style argv and returns the completed process.
 CommandRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]
@@ -132,6 +134,8 @@ def scope_report(
     if kind in _UNVERIFIABLE_TYPES:
         return TokenScopeReport(kind, source, None, f"{kind} tokens carry no scopes header")
     scopes, reason = fetch_scopes(token, fetch)
+    if scopes == () and kind not in _SCOPED_TYPES:
+        return TokenScopeReport(kind, source, None, f"an empty scopes header from a {kind} token is not a scope list")
     return TokenScopeReport(kind, source, scopes, reason)
 
 

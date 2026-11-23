@@ -179,3 +179,21 @@ def test_resolve_github_token_survives_a_failing_gh():
 def test_report_format_line_names_type_source_and_scopes():
     line = TokenScopeReport("classic", "gh", ("repo", "workflow")).format_line()
     assert line == "github_token=classic source=gh scopes=repo,workflow"
+
+
+def test_a_user_to_server_token_is_unverifiable_without_a_request():
+    report, fetcher = _report(token="ghu_TESTSENTINEL", headers={"X-OAuth-Scopes": ""})
+    assert not report.verifiable and fetcher.calls == []
+    assert workflow_scope_error(report, WORKFLOW_PATHS) is None
+
+
+def test_an_empty_scopes_header_from_an_unknown_token_is_unverifiable():
+    report, _ = _report(token="xyz_TESTSENTINEL", headers={"X-OAuth-Scopes": ""})
+    assert not report.verifiable and "empty scopes header" in report.detail
+    assert workflow_scope_error(report, WORKFLOW_PATHS) is None
+
+
+def test_an_empty_scopes_header_from_a_classic_token_means_no_scopes():
+    report, _ = _report(headers={"X-OAuth-Scopes": ""})
+    assert report.scopes == ()
+    assert REFRESH_COMMAND in (workflow_scope_error(report, WORKFLOW_PATHS) or "")

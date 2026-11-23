@@ -170,7 +170,9 @@ _LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.stages.review": "TESTS_NOT_MEASURED_ERROR _checkout_execution_branch run_review_stage",
     "sandbox_executor.flow.stages.stage_support": "consult_knowledge intent_payload_file stage_success",
     "sandbox_executor.flow.stages.sync_conflict": "sync_conflict_result",
-    "sandbox_executor.flow.stages.token_scope_guard": "declared_paths token_scope_failure",
+    "sandbox_executor.flow.stages.token_scope_guard": (
+        "declared_paths push_url pushes_over_https_github token_scope_failure"
+    ),
     "sandbox_executor.flow.stages.touch_set_guard": (
         "superseding_failure_row touch_set_replan_exhausted touch_set_replan_feedback touch_set_violation "
         "touch_set_violation_result"
@@ -431,6 +433,8 @@ __all__ = [
     "publish_with_first_row",
     "push_branch",
     "push_commit",
+    "push_url",
+    "pushes_over_https_github",
     "read_plan_touch_set",
     "read_worktree_checkpoint",
     "rebuild_calibrated_branch",

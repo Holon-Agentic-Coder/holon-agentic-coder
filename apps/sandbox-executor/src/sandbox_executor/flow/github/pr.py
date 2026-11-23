@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import re
-import shutil
-import subprocess
 import time
 from typing import Any
 
+from sandbox_executor.flow.github.adapter import GitHubAdapter
 from sandbox_executor.flow.github.mergeability_policy import (
     gh_view_verdict,
     local_error_result,
@@ -20,6 +17,7 @@ from sandbox_executor.flow.github.mergeability_policy import (
 )
 from sandbox_executor.flow.github.pr_metadata import generate_semantic_pr_metadata as generate_semantic_pr_metadata
 from sandbox_executor.git import run_git
+from sandbox_executor.redaction import redact_agent_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +53,8 @@ def check_pr_mergeability(
     branch: str,
     target_branch: str = "main",
     proxy_env: dict[str, str] | None = None,
+    *,
+    github: GitHubAdapter | None = None,
 ) -> dict[str, Any]:
     """Inspect PR and branch mergeability status against target branch.
 
@@ -75,6 +75,7 @@ def check_pr_mergeability(
         branch: Name of branch or PR branch to evaluate.
         target_branch: Target base branch name (defaults to 'main').
         proxy_env: Optional proxy environment variables for network-intercepted runs.
+        github: The GitHub adapter to read the PR through; defaults to one for repo_dir and proxy_env.
 
     Returns:
         dict[str, Any]: Mergeability diagnostics dictionary with keys:
@@ -93,10 +94,11 @@ def check_pr_mergeability(
         None: Gracefully falls back to git_local or UNKNOWN on exceptions.
     """
     clean_branch = branch.strip() if branch else ""
+    github = github or GitHubAdapter(repo_dir, proxy_env)
 
     # 1. Attempt GitHub CLI inspection if gh is installed and available
-    if shutil.which("gh") and clean_branch:
-        gh_result = _gh_mergeability(repo_dir, clean_branch, proxy_env)
+    if clean_branch and github.available:
+        gh_result = _gh_mergeability(github, clean_branch)
         if gh_result is not None:
             return gh_result
 
@@ -104,21 +106,12 @@ def check_pr_mergeability(
     return _local_mergeability(repo_dir, clean_branch, target_branch)
 
 
-def _gh_mergeability(repo_dir: str, clean_branch: str, proxy_env: dict[str, str] | None) -> dict[str, Any] | None:
+def _gh_mergeability(github: GitHubAdapter, clean_branch: str) -> dict[str, Any] | None:
     """Return the ``gh pr view`` mergeability verdict, retrying while GitHub computes it, or None to fall back."""
-    gh_env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
     for attempt in range(3):
         try:
-            gh_proc = subprocess.run(
-                ["gh", "pr", "view", clean_branch, "--json", "number,mergeable,mergeStateStatus,statusCheckRollup"],
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=60,
-                env=gh_env,
-            )
-            if gh_proc.returncode != 0:
+            gh_proc = github.mergeability(clean_branch)
+            if not gh_proc.ok:
                 return None
             if not gh_proc.stdout.strip():
                 continue
@@ -222,6 +215,8 @@ def create_or_update_pr(  # noqa: PLR0913
     title: str = "",
     body: str = "",
     proxy_env: dict[str, str] | None = None,
+    *,
+    github: GitHubAdapter | None = None,
 ) -> dict[str, Any]:
     """Create a new pull request or update existing PR title and body via GitHub CLI.
 
@@ -232,82 +227,25 @@ def create_or_update_pr(  # noqa: PLR0913
         title: PR title.
         body: PR markdown description.
         proxy_env: Optional proxy environment variables.
+        github: The GitHub adapter to create or edit the PR through; defaults to one for repo_dir and proxy_env.
 
     Returns:
         dict[str, Any]: Outcome dictionary with keys 'attempted', 'success', 'action', 'pr_number', 'output'.
     """
     clean_branch = branch.strip() if branch else ""
-    if not shutil.which("gh") or not clean_branch:
+    github = github or GitHubAdapter(repo_dir, proxy_env)
+    if not clean_branch or not github.available:
         return {"attempted": False, "success": False, "action": "none", "pr_number": None, "output": ""}
 
-    gh_env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
-
     try:
-        view_proc = subprocess.run(
-            ["gh", "pr", "view", clean_branch, "--json", "number,title"],
-            cwd=repo_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=gh_env,
-            timeout=60,
-        )
-        if view_proc.returncode == 0 and view_proc.stdout.strip():
-            data = json.loads(view_proc.stdout)
-            pr_num = data.get("number")
-            edit_cmd = ["gh", "pr", "edit", clean_branch]
-            if title:
-                edit_cmd.extend(["--title", title])
-            if body:
-                edit_cmd.extend(["--body", body])
-            edit_proc = subprocess.run(
-                edit_cmd,
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                env=gh_env,
-                timeout=60,
-            )
-            return {
-                "attempted": True,
-                "success": edit_proc.returncode == 0,
-                "action": "edit",
-                "pr_number": pr_num,
-                "output": f"{edit_proc.stdout or ''}\n{edit_proc.stderr or ''}".strip(),
-            }
-        else:
-            create_cmd = [
-                "gh",
-                "pr",
-                "create",
-                "--base",
-                target_branch,
-                "--head",
-                clean_branch,
-                "--title",
-                title or clean_branch,
-                "--body",
-                body or f"Automated PR for branch {clean_branch}",
-            ]
-            create_proc = subprocess.run(
-                create_cmd,
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                env=gh_env,
-                timeout=60,
-            )
-            out = f"{create_proc.stdout or ''}\n{create_proc.stderr or ''}".strip()
-            pr_match = re.search(r"/pull/(\d+)", out)
-            pr_num = int(pr_match.group(1)) if pr_match else None
-            return {
-                "attempted": True,
-                "success": create_proc.returncode == 0,
-                "action": "create",
-                "pr_number": pr_num,
-                "output": out,
-            }
+        action, pr_num, result = github.open_or_update(clean_branch, target_branch, title, body)
     except Exception as exc:
-        return {"attempted": True, "success": False, "action": "error", "pr_number": None, "output": str(exc)}
+        return _pr_error(redact_agent_secrets(str(exc)))
+    if result.error:
+        return _pr_error(result.error)
+    return {"attempted": True, "success": result.ok, "action": action, "pr_number": pr_num, "output": result.output}
+
+
+def _pr_error(output: str) -> dict[str, Any]:
+    """The outcome of a PR create or update that could not be run."""
+    return {"attempted": True, "success": False, "action": "error", "pr_number": None, "output": output}

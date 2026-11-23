@@ -1085,7 +1085,7 @@ def test_approved_loop_never_merges(tmp_path, gh_write_guard):
         ),
         patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
         patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"),
-        patch("sandbox_executor.flow.github.review_post.subprocess.run", side_effect=_recording_run),
+        patch("sandbox_executor.flow.github.adapter.subprocess.run", side_effect=_recording_run),
     ):
         res = run_review_loop(_loop_ctx(tmp_path), target="feature/x", max_iterations=1)
 
@@ -1116,7 +1116,7 @@ def test_reviewed_commit_lookup_fetches_only_outside_a_mounted_container(tmp_pat
         patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", return_value=(None, None)),
         patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123") as resolve,
         patch(
-            "sandbox_executor.flow.github.review_post.subprocess.run",
+            "sandbox_executor.flow.github.adapter.subprocess.run",
             return_value=MagicMock(returncode=0, stdout=""),
         ),
     ):
@@ -1137,8 +1137,8 @@ def test_mergeability_probe_is_bounded_by_a_subprocess_timeout(tmp_path):
         return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
 
     with (
-        patch("sandbox_executor.flow.github.pr.shutil.which", return_value="/usr/bin/gh"),
-        patch("sandbox_executor.flow.github.pr.subprocess.run", side_effect=_timing_out),
+        patch("sandbox_executor.flow.github.adapter.shutil.which", return_value="/usr/bin/gh"),
+        patch("sandbox_executor.flow.github.adapter.subprocess.run", side_effect=_timing_out),
         patch("sandbox_executor.flow.github.pr.run_git", return_value=MagicMock(returncode=1, stdout="", stderr="")),
     ):
         res = check_pr_mergeability(str(tmp_path), "feature/x", "main")

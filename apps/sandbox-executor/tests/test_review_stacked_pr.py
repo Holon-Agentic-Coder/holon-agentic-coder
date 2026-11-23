@@ -181,7 +181,7 @@ def stacked_repo(tmp_path: Path) -> Path:
 def test_local_mergeability_of_a_stacked_branch_never_needs_main(
     stacked_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("sandbox_executor.flow.github.pr.shutil.which", lambda name: None)
+    monkeypatch.setattr("sandbox_executor.flow.github.adapter.shutil.which", lambda name: None)
 
     clean = check_pr_mergeability(str(stacked_repo), CHILD_EXECUTION_BRANCH, target_branch=PARENT_BRANCH)
     assert (clean["source"], clean["mergeable"], clean["merge_state_status"]) == ("git_local", "MERGEABLE", "CLEAN")

@@ -8,7 +8,6 @@ import io
 import json
 import os
 import secrets
-import shutil
 import stat
 import sys
 import tempfile
@@ -17,8 +16,7 @@ from unittest.mock import MagicMock, patch
 
 from sandbox_executor import cli, local_llm, token_reduction
 from sandbox_executor.agent_runner import get_runner
-from sandbox_executor.launcher import proxy_paths
-from sandbox_executor.token_reduction import proxy_readiness
+from sandbox_executor.launcher import proxy_paths, sidecar
 
 from tests.leak_assertions import assert_no_fragment, make_probe
 
@@ -419,16 +417,11 @@ class TestLauncherIntegration(unittest.TestCase):
         with (
             patch("shutil.which", side_effect=lambda name: "/usr/bin/docker" if name == "docker" else None),
             patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
-            patch(
-                "sandbox_executor.launcher.mounts.get_agent_session_mounts", side_effect=mounts or (lambda agent: [])
-            ),
+            patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", side_effect=mounts or (lambda _: [])),
             patch.object(cli.git_flow, "sandbox_worktree_mounts", return_value=[]),
-            patch(
-                "sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs",
-                return_value=([], dict(tr_envs or {})),
-            ),
+            patch.object(sidecar, "get_token_reduction_mounts_and_envs", return_value=([], dict(tr_envs or {}))),
             patch.object(tempfile, "mkdtemp", return_value=mkdtemp_dir or self.default_agent_dir),
-            patch.object(shutil, "rmtree") as mock_rmtree,
+            patch("shutil.rmtree") as mock_rmtree,
             patch.dict(os.environ, merged_env, clear=True),
         ):
             code = cli.run_docker_container(
@@ -468,7 +461,7 @@ class TestLauncherIntegration(unittest.TestCase):
                 proxy_paths, "_mitm_proxy_ca_paths", return_value=("/tmp/mock-ca.pem", "/tmp/mock-ca-cert.pem")
             ),
             patch.object(os.path, "isfile", lambda path: True),
-            patch.object(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True),
+            patch("sandbox_executor.token_reduction.proxy_readiness.wait_for_proxy", lambda *a, **k: True),
             patch("subprocess.run") as mock_subproc,
         ):
             mock_subproc.return_value = MagicMock(returncode=0, stdout="8080\n")

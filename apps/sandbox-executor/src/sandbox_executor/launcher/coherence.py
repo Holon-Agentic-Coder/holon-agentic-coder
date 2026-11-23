@@ -114,14 +114,7 @@ def _coherence_binary_present() -> bool:
 
 def _token_reduce_opt_in(token_reduce: bool = False) -> bool:
     """True only on explicit opt-in; respects opt-out."""
-    env_reduce = os.getenv("HOLON_TOKEN_REDUCE", "").strip().lower()
-    if env_reduce in _EXPLICIT_OPT_OUT_VALUES:
-        return False
-    if token_reduce:
-        return True
-    if env_reduce in _TRUTHY_ENV_VALUES:
-        return True
-    return os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES
+    return _explicit_coherence_choice(token_reduce) is True
 
 
 def get_host_proxy_envs() -> dict[str, str]:

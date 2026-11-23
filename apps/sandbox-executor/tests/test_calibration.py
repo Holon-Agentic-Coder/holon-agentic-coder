@@ -1489,7 +1489,6 @@ def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
 
     assert res.status == StageStatus.FAILED
     assert "nothing was committed or pushed" in (res.error or "")
-    # No push, no fast-forward, no reconciliation commit; the empty /calibrated branch is discarded.
     assert not [c for c in git_calls if c[:1] in (["push"], ["merge"]) or c[:1] == ["commit"]]
     assert git("rev-parse", _EXEC_BRANCH).strip() == exec_head_before
     assert git("branch", "--list", calibrated).strip() == ""

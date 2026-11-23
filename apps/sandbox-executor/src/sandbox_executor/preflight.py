@@ -27,8 +27,8 @@ from typing import Any
 from sandbox_executor import local_llm
 from sandbox_executor.agent_defaults import AGENT_IMAGE_MAPPING, normalise_agent_id
 from sandbox_executor.claude_credential import (
-    CLAUDE_CREDENTIAL_ENV_NAMES,
     SECRETS_FILE_DISPLAY,
+    pin_claude_credential,
     resolve_claude_credential,
 )
 
@@ -52,6 +52,7 @@ _SENSITIVE_ENV_VARS = (
     "GH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "ANTHROPIC_API_KEY",
+    "HOLON_AGENT_OAUTH_TOKEN",
 )
 # Bare Anthropic API keys and OAuth tokens (sk-ant-...), which the generic sweep does not recognise on their own.
 _ANTHROPIC_TOKEN_RE = re.compile(r"sk-ant-[A-Za-z0-9_\-]+")
@@ -292,6 +293,7 @@ def build_probe_docker_cmd(
         ``env_files.write_env_file`` and ``--env-file``.
     """
     from sandbox_executor.agent_runner import RETIRED_ENV_VARS, runners
+    from sandbox_executor.config_env import RESOLVED_MARKER
     from sandbox_executor.launcher import env_files, mounts, proxy_paths
 
     agent_id = normalise_agent_id(agent)
@@ -301,14 +303,9 @@ def build_probe_docker_cmd(
         for key, value in os.environ.items()
         if key.startswith("HOLON_") and key != "HOLON_ROLE" and key not in RETIRED_ENV_VARS
     }
-    if agent_id == "claude":
-        env.pop("HOLON_AGENT_KEY", None)
-        claude_credential = resolve_claude_credential()
-        if claude_credential:
-            for name in CLAUDE_CREDENTIAL_ENV_NAMES:
-                env.pop(name, None)
-            env[claude_credential[0]] = claude_credential[1]
+    pin_claude_credential(env, agent_id)
     env["HOLON_AGENT_ID"] = agent_id
+    env[RESOLVED_MARKER] = "1"
     env[SKIP_ENV_VAR] = "1"
     secret_env: dict[str, str] = {}
     for key, value in sorted(env.items()):

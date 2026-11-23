@@ -49,7 +49,9 @@ graph TD
   - `NODE_EXTRA_CA_CERTS` (Node.js/Prettier/TypeScript tools)
   - `REQUESTS_CA_BUNDLE` & `SSL_CERT_FILE` (Python library requests)
   - `CURL_CA_BUNDLE` (cURL command line calls)
-- **Proxy Interception**: Outbound requests are routed via `mitmproxy` using a custom scripting addon (`mitm_addon.py`).
+- **Proxy Interception**: Outbound requests are routed via `mitmproxy` using the addon holon-coherence ships in its
+  proxy image. holon-coherence owns token reduction; this repository's launcher only starts that image as a sidecar,
+  keeps the host Root CA valid (`launcher/root_ca.py`) and probes proxy readiness (`launcher/proxy_readiness.py`).
 
 ---
 

@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-1cf59165",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T12:13:40.216380+00:00",
+  "updated_ts": "2026-11-23T12:13:40.216380+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795432314-e5887fac-claude-agent",
+      "REV-1795432307-cd6f85c9-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 3,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795388456-github-adapter-pr-ci-review/P-1795397463-CLA-CO5.5/_",
+    "description": "Reproduced failure across 3 executions with identical context.",
+    "action": "Review Loop halted without consensus after 2 iteration(s): not approved: reviewer 1 final verdict FAILED, reviewer 2 final verdict FAILED, reviewer 3 final verdict FAILED; final verdicts: Reviewer 1 FAILED (0/0/0); Reviewer 2 FAILED (0/0/0); Reviewer 3 FAILED (0/0/0)",
+    "symptoms": []
+  }
+}

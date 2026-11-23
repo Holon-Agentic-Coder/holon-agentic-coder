@@ -1,14 +1,14 @@
 """The conflict gate: no approved consensus is posted, and Stage 5 never starts, on a CONFLICTING or DIRTY head.
 
-The mergeability probe is scripted, the post is a mock, and the merge either is a recorded fake or runs real git
-against a local bare ``origin``; no test reaches GitHub.
+The mergeability reads and the post are answered by an injected ``FakeGitHub``, and the merge either is a recorded
+fake or runs real git against a local bare ``origin``; no test reaches GitHub.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from sandbox_executor.flow import FlowContext, StageResult, StageStatus, run_review_loop
@@ -17,6 +17,7 @@ from sandbox_executor.flow.review.posting import PostRequest, post_review_consen
 from sandbox_executor.flow.stages import calibrate
 from sandbox_executor.review_report import _mergeability_word
 
+from tests.flow.github.fake_github import view_for
 from tests.flow.helpers import _git
 from tests.ledger_conflict_repos import BRANCH, LEDGER, build_conflicting_repos, refuse_test_runs
 from tests.review_fakes import FakeEnsemble, clean_reviewer
@@ -61,16 +62,12 @@ def test_only_an_explicit_conflict_or_dirty_state_counts(probe, expected):
 def test_loop_never_posts_an_approval_when_the_head_turns_conflicting_before_the_post(tmp_path, monkeypatch):
     merge = _RecordingMerge(CODE_CONFLICT)
     monkeypatch.setattr(conflict_gate, "_merge_and_push", merge)
-    probes = [dict(_CLEAN_MERGE), dict(CONFLICTING)]
     stubs = _LoopStubs()
+    # The iteration reads a clean head; every later read (the pre-post conflict gate) sees it conflicting.
+    stubs.github.views = [view_for(_CLEAN_MERGE)]
+    stubs.github.standing_view = view_for(CONFLICTING)
     ctx = _ensemble_ctx(tmp_path)
-    with (
-        stubs,
-        patch(
-            "sandbox_executor.flow.review.loop.check_pr_mergeability",
-            side_effect=lambda *a, **k: dict(probes.pop(0) if len(probes) > 1 else probes[0]),
-        ),
-    ):
+    with stubs:
         res = run_review_loop(
             ctx,
             target=EXEC_TARGET,
@@ -79,7 +76,7 @@ def test_loop_never_posts_an_approval_when_the_head_turns_conflicting_before_the
             run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
         )
 
-    stubs.post.assert_not_called()
+    assert stubs.posts() == []
     assert merge.calls == [(str(tmp_path), EXEC_TARGET, "main")]
     assert res["consensus"]["approved"] is False
     assert res["consensus"]["status"] == "conflict_gate"
@@ -102,7 +99,7 @@ def test_a_clean_head_posts_the_approval_unchanged(tmp_path, monkeypatch):
         )
 
     assert res["consensus"]["approved"] is True
-    assert stubs.post.call_count == 1
+    assert len(stubs.posts()) == 1
     assert merge.calls == []
     assert not _rows(tmp_path, "ACT-GATE")
 
@@ -513,21 +510,16 @@ def test_a_carried_approval_ends_the_loop_approved_without_another_reviewer_disp
     same_change = MagicMock(return_value="pf1:" + "c" * 40)
     monkeypatch.setattr("sandbox_executor.flow.review.loop.approval_fingerprint_of", same_change)
     monkeypatch.setattr("sandbox_executor.flow.review.approval_carry_over.approval_fingerprint_of", same_change)
-    probes = [dict(_CLEAN_MERGE), dict(CONFLICTING)]
     ensemble = FakeEnsemble([clean_reviewer(1)])
     stubs = _LoopStubs()
+    stubs.github.views = [view_for(_CLEAN_MERGE)]
+    stubs.github.standing_view = view_for(CONFLICTING)
     ctx = _ensemble_ctx(tmp_path)
-    with (
-        stubs,
-        patch(
-            "sandbox_executor.flow.review.loop.check_pr_mergeability",
-            side_effect=lambda *a, **k: dict(probes.pop(0) if len(probes) > 1 else probes[0]),
-        ),
-    ):
+    with stubs:
         res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=3, ensemble_size=1, run_ensemble_fn=ensemble)
 
     assert len(ensemble.calls) == 1  # The single approving pass; no reviewer is dispatched again.
-    assert stubs.post.call_count == 1
+    assert len(stubs.posts()) == 1
     assert res["consensus"]["approved"] is True and res["consensus"]["status"] == "approved"
     approved = res["consensus"]["target_commit"]  # The SHA the reviewers saw, never the merged head.
     assert approved and approved != merged_head

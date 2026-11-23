@@ -2,12 +2,14 @@
 
 import json
 import os
+from contextlib import nullcontext
 from unittest.mock import patch
 
 import pytest
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, run_review_loop, run_review_stage
 from sandbox_executor.flow.review.records import record_review_action
 
+from tests.flow.github.fake_github import FakeGitHub, merge_view
 from tests.flow.helpers import (
     EXECUTION_ID_PATTERNS,
     HISTORICAL_KEYS_BY_PREFIX,
@@ -21,7 +23,6 @@ from tests.flow.helpers import (
     _read_rows,
     _verified_diff,
 )
-from tests.flow.lookup_patch import patch_lookup_sites
 from tests.review_flow_repo import LEDGER, added_rows, build_flow_worktree, changed_paths
 from tests.review_loop_stubs import EXEC_TARGET
 
@@ -36,7 +37,7 @@ class TestStage4LedgerProvenance:
         yield
         assert _ledger_fingerprint(REAL_EXECUTIONS_LEDGER) == before, "Real executions.jsonl was modified"
 
-    def _run_dirty_then_clean_loop(self, tmp_path, posting_side_effect=None, posting_return=None):
+    def _run_dirty_then_clean_loop(self, tmp_path, posting_side_effect=None, review_results=(), comment_result=None):
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
@@ -48,27 +49,23 @@ class TestStage4LedgerProvenance:
             status=StageStatus.SUCCESS,
             payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
         )
-        mergeability = iter([{"is_dirty": True}, {"is_dirty": False}])
-        if posting_side_effect:
-            posting: dict = {"side_effect": posting_side_effect}
-        elif posting_return is not None:
-            posting = {"return_value": posting_return}
-        else:
-            posting = {"return_value": {"dual_posted": True, "official_review": {"success": True}}}
-        with (
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
+        github = FakeGitHub(
+            views=[merge_view("CONFLICTING", "DIRTY"), merge_view()],
+            review_results=list(review_results),
+            **({"comment_result": comment_result} if comment_result else {}),
+        )
+        # A raising poster is unreachable through the adapter (the posting ladder catches every gh failure), so that
+        # case raises from the report builder inside post_pr_review_consensus: a documented non-loop seam.
+        raising = (
             patch(
-                "sandbox_executor.flow.review.loop.check_pr_mergeability",
-                side_effect=lambda *a, **k: next(mergeability),
-            ),
-            patch(
-                "sandbox_executor.flow.review.loop.probe_ci_checks",
-                return_value={"all_passed": True, "source": "local_tests"},
-            ),
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", **posting),
-            _verified_diff(),
-        ):
-            result = run_review_loop(ctx, auto_pr=False, max_iterations=1)
+                "sandbox_executor.flow.github.review_post.build_pr_review_consensus_report",
+                side_effect=posting_side_effect,
+            )
+            if posting_side_effect
+            else nullcontext()
+        )
+        with patch("shutil.which", return_value=None), raising, _verified_diff():
+            result = run_review_loop(ctx, auto_pr=False, max_iterations=1, github=github)
         return ctx, result, tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
 
     def test_review_loop_appends_act_rows_to_target_repository(self, tmp_path):
@@ -146,26 +143,18 @@ class TestStage4LedgerProvenance:
 
     def test_act_post_records_returned_failure_diagnostics(self, tmp_path):
         sample_value = "ghp_" + "Z" * 36
-        returned_failure = {
-            "dual_posted": False,
-            "diagnostics": "Review posting failed: review=False, comment=True.",
-            "discussion_comment": {"attempted": True, "success": True, "output": "posted"},
-            "official_review": {
-                "attempted": True,
-                "success": False,
-                "output": f"Official review submission failed (exit code 1): bad credentials {sample_value}",
-            },
-        }
-        _, _, ledger = self._run_dirty_then_clean_loop(tmp_path, posting_return=returned_failure)
+        _, _, ledger = self._run_dirty_then_clean_loop(
+            tmp_path, review_results=[(1, "", f"bad credentials {sample_value}")], comment_result=(1, "", "rejected")
+        )
 
         post_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST"]
         assert len(post_rows) == 1
         error_context = post_rows[0]["error_context"]
         assert post_rows[0]["outcome"] == "failure"
-        assert "Review posting failed: review=False, comment=True." in error_context
+        assert "Review posting failed: review=False, comment=False." in error_context
         assert "official_review: Official review submission failed (exit code 1)" in error_context
         assert "*******" in error_context
-        assert "discussion_comment" not in error_context
+        assert "discussion_comment: gh pr comment failed (exit code 1): rejected" in error_context
         assert sample_value not in ledger.read_text(encoding="utf-8")
 
     def test_act_post_error_context_redacts_before_truncating(self, tmp_path):
@@ -173,11 +162,9 @@ class TestStage4LedgerProvenance:
 
         sample_value = "ghp_" + "K" * 36
         padding = "x" * (POSTING_ERROR_CONTEXT_MAX_CHARS - 40)
-        returned_failure = {
-            "dual_posted": False,
-            "official_review": {"success": False, "output": f"{padding} {sample_value} trailing detail"},
-        }
-        _, _, ledger = self._run_dirty_then_clean_loop(tmp_path, posting_return=returned_failure)
+        _, _, ledger = self._run_dirty_then_clean_loop(
+            tmp_path, review_results=[(1, "", f"{padding} {sample_value} trailing detail")], comment_result=(1, "", "")
+        )
 
         error_context = next(r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST")["error_context"]
         assert len(error_context) <= POSTING_ERROR_CONTEXT_MAX_CHARS
@@ -186,15 +173,8 @@ class TestStage4LedgerProvenance:
 
     def test_dry_run_suppresses_appends_visibly(self, tmp_path):
         ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1/P-2/E-3/_", dry_run=True)
-        with (
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
-            patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
-            patch(
-                "sandbox_executor.flow.review.loop.probe_ci_checks",
-                return_value={"all_passed": True, "source": "local_tests"},
-            ),
-        ):
-            run_review_loop(ctx, auto_pr=False, max_iterations=1)
+        with patch("shutil.which", return_value=None):
+            run_review_loop(ctx, auto_pr=False, max_iterations=1, github=FakeGitHub(standing_view=merge_view()))
 
         assert not (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").exists()
         assert any("Dry run" in line and "ledger record(s) not appended" in line for line in ctx.logs)
@@ -208,19 +188,14 @@ class TestStage4LedgerProvenance:
             payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
         )
         ledger_path = str(tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl")
+        github = FakeGitHub(standing_view=merge_view())
         with (
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
-            patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
-            patch(
-                "sandbox_executor.flow.review.loop.probe_ci_checks",
-                return_value={"all_passed": True, "source": "local_tests"},
-            ),
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+            patch("shutil.which", return_value=None),
             patch("sandbox_executor.ledger.LedgerLock.__enter__", side_effect=PermissionError("ledger denied")),
             _verified_diff(),
             patch("sandbox_executor.knowledge.records.atomic_ledger_append", side_effect=PermissionError("denied")),
         ):
-            result = run_review_loop(ctx, auto_pr=False, max_iterations=1)
+            result = run_review_loop(ctx, auto_pr=False, max_iterations=1, github=github)
 
         assert result["consensus"]["approved"] is True
         warnings = [rec.getMessage() for rec in caplog.records if rec.levelname == "WARNING"]
@@ -239,21 +214,8 @@ class TestStage4LedgerProvenance:
         ledger_dir.chmod(0o555)
         ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1/P-2/E-3/_", dry_run=False)
         try:
-            with (
-                patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
-                patch_lookup_sites(
-                    "sandbox_executor.flow.review.loop.check_pr_mergeability",
-                    "sandbox_executor.flow.stage_conflicts.check_pr_mergeability",
-                    return_value={"is_dirty": False},
-                ),
-                patch_lookup_sites(
-                    "sandbox_executor.flow.github.ci.probe_ci_checks",
-                    "sandbox_executor.flow.review.loop.probe_ci_checks",
-                    return_value={"all_passed": True, "source": "local_tests"},
-                ),
-                patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
-            ):
-                run_review_loop(ctx, auto_pr=False, max_iterations=1)
+            with patch("shutil.which", return_value=None):
+                run_review_loop(ctx, auto_pr=False, max_iterations=1, github=FakeGitHub(standing_view=merge_view()))
         finally:
             ledger_dir.chmod(0o755)
 
@@ -295,7 +257,7 @@ def test_a_stage_4_exit_by_raise_commits_the_rows_the_loop_recorded(tmp_path):
         "entry_type": "action",
     }
 
-    def recording_then_raising(context):
+    def recording_then_raising(context, *, github=None):
         record_review_action(context, exec_file, row)
         raise RuntimeError("review loop crashed")
 

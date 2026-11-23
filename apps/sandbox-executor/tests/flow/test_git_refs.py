@@ -19,6 +19,7 @@ from sandbox_executor.flow import (
     run_review_stage,
 )
 
+from tests.flow.github.fake_github import FakeGitHub, ci_checks_payload
 from tests.flow.helpers import (
     _REAL_RESOLVE_REVIEWED_TARGET,
     FakeRoleAgents,
@@ -55,18 +56,26 @@ class TestStageTargetsIgnoreOperatorHead:
     def _run_loop_capturing_consensus(ctx: FlowContext, target: str) -> dict[str, Any]:
         captured: dict[str, Any] = {}
 
-        def _capture(**kwargs: Any) -> dict[str, Any]:
+        def _capture(**kwargs: Any) -> str:
             captured.update(kwargs["consensus_data"])
-            return {"dual_posted": True}
+            return "report"
 
+        # No PR view, so mergeability stays on local git; the post lands on the fake. The CI summary stays the
+        # source-less green status this test always used (the adapter cannot produce it, so the probe's summary is
+        # scripted, not the loop's probe): the test is about the reviewed commit, not CI evidence.
+        github = FakeGitHub(checks=ci_checks_payload(passed=1))
         # Resolve the reviewed target with real git, so the reported commit is the one the reviewers' diff names.
         with (
             patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", _REAL_RESOLVE_REVIEWED_TARGET),
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", side_effect=_capture),
-            patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value={"all_passed": True}),
+            patch("sandbox_executor.flow.github.review_post.build_pr_review_consensus_report", side_effect=_capture),
+            patch("sandbox_executor.flow.github.ci.summarise_ci_checks", return_value={"all_passed": True}),
             _verified_diff(),
         ):
-            run_review_loop(ctx, target=target, max_iterations=1, auto_pr=False)
+            # No CI registration wait (as when gh was absent): the scripted summary never registers as GitHub CI.
+            run_review_loop(
+                ctx, target=target, max_iterations=1, auto_pr=False, ci_registration_timeout=0, github=github
+            )
+        assert github.methods().count("post_review") == 1
         return captured
 
     def test_review_target_commit_is_execution_tip_not_operator_head(self, flow_repos, tmp_path):

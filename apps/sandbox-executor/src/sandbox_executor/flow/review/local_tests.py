@@ -1,42 +1,41 @@
-"""Stage 4 local test measurement: when no CI registers and Stage 3 recorded no rate, run the test task here.
+"""Stage 4 head test gate: judge test evidence for the current head commit via ``choose_evidence``.
 
-The result is cached per head commit, so the review loop measures once per head and re-measures only after the resolver
-pushes a fix.
+Reuses confirmed resolver evidence, green GitHub CI on the PR head SHA, or Stage 3 on an unchanged head, falling back
+to a per-head local test run (``review_local``) when Stage 3 failed, was unmeasured, or the head moved.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from sandbox_executor.entrypoint.test_measurement import TestMeasurement, run_test_task
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.dispatch import _test_evidence
+from sandbox_executor.flow.github.pr_head import pr_head_sha
+from sandbox_executor.flow.review.head_test_evidence import (
+    TEST_SOURCE_CI_HEAD,
+    TEST_SOURCE_RESOLVER_EVIDENCE,
+    TEST_SOURCE_STAGE_3,
+    HeadEvidenceDecisionInput,
+    _attach_local_counts,
+    _attach_stage_3_counts,
+    _attribute_test_source,
+    _discard_stale_github_pass,
+    _failed,
+    _has_passing_ci_rejection,
+    _LocalTestOutcome,
+    _needs_ci_registration,
+    _needs_pr_head,
+    choose_evidence,
+)
+from sandbox_executor.flow.review.head_test_evidence import (
+    has_pass_marker as has_pass_marker,
+)
 from sandbox_executor.git import run_git
-
-TEST_SOURCE_STAGE_3 = "stage_3"
-TEST_SOURCE_CI = "ci"
-TEST_SOURCE_REVIEW_LOCAL = "review_local"
 
 # The test run; replaced in tests so no real ``uv run task test`` starts.
 run_measurement: Callable[[str], TestMeasurement] = run_test_task
-
-
-@dataclass(frozen=True)
-class _LocalTestOutcome:
-    """The review-local measurement as the loop consumes it: a rate (None when unmeasured) and whether it failed."""
-
-    rate: float | None
-    failed: bool
-    measurement: TestMeasurement
-
-
-def _failed(measurement: TestMeasurement) -> bool:
-    """A measured rate below 1.0 or a non-zero exit of a completed run; an unrunnable run is unmeasured, not failed."""
-    if measurement.run_error:
-        return False
-    return measurement.exit_code != 0 or (measurement.rate is not None and measurement.rate < 1.0)
 
 
 class _ReviewLocalTests:
@@ -60,58 +59,119 @@ class _ReviewLocalTests:
         return self._cache[head]
 
 
-def _applies(ci_status: dict[str, Any], stage_3_rate: float | None, stage_3_failed: bool) -> bool:
-    """True when the probe fell back to ``local_tests`` and Stage 3 left the tests unmeasured."""
-    return ci_status.get("source") == "local_tests" and stage_3_rate is None and not stage_3_failed
-
-
-def _attribute_test_source(
-    ci_status: dict[str, Any], stage_3: dict[str, Any] | None, review_local: _LocalTestOutcome | None
-) -> None:
-    """Record on the CI probe where its test evidence came from (``stage_3``, ``ci`` or ``review_local``)."""
-    if ci_status.get("source") == "github_cli":
-        ci_status["test_source"] = TEST_SOURCE_CI
-        return
-    if review_local is not None:
-        m = review_local.measurement
-        ci_status["test_source"] = TEST_SOURCE_REVIEW_LOCAL
-        ci_status["test_counts"] = {"passed": m.passed, "failed": m.failed, "errored": m.errored}
-        if m.run_error:
-            ci_status["test_run_error"] = m.run_error
-    elif stage_3 and (stage_3.get("test_pass_rate") is not None or stage_3.get("test_run_error")):
-        ci_status["test_source"] = TEST_SOURCE_STAGE_3
-        ci_status["test_counts"] = {
-            "passed": stage_3.get("tests_passed"),
-            "failed": stage_3.get("tests_failed"),
-            "errored": stage_3.get("tests_errored"),
-        }
+def _default_pr_head(repo_dir: str, target: str, proxy_env: Mapping[str, str] | None = None) -> str | None:
+    """The PR head commit for ``target`` via ``gh``, or None when it cannot be read."""
+    return pr_head_sha(repo_dir, target, proxy_env)
 
 
 class _ReviewTestGate:
     """Stage 3's test evidence for the review loop, topped up by a local measurement when CI cannot supply it."""
 
-    def __init__(self, context: FlowContext, repo_dir: str) -> None:
+    def __init__(
+        self,
+        context: FlowContext,
+        repo_dir: str,
+        pr_head: Callable[[str], str | None] | None = None,
+        target: str = "",
+        proxy_env: Mapping[str, str] | None = None,
+    ) -> None:
         exec_result = context.stage_results.get("execute")
         self._context = context
+        self._repo_dir = repo_dir
+        self.pr_head = pr_head
+        self._target = target or context.execution_branch or context.intent_branch or ""
+        self._proxy_env = dict(proxy_env or {})
         self._stage_3 = (exec_result.payload if exec_result else None) or {}
         rate, exit_code = _test_evidence(exec_result)
         self.stage_3_evidence = (rate, exit_code != 0 or (rate is not None and rate < 1.0))
+        # The commit Stage 3 tested; without one its evidence applies to no head and the gate measures locally.
+        self.stage_3_head = str(self._stage_3.get("head_sha") or "").strip()
+
         self._tester = _ReviewLocalTests(repo_dir)
+        self._resolver_heads: set[str] = set()
+        self._logged_evidence: set[tuple[str, str]] = set()
+        self._pr_heads: dict[str, str | None] = {}
 
-    def evidence(self, ci_status: dict[str, Any]) -> tuple[float | None, bool]:
-        """The ``(test_pass_rate, tests_failed)`` for the CI gate, attributing the probe to its source.
+    def _get_pr_head(self, local_head: str) -> str | None:
+        """The PR head commit; cached once matched to ``local_head`` so stale or failed lookups retry."""
+        if local_head and self._pr_heads.get(local_head) == local_head:
+            return local_head
+        reader = self.pr_head or (lambda t: _default_pr_head(self._repo_dir, t, self._proxy_env))
+        if (sha := reader(self._target)) == local_head and local_head:
+            self._pr_heads[local_head] = sha
+        return sha
 
-        Measures locally only when the probe fell back to ``local_tests`` and Stage 3 recorded neither a rate nor a
-        failure.
-        """
-        rate, failed = self.stage_3_evidence
-        if not _applies(ci_status, rate, failed):
-            _attribute_test_source(ci_status, self._stage_3, None)
-            return rate, failed
+    def accept_resolver_evidence(self, head_sha: str, dispositions: Sequence[Any]) -> None:
+        """Confirm a rejected FIND-CI with passing test evidence on this head via local re-measurement."""
+        if not head_sha or not _has_passing_ci_rejection(dispositions):
+            return
+        if self._tester._head() != head_sha:
+            # The resolver pushed: the checkout is no longer the head its evidence describes.
+            return
         outcome = self._tester.measure()
-        label = "not measured" if outcome.rate is None else f"rate {outcome.rate:.3f}"
-        self._context.log(
-            f"[Review Loop] No CI registered and Stage 3 recorded no rate; measured tests locally: {label}."
+        if not outcome.failed and outcome.rate is not None and not outcome.measurement.run_error:
+            self._resolver_heads.add(head_sha)
+
+    def needs_ci_registration(self) -> bool:
+        """True when the current head has neither confirmed resolver evidence nor a Stage 3 measurement."""
+        return _needs_ci_registration(
+            self.stage_3_evidence, self.stage_3_head, self._tester._head(), self._resolver_heads
         )
-        _attribute_test_source(ci_status, self._stage_3, outcome)
-        return outcome.rate, outcome.failed
+
+    def advance_ledger_head(self, old_head: str, new_head: str) -> None:
+        """Carry head-scoped evidence across a flow-authored ledger commit (no code changed)."""
+        if not old_head or not new_head or old_head == new_head:
+            return
+        if old_head in self._resolver_heads:
+            self._resolver_heads.add(new_head)
+        if old_head in self._tester._cache:
+            self._tester._cache[new_head] = self._tester._cache[old_head]
+        if self.stage_3_head == old_head:
+            self.stage_3_head = new_head
+
+    def evidence(self, ci_status: dict[str, Any], dry_run: bool | None = None) -> tuple[float | None, bool]:
+        """The ``(test_pass_rate, tests_failed)`` for the CI gate judging the current head commit."""
+        if bool(dry_run or self._context.dry_run):
+            _attribute_test_source(ci_status, self._stage_3, None)
+            return self.stage_3_evidence
+
+        current_head = self._tester._head()
+        need_pr = _needs_pr_head(ci_status, current_head, self._resolver_heads)
+        pr_head = self._get_pr_head(current_head) if need_pr else ""
+        source = choose_evidence(
+            HeadEvidenceDecisionInput(
+                ci_status=ci_status,
+                stage_3_evidence=self.stage_3_evidence,
+                stage_3_head=self.stage_3_head,
+                current_head=current_head,
+                pr_head_sha=pr_head,
+                resolver_heads=frozenset(self._resolver_heads),
+            )
+        )
+        _discard_stale_github_pass(ci_status, source)
+
+        if source == TEST_SOURCE_RESOLVER_EVIDENCE:
+            rate, failed, detail = 1.0, False, "passing run confirmed locally"
+            if (cached := self._tester._cache.get(current_head)) is not None:
+                _attach_local_counts(ci_status, cached)
+        elif source == TEST_SOURCE_CI_HEAD:
+            rate, failed, detail = 1.0, False, "all_passed=True"
+        elif source == TEST_SOURCE_STAGE_3:
+            rate, failed = self.stage_3_evidence
+            detail = f"rate {rate}, failed={failed}"
+            _attach_stage_3_counts(ci_status, self._stage_3)
+        else:
+            outcome = self._tester.measure()
+            rate, failed = outcome.rate, outcome.failed
+            detail = outcome.measurement.run_error or f"rate {rate}, failed={failed}"
+            _attach_local_counts(ci_status, outcome)
+
+        ci_status["test_source"] = source
+        ci_status["test_head_sha"] = current_head
+
+        sha7 = current_head[:7] if current_head else "unknown"
+        if (current_head, source) not in self._logged_evidence:
+            self._context.log(f"[Review Loop] Test evidence for {sha7}: {source} ({detail}).")
+            self._logged_evidence.add((current_head, source))
+
+        return rate, failed

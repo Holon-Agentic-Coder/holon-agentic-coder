@@ -28,7 +28,9 @@ from tests.review_loop_stubs import (  # noqa: F401  (_CLEAN_MERGE and _ledger a
     _GREEN_CI,
     EXEC_TARGET,
     _ensemble_ctx,
+    _green_loop_patches,
     _ledger,
+    _loop_ctx,
     _LoopStubs,
     _rows,
 )
@@ -497,6 +499,7 @@ class TestReviewLoopEmptyDiffGuard:
                 "sandbox_executor.flow.review.loop.probe_ci_checks",
                 return_value={"all_passed": True, "source": "github_cli"},
             ),
+            patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"),
             patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
         ):
             res = run_review_loop(
@@ -601,6 +604,7 @@ class TestReviewLoopEmptyDiffGuardOrigin:
                 "sandbox_executor.flow.review.loop.probe_ci_checks",
                 return_value={"all_passed": True, "source": "github_cli"},
             ),
+            patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"),
             patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
         ):
             res = run_review_loop(ctx, target=self.EXEC, max_iterations=1, dry_run=False)
@@ -944,49 +948,6 @@ def test_default_gh_runner_sets_no_repository_env(tmp_path):
 # --------------------------------------------------------------------------------------
 # run_review_loop: empty-diff guard, failed posts, dry runs, merges and pending CI
 # --------------------------------------------------------------------------------------
-
-
-def _loop_ctx(tmp_path: Path, target: str = "feature/x", dry_run: bool = False):
-    from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
-
-    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True, exist_ok=True)
-    ctx = FlowContext(repo_dir=str(tmp_path), execution_branch=target, token_reduce=False, dry_run=dry_run)
-    ctx.stage_results["execute"] = StageResult(
-        stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 1.0, "exit_code": 0}
-    )
-    return ctx
-
-
-def _green_loop_patches(verdict=None, post=None, which=None, ci=None):
-    from contextlib import ExitStack
-
-    from sandbox_executor.review_target import DiffVerdict
-
-    stack = ExitStack()
-    verify = stack.enter_context(
-        patch(
-            "sandbox_executor.review_target.verify_review_diff",
-            return_value=(verdict or DiffVerdict.VERIFIED, "guard detail"),
-        )
-    )
-    stack.enter_context(patch("sandbox_executor.flow.review.loop.shutil.which", return_value=which))
-    stack.enter_context(
-        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False})
-    )
-    stack.enter_context(
-        patch(
-            "sandbox_executor.flow.review.loop.probe_ci_checks",
-            return_value=ci or {"all_passed": True, "source": "local_tests"},
-        )
-    )
-    stack.enter_context(patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"))
-    mock_post = stack.enter_context(
-        patch(
-            "sandbox_executor.flow.review.loop.post_pr_review_consensus",
-            **(post or {"return_value": {"dual_posted": True}}),
-        )
-    )
-    return stack, verify, mock_post
 
 
 @pytest.mark.parametrize("which", [None, "/usr/bin/gh"], ids=["no-gh", "gh"])

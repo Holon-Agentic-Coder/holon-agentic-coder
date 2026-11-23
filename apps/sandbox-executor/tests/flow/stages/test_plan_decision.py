@@ -193,6 +193,7 @@ class TestStage3ExecutesThePlanRowsDecision:
         "exit_code",
         "token_reduce",
         "changed_files",
+        "head_sha",
         "test_pass_rate",
         "tests_passed",
         "tests_failed",

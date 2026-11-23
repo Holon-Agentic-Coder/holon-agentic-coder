@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-d46b9949",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T01:43:22.103506+00:00",
+  "updated_ts": "2026-11-23T01:43:22.103506+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795392384-319ead14-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795246931-review-approved-and-fresh-tests/P-1795246949-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 12 iteration(s): resolver failed: Resolver push failed: host push of 'I-1795246931-review-approved-and-fresh-tests/P-1795246949-CLA-CO5.5/E-1795253469-ANA-G3.8FM/_' through remote 'origin' failed: To github.com:Holon-Agentic-Coder/holon-agentic-coder.git\n ! [rejected]          743da5bb7a52c2312fc7e49beb61f8500a79f405 -> I-1795246931-review-approved-and-fresh-tests/P-1795246949-CLA-CO5.5/E-1795253469-ANA-G3.8FM/_ (non-fast-forward)\nerror: failed to push some refs to 'github.com:Holon-Agentic-Coder/holon-agentic-coder.git'\nhint: Updates were rejected because the tip of your current branch is behind\nhint: its remote counterpart. If you want to integrate the remote changes,\nhint: use 'git pull' before pushing again.\nhint: See the 'Note about fast-forwards' in 'git push --help' for details.; not approved: reviewer 1 final verdict CHANGES_REQUESTED, reviewer 1 Documentation role CHANGES, reviewer 3 final verdict CHANGES_REQUESTED, reviewer 3 Documentation role CHANGES; final verdicts: Reviewer 1 CHANGES_REQUESTED (0/2/0); Reviewer 1 Documentation role CHANGES; Reviewer 2 APPROVED (0/0/0); Reviewer 3 CHANGES_REQUESTED (0/0/2); Reviewer 3 Documentation role CHANGES",
+    "symptoms": []
+  }
+}

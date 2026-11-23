@@ -449,7 +449,7 @@ Include metrics in this format:
 
             if replan_feedback:
                 f.write(build_replan_paragraph(replan_feedback, entropy_budget))
-            merged_notice = os.getenv("HOLON_TARGET_MERGED_NOTICE", "").strip()
+            merged_notice = os.environ.pop("HOLON_TARGET_MERGED_NOTICE", "").strip()
             if merged_notice:
                 f.write(f"\n\n{merged_notice}\n")
 
@@ -497,6 +497,7 @@ Include metrics in this format:
                 cwd=repo_dir,
                 stdin_file=prompt_file if getattr(runner, "uses_stdin", False) else None,
                 prompt_file=prompt_file,
+                on_turn_boundary=lambda _turn_idx: os.environ.pop("HOLON_TARGET_MERGED_NOTICE", "").strip() or None,
             )
         except Exception as e:
             agent_error = f"Exception running agent: {e}"

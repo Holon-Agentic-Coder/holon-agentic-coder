@@ -34,6 +34,7 @@ from sandbox_executor.flow.git_refs import _fetch_refspecs_error
 from sandbox_executor.flow.github.merge import merge_child_pr
 from sandbox_executor.flow.stage_status import REVIEW_BOUNDARY_STATUSES
 from sandbox_executor.flow.stages.integration import integrate_children
+from sandbox_executor.flow.target_sync_hooks import at_turn_boundary
 from sandbox_executor.redaction import redact_agent_secrets
 
 _PR_URL_RE = re.compile(r"https?://\S+/pull/\d+")
@@ -236,6 +237,8 @@ def _merge_ready_child(context: FlowContext, payload: dict[str, Any], entry: dic
 
 def _advance_child(context: FlowContext, start_time: str, payload: dict[str, Any], entry: dict[str, Any]) -> str | None:
     """Take one child from wherever its progress says it is to merged; return why it stopped, or None."""
+    if (turn_err := at_turn_boundary(context, FlowStage.EXECUTE, int(entry["index"]))) is not None:
+        return turn_err.error or "target sync blocked at sub-intent boundary"
     action = next_child_action(entry, checkpoint_exists(context, entry))
     if action == "skip":
         # A child promoted to merged by origin reconciliation has no merged summary yet; record it.

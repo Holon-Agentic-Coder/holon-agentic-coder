@@ -273,6 +273,9 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
         )
         if self.args.partial_branch and self.partial_head:
             base_prompt = f"{base_prompt}\n\n{continuation_note(self.args.partial_branch, self.partial_head)}"
+        merged_notice = os.environ.pop("HOLON_TARGET_MERGED_NOTICE", "").strip()
+        if merged_notice:
+            base_prompt = f"{base_prompt}\n\n{merged_notice}"
         full_prompt = f"{base_prompt}\n\n{execution_write_protocol(self.notes_rel)}"
 
         budgets = load_budgets(os.environ)
@@ -310,6 +313,7 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
                 cwd=self.repo_dir,
                 stdin_file=prompt_file if getattr(runner, "uses_stdin", False) else None,
                 prompt_file=prompt_file,
+                on_turn_boundary=lambda _turn_idx: os.environ.pop("HOLON_TARGET_MERGED_NOTICE", "").strip() or None,
             )
             self.exec_status, self.summary, self.budget_breach, self.budget_reason = (
                 executor_facade.classify_execution_outcome(outcome)

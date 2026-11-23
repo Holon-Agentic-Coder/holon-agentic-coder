@@ -335,6 +335,7 @@ __all__ = [
     "local_in_flight_flows",
     "local_tests_ci_status",
     "lookup_merge_flag",
+    "make_turn_boundary_hook",
     "merge_argv",
     "merge_branch_detailed",
     "merge_findings",

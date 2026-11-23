@@ -19,7 +19,6 @@ from sandbox_executor.flow.git_refs import (
     _track_local_branch,
 )
 from sandbox_executor.flow.host_remote import publish_new_child_branches, remote_error
-from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.plan_support import (
     dry_run_plan_result,
     plan_id_of,
@@ -82,15 +81,11 @@ class PlanStage:
         return None
 
     def prepare(self) -> StageResult | None:
-        """Refuse a skip-push run, resolve stage conflicts and snapshot the plan branches already on origin."""
+        """Refuse a skip-push run, sync with the target branch and snapshot the plan branches already on origin."""
         if self.context.skip_push:
             return self.fail(SKIP_PUSH_DISPATCH_ERROR)
-        target_branch = self.context.intent_data.get("target_branch", "main")
         if (failure := at_stage_boundary(self.context, FlowStage.PLAN, SyncBoundary.STAGE_START)) is not None:
             return failure
-        check_and_resolve_stage_conflicts(
-            self.repo_dir, target_branch=target_branch, stage_name="plan", branch=self.context.intent_branch
-        )
         existing_plans = _snapshot_child_branches(self.repo_dir, self.intent_prefix, "P")
         if existing_plans is None:
             return self.fail(

@@ -36,7 +36,6 @@ from sandbox_executor.flow.host_remote import fetch_base, publish_new_child_bran
 from sandbox_executor.flow.partial_head import failed_partial_head
 from sandbox_executor.flow.partial_salvage import salvage_for_resume
 from sandbox_executor.flow.plan_refresh import plan_refresh_stage_failure, refresh_payload
-from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.decomposition import _run_decomposed_plan, _sub_intent_depth_error
 from sandbox_executor.flow.stages.empty_diff_outcome import empty_diff_failure
 from sandbox_executor.flow.stages.execute_veto import execution_veto_error
@@ -197,12 +196,11 @@ class ExecuteStage:
         return token_scope_failure(self.context, self.state.start_time)
 
     def admit_and_refresh_plan(self) -> StageResult | None:
-        """Resolve stage conflicts, refuse a plan the budget decision rejects, then run admission and plan refresh."""
+        """Sync with the target branch, refuse a plan the budget decision rejects, then run admission and refresh."""
         context, state = self.context, self.state
         state.target_branch = context.intent_data.get("target_branch", "main")
-        check_and_resolve_stage_conflicts(
-            state.repo_dir, target_branch=state.target_branch, stage_name="execute", branch=context.plan_branch
-        )
+        if (failure := at_stage_boundary(context, FlowStage.EXECUTE, SyncBoundary.STAGE_START)) is not None:
+            return failure
         try:
             state.precheck = precheck = _plan_budget_decision(context)
         except InvalidPlanDecisionError as exc:
@@ -396,7 +394,10 @@ class ExecuteStage:
         )
         if violation is not None:
             return violation
-        if (end_err := at_stage_boundary(context, FlowStage.EXECUTE, SyncBoundary.STAGE_END)) is not None:
+        if (
+            not state.base_payload.get("sync_conflict_resolved")
+            and (end_err := at_stage_boundary(context, FlowStage.EXECUTE, SyncBoundary.STAGE_END)) is not None
+        ):
             return end_err
         end_time = _utc_now()
         context.log(f"Stage 3 completed: Execution branch '{state.exec_branch}' changes {len(state.changed)} path(s).")

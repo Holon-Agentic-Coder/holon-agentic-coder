@@ -228,12 +228,17 @@ def test_stage3_sync_conflict_row_triggers_host_sync_and_records_supersedes(tmp_
 
     assert outcome is None
     assert conflict_row["status"] == "success"
+    assert conflict_row["ledger_revision"] == 3
     assert base_payload["status"] == "success"
     assert base_payload["sync_conflict_resolved"] is True
     rows = _sync_rows(work)
     assert len(rows) == 1
     assert rows[0]["supersedes"] == "E-3-z@r2"
     assert rows[0]["outcome"] == "success"
+    ledger_lines = [json.loads(line) for line in _git(work, "show", f"origin/{FLOW_BRANCH}:{LEDGER}").splitlines()]
+    summaries = [r for r in ledger_lines if r.get("entry_type") == "summary" and r.get("execution_id") == "E-3-z"]
+    assert summaries[-1]["status"] == "success"
+    assert summaries[-1]["ledger_revision"] == 3
 
 
 def test_stage3_sync_conflict_row_fails_closed_when_host_sync_is_blocked(tmp_path: Path) -> None:
@@ -307,3 +312,42 @@ def test_target_merge_notice_reaches_planner_and_executor_turn_prompts(tmp_path:
     assert "`abc123456789`" in prompts[1]
     assert "`src/app.py`" in prompts[1]
     assert "`docs/readme.md`" in prompts[1]
+
+
+def test_make_turn_boundary_hook_merges_conflict_and_returns_notice(tmp_path: Path) -> None:
+    from sandbox_executor.flow import make_turn_boundary_hook
+
+    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n"})
+    _inject_ledger_conflict(work, FLOW_BRANCH, 4)
+    hook = make_turn_boundary_hook(str(work), FLOW_BRANCH, "main", FlowStage.PLAN)
+
+    notice = hook(1)
+
+    assert notice is not None
+    assert "## Target branch merged" in notice
+    assert f"`{LEDGER}`" in notice
+    assert hook(2) is None
+
+
+def test_child_turn_boundary_syncs_plan_branch_and_propagates_notice(tmp_path: Path) -> None:
+    from sandbox_executor.flow.stages.children import _child_context, _sync_sub_intent_plan_branch
+
+    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n"})
+    _inject_ledger_conflict(work, FLOW_BRANCH, 5)
+    ctx = FlowContext(
+        target_worktree=str(work),
+        intent_data={"intent_id": "I-1", "slug": "x", "target_branch": "main"},
+        plan_branch=FLOW_BRANCH,
+        execution_branch="I-1-x/P-2-y/E-decomposed/_",
+        token_reduce=False,
+    )
+
+    err = _sync_sub_intent_plan_branch(ctx, {"plan_branch": FLOW_BRANCH}, 2)
+
+    assert err is None
+    assert ctx.execution_branch == "I-1-x/P-2-y/E-decomposed/_"
+    child = _child_context(ctx, {"slug": "sub", "target_branch": FLOW_BRANCH})
+    notice = consume_target_merge_notice(child)
+    assert "## Target branch merged" in notice
+    assert f"`{LEDGER}`" in notice
+    assert consume_target_merge_notice(ctx) == ""

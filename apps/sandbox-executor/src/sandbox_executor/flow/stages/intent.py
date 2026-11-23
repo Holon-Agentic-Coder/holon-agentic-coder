@@ -18,7 +18,6 @@ from sandbox_executor.flow.git_refs import (
 )
 from sandbox_executor.flow.host_remote import fetch_base, push_branch, remote_error
 from sandbox_executor.flow.intent_questions import validate_intent_questions
-from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.stage_support import consult_knowledge, intent_payload_file, stage_success
 from sandbox_executor.flow.target_sync_hooks import at_stage_boundary
 from sandbox_executor.flow.target_sync_result import SyncBoundary
@@ -114,7 +113,6 @@ class IntentStage:
         if self.context.skip_push:
             return self.fail(SKIP_PUSH_DISPATCH_ERROR)
         repo_dir = self.context.target_worktree
-        check_and_resolve_stage_conflicts(repo_dir, target_branch=self.target_branch, stage_name="intent", branch=None)
         if (failure := at_stage_boundary(self.context, FlowStage.INTENT, SyncBoundary.STAGE_START)) is not None:
             return failure
         fetch_error = _fetch_branch_prefix_error(repo_dir, self.branch)

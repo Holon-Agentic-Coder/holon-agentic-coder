@@ -24,6 +24,8 @@ from sandbox_executor.budgets import (
 from sandbox_executor.decomposition_rule import should_decompose
 from sandbox_executor.entrypoint.execution_workspace import start_branch_from_host_fetch
 from sandbox_executor.entrypoint.taken_ids import taken_plan_ids
+from sandbox_executor.flow.context import FlowStage
+from sandbox_executor.flow.target_sync_hooks import make_turn_boundary_hook
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
@@ -395,8 +397,16 @@ def main():  # noqa: C901, PLR0912, PLR0915
     entropy_budget = resolve_entropy_budget({}, intent_data)
 
     # Transient re-plan feedback from the flow (HOLON_REPLAN_FEEDBACK). It reaches the agent through the prompt and the
-    # temporary intent file only; it is never written to any ledger.
-    replan_feedback = os.getenv(ENV_REPLAN_FEEDBACK, "").strip()
+    # temporary intent file only; it is never written to any ledger. Any target-merge notice is excluded from the
+    # intent file's replan_feedback field so only real re-plan feedback is recorded there.
+    raw_feedback = os.getenv(ENV_REPLAN_FEEDBACK, "").strip()
+    if "## Target branch merged" in raw_feedback:
+        head_part, tail_part = raw_feedback.split("## Target branch merged", 1)
+        replan_feedback = head_part.strip()
+        merge_notice = f"## Target branch merged{tail_part}".strip()
+    else:
+        replan_feedback = raw_feedback
+        merge_notice = ""
 
     # Prepare prompt using template
     template_path = os.path.join(repo_dir, "holon-config/prompts/planner.template.md")
@@ -448,13 +458,9 @@ Include metrics in this format:
             f.write(get_file_structure(repo_dir))
 
             if replan_feedback:
-                if "## Target branch merged" in replan_feedback:
-                    parts = replan_feedback.split("## Target branch merged", 1)
-                    if parts[0].strip():
-                        f.write(build_replan_paragraph(parts[0].strip(), entropy_budget))
-                    f.write(f"\n\n## Target branch merged{parts[1]}\n")
-                else:
-                    f.write(build_replan_paragraph(replan_feedback, entropy_budget))
+                f.write(build_replan_paragraph(replan_feedback, entropy_budget))
+            if merge_notice:
+                f.write(f"\n\n{merge_notice}\n")
 
         with open(intent_file, "w") as f:
             json.dump({**intent_data, "replan_feedback": replan_feedback} if replan_feedback else intent_data, f)
@@ -500,7 +506,9 @@ Include metrics in this format:
                 cwd=repo_dir,
                 stdin_file=prompt_file if getattr(runner, "uses_stdin", False) else None,
                 prompt_file=prompt_file,
-                on_turn_boundary=lambda _turn_idx: None,
+                on_turn_boundary=make_turn_boundary_hook(
+                    repo_dir, plan_branch, str(intent_data.get("target_branch") or "main"), FlowStage.PLAN
+                ),
             )
         except Exception as e:
             agent_error = f"Exception running agent: {e}"

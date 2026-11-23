@@ -1,13 +1,9 @@
-"""Flow boundary hooks for ``sync_with_target``: flow start, stage start/end, turn boundaries, and merge notices.
-
-Maps ``FlowContext`` and ``FlowStage`` to :class:`SyncRequest`, caches :class:`TargetProbe` and merged target changes
-in transient attributes on ``context``, exports the notice for role containers, and converts blocked syncs into
-:class:`StageResult` failures.
-"""
+"""Flow boundary hooks for ``sync_with_target``: flow start, stage start/end, turn boundaries, and merge notices."""
 
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from sandbox_executor.flow.base_files import base_branch_name
@@ -28,20 +24,16 @@ _LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
 def format_target_merge_notice(target_sha: str, changed_paths: tuple[str, ...] | list[str]) -> str:
     """Render the ``## Target branch merged`` markdown notice listing ``target_sha`` and ``changed_paths``."""
     paths = [str(p) for p in changed_paths if p]
-    bullet_lines = "\n".join(f"- `{p}`" for p in paths) if paths else "- (no file changes)"
-    return (
-        f"## Target branch merged\n\n"
-        f"The target branch was merged into this flow branch at commit `{target_sha}`.\n"
-        f"Changed paths:\n{bullet_lines}"
-    )
+    bullets = "\n".join(f"- `{p}`" for p in paths) if paths else "- (no file changes)"
+    header = f"## Target branch merged\n\nThe target branch was merged into this flow branch at commit `{target_sha}`."
+    return f"{header}\nChanged paths:\n{bullets}"
 
 
 def consume_target_merge_notice(context: FlowContext | None = None) -> str:
     """Return and clear the pending target-merge notice from ``context``."""
-    if context is None:
-        return ""
-    notice = str(getattr(context, _NOTICE_ATTR, "") or "").strip()
-    setattr(context, _NOTICE_ATTR, "")
+    notice = str(getattr(context, _NOTICE_ATTR, "") or "").strip() if context is not None else ""
+    if context is not None:
+        setattr(context, _NOTICE_ATTR, "")
     return notice
 
 
@@ -59,17 +51,13 @@ def active_flow_branch(context: FlowContext, stage: FlowStage) -> str:
         FlowStage.REVIEW: (context.execution_branch, context.plan_branch),
         FlowStage.CALIBRATE: (context.calibrated_branch, context.execution_branch),
     }
-    for branch in candidates_by_stage.get(stage, ()):
-        if branch:
-            return branch
-    return ""
+    return next((branch for branch in candidates_by_stage.get(stage, ()) if branch), "")
 
 
 def _execution_id_of(branch: str, stage: FlowStage, boundary: SyncBoundary) -> str:
     segments = [part for part in branch.split("/") if part and part != "_"]
     for prefix in ("E-", "P-", "I-"):
-        found = next((part for part in reversed(segments) if part.startswith(prefix)), "")
-        if found:
+        if found := next((part for part in reversed(segments) if part.startswith(prefix)), ""):
             return found
     return segments[-1] if segments else f"SYNC-{stage.value}-{boundary.value}"
 
@@ -89,6 +77,8 @@ def _checkout_active_branch(context: FlowContext, branch: str) -> tuple[str, boo
     if ref is None:
         return "", False, None
     current = _checked_out_branch(worktree)
+    if current == branch and ref == f"refs/heads/{branch}":
+        return current, False, None
     detached = not current
     prev = current or (run_git(["rev-parse", "HEAD"], cwd=worktree, check=False).stdout or "").strip()
     res = run_git(["checkout", "-q", "-B", branch, ref], cwd=worktree, check=False)
@@ -111,18 +101,16 @@ def _blocked_stage_failure(
 ) -> StageResult:
     paths = ", ".join(result.conflicted_paths or result.code_paths)
     where = f" in {paths}" if paths else ""
-    detail = result.error or "target sync blocked"
-    if result.test_result:
-        detail = f"{detail} ({result.test_result})"
+    base_err = result.error or "target sync blocked"
+    detail = f"{base_err} ({result.test_result})" if result.test_result else base_err
     msg = (
         f"{stage.value.capitalize()} stage failed at {boundary.value}: target sync of '{branch}' with "
         f"'origin/{base_branch_name(context)}' was blocked{where}: {detail}"
     )
-    start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     return _stage_failure(
         context,
         stage,
-        start_time,
+        datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         msg,
         sync_boundary=boundary.value,
         conflicted_paths=list(result.conflicted_paths or result.code_paths),
@@ -135,8 +123,7 @@ def _run_boundary_sync(
 ) -> tuple[SyncResult, StageResult | None]:
     """Run ``sync_with_target`` at ``(stage, boundary)``; return ``(sync_result, failure_stage_result_or_None)``."""
     noop = SyncResult("unchanged", "", "", "")
-    worktree = context.target_worktree
-    target_branch = base_branch_name(context)
+    worktree, target_branch = context.target_worktree, base_branch_name(context)
     branch = active_flow_branch(context, stage)
     if context.dry_run or not branch or not _can_sync_worktree(worktree, target_branch):
         return noop, None
@@ -169,8 +156,7 @@ def _run_boundary_sync(
         setattr(context, _PROBE_ATTR, result.probe)
     if result.status == "merged":
         _track_local_branch(context, branch)
-        notice = format_target_merge_notice(result.target_sha, result.changed_paths)
-        setattr(context, _NOTICE_ATTR, notice)
+        setattr(context, _NOTICE_ATTR, format_target_merge_notice(result.target_sha, result.changed_paths))
     if result.status == "blocked":
         return result, _blocked_stage_failure(context, stage, boundary, branch, result)
     return result, None
@@ -178,18 +164,34 @@ def _run_boundary_sync(
 
 def at_flow_start(context: FlowContext, first_stage: FlowStage = FlowStage.INTENT) -> StageResult | None:
     """Run ``sync_with_target`` at ``FLOW_START``; return a failed :class:`StageResult` if blocked, else ``None``."""
-    _, failure = _run_boundary_sync(context, first_stage, SyncBoundary.FLOW_START)
-    return failure
+    return _run_boundary_sync(context, first_stage, SyncBoundary.FLOW_START)[1]
 
 
 def at_stage_boundary(context: FlowContext, stage: FlowStage, boundary: SyncBoundary) -> StageResult | None:
     """Run ``sync_with_target`` at ``STAGE_START`` or ``STAGE_END``; return a failed :class:`StageResult` if blocked."""
-    _, failure = _run_boundary_sync(context, stage, boundary)
-    return failure
+    return _run_boundary_sync(context, stage, boundary)[1]
 
 
 def at_turn_boundary(context: FlowContext, stage: FlowStage, turn_index: int = 0) -> StageResult | None:
     """Run ``sync_with_target`` at a ``TURN`` boundary; return a failed :class:`StageResult` if blocked."""
     del turn_index
-    _, failure = _run_boundary_sync(context, stage, SyncBoundary.TURN)
-    return failure
+    return _run_boundary_sync(context, stage, SyncBoundary.TURN)[1]
+
+
+def make_turn_boundary_hook(
+    worktree: str, branch: str, target_branch: str, stage: FlowStage
+) -> Callable[[int], str | None]:
+    """Build the ``on_turn_boundary`` callback for :func:`supervise_authoring_turn` in ``stage``."""
+    ctx = FlowContext(
+        target_worktree=worktree,
+        intent_data={"target_branch": target_branch},
+        plan_branch=branch if stage == FlowStage.PLAN else None,
+        execution_branch=branch if stage == FlowStage.EXECUTE else None,
+        token_reduce=False,
+    )
+
+    def _on_turn(turn_index: int) -> str | None:
+        at_turn_boundary(ctx, stage, turn_index)
+        return consume_target_merge_notice(ctx) or None
+
+    return _on_turn

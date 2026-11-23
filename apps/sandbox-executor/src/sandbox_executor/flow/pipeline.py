@@ -40,8 +40,7 @@ from sandbox_executor.flow.stages.touch_set_guard import (
     touch_set_replan_exhausted,
     touch_set_replan_feedback,
 )
-from sandbox_executor.flow.target_sync_hooks import at_flow_start, at_stage_boundary, at_turn_boundary
-from sandbox_executor.flow.target_sync_result import SyncBoundary
+from sandbox_executor.flow.target_sync_hooks import at_flow_start, at_turn_boundary
 from sandbox_executor.flow_guard import pre_run_guard_error
 from sandbox_executor.git_flow import target_worktree_problem
 from sandbox_executor.ledger import validate_stage_ledger
@@ -160,19 +159,9 @@ class PipelineEngine:
         return rerun_calibration(self.context, result, run_calibrate_stage)
 
     def _run_stage_once(self, stage: FlowStage) -> StageResult:
-        """Enter ``stage`` and run it under its budget; Stages 1-3 also sync with target at start and end."""
+        """Enter ``stage`` and run it under its budget, rerunning Stage 5 if the head moved during its CI wait."""
         self.before_stage(stage)
-        sync_stage = stage in (FlowStage.INTENT, FlowStage.PLAN, FlowStage.EXECUTE)
-        if sync_stage and (failure := at_stage_boundary(self.context, stage, SyncBoundary.STAGE_START)) is not None:
-            return failure
-        result = self._rerun_if_calibrate(stage, self.timed_execute_stage(stage))
-        if (
-            sync_stage
-            and result.status == StageStatus.SUCCESS
-            and (failure := at_stage_boundary(self.context, stage, SyncBoundary.STAGE_END)) is not None
-        ):
-            return failure
-        return result
+        return self._rerun_if_calibrate(stage, self.timed_execute_stage(stage))
 
     def _record_stage(self, stage: FlowStage, result: StageResult) -> None:
         """Record ``result`` as the stage's result and checkpoint it."""
@@ -281,10 +270,11 @@ class PipelineEngine:
         """
         while _replan_requested(result) and self.context.replan_attempts < MAX_REPLAN_ATTEMPTS:
             self.context.replan_attempts += 1
+            feedback = self._replan_feedback(result)
+            self.context.plan_branch = None
             if (turn_err := at_turn_boundary(self.context, FlowStage.PLAN, self.context.replan_attempts)) is not None:
                 return turn_err
-            self.context.intent_data["replan_feedback"] = self._replan_feedback(result)
-            self.context.plan_branch = None
+            self.context.intent_data["replan_feedback"] = feedback
             try:
                 plan_result = self._run_stage_once(FlowStage.PLAN)
             finally:

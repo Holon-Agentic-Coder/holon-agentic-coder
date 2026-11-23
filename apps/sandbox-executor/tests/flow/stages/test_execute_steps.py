@@ -121,7 +121,7 @@ class TestPreflight:
 class TestAdmitAndRefreshPlan:
     @pytest.fixture(autouse=True)
     def _no_stage_conflicts(self):
-        with patch(f"{EXECUTE}.check_and_resolve_stage_conflicts"):
+        with patch(f"{EXECUTE}.at_stage_boundary", return_value=None):
             yield
 
     def test_continues_and_records_the_target_branch_and_decision(self, tmp_path):

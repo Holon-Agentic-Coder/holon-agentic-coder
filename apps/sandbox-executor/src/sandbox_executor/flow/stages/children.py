@@ -2,10 +2,7 @@
 
 Children run strictly one after another. Each child is a new intent whose ``target_branch`` and ``parent_intent_id`` are
 the plan branch, so Stage 1 cuts it from the plan branch tip on origin, which already holds every earlier child's merge
-or squash commit. A child is merged into the plan branch (by the guarded :func:`merge_child_pr`) only after its Stage 4
-consensus approval and its Stage 5 calibration; the next child starts only after that merge. Progress is recorded per
-in the Stage 3 payload and checkpointed after every change, so a resume continues where the run stopped and never
-dispatches the parent executor or a child that already has work on origin.
+commit. A child is merged into the plan branch only after its Stage 4 approval and Stage 5 calibration.
 """
 
 from __future__ import annotations
@@ -34,19 +31,14 @@ from sandbox_executor.flow.git_refs import _fetch_refspecs_error
 from sandbox_executor.flow.github.merge import merge_child_pr
 from sandbox_executor.flow.stage_status import REVIEW_BOUNDARY_STATUSES
 from sandbox_executor.flow.stages.integration import integrate_children
-from sandbox_executor.flow.target_sync_hooks import at_turn_boundary
+from sandbox_executor.flow.target_sync_hooks import at_turn_boundary, consume_target_merge_notice
 from sandbox_executor.redaction import redact_agent_secrets
 
 _PR_URL_RE = re.compile(r"https?://\S+/pull/\d+")
 
 
 def _child_review_pr(results: dict[str, StageResult]) -> tuple[Any, Any]:
-    """Return the ``(pr_url, pr_number)`` a child pipeline's Stage 4 recorded, or ``(None, None)``.
-
-    Stage 4 records the ``create_or_update_pr`` result under ``payload["pr"]``: it carries ``pr_number``, and the
-    URL only inside the ``gh`` output, so the URL is read from an explicit ``pr_url`` key when present, else from that
-    output.
-    """
+    """Return the ``(pr_url, pr_number)`` a child pipeline's Stage 4 recorded, or ``(None, None)``."""
     review = results.get(FlowStage.REVIEW.value)
     pr = review.payload.get("pr") if review is not None else None
     if not isinstance(pr, dict):
@@ -60,7 +52,7 @@ def _child_review_pr(results: dict[str, StageResult]) -> tuple[Any, Any]:
 
 def _child_context(context: FlowContext, intent_data: dict[str, Any]) -> FlowContext:
     """Build the FlowContext of one child intent, inheriting the parent's runner, flags and dispatcher."""
-    return FlowContext(
+    child = FlowContext(
         repo_dir=context.target_worktree,
         intent_data=intent_data,
         agent=context.agent,
@@ -77,6 +69,9 @@ def _child_context(context: FlowContext, intent_data: dict[str, Any]) -> FlowCon
         allow_overlap=context.allow_overlap,
         dispatcher=context.dispatcher,
     )
+    if notice := consume_target_merge_notice(context):
+        child._pending_target_merge_notice = notice
+    return child
 
 
 def _build_child_intent(context: FlowContext, payload: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
@@ -235,6 +230,17 @@ def _merge_ready_child(context: FlowContext, payload: dict[str, Any], entry: dic
     return None
 
 
+def _sync_sub_intent_plan_branch(context: FlowContext, payload: dict[str, Any], index: int) -> StageResult | None:
+    """Sync the active ``plan_branch`` (which sub-intents cut from) at a sub-intent turn boundary."""
+    prev_plan, prev_exec = context.plan_branch, context.execution_branch
+    context.plan_branch = str(payload.get("plan_branch") or context.plan_branch or "") or None
+    context.execution_branch = None
+    try:
+        return at_turn_boundary(context, FlowStage.EXECUTE, index)
+    finally:
+        context.plan_branch, context.execution_branch = prev_plan, prev_exec
+
+
 def _advance_child(context: FlowContext, start_time: str, payload: dict[str, Any], entry: dict[str, Any]) -> str | None:
     """Take one child from wherever its progress says it is to merged; return why it stopped, or None."""
     action = next_child_action(entry, checkpoint_exists(context, entry))
@@ -243,10 +249,7 @@ def _advance_child(context: FlowContext, start_time: str, payload: dict[str, Any
         merged = {"index": entry["index"], "merged": True, "merge_commit": entry.get("merge_commit")}
         _set_child_summary(payload, merged)
         return None
-    if (
-        int(entry["index"]) > 1
-        and (turn_err := at_turn_boundary(context, FlowStage.EXECUTE, int(entry["index"]))) is not None
-    ):
+    if int(entry["index"]) > 1 and (turn_err := _sync_sub_intent_plan_branch(context, payload, int(entry["index"]))):
         return turn_err.error or "target sync blocked at sub-intent boundary"
     if action in ("dispatch", "resume"):
         entry["status"] = IN_PROGRESS

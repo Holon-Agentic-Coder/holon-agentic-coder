@@ -540,3 +540,38 @@ def test_execution_rows_match_by_id_without_a_plan_branch() -> None:
     assert is_execution_row({"execution_id": "legacy-9"}, "legacy-9")
     assert not is_execution_row({"execution_id": "XXXX"})
     assert row_stage({"execution_id": "XXXX"}) == "other"
+
+
+def test_execution_rows_without_a_plan_branch_match_by_id() -> None:
+    own = {key: value for key, value in _ledger_row("E-0", "success", 1).items() if key != "plan_branch"}
+    other = {**_ledger_row("E-9", "failed", 2), "plan_branch": "I-other/P-other/_"}
+    assert _matrix_drag([own, other]) == 0.0
+
+
+def test_legacy_fallback_ignores_action_rows() -> None:
+    rows = [
+        {"execution_id": "E-x", "status": "success", "exit_code": 0, "created_at": "2026-11-20T01:01:00Z"},
+        {"entry_type": "action", "execution_id": "E-y", "status": "failed", "created_at": "2026-11-20T01:02:00Z"},
+    ]
+    metrics = evaluate_dual_ev_outcomes(rows, "E-unknown", "", predicted_impact=50.0, cost_effort=5.0)
+    assert metrics.bug_ev_drag == 0.0
+
+
+def test_outcome_helpers_without_plan_rows() -> None:
+    from sandbox_executor.calibration_outcome import has_delivered, has_unresolved_failure
+
+    failed = _ledger_row("E-1", "failed", 1)
+    conflict = {**_ledger_row("E-1", "sync_conflict", 1), "exit_code": 0}
+    assert has_unresolved_failure([failed]) is True
+    assert has_unresolved_failure([conflict]) is True
+    assert has_delivered([conflict]) is False
+
+
+@pytest.mark.parametrize(("approval_minute", "unresolved"), [(3, False), (2, True)])
+def test_plan_rows_that_are_copies_resolve_by_a_strictly_later_instant(approval_minute: int, unresolved: bool) -> None:
+    """A conflict row that is not itself among the plan rows is resolved only by a strictly later delivered row."""
+    from sandbox_executor.calibration_outcome import has_unresolved_failure
+
+    conflict = {**_ledger_row("E-1", "sync_conflict", 2), "exit_code": 0}
+    approval = {**_ledger_row("REV-1", "approved", approval_minute), "exit_code": 0}
+    assert has_unresolved_failure([conflict], [dict(conflict), approval]) is unresolved

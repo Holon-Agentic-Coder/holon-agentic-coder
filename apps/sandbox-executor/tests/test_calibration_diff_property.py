@@ -202,14 +202,18 @@ def test_target_branch_refs_strip_qualifiers() -> None:
     assert target_branch_refs("origin/main") == target_branch_refs("refs/heads/main") == expected
 
 
-def test_target_with_unrelated_history_is_skipped(tmp_path: Path) -> None:
+def test_target_with_unrelated_history_is_skipped_for_the_next_target(tmp_path: Path) -> None:
     make_flow(tmp_path)
     commit(tmp_path, {"src/own.py": "own\n"}, "pr")
+    advance_main(tmp_path, ["main/other.py"], "other")
+    git(tmp_path, "merge", "-q", "--no-edit", "main")
     git(tmp_path, "checkout", "-q", "--orphan", "unrelated")
     commit(tmp_path, {"other.txt": "other\n"}, "unrelated root")
     git(tmp_path, "checkout", "-q", EXEC)
     refs = ("refs/heads/unrelated", *target_branch_refs("main"))
-    _base, _target, label = patch_diff_range(PLAN, EXEC, str(tmp_path), (), refs)
+    base, _target, label = patch_diff_range(PLAN, EXEC, str(tmp_path), (), refs)
+    assert (base, label) == ("refs/heads/main", DIFF_BASE_TARGET_MERGE_BASE)
+    _base, _target, label = patch_diff_range(PLAN, EXEC, str(tmp_path), (), ("refs/heads/unrelated",))
     assert label == DIFF_BASE_PLAN
 
 

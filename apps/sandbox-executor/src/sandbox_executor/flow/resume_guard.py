@@ -85,9 +85,11 @@ def _resume_context_error(
     """
     if start_stage is None:
         return None
-    merge_error = resume_merge_error(context, start_stage)
-    if merge_error is not None:
-        return merge_error
+    # The branch check runs first, so a resume it refuses never adopts (merges, records and pushes) a merge.
+    return _missing_branch_error(context, start_stage, checkpoint_path) or resume_merge_error(context, start_stage)
+
+
+def _missing_branch_error(context: FlowContext, start_stage: FlowStage, checkpoint_path: str | None) -> str | None:
     stage = _first_running_stage(context, start_stage)
     field = REQUIRED_BRANCH.get(stage) if stage is not None else None
     if field is None or getattr(context, field, None):

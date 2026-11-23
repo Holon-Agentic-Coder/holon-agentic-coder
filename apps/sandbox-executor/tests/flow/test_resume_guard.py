@@ -129,3 +129,15 @@ def test_an_execution_branch_of_only_placeholders_falls_back_to_the_checked_out_
     request = _resume_sync_request(context, FlowStage.REVIEW)
 
     assert request is not None and request.execution_id == "E-3-z"
+
+
+def test_a_resume_refused_for_its_branch_never_adopts_the_merge(tmp_path, existing_checkpoint, monkeypatch):
+    adopted: list[FlowStage] = []
+    monkeypatch.setattr(
+        "sandbox_executor.flow.resume_guard.resume_merge_error", lambda _ctx, stage: adopted.append(stage)
+    )
+
+    assert _resume_context_error(_context(tmp_path), FlowStage.REVIEW) is not None
+    assert adopted == []
+    assert _resume_context_error(_context(tmp_path, **ALL_BRANCHES), FlowStage.REVIEW) is None
+    assert adopted == [FlowStage.REVIEW]

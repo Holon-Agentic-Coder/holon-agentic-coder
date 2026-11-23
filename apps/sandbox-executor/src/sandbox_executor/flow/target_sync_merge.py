@@ -15,7 +15,7 @@ from pathlib import Path
 
 from sandbox_executor.flow.conflict_classes import classify_merge_conflicts
 from sandbox_executor.flow.conflict_classes_resolve import resolve_mechanical
-from sandbox_executor.flow.host_remote import HostRemoteError, push_commit
+from sandbox_executor.flow.host_remote import push_commit
 from sandbox_executor.flow.target_probe import TargetProbe
 from sandbox_executor.flow.target_sync_record import append_sync_row
 from sandbox_executor.flow.target_sync_result import SyncRequest, SyncResult
@@ -109,12 +109,13 @@ def _commit_and_push(request: SyncRequest, probe: TargetProbe, result: SyncResul
     commit = run_git(["commit", "--no-edit", "-m", _commit_message(probe, result)], cwd=request.worktree, check=False)
     if commit.returncode != 0:
         raise RuntimeError(f"merge commit failed: {(commit.stderr or '').strip()}")
-    head_after = _git_out(request.worktree, "rev-parse", "HEAD").strip()
-    changed = _git_out(request.worktree, "diff", "--name-only", "-z", f"{result.head_before}..{head_after}")
-    result = replace(result, head_after=head_after, changed_paths=tuple(p for p in changed.split("\0") if p))
-    try:
+    try:  # the merge commit (with its row) has landed: any later error keeps the row id, so it is never aborted
+        head_after = _git_out(request.worktree, "rev-parse", "HEAD").strip()
+        changed = _git_out(request.worktree, "diff", "--name-only", "-z", f"{result.head_before}..{head_after}")
+        result = replace(result, head_after=head_after, changed_paths=tuple(p for p in changed.split("\0") if p))
         push_commit(request.worktree, head_after, request.branch)
-    except (HostRemoteError, TimeoutError, OSError) as exc:
+    except Exception as exc:
+        logger.warning("Target sync of %s merged locally but was not pushed: %s", request.branch, exc)
         return replace(result, status="blocked", error=str(exc) or f"push failed: {type(exc).__name__}")
     return result
 

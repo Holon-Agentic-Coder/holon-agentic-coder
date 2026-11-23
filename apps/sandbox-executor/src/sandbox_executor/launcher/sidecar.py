@@ -166,24 +166,22 @@ def teardown_token_reduction_proxy() -> None:
 def get_token_reduction_mounts_and_envs(
     token_reduce: bool = False,
     mitm_web: bool = False,
+    proxy_attach: bool = False,
 ) -> tuple[list[str], dict[str, str]]:
-    """Build token-reduction mounts/env vars for an explicitly opted-in or auto-detected run.
+    """Build token-reduction mounts/env vars for an explicitly opted-in run or an attach to a running proxy.
 
-    Opt-in is strictly ``--token-reduce``, ``--mitm-web``, ``HOLON_TOKEN_REDUCE`` in ``("1", "true", "yes",
-    "on")``, or auto-detected holon-coherence proxy. Host ``HTTP_PROXY``/``HTTPS_PROXY`` alone never
-    change sandbox networking. Any failure degrades to direct egress (empty mounts/envs) with an
-    actionable warning log.
+    Opt-in is strictly ``--token-reduce``, ``--mitm-web`` or ``HOLON_TOKEN_REDUCE`` in ``("1", "true", "yes",
+    "on")``. Without an opt-in, ``proxy_attach`` (the flow's detected, user-owned proxy) attaches to that proxy and
+    never spawns a sidecar; ``HOLON_TOKEN_REDUCE`` set to an opt-out value disables both. Host
+    ``HTTP_PROXY``/``HTTPS_PROXY`` alone never change sandbox networking. Any failure degrades to direct egress
+    (empty mounts/envs) with an actionable warning log.
     """
-    if not coherence._token_reduce_opt_in(token_reduce or mitm_web):
+    opted_in = coherence._token_reduce_opt_in(token_reduce or mitm_web)
+    if not opted_in and not (proxy_attach and not coherence._token_reduce_opted_out()):
         return [], {}
 
     try:
-        is_passive = os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES
-        if token_reduce or mitm_web or is_passive:
-            if mitm_web:
-                return setup_token_reduction_proxy(mitm_web=True)
-            return setup_token_reduction_proxy()
-        return proxy_attach._attach_external_proxy()
+        return _opted_in_mounts_and_envs(token_reduce, mitm_web) if opted_in else _attach_running_proxy()
     except (FileNotFoundError, RuntimeError, OSError) as exc:
         logger.warning(
             "holon-coherence proxy configuration failed (%s: %s). Proceeding with DIRECT egress fallback.",
@@ -197,3 +195,18 @@ def get_token_reduction_mounts_and_envs(
             messages.redact_cli_error(exc),
         )
         return [], {}
+
+
+def _opted_in_mounts_and_envs(token_reduce: bool, mitm_web: bool) -> tuple[list[str], dict[str, str]]:
+    """Spawn this run's sidecar for a flag or passive-monitoring opt-in; attach for an env-only opt-in."""
+    is_passive = os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES
+    if token_reduce or mitm_web or is_passive:
+        if mitm_web:
+            return setup_token_reduction_proxy(mitm_web=True)
+        return setup_token_reduction_proxy()
+    return _attach_running_proxy()
+
+
+def _attach_running_proxy() -> tuple[list[str], dict[str, str]]:
+    """Attach to the user's running proxy; never starts or tears down a sidecar."""
+    return proxy_attach._attach_external_proxy()

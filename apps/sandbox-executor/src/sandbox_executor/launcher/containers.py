@@ -22,6 +22,7 @@ class ContainerLaunchOptions(TypedDict, total=False):
     intent_file: str | None
     token_reduce: bool
     mitm_web: bool
+    proxy_attach: bool
     target_worktree: str | None
     result_file: str | None
 
@@ -53,6 +54,8 @@ class ContainerLaunch:
     intent_file: str | None = None
     token_reduce: bool = False
     mitm_web: bool = False
+    # Attach to a proxy the user already runs (the flow's port-probe hit); never spawns a sidecar.
+    proxy_attach: bool = False
     target_worktree: str | None = None
     result_file: str | None = None
     docker_cmd: list[str] = field(default_factory=list, init=False)
@@ -86,7 +89,7 @@ class ContainerLaunch:
         # so every remaining exit path — early returns included — must run teardown, not just the final
         # subprocess.run.
         tr_mounts, tr_envs = sidecar.get_token_reduction_mounts_and_envs(
-            token_reduce=self.token_reduce, mitm_web=self.mitm_web
+            token_reduce=self.token_reduce, mitm_web=self.mitm_web, proxy_attach=self.proxy_attach
         )
         try:
             self.mounts(tr_mounts, tr_envs)

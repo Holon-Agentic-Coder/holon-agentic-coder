@@ -560,21 +560,24 @@ class TestHolonFlowCLI(unittest.TestCase):
             self.assertEqual(cm.exception.code, 1)
             self.assertIn("Model is mandatory", mock_stderr.getvalue())
 
-    def test_flow_skip_review_flag(self):
+    def test_flow_rejects_the_removed_skip_review_flag(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             intent_file = os.path.join(tmp_dir, "intent.json")
             with open(intent_file, "w", encoding="utf-8") as f:
                 json.dump({"slug": "test-skip-rev"}, f)
 
-            with patch("sandbox_executor.cli.run_flow_pipeline") as mock_pipeline, patch("sys.exit") as mock_exit:
-                mock_pipeline.return_value = {"status": "ok"}
-                with patch("sys.argv", ["holon", "flow", intent_file, "--skip-review"]):
-                    main()
-                mock_pipeline.assert_called_once()
-                ctx = mock_pipeline.call_args[1]["context"]
-                self.assertTrue(ctx.skip_review)
-                self.assertFalse(ctx.skip_calibrate)
-                mock_exit.assert_called_with(0)
+            with (
+                patch("sandbox_executor.cli.run_flow_pipeline") as mock_pipeline,
+                patch("sandbox_executor.cli.dispatch_role_agent") as mock_dispatch,
+                patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
+                patch("sys.argv", ["holon", "flow", intent_file, "--skip-review"]),
+                self.assertRaises(SystemExit) as cm,
+            ):
+                main()
+            self.assertEqual(cm.exception.code, 2)
+            self.assertIn("unrecognized arguments: --skip-review", mock_stderr.getvalue())
+            mock_pipeline.assert_not_called()
+            mock_dispatch.assert_not_called()
 
     def test_flow_skip_calibrate_flag(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -588,7 +591,6 @@ class TestHolonFlowCLI(unittest.TestCase):
                     main()
                 mock_pipeline.assert_called_once()
                 ctx = mock_pipeline.call_args[1]["context"]
-                self.assertFalse(ctx.skip_review)
                 self.assertTrue(ctx.skip_calibrate)
                 self.assertFalse(ctx.auto_calibrate)
                 mock_exit.assert_called_with(0)
@@ -711,7 +713,6 @@ class TestHolonFlowCLI(unittest.TestCase):
                     "flow",
                     intent_file,
                     "--dry-run",
-                    "--skip-review",
                     "--skip-calibrate",
                     "--max-review-iterations",
                     "4",
@@ -723,7 +724,6 @@ class TestHolonFlowCLI(unittest.TestCase):
                 mock_pipeline.assert_called_once()
                 ctx = mock_pipeline.call_args[1]["context"]
                 self.assertTrue(ctx.dry_run)
-                self.assertTrue(ctx.skip_review)
                 self.assertTrue(ctx.skip_calibrate)
                 self.assertFalse(ctx.auto_calibrate)
                 self.assertEqual(ctx.max_review_iterations, 4)
@@ -740,11 +740,6 @@ class TestHolonFlowCLI(unittest.TestCase):
             def fake_run(context, **kwargs):
                 from sandbox_executor.flow import FlowStage, StageResult, StageStatus
 
-                context.stage_results["review"] = StageResult(
-                    stage=FlowStage.REVIEW,
-                    status=StageStatus.SKIPPED,
-                    payload={"skipped_by_flag": True},
-                )
                 context.stage_results["calibrate"] = StageResult(
                     stage=FlowStage.CALIBRATE,
                     status=StageStatus.SKIPPED,
@@ -757,14 +752,13 @@ class TestHolonFlowCLI(unittest.TestCase):
                 patch("sys.stdout", new_callable=io.StringIO) as mock_stdout,
                 patch("sys.exit") as mock_exit,
             ):
-                with patch("sys.argv", ["holon", "flow", intent_file, "--skip-review", "--skip-calibrate", "--json"]):
+                with patch("sys.argv", ["holon", "flow", intent_file, "--skip-calibrate", "--json"]):
                     main()
                 mock_exit.assert_called_with(0)
                 output = mock_stdout.getvalue()
                 parsed = json.loads(output)
-                self.assertEqual(parsed["stage_results"]["review"]["status"], "skipped")
                 self.assertEqual(parsed["stage_results"]["calibrate"]["status"], "skipped")
-                self.assertTrue(parsed["skip_review"])
+                self.assertNotIn("skip_review", parsed)
                 self.assertTrue(parsed["skip_calibrate"])
 
     def test_flow_summary_lists_merged_child_prs_and_the_combined_pr(self):
@@ -849,7 +843,6 @@ class TestHolonFlowCLI(unittest.TestCase):
             orig_ctx = FlowContext(
                 target_worktree=tmp_dir,
                 intent_data={"slug": "test-resume"},
-                skip_review=False,
                 skip_calibrate=False,
                 max_review_iterations=5,
             )
@@ -864,7 +857,6 @@ class TestHolonFlowCLI(unittest.TestCase):
                     "flow",
                     "--checkpoint",
                     checkpoint_file,
-                    "--skip-review",
                     "--skip-calibrate",
                     "--max-review-iterations",
                     "10",
@@ -874,7 +866,6 @@ class TestHolonFlowCLI(unittest.TestCase):
                     main()
                 mock_pipeline.assert_called_once()
                 ctx = mock_pipeline.call_args[1]["context"]
-                self.assertTrue(ctx.skip_review)
                 self.assertTrue(ctx.skip_calibrate)
                 self.assertFalse(ctx.auto_calibrate)
                 self.assertEqual(ctx.max_review_iterations, 10)

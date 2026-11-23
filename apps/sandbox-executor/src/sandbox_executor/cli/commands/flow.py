@@ -107,11 +107,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         ),
     )
     parser.add_argument(
-        "--skip-review",
-        action="store_true",
-        help=f"Skip Stage 4 (review loop) and proceed to calibration. {_RUN_ONLY}",
-    )
-    parser.add_argument(
         "--skip-calibrate",
         action="store_true",
         help=f"Skip Stage 5 (post-execution calibration report generation). {_RUN_ONLY}",
@@ -195,22 +190,34 @@ def _resolve_checkpoint_and_intent(
         flow_agent, flow_model = agent_res.value, model_res.value
     else:
         flow_agent, flow_model = resolve_resumed_runner(args, context, args.checkpoint)
+        apply_run_switches(context, args)
         intent_data = {}
 
     return context, intent_data, flow_agent, flow_model
 
 
-def _check_skip_push(args: argparse.Namespace) -> bool:
-    """Reject --skip-push given in this run outside a dry run of this run, before any other gate."""
-    if args.skip_push and not args.dry_run:
+def _check_skip_push(args: argparse.Namespace, context: Any | None) -> bool:
+    """Reject --skip-push outside a dry run, before any other gate.
+
+    A resumed ``context`` already carries this run's switches (a stored skip was dropped), so it is the source of truth.
+    """
+    effective_dry_run = bool(context.dry_run if context is not None else args.dry_run)
+    effective_skip_push = bool(context.skip_push if context is not None else args.skip_push)
+    if effective_skip_push and not effective_dry_run:
         print(f"Error: {cli.SKIP_PUSH_DISPATCH_ERROR}", file=sys.stderr)
         sys.exit(1)
         return False
     return True
 
 
-def _check_dry_run_and_preflight(args: argparse.Namespace, flow_agent: str, flow_model: str) -> bool:
-    if args.dry_run:
+def _check_dry_run_and_preflight(
+    args: argparse.Namespace,
+    context: Any | None,
+    flow_agent: str,
+    flow_model: str,
+) -> bool:
+    effective_dry_run = bool(context.dry_run if context is not None else args.dry_run)
+    if effective_dry_run:
         logger.info("Pre-flight probe skipped for a dry-run flow (no agent is called).")
     elif not cli.flow_dispatches_agent(args.from_stage):
         logger.info(
@@ -266,7 +273,6 @@ def _build_flow_context(
             model=flow_model,
             dry_run=args.dry_run,
             skip_push=args.skip_push,
-            skip_review=args.skip_review,
             skip_calibrate=args.skip_calibrate,
             auto_calibrate=not args.skip_calibrate,
             max_review_iterations=args.max_review_iterations,
@@ -336,10 +342,10 @@ def run(args: argparse.Namespace) -> int | None:
             return None
         context, intent_data, flow_agent, flow_model = resolved
 
-        if not _check_skip_push(args) or not ensure_flow_worktree(args, context, intent_data):
+        if not _check_skip_push(args, context) or not ensure_flow_worktree(args, context, intent_data):
             return None
 
-        if not _check_dry_run_and_preflight(args, flow_agent, flow_model):
+        if not _check_dry_run_and_preflight(args, context, flow_agent, flow_model):
             return None
         if not redirect_default_branch_target(args, context, intent_data):
             return None

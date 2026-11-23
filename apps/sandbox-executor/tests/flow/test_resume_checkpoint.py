@@ -211,7 +211,6 @@ def _run_args(intent_file: Path, worktree: Path, **flags: Any) -> argparse.Names
     defaults = {
         "dry_run": True,
         "skip_push": True,
-        "skip_review": False,
         "skip_calibrate": False,
         "allow_overlap": False,
         "max_review_iterations": None,
@@ -253,36 +252,46 @@ def _save_runner_checkpoint(worktree: Path, **attributes: Any) -> Path:
     return Path(save_checkpoint(context))
 
 
-def test_a_stored_skip_review_is_dropped_and_logged_when_the_resume_does_not_pass_it(worktree, intent_file, caplog):
-    _save_runner_checkpoint(worktree, skip_review=True, skip_calibrate=True, auto_calibrate=False)
+def test_a_stored_skip_calibrate_is_dropped_and_logged_when_the_resume_does_not_pass_it(worktree, intent_file, caplog):
+    _save_runner_checkpoint(worktree, skip_calibrate=True, auto_calibrate=False)
     args = _run_args(intent_file, worktree)
 
     with caplog.at_level(logging.WARNING, logger="sandbox_executor.cli.commands._flow_resume"):
         context, seen = _resume(args)
 
     assert [role for role, _agent, _model in seen] == ["review", "calibrate"]
-    for name in ("skip_review", "skip_calibrate"):
-        dropped = f"Resume dropped the stored {name} from the checkpoint"
-        assert dropped in caplog.text
-        assert any(dropped in line for line in context.logs)
+    dropped = "Resume dropped the stored skip_calibrate from the checkpoint"
+    assert dropped in caplog.text
+    assert any(dropped in line for line in context.logs)
     assert "dropped the stored dry_run" not in caplog.text
-    assert (context.skip_review, context.skip_calibrate, context.auto_calibrate) == (False, False, True)
-    saved = load_checkpoint(args.checkpoint).context
-    assert (saved.skip_review, saved.skip_calibrate) == (False, False)
+    assert (context.skip_calibrate, context.auto_calibrate) == (False, True)
+    assert load_checkpoint(args.checkpoint).context.skip_calibrate is False
+
+
+def test_a_legacy_checkpoint_skip_review_never_skips_review_on_resume(worktree, intent_file):
+    path = _save_runner_checkpoint(worktree)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["context"]["skip_review"] = True
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    context, seen = _resume(_run_args(intent_file, worktree))
+
+    assert [role for role, _agent, _model in seen] == ["review", "calibrate"]
+    assert not hasattr(context, "skip_review")
+    assert "skip_review" not in RUN_SWITCHES
 
 
 def test_only_the_switches_passed_to_this_run_take_effect(worktree, intent_file):
-    _save_runner_checkpoint(worktree, skip_review=True)
-    args = _run_args(intent_file, worktree, skip_review=True)
+    _save_runner_checkpoint(worktree, skip_calibrate=True, auto_calibrate=False)
+    args = _run_args(intent_file, worktree, skip_calibrate=True)
 
     context, seen = _resume(args)
 
-    assert [role for role, _agent, _model in seen] == ["calibrate"]
+    assert [role for role, _agent, _model in seen] == ["review"]
     assert {name: getattr(context, name) for name in RUN_SWITCHES} == {
         "dry_run": True,
         "skip_push": True,
-        "skip_review": True,
-        "skip_calibrate": False,
+        "skip_calibrate": True,
     }
 
 

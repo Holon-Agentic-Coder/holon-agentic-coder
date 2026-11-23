@@ -25,7 +25,7 @@ from sandbox_executor.git_flow import flow_worktree_layout
 
 logger = logging.getLogger(__name__)
 
-RUN_SWITCHES = ("dry_run", "skip_push", "skip_review", "skip_calibrate")
+RUN_SWITCHES = ("dry_run", "skip_push", "skip_calibrate")
 """Per-run switches a resume takes only from the current flags, never from the checkpoint."""
 
 

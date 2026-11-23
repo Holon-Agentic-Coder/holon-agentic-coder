@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-6fa6d105",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-22T23:37:40.608174+00:00",
+  "updated_ts": "2026-11-22T23:37:40.608174+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "E-1795088115-4e818090-claude-agent-claude-fable-5"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1794976491-shortref/P-1795087811-3604f487-claude-agent-claude-fable-5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Pre-push sync failure: Non-ledger merge conflicts detected with origin/main in files: ['apps/sandbox-executor/flow_module_budgets.json']. Aborting auto-merge and refusing push.. The branch was not published.",
+    "symptoms": []
+  }
+}

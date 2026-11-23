@@ -22,7 +22,7 @@ from tests.leak_assertions import assert_no_fragment
 from tests.test_config_env import fake_token, write
 
 DISPATCHER = pathlib.Path(__file__).resolve().parent.parent / "entrypoint" / "role_dispatcher.sh"
-ROLES = ("intent-creator", "planner", "executor", "review-loop")
+ROLES = ("intent-creator", "planner", "executor", "review-loop", "conflict-resolver")
 
 
 @pytest.fixture

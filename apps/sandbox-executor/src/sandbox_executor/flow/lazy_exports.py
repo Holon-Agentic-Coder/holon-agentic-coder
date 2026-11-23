@@ -45,6 +45,12 @@ LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.conflict_classes_lists": "appended_list_union",
     "sandbox_executor.flow.conflict_classes_resolve": "MechanicalResolution resolve_mechanical resolve_path",
     "sandbox_executor.flow.conflict_classes_tokens": "python_lines unchanged_outside",
+    "sandbox_executor.flow.conflict_resolver_attempt": (
+        "AttemptCheck MergeSnapshot check_attempt discard_tampered reset_attempt save_attempt_diff snapshot_merge "
+        "stage_resolution"
+    ),
+    "sandbox_executor.flow.conflict_resolver_role": "conflict_code_resolver",
+    "sandbox_executor.flow.conflict_resolver_tiers": "next_tier tier_ladder",
     "sandbox_executor.flow.constants": "CI_REGISTRATION_POLL_SECONDS CURRENT_CONTEXT_SCHEMA_VERSION",
     "sandbox_executor.flow.context": (
         "_SUMMARY_STATUS_WORDS FlowContext FlowStage StageResult StageStatus _support_legacy_repo_dir"
@@ -160,6 +166,7 @@ LAZY_EXPORTS: dict[str, str] = {
         "superseding_failure_row touch_set_replan_exhausted touch_set_replan_feedback touch_set_violation "
         "touch_set_violation_result"
     ),
+    "sandbox_executor.flow.merge_git": "git_out has_conflict_markers",
     "sandbox_executor.flow.target_probe": (
         "TargetProbe TargetProbeError merge_tree_conflicts parse_merge_tree_paths probe_target"
     ),

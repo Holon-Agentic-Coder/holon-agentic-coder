@@ -21,6 +21,7 @@ from sandbox_executor.flow import (
     run_review_stage,
     save_checkpoint,
 )
+from sandbox_executor.flow.github.pr_head import PR_HEAD_TIMEOUT_SECONDS
 from sandbox_executor.review_target import ReviewTarget
 
 from tests.flow.github.fake_github import FakeGitHub, ci_checks_payload
@@ -529,6 +530,32 @@ def test_an_injected_adapter_supplies_the_proxy_environment_of_the_loop(tmp_path
     assert res["consensus"]["approved"] is True
     resolve.assert_not_called()
     assert gate.call_args.kwargs["proxy_env"] == {"HTTPS_PROXY": "http://p"}
+    assert gate.call_args.kwargs["pr_head"]("feat") == "stage3-head"
+    assert github.calls[-1] == ("pr_head_sha", ("feat", PR_HEAD_TIMEOUT_SECONDS))
+
+
+def test_without_an_injected_adapter_the_loop_builds_one_with_the_resolved_proxy_environment(tmp_path):
+    """Without ``github=...`` the loop builds its adapter over the worktree with the proxy environment it resolved."""
+    from sandbox_executor.flow.review import loop as loop_module
+    from sandbox_executor.review_target import DiffVerdict
+
+    github = FakeGitHub(
+        views=[{"number": 7, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}] * 2,
+        checks=ci_checks_payload(passed=1),
+        head_sha="stage3-head",
+    )
+    ctx = _ensemble_ctx(tmp_path)
+    with (
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc1234"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+        patch.object(loop_module, "review_proxy_env", return_value={"HTTPS_PROXY": "http://p"}) as resolve,
+        patch.object(loop_module, "GitHubAdapter", return_value=github) as adapter,
+    ):
+        res = run_review_loop(ctx, max_iterations=1, run_ensemble_fn=FakeEnsemble())
+
+    assert res["consensus"]["approved"] is True
+    resolve.assert_called_once_with(ctx)
+    adapter.assert_called_once_with(ctx.target_worktree, {"HTTPS_PROXY": "http://p"})
 
 
 def test_an_unavailable_adapter_attempts_no_pr(tmp_path):

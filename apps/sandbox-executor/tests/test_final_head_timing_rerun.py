@@ -239,7 +239,7 @@ def test_checks_that_never_reregister_get_no_second_dispatch(tmp_path: Path) -> 
 
 
 def test_an_injected_adapter_reads_the_pr_head_probes_ci_and_dispatches_the_rerun(tmp_path: Path) -> None:
-    """With ``FinalHeadSeams(github=...)`` and no other gh seam, every gh call of the check goes through the adapter."""
+    """With ``FinalHeadSeams(github=...)``, the PR-head read, the CI probes and the rerun go through the adapter."""
     fakes = RerunFakes(_status([]), steps={"macos-unit": [GATE]})
     github = FakeGitHub(
         checks_sequence=[ci_checks_payload(failed=1, names=["macos-unit"]), ci_checks_payload(passed=1)],

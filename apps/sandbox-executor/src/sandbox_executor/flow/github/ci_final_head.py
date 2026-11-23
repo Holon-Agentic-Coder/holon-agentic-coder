@@ -65,7 +65,7 @@ class FinalHeadSeams:
     rerun_dispatcher: Callable[[str], bool] | None = None
     changed_paths: Callable[[str, str], list[str] | None] | None = None
     approved_head: Callable[[], str | None] | None = None
-    github: GitHubAdapter | None = None  # Every ``gh`` call of the check; default one over the checkout and proxy.
+    github: GitHubAdapter | None = None  # PR head, CI probes and reruns (not ``detail_lookup``); default over checkout.
 
 
 @dataclass(frozen=True)

@@ -736,7 +736,7 @@ def test_a_stale_warning_followed_by_more_commits_leaves_exactly_one_updated_war
     assert (first["posted"], second["edited"], third["edited"]) == (True, 1, 0)
     (warning,) = thread.stale_bodies()
     assert "`ddddddd`" in warning and "`bbbbbbb`" not in warning
-    assert "do not merge on this report" in warning
+    assert "The flow reruns Stage 5 for this head on its next run" in warning
     assert (len(thread.posted), len(thread.edits)) == (1, 1)
 
 

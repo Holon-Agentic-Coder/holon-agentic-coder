@@ -135,6 +135,28 @@ When Stage 5 later finds CI red on a different head, one follow-up comment says 
 [Final-head CI check](git_flow.md#final-head-ci-check-stage-5)). A later green head needs its own approval, which names
 its own head.
 
+## CI gate on the merged head
+
+Stage 5 pushes no calibration commit until CI has passed on the head it would calibrate. After the conflict gate, it
+compares the execution head with the approved head. If the head is unchanged, or moved only by non-merge commits that
+touch `plans/`, `executions/` or `holon-knowledge/` (the ledger rows Stage 4 commits on exit), Stage 5 relies on the
+Stage 4 CI result and runs immediately. Any other head, for example one with `origin/main` merged in, waits for every
+check run on exactly that SHA, read from the GitHub check-runs API for the commit.
+
+- Only `success`, `neutral` and `skipped` pass. Runs registered against another SHA (superseded) are ignored, and the
+  newest run per check suite and check name counts.
+- A `cancelled` or `stale` run is never treated as passed. It is re-triggered once per run id; a second cancellation, or
+  a cancelled check with no Actions run, fails Stage 5 closed.
+- Checks still pending when the CI wait budget runs out, or no readable checks, also fail Stage 5 closed. Nothing is
+  pushed and the approval is not withdrawn, because no check failed.
+- A failed check withdraws the consensus. A new ledger row (labels `consensus-withdrawn` and `merged-head-ci`) records
+  it, and no earlier row is edited. One PR comment per merged head says the approval was withdrawn. The pipeline then
+  restarts Stage 4 at iteration 1, with a fresh reviewer ensemble, for the new head. It does this at most 3 times; after
+  that, Stage 5 fails and nothing is calibrated.
+
+The Stage 5 log names the head SHA, the run ids and the conclusions it relied on. Dry runs and `--skip-push` skip the
+gate.
+
 ## Resolver pre-push verification
 
 Before the resolver commits a fix it runs, in order: `uv run task lint`, a Prettier check of the Markdown files it

@@ -34,6 +34,7 @@ from sandbox_executor.flow.github.ci_reverify import RED, blocked_error, reverif
 from sandbox_executor.flow.ledger_warning import _warn_ledger_failure
 from sandbox_executor.flow.review.conflict_gate import _stage5_conflict_gate
 from sandbox_executor.flow.review.records import _bounded_error_context
+from sandbox_executor.flow.review_restart import stage5_merged_head_gate
 from sandbox_executor.flow.stage5 import Stage5Steps, run_stage5
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.review import _checkout_execution_branch
@@ -105,9 +106,16 @@ def stage5_steps(
 
 
 def run_calibrate_stage(context: FlowContext) -> StageResult:
-    """Execute Stage 5 unless the conflict gate refuses the head, then return the worktree to its starting branch."""
+    """Execute Stage 5 unless the conflict gate or the merged-head CI gate stops it, then restore the starting branch.
+
+    The merged-head CI gate runs after the conflict gate's merge and before any calibration commit is pushed.
+    """
     try:
-        return _stage5_conflict_gate(context) or _calibrate_execution_branch(context)
+        refused = _stage5_conflict_gate(context)
+        if refused is not None:
+            return refused
+        stopped, merged_head_ci = stage5_merged_head_gate(context)
+        return stopped or _calibrate_execution_branch(context, merged_head_ci)
     finally:
         restore_starting_branch(context)
 
@@ -173,12 +181,13 @@ def _prepare_execution_branch(context: FlowContext, start_time: str) -> tuple[St
     return None, start_sha, calibrated_created
 
 
-def _calibrate_execution_branch(context: FlowContext) -> StageResult:
+def _calibrate_execution_branch(context: FlowContext, merged_head_ci: dict[str, Any] | None = None) -> StageResult:
     """Execute Stage 5: Post-Execution Calibration.
 
     Runs the shared Stage 5 core (``flow.stage5.run_stage5``) on the execution branch: the calibration report, the
     execution reconciliation and the knowledge/wisdom promotion, each committed on the /calibrated branch. Then
-    publishes the /calibrated branch and checks the final head's CI.
+    publishes the /calibrated branch and checks the final head's CI. ``merged_head_ci`` is the record of the CI Stage 5
+    relied on before calibrating (see :func:`sandbox_executor.flow.review_restart.stage5_merged_head_gate`).
     Operates unattended: applies conservative calibrated updates automatically.
     """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -259,6 +268,7 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:
             "calibration_report": report_dict,
             "promoted_candidates": promoted_candidates,
             "stage5_reconciliation": outcome.reconciliation,
+            "merged_head_ci": merged_head_ci,
             "final_head_ci": final_head_ci,
             "ci_verdict": reverified,
         },

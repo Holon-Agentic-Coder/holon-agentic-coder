@@ -33,7 +33,7 @@ from sandbox_executor.flow.calibrate_stale_warning import (
 from sandbox_executor.flow.github.approval_invalidation import CommentRecord
 from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of
 from sandbox_executor.flow.review.conflict_merge import _merge_target_ledger_only
-from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
+from sandbox_executor.flow.stages.calibrate import _supersede_stale_warning, run_calibrate_stage
 
 from tests.test_calibrate_sync import CALIBRATED, EXEC, commit_file, git, make_repos
 
@@ -302,17 +302,29 @@ def realistic_calibrate(**kwargs: object) -> SimpleNamespace:
         handle.write(json.dumps(row) + "\n")
     git(cwd, "add", CAL_REPORT_REL, LEDGER_REL)
     git(cwd, "commit", "-qm", CAL_SUBJECT)
-    return SimpleNamespace(calibrated_branch=CALIBRATED, to_dict=lambda: {"plan_id": PLAN_ID})
+    report = {"plan_id": PLAN_ID, "evaluated_commit_sha": evaluated}
+    return SimpleNamespace(calibrated_branch=CALIBRATED, to_dict=lambda: report)
 
 
-def stage_runner(calls: list[str]) -> object:
-    """A run_calibrate_stage wrapper with the network-facing seams faked, recording each invocation."""
+def stage5_resolve_stale(thread: FakeThread) -> object:
+    """``resolve_stale`` as Stage 5 calls it after the push, routed to the fake thread instead of ``gh``."""
+    seams = WarningSeams(comments=thread.comments, poster=thread.poster, editor=thread.editor)
+    return lambda context, pr_number, evaluated: resolve_stale(context, pr_number, evaluated, seams)
+
+
+def stage_runner(calls: list[str], thread: FakeThread | None = None) -> object:
+    """A run_calibrate_stage wrapper with the network-facing seams faked, recording each invocation.
+
+    Stage 5's own supersede-after-push edits ``thread`` when one is given, else an empty thread nobody reads.
+    """
+    resolver = stage5_resolve_stale(thread or FakeThread())
 
     def run(ctx: FlowContext) -> StageResult:
         calls.append("stage")
         with (
             patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
             patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=realistic_calibrate),
+            patch("sandbox_executor.flow.stages.calibrate.resolve_stale", side_effect=resolver),
             patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", return_value={"state": "success"}),
         ):
             return run_calibrate_stage(ctx)
@@ -320,10 +332,12 @@ def stage_runner(calls: list[str]) -> object:
     return run
 
 
-def calibrated_flow(repos: SimpleNamespace) -> tuple[FlowContext, StageResult, list[str], object]:
+def calibrated_flow(
+    repos: SimpleNamespace, thread: FakeThread | None = None
+) -> tuple[FlowContext, StageResult, list[str], object]:
     """A context whose Stage 5 already ran once, with the stage-call recorder the rerun trigger reuses."""
     calls: list[str] = []
-    run = stage_runner(calls)
+    run = stage_runner(calls, thread)
     ctx = FlowContext(target_worktree=str(repos.host), execution_branch=EXEC, agent="a", model="m")
     result = run(ctx)
     assert result.status == StageStatus.SUCCESS
@@ -480,7 +494,8 @@ def test_a_head_that_outruns_both_attempts_marks_the_payload_stale(repos: Simple
     assert "not ready to merge" in line and "covers" in line
 
 
-def test_the_stale_signal_is_superseded_by_the_rerun_and_the_refreshed_note_posts_once(repos: SimpleNamespace) -> None:
+def test_the_stale_signal_is_superseded_by_the_rerun_and_no_second_comment_is_posted(repos: SimpleNamespace) -> None:
+    """Stage 5 here cannot reach the thread (its own edit goes nowhere), so the trigger's explicit number supersedes."""
     ctx, result, _, run = calibrated_flow(repos)
     approve_pr(ctx)
     thread = FakeThread(stale_body(StaleRange("a" * 40, "b" * 40, "an earlier flow")))  # a warning is already open
@@ -488,14 +503,112 @@ def test_the_stale_signal_is_superseded_by_the_rerun_and_the_refreshed_note_post
     move_head(repos)
     refreshed = rerun_calibration(ctx, result, run, seams=seams)
     assert refreshed.status == StageStatus.SUCCESS
-    assert stale_warnings(thread.posted) == []  # the rerun never warns about the report it is replacing
-    (note,) = thread.posted
-    assert "Calibration refreshed" in note and refreshed.payload["calibrated_head"][:7] in note
-    (warning,) = thread.stale_bodies()
+    assert refreshed.payload["stale_warning"] == {"posted": False, "edited": 0, "reason": "no open stale warning"}
+    assert thread.posted == []  # no warning about the report being replaced, and no refreshed note beside the edit
+    (warning,) = (record.body for record in thread.records)
     assert "superseded" in warning and "Calibration report is stale" not in warning
     assert f"{SUPERSEDED_MARKER_PREFIX}{refreshed.payload['calibrated_head']} -->" in warning
     assert rerun_calibration(ctx, refreshed, run, seams=seams) is refreshed
-    assert (len(thread.posted), len(thread.edits)) == (1, 1)  # nothing new on a repeated check
+    assert (len(thread.posted), len(thread.edits)) == (0, 1)  # nothing new on a repeated check
+
+
+def test_stage5_supersedes_the_warning_right_after_the_push_and_before_the_final_head_ci_check(
+    repos: SimpleNamespace,
+) -> None:
+    thread = FakeThread()
+    ctx, _, _, _ = calibrated_flow(repos, thread)
+    approve_pr(ctx)
+    new_head = move_head(repos)
+    post_stale_signal(ctx, report_staleness(ctx), thread.seams(), pr_number="7")
+    assert len(stale_warnings(thread.stale_bodies())) == 1  # the warning is open when Stage 5 starts
+    seen_at_ci_check: list[str] = []
+
+    def final_head_ci(context: FlowContext, repo_dir: str, branch: str) -> dict[str, str]:
+        (warning,) = thread.stale_bodies()
+        seen_at_ci_check.append(warning)
+        assert "Stale calibration warning superseded" in warning and "Calibration report is stale" not in warning
+        assert f"{SUPERSEDED_MARKER_PREFIX}{new_head} -->" in warning and f"`{new_head[:7]}`" in warning
+        assert parse_evaluated_commit_sha(git(repos.origin, "show", f"{EXEC}:{CAL_REPORT_REL}")) == new_head
+        return {"state": "success"}
+
+    with (
+        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=realistic_calibrate),
+        patch("sandbox_executor.flow.stages.calibrate.resolve_stale", side_effect=stage5_resolve_stale(thread)),
+        patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", side_effect=final_head_ci),
+    ):
+        result = run_calibrate_stage(ctx)
+
+    assert (result.status, len(seen_at_ci_check)) == (StageStatus.SUCCESS, 1)
+    assert result.payload["stale_warning"] == {"posted": False, "edited": 1, "reason": "superseded"}
+    assert (len(thread.records), len(thread.posted), len(thread.edits)) == (1, 1, 1)  # one comment, edited once
+    assert thread.records[0].body == seen_at_ci_check[0]
+
+
+def test_a_failed_publish_leaves_the_warning_open_and_records_no_supersession(repos: SimpleNamespace) -> None:
+    thread = FakeThread()
+    ctx, _, _, _ = calibrated_flow(repos, thread)
+    approve_pr(ctx)
+    move_head(repos)
+    post_stale_signal(ctx, report_staleness(ctx), thread.seams(), pr_number="7")
+    with (
+        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=realistic_calibrate),
+        patch("sandbox_executor.flow.stages.calibrate.publish_calibration", return_value=False),
+        patch("sandbox_executor.flow.stages.calibrate.resolve_stale", side_effect=stage5_resolve_stale(thread)) as hook,
+        patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci") as final_head_ci,
+    ):
+        result = run_calibrate_stage(ctx)
+
+    assert (result.payload["stale_warning"], result.payload["calibrated_head"]) == (None, None)
+    hook.assert_not_called()
+    final_head_ci.assert_not_called()
+    (warning,) = thread.stale_bodies()
+    assert "Calibration report is stale" in warning and thread.edits == []
+
+
+def test_a_rerun_adds_the_refreshed_note_only_when_no_warning_was_superseded(repos: SimpleNamespace) -> None:
+    thread = FakeThread()
+    ctx, result, calls, run = calibrated_flow(repos, thread)
+    approve_pr(ctx)
+    first_head = move_head(repos, "first-fix.txt")
+    first = rerun_calibration(ctx, result, run, seams=thread.seams())
+    assert first.payload["stale_warning"]["edited"] == 0  # no warning was open: the refreshed note is posted once
+    (note,) = thread.posted
+    assert "Calibration refreshed" in note and first_head[:7] in note
+
+    second_head = move_head(repos, "second-fix.txt")
+    post_stale_signal(ctx, report_staleness(ctx), thread.seams(), pr_number="7")  # as a standalone gate would
+    second = rerun_calibration(ctx, first, run, seams=thread.seams())
+    assert (len(calls), second.payload["calibrated_head"]) == (3, second_head)
+    assert second.payload["stale_warning"] == {"posted": False, "edited": 1, "reason": "superseded"}
+    (warning,) = thread.stale_bodies()
+    assert f"{SUPERSEDED_MARKER_PREFIX}{second_head} -->" in warning
+    assert refreshed_notes(thread.posted) == [note]  # the superseded warning names the fresh report: no second note
+    assert len(thread.records) == 2
+
+
+@pytest.mark.parametrize(
+    ("review_payload", "pr_number"),
+    [
+        ({"consensus": {"approved": True, "pr_number": 7}, "pr": {"pr_number": 9}}, "7"),
+        ({"consensus": {"approved": False}, "pr": {"pr_number": 9}}, "9"),  # halted for a human: still the reviewed PR
+        ({"consensus": "approved", "pr": ["9"]}, None),
+        (None, None),
+    ],
+)
+def test_stage5_supersedes_on_the_reviewed_pull_request_approved_or_not(
+    tmp_path: Path, review_payload: dict | None, pr_number: str | None
+) -> None:
+    ctx = pr_context(tmp_path)
+    if review_payload is not None:
+        ctx.stage_results["review"] = StageResult(
+            stage=FlowStage.REVIEW, status=StageStatus.HALTED_FOR_HUMAN, payload=review_payload
+        )
+    record = {"posted": False, "edited": 0, "reason": "no open stale warning"}
+    with patch("sandbox_executor.flow.stages.calibrate.resolve_stale", return_value=record) as hook:
+        assert _supersede_stale_warning(ctx, "c" * 40) is record
+    hook.assert_called_once_with(ctx, pr_number, "c" * 40)
 
 
 def test_a_successful_rerun_on_a_code_push_posts_no_stale_warning(repos: SimpleNamespace) -> None:
@@ -658,6 +771,26 @@ def test_a_current_report_supersedes_a_leftover_warning(repos: SimpleNamespace) 
     (warning,) = thread.stale_bodies()
     assert f"{SUPERSEDED_MARKER_PREFIX}{evaluated} -->" in warning
     assert thread.posted == []
+
+
+@pytest.mark.parametrize("trigger_site", ["review gate", "pipeline rerun"])
+def test_a_leftover_warning_on_a_covered_pr258_shaped_head_is_superseded_and_nothing_is_posted(
+    repos: SimpleNamespace, trigger_site: str
+) -> None:
+    history = pr258_history(repos)
+    ctx = standalone_context(repos)
+    thread = FakeThread(stale_body(StaleRange(history.evaluated, history.merge, "an earlier flow")))
+    if trigger_site == "review gate":
+        assert review_calibration_freshness(ctx, "7", seams=thread.seams()) is None
+    else:
+        calibrated = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
+        calls: list[str] = []
+        assert rerun_calibration(ctx, calibrated, stage_runner(calls), thread.seams(), pr_number="7") is calibrated
+        assert calls == []
+    (warning,) = thread.stale_bodies()
+    assert "Stale calibration warning superseded" in warning
+    assert f"{SUPERSEDED_MARKER_PREFIX}{history.evaluated} -->" in warning
+    assert (thread.posted, len(thread.edits)) == ([], 1)
 
 
 def test_flow_summary_renders_covering_and_unrefreshed_states() -> None:

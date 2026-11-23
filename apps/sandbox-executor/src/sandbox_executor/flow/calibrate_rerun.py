@@ -151,8 +151,10 @@ def _settle_rerun(
         head = str(result.payload.get("calibrated_head") or check.evaluated_sha)
         ci_verdict = rerun_note(result.payload.get("ci_verdict") or {}, head)
         result.payload = {**result.payload, "ci_verdict": ci_verdict}
-        resolve_stale(context, thread.pr_number, check.evaluated_sha or head, warning)
-        post_refreshed(context, thread.pr_number, head, warning)
+        resolved = resolve_stale(context, thread.pr_number, check.evaluated_sha or head, warning)
+        superseded = (result.payload.get("stale_warning") or {}).get("edited") or resolved.get("edited")
+        if not superseded:  # a superseded warning already names the fresh report: one comment, not two
+            post_refreshed(context, thread.pr_number, head, warning)
     elif check.evaluated_sha and check.current_head:  # current without a rerun: clear any leftover warning
         resolve_stale(context, thread.pr_number, check.evaluated_sha, warning)
     return result, None
@@ -192,11 +194,12 @@ def rerun_calibration(
     An unmoved head is a no-op by construction: no stage call, hence no new ledger rows and the unchanged ``result``.
     A moved head reruns ``run_stage`` (production: ``run_calibrate_stage``, which syncs to the new head, rebuilds the
     stale /calibrated branch, appends fresh rows, publishes and re-verifies CI) without warning about the report it is
-    replacing, then supersedes any open warning and posts the refreshed comment; a current report supersedes any
-    leftover warning. The stale warning is posted only for a stale report that stays: a head that outran every attempt
-    (which also leaves ``calibration_stale`` set in the payload, so the stage is never reported as covering a head it
-    does not), a rerun that failed without publishing a covering report (the failure propagates as the stage failure),
-    and a failed Stage 5 ``result`` whose old report is stale. A skipped ``result`` returns unchanged, unchecked.
+    replacing, then supersedes any open warning, or posts the refreshed comment when none was open (Stage 5 itself
+    supersedes it right after the push); a current report supersedes any leftover warning. The stale warning is
+    posted only for a stale report that stays: a head that outran every attempt (which also leaves
+    ``calibration_stale`` set in the payload, so the stage is never reported as covering a head it does not), a rerun
+    that failed without publishing a covering report (the failure propagates as the stage failure), and a failed
+    Stage 5 ``result`` whose old report is stale. A skipped ``result`` returns unchanged, unchecked.
     """
     return _rerun_while_stale(context, result, run_stage, _Thread(seams, pr_number))[0]
 

@@ -13,12 +13,19 @@ read as a move. "Unmoved" needs either only bookkeeping commits or two known, eq
 
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass
 
+from sandbox_executor.calibration import read_git_file
 from sandbox_executor.calibration_evaluated_sha import is_calibration_commit, is_ledger_only_commit
 from sandbox_executor.flow.calibrate_rebuild import is_ancestor
+from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.flow.host_remote import DEFAULT_REMOTE, HostRemoteError, fetch_base
 from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of, fingerprints_match
 from sandbox_executor.git import run_git
+
+logger = logging.getLogger(__name__)
 
 ONLY_BOOKKEEPING = "only calibration and ledger commits landed after the evaluated commit"
 
@@ -36,6 +43,39 @@ class HeadMoveCheck:
 def _same_commit(first: str, second: str) -> bool:
     """Whether two SHAs (either may be abbreviated) name the same commit."""
     return bool(first and second) and (first.startswith(second) or second.startswith(first))
+
+
+def _fetch_tolerantly(repo_dir: str, branch: str) -> None:
+    """Refresh ``origin/<branch>``; a failed fetch is only logged, the staleness check then reads the ref it has."""
+    try:
+        fetch_base(repo_dir, branch, DEFAULT_REMOTE)
+    except HostRemoteError as exc:
+        logger.debug("Could not fetch origin/%s before the staleness check: %s", branch, exc)
+
+
+def _origin_head(context: FlowContext) -> str:
+    """The origin head of the execution branch after a tolerant fetch; the local ref, then '', when origin lacks it."""
+    branch, repo_dir = context.execution_branch or "", context.target_worktree
+    _fetch_tolerantly(repo_dir, branch)
+    for ref in (f"refs/remotes/{DEFAULT_REMOTE}/{branch}", f"refs/heads/{branch}"):
+        res = run_git(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=repo_dir, check=False)
+        if res.returncode == 0 and isinstance(res.stdout, str) and res.stdout.strip():
+            return res.stdout.strip()
+    return ""
+
+
+def _report_content(context: FlowContext, report_rel: str) -> str | None:
+    """The calibration report at the branch tip (origin first, worktree file as a last resort); None when absent."""
+    branch = context.execution_branch or ""
+    for ref in (f"refs/remotes/{DEFAULT_REMOTE}/{branch}", f"refs/heads/{branch}"):
+        content = read_git_file(ref, report_rel, target_worktree=context.target_worktree)
+        if content:
+            return content
+    path = os.path.join(context.target_worktree, report_rel)
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+    return None
 
 
 def _first_parent_commits(repo_dir: str, evaluated_sha: str, current_head: str) -> list[str] | None:

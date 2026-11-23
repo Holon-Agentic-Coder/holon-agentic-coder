@@ -428,3 +428,19 @@ a bad port, an empty host, or no `scheme://`) is not probed either; the section 
 `WARNING: <source> is not a parseable URL, so its server is not probed (value withheld)`, naming only
 `HOLON_LOCAL_BASE_URL` or the host `models.json` provider whose `baseUrl` it is, never the value, and the command does
 not fail on it.
+
+The section also reports the GitHub token the flow hands to the sandbox (`GITHUB_TOKEN`, then `GH_TOKEN`, then
+`gh auth token`), never its value:
+
+```text
+github_token=<classic|oauth|fine-grained|app|user-to-server|unknown> source=<GITHUB_TOKEN|GH_TOKEN|gh> scopes=<list|none|unverifiable>
+```
+
+or `github_token=none (set GITHUB_TOKEN or run gh auth login)`. A classic (`ghp_`) or `gh` OAuth (`gho_`) token's scopes
+come from the `X-OAuth-Scopes` header of one `GET https://api.github.com/user`. When they are known and lack `workflow`,
+a `WARNING` line says that plans touching `.github/workflows/**` will fail before Stage 3 and names the fix,
+`gh auth refresh -h github.com -s workflow` (a token set in the environment must instead be regenerated with the
+`workflow` scope). A fine-grained (`github_pat_`) or app (`ghs_`) token carries no scopes header, so its scopes are
+`unverifiable` and a `WARNING` line asks for the Workflows read/write permission; a failed request is unverifiable too.
+These warnings never change the doctor's exit code. The same report drives the Stage 3 token scope pre-flight (see
+[git_flow.md](../git_flow.md#flow-equivalence-guarantee)).

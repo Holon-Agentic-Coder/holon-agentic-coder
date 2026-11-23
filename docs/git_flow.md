@@ -432,6 +432,22 @@ The guarantee has five deliberate limits:
   `--skip-push` is rejected outside `--dry-run` -- on every run, including a `--from-stage` or `--checkpoint` resume
   from any stage -- before any stage runs, because the host fetches from and pushes to `origin` for the role containers,
   Stage 4 opens the PR from the `origin` execution branch and Stage 5 pushes the `/calibrated` branch.
+- **Token scope pre-flight.** GitHub refuses a push that changes `.github/workflows/**` from a token without the
+  `workflow` scope, and the host only pushes after the executor has run. So when the plan's touch set or the intent's
+  declared `scope` names a path that is or may match a workflow file (`.github/workflows/ci.yml`, `.github/**`, `**`),
+  Stage 3 reads the token's scopes right after its dry-run and `--skip-push` checks (`flow/stages/token_scope_guard.py`,
+  `flow/github/token_scopes.py`). A token whose `X-OAuth-Scopes` header lacks `workflow`, or no token at all, fails the
+  stage before admission, the plan refresh and the executor container (`dispatched: false`, `token_scope: "missing"`,
+  `workflow_paths`), naming `gh auth refresh -h github.com -s workflow` (or `gh auth login -h github.com -s workflow`).
+  A fine-grained or app token, or a failed scope request, is unverifiable: the stage logs a note and goes on. Plans that
+  touch no workflow path make no request. The token value is never logged or put in an error.
+- **A refused push keeps the commits.** When the host's Stage 3 push is refused, every new execution branch's tip is
+  pinned under `refs/holon/recovery/<execution id>` in the worktree's repository, so it survives worktree removal and
+  branch deletion, and a fast-forward-only push to `origin` `holon-recovery/<execution id>` is attempted (it succeeds
+  for a refusal tied to the branch name, not for one tied to the commits' content, such as the missing `workflow`
+  scope). The stage error names each ref and the republish command
+  (`git push origin refs/holon/recovery/<execution id>:refs/heads/<execution branch>`), plus the refresh command for a
+  workflow-scope refusal; the payload carries `recovery_refs` and `recovery_pushed` (`flow/execution_recovery.py`).
 - **Unmeasured tests are never a pass.** The executor container runs `uv run task test` after the agent's turn and
   before the execution commit, and records `test_pass_rate`, the counts, `test_exit_code` and any `test_run_error` in
   its `executions.jsonl` summary row (bounded by `HOLON_TEST_MEASUREMENT_TIMEOUT_SECONDS`, default 900). Stage 3 carries

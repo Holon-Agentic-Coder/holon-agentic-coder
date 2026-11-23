@@ -38,7 +38,7 @@ def dispatch_timed_execute(tmp_path, env, exit_code=7):
         patch("sandbox_executor.flow.stages.execute.fetch_base"),
         patch("sandbox_executor.flow.stages.execute.publish_new_child_branches", return_value=[]),
         patch("sandbox_executor.flow.stages.execute._snapshot_child_branches", return_value=set()),
-        patch("sandbox_executor.cli.run_docker_container", side_effect=fake_container),
+        patch("sandbox_executor.launcher.containers.run_docker_container", side_effect=fake_container),
         patch("sandbox_executor.flow.stages.execute._fetch_branch_prefix_error", return_value=None),
         patch("sandbox_executor.flow.stages.execute._discover_child_branch", return_value=(exec_branch, None)),
         patch("sandbox_executor.flow.stages.execute._track_local_branch"),

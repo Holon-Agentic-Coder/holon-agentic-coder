@@ -271,7 +271,7 @@ class TestHolonCLI(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertIn("Error: Intent file is mandatory for intent creation.", mock_stderr.getvalue())
 
-    @patch("sandbox_executor.cli.run_docker_container", return_value=0)
+    @patch("sandbox_executor.launcher.containers.run_docker_container", return_value=0)
     def test_main_subcommands(self, mock_run_container):
         test_args = [
             "holon",
@@ -337,7 +337,7 @@ class TestHolonCLI(unittest.TestCase):
             )
             self.host["execute_push"].assert_called_once_with("/work/flow-x")
 
-    @patch("sandbox_executor.cli.run_docker_container", return_value=0)
+    @patch("sandbox_executor.launcher.containers.run_docker_container", return_value=0)
     def test_main_subcommands_token_reduce_flag(self, mock_run_container):
         test_args = [
             "holon",
@@ -367,7 +367,7 @@ class TestHolonCLI(unittest.TestCase):
         argv = ["holon", "execute", "plan_branch_name", "--agent", "antigravity-agent", "--model", "m"]
         stderr = io.StringIO()
         with (
-            patch("sandbox_executor.cli.run_docker_container", return_value=dispatch_exit),
+            patch("sandbox_executor.launcher.containers.run_docker_container", return_value=dispatch_exit),
             patch("sys.argv", argv),
             patch("sys.stderr", stderr),
             self.assertRaises(SystemExit) as cm,
@@ -393,7 +393,7 @@ class TestHolonCLI(unittest.TestCase):
         loaded_main = holon_ep.load()
         self.assertIs(loaded_main, main)
 
-    @patch("sandbox_executor.cli.run_docker_container", return_value=0)
+    @patch("sandbox_executor.launcher.containers.run_docker_container", return_value=0)
     def test_console_script_entrypoint_dispatch(self, mock_run_container):
         holon_ep = next(
             (ep for ep in importlib.metadata.entry_points(group="console_scripts") if ep.name == "holon"),
@@ -1332,7 +1332,7 @@ class TestSharedRoleDispatch(unittest.TestCase):
             else:
                 self.assertNotIn("over its entropy budget", stderr.getvalue(), code)
 
-    @patch("sandbox_executor.cli.run_docker_container", return_value=0)
+    @patch("sandbox_executor.launcher.containers.run_docker_container", return_value=0)
     def test_dispatch_role_agent_uses_runner_image(self, mock_run_container):
         from sandbox_executor.cli import dispatch_role_agent
 

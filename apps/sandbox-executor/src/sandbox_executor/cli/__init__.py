@@ -15,22 +15,26 @@ from sandbox_executor.agent_defaults import (
     AGENT_IMAGE_MAPPING as AGENT_IMAGE_MAPPING,  # re-exported: the mapping moved to agent_defaults
 )
 from sandbox_executor.agent_defaults import (
-    FALLBACK_AGENT,
+    FALLBACK_AGENT as FALLBACK_AGENT,
+)
+from sandbox_executor.agent_defaults import (
     MissingAgentRunnerError,
     MissingModelError,
     Resolution,
     UnmappedAgentRunnerError,
     get_available_models_for_runner,
-    image_for_agent,
     normalise_agent_id,
     resolve_agent_runner,
     resolve_model,
+)
+from sandbox_executor.agent_defaults import (
+    image_for_agent as image_for_agent,
 )
 from sandbox_executor.agent_runner import (
     HOST_WORKTREE_ROLES as HOST_WORKTREE_ROLES,
 )
 from sandbox_executor.agent_runner import (
-    INTENT_CREATOR_ROLE,
+    INTENT_CREATOR_ROLE as INTENT_CREATOR_ROLE,
 )
 from sandbox_executor.agent_runner import (
     RETIRED_ENV_VARS as RETIRED_ENV_VARS,
@@ -169,6 +173,16 @@ from sandbox_executor.launcher.proxy_paths import (
 from sandbox_executor.launcher.proxy_paths import (
     _run_docker as _run_docker,
 )
+from sandbox_executor.launcher.role_dispatch import (
+    INTENT_CREATOR_AGENT_ID as INTENT_CREATOR_AGENT_ID,
+)
+from sandbox_executor.launcher.role_dispatch import (
+    INTENT_CREATOR_IMAGE as INTENT_CREATOR_IMAGE,
+)
+from sandbox_executor.launcher.role_dispatch import (
+    RoleLaunchOptions as RoleLaunchOptions,
+)
+from sandbox_executor.launcher.role_dispatch import dispatch_role_agent, resolve_role_image
 from sandbox_executor.launcher.sidecar import (
     _sidecar_state,
     detect_holon_coherence,
@@ -444,79 +458,6 @@ def _report_gateways(  # noqa: PLR0913
                     )
     if not probed:
         print("prefill_cache=unknown (no loopback or allow-listed endpoint to probe)", file=out)
-
-
-INTENT_CREATOR_IMAGE: str = "holon/orchestrator"
-# The intent-creator entrypoint never invokes a runner, so its container keeps the historical antigravity
-# mount profile whatever runner the caller resolved.
-INTENT_CREATOR_AGENT_ID: str = "antigravity"
-
-
-def resolve_role_image(role: str, agent_id: str) -> str:
-    """Resolve the container image that hosts a role agent.
-
-    Args:
-        role: Role name ('intent-creator', 'planner' or 'executor').
-        agent_id: Runner name or normalised agent id (see agent_defaults.normalise_agent_id).
-
-    Returns:
-        str: 'holon/orchestrator' for the intent creator, otherwise the mapped 'holon/agent-<runner>' image.
-
-    Raises:
-        UnmappedAgentRunnerError: If a planner or executor runner has no mapped image.
-    """
-    if role == INTENT_CREATOR_ROLE:
-        return INTENT_CREATOR_IMAGE
-    return image_for_agent(agent_id)
-
-
-def dispatch_role_agent(  # noqa: PLR0913
-    role: str,
-    runner: str | None,
-    model: str | None,
-    positional_args: list[str],
-    *,
-    target_worktree: str | None = None,
-    intent_file: str | None = None,
-    result_file: str | None = None,
-    token_reduce: bool = False,
-    mitm_web: bool = False,
-) -> int:
-    """Launch the containerised role agent shared by 'holon intent|plan|execute' and 'holon flow'.
-
-    This is the single dispatch path for the authoring roles: the per-stage commands and the flow
-    stages both call it, so the two invocations launch the same image with the same arguments.
-
-    Args:
-        role: Role name ('intent-creator', 'planner' or 'executor').
-        runner: Resolved runner name (e.g. 'claude-agent'); selects the 'holon/agent-<runner>' image.
-        model: Resolved model name. Planner and executor receive it through positional_args; the
-            intent creator does not run a model.
-        positional_args: Container arguments (e.g. [plan_branch, runner, model] for the executor).
-        target_worktree: Host git worktree the role container works in (required).
-        intent_file: Intent payload path, mandatory for the intent creator.
-        result_file: Structured outcome payload path for container-to-host result transport.
-        token_reduce: Whether to route container traffic through the token reduction proxy.
-        mitm_web: Whether to start the proxy with the mitmweb interface.
-
-    Returns:
-        int: Container exit code (non-zero on failure).
-    """
-    del model  # Carried in positional_args for the roles that run a model.
-    if role == INTENT_CREATOR_ROLE:
-        kwargs: dict[str, Any] = {"agent_id": INTENT_CREATOR_AGENT_ID, "intent_file": intent_file}
-        if token_reduce:
-            kwargs["token_reduce"] = True
-    else:
-        kwargs = {"agent_id": normalise_agent_id(runner or FALLBACK_AGENT), "token_reduce": token_reduce}
-    if mitm_web:
-        kwargs["mitm_web"] = True
-    if target_worktree:
-        kwargs["target_worktree"] = target_worktree
-    if result_file:
-        kwargs["result_file"] = result_file
-    image_name = resolve_role_image(role, kwargs["agent_id"])
-    return run_docker_container(role, image_name, list(positional_args), **kwargs)
 
 
 def resolve_runner_and_model(agent: str | None, model: str | None) -> tuple[Resolution, Resolution]:

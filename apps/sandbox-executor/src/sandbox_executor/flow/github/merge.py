@@ -9,7 +9,6 @@ flag); never ``--rebase``, ``--auto``, ``--admin`` or ``--delete-branch``. ``gh`
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
@@ -20,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sandbox_executor.flow.git_refs import EXECUTOR_GIT_ENV, _fetch_refspecs_error
+from sandbox_executor.flow.github.adapter import GitHubAdapter, parse_gh_json
 from sandbox_executor.flow.github.merge_method import lookup_merge_flag
 from sandbox_executor.flow.github.mergeability_policy import PROTECTED_BRANCHES as PROTECTED_BRANCHES
 from sandbox_executor.flow.github.mergeability_policy import _bare_branch as _bare_branch
@@ -39,16 +39,13 @@ MERGE_POLL_SECONDS = 15.0
 
 def run_gh(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
     """Run ``gh`` with ``args`` in ``cwd``; a missing binary or a timeout becomes a failed process, never a raise."""
-    env = {**os.environ, "DOCKER_CLI_HINTS": "false"}
-    try:
-        return subprocess.run(["gh", *args], cwd=cwd, capture_output=True, text=True, check=False, timeout=120, env=env)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return subprocess.CompletedProcess(["gh", *args], 127, "", redact_agent_secrets(str(exc)))
+    return GitHubAdapter(cwd).gh(args)
 
 
-def gh_runner(runner: GhRunner | None) -> GhRunner:
-    """Return ``runner``, or this module's :func:`run_gh` looked up at call time (the seam tests patch)."""
-    return runner or run_gh
+def gh_runner(runner: GhRunner | None, github: GitHubAdapter | None = None) -> GhRunner:
+    """Return ``runner``, else ``github.gh``, else this module's :func:`run_gh` looked up at call time (the seam
+    tests patch)."""
+    return runner or (github.gh if github is not None else run_gh)
 
 
 @dataclass
@@ -63,24 +60,24 @@ class MergeResult:
 
 def _gh_json(repo_dir: str, args: list[str], runner: GhRunner) -> Any:
     """Run a ``gh ... --json`` command and return its parsed output, or None when it failed or printed no JSON."""
-    proc = runner(args, repo_dir)
-    try:
-        return json.loads(proc.stdout) if proc.stdout and proc.stdout.strip() else None
-    except (json.JSONDecodeError, TypeError):
-        return None
+    return parse_gh_json(runner(args, repo_dir).stdout)
 
 
-def lookup_default_branch(repo_dir: str, runner: GhRunner | None = None) -> str | None:
+def lookup_default_branch(
+    repo_dir: str, runner: GhRunner | None = None, *, github: GitHubAdapter | None = None
+) -> str | None:
     """Return the repository default branch from ``gh repo view``, or None on any failure (never a ``main`` guess)."""
-    data = _gh_json(repo_dir, ["repo", "view", "--json", "defaultBranchRef"], gh_runner(runner))
+    data = _gh_json(repo_dir, ["repo", "view", "--json", "defaultBranchRef"], gh_runner(runner, github))
     ref = data.get("defaultBranchRef") if isinstance(data, dict) else None
     name = ref.get("name") if isinstance(ref, dict) else None
     return name.strip() if isinstance(name, str) and name.strip() else None
 
 
-def view_pr(repo_dir: str, pr: str, runner: GhRunner | None = None) -> dict[str, Any] | None:
+def view_pr(
+    repo_dir: str, pr: str, runner: GhRunner | None = None, *, github: GitHubAdapter | None = None
+) -> dict[str, Any] | None:
     """Return the ``gh pr view`` facts of a PR (number, URL or head branch), or None when they cannot be read."""
-    data = _gh_json(repo_dir, ["pr", "view", str(pr), "--json", PR_VIEW_FIELDS], gh_runner(runner))
+    data = _gh_json(repo_dir, ["pr", "view", str(pr), "--json", PR_VIEW_FIELDS], gh_runner(runner, github))
     return data if isinstance(data, dict) else None
 
 

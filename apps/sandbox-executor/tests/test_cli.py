@@ -23,6 +23,7 @@ from sandbox_executor.cli import (
     run_docker_container,
 )
 from sandbox_executor.flow import SKIP_PUSH_DISPATCH_ERROR, FlowContext
+from sandbox_executor.launcher import proxy_paths
 
 from tests.leak_assertions import (
     CREDENTIAL_FREE_URLS,
@@ -1847,7 +1848,7 @@ def test_find_git_root_terminates_without_a_git_ancestor(tmp_path, monkeypatch):
     nested.mkdir(parents=True)
     _confine_git_lookups(monkeypatch, tmp_path)
     monkeypatch.setattr(cli.os, "getcwd", lambda: str(nested))
-    monkeypatch.setattr(cli, "__file__", str(nested / "cli.py"))
+    monkeypatch.setattr(proxy_paths, "__file__", str(nested / "cli.py"))
 
     finished, root = _find_git_root_within_deadline(str(nested))
 

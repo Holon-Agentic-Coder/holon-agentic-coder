@@ -7,13 +7,10 @@ import importlib.metadata
 import logging
 import os
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
-import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Any, TextIO
 
 from sandbox_executor import git_flow, local_llm
@@ -63,6 +60,15 @@ from sandbox_executor.knowledge import (
 )
 from sandbox_executor.knowledge.consult import format_consult_results_table
 from sandbox_executor.knowledge.stats import format_stats_dashboard
+from sandbox_executor.launcher.coherence import (
+    _EXPLICIT_OPT_OUT_VALUES as _EXPLICIT_OPT_OUT_VALUES,
+)
+from sandbox_executor.launcher.coherence import (
+    _TRUTHY_ENV_VALUES as _TRUTHY_ENV_VALUES,
+)
+from sandbox_executor.launcher.coherence import (
+    _token_reduce_opt_in as _token_reduce_opt_in,
+)
 from sandbox_executor.launcher.env_files import (
     _ENV_FILE_STALE_SECONDS as _ENV_FILE_STALE_SECONDS,
 )
@@ -100,6 +106,7 @@ from sandbox_executor.launcher.mounts import (
 from sandbox_executor.launcher.mounts import (
     get_pi_mounts as get_pi_mounts,
 )
+from sandbox_executor.launcher.proxy_attach import _attach_external_proxy
 from sandbox_executor.launcher.proxy_paths import (
     CONTAINER_CA_BUNDLE_PATH as CONTAINER_CA_BUNDLE_PATH,
 )
@@ -107,26 +114,59 @@ from sandbox_executor.launcher.proxy_paths import (
     CONTAINER_CA_DIR as CONTAINER_CA_DIR,
 )
 from sandbox_executor.launcher.proxy_paths import (
-    MITM_PROXY_CA_DIR,
-    PROXY_ATTACH_TIMEOUT_SECONDS,
-    PROXY_CONNECT_TIMEOUT_SECONDS,
-    PROXY_LISTEN_PORT,
-    _build_proxy_envs,
-    _ca_mount_args,
-    _ensure_network,
-    _find_git_root,
-    _gateway_host_args,
-    _mitm_proxy_ca_paths,
-    _proxy_gateway_url,
-    _proxy_host_port,
-    _published_loopback_port,
-    _run_docker,
+    MITM_PROXY_CA_DIR as MITM_PROXY_CA_DIR,
 )
 from sandbox_executor.launcher.proxy_paths import (
     NO_PROXY_HOSTS as NO_PROXY_HOSTS,
 )
 from sandbox_executor.launcher.proxy_paths import (
+    PROXY_ATTACH_TIMEOUT_SECONDS as PROXY_ATTACH_TIMEOUT_SECONDS,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    PROXY_CONNECT_TIMEOUT_SECONDS as PROXY_CONNECT_TIMEOUT_SECONDS,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    PROXY_LISTEN_PORT as PROXY_LISTEN_PORT,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _build_proxy_envs as _build_proxy_envs,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _ca_mount_args as _ca_mount_args,
+)
+from sandbox_executor.launcher.proxy_paths import (
     _container_ca_path as _container_ca_path,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _ensure_network as _ensure_network,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _find_git_root,
+    _gateway_host_args,
+    _proxy_host_port,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _mitm_proxy_ca_paths as _mitm_proxy_ca_paths,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _proxy_gateway_url as _proxy_gateway_url,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _published_loopback_port as _published_loopback_port,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _run_docker as _run_docker,
+)
+from sandbox_executor.launcher.sidecar import (
+    _sidecar_state,
+    detect_holon_coherence,
+    get_host_proxy_envs,
+    get_token_reduction_mounts_and_envs,
+    setup_token_reduction_proxy,
+    teardown_token_reduction_proxy,
+)
+from sandbox_executor.launcher.sidecar import (
+    _SidecarState as _SidecarState,
 )
 from sandbox_executor.ledger import format_query_results_table, query_ledger
 from sandbox_executor.naming import MissingTickerError, ticker_for
@@ -137,12 +177,7 @@ from sandbox_executor.preflight import (
     run_preflight_probe,
 )
 from sandbox_executor.redaction import (
-    COMMAND_ECHO_ENV_NAMES,
-    redact_agent_secrets,
-    redact_command,
-    redact_env_literals,
-    trusted_url_authority,
-    url_userinfo_end,
+    COMMAND_ECHO_ENV_NAMES as COMMAND_ECHO_ENV_NAMES,
 )
 from sandbox_executor.redaction import (
     carries_url_password as carries_url_password,
@@ -151,15 +186,31 @@ from sandbox_executor.redaction import (
     is_secret_env_name as is_secret_env_name,
 )
 from sandbox_executor.redaction import (
+    redact_agent_secrets as redact_agent_secrets,
+)
+from sandbox_executor.redaction import (
+    redact_command,
+    url_userinfo_end,
+)
+from sandbox_executor.redaction import (
+    redact_env_literals as redact_env_literals,
+)
+from sandbox_executor.redaction import (
     starts_with_url_authority as starts_with_url_authority,
+)
+from sandbox_executor.redaction import (
+    trusted_url_authority as trusted_url_authority,
 )
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 from sandbox_executor.scaffold import init_project
-from sandbox_executor.token_reduction import generate_root_ca
-from sandbox_executor.token_reduction.proxy_readiness import PROXY_READY_TIMEOUT_SECONDS
-from sandbox_executor.token_reduction.proxy_readiness import wait_for_proxy as _wait_for_proxy
+from sandbox_executor.token_reduction import generate_root_ca as generate_root_ca
+from sandbox_executor.token_reduction import proxy_readiness
+from sandbox_executor.token_reduction.proxy_readiness import PROXY_READY_TIMEOUT_SECONDS as PROXY_READY_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
+
+# Kept for import compatibility; the launcher calls `proxy_readiness.wait_for_proxy` itself.
+_wait_for_proxy = proxy_readiness.wait_for_proxy
 
 # Root of Holon's own logger hierarchy; the CLI routes its INFO records to stderr (see configure_cli_logging).
 PACKAGE_LOGGER_NAME = "sandbox_executor"
@@ -192,9 +243,6 @@ def configure_cli_logging() -> None:
     if package_logger.level == logging.NOTSET:
         package_logger.setLevel(logging.INFO)
 
-
-_TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
-_EXPLICIT_OPT_OUT_VALUES = {"0", "false", "no", "off"}
 
 from sandbox_executor.cli.options import (  # noqa: E402
     _AGENT_HELP,
@@ -272,477 +320,6 @@ __all__ = [
     "url_userinfo_end",
     "write_env_file",
 ]
-
-
-@dataclass
-class _SidecarState:
-    """Tracks the proxy resources created by THIS run so teardown never touches foreign ones."""
-
-    container_name: str | None = None
-    network_name: str | None = None
-    network_created: bool = False
-
-
-_sidecar_state = _SidecarState()
-
-
-def detect_holon_coherence(token_reduce: bool = False) -> bool:  # noqa: C901, PLR0911, PLR0912
-    """Detect whether holon-coherence proxy is available or explicitly requested.
-
-    Evaluation hierarchy:
-    - Tier 1 (Explicit Opt-Out): If HOLON_TOKEN_REDUCE is in ("0", "false", "no", "off"),
-      return False immediately.
-    - Tier 2 (Explicit Opt-In): If token_reduce is True, or HOLON_TOKEN_REDUCE /
-      HOLON_PASSIVE_MONITORING is truthy, return True.
-    - Tier 3 (TCP Port Probe): Determine target proxy host and port from HOLON_PROXY_URL,
-      or 127.0.0.1 and HOLON_PROXY_PORT (default 8080). Attempt a quick non-blocking TCP socket
-      connection with a 0.2-second timeout. If successful, return True.
-    - Tier 4 (Docker Image Probe): If docker CLI exists on host PATH, probe if either
-      'holon-coherence:latest' or 'ghcr.io/holon-agentic-coder/holon-coherence:latest' is present
-      locally via docker image inspect. If found, return True.
-    - Tier 5 (CLI Binary Probe): Check if 'holon-coherence' executable exists on PATH.
-      If found, return True.
-    - If all tiers evaluate negative, return False.
-    """
-    env_reduce = os.getenv("HOLON_TOKEN_REDUCE", "").strip().lower()
-    if env_reduce in _EXPLICIT_OPT_OUT_VALUES:
-        return False
-
-    if token_reduce:
-        return True
-    if env_reduce in _TRUTHY_ENV_VALUES:
-        return True
-    if os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES:
-        return True
-
-    # Tier 3: TCP Port Probe
-    proxy_url = os.getenv("HOLON_PROXY_URL")
-    if proxy_url:
-        host_port = _proxy_host_port(proxy_url)
-        if host_port is None:
-            # Never echo the value: an unparseable URL has no reliable userinfo boundary to mask.
-            logger.warning("HOLON_PROXY_URL is not a valid proxy URL; skipping the proxy port probe.")
-    else:
-        try:
-            port = int(os.getenv("HOLON_PROXY_PORT", str(PROXY_LISTEN_PORT)))
-        except ValueError:
-            port = PROXY_LISTEN_PORT
-        host_port = ("127.0.0.1", port)
-
-    if host_port is not None:
-        try:
-            sock = socket.create_connection(host_port, timeout=0.2)
-            if hasattr(sock, "close"):
-                sock.close()
-            return True
-        except (OSError, TimeoutError):
-            pass
-
-    # Tier 4: Docker Image Probe (checks for coherence or mitmproxy images that sidecar runner supports)
-    if shutil.which("docker"):
-        for img in (
-            "holon-coherence:latest",
-            "ghcr.io/holon-agentic-coder/holon-coherence:latest",
-            "mitmproxy/mitmproxy:12.2.3",
-        ):
-            try:
-                proc = subprocess.run(
-                    ["docker", "image", "inspect", img],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=2.0,
-                )
-                if proc.returncode == 0:
-                    return True
-            except (subprocess.SubprocessError, OSError):
-                pass
-
-    # Tier 5: CLI Binary Probe
-    return bool(shutil.which("holon-coherence"))
-
-
-def _token_reduce_opt_in(token_reduce: bool = False) -> bool:
-    """True only on explicit opt-in; respects opt-out."""
-    env_reduce = os.getenv("HOLON_TOKEN_REDUCE", "").strip().lower()
-    if env_reduce in _EXPLICIT_OPT_OUT_VALUES:
-        return False
-    if token_reduce:
-        return True
-    if env_reduce in _TRUTHY_ENV_VALUES:
-        return True
-    return os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES
-
-
-def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict[str, str]]:  # noqa: C901, PLR0912, PLR0915
-    """Start this run's mitmproxy sidecar and return the sandbox mounts and env vars.
-
-    Resources are named per run (pid + uuid suffix) and recorded in ``_sidecar_state`` so teardown
-    only ever removes what this run created.
-
-    Raises:
-        FileNotFoundError: If the mitmproxy addon script is missing.
-        RuntimeError: If Docker networking, the sidecar spawn, or the readiness probe fails.
-    """
-    run_suffix = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
-    container_name = f"holon-proxy-{run_suffix}"
-    network_name = f"holon-net-{run_suffix}"
-
-    addon_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "token_reduction", "mitm_addon.py"
-    )
-    if not os.path.isfile(addon_path):
-        raise FileNotFoundError(
-            f"mitmproxy addon script not found at '{addon_path}'. Token reduction cannot start its proxy "
-            "without it; re-run without --token-reduce to execute with direct egress."
-        )
-
-    ca_cert_path, ca_key_path = generate_root_ca()
-
-    # Share ONLY a narrow proxy cache dir, read-only. Never mount ~/.holon: that subtree holds the
-    # Root CA private key (~/.holon/certs) and the agent auth session stores (~/.holon/sessions).
-    proxy_cache_dir = os.path.join(os.path.expanduser(os.path.join("~", ".holon")), "proxy-cache")
-    os.makedirs(proxy_cache_dir, exist_ok=True)
-
-    # mitmproxy needs the CA private key to sign leaves (see _mitm_proxy_ca_paths); hand it exactly
-    # the two files it expects, read-only, instead of the whole certificate directory.
-    mitm_ca_combined, mitm_ca_cert = _mitm_proxy_ca_paths(ca_cert_path, ca_key_path)
-
-    repo_root = _find_git_root()
-    wire_dir_env = os.getenv("WIRE_LOG_DIR")
-    if wire_dir_env:
-        host_wire_log_dir = (
-            wire_dir_env if os.path.isabs(wire_dir_env) else os.path.abspath(os.path.join(repo_root, wire_dir_env))
-        )
-    else:
-        host_wire_log_dir = os.path.abspath(os.path.join(repo_root, "todo", "mitm_wire_logs"))
-    os.makedirs(host_wire_log_dir, exist_ok=True)
-
-    cache_dir_env = os.getenv("CACHE_DIR")
-    if cache_dir_env:
-        host_cache_dir = (
-            cache_dir_env if os.path.isabs(cache_dir_env) else os.path.abspath(os.path.join(repo_root, cache_dir_env))
-        )
-    else:
-        host_cache_dir = os.path.abspath(os.path.join(repo_root, "todo", "cache"))
-    os.makedirs(host_cache_dir, exist_ok=True)
-
-    # Ensure non-root container UID 1000 can write without permission errors on Linux hosts.
-    # Note: On shared multi-user hosts or environments where host UID/GID != 1000, setting
-    # HOLON_MITM_USER="$(id -u):$(id -g)" is strongly recommended, allowing the host
-    # directories to use restrictive 0o700 or 0o750 permissions rather than 0o775.
-    for d in (host_wire_log_dir, host_cache_dir):
-        try:
-            os.chmod(d, 0o775)
-        except OSError as e:
-            logger.debug("Could not chmod 0o775 on %s: %s", d, e)
-
-    try:
-        web_port = int(os.getenv("HOLON_MITM_WEB_PORT", "8081"))
-    except ValueError:
-        logger.warning("Invalid HOLON_MITM_WEB_PORT; falling back to 8081.")
-        web_port = 8081
-
-    if mitm_web:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(PROXY_CONNECT_TIMEOUT_SECONDS)
-            if s.connect_ex(("127.0.0.1", web_port)) == 0:
-                raise RuntimeError(
-                    f"Port {web_port} is already in use on 127.0.0.1. "
-                    "Specify a different dashboard port using HOLON_MITM_WEB_PORT=<port>."
-                )
-
-    _sidecar_state.network_name = network_name
-    _sidecar_state.network_created = _ensure_network(network_name)
-    _sidecar_state.container_name = container_name
-
-    src_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".."))
-
-    docker_run_proxy = [
-        "docker",
-        "run",
-        "-d",
-        "--name",
-        container_name,
-        "--network",
-        network_name,
-        "--memory=256m",
-        "--cpus=0.5",
-        "--log-opt",
-        "max-size=5m",
-        "--log-opt",
-        "max-file=2",
-        "--restart=no",
-        # Loopback-only publish so the host can run a real TCP readiness probe.
-        "-p",
-        f"127.0.0.1::{PROXY_LISTEN_PORT}",
-    ]
-    mitm_user = os.getenv("HOLON_MITM_USER")
-    if mitm_user:
-        docker_run_proxy.extend(["--user", mitm_user])
-    if mitm_web:
-        docker_run_proxy.extend(["-p", f"127.0.0.1:{web_port}:{web_port}"])
-
-    passive_val = "1" if os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES else "0"
-    docker_run_proxy.extend(
-        [
-            "-e",
-            "PYTHONPATH=/tmp/src",
-            "-e",
-            "WIRE_LOG_DIR=/tmp/wire_logs",
-            "-e",
-            "CACHE_DIR=/tmp/cache",
-            "-e",
-            f"HOLON_PASSIVE_MONITORING={passive_val}",
-            "-v",
-            f"{src_dir}:/tmp/src:ro",
-            "-v",
-            f"{proxy_cache_dir}:/home/mitmproxy/.holon/proxy-cache:ro",
-            "-v",
-            f"{host_cache_dir}:/tmp/cache",
-            "-v",
-            f"{mitm_ca_combined}:{MITM_PROXY_CA_DIR}/mitmproxy-ca.pem:ro",
-            "-v",
-            f"{mitm_ca_cert}:{MITM_PROXY_CA_DIR}/mitmproxy-ca-cert.pem:ro",
-            "-v",
-            f"{addon_path}:/tmp/mitm_addon.py:ro",
-            "-v",
-            f"{host_wire_log_dir}:/tmp/wire_logs",
-            "mitmproxy/mitmproxy:12.2.3",
-            "mitmweb" if mitm_web else "mitmdump",
-            "-s",
-            "/tmp/mitm_addon.py",
-            "--listen-port",
-            str(PROXY_LISTEN_PORT),
-            "--set",
-            "stream_large_bodies=1m",
-        ]
-    )
-    if mitm_web:
-        docker_run_proxy.extend(["--web-host", "0.0.0.0", "--web-port", str(web_port)])
-        web_password = os.getenv("HOLON_MITM_WEB_PASSWORD")
-        if web_password:
-            docker_run_proxy.extend(["--set", f"web_password={web_password}"])
-
-    logger.info(
-        "Starting mitmproxy sidecar '%s'; the first run has to pull the 'mitmproxy/mitmproxy:12.2.3' "
-        "image, which can take a while before the container appears.",
-        container_name,
-    )
-    proxy_spawn = subprocess.run(docker_run_proxy, capture_output=True, text=True, check=False)
-    if proxy_spawn.returncode != 0:
-        # The sidecar's output can echo the mitmweb `?token=` login URL or the `web_password=` setting.
-        stderr = redact_env_literals(
-            redact_agent_secrets((proxy_spawn.stderr or "").strip() or (proxy_spawn.stdout or "").strip()),
-            names=COMMAND_ECHO_ENV_NAMES,
-        )
-        teardown_token_reduction_proxy()
-        raise RuntimeError(
-            f"mitmproxy sidecar '{container_name}' failed to start: {stderr or 'unknown docker error'}. "
-            "Re-run without --token-reduce to execute with direct egress."
-        )
-
-    host_port = _published_loopback_port(container_name)
-    if host_port is None:
-        teardown_token_reduction_proxy()
-        raise RuntimeError(
-            f"mitmproxy sidecar '{container_name}' published no host loopback port, so its readiness cannot be "
-            "verified. Re-run without --token-reduce to execute with direct egress."
-        )
-    if not _wait_for_proxy("127.0.0.1", host_port):
-        teardown_token_reduction_proxy()
-        raise RuntimeError(
-            f"mitmproxy sidecar '{container_name}' never answered an HTTP proxy request on "
-            f"127.0.0.1:{host_port} within {PROXY_READY_TIMEOUT_SECONDS}s (the addon likely crashed on startup). "
-            "Re-run without --token-reduce to execute with direct egress."
-        )
-
-    if mitm_web:
-        logger.info("🌐 mitmweb dashboard active at http://127.0.0.1:%s", web_port)
-
-    mounts = ["--network", network_name, *_ca_mount_args(ca_cert_path)]
-    return mounts, _build_proxy_envs(ca_cert_path, f"http://{container_name}:{PROXY_LISTEN_PORT}")
-
-
-def teardown_token_reduction_proxy() -> None:
-    """Remove only the sidecar container and network THIS run created (no-op otherwise)."""
-    if _sidecar_state.container_name:
-        result = _run_docker("rm", "-f", _sidecar_state.container_name)
-        if result.returncode != 0:
-            logger.debug(
-                "docker rm -f %s exited %s: %s",
-                _sidecar_state.container_name,
-                result.returncode,
-                (result.stderr or "").strip(),
-            )
-        _sidecar_state.container_name = None
-
-    if _sidecar_state.network_created and _sidecar_state.network_name:
-        result = _run_docker("network", "rm", _sidecar_state.network_name)
-        if result.returncode != 0:
-            logger.debug(
-                "docker network rm %s exited %s: %s",
-                _sidecar_state.network_name,
-                result.returncode,
-                (result.stderr or "").strip(),
-            )
-
-    _sidecar_state.network_name = None
-    _sidecar_state.network_created = False
-
-
-def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
-    """Attach the sandbox to an already-running proxy (``HOLON_PROXY_URL`` or host gateway).
-
-    Used for the ``HOLON_TOKEN_REDUCE`` opt-in path: the proxy is owned by the user, so this run
-    neither starts nor tears it down. An unreachable proxy degrades to direct egress.
-    """
-    proxy_url = os.getenv("HOLON_PROXY_URL") or _proxy_gateway_url()
-    host_port = _proxy_host_port(proxy_url)
-    if host_port is None:
-        # Never echo the value: an unparseable URL has no reliable userinfo boundary to mask.
-        logger.warning(
-            "holon-coherence proxy probe failed: HOLON_PROXY_URL is not a valid proxy URL; ignoring it. "
-            "Proceeding with DIRECT egress fallback."
-        )
-        logger.error(
-            "HOLON_TOKEN_REDUCE is enabled but HOLON_PROXY_URL is not a valid proxy URL; ignoring it. "
-            "This run continues with DIRECT egress (no token reduction)."
-        )
-        return [], {}
-
-    # Probe before generating: an unreachable proxy must not leave a fresh CA behind on a host that
-    # is about to run with direct egress.
-    ready = False
-    probe_host = "127.0.0.1" if host_port[0] in ("host.docker.internal", "172.17.0.1", "localhost") else host_port[0]
-    # Messages show the target only when its host was validated after the userinfo was removed;
-    # otherwise the parsed host and port may be part of a credential, so only the variable is named.
-    trusted = trusted_url_authority(proxy_url) is not None
-    probe_target = f"{probe_host}:{host_port[1]}" if trusted else "the HOLON_PROXY_URL target"
-    proxy_target = f"{host_port[0]}:{host_port[1]}" if trusted else "the HOLON_PROXY_URL target"
-    try:
-        ready = _wait_for_proxy(probe_host, host_port[1], timeout=PROXY_ATTACH_TIMEOUT_SECONDS)
-    except (OSError, TimeoutError) as exc:
-        logger.warning(
-            "holon-coherence proxy probe failed at %s. Proceeding with DIRECT egress fallback.",
-            probe_target,
-        )
-        logger.error(
-            "HOLON_TOKEN_REDUCE is enabled but proxy probe failed at %s (%s: %s). "
-            "This run continues with DIRECT egress (no token reduction).",
-            probe_target,
-            type(exc).__name__,
-            redact_cli_error(exc),
-        )
-        return [], {}
-
-    if not ready:
-        logger.warning(
-            "holon-coherence proxy probe failed at %s. Proceeding with DIRECT egress fallback.",
-            proxy_target,
-        )
-        logger.error(
-            "HOLON_TOKEN_REDUCE is enabled but no proxy answered an HTTP proxy request at %s. Start the proxy or "
-            "point HOLON_PROXY_URL at it; this run continues with DIRECT egress (no token reduction).",
-            proxy_target,
-        )
-        return [], {}
-
-    ca_cert_path, _ = generate_root_ca()
-
-    # No gateway --add-host here: run_docker_container adds it once for every agent container, and emitting it from
-    # both places produced a duplicate flag whenever an externally attached proxy was in use.
-    return _ca_mount_args(ca_cert_path), _build_proxy_envs(ca_cert_path, proxy_url)
-
-
-def get_token_reduction_mounts_and_envs(
-    token_reduce: bool = False,
-    mitm_web: bool = False,
-) -> tuple[list[str], dict[str, str]]:
-    """Build token-reduction mounts/env vars for an explicitly opted-in or auto-detected run.
-
-    Opt-in is strictly ``--token-reduce``, ``--mitm-web``, ``HOLON_TOKEN_REDUCE`` in ``("1", "true", "yes",
-    "on")``, or auto-detected holon-coherence proxy. Host ``HTTP_PROXY``/``HTTPS_PROXY`` alone never
-    change sandbox networking. Any failure degrades to direct egress (empty mounts/envs) with an
-    actionable warning log.
-    """
-    if not _token_reduce_opt_in(token_reduce or mitm_web):
-        return [], {}
-
-    try:
-        is_passive = os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES
-        if token_reduce or mitm_web or is_passive:
-            if mitm_web:
-                return setup_token_reduction_proxy(mitm_web=True)
-            return setup_token_reduction_proxy()
-        return _attach_external_proxy()
-    except (FileNotFoundError, RuntimeError, OSError) as exc:
-        logger.warning(
-            "holon-coherence proxy configuration failed (%s: %s). Proceeding with DIRECT egress fallback.",
-            type(exc).__name__,
-            redact_cli_error(exc),
-        )
-        logger.error(
-            "Token reduction is enabled but could not be configured (%s: %s). This run continues with DIRECT "
-            "egress (no TLS interception, no token reduction).",
-            type(exc).__name__,
-            redact_cli_error(exc),
-        )
-        return [], {}
-
-
-def get_host_proxy_envs() -> dict[str, str]:
-    """Return environment variables for host-side processes to route through an active coherence proxy.
-
-    Only returns proxy env vars if a proxy is actively listening on localhost or HOLON_PROXY_URL,
-    and the root CA certificate exists on the host. Otherwise returns empty dict (direct egress).
-    """
-    env_reduce = os.getenv("HOLON_TOKEN_REDUCE", "").strip().lower()
-    if env_reduce in _EXPLICIT_OPT_OUT_VALUES:
-        return {}
-
-    proxy_url = os.getenv("HOLON_PROXY_URL")
-    if proxy_url:
-        host_port = _proxy_host_port(proxy_url)
-    else:
-        try:
-            port = int(os.getenv("HOLON_PROXY_PORT", str(PROXY_LISTEN_PORT)))
-        except ValueError:
-            port = PROXY_LISTEN_PORT
-        host_port = ("127.0.0.1", port)
-        proxy_url = f"http://127.0.0.1:{port}"
-
-    if host_port is None:
-        return {}
-
-    # Probe if proxy is actively accepting connections
-    try:
-        with socket.create_connection(host_port, timeout=0.2):
-            pass
-    except (OSError, TimeoutError):
-        return {}
-
-    # Check for host CA cert
-    ca_dir = os.path.join(os.path.expanduser(os.path.join("~", ".holon")), "proxy-ca")
-    ca_cert_path = os.path.join(ca_dir, "mitmproxy-ca-cert.pem")
-    if not os.path.exists(ca_cert_path):
-        try:
-            ca_cert_path, _ = generate_root_ca()
-        except Exception:
-            return {}
-
-    envs = {
-        "HTTP_PROXY": proxy_url,
-        "HTTPS_PROXY": proxy_url,
-        "http_proxy": proxy_url,
-        "https_proxy": proxy_url,
-    }
-    if os.path.exists(ca_cert_path):
-        envs["NODE_EXTRA_CA_CERTS"] = ca_cert_path
-        envs["SSL_CERT_FILE"] = ca_cert_path
-        envs["REQUESTS_CA_BUNDLE"] = ca_cert_path
-
-    return envs
 
 
 def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915

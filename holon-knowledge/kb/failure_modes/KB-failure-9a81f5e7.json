@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-9a81f5e7",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T08:27:27.813229+00:00",
+  "updated_ts": "2026-11-23T08:27:27.813229+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795419574-0411ab8d-claude-agent",
+      "REV-1795419569-8727f448-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 3,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795416692-approval-survives-main-merge/P-1795418641-CLA-CO5.5/_",
+    "description": "Reproduced failure across 3 executions with identical context.",
+    "action": "Review Loop halted without consensus after 2 iteration(s): not approved: reviewer 3 final verdict CHANGES_REQUESTED, reviewer 3 Engineering role CHANGES; final verdicts: Reviewer 1 APPROVED (0/0/0); Reviewer 2 APPROVED (0/0/0); Reviewer 3 CHANGES_REQUESTED (0/0/1); Reviewer 3 Engineering role CHANGES",
+    "symptoms": []
+  }
+}

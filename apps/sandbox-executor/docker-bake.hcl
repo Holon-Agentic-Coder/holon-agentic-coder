@@ -2,18 +2,11 @@ variable "CI" {
   default = "false"
 }
 
-# Overrides the beads (bd) pin baked into holon-base; empty keeps the Dockerfile's ARG BD_VERSION
-# default as the single pin.
-variable "BD_VERSION" {
-  default = ""
-}
-
 target "common" {
   context = "apps/sandbox-executor"
   dockerfile = "Dockerfile"
   cache-from = CI == "true" ? ["type=gha,scope=holon-sandbox-executor"] : []
   cache-to = CI == "true" ? ["type=gha,mode=max,scope=holon-sandbox-executor"] : []
-  args = BD_VERSION != "" ? { BD_VERSION = BD_VERSION } : {}
 }
 
 target "base" {

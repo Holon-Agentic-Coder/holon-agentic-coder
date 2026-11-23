@@ -31,6 +31,7 @@ from sandbox_executor.flow.github.ci_head_checks import (
     PENDING_STATUSES,
 )
 from sandbox_executor.flow.github.ci_reverify import approved_head_of
+from sandbox_executor.flow.review.approval_coverage import approved_fingerprint_of
 from sandbox_executor.knowledge import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.redaction import redact_agent_secrets
@@ -40,6 +41,8 @@ logger = logging.getLogger(__name__)
 MARKER_PREFIX = "<!-- holon-consensus-withdrawn:"
 MAX_COMMENT_CHARS = 4000
 WITHDRAWAL_LABELS = ["review", "consensus-withdrawn", "merged-head-ci"]
+CI_FAILED = "CI failed on the merged head"
+_Runs = list[Mapping[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -71,16 +74,20 @@ def _next_step(restart: bool) -> str:
     return "The review restart cap was reached, so the review was not restarted and the flow stopped"
 
 
+def _why(merged_head: str, reason: str | None) -> str:
+    return f"{reason} on head {merged_head}" if reason else f"CI failed on merged head {merged_head}"
+
+
 def render_withdrawal(
-    approved_head: str | None, merged_head: str, failed_runs: list[Mapping[str, Any]], restart: bool = True
+    approved_head: str | None, merged_head: str, failed_runs: _Runs, restart: bool = True, reason: str | None = None
 ) -> str:
-    """The comment body: the withdrawn approval, the merged head, each failing check and the restart (or the stop)."""
+    """The comment body: the withdrawn approval, the merged head, each failing check (or the reason) and the restart."""
     covered = f"`{short_sha(approved_head)}`" if approved_head else "an earlier commit"
     marker = withdrawal_marker(merged_head)
     lines = [
         "## ⚠️ Ensemble Consensus Approval withdrawn",
         "",
-        f"The consensus approval of {covered} was withdrawn: CI failed on merged head `{short_sha(merged_head)}`:",
+        f"The consensus approval of {covered} was withdrawn: {_why(f'`{short_sha(merged_head)}`', reason)}:",
         "",
         *(f"- {run.get('name')} (run {run.get('run_id') or 'n/a'}): {run.get('conclusion')}" for run in failed_runs),
         "",
@@ -92,16 +99,17 @@ def render_withdrawal(
 
 
 def _withdrawal_row(
-    context: FlowContext, approved: str | None, merged: str, failed: list[dict[str, Any]], restart: bool
+    context: FlowContext, approved: str | None, record: Mapping[str, Any], restart: bool
 ) -> dict[str, Any]:
     """The ACT row recording the withdrawn approval and whether the review restarts; free text is redacted."""
+    merged, failed, reason = str(record.get("head_sha") or ""), failed_runs_of(record), record.get("withdrawal_reason")
     named = ", ".join(f"{run.get('name')}: {run.get('conclusion')}" for run in failed) or "no check named"
-    detail = f"CI failed on merged head {merged} after the approval of {approved or 'an earlier head'}: {named}"
-    detail += f". {_next_step(restart)}."
+    detail = f"{_why(merged, reason)} after the approval of {approved or 'an earlier head'}"
+    detail += f". {_next_step(restart)}." if reason else f": {named}. {_next_step(restart)}."
     return {
         "action_id": generate_action_id("ACT-WITHDRAW"),
         "execution_id": f"REV-WITHDRAW-{int(datetime.now(UTC).timestamp())}",
-        "action": f"Consensus approval withdrawn for {context.execution_branch}: CI failed on the merged head",
+        "action": f"Consensus approval withdrawn for {context.execution_branch}: {reason or CI_FAILED}",
         "category": "code",
         "target": str(context.execution_branch or ""),
         "outcome": "failure",
@@ -113,6 +121,7 @@ def _withdrawal_row(
         "merged_head": merged,
         "failed_runs": failed,
         "review_restarted": restart,
+        "approval_fingerprint": approved_fingerprint_of(context),
         "created_at": datetime.now(UTC).isoformat(),
     }
 
@@ -161,19 +170,21 @@ def withdraw_consensus(
     from sandbox_executor.flow.review.records import record_review_action  # Lazy: records imports review_report.
 
     approved, merged = approved_head_of(context), str(record.get("head_sha") or "")
+    reason = record.get("withdrawal_reason")  # Set when the PR-own change differs from the approved one.
     pr_target = approval_pr_number(context) or context.execution_branch
     failed = failed_runs_of(record)
     ledger_path = os.path.join(context.target_worktree, "holon-knowledge", "ledger", "executions.jsonl")
-    row = record_review_action(context, ledger_path, _withdrawal_row(context, approved, merged, failed, restart))
+    row = record_review_action(context, ledger_path, _withdrawal_row(context, approved, record, restart))
     action_id = (row or {}).get("action_id")
-    comment = _post_once(
-        context, pr_target, render_withdrawal(approved, merged, failed, restart), merged, seams or WithdrawalSeams()
-    )
+    body = render_withdrawal(approved, merged, failed, restart, reason)
+    comment = _post_once(context, pr_target, body, merged, seams or WithdrawalSeams())
     withdrawn = {"merged_head": merged, "approved_head": approved, "action_id": action_id, "review_restarted": restart}
+    if fingerprint := approved_fingerprint_of(context):  # Named only when the approval recorded one.
+        withdrawn["approval_fingerprint"] = fingerprint
     _reset_review(context, withdrawn)
     context.log(
-        f"Consensus withdrawn: the approval of {short_sha(approved)} no longer stands because CI failed on merged "
-        f"head {merged}; ledger row {action_id or 'not written'}, comment {comment['reason']}."
+        f"Consensus withdrawn: the approval of {short_sha(approved)} no longer stands because {_why(merged, reason)}; "
+        f"ledger row {action_id or 'not written'}, comment {comment['reason']}."
     )
     return {**withdrawn, "comment_posted": comment["posted"], "comment": comment, "failed_runs": failed}
 

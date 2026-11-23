@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sandbox_executor.flow.git_refs import _fetch_refspecs_error
 from sandbox_executor.flow.github.merge import PROTECTED_BRANCHES, _bare_branch
@@ -29,6 +29,7 @@ class _MergeOutcome:
     ledger_only: bool = False
     conflicting_paths: tuple[str, ...] = ()
     error: str = ""
+    head_sha: str = ""  # The pushed merge commit, when merged.
 
 
 def _is_ledger_path(path: str) -> bool:
@@ -101,6 +102,7 @@ def _merge_and_push(repo_dir: str, branch: str, target_branch: str, trailers: st
             push_commit(repo_dir, merged_sha, branch)
             run_git(["update-ref", f"refs/remotes/origin/{branch}", merged_sha], cwd=repo_dir, check=False)
             _follow_merged_head(repo_dir, branch, merged_sha)
+            return replace(outcome, head_sha=merged_sha)
         return outcome
     except LedgerRewriteError:
         raise

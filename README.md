@@ -749,6 +749,8 @@ flowchart TD
   - [`docs/metrics.md`](docs/metrics.md) — Detailed formulation of estimators ($P(success)$, $\Delta S$, $EV$, and
     calibration).
   - [`docs/safety.md`](docs/safety.md) — Resource limits, budgets, sandboxing, and trust ladders.
+  - [`docs/environment_variables.md`](docs/environment_variables.md) — Every `HOLON_*` environment variable: purpose,
+    values, defaults, where it is read and whether it reaches the containers.
 - **Knowledge & Ledgers:**
   - [`docs/knowledgebase_schema.md`](docs/knowledgebase_schema.md) — Propose/validate/promote schemas.
   - [`docs/wisdombase_schema.md`](docs/wisdombase_schema.md) — Universal code invariants and meta-principles.
@@ -984,6 +986,9 @@ network so agent responses can be compacted before they are tokenized.
 
 > [!IMPORTANT] Host `HTTP_PROXY` / `HTTPS_PROXY` are **never** interpreted as opt-in; sandbox networking only changes
 > when `--token-reduce` or `HOLON_TOKEN_REDUCE` is set explicitly.
+
+Every other `HOLON_*` variable (runner, budgets, proxy, git, ledger, review loop, logging and CI) is listed in
+[`docs/environment_variables.md`](docs/environment_variables.md).
 
 ---
 

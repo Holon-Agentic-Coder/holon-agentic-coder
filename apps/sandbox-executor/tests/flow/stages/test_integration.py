@@ -16,7 +16,6 @@ from tests.flow.helpers import SUB_INTENT_LIST, BudgetRoleAgents, _budget_contex
 def _run_decomposed(host: Path, origin: Path, tmp_path: Path):
     agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")])
     ctx = _budget_context(host, agents, 5.0)
-    ctx.skip_review = False
     with decomposed_flow(origin, tmp_path) as reviews:
         results = PipelineEngine(ctx).run()
     return ctx, results, reviews

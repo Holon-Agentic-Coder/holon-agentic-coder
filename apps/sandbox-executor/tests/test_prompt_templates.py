@@ -59,6 +59,14 @@ TEST_RUN_RULE_PHRASES = (
     "-n auto --dist worksteal",
     "median",
 )
+# Lower-case foreground rule phrases the planner, executor and review-loop prompts must carry: a backgrounded test or
+# lint run cannot report back in the container, so the turn supervisor would stop the agent as stalled.
+FOREGROUND_RULE_PHRASES = (
+    "run tests and lint in the foreground",
+    "wait for the result in the same turn",
+    "never background a command",
+    "and end the turn",
+)
 # Lower-case code placement and complexity phrases both the planner and the executor prompt must carry.
 CODE_PLACEMENT_RULE_PHRASES = (
     "module that owns the data",
@@ -150,6 +158,17 @@ def test_rendered_templates_carry_test_run_rule(render: Callable[[], str]) -> No
     text = normalised(render())
     missing = [phrase for phrase in TEST_RUN_RULE_PHRASES if phrase not in text]
     assert missing == [], f"test-run rule phrases missing: {missing}"
+
+
+@pytest.mark.parametrize(
+    "render",
+    [rendered_planner, rendered_executor, lambda: MARKDOWN_TEMPLATE],
+    ids=["planner", "executor", "review_loop"],
+)
+def test_templates_require_foreground_test_and_lint_runs(render: Callable[[], str]) -> None:
+    text = normalised(render())
+    missing = [phrase for phrase in FOREGROUND_RULE_PHRASES if phrase not in text]
+    assert missing == [], f"foreground rule phrases missing: {missing}"
 
 
 def test_rendered_executor_runs_suite_once_and_commits_each_step() -> None:

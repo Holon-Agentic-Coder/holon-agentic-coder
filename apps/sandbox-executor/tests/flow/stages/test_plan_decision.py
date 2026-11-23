@@ -216,8 +216,7 @@ class TestStage3ExecutesThePlanRowsDecision:
             return run_decomposed(context, start_time, record, base_payload)
 
         run_decomposed = flow_module._run_decomposed_plan
-        # The children run through their own consensus halt and merge into the plan branch, so review is not skipped.
-        ctx.skip_review = False
+        # The children run through their own consensus halt and merge into the plan branch.
         with (
             decomposed_flow(origin, tmp_path),
             patch("sandbox_executor.flow.stages.execute._run_decomposed_plan", side_effect=spy),

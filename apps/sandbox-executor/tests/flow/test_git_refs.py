@@ -27,6 +27,7 @@ from tests.flow.helpers import (
     _git,
     _init_mergeability_repo,
     _verified_diff,
+    stage4_halts_at_consensus,
 )
 from tests.flow.lookup_patch import patch_lookup_sites
 
@@ -43,7 +44,8 @@ class TestStageTargetsIgnoreOperatorHead:
     @staticmethod
     def _run_stages_1_to_3(host: Path, origin: Path, tmp_path: Path) -> FlowContext:
         ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin))
-        results = PipelineEngine(ctx).run()
+        with stage4_halts_at_consensus():
+            results = PipelineEngine(ctx).run()
         assert results["execute"].status == StageStatus.SUCCESS
         # The executor container leaves the worktree on its execution branch; the operator's checkout is main.
         _git(host, "checkout", "-q", "main")
@@ -141,7 +143,7 @@ class TestStageTargetsIgnoreOperatorHead:
         ctx.skip_push = True
         main_tip = _git(host, "rev-parse", "main")
 
-        # '--skip-review' or a resume entering at Stage 5: the operator is still on 'main' and calibration throws,
+        # A resume entering at Stage 5: the operator is still on 'main' and calibration throws,
         # so the fallback report must still be written into the execution branch's tree, never 'main'.
         heads: list[str] = []
 

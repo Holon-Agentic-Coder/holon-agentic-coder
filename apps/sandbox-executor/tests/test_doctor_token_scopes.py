@@ -77,7 +77,7 @@ def test_a_failing_report_is_isolated_and_value_free(monkeypatch):
 
     monkeypatch.setattr(token_scopes, "scope_report", broken)
     out = io.StringIO()
-    cli.report_budgets_and_envelope(out=out)
+    assert cli.report_budgets_and_envelope(out=out) == 1
     assert "WARNING: doctor github token check failed unexpectedly (RuntimeError)" in out.getvalue()
     assert SENTINEL not in out.getvalue()
 

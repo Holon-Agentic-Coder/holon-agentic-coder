@@ -26,8 +26,11 @@ from sandbox_executor.calibration_diff import (
     DIFF_BASE_FIRST_PARENT,
     DIFF_BASE_MERGE_BASE,
     DIFF_BASE_PLAN,
+    DIFF_BASE_TARGET_MERGE_BASE,
+    intent_target_branch,
     merge_history,
     patch_diff_range,
+    target_branch_refs,
 )
 from sandbox_executor.calibration_ev import (
     evaluate_dual_ev_outcomes,
@@ -778,10 +781,15 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
         if isinstance(raw_rate, int | float) and not isinstance(raw_rate, bool) and 0.0 <= float(raw_rate) <= 1.0:
             actual.test_pass_rate = float(raw_rate)
 
-    # 2. Compute patch size via git diff between plan_branch and execution_branch (fail loudly on non-zero exit)
-    fallback_refs = (extract_branch_components(plan_branch)["intent_branch"], "main") if plan_branch else ()
+    # 2. Compute patch size via git diff from the merge-base with the intent's target branch (fail loudly on non-zero
+    # exit); the plan branch and its fallbacks apply only when no target branch resolves
+    intent_branch = extract_branch_components(plan_branch)["intent_branch"] if plan_branch else ""
+    fallback_refs = (intent_branch, "main") if plan_branch else ()
+    target_refs = (
+        target_branch_refs(intent_target_branch(intent_branch, target_ref, target_worktree)) if execution_branch else ()
+    )
     base_rev, target_rev, diff_base = patch_diff_range(
-        plan_branch if execution_branch else "", target_ref, target_worktree, fallback_refs
+        plan_branch if execution_branch else "", target_ref, target_worktree, fallback_refs, target_refs
     )
     exec_meta["diff_base"] = diff_base
     diff_range = f"{base_rev}...{target_rev}" if base_rev else f"{target_rev}~1..{target_rev}"
@@ -798,7 +806,7 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
             f"with exit code {res.returncode}: {error_message}"
         )
 
-    if diff_base == DIFF_BASE_PLAN:
+    if diff_base in (DIFF_BASE_PLAN, DIFF_BASE_TARGET_MERGE_BASE):
         exec_meta.update(merge_history(base_rev, target_rev, target_worktree))
 
     actual.files_changed = 0
@@ -946,6 +954,17 @@ def compute_calibration_deltas(
     return deltas, accuracy_ratings, bias_directions
 
 
+def patch_size_base_line(report_data: dict[str, Any]) -> str:
+    """The report's ``Patch Size Base`` line: the ``diff_base`` label, and the merge-base SHA the diff started from."""
+    label = report_data["diff_base"]
+    line = f"- **Patch Size Base:** `{label}`"
+    if label == DIFF_BASE_TARGET_MERGE_BASE and report_data.get("merge_base_sha"):
+        line += f" (merge-base `{report_data['merge_base_sha']}` with the target branch)"
+    elif label in (DIFF_BASE_MERGE_BASE, DIFF_BASE_FIRST_PARENT):
+        line += " (not measured against the plan branch)"
+    return line
+
+
 def format_markdown_report(report_data: dict[str, Any]) -> str:
     """Format structured markdown report conforming to reference calibration schema."""
     plan_id = report_data["plan_id"]
@@ -986,8 +1005,8 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
         report_data.get("merge_base_sha") or report_data["merged_commit_count"] > 0
     ):
         lines.append(f"- **Merged Commits:** `{report_data['merged_commit_count']}`")
-    if report_data.get("diff_base") in (DIFF_BASE_MERGE_BASE, DIFF_BASE_FIRST_PARENT):
-        lines.append(f"- **Patch Size Base:** `{report_data['diff_base']}` (not measured against the plan branch)")
+    if report_data.get("diff_base"):
+        lines.append(patch_size_base_line(report_data))
     lines.extend(
         [
             "",

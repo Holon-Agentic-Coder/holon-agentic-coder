@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from sandbox_executor.calibration import (
     ActualMetrics,
     EntropyFactors,
@@ -15,6 +17,7 @@ from sandbox_executor.calibration import (
     parse_actual_metrics,
 )
 from sandbox_executor.calibration_ev import evaluate_dual_ev_outcomes
+from sandbox_executor.calibration_rows import is_infrastructure_failure, row_stage
 
 
 class TestCalibrationDualEV(unittest.TestCase):
@@ -343,3 +346,137 @@ class TestCalibrationDualEV(unittest.TestCase):
         # Assert no new noqa annotations added in calibration_ev.py
         helper_content = helper_file.read_text(encoding="utf-8")
         self.assertNotIn("# no" + "qa", helper_content, "calibration_ev.py must not contain any '# noqa' annotations")
+
+
+MATRIX_PLAN = "I-m/P-m/_"
+ID_PREFIX = {"execution": "E-", "review": "REV-", "calibrate": "CAL-"}
+# The slots of each order: "x" is a row with the case's status, "s" a success row.
+ORDERS = {"failure_then_success": "xs", "success_then_failure": "sx", "failure_last": "xsx"}
+
+
+def _matrix_rows(kind: str, status: str, order: str) -> list[dict[str, Any]]:
+    """A Stage 3 success row first (review/calibrate kinds only), then one row per slot with its own id and instant."""
+    rows: list[dict[str, Any]] = []
+    if kind != "execution":
+        rows.append(_ledger_row("E-0", "success", 0))
+    for index, slot in enumerate(ORDERS[order], start=1):
+        slot_status = status if slot == "x" else "success"
+        rows.append(_ledger_row(f"{ID_PREFIX[kind]}{index}", slot_status, index))
+    return rows
+
+
+def _ledger_row(execution_id: str, status: str, minute: int, **extra: Any) -> dict[str, Any]:
+    return {
+        "entry_type": "summary",
+        "execution_id": execution_id,
+        "plan_branch": MATRIX_PLAN,
+        "status": status,
+        "exit_code": 0 if status == "success" else 1,
+        "created_at": f"2026-11-20T01:{minute:02d}:00Z",
+        **extra,
+    }
+
+
+def _matrix_drag(rows: list[dict[str, Any]]) -> float:
+    return evaluate_dual_ev_outcomes(rows, "E-0", MATRIX_PLAN, predicted_impact=50.0, cost_effort=5.0).bug_ev_drag
+
+
+@pytest.mark.parametrize("order", sorted(ORDERS))
+@pytest.mark.parametrize("status", ["failed", "sync_conflict", "success"])
+@pytest.mark.parametrize("kind", ["execution", "review", "calibrate"])
+def test_dual_ev_matrix(kind: str, status: str, order: str) -> None:
+    """Only an unresolved Stage 3 failure adds drag; review and calibrate rows never do, whatever their order."""
+    drag = _matrix_drag(_matrix_rows(kind, status, order))
+    if kind == "execution" and status != "success" and order != "failure_then_success":
+        assert drag == 50.0
+    else:
+        assert drag == 0.0
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "Reviewer ensemble container dispatch exited with code 1 without writing results",
+        "Executor stopped: usage limit reached",
+        "execute turn budget of 900 s exceeded after 901.2 s",
+        "Harness timeout while waiting for the agent",
+    ],
+)
+def test_infrastructure_failure_after_delivery_adds_no_drag(summary: str) -> None:
+    rows = [_ledger_row("E-1", "success", 1), _ledger_row("E-2", "failed", 2, summary=summary)]
+    assert is_infrastructure_failure(rows[1])
+    assert _matrix_drag(rows) == 0.0
+
+
+@pytest.mark.parametrize(
+    "summary", ["Plan execution failed with exit code 1: 3 tests failed", "pytest timed out in test_slow"]
+)
+def test_real_failure_after_delivery_adds_drag(summary: str) -> None:
+    rows = [_ledger_row("E-1", "success", 1), _ledger_row("E-2", "failed", 2, summary=summary)]
+    assert not is_infrastructure_failure(rows[1])
+    assert _matrix_drag(rows) == 50.0
+
+
+def test_failure_reason_and_error_fields_are_read() -> None:
+    assert is_infrastructure_failure({"error": "Resolver container dispatch failed: boom"})
+    assert is_infrastructure_failure({"failure_reason": "session limit"})
+    assert not is_infrastructure_failure({"summary": "failed", "error": "error"})
+
+
+def test_pr_249_rows_add_no_drag() -> None:
+    """The PR #249 summary rows verbatim: Stage 3 success, a failed reviewer dispatch, then the approval."""
+    plan = "I-1795409225-remove-token-reduction-copy/P-1795409242-CLA-CO5.5/_"
+    rows = [
+        {
+            "entry_type": "summary",
+            "execution_id": "E-1795409573-CLA-CO5.5",
+            "plan_branch": plan,
+            "status": "success",
+            "summary": "Plan executed successfully",
+            "created_at": "2026-11-23T04:52:53.778310+00:00",
+            "ledger_revision": 1,
+        },
+        {
+            "execution_id": "REV-1795410989-b2a486df-claude-agent",
+            "plan_branch": plan,
+            "status": "failed",
+            "entry_type": "summary",
+            "summary": (
+                "Review Loop halted without consensus after 2 iteration(s): Reviewer ensemble container "
+                "dispatch exited with code 1 without writing results"
+            ),
+            "created_at": "2026-11-23T05:16:29.233Z",
+        },
+        {
+            "execution_id": "REV-1795412634-3cf610db-claude-agent",
+            "plan_branch": plan,
+            "status": "approved",
+            "entry_type": "summary",
+            "summary": "Review Loop reached consensus approval after 5 iteration(s)",
+            "created_at": "2026-11-23T05:43:54.358Z",
+        },
+    ]
+    metrics = evaluate_dual_ev_outcomes(rows, "E-1795409573-CLA-CO5.5", plan, predicted_impact=82.0, cost_effort=4.0)
+    assert metrics.bug_ev_drag == 0.0
+    assert metrics.ev_with_bugs == metrics.ev_clean == 78.0
+
+
+@pytest.mark.parametrize(
+    ("record", "stage"),
+    [
+        ({"execution_id": "REV-1"}, "review"),
+        ({"execution_id": "CAL-P-1-2"}, "calibrate"),
+        ({"execution_id": "E-1"}, "execution"),
+        ({}, "execution"),
+        ({"execution_id": "X-1"}, "other"),
+        ({"execution_id": "REV-1", "stage": "execution"}, "execution"),
+        ({"execution_id": "E-1", "stage": "Review"}, "review"),
+        ({"execution_id": "E-1", "stage": "bogus"}, "other"),
+    ],
+)
+def test_row_stage(record: dict[str, Any], stage: str) -> None:
+    assert row_stage(record) == stage
+
+
+def test_row_stage_accepts_the_plan_execution_id_as_execution() -> None:
+    assert row_stage({"execution_id": "legacy-1"}, "legacy-1") == "execution"

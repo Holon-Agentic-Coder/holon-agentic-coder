@@ -272,3 +272,45 @@ class TestStage5PromotedArtifactsCommit:
             "Stage 5 promoted knowledge/wisdom artifacts unchanged: zero modifications to commit." in msg
             for msg in ctx.logs
         )
+
+    def test_stage5_self_check_failure_fails_stage_commits_and_pushes_nothing(self, tmp_path):
+        """A report the self-check rejects fails Stage 5: no commit, no push, the condition named in the log."""
+        from sandbox_executor.flow import FlowStage, StageResult
+
+        def git(*args: str) -> str:
+            return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
+
+        execution_branch = "I-100-intent/P-200-plan/E-300-exec/_"
+        self._setup_repo(tmp_path, execution_branch)
+        approved = git("rev-parse", "main").strip()
+        heads_before = git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads")
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            execution_branch=execution_branch,
+            plan_branch="I-100-intent/P-200-plan/_",
+            dry_run=False,
+            skip_push=False,
+        )
+        # The review approved the initial commit; the execution head adds code after it, so they disagree.
+        review_payload = {"consensus": {"approved": True, "target_commit": approved}}
+        ctx.stage_results["review"] = StageResult(
+            stage=FlowStage.REVIEW, status=StageStatus.SUCCESS, payload=review_payload
+        )
+        with (
+            patch("sandbox_executor.flow.stages.calibrate.publish_calibration") as mock_publish,
+            patch("sandbox_executor.flow.stages.calibrate.reconcile_records") as mock_reconcile,
+            patch("sandbox_executor.flow.stages.calibrate.record_calibration_action") as mock_record,
+        ):
+            res = run_calibrate_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert "evaluated_not_approved" in res.error
+        assert "nothing was committed or pushed" in res.error
+        assert res.payload["self_check_conditions"] == ["evaluated_not_approved"]
+        assert ctx.stage_results["calibrate"] is res
+        assert any("self-check violated: evaluated_not_approved" in line for line in ctx.logs)
+        mock_publish.assert_not_called()
+        mock_reconcile.assert_not_called()
+        mock_record.assert_not_called()
+        assert git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads") == heads_before
+        assert not (tmp_path / "plans").exists()

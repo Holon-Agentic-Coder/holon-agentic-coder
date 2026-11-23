@@ -243,10 +243,11 @@ Stage 4 and Stage 5 action rows keep their historical field order and identifier
 - `ACT-CAL` uses `execution_id` `CAL-{plan_id}-{ts}`, `category: "doc"` and labels
   `["calibration", "stage-5", plan_id]`. Beyond the common action fields it carries `plan_branch`, `execution_branch`,
   `evaluated_commit_sha`, `predicted_metrics`, `actual_metrics`, `calibration_deltas` and `calibration_report_path` (new
-  rows add `touch_set_accuracy`, see [touch_set.md](touch_set.md)). Each committed run appends a new `ACT-CAL` row; a
-  failed Stage 5 run appends an uncommitted `failure` row whose `action` states whether a fallback report was written or
-  the existing report and ledger rows were left uncommitted.
-- Failure `error_context` values that can carry external output (the `ACT-POST` posting error and the fallback `ACT-CAL`
+  rows add `touch_set_accuracy`, see [touch_set.md](touch_set.md)). Each committed run appends a new `ACT-CAL` row. A
+  failed Stage 5 run (after its bounded retries) appends one uncommitted `failure` row, writes no report and commits and
+  pushes nothing; a `--from-stage calibrate` resume commits the row with its next reconciliation commit. The failure
+  row's `calibration_report_path` is the path the report would have had.
+- Failure `error_context` values that can carry external output (the `ACT-POST` posting error and the failure `ACT-CAL`
   calibration error) are redacted, then truncated to 2000 characters.
 
 Write rules for every stage:
@@ -277,14 +278,14 @@ Write rules for every stage:
 - **Known gap**: the review loop does not commit `executions.jsonl`. Stage 4 rows only reach git when a later commit
   includes the ledger, for example the Stage 5 calibration commit in `holon flow`. A review run in a throwaway container
   clone leaves them uncommitted, which is also why `holon flow` Stage 4 cannot yet route its reviewer turns into the
-  `review-loop` container and read the rows back. Likewise, when `run_calibrate()` raises (including a
-  `CalibrationCommitError` when a git hook or signing rejects the calibration report commit), Stage 5 writes a fallback
-  `plans/{intent}/{plan_id}_calibration.md` and appends an `ACT-CAL` row with `outcome: "failure"` and the
-  reconciliation events to the working-tree `executions.jsonl`, but commits none of them, even when HEAD already sits on
-  the `/calibrated` branch, and neither pushes nor fast-forwards that branch, because `calibrate` is the last stage and
-  the `/calibrated` branch may not exist. After a rejected report commit the real report stays in place of the fallback,
-  and the success `ACT-CAL` row appended for that commit stays uncommitted ahead of the failure row. The operator must
-  commit or discard them. `holon calibrate` exits non-zero on a rejected report commit.
+  `review-loop` container and read the rows back. Likewise, when `run_calibrate()` raises with no retries left
+  (including a `CalibrationCommitError` when a git hook or signing rejects the calibration report commit), Stage 5 fails
+  (`calibrate: failed`): it writes no report, appends only an `ACT-CAL` row with `outcome: "failure"` to the
+  working-tree `executions.jsonl`, skips reconciliation and promotion, commits and pushes nothing, discards an empty
+  `/calibrated` branch and keeps the checkpoint at `calibrate`. After a rejected report commit the real report stays
+  uncommitted, and the success `ACT-CAL` row appended for that commit stays uncommitted ahead of the failure row. A
+  `--from-stage calibrate` resume commits the uncommitted rows as a pure append; otherwise the operator must commit or
+  discard them. `holon calibrate` exits non-zero on a rejected report commit.
 
 **Why JSONL?**
 

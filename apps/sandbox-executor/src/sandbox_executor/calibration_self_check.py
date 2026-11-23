@@ -9,7 +9,7 @@ before any branch, file or commit is touched and raises ``CalibrationSelfCheckEr
 - ``evaluated_ledger_only``: the evaluated SHA is one of Stage 5's own calibration (report or ledger-only) commits.
 - ``evaluated_not_approved``: the review approved a head the evaluated SHA neither is nor reaches through
   metadata-only commits (ledger rows recorded after the approval) or merges (the conflict gate's merge of the target).
-- ``fallback_stub``: the report holds the fallback stub text of a failed calibration.
+- ``fallback_stub``: the report holds the stub text older Stage 5 runs wrote for a failed calibration.
 
 ``self_check_report`` is pure; ``report_self_check_inputs`` gathers its git facts.
 """
@@ -33,7 +33,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The body Stage 5's fallback report carries when ``run_calibrate`` raised (``flow.stages.calibrate``).
+# The body older Stage 5 runs wrote as a fallback report when ``run_calibrate`` raised (for example on PR #249). No code
+# path writes it any more; the condition guards against re-accepting such a stub already committed on a branch.
 FALLBACK_REPORT_MARKER = "Fallback calibration generated."
 
 

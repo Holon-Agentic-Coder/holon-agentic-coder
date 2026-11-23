@@ -7,6 +7,7 @@ never pulls in a flow submodule.
 from __future__ import annotations
 
 from sandbox_executor.flow.lazy_exports_review import REVIEW_LAZY_EXPORTS
+from sandbox_executor.flow.lazy_exports_sync import SYNC_LAZY_EXPORTS
 
 LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.entrypoint.planner": "parse_metrics",
@@ -20,6 +21,10 @@ LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.calibrate_rebuild": (
         "holds_only_calibration_commits is_ancestor is_calibration_commit is_calibration_path "
         "rebuild_calibrated_branch stale_calibrated_refs"
+    ),
+    "sandbox_executor.flow.calibrate_retry": (
+        "CalibrateFailure CalibrationRetriesExhausted RetryKind call_with_retries classify_calibrate_error "
+        "redacted_cause"
     ),
     "sandbox_executor.flow.calibrate_rerun": (
         "HeadMoveCheck RerunSeams head_move_since_calibration post_stale_signal report_staleness rerun_calibration "
@@ -39,18 +44,6 @@ LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.checkpoint_discovery": "get_default_checkpoint_path",
     "sandbox_executor.flow.checkpoint_store": "CheckpointStore FileCheckpointStore",
     "sandbox_executor.flow.child_progress": "_child_intent_branch _sub_intent_depth",
-    "sandbox_executor.flow.conflict_classes": (
-        "ConflictClass ConflictSides classify_merge_conflicts classify_path classify_sides read_sides unmerged_stages"
-    ),
-    "sandbox_executor.flow.conflict_classes_lists": "appended_list_union",
-    "sandbox_executor.flow.conflict_classes_resolve": "MechanicalResolution resolve_mechanical resolve_path",
-    "sandbox_executor.flow.conflict_classes_tokens": "python_lines unchanged_outside",
-    "sandbox_executor.flow.conflict_resolver_attempt": (
-        "AttemptCheck MergeSnapshot check_attempt discard_tampered reset_attempt save_attempt_diff snapshot_merge "
-        "stage_resolution"
-    ),
-    "sandbox_executor.flow.conflict_resolver_role": "conflict_code_resolver",
-    "sandbox_executor.flow.conflict_resolver_tiers": "next_tier tier_ladder",
     "sandbox_executor.flow.constants": "CI_REGISTRATION_POLL_SECONDS CURRENT_CONTEXT_SCHEMA_VERSION",
     "sandbox_executor.flow.context": (
         "_SUMMARY_STATUS_WORDS FlowContext FlowStage StageResult StageStatus _support_legacy_repo_dir"
@@ -71,14 +64,19 @@ LAZY_EXPORTS: dict[str, str] = {
         "_origin_has_branch _read_ledger_rows _resolve_branch_ref _resolve_review_commit _snapshot_child_branches "
         "_sync_local_execution_refs _track_local_branch fast_forward_local_branch"
     ),
+    "sandbox_executor.flow.github.adapter": "GitHubAdapter merge_argv parse_gh_json",
+    "sandbox_executor.flow.github.adapter_runner": "GhResult gh_env spawn_gh",
     "sandbox_executor.flow.github.token_scopes": (
         "TokenScopeReport doctor_lines fetch_scopes resolve_github_token scope_report token_type touches_workflows "
         "workflow_scope_error"
     ),
     "sandbox_executor.flow.github.approval_invalidation": "CommentRecord gh_comment_editor gh_comment_records",
     "sandbox_executor.flow.github.ci": (
-        "CI_REGISTRATION_TIMEOUT_ENV_VAR CI_REGISTRATION_TIMEOUT_SECONDS _ci_green _extract_failed_ci_check_names "
-        "_wait_for_ci_registration probe_ci_checks resolve_ci_registration_timeout"
+        "CI_REGISTRATION_TIMEOUT_ENV_VAR CI_REGISTRATION_TIMEOUT_SECONDS _wait_for_ci_registration probe_ci_checks "
+        "resolve_ci_registration_timeout"
+    ),
+    "sandbox_executor.flow.github.ci_policy": (
+        "_ci_green _extract_failed_ci_check_names local_tests_ci_status summarise_ci_checks"
     ),
     "sandbox_executor.flow.github.ci_final_head": "format_final_head_ci",
     "sandbox_executor.flow.github.ci_head_checks": (
@@ -93,10 +91,19 @@ LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.github.merge": "BranchMerge merge_branch_detailed",
     "sandbox_executor.flow.github.merge_method": "choose_merge_flag lookup_merge_flag",
+    "sandbox_executor.flow.github.mergeability_policy": (
+        "gh_view_verdict local_error_result merge_tree_verdict mergeability_result missing_ref_result "
+        "not_a_repository_result"
+    ),
     "sandbox_executor.flow.github.pr_head": "pr_head_sha",
     "sandbox_executor.flow.github.pr": (
-        "_resolve_commit_ref check_pr_mergeability create_or_update_pr format_review_git_trailers "
-        "generate_semantic_pr_metadata"
+        "_resolve_commit_ref check_pr_mergeability create_or_update_pr format_review_git_trailers"
+    ),
+    "sandbox_executor.flow.github.pr_metadata": "generate_semantic_pr_metadata",
+    "sandbox_executor.flow.github.review_policy": (
+        "CommentAttempt ReviewAttempt comment_failed_output comment_not_attempted_output comment_posted_output "
+        "gh_unavailable_outcome is_self_approval_rejection posting_outcome review_failed_output review_flag "
+        "review_submitted_output"
     ),
     "sandbox_executor.flow.github.review_post": "post_pr_review_consensus",
     "sandbox_executor.flow.host_remote": (
@@ -128,7 +135,6 @@ LAZY_EXPORTS: dict[str, str] = {
         "PLAN_REFRESH_KIND PlanRefresh plan_refresh_stage_failure record_plan_refresh refresh_already_recorded "
         "refresh_due refresh_payload refresh_plan_branch"
     ),
-    "sandbox_executor.flow.resume_guard": "resume_merge_error",
     "sandbox_executor.flow.review.head_test_evidence": ("HeadEvidenceDecisionInput choose_evidence has_pass_marker"),
     "sandbox_executor.flow.review_restart": (
         "approval_stands calibrate_with_review_restart is_review_restart stage5_merged_head_gate"
@@ -166,23 +172,11 @@ LAZY_EXPORTS: dict[str, str] = {
         "superseding_failure_row touch_set_replan_exhausted touch_set_replan_feedback touch_set_violation "
         "touch_set_violation_result"
     ),
-    "sandbox_executor.flow.merge_git": "git_out has_conflict_markers",
-    "sandbox_executor.flow.target_probe": (
-        "TargetProbe TargetProbeError merge_tree_conflicts parse_merge_tree_paths probe_target"
-    ),
-    "sandbox_executor.flow.target_sync": "sync_with_target",
-    "sandbox_executor.flow.target_sync_merge": (
-        "abort_merge complete_merge merge_in_progress merge_target merge_verification_error unmerged_paths"
-    ),
-    "sandbox_executor.flow.target_sync_record": "append_sync_row superseded_sync_conflict sync_row",
-    "sandbox_executor.flow.target_sync_result": (
-        "CodeResolution CodeResolver SyncBoundary SyncRequest SyncResult fail_closed_code_resolver"
-    ),
-    "sandbox_executor.flow.target_sync_resume": "MergeAdoption adopt_merge_in_progress",
     "sandbox_executor.flow.worktree_checkpoints": "WorktreeCheckpoint read_worktree_checkpoint",
     "sandbox_executor.flow_guard": "SKIP_PUSH_DISPATCH_ERROR",
     "sandbox_executor.git": "run_git",
     "sandbox_executor.redaction": "redact_agent_secrets",
     "sandbox_executor.review_report": "build_pr_review_consensus_report",
     **REVIEW_LAZY_EXPORTS,
+    **SYNC_LAZY_EXPORTS,
 }

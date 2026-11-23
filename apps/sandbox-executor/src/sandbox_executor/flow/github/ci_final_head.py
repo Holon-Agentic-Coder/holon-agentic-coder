@@ -25,6 +25,7 @@ from typing import Any
 from sandbox_executor.budgets import resolve_review_ci_wait_seconds
 from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS
 from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.flow.github.adapter import GitHubAdapter
 from sandbox_executor.flow.github.ci import (
     _extract_failed_ci_check_names,
     _wait_for_ci_registration,
@@ -42,7 +43,6 @@ from sandbox_executor.flow.github.ci_failure_detail import (
 )
 from sandbox_executor.flow.github.ci_reverify import approved_head_of
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, wait_for_pending_ci
-from sandbox_executor.flow.github.pr_head import pr_head_sha
 from sandbox_executor.knowledge import CredentialRedactor
 
 MAX_REASON_CHARS = 300
@@ -65,10 +65,28 @@ class FinalHeadSeams:
     rerun_dispatcher: Callable[[str], bool] | None = None
     changed_paths: Callable[[str, str], list[str] | None] | None = None
     approved_head: Callable[[], str | None] | None = None
+    github: GitHubAdapter | None = None  # PR head, CI probes and reruns (not ``detail_lookup``); default over checkout.
 
 
-def _git_gh_head(repo_dir: str, branch: str, proxy_env: Mapping[str, str]) -> tuple[Callable[[], str | None], ...]:
-    env = {**os.environ, **proxy_env, "DOCKER_CLI_HINTS": "false"}
+@dataclass(frozen=True)
+class _FinalHeadCheck:
+    """One invocation's fixed arguments, bundled so the rerun helpers stay within the argument limit."""
+
+    context: FlowContext
+    repo_dir: str
+    branch: str
+    seams: FinalHeadSeams
+    github: GitHubAdapter
+
+    def default_probe(self) -> Callable[[], dict[str, Any]]:
+        """The CI probe of the branch through the check's adapter."""
+        proxy_env = dict(self.seams.proxy_env)
+        return functools.partial(probe_ci_checks, self.repo_dir, self.branch, proxy_env=proxy_env, github=self.github)
+
+
+def _git_gh_head(check: _FinalHeadCheck) -> tuple[Callable[[], str | None], ...]:
+    env = {**os.environ, **check.seams.proxy_env, "DOCKER_CLI_HINTS": "false"}
+    repo_dir = check.repo_dir
 
     def _local_head() -> str | None:
         try:
@@ -85,17 +103,16 @@ def _git_gh_head(repo_dir: str, branch: str, proxy_env: Mapping[str, str]) -> tu
             return None
         return proc.stdout.strip() or None if proc.returncode == 0 else None
 
-    return _local_head, lambda: pr_head_sha(repo_dir, branch, proxy_env, STEP_LOOKUP_TIMEOUT_SECONDS)
+    return _local_head, lambda: check.github.pr_head_sha(check.branch, STEP_LOOKUP_TIMEOUT_SECONDS)
 
 
-def _wait_for_pr_head(
-    branch: str, repo_dir: str, proxy_env: Mapping[str, str], seams: FinalHeadSeams, policy: Any
-) -> None:
+def _wait_for_pr_head(check: _FinalHeadCheck, policy: Any) -> None:
     """Wait until the PR head is the pushed SHA, so checks of the previous head are never taken for the final head.
 
     When either SHA cannot be read the head is unverifiable and the probe proceeds as before.
     """
-    default_pushed, default_pr = _git_gh_head(repo_dir, branch, proxy_env)
+    seams = check.seams
+    default_pushed, default_pr = _git_gh_head(check)
     pushed = (seams.pushed_head or default_pushed)()
     if not pushed:
         return
@@ -150,19 +167,26 @@ def classify_final_head(
     return _record("unknown", "CI reported no checks.", ci_wait=wait_record)
 
 
-def _settled_status(
-    context: FlowContext, repo_dir: str, branch: str, seams: FinalHeadSeams
-) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    proxy_env = dict(seams.proxy_env)
-    probe = seams.probe or functools.partial(probe_ci_checks, repo_dir, branch, proxy_env=proxy_env)
+def _settled_status(check: _FinalHeadCheck) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    seams, context = check.seams, check.context
+    default_probe = check.default_probe()
+    probe = seams.probe or default_probe
     policy = seams.policy or CiWaitPolicy(resolve_review_ci_wait_seconds(os.environ))
-    _wait_for_pr_head(branch, repo_dir, proxy_env, seams, policy)
+    _wait_for_pr_head(check, policy)
     ci_status = probe()
     if ci_status.get("source") != "github_cli":
         # A push returns before GitHub registers the new runs, so give them time to appear.
         timeout = resolve_ci_registration_timeout(seams.registration_timeout)
         _wait_for_ci_registration(
-            context, repo_dir, branch, proxy_env, timeout, CI_REGISTRATION_POLL_SECONDS, policy.clock, policy.sleep
+            context,
+            check.repo_dir,
+            check.branch,
+            dict(seams.proxy_env),
+            timeout,
+            CI_REGISTRATION_POLL_SECONDS,
+            policy.clock,
+            policy.sleep,
+            probe=default_probe,
         )
         ci_status = probe()
     if ci_status.get("source") != "github_cli" or ci_status.get("pending", 0) <= 0:
@@ -172,43 +196,11 @@ def _settled_status(
     return ci_status, waited.as_record()
 
 
-@dataclass(frozen=True)
-class _FinalHeadCheck:
-    """One invocation's fixed arguments, bundled so the rerun helpers stay within the argument limit."""
-
-    context: FlowContext
-    repo_dir: str
-    branch: str
-    seams: FinalHeadSeams
-
-
 def _classify_settled(check: _FinalHeadCheck) -> tuple[dict[str, Any], dict[str, Any]]:
     """Wait for a settled CI probe and classify it, returning the record and the probe it was built from."""
-    ci_status, wait_record = _settled_status(check.context, check.repo_dir, check.branch, check.seams)
+    ci_status, wait_record = _settled_status(check)
     lookup = check.seams.detail_lookup or gh_detail_lookup(check.repo_dir, check.seams.proxy_env)
     return classify_final_head(ci_status, wait_record, lookup), ci_status
-
-
-def _gh_rerun(repo_dir: str, proxy_env: Mapping[str, str]) -> Callable[[str], bool]:
-    """A dispatcher of ``gh run rerun <run-id> --failed``; False on any error, so a failed dispatch is fail-closed."""
-    env = {**os.environ, **proxy_env, "DOCKER_CLI_HINTS": "false"}
-
-    def rerun(run_id: str) -> bool:
-        try:
-            proc = subprocess.run(
-                ["gh", "run", "rerun", run_id, "--failed"],
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=STEP_LOOKUP_TIMEOUT_SECONDS,
-                env=env,
-            )
-        except Exception:
-            return False
-        return proc.returncode == 0
-
-    return rerun
 
 
 def _git_changed_paths(repo_dir: str, proxy_env: Mapping[str, str]) -> Callable[[str, str], list[str] | None]:
@@ -259,7 +251,7 @@ def _failed_run_ids(ci_status: dict[str, Any], names: list[str]) -> list[str] | 
 
 def _resolve_final_head(check: _FinalHeadCheck) -> str | None:
     """The head CI was measured on: the PR head, or the pushed head when the PR head is unreadable."""
-    default_pushed, default_pr = _git_gh_head(check.repo_dir, check.branch, check.seams.proxy_env)
+    default_pushed, default_pr = _git_gh_head(check)
     return (check.seams.pr_head or default_pr)() or (check.seams.pushed_head or default_pushed)()
 
 
@@ -290,6 +282,14 @@ def _wait_for_rerun_start(probe: Callable[[], dict[str, Any]], names: list[str],
         policy.sleep(max(0.0, min(CI_REGISTRATION_POLL_SECONDS, remaining)))
 
 
+def _dispatch_rerun(check: _FinalHeadCheck, run_id: str) -> bool:
+    """Dispatch one rerun through the check's adapter; any exception is a failed dispatch (fail-closed)."""
+    try:
+        return check.github.rerun_failed(run_id, timeout=STEP_LOOKUP_TIMEOUT_SECONDS)
+    except Exception:
+        return False
+
+
 def _retry_timing_noise(check: _FinalHeadCheck, record: dict[str, Any], ci_status: dict[str, Any]) -> dict[str, Any]:
     """Rerun a timing-gate-only failure on a bookkeeping-only head once and re-classify; anything else is unchanged.
 
@@ -300,13 +300,12 @@ def _retry_timing_noise(check: _FinalHeadCheck, record: dict[str, Any], ci_statu
     if not run_ids:
         return record
     check.context.log(f"Final-head CI: rerunning timing-gate failure on a bookkeeping-only head: {', '.join(run_ids)}")
-    rerun = check.seams.rerun_dispatcher or _gh_rerun(check.repo_dir, check.seams.proxy_env)
+    seams = check.seams
+    # A failed dispatch (False, including gh missing, a spawn error or any exception) is fail-closed.
+    rerun = seams.rerun_dispatcher or functools.partial(_dispatch_rerun, check)
     if not all(rerun(run_id) for run_id in run_ids):
         return {**record, "timing_rerun": {"attempted": False, "reason": "the rerun could not be dispatched"}}
-    seams = check.seams
-    probe = seams.probe or functools.partial(
-        probe_ci_checks, check.repo_dir, check.branch, proxy_env=dict(seams.proxy_env)
-    )
+    probe = seams.probe or check.default_probe()
     policy = seams.policy or CiWaitPolicy(resolve_review_ci_wait_seconds(os.environ))
     timeout = resolve_ci_registration_timeout(seams.registration_timeout)
     _wait_for_rerun_start(probe, record["failed_checks"], policy, timeout)
@@ -320,7 +319,9 @@ def check_final_head_ci(
     """Wait for CI on the pushed final head and report the outcome; never raises and never changes the stage status."""
     if context.dry_run or context.skip_push:
         return _record("skipped", "dry run" if context.dry_run else "push skipped")
-    check = _FinalHeadCheck(context, repo_dir, branch, seams or FinalHeadSeams())
+    seams = seams or FinalHeadSeams()
+    github = seams.github or GitHubAdapter(repo_dir, dict(seams.proxy_env))
+    check = _FinalHeadCheck(context, repo_dir, branch, seams, github)
     try:
         record, ci_status = _classify_settled(check)
         if record["state"] != "failed":

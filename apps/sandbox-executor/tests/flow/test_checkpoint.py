@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sandbox_executor.flow import FlowContext, FlowStage, PipelineEngine, StageResult, StageStatus, run_review_stage
@@ -24,8 +24,12 @@ class TestFlowResumptionAndErrorHandling:
             dry_run=True,
         )
 
+        # tmp_path holds no git repository, so a real calibration would fail Stage 5 closed; stand in a dry-run report.
+        report = MagicMock(calibrated_branch=None)
+        report.to_dict.return_value = {}
         engine = PipelineEngine(ctx)
-        results = engine.run()
+        with patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=report):
+            results = engine.run()
 
         # Intent, Plan, Execute, Review (halted for human), and Calibrate should be recorded
         assert "intent" in results

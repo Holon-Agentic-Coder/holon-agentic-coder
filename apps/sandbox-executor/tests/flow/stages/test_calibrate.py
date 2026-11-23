@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from sandbox_executor.flow import FlowContext, StageStatus, run_calibrate_stage
 
 from tests.flow.helpers import _append_jsonl, _configure_identity
+from tests.flow.sleep_patch import scoped_sleep_patch
 
 
 class TestStage5PromotedArtifactsCommit:
@@ -136,29 +137,22 @@ class TestStage5PromotedArtifactsCommit:
         assert "record stage 5 promoted knowledge and wisdom" not in all_logs
         assert res.payload["promoted_candidates"] == []
 
-    def test_stage5_promoted_candidates_uncommitted_on_calibration_failure(self, tmp_path):
-        """When calibration fails, promoted candidate artifacts remain uncommitted in the working tree."""
+    def test_stage5_calibration_failure_skips_reconciliation_and_promotion(self, tmp_path):
+        """When calibration fails, Stage 5 fails closed: nothing is reconciled, promoted or committed."""
 
         def git(*args: str) -> str:
             return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
 
         execution_branch = "I-100-intent/P-200-plan/E-300-exec/_"
         self._setup_repo(tmp_path, execution_branch)
+        execution_tip = git("rev-parse", execution_branch).strip()
+        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
 
         def fake_run_calibrate(**_kwargs):
             raise RuntimeError("calibration failure")
 
-        def fake_reconcile(**kwargs):
-            _append_jsonl(Path(kwargs["ledger_path"]), {"entry_type": "action", "action_id": "ACT-RECON-1"})
-
-        def fake_promote(index_db, kb_dir, wb_dir, min_trials=2, dry_run=False):
-            os.makedirs(kb_dir, exist_ok=True)
-            os.makedirs(wb_dir, exist_ok=True)
-            with open(os.path.join(kb_dir, "KB-fail.json"), "w", encoding="utf-8") as f:
-                f.write('{"title": "fail kb"}\n')
-            with open(os.path.join(wb_dir, "WB-fail.json"), "w", encoding="utf-8") as f:
-                f.write('{"title": "fail wisdom"}\n')
-            return [{"id": "KB-fail", "type": "kb"}]
+        fake_reconcile = MagicMock()
+        fake_promote = MagicMock(return_value=[{"id": "KB-fail", "type": "kb"}])
 
         ctx = FlowContext(
             repo_dir=str(tmp_path),
@@ -168,21 +162,25 @@ class TestStage5PromotedArtifactsCommit:
             skip_push=True,
         )
         with (
+            scoped_sleep_patch("sandbox_executor.flow.calibrate_retry") as sleep,
             patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=fake_run_calibrate),
-            patch("sandbox_executor.flow.stages.calibrate.reconcile_records", side_effect=fake_reconcile),
-            patch("sandbox_executor.flow.stages.calibrate.promote_pending_candidates", side_effect=fake_promote),
+            patch("sandbox_executor.flow.stages.calibrate.reconcile_records", fake_reconcile),
+            patch("sandbox_executor.flow.stages.calibrate.promote_pending_candidates", fake_promote),
         ):
             res = run_calibrate_stage(ctx)
 
-        assert res.status == StageStatus.SUCCESS
-        assert any(
-            "Stage 5 promoted knowledge/wisdom artifacts left uncommitted: calibration failed." in msg
-            for msg in ctx.logs
-        )
+        assert res.status == StageStatus.FAILED
+        fake_reconcile.assert_not_called()
+        fake_promote.assert_not_called()
+        sleep.assert_not_called()
         status = git("status", "--porcelain", "--untracked-files=all")
-        assert "holon-knowledge/kb/KB-fail.json" in status
-        assert "holon-knowledge/wisdom/WB-fail.json" in status
-        assert git("log", "-1", "--format=%s", execution_branch).strip() == "execution change"
+        assert "holon-knowledge/kb/KB-fail.json" not in status
+        assert "holon-knowledge/wisdom/WB-fail.json" not in status
+        assert git("rev-parse", execution_branch).strip() == execution_tip
+        rows = [line for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+        assert len(rows) == 1
+        assert '"outcome": "failure"' in rows[0]
+        assert "ACT-CAL-" in rows[0]
 
     def test_stage5_promoted_candidates_dry_run_noop(self, tmp_path):
         """When running in dry-run mode, promote_pending_candidates gets dry_run=True and commits are skipped."""

@@ -79,8 +79,9 @@ class TestFlowStages:
         review_res = run_review_stage(ctx)
         assert review_res.status in (StageStatus.SUCCESS, StageStatus.HALTED_FOR_HUMAN)
 
+        # No git repository under tmp_path, so calibration fails closed instead of halting for a human.
         cal_res = run_calibrate_stage(ctx)
-        assert cal_res.status in (StageStatus.SUCCESS, StageStatus.PENDING)
+        assert cal_res.status == StageStatus.FAILED
 
     def test_stage2_plan_missing_intent_branch(self):
         ctx = FlowContext(intent_branch=None)
@@ -191,8 +192,8 @@ class TestFlowStages:
         assert res.status == StageStatus.FAILED
         assert res.payload["consensus"]["approved"] is False
 
-    def test_stage5_calibrate(self, tmp_path):
-        """Test Stage 5 Post-Execution Calibration generating calibration report."""
+    def test_stage5_calibrate_without_repository_fails_closed(self, tmp_path):
+        """A dry-run Stage 5 whose calibration cannot run fails: no stub report, no calibrated branch."""
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
@@ -200,11 +201,11 @@ class TestFlowStages:
         )
 
         res = run_calibrate_stage(ctx)
-        assert res.status == StageStatus.SUCCESS
-        assert ctx.calibrated_branch is not None
-        assert ctx.calibrated_branch.endswith("/calibrated")
-        assert not ctx.calibrated_branch.endswith("/_/calibrated")
-        assert "calibrated_branch" in res.payload
+        assert res.status == StageStatus.FAILED
+        assert res.summary_line().startswith("calibrate: failed")
+        assert ctx.calibrated_branch is None
+        assert "nothing was committed or pushed" in (res.error or "")
+        assert not list(tmp_path.rglob("*_calibration.md"))
 
     def test_stage5_calibrate_mocked(self, tmp_path):
         """Test Stage 5 invoking run_calibrate successfully."""
@@ -228,7 +229,7 @@ class TestFlowStages:
         assert mock_run.call_args.kwargs["log_fn"] == ctx.log
         assert ctx.calibrated_branch == "I-100-intent/P-200-plan/E-300-exec/calibrated"
 
-    def test_stage5_calibrate_fallback_formats_report_with_lint_docs_prettier(self, tmp_path):
+    def test_stage5_calibrate_failure_writes_no_report(self, tmp_path):
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
@@ -240,14 +241,14 @@ class TestFlowStages:
             patch(
                 "sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=RuntimeError("calibration failed")
             ),
-            patch("sandbox_executor.flow.stages.calibrate.format_calibration_report") as mock_format,
         ):
             res = run_calibrate_stage(ctx)
 
-        assert res.status == StageStatus.SUCCESS
-        mock_format.assert_called_once_with("plans/I-100-intent/P-200-plan_calibration.md", str(tmp_path))
+        assert res.status == StageStatus.FAILED
+        assert res.payload["calibration_attempts"] == ["calibration failed"]
+        assert not (tmp_path / "plans" / "I-100-intent" / "P-200-plan_calibration.md").exists()
 
-    def test_stage5_calibrate_fallback_appends_uncommitted_failure_act_cal(self, tmp_path):
+    def test_stage5_calibrate_failure_appends_uncommitted_failure_act_cal(self, tmp_path):
         """A failed calibration run appends an ACT-CAL failure row that stays uncommitted, as documented."""
         import subprocess
 
@@ -273,35 +274,34 @@ class TestFlowStages:
             dry_run=False,
             skip_push=True,
         )
-        with (
-            patch(
-                "sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=RuntimeError("calibration failed")
-            ),
-            patch("sandbox_executor.flow.stages.calibrate.format_calibration_report"),
+        with patch(
+            "sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=RuntimeError("calibration failed")
         ):
             res = run_calibrate_stage(ctx)
 
-        assert res.status == StageStatus.SUCCESS
+        assert res.status == StageStatus.FAILED
         cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
         assert len(cal_rows) == 1
         assert cal_rows[0]["outcome"] == "failure"
         assert "calibration failed" in cal_rows[0]["error_context"]
-        assert cal_rows[0]["action"] == "Calibration failed for plan P-200-plan; fallback report written"
+        assert (
+            cal_rows[0]["action"] == "Calibration failed for plan P-200-plan; no report written, row left uncommitted"
+        )
         assert cal_rows[0]["calibration_report_path"] == "plans/I-100-intent/P-200-plan_calibration.md"
 
-        # Nothing is committed on the fallback path: the row and report remain working-tree changes.
-        # The worktree is returned to the branch it started on, carrying the uncommitted changes.
+        # Nothing is committed on a failed calibration: only the row remains a working-tree change, no report.
+        # The worktree is returned to the branch it started on, carrying the uncommitted row.
         assert git("rev-parse", "--abbrev-ref", "HEAD").strip() == "main"
         assert git("rev-parse", "HEAD").strip() == head_before
         assert git("rev-parse", "main").strip() == head_before
         assert git("branch", "--list", "*calibrated").strip() == ""
         status = git("status", "--porcelain", "--untracked-files=all")
         assert "holon-knowledge/ledger/executions.jsonl" in status
-        assert "plans/I-100-intent/P-200-plan_calibration.md" in status
+        assert "plans/I-100-intent/P-200-plan_calibration.md" not in status
 
     @pytest.mark.parametrize("scenario", ["raises_after_checkout", "rerun_on_calibrated"])
     def test_stage5_calibrate_failure_on_calibrated_branch_commits_nothing(self, tmp_path, scenario):
-        """A failed calibration leaves its rows uncommitted even when HEAD sits on the /calibrated branch."""
+        """A failed calibration commits nothing even when HEAD sits on the /calibrated branch."""
         import subprocess
 
         def git(*args: str) -> str:
@@ -335,59 +335,31 @@ class TestFlowStages:
             dry_run=False,
             skip_push=True,
         )
-        with (
-            patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=failing_run_calibrate),
-            patch("sandbox_executor.flow.stages.calibrate.format_calibration_report"),
-        ):
+        with patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=failing_run_calibrate):
             res = run_calibrate_stage(ctx)
 
-        assert res.status == StageStatus.SUCCESS
+        assert res.status == StageStatus.FAILED
+        assert "nothing was committed or pushed" in (res.error or "")
         cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
         assert len(cal_rows) == 1
         assert cal_rows[0]["outcome"] == "failure"
 
-        # Neither branch gains a commit, so no ff/push can carry the failure rows into the PR.
-        assert git("rev-parse", calibrated_branch).strip() == execution_tip
+        # Neither branch gains a commit, so no ff/push can carry the failure row into the PR. The /calibrated
+        # branch this stage created is discarded once HEAD has left it; a pre-existing one is kept unchanged.
         assert git("rev-parse", execution_branch).strip() == execution_tip
-        assert git("show", f"{calibrated_branch}:holon-knowledge/ledger/executions.jsonl") == ""
+        if scenario == "raises_after_checkout":
+            assert git("branch", "--list", calibrated_branch).strip() == ""
+            # The row never names a discarded branch.
+            assert cal_rows[0]["target"] == execution_branch
+        else:
+            assert git("rev-parse", calibrated_branch).strip() == execution_tip
+            assert git("show", f"{calibrated_branch}:holon-knowledge/ledger/executions.jsonl") == ""
         status = git("status", "--porcelain", "--untracked-files=all")
         assert "holon-knowledge/ledger/executions.jsonl" in status
-        assert "plans/I-100-intent/P-200-plan_calibration.md" in status
-        assert any("left uncommitted" in line and "calibration failed" in line for line in ctx.logs)
+        assert "plans/I-100-intent/P-200-plan_calibration.md" not in status
 
-    def test_stage5_calibrate_fallback_records_original_error_when_prettier_fails(self, tmp_path):
-        """A Prettier failure inside the fallback must not mask the original calibration error."""
-        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
-        ledger.parent.mkdir(parents=True)
-        ledger.write_text("", encoding="utf-8")
-
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
-            plan_branch="I-100-intent/P-200-plan/_",
-            dry_run=False,
-            skip_push=True,
-        )
-        with (
-            patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
-            patch(
-                "sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=RuntimeError("calibration failed")
-            ),
-            patch(
-                "sandbox_executor.flow.stages.calibrate.format_calibration_report",
-                side_effect=OSError("prettier missing"),
-            ),
-        ):
-            res = run_calibrate_stage(ctx)
-
-        assert res.status == StageStatus.SUCCESS
-        cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
-        assert len(cal_rows) == 1
-        assert cal_rows[0]["outcome"] == "failure"
-        assert cal_rows[0]["error_context"] == "Calibration run failed: calibration failed"
-
-    def test_stage5_calibrate_fallback_redacts_credentials_in_act_cal(self, tmp_path):
-        """The fallback ACT-CAL error_context must not carry credentials from the exception text."""
+    def test_stage5_calibrate_failure_redacts_credentials_in_act_cal(self, tmp_path):
+        """The failure ACT-CAL error_context and the stage error must not carry credentials from the exception text."""
         ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
         ledger.parent.mkdir(parents=True)
         ledger.write_text("", encoding="utf-8")
@@ -406,17 +378,18 @@ class TestFlowStages:
                 "sandbox_executor.flow.stages.calibrate.run_calibrate",
                 side_effect=RuntimeError(f"fetch failed {sample_value}"),
             ),
-            patch("sandbox_executor.flow.stages.calibrate.format_calibration_report"),
         ):
-            run_calibrate_stage(ctx)
+            res = run_calibrate_stage(ctx)
 
         cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
         assert len(cal_rows) == 1
         assert cal_rows[0]["error_context"] == "Calibration run failed: fetch failed *******"
         assert sample_value not in ledger.read_text(encoding="utf-8")
+        assert sample_value not in (res.error or "")
+        assert all(sample_value not in line for line in ctx.logs)
 
-    def test_stage5_calibrate_fallback_bounds_act_cal_error_context(self, tmp_path):
-        """A long fallback error_context is redacted before it is truncated."""
+    def test_stage5_calibrate_failure_bounds_act_cal_error_context(self, tmp_path):
+        """A long failure error_context is redacted before it is truncated."""
         from sandbox_executor.flow import POSTING_ERROR_CONTEXT_MAX_CHARS
 
         ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
@@ -438,7 +411,6 @@ class TestFlowStages:
         with (
             patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
             patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=RuntimeError(hook_output)),
-            patch("sandbox_executor.flow.stages.calibrate.format_calibration_report"),
         ):
             run_calibrate_stage(ctx)
 
@@ -449,31 +421,6 @@ class TestFlowStages:
         assert error_context.startswith("Calibration run failed: xxx")
         assert "ghp_" not in error_context
         assert "ghp_" not in ledger.read_text(encoding="utf-8")
-
-    def test_stage5_fallback_prettier_warning_redacts_credentials(self, tmp_path):
-        """The fallback Prettier failure warning must not echo credentials from the exception text."""
-        (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
-        sample_value = "ghp_" + "P" * 36
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
-            plan_branch="I-100-intent/P-200-plan/_",
-            dry_run=True,
-            skip_push=True,
-        )
-        with (
-            patch(
-                "sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=RuntimeError("calibration failed")
-            ),
-            patch(
-                "sandbox_executor.flow.stages.calibrate.format_calibration_report",
-                side_effect=OSError(f"npx auth {sample_value}"),
-            ),
-        ):
-            run_calibrate_stage(ctx)
-
-        assert any("Prettier formatting failed" in line and "*******" in line for line in ctx.logs)
-        assert all(sample_value not in line for line in ctx.logs)
 
     @staticmethod
     def _stage5_push_context(tmp_path):
@@ -882,7 +829,10 @@ class TestSkipPushRejectedOnEveryNonDryRun:
             dry_run=True,
             skip_push=True,
         )
-        results = PipelineEngine(ctx, from_stage="calibrate").run()
+        report = MagicMock(calibrated_branch=None)
+        report.to_dict.return_value = {}
+        with patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=report):
+            results = PipelineEngine(ctx, from_stage="calibrate").run()
 
         assert results["calibrate"].status == StageStatus.SUCCESS
 

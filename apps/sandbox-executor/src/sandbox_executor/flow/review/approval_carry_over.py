@@ -7,10 +7,10 @@ nothing to the change the reviewers approved, so the approval is kept instead of
 with both SHAs and the fingerprint and recorded as one appended ``ACT-CARRY`` ledger row (no row is edited).
 
 The carry-over removes a review re-run, never a CI wait. ``target_commit`` stays A, the SHA the reviewers saw, and the
-consensus gains ``carried_from`` (A) and ``carried_to`` (B); its ``ci_checks`` become "not measured", so the stamp never
-shows A's green CI for B. Stage 5's merged-head gate therefore still sees a moved head, waits for every check on B, and
-withdraws the consensus and restarts Stage 4 when one fails. A code conflict, a different fingerprint or an approval
-without a fingerprint (a legacy checkpoint) keeps the gate's block.
+consensus gains ``carried_from`` (A) and ``carried_to`` (B); its ``ci_checks`` and ``mergeability`` become "not
+measured", so the stamp never shows A's green CI or clean probe for B. Stage 5's merged-head gate therefore still sees
+a moved head, waits for every check on B, and withdraws the consensus and restarts Stage 4 when one fails. A code
+conflict, a different fingerprint or an approval without a fingerprint (a legacy checkpoint) keeps the gate's block.
 
 Stage 5 uses the same helpers: its conflict gate records a carry-over row for a merge it made, and its merged-head
 gate (:func:`merged_head_coverage`) annotates the CI wait on a carried head, or withdraws the consensus when the PR-own
@@ -93,11 +93,16 @@ def carry_over_record(review_target: str, carry: CarryOver) -> dict[str, Any]:
 
 
 def apply_carry_over(consensus_data: dict[str, Any], carry: CarryOver) -> None:
-    """Record the carry-over on the consensus; ``target_commit`` stays the head the reviewers saw."""
+    """Record the carry-over on the consensus; ``target_commit`` stays the head the reviewers saw.
+
+    Neither the approved head's CI nor its mergeability probe describes the merged head, so both become unmeasured.
+    """
     consensus_data["carried_from"] = carry.approved_head
     consensus_data["carried_to"] = carry.merged_head
     reason = f"CI on merged head {carry.merged_head} not yet measured; Stage 5 waits for it"
     consensus_data["ci_checks"] = {"measured": False, "reason": reason}
+    probe_reason = f"mergeability of merged head {carry.merged_head} not probed"
+    consensus_data["mergeability"] = {"measured": False, "merge_state_status": "UNKNOWN", "reason": probe_reason}
 
 
 def carry_approval_over(

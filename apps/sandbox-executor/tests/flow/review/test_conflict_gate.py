@@ -15,6 +15,7 @@ from sandbox_executor.flow import FlowContext, StageResult, StageStatus, run_rev
 from sandbox_executor.flow.review import conflict_gate
 from sandbox_executor.flow.review.posting import PostRequest, post_review_consensus
 from sandbox_executor.flow.stages import calibrate
+from sandbox_executor.review_report import _mergeability_word
 
 from tests.flow.helpers import _git
 from tests.ledger_conflict_repos import BRANCH, LEDGER, build_conflicting_repos, refuse_test_runs
@@ -381,6 +382,7 @@ def _approved_at_head(work: Path, origin: Path, *, fingerprinted: bool = True) -
     head = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
     _git(work, "fetch", "-q", "origin")
     data = {"approved": True, "base_branch": "main", "target_commit": head, "ci_checks": dict(GREEN_AT_A)}
+    data["mergeability"] = {"merge_state_status": "CLEAN", "mergeable": "MERGEABLE", "is_dirty": False}  # A's probe.
     if fingerprinted:
         data["approval_fingerprint"] = approval_fingerprint_of(str(work), head, "main")
         assert str(data["approval_fingerprint"]).startswith("pf1:")
@@ -427,6 +429,7 @@ def test_a_ledger_only_merge_with_the_same_fingerprint_carries_the_approval_over
     assert consensus_data["target_commit"] == approved  # The SHA the reviewers saw is never rewritten.
     assert (consensus_data["carried_from"], consensus_data["carried_to"]) == (approved, merged)
     assert consensus_data["ci_checks"]["measured"] is False  # Never A's green CI for B.
+    assert _mergeability_word(consensus_data) == "UNMEASURED"  # Nor A's clean probe for the unprobed B.
     text = exec_file.read_text(encoding="utf-8")
     assert text.startswith(earlier)  # Append-only: earlier bytes are a prefix.
     rows = _gate_rows(exec_file)

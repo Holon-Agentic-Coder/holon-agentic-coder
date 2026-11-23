@@ -17,6 +17,7 @@ from sandbox_executor.flow.review.approval_carry_over import (
 )
 from sandbox_executor.flow.review.approval_fingerprint import fingerprints_match
 from sandbox_executor.ledger import ActionRecord
+from sandbox_executor.review_report import _mergeability_word
 
 from tests.leak_assertions import assert_no_leak, make_gh_probe
 
@@ -33,6 +34,7 @@ def _consensus(**overrides) -> dict:
         "approval_fingerprint": FINGERPRINT,
         "base_branch": "main",
         "ci_checks": {"total": 3, "passed": 3, "failed": 0, "pending": 0},
+        "mergeability": {"merge_state_status": "CLEAN", "mergeable": "MERGEABLE", "is_dirty": False},
     }
     return data | overrides
 
@@ -110,6 +112,8 @@ def test_apply_never_touches_target_commit() -> None:
     assert (consensus["carried_from"], consensus["carried_to"]) == (APPROVED, MERGED)
     assert consensus["ci_checks"]["measured"] is False
     assert MERGED in consensus["ci_checks"]["reason"]
+    assert _mergeability_word(consensus) == "UNMEASURED"
+    assert MERGED in consensus["mergeability"]["reason"]
 
 
 def test_the_message_names_both_shas_the_fingerprint_and_the_ci_wait() -> None:

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, run_review_loop, run_review_stage
 
-from tests.flow.github.fake_github import FakeGitHub
+from tests.flow.github.fake_github import FakeGitHub, merge_view
 from tests.flow.helpers import _verified_diff
 
 
@@ -29,13 +29,11 @@ class TestStage4TestEvidence:
         return ctx
 
     def _loop(self, ctx: FlowContext) -> dict[str, Any]:
-        with (
-            patch("shutil.which", return_value=None),
-            patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
-            _verified_diff(),
-        ):
-            return run_review_loop(ctx, auto_pr=False, max_iterations=1)
+        # A clean PR with no CI checks reported (CI falls back to local tests); the post succeeds on the fake.
+        github = FakeGitHub(standing_view=merge_view())
+        with patch("shutil.which", return_value=None), _verified_diff():
+            # No CI registration wait: these tests are about Stage 3 evidence, as when gh was absent.
+            return run_review_loop(ctx, auto_pr=False, max_iterations=1, ci_registration_timeout=0, github=github)
 
     def test_local_tests_fallback_without_recorded_result_is_not_measured_and_never_approves(self, tmp_path):
         res = self._loop(self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": None}))

@@ -54,6 +54,36 @@ def ci_checks_payload(
     ]
 
 
+def merge_view(mergeable: str = "MERGEABLE", state: str = "CLEAN", number: int = 1) -> dict[str, Any]:
+    """A ``gh pr view --json number,mergeable,mergeStateStatus`` mergeability payload."""
+    return {"number": number, "mergeable": mergeable, "mergeStateStatus": state}
+
+
+def view_for(merge: dict[str, Any]) -> dict[str, Any]:
+    """The ``gh pr view`` payload that ``check_pr_mergeability`` turns back into the given mergeability dict's state."""
+    dirty = bool(merge.get("is_dirty"))
+    return merge_view(
+        str(merge.get("mergeable") or ("CONFLICTING" if dirty else "MERGEABLE")),
+        str(merge.get("merge_state_status") or ("DIRTY" if dirty else "CLEAN")),
+        int(merge.get("pr_number") or 1),
+    )
+
+
+def checks_for(status: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """The ``gh pr checks`` payload ``probe_ci_checks`` summarises into the given CI status dict's counts.
+
+    A non-``github_cli`` status maps to None ("no checks reported"), so the probe falls back to local tests; a status
+    with a ``checks`` list replays it; otherwise the counts (an ``all_passed`` status without counts is one pass).
+    """
+    if status.get("source") != "github_cli":
+        return None
+    if isinstance(status.get("checks"), list) and status["checks"]:
+        return [dict(check) for check in status["checks"]]
+    failed, pending = int(status.get("failed") or 0), int(status.get("pending") or 0)
+    passed = int(status.get("passed") or (1 if status.get("all_passed") and not failed and not pending else 0))
+    return ci_checks_payload(passed=passed, failed=failed, pending=pending)
+
+
 def spawn_failure(message: str = "timed out after 60 seconds") -> GhResult:
     """The result the adapter returns when ``gh`` could not be run (``OSError`` or a timeout)."""
     return GhResult(True, 127, "", message, error=message)
@@ -67,9 +97,11 @@ class FakeGitHub:
     ``checks`` is the ``gh pr checks`` payload, None for "no checks reported", or a scripted result;
     ``checks_sequence``, when non-empty, takes precedence: successive ``checks`` values, the last one repeating.
     ``views`` are the successive ``gh pr view`` mergeability payloads (or scripted results); ``review_results`` the
-    successive ``post_review`` outcomes, default success. ``head_sha`` answers ``pr_head_sha`` (None when its
-    ``timeout`` is not positive). ``rerun_ok`` answers ``rerun_failed``. ``open_error`` makes the PR lookup fail to
-    run. ``proxy_env`` is the environment the adapter would spawn ``gh`` with.
+    successive ``post_review`` outcomes, default success; ``standing_view`` answers every mergeability read once
+    ``views`` run out (None: a failed read, so the caller falls back to local git). ``head_sha`` answers
+    ``pr_head_sha`` (None when its ``timeout`` is not positive). ``rerun_ok`` answers ``rerun_failed``.
+    ``open_error`` makes the PR lookup fail to run. ``proxy_env`` is the environment the adapter would spawn ``gh``
+    with.
     """
 
     available: bool = True
@@ -81,6 +113,7 @@ class FakeGitHub:
     checks: list[dict[str, Any]] | Scripted | None = None
     checks_sequence: list[list[dict[str, Any]] | Scripted | None] = field(default_factory=list)
     views: list[dict[str, Any] | Scripted] = field(default_factory=list)
+    standing_view: dict[str, Any] | None = None
     review_results: list[Scripted] = field(default_factory=list)
     comment_result: Scripted = (0, "comment posted", "")
     head_sha: str | None = None
@@ -135,9 +168,9 @@ class FakeGitHub:
         """Answer one mergeability read with the next of ``views`` (a failed read once they run out)."""
         if missing := self._call("mergeability", branch):
             return missing
-        if not self.views:
+        if not self.views and self.standing_view is None:
             return GhResult(True, 1, "", "no pull requests found")
-        view = self.views.pop(0)
+        view = self.views.pop(0) if self.views else self.standing_view
         return GhResult(True, 0, json.dumps(view), "") if isinstance(view, dict) else _result(view)
 
     def post_review(self, target: str, flag: str, body: str) -> GhResult:

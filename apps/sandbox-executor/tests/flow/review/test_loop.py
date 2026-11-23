@@ -119,7 +119,6 @@ class TestReviewLoopStage:
                 "sandbox_executor.flow.stages.review.run_git",
             ) as mock_git,
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
-            patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
             _review_loop_gh_stubs(),
         ):
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 10 insertions(+)\n")
@@ -169,15 +168,17 @@ class TestReviewLoopStage:
             payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
         )
 
+        # No PR view and no checks: mergeability falls back to local git and CI to local tests, as without gh.
+        github = FakeGitHub()
         with (
             patch("sandbox_executor.flow.github.pr.run_git") as mock_git,
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus") as mock_post,
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
-            patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
         ):
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 10 insertions(+)\n")
-            mock_post.return_value = {"dual_posted": True, "official_review": {"success": True}}
-            run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=2, dry_run=False)
+            run_review_loop(
+                ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=2, dry_run=False, github=github
+            )
+        assert github.methods().count("post_review") == 1
 
         exec_file = ledger_dir / "executions.jsonl"
         assert exec_file.exists()
@@ -492,10 +493,10 @@ def test_an_injected_adapter_receives_every_github_call_of_the_loop(tmp_path):
     github = FakeGitHub(
         views=[{"number": 7, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}] * 2,
         checks=ci_checks_payload(passed=1),
+        head_sha="stage3-head",
     )
     with (
         patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc1234"),
-        patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"),
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
     ):
         res = run_review_loop(_ensemble_ctx(tmp_path), max_iterations=1, run_ensemble_fn=FakeEnsemble(), github=github)

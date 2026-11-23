@@ -18,7 +18,7 @@ from sandbox_executor.flow import (
 )
 from sandbox_executor.ledger import parse_commit_trailers
 
-from tests.flow.github.fake_github import FakeGitHub, spawn_failure
+from tests.flow.github.fake_github import FakeGitHub, spawn_failure, view_for
 from tests.flow.helpers import _git, _init_mergeability_repo
 from tests.flow.lookup_patch import patch_lookup_sites
 from tests.flow.sleep_patch import scoped_sleep_patch
@@ -51,7 +51,8 @@ class TestReviewMergeabilityGuards:
             "source": "github_cli",
         }
 
-        with patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=mock_mergeability):
+        github = FakeGitHub(standing_view=view_for(mock_mergeability))
+        with patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github):
             result = run_review_stage(context)
 
         assert result.status == StageStatus.FAILED
@@ -288,9 +289,9 @@ class TestMergeabilityRefResolution:
 
     def test_review_loop_reports_missing_ref_without_find_dirty(self, repo: Path):
         ctx = FlowContext(repo_dir=str(repo), intent_data={"target_branch": "main"}, dry_run=True, token_reduce=False)
-        ci_passed = {"source": "local_tests", "all_passed": True, "passed": 1, "failed": 0, "pending": 0}
-        with patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value=ci_passed):
-            res = run_review_loop(ctx, target="does-not-exist", max_iterations=3, dry_run=True)
+        # Without gh, CI falls back to local tests and mergeability to the local git refs of the fixture repository.
+        github = FakeGitHub(available=False)
+        res = run_review_loop(ctx, target="does-not-exist", max_iterations=3, dry_run=True, github=github)
 
         assert not any(fid.startswith("FIND-DIRTY") for fid in res["findings"])
         assert res["findings"] == ["FIND-REF-001"]
@@ -355,7 +356,12 @@ class TestMergeabilityRefResolution:
                 "message": "cannot evaluate mergeability for ref origin/I-100/P-100/E-100",
             },
         }
-        with patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value=missing_ref):
+        # Documented non-loop seam: the local-git verdict is scripted, since a missing branch ref in a real repository
+        # never resolves to the ``origin/`` candidate this report names.
+        with (
+            patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=FakeGitHub(available=False)),
+            patch("sandbox_executor.flow.github.pr._local_mergeability", return_value=missing_ref),
+        ):
             result = run_review_stage(context)
 
         assert result.status == StageStatus.FAILED

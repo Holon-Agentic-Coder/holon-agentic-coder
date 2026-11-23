@@ -30,7 +30,7 @@ def _run_without_ci(tmp_path, monkeypatch, measurement: TestMeasurement, payload
     calls = MagicMock(return_value=measurement)
     monkeypatch.setattr(local_tests, "run_measurement", calls)
     ctx = HARNESS._ctx(tmp_path, payload if payload is not None else {"exit_code": 0, "test_pass_rate": None})
-    res, _probe, _sleep = HARNESS._loop(ctx, lambda *a, **k: dict(HARNESS.LOCAL), gh=None)
+    res, _probe, _sleep = HARNESS._loop(ctx, dict(HARNESS.LOCAL), gh=None, gh_available=True, ci_registration_timeout=0)
     return res, calls
 
 

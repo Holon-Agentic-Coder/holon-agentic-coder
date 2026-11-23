@@ -28,6 +28,7 @@ from sandbox_executor.flow.github.ci import (
 )
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, CiWaitResult, settle_pending_ci
 from sandbox_executor.flow.github.pr import check_pr_mergeability, create_or_update_pr, format_review_git_trailers
+from sandbox_executor.flow.github.pr_head import PR_HEAD_TIMEOUT_SECONDS
 from sandbox_executor.flow.github.review_post import post_pr_review_consensus
 from sandbox_executor.flow.ledger_warning import _warn_ledger_failure
 from sandbox_executor.flow.review.adjudication import (
@@ -198,7 +199,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     proxy_env = dict(github.proxy_env or {}) if github is not None else review_proxy_env(context)
     github = github or GitHubAdapter(repo_dir, proxy_env)
 
-    test_gate = _ReviewTestGate(context, repo_dir, target=review_target, proxy_env=proxy_env)
+    pr_head = functools.partial(github.pr_head_sha, timeout=PR_HEAD_TIMEOUT_SECONDS)
+    test_gate = _ReviewTestGate(context, repo_dir, target=review_target, pr_head=pr_head, proxy_env=proxy_env)
     _, tests_failed = test_gate.stage_3_evidence
     iteration = first_label - 1
     consensus_reached = False

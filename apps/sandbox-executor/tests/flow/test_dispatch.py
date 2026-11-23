@@ -23,6 +23,7 @@ from sandbox_executor.flow import (
     save_checkpoint,
 )
 
+from tests.flow.github.fake_github import FakeGitHub
 from tests.flow.helpers import (
     FakeRoleAgents,
     _append_jsonl,
@@ -453,6 +454,7 @@ class TestFlowRoleDispatch:
         ctx = _dispatch_context(host, agents)
         real_run = subprocess.run
         gh_calls: list[list[str]] = []
+        github = FakeGitHub()
 
         def fake_run(cmd, *args, **kwargs):
             if isinstance(cmd, list) and cmd and cmd[0] == "gh":
@@ -463,7 +465,7 @@ class TestFlowRoleDispatch:
         with (
             patch("shutil.which", return_value="/usr/bin/gh"),
             patch("subprocess.run", side_effect=fake_run),
-            patch("sandbox_executor.flow.review.loop.create_or_update_pr") as mock_pr,
+            patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github),
         ):
             results = PipelineEngine(ctx).run()
 
@@ -472,7 +474,7 @@ class TestFlowRoleDispatch:
         assert results["execute"].payload["status"] == "failed"
         assert results["execute"].payload["superseding_row_recorded"] is True
         assert "review" not in results
-        mock_pr.assert_not_called()
+        assert "open_or_update" not in github.methods()
         assert not any(call[:3] == ["gh", "pr", "create"] for call in gh_calls)
 
         rows = _ledger_rows(host, f"origin/{ctx.execution_branch}", "executions.jsonl")

@@ -41,10 +41,9 @@ def _checkout_execution_branch(context: FlowContext) -> str | None:
     Stages 1-3 only fetch and track the branches their containers push, so the operator's checkout is still
     wherever 'holon flow' started. Stage 4 appends its review ledger rows to the checkout and Stage 5 writes the
     calibration report and reconciles 'executions.jsonl' in it, as 'holon review-loop' and 'holon calibrate' do
-    when run on the branch. Both stages call this so that a '--skip-review' run, or a resume entering at Stage 5,
-    never writes into the operator's branch. A HEAD detached at the branch tip is re-attached in place; otherwise a
-    plain 'git checkout' carries non-conflicting local changes over and refuses conflicting ones, so nothing is ever
-    discarded.
+    when run on the branch. Both stages call this so that a resume entering at Stage 5 never writes into the
+    operator's branch. A HEAD detached at the branch tip is re-attached in place; otherwise a plain 'git checkout'
+    carries non-conflicting local changes over and refuses conflicting ones, so nothing is ever discarded.
 
     Returns:
         None when HEAD is (now) on the execution branch, otherwise the redacted reason the checkout failed.

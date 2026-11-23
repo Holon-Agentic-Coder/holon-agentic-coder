@@ -186,8 +186,6 @@ class PipelineEngine:
                 return run_execute_stage(self.context, resume_partial=True)
             return run_execute_stage(self.context)
         elif stage == FlowStage.REVIEW:
-            if self.context.skip_review:
-                return _skipped_by_flag(FlowStage.REVIEW)
             return run_review_stage(self.context)
         elif stage == FlowStage.CALIBRATE:
             if self.context.skip_calibrate:
@@ -309,7 +307,7 @@ class PipelineEngine:
         finally:
             restore_starting_branch(self.context)
 
-    def _run_stages(self) -> dict[str, StageResult]:  # noqa: C901, PLR0915
+    def _run_stages(self) -> dict[str, StageResult]:
         """Execute the configured pipeline stages sequentially."""
         start_idx = 0
         if self.from_stage:
@@ -340,18 +338,8 @@ class PipelineEngine:
         for i in range(start_idx, len(self.STAGE_ORDER)):
             stage = self.STAGE_ORDER[i]
 
-            if stage == FlowStage.REVIEW and self.context.skip_review:
-                self.context.log("Stage 4 (REVIEW) skipped due to --skip-review flag.")
-                result = _skipped_by_flag(FlowStage.REVIEW)
-                self.after_stage(stage, result)
-                self.save_checkpoint()
-                continue
-
             if stage == FlowStage.CALIBRATE and self.context.skip_calibrate:
-                self.context.log("Stage 5 (CALIBRATE) skipped due to --skip-calibrate flag.")
-                result = _skipped_by_flag(FlowStage.CALIBRATE)
-                self.after_stage(stage, result)
-                self.save_checkpoint()
+                self._skip_calibration()
                 continue
 
             self.before_stage(stage)
@@ -372,19 +360,7 @@ class PipelineEngine:
             # Only Stage 4 (the review consensus halt before merge) may halt; no earlier stage waits for a human.
             if result.status == StageStatus.HALTED_FOR_HUMAN:
                 if stage == FlowStage.REVIEW:
-                    if self.context.auto_calibrate and not self.context.skip_calibrate:
-                        cal_stage = FlowStage.CALIBRATE
-                        self.before_stage(cal_stage)
-                        cal_result = self.timed_execute_stage(cal_stage)
-                        cal_result = rerun_calibration(self.context, cal_result, run_calibrate_stage)
-                        self.after_stage(cal_stage, cal_result)
-                        self.save_checkpoint()
-                    elif self.context.skip_calibrate:
-                        self.context.log("Stage 5 (CALIBRATE) skipped due to --skip-calibrate flag.")
-                        cal_result = _skipped_by_flag(FlowStage.CALIBRATE)
-                        self.after_stage(FlowStage.CALIBRATE, cal_result)
-                        self.save_checkpoint()
-
+                    self._calibrate_after_consensus_halt()
                 self.context.log(
                     f"Pipeline safely halted for human intervention at stage '{stage.value}'. "
                     "Halting execution without merging."
@@ -393,9 +369,26 @@ class PipelineEngine:
 
         return self.context.stage_results
 
+    def _calibrate_after_consensus_halt(self) -> None:
+        """Run Stage 5 (or record it as skipped by --skip-calibrate) after Stage 4 halted at consensus approval."""
+        if self.context.skip_calibrate:
+            self._skip_calibration()
+        elif self.context.auto_calibrate:
+            self.before_stage(FlowStage.CALIBRATE)
+            cal_result = self.timed_execute_stage(FlowStage.CALIBRATE)
+            cal_result = rerun_calibration(self.context, cal_result, run_calibrate_stage)
+            self.after_stage(FlowStage.CALIBRATE, cal_result)
+            self.save_checkpoint()
+
+    def _skip_calibration(self) -> None:
+        """Record Stage 5 as skipped by --skip-calibrate and checkpoint it."""
+        self.context.log("Stage 5 (CALIBRATE) skipped due to --skip-calibrate flag.")
+        self.after_stage(FlowStage.CALIBRATE, _skipped_by_flag(FlowStage.CALIBRATE))
+        self.save_checkpoint()
+
 
 def _skipped_by_flag(stage: FlowStage) -> StageResult:
-    """The result of Stage 4 or Stage 5 skipped by --skip-review or --skip-calibrate."""
+    """The result of Stage 5 skipped by --skip-calibrate."""
     return StageResult(stage=stage, status=StageStatus.SKIPPED, payload={"skipped_by_flag": True})
 
 

@@ -26,8 +26,8 @@ _STAGE_ORDER = (FlowStage.INTENT, FlowStage.PLAN, FlowStage.EXECUTE, FlowStage.R
 
 
 def _first_running_stage(context: FlowContext, start_stage: FlowStage) -> FlowStage | None:
-    """The first stage from ``start_stage`` on that is not skipped by --skip-review or --skip-calibrate."""
-    skipped = {FlowStage.REVIEW: context.skip_review, FlowStage.CALIBRATE: context.skip_calibrate}
+    """The first stage from ``start_stage`` on that is not skipped by --skip-calibrate."""
+    skipped = {FlowStage.CALIBRATE: context.skip_calibrate}
     for stage in _STAGE_ORDER[_STAGE_ORDER.index(start_stage) :]:
         if not skipped.get(stage):
             return stage

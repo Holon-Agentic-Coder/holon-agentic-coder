@@ -39,6 +39,11 @@ LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.checkpoint_discovery": "get_default_checkpoint_path",
     "sandbox_executor.flow.checkpoint_store": "CheckpointStore FileCheckpointStore",
     "sandbox_executor.flow.child_progress": "_child_intent_branch _sub_intent_depth",
+    "sandbox_executor.flow.conflict_classes": (
+        "ConflictClass ConflictSides classify_merge_conflicts classify_sides read_sides unmerged_stages"
+    ),
+    "sandbox_executor.flow.conflict_classes_lists": "appended_list_union",
+    "sandbox_executor.flow.conflict_classes_resolve": "MechanicalResolution resolve_mechanical resolve_path",
     "sandbox_executor.flow.constants": "CI_REGISTRATION_POLL_SECONDS CURRENT_CONTEXT_SCHEMA_VERSION",
     "sandbox_executor.flow.context": (
         "_SUMMARY_STATUS_WORDS FlowContext FlowStage StageResult StageStatus _support_legacy_repo_dir"
@@ -116,6 +121,7 @@ LAZY_EXPORTS: dict[str, str] = {
         "PLAN_REFRESH_KIND PlanRefresh plan_refresh_stage_failure record_plan_refresh refresh_already_recorded "
         "refresh_due refresh_payload refresh_plan_branch"
     ),
+    "sandbox_executor.flow.resume_guard": "resume_merge_error",
     "sandbox_executor.flow.review.head_test_evidence": ("HeadEvidenceDecisionInput choose_evidence has_pass_marker"),
     "sandbox_executor.flow.review_restart": (
         "approval_stands calibrate_with_review_restart is_review_restart stage5_merged_head_gate"
@@ -153,6 +159,18 @@ LAZY_EXPORTS: dict[str, str] = {
         "superseding_failure_row touch_set_replan_exhausted touch_set_replan_feedback touch_set_violation "
         "touch_set_violation_result"
     ),
+    "sandbox_executor.flow.target_probe": (
+        "TargetProbe TargetProbeError merge_tree_conflicts parse_merge_tree_paths probe_target"
+    ),
+    "sandbox_executor.flow.target_sync": "sync_with_target",
+    "sandbox_executor.flow.target_sync_merge": (
+        "abort_merge complete_merge merge_in_progress merge_target merge_verification_error unmerged_paths"
+    ),
+    "sandbox_executor.flow.target_sync_record": "append_sync_row superseded_sync_conflict sync_row",
+    "sandbox_executor.flow.target_sync_result": (
+        "CodeResolution CodeResolver SyncBoundary SyncRequest SyncResult fail_closed_code_resolver"
+    ),
+    "sandbox_executor.flow.target_sync_resume": "MergeAdoption adopt_merge_in_progress",
     "sandbox_executor.flow.worktree_checkpoints": "WorktreeCheckpoint read_worktree_checkpoint",
     "sandbox_executor.flow_guard": "SKIP_PUSH_DISPATCH_ERROR",
     "sandbox_executor.git": "run_git",

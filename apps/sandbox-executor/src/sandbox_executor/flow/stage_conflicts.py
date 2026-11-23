@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any
 
 from sandbox_executor.flow.git_refs import _resolve_branch_ref
 from sandbox_executor.flow.github.pr import check_pr_mergeability
 from sandbox_executor.flow.ledger_reconcile import ConflictResolutionError, _ledgers_with_conflict_markers
-from sandbox_executor.flow.stage_conflict_resolution import classify_conflicts, resolve_classified_conflicts
+from sandbox_executor.flow.stage_conflict_resolution import (
+    ConflictKind,
+    classify_conflicts,
+    resolve_classified_conflicts,
+)
+from sandbox_executor.flow.target_probe import merge_tree_conflicts
 from sandbox_executor.git import run_git
 
 logger = logging.getLogger(__name__)
@@ -72,25 +76,11 @@ def _probe_branch_ref(repo_dir: str, branch: str) -> str:
     return _resolve_branch_ref(repo_dir, branch, prefer_remote=False) or branch
 
 
-def _conflict_line_paths(line: str) -> list[str]:
-    """The path-like words of one ``git merge-tree`` conflict line."""
-    words = (word.strip(",:\"'") for word in line.split())
-    return [word for word in words if os.sep in word or "." in word]
-
-
-def _merge_tree_conflict_paths(output: str) -> list[str]:
-    """The paths ``git merge-tree`` output names on its conflict lines, in order and without duplicates."""
-    probed: list[str] = []
-    for line in output.splitlines():
-        if "CONFLICT" in line or line.startswith("changed in both"):
-            _append_new(probed, _conflict_line_paths(line))
-    return probed
-
-
 def _probe_upstream_conflicts(repo_dir: str, branch: str, target_branch: str) -> list[str]:
     """The paths ``git merge-tree`` reports conflicting when ``branch`` is not mergeable into ``target_branch``.
 
-    The probe is non-fatal: any failure is logged at DEBUG level and yields no paths.
+    The paths come from the structured ``merge-tree --name-only -z`` output (``target_probe.merge_tree_conflicts``);
+    the container never fetches. The probe is non-fatal: any failure is logged at DEBUG level and yields no paths.
     """
     try:
         merge_diag = check_pr_mergeability(repo_dir, branch=branch, target_branch=target_branch)
@@ -98,8 +88,7 @@ def _probe_upstream_conflicts(repo_dir: str, branch: str, target_branch: str) ->
             return []
         target_ref = _probe_target_ref(repo_dir, target_branch)
         branch_ref = _probe_branch_ref(repo_dir, branch)
-        mt_proc = run_git(["merge-tree", branch_ref, target_ref], cwd=repo_dir, check=False)
-        return _merge_tree_conflict_paths(_stdout_text(mt_proc))
+        return list(merge_tree_conflicts(repo_dir, branch_ref, target_ref))
     except Exception as exc:
         logger.debug("Non-fatal upstream mergeability probe in check_and_resolve_stage_conflicts: %s", exc)
         return []
@@ -142,7 +131,8 @@ def check_and_resolve_stage_conflicts(
     """Inspect and resolve stage merge conflicts proactively before stage execution.
 
     Three steps: ``detect_stage_conflicts`` collects the conflicting paths, ``classify_conflicts`` labels each one
-    (code conflict, ledger to resolve, deferred ledger) and ``resolve_classified_conflicts`` append-merges the ledgers.
+    (a ``conflict_classes`` class, or a deferred ledger) and ``resolve_classified_conflicts`` resolves the mechanical
+    ones: ledgers by pure append, the other mechanical classes through ``conflict_classes_resolve``.
 
     - Runs git status --porcelain to detect conflicting files, with isinstance(..., str) guards
       on stdout for test mock safety.
@@ -151,7 +141,7 @@ def check_and_resolve_stage_conflicts(
       branch does not exist yet).
     - A ledger counts as conflicted only when git reports it unmerged or a line starts with a conflict
       marker. Conflicted ledgers are resolved by pure append (``reconcile_ledger_file``) and never staged.
-    - If non-ledger code conflicts exist and cannot be cleanly resolved, raises ConflictResolutionError.
+    - If code conflicts (or a mechanical path whose resolver failed) remain, raises ConflictResolutionError.
 
     Args:
         repo_dir: Path to git repository.
@@ -164,22 +154,32 @@ def check_and_resolve_stage_conflicts(
             - status: str ('clean', 'resolved', 'conflict')
             - conflicting_files: list[str]
             - resolved_ledgers: list[str]
+            - resolved_paths: list[dict[str, str]] (``path`` and ``class`` of every resolved path)
             - stage: str
 
     Raises:
-        ConflictResolutionError: When unresolvable non-ledger conflicts exist.
+        ConflictResolutionError: When unresolvable conflicts remain.
     """
     detection = detect_stage_conflicts(repo_dir, target_branch, branch)
-    resolved_ledgers, unresolved = resolve_classified_conflicts(repo_dir, classify_conflicts(detection))
+    classified = classify_conflicts(detection, repo_dir)
+    resolved, unresolved = resolve_classified_conflicts(repo_dir, classified)
     if unresolved:
-        err_msg = f"Unresolvable merge conflicts detected in stage '{stage_name or 'unknown'}': {', '.join(unresolved)}"
-        raise ConflictResolutionError(err_msg)
+        raise ConflictResolutionError(_unresolved_message(classified, unresolved, stage_name))
 
+    kinds = dict(classified)
     return {
-        "status": "resolved" if resolved_ledgers else "clean",
+        "status": "resolved" if resolved else "clean",
         "conflicts_detected": bool(detection.conflicting_files),
         "resolved": not unresolved,
         "conflicting_files": detection.conflicting_files,
-        "resolved_ledgers": resolved_ledgers,
+        "resolved_ledgers": [path for path in resolved if kinds[path] is ConflictKind.LEDGER],
+        "resolved_paths": [{"path": path, "class": kinds[path].value} for path in resolved],
         "stage": stage_name,
     }
+
+
+def _unresolved_message(classified: list[tuple[str, ConflictKind]], unresolved: list[str], stage_name: str) -> str:
+    """The stage error; the paths are called code conflicts only when every one of them is ``CODE``."""
+    all_code = all(kind is ConflictKind.CODE for path, kind in classified if path in unresolved)
+    kind_word = "code" if all_code else "merge"
+    return f"Unresolvable {kind_word} conflicts detected in stage '{stage_name or 'unknown'}': {', '.join(unresolved)}"

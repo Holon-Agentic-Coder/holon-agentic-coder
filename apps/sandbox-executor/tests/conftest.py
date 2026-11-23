@@ -9,6 +9,7 @@ import pytest
 from sandbox_executor import cli
 from sandbox_executor.agent_defaults import detected_harness_markers
 from sandbox_executor.flow.admission import AdmissionDecision
+from sandbox_executor.launcher import env_files, mounts
 
 from tests import network_guard
 from tests.credential_env import CREDENTIAL_ENV_NAMES
@@ -111,7 +112,13 @@ def no_ambient_credentials(monkeypatch):
             continue
         if name in _AMBIENT_CREDENTIAL_NAMES or name.startswith(_AMBIENT_PREFIX):
             monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(cli, "find_github_token", lambda: os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN"))
+
+    def env_token() -> str | None:
+        return os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+
+    # The launcher module owns the name; the cli binding is the re-export that preflight and older callers reach.
+    monkeypatch.setattr(mounts, "find_github_token", env_token)
+    monkeypatch.setattr(cli, "find_github_token", env_token)
 
 
 @pytest.fixture(autouse=True)
@@ -142,6 +149,8 @@ def isolated_env_file_dir(tmp_path_factory, monkeypatch):
     """
     env_dir = tmp_path_factory.mktemp("env-files")
     os.chmod(env_dir, 0o700)
+    # The launcher module owns the name; preflight still reaches it through the cli re-export.
+    monkeypatch.setattr(env_files, "env_file_dir", lambda: str(env_dir))
     monkeypatch.setattr(cli, "env_file_dir", lambda: str(env_dir))
     return env_dir
 

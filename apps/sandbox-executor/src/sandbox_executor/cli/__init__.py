@@ -6,18 +6,15 @@ import contextlib
 import importlib.metadata
 import logging
 import os
-import re
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
-import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, TextIO
-from urllib.parse import urlparse
 
 from sandbox_executor import git_flow, local_llm
 from sandbox_executor.agent_defaults import (
@@ -45,8 +42,6 @@ from sandbox_executor.agent_runner import (
 from sandbox_executor.budgets import stage_budget_handdown_env
 from sandbox_executor.calibration import run_calibrate
 from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES, resolve_claude_credential
-from sandbox_executor.cli.antigravity_mounts import antigravity_session_mounts
-from sandbox_executor.cli.pi_mounts import get_pi_mounts
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 from sandbox_executor.flow import (
     SKIP_PUSH_DISPATCH_ERROR,
@@ -68,6 +63,71 @@ from sandbox_executor.knowledge import (
 )
 from sandbox_executor.knowledge.consult import format_consult_results_table
 from sandbox_executor.knowledge.stats import format_stats_dashboard
+from sandbox_executor.launcher.env_files import (
+    _ENV_FILE_STALE_SECONDS as _ENV_FILE_STALE_SECONDS,
+)
+from sandbox_executor.launcher.env_files import (
+    ENV_FILE_PREFIX as ENV_FILE_PREFIX,
+)
+from sandbox_executor.launcher.env_files import (
+    env_file_dir,
+    is_secret_env_item,
+    sweep_stale_env_files,
+    write_env_file,
+)
+from sandbox_executor.launcher.messages import (
+    _URL_DELIMITER_SPLIT_RE as _URL_DELIMITER_SPLIT_RE,
+)
+from sandbox_executor.launcher.messages import (
+    _URL_ENV_NAME_RE as _URL_ENV_NAME_RE,
+)
+from sandbox_executor.launcher.messages import (
+    _url_env_credential_parts as _url_env_credential_parts,
+)
+from sandbox_executor.launcher.messages import print_encodable, redact_cli_error
+from sandbox_executor.launcher.mounts import (
+    BLOCKED_METADATA_HOSTS,
+    build_network_isolation_args,
+    find_github_token,
+    get_agent_session_mounts,
+)
+from sandbox_executor.launcher.mounts import (
+    SINKHOLE_IP as SINKHOLE_IP,
+)
+from sandbox_executor.launcher.mounts import (
+    antigravity_session_mounts as antigravity_session_mounts,
+)
+from sandbox_executor.launcher.mounts import (
+    get_pi_mounts as get_pi_mounts,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    CONTAINER_CA_BUNDLE_PATH as CONTAINER_CA_BUNDLE_PATH,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    CONTAINER_CA_DIR as CONTAINER_CA_DIR,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    MITM_PROXY_CA_DIR,
+    PROXY_ATTACH_TIMEOUT_SECONDS,
+    PROXY_CONNECT_TIMEOUT_SECONDS,
+    PROXY_LISTEN_PORT,
+    _build_proxy_envs,
+    _ca_mount_args,
+    _ensure_network,
+    _find_git_root,
+    _gateway_host_args,
+    _mitm_proxy_ca_paths,
+    _proxy_gateway_url,
+    _proxy_host_port,
+    _published_loopback_port,
+    _run_docker,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    NO_PROXY_HOSTS as NO_PROXY_HOSTS,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _container_ca_path as _container_ca_path,
+)
 from sandbox_executor.ledger import format_query_results_table, query_ledger
 from sandbox_executor.naming import MissingTickerError, ticker_for
 from sandbox_executor.preflight import (
@@ -78,14 +138,20 @@ from sandbox_executor.preflight import (
 )
 from sandbox_executor.redaction import (
     COMMAND_ECHO_ENV_NAMES,
-    carries_url_password,
-    is_secret_env_name,
     redact_agent_secrets,
     redact_command,
     redact_env_literals,
-    starts_with_url_authority,
     trusted_url_authority,
     url_userinfo_end,
+)
+from sandbox_executor.redaction import (
+    carries_url_password as carries_url_password,
+)
+from sandbox_executor.redaction import (
+    is_secret_env_name as is_secret_env_name,
+)
+from sandbox_executor.redaction import (
+    starts_with_url_authority as starts_with_url_authority,
 )
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 from sandbox_executor.scaffold import init_project
@@ -127,21 +193,6 @@ def configure_cli_logging() -> None:
         package_logger.setLevel(logging.INFO)
 
 
-# Directory the Root CA certificate is mounted into inside the sandbox. The sandbox image runs as
-# the unprivileged `holon` user, so update-ca-certificates can never run there; the entrypoint
-# instead concatenates this mount with the image's system bundle into CONTAINER_CA_BUNDLE_PATH.
-CONTAINER_CA_DIR = "/usr/local/share/ca-certificates"
-# Merged trust bundle (image system roots + Holon Root CA) materialised by the sandbox entrypoint.
-# SSL_CERT_FILE / REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE REPLACE the trust store of the clients that
-# read them, so they must point here and never at the single-cert Holon mount.
-CONTAINER_CA_BUNDLE_PATH = "/home/holon/.holon-ca-bundle.crt"
-# Loopback tooling and link-local metadata endpoints must never be force-proxied.
-NO_PROXY_HOSTS = "localhost,127.0.0.1,::1,169.254.169.254"
-# mitmproxy loads its signing CA from this directory inside the sidecar image.
-MITM_PROXY_CA_DIR = "/home/mitmproxy/.mitmproxy"
-PROXY_LISTEN_PORT = 8080
-PROXY_ATTACH_TIMEOUT_SECONDS = 3.0
-PROXY_CONNECT_TIMEOUT_SECONDS = 0.5
 _TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
 _EXPLICIT_OPT_OUT_VALUES = {"0", "false", "no", "off"}
 
@@ -234,297 +285,6 @@ class _SidecarState:
 
 _sidecar_state = _SidecarState()
 
-BLOCKED_METADATA_HOSTS: list[str] = [
-    "169.254.169.254",
-    "metadata.google.internal",
-    "instance-data",
-]
-SINKHOLE_IP: str = "127.0.0.1"
-
-
-def build_network_isolation_args(
-    token_reduce: bool = False,
-    network_mode: str | None = None,
-) -> list[str]:
-    """Construct Docker CLI arguments enforcing container network isolation and egress controls.
-
-    Drops NET_RAW capability to prevent packet sniffing and port scanning, and sinkholes cloud
-    metadata endpoints to 127.0.0.1.
-    If network_mode is provided and token_reduce is False, sets --network.
-    When token_reduce is True, container network routing is managed by the proxy sidecar.
-
-    Args:
-        token_reduce: Whether token reduction proxy network is active.
-        network_mode: Optional Docker network mode (e.g. bridge, host) when token_reduce is False.
-
-    Returns:
-        List of Docker CLI argument strings.
-    """
-    args = [
-        "--cap-drop=ALL",
-        "--security-opt=no-new-privileges",
-    ]
-
-    for host in BLOCKED_METADATA_HOSTS:
-        args.extend(["--add-host", f"{host}:{SINKHOLE_IP}"])
-
-    if network_mode and not token_reduce:
-        args.extend(["--network", network_mode])
-
-    return args
-
-
-def find_github_token() -> str | None:
-    """Auto-detect GitHub token from environment variables or gh CLI."""
-    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
-    if token:
-        return token
-    if shutil.which("gh"):
-        try:
-            res = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True)
-            if res.returncode == 0 and res.stdout.strip():
-                return res.stdout.strip()
-        except Exception as e:
-            logger.debug("Failed to retrieve token via gh CLI: %s", e)
-    return None
-
-
-def get_agent_session_mounts(agent_id: str) -> list[str]:
-    """Auto-detect and construct session mounts for supported agents."""
-    mounts = []
-    home = os.path.expanduser("~")
-
-    # Handle Antigravity specific mounts
-    if agent_id.lower() in ("antigravity", "antigravity-agent"):
-        dedicated_session = os.getenv(
-            "HOLON_ANTIGRAVITY_SESSION_DIR",
-            os.path.join(home, ".holon", "sessions", "antigravity"),
-        )
-
-        # If HOLON_AGENT_KEY is supplied, session mount is optional
-        has_key = bool(os.getenv("HOLON_AGENT_KEY"))
-
-        # Prefer ~/.holon/sessions/antigravity, then fall back to host ~/.gemini/antigravity-cli
-        if os.path.exists(dedicated_session):
-            return antigravity_session_mounts(dedicated_session)
-
-        # On macOS, ~/.holon/sessions/antigravity is required if not using HOLON_AGENT_KEY
-        if sys.platform == "darwin" and not has_key:
-            print(
-                "Error: Missing Antigravity sandbox session directory on macOS.\n"
-                f"The session directory '{dedicated_session}' does not exist.\n\n"
-                "Please initialise the Antigravity session in an interactive TTY by running:\n\n"
-                f"  mkdir -p {dedicated_session}\n"
-                "  docker run -it "
-                f"-v {dedicated_session}:/home/holon/.gemini/antigravity-cli:rw holon/agent-antigravity agy\n\n"
-                "After completing interactive authentication, rerun this command.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        host_agy_cli = os.path.join(home, ".gemini", "antigravity-cli")
-        if os.path.exists(host_agy_cli):
-            return antigravity_session_mounts(host_agy_cli)
-
-        return mounts
-
-    session_mapping = {
-        "claude": [
-            (os.path.join(home, ".config/claude"), "/home/holon/.config/claude"),
-        ],
-        "codex": [
-            (os.path.join(home, ".codex"), "/home/holon/.codex"),
-        ],
-    }
-
-    norm_agent_id = local_llm.normalize_agent_id(agent_id)
-    dirs = session_mapping.get(norm_agent_id, [])
-    # In host-local model mode the container receives a generated agent directory whose base URLs are reachable from it,
-    # so the host's own provider config is deliberately not mounted.
-    if norm_agent_id == "pi":
-        return mounts if local_llm.local_llm_requested() else get_pi_mounts(home)
-    for host_path, container_path in dirs:
-        if os.path.exists(host_path):
-            mounts.extend(["-v", f"{host_path}:{container_path}:ro"])
-            if norm_agent_id == "codex" and container_path == "/home/holon/.codex":
-                mounts.extend(["--tmpfs", "/home/holon/.codex/log:uid=1000,gid=1000"])
-                mounts.extend(["--tmpfs", "/home/holon/.codex/cache:uid=1000,gid=1000"])
-
-    return mounts
-
-
-def _run_docker(*args: str) -> subprocess.CompletedProcess[str]:
-    """Run a docker command without raising, capturing stdout/stderr for diagnostics."""
-    try:
-        return subprocess.run(
-            ["docker", *args],
-            capture_output=True,
-            text=True,
-            check=False,
-            env={**os.environ, "DOCKER_CLI_HINTS": "false"},
-        )
-    except OSError as e:
-        return subprocess.CompletedProcess(args=["docker", *args], returncode=127, stdout="", stderr=str(e))
-
-
-def _container_ca_path(ca_cert_path: str) -> str:
-    """Map a host Root CA path onto its read-only in-container location."""
-    return f"{CONTAINER_CA_DIR}/{os.path.basename(ca_cert_path)}"
-
-
-def _ca_mount_args(ca_cert_path: str) -> list[str]:
-    """Docker args mounting the host Root CA certificate read-only into the sandbox."""
-    return ["-v", f"{ca_cert_path}:{_container_ca_path(ca_cert_path)}:ro"]
-
-
-def _build_proxy_envs(ca_cert_path: str, proxy_url: str) -> dict[str, str]:
-    """Env vars that route the sandbox through ``proxy_url`` and make it trust the Holon Root CA.
-
-    ``NODE_EXTRA_CA_CERTS`` *augments* Node's built-in roots, so it may point straight at the
-    read-only Holon CA mount. ``SSL_CERT_FILE`` / ``REQUESTS_CA_BUNDLE`` / ``CURL_CA_BUNDLE``
-    *replace* the trust store, so they point at the merged bundle the sandbox entrypoint writes at
-    startup (system roots + Holon CA). Pointing them at the single-cert mount would make every
-    legitimate HTTPS endpoint (github.com, api.openai.com, the agent's own LLM) fail verification.
-    """
-    container_ca = _container_ca_path(ca_cert_path)
-    return {
-        "HTTP_PROXY": proxy_url,
-        "HTTPS_PROXY": proxy_url,
-        # curl and many CLIs only ever read the lowercase spellings.
-        "http_proxy": proxy_url,
-        "https_proxy": proxy_url,
-        "NO_PROXY": NO_PROXY_HOSTS,
-        "no_proxy": NO_PROXY_HOSTS,
-        "NODE_EXTRA_CA_CERTS": container_ca,
-        "SSL_CERT_FILE": CONTAINER_CA_BUNDLE_PATH,
-        "REQUESTS_CA_BUNDLE": CONTAINER_CA_BUNDLE_PATH,
-        # CURL_CA_BUNDLE is honoured by `requests`, not by the curl binary itself.
-        "CURL_CA_BUNDLE": CONTAINER_CA_BUNDLE_PATH,
-    }
-
-
-def _mitm_proxy_ca_paths(ca_cert_path: str, ca_key_path: str) -> tuple[str, str]:
-    """Materialise the mitmproxy CA pair under ``~/.holon/proxy-ca`` and return the host paths.
-
-    A MITM proxy inherently requires the CA **private key**: without it the sidecar cannot sign the
-    forged leaf certificates that make interception work, and it would fall back to its own
-    ephemeral CA that the sandbox does not trust. Exposure is therefore narrowed to exactly two
-    files (combined key+cert and cert-only) mounted read-only into ``/home/mitmproxy/.mitmproxy``.
-    The private key is never mounted into the *agent* container, which only receives the public
-    certificate.
-    """
-    ca_dir = os.path.join(os.path.expanduser(os.path.join("~", ".holon")), "proxy-ca")
-    os.makedirs(ca_dir, exist_ok=True)
-    os.chmod(ca_dir, 0o700)  # this directory holds the CA private key
-
-    combined_path = os.path.join(ca_dir, "mitmproxy-ca.pem")
-    cert_only_path = os.path.join(ca_dir, "mitmproxy-ca-cert.pem")
-
-    with open(ca_cert_path) as cert_handle:
-        cert_blob = cert_handle.read()
-    with open(ca_key_path) as key_handle:
-        key_blob = key_handle.read()
-
-    # Created with 0o600 up front so the combined key+cert file is never world-readable, whatever
-    # the caller's umask is, and re-chmodded in case a previous run left a looser mode behind.
-    fd = os.open(combined_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as handle:
-        handle.write(f"{key_blob}{cert_blob}")
-    os.chmod(combined_path, 0o600)
-
-    shutil.copyfile(ca_cert_path, cert_only_path)
-    os.chmod(cert_only_path, 0o644)
-
-    return combined_path, cert_only_path
-
-
-def _proxy_gateway_url(port: int = PROXY_LISTEN_PORT) -> str:
-    """URL of a proxy listening on the Docker host, correct for the current platform.
-
-    ``172.17.0.1`` is the Linux bridge gateway only; Docker Desktop (macOS/Windows) does not route
-    it, so ``host.docker.internal`` is used there instead.
-    """
-    if sys.platform in ("darwin", "win32"):
-        return f"http://host.docker.internal:{port}"
-    return f"http://172.17.0.1:{port}"
-
-
-def _gateway_host_args() -> list[str]:
-    """Docker args that make ``host.docker.internal`` resolvable on Linux."""
-    if sys.platform in ("darwin", "win32"):
-        return []
-    return ["--add-host", "host.docker.internal:host-gateway"]
-
-
-def _proxy_host_port(proxy_url: str) -> tuple[str, int] | None:
-    """Split a proxy URL into ``(host, port)``; None when it cannot be parsed.
-
-    The userinfo is removed first with the shared `redaction.url_userinfo_end` rule, so a password
-    holding a raw `/`, `?` or `#` is never read as the host or port. A port that is not a valid
-    integer makes the URL unparseable (None) rather than raising, because `urlparse`'s `ValueError`
-    quotes the offending text, while the callers' "not a valid proxy URL" messages never echo the value.
-    """
-    url = proxy_url if starts_with_url_authority(proxy_url) else f"//{proxy_url}"
-    head, sep, rest = url.partition("//")
-    at = url_userinfo_end(rest)
-    parsed = urlparse(head + sep + (rest[at + 1 :] if at is not None else rest))
-    try:
-        port = parsed.port
-    except ValueError:
-        return None
-    if not parsed.hostname:
-        return None
-    return parsed.hostname, port or PROXY_LISTEN_PORT
-
-
-_URL_ENV_NAME_RE = re.compile(r"(?:URL|URI|PROXY)$", re.IGNORECASE)
-_URL_DELIMITER_SPLIT_RE = re.compile(r"[/?#]")
-
-
-def _url_env_credential_parts() -> set[str]:
-    """Return the userinfo credential of every URL-valued environment variable, whole and in pieces.
-
-    A parse error can quote only the part of a password before its first raw `/`, `?` or `#`, which
-    no shape-based redactor recognises, so each delimiter-separated piece of at least 4 characters
-    is returned alongside the whole credential.
-    """
-    parts: set[str] = set()
-    for name, value in os.environ.items():
-        if not value or not _URL_ENV_NAME_RE.search(name):
-            continue
-        url = value if starts_with_url_authority(value) else f"//{value}"
-        rest = url.partition("//")[2]
-        at = url_userinfo_end(rest)
-        if at is None:
-            continue
-        userinfo = rest[:at]
-        user, colon, password = userinfo.partition(":")
-        credential = password if colon else user
-        for piece in (userinfo, credential, *_URL_DELIMITER_SPLIT_RE.split(credential)):
-            if len(piece) >= 4:
-                parts.add(piece)
-    return parts
-
-
-def redact_cli_error(message: object) -> str:
-    """Redact an exception message before a top-level CLI handler prints or logs it.
-
-    Applies `redact_agent_secrets`, then masks the userinfo credential of every URL-valued
-    environment variable (and each piece of it between raw URL delimiters), so a parse error that
-    quotes part of a configured password, such as `urlparse`'s "Port could not be cast" message,
-    cannot echo it.
-
-    Args:
-        message: The exception (or any object) whose string form is printed.
-
-    Returns:
-        The redacted message.
-    """
-    text = redact_agent_secrets(str(message))
-    for part in sorted(_url_env_credential_parts(), key=len, reverse=True):
-        text = text.replace(part, "*******")
-    return text
-
 
 def detect_holon_coherence(token_reduce: bool = False) -> bool:  # noqa: C901, PLR0911, PLR0912
     """Detect whether holon-coherence proxy is available or explicitly requested.
@@ -612,50 +372,6 @@ def _token_reduce_opt_in(token_reduce: bool = False) -> bool:
     if env_reduce in _TRUTHY_ENV_VALUES:
         return True
     return os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES
-
-
-def _ensure_network(network_name: str) -> bool:
-    """Create a per-run bridge network; returns True when THIS run created it."""
-    result = _run_docker("network", "create", network_name)
-    stderr = (result.stderr or "").strip()
-    if result.returncode == 0:
-        return True
-    logger.debug("docker network create %s exited %s: %s", network_name, result.returncode, stderr)
-    if "already exists" in stderr.lower():
-        return False
-    raise RuntimeError(f"could not create Docker network '{network_name}': {stderr or 'unknown docker error'}")
-
-
-def _published_loopback_port(container_name: str) -> int | None:
-    """Read the host loopback port Docker published for the sidecar's proxy port."""
-    result = _run_docker("port", container_name, f"{PROXY_LISTEN_PORT}/tcp")
-    if result.returncode != 0:
-        logger.debug("docker port %s exited %s: %s", container_name, result.returncode, (result.stderr or "").strip())
-        return None
-    for line in (result.stdout or "").splitlines():
-        candidate = line.strip().rsplit(":", 1)[-1]
-        if candidate.isdigit():
-            return int(candidate)
-    return None
-
-
-def _find_git_root(start_dir: str | None = None) -> str:
-    """Walk upwards to the nearest directory containing .git, or fall back to start_dir / getcwd.
-
-    Each walk ends at the filesystem root, so the search always terminates.
-    """
-    for base in (start_dir, os.getcwd(), os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
-        if not base:
-            continue
-        cur = os.path.abspath(base)
-        while True:
-            if os.path.exists(os.path.join(cur, ".git")):
-                return cur
-            parent = os.path.dirname(cur)
-            if parent == cur:
-                break
-            cur = parent
-    return os.path.abspath(start_dir or os.getcwd())
 
 
 def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict[str, str]]:  # noqa: C901, PLR0912, PLR0915
@@ -1029,95 +745,6 @@ def get_host_proxy_envs() -> dict[str, str]:
     return envs
 
 
-# Credential env-files live in an owner-only directory, apart from ~/.holon/tmp itself, which also
-# holds directories that are bind-mounted into the container.
-ENV_FILE_PREFIX = "holon-env-"
-_ENV_FILE_STALE_SECONDS = 24 * 60 * 60
-
-
-def env_file_dir() -> str:
-    """Return the directory for temporary credential env-files, creating it owner-only (0700).
-
-    Returns:
-        The absolute path of `~/.holon/tmp/env-files`. Looser permission bits on an existing
-        directory are tightened back to 0700.
-    """
-    path = os.path.expanduser(os.path.join("~", ".holon", "tmp", "env-files"))
-    os.makedirs(path, mode=0o700, exist_ok=True)
-    if os.stat(path).st_mode & 0o077:
-        os.chmod(path, 0o700)
-    return path
-
-
-def sweep_stale_env_files(directory: str, max_age_seconds: float = _ENV_FILE_STALE_SECONDS) -> None:
-    """Best-effort removal of credential env-files left behind by a killed run.
-
-    Args:
-        directory: The env-file directory to sweep.
-        max_age_seconds: Files whose modification time is older than this are removed.
-    """
-    cutoff = time.time() - max_age_seconds
-    try:
-        entries = os.listdir(directory)
-    except OSError:
-        return
-    for name in entries:
-        if not name.startswith(ENV_FILE_PREFIX):
-            continue
-        path = os.path.join(directory, name)
-        try:
-            if os.path.getmtime(path) < cutoff:
-                os.remove(path)
-                logger.debug("Removed stale credential env-file %s", path)
-        except OSError as exc:
-            logger.debug("Could not sweep env-file %s: %s", path, exc)
-
-
-def write_env_file(env: dict[str, str]) -> str:
-    """Write credential variables to a new 0600 docker `--env-file`, one `KEY=VALUE` line each.
-
-    Docker reads the file on the client side and applies no quoting, so a value containing a line
-    break would be cut short or smuggle in a second variable; such values are rejected.
-
-    Args:
-        env: The variables to write, which are emitted in sorted key order.
-
-    Returns:
-        The path of the new file. The caller owns it and must remove it.
-
-    Raises:
-        ValueError: If a value contains a line break. The message names the key, never the value.
-    """
-    for key, value in env.items():
-        if "\n" in value or "\r" in value:
-            raise ValueError(f"the value of {key} contains a line break and cannot be passed to the container")
-    fd, path = tempfile.mkstemp(prefix=ENV_FILE_PREFIX, dir=env_file_dir())
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.writelines(f"{key}={value}\n" for key, value in sorted(env.items()))
-    except BaseException:
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(path)
-        raise
-    return path
-
-
-def is_secret_env_item(key: str, value: str) -> bool:
-    """Decide whether a container variable must travel in the 0600 `--env-file`, not on the argv.
-
-    Args:
-        key: The variable name.
-        value: The variable value.
-
-    Returns:
-        True for a credential-bearing name, a `KEY=VALUE` item the command redactor would mask, or a
-        value with a URL password (a proxy URL in any scheme, or none), whatever its name.
-    """
-    item = f"{key}={value}"
-    return is_secret_env_name(key) or redact_command([item]) != item or carries_url_password(value)
-
-
 def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
     role: str,
     image_name: str,
@@ -1353,22 +980,6 @@ def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
                 runner.cleanup_ephemeral_credentials()
         except Exception:
             pass
-
-
-def print_encodable(text: str, file: TextIO | None = None) -> None:
-    """``print(text, file=file)`` that cannot raise ``UnicodeEncodeError``.
-
-    Characters the stream's encoding cannot represent (a lone surrogate, a non-UTF-8 byte that ``os.environ`` decoded
-    with ``surrogateescape``, or non-ASCII text on an ASCII terminal) are written backslash-escaped; text the stream
-    can encode is written unchanged.
-    """
-    stream = sys.stdout if file is None else file
-    encoding = getattr(stream, "encoding", None) or "utf-8"
-    try:
-        text = text.encode(encoding, "backslashreplace").decode(encoding)
-    except LookupError:
-        text = text.encode("ascii", "backslashreplace").decode("ascii")
-    print(text, file=stream)
 
 
 def _doctor_section_failed(section: str, exc: BaseException) -> str:

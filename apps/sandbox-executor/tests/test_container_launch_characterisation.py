@@ -8,6 +8,7 @@ included), the sorted `--env-file` lines and the exit code, after run-specific p
 """
 
 import io
+import logging
 import os
 import re
 import shutil
@@ -71,6 +72,8 @@ def launch_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(sys, "stdin", io.StringIO())
+    # An earlier test may have run `configure_cli_logging`, whose handler would add INFO lines to stderr.
+    monkeypatch.setattr(logging.getLogger("sandbox_executor"), "handlers", [])
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}" if name == "docker" else None)
     state: dict[str, Any] = {"runs": [], "env_files": [], "tmp": str(tmp_path), "worktree_calls": []}
 
@@ -204,9 +207,9 @@ EXPECTED: dict[str, Launch] = {
         code=0,
         docker_runs=[_argv(_PLANNER_CLAUDE_ARGV)],
         env_file_lines=[
-            "ANTHROPIC_API_KEY=sk-ant-api03-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-            "GITHUB_TOKEN=ghp_A1b2C3d4A1b2C3d4A1b2C3d4A1b2C3d4A1b2C3d4",
-            "HOLON_MIRROR_URL=https://holon:s3cretPassw0rd@mirror.example/repo",
+            f"ANTHROPIC_API_KEY={CLAUDE_API_KEY}",
+            f"GITHUB_TOKEN={GITHUB_TOKEN}",
+            f"HOLON_MIRROR_URL=https://holon:{URL_PASSWORD}@mirror.example/repo",
         ],
         stdout=_executing(_PLANNER_CLAUDE_ARGV),
         stderr="",
@@ -214,7 +217,7 @@ EXPECTED: dict[str, Launch] = {
     "executor_result_file": Launch(
         code=0,
         docker_runs=[_argv(_EXECUTOR_RESULT_FILE_ARGV)],
-        env_file_lines=["GITHUB_TOKEN=ghp_A1b2C3d4A1b2C3d4A1b2C3d4A1b2C3d4A1b2C3d4"],
+        env_file_lines=[f"GITHUB_TOKEN={GITHUB_TOKEN}"],
         stdout=_executing(_EXECUTOR_RESULT_FILE_ARGV),
         stderr="",
     ),
@@ -256,7 +259,7 @@ EXPECTED: dict[str, Launch] = {
     "pi_local_llm": Launch(
         code=0,
         docker_runs=[_argv(_PI_LOCAL_LLM_ARGV)],
-        env_file_lines=["GITHUB_TOKEN=ghp_A1b2C3d4A1b2C3d4A1b2C3d4A1b2C3d4A1b2C3d4"],
+        env_file_lines=[f"GITHUB_TOKEN={GITHUB_TOKEN}"],
         stdout=_executing(_PI_LOCAL_LLM_ARGV),
         stderr="",
     ),
@@ -278,11 +281,11 @@ EXPECTED: dict[str, Launch] = {
         code=0,
         docker_runs=[_argv(_TOKEN_REDUCE_ATTACH_ARGV)],
         env_file_lines=[
-            "HOLON_PROXY_URL=http://proxy:s3cretPassw0rd@proxy.example:3128",
-            "HTTPS_PROXY=http://proxy:s3cretPassw0rd@proxy.example:3128",
-            "HTTP_PROXY=http://proxy:s3cretPassw0rd@proxy.example:3128",
-            "http_proxy=http://proxy:s3cretPassw0rd@proxy.example:3128",
-            "https_proxy=http://proxy:s3cretPassw0rd@proxy.example:3128",
+            f"HOLON_PROXY_URL=http://proxy:{URL_PASSWORD}@proxy.example:3128",
+            f"HTTPS_PROXY=http://proxy:{URL_PASSWORD}@proxy.example:3128",
+            f"HTTP_PROXY=http://proxy:{URL_PASSWORD}@proxy.example:3128",
+            f"http_proxy=http://proxy:{URL_PASSWORD}@proxy.example:3128",
+            f"https_proxy=http://proxy:{URL_PASSWORD}@proxy.example:3128",
         ],
         stdout=_executing(_TOKEN_REDUCE_ATTACH_ARGV),
         stderr="",

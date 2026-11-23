@@ -30,6 +30,7 @@ from urllib.parse import urlsplit
 
 import pytest
 from sandbox_executor import cli, local_llm
+from sandbox_executor.launcher import env_files
 
 FRAGMENT_LEN = 4
 _LETTERS = "FGJQVZ"
@@ -490,7 +491,7 @@ def test_env_file_path_sharing_a_part_run_is_not_a_leak(monkeypatch, tmp_path_fa
     parts = _colliding_parts()
     env_dir = tmp_path_factory.mktemp(f"env-{parts[0][:FRAGMENT_LEN].lower()}")
     os.chmod(env_dir, 0o700)
-    monkeypatch.setattr(cli, "env_file_dir", lambda: str(env_dir))
+    monkeypatch.setattr(env_files, "env_file_dir", lambda: str(env_dir))
     value = DELIMITER_FORMS["http"].format(c="[".join(parts))
     _, docker, _, _, echo = _run_delimiter_case(value)
     _assert_collision_forced(docker.argv, echo, str(env_dir), parts[0])

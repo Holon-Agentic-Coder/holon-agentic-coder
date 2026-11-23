@@ -26,6 +26,7 @@ from sandbox_executor.cli import (
     setup_token_reduction_proxy,
     teardown_token_reduction_proxy,
 )
+from sandbox_executor.launcher import proxy_paths
 from sandbox_executor.token_reduction import ca_generator
 from sandbox_executor.token_reduction.ca_generator import generate_root_ca
 
@@ -124,6 +125,18 @@ class FakeDocker:
 
     def joined(self) -> str:
         return "\n".join(" ".join(call) for call in self.calls)
+
+
+# Every launcher module that spawns docker (or the cli code still holding a launch path) owns its own `subprocess`
+# binding, so a fake docker replaces each of them.
+_DOCKER_MODULES = (cli, proxy_paths)
+
+
+def _fake_docker_runs(monkeypatch: pytest.MonkeyPatch, run) -> None:
+    """Route every docker invocation of the sidecar and launch code through `run`."""
+    fake_subprocess = SimpleNamespace(run=run)
+    for module in _DOCKER_MODULES:
+        monkeypatch.setattr(module, "subprocess", fake_subprocess)
 
 
 @pytest.fixture(autouse=True)
@@ -283,7 +296,7 @@ def test_ca_generator_detects_poisoned_cache(tmp_path):
 def test_setup_proxy_addon_missing_raises_file_not_found(host_paths, monkeypatch):
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: False)
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    _fake_docker_runs(monkeypatch, fake)
 
     with pytest.raises(FileNotFoundError) as excinfo:
         setup_token_reduction_proxy()
@@ -295,7 +308,7 @@ def test_setup_proxy_addon_missing_raises_file_not_found(host_paths, monkeypatch
 def test_setup_proxy_spawn_failure_raises_and_injects_no_dead_proxy(host_paths, monkeypatch):
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
     fake = FakeDocker(spawn=_completed(returncode=125, stderr="docker: error: image not found"))
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    _fake_docker_runs(monkeypatch, fake)
 
     with pytest.raises(RuntimeError) as excinfo:
         setup_token_reduction_proxy()
@@ -320,7 +333,7 @@ def test_setup_proxy_spawn_failure_redacts_dashboard_credentials(host_paths, mon
         f"error: invalid option web_password={pw_sample}\nbad value {pw_sample}"
     )
     fake = FakeDocker(spawn=_completed(returncode=1, stderr=stderr))
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    _fake_docker_runs(monkeypatch, fake)
 
     with pytest.raises(RuntimeError) as excinfo:
         setup_token_reduction_proxy(mitm_web=True)
@@ -335,7 +348,7 @@ def test_setup_proxy_readiness_failure_raises_without_proxy_envs(host_paths, mon
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
     monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: False)
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    _fake_docker_runs(monkeypatch, fake)
 
     with pytest.raises(RuntimeError) as excinfo:
         setup_token_reduction_proxy()
@@ -349,7 +362,7 @@ def test_setup_proxy_readiness_failure_raises_without_proxy_envs(host_paths, mon
 def test_setup_proxy_missing_published_port_raises(host_paths, monkeypatch):
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
     fake = FakeDocker(port_stdout="")
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    _fake_docker_runs(monkeypatch, fake)
 
     with pytest.raises(RuntimeError) as excinfo:
         setup_token_reduction_proxy()
@@ -361,7 +374,7 @@ def test_setup_proxy_success_mounts_only_narrow_ro_cache(host_paths, monkeypatch
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
     monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    _fake_docker_runs(monkeypatch, fake)
 
     mounts, envs = setup_token_reduction_proxy()
 
@@ -408,7 +421,7 @@ def test_setup_proxy_network_already_exists_is_not_owned(host_paths, monkeypatch
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
     monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker(network_stderr="Error response from daemon: network with name x already exists")
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    _fake_docker_runs(monkeypatch, fake)
 
     setup_token_reduction_proxy()
 
@@ -420,7 +433,7 @@ def test_setup_proxy_network_already_exists_is_not_owned(host_paths, monkeypatch
 
 def test_teardown_is_noop_when_this_run_created_nothing(monkeypatch):
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    _fake_docker_runs(monkeypatch, fake)
 
     teardown_token_reduction_proxy()
 
@@ -602,7 +615,7 @@ def _stub_run_preconditions(monkeypatch, teardowns: list[bool]) -> None:
 def test_run_docker_container_tears_down_sidecar_on_early_return(monkeypatch, tmp_path):
     teardowns: list[bool] = []
     _stub_run_preconditions(monkeypatch, teardowns)
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=lambda *a, **k: pytest.fail("docker must not run")))
+    _fake_docker_runs(monkeypatch, lambda *a, **k: pytest.fail("docker must not run"))
 
     rc = cli.run_docker_container(
         "intent-creator",
@@ -634,7 +647,7 @@ def test_run_docker_container_tears_down_sidecar_when_body_raises(monkeypatch):
 def test_run_docker_container_tears_down_sidecar_after_the_run(monkeypatch):
     teardowns: list[bool] = []
     _stub_run_preconditions(monkeypatch, teardowns)
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=lambda *a, **k: _completed(returncode=7)))
+    _fake_docker_runs(monkeypatch, lambda *a, **k: _completed(returncode=7))
 
     assert cli.run_docker_container("planner", "holon/agent-pi", [], agent_id="pi") == 7
     assert teardowns == [True]
@@ -2520,7 +2533,7 @@ def test_cli_mitm_web_configuration(host_paths, monkeypatch):
     monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli.socket.socket, "connect_ex", lambda *args, **kwargs: 1)
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    _fake_docker_runs(monkeypatch, fake)
 
     setup_token_reduction_proxy(mitm_web=True)
     run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
@@ -2597,7 +2610,7 @@ def test_cli_mitm_web_custom_port(host_paths, monkeypatch):
     monkeypatch.setattr(cli.socket.socket, "connect_ex", lambda *args, **kwargs: 1)
     monkeypatch.setenv("HOLON_MITM_WEB_PORT", "9090")
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    _fake_docker_runs(monkeypatch, fake)
 
     setup_token_reduction_proxy(mitm_web=True)
     run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
@@ -2783,7 +2796,7 @@ def test_cli_directory_permissions_0o775_and_socket_conflict(host_paths, monkeyp
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
     monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    _fake_docker_runs(monkeypatch, fake)
 
     # Test permissions 0o775
     setup_token_reduction_proxy(mitm_web=False)
@@ -2942,7 +2955,7 @@ def test_setup_token_reduction_proxy_chmod_oserror_fallback(host_paths, monkeypa
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
     monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    _fake_docker_runs(monkeypatch, fake)
 
     # Must complete without raising OSError
     mounts, envs = setup_token_reduction_proxy(mitm_web=False)
@@ -3352,7 +3365,7 @@ def test_setup_token_reduction_proxy_relative_paths(host_paths, monkeypatch):
     monkeypatch.setattr(cli.os.path, "isfile", lambda path: True)
     monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    _fake_docker_runs(monkeypatch, fake)
 
     setup_token_reduction_proxy(mitm_web=False)
     teardown_token_reduction_proxy()
@@ -3412,7 +3425,7 @@ def test_mitm_web_password_support(host_paths, monkeypatch):
     monkeypatch.setattr(cli, "_wait_for_proxy", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli.socket.socket, "connect_ex", lambda *args, **kwargs: 1)
     fake = FakeDocker()
-    monkeypatch.setattr(cli, "subprocess", SimpleNamespace(run=fake))
+    _fake_docker_runs(monkeypatch, fake)
 
     setup_token_reduction_proxy(mitm_web=True)
     teardown_token_reduction_proxy()

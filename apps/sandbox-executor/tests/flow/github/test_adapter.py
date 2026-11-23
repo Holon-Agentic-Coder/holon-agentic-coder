@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from sandbox_executor.flow.github import adapter as adapter_module
 from sandbox_executor.flow.github import adapter_runner
-from sandbox_executor.flow.github.adapter import GitHubAdapter
+from sandbox_executor.flow.github.adapter import GitHubAdapter, merge_argv
 
 from tests.gh_write_guard import GhWriteBlockedError
 
@@ -159,31 +159,27 @@ def test_merge_runner_turns_a_missing_binary_into_a_127_process():
     assert proc.returncode == 127 and TOKEN not in proc.stderr
 
 
-def test_view_pr_and_default_branch_parse_gh_json():
-    run = RecordingRun((0, json.dumps({"number": 7}), ""), (0, json.dumps({"defaultBranchRef": {"name": " dev "}}), ""))
+def test_pr_head_sha_reads_head_ref_oid_or_none():
+    run = RecordingRun((0, json.dumps({"headRefOid": "abc"}), ""), (1, "", "boom"), (0, "not json", ""))
     github = _adapter(run)
-    assert github.view_pr("7", "number") == {"number": 7}
-    assert github.default_branch() == "dev"
-    assert run.calls[0][0] == ["gh", "pr", "view", "7", "--json", "number"]
-    assert run.calls[1][0] == ["gh", "repo", "view", "--json", "defaultBranchRef"]
-    failing = _adapter(RecordingRun((1, "", "boom"), (0, "not json", "")))
-    assert failing.view_pr("7", "number") is None
-    assert failing.default_branch() is None
+    assert github.pr_head_sha("7", 10) == "abc"
+    assert run.calls[0][0] == ["gh", "pr", "view", "7", "--json", "headRefOid"]
+    assert run.calls[0][1]["timeout"] == 10 and run.calls[0][1]["env"]["HTTP_PROXY"] == PROXY["HTTP_PROXY"]
+    assert github.pr_head_sha("7") is None
+    assert github.pr_head_sha("7") is None
+    assert github.pr_head_sha("") is None and len(run.calls) == 3
+    assert _adapter(RecordingRun(), which=lambda _: None).pr_head_sha("7") is None
 
 
 @pytest.mark.parametrize("flag", ["--merge", "--squash"])
-def test_merge_pr_builds_the_match_head_commit_argv(flag):
-    run = RecordingRun()
-    _adapter(run).merge_pr(5, flag, "abc")
-    assert run.calls[0][0] == ["gh", "pr", "merge", "5", flag, "--match-head-commit", "abc"]
+def test_merge_argv_builds_the_match_head_commit_argv(flag):
+    assert merge_argv(5, flag, "abc") == ["pr", "merge", "5", flag, "--match-head-commit", "abc"]
 
 
 @pytest.mark.parametrize(("flag", "sha"), [("--rebase", "abc"), ("--auto", "abc"), ("--admin", "abc"), ("--merge", "")])
-def test_merge_pr_refuses_other_flags_without_spawning(flag, sha):
-    run = RecordingRun()
+def test_merge_argv_refuses_other_flags(flag, sha):
     with pytest.raises(ValueError):
-        _adapter(run).merge_pr(5, flag, sha)
-    assert run.calls == []
+        merge_argv(5, flag, sha)
 
 
 @pytest.mark.parametrize(
@@ -191,7 +187,7 @@ def test_merge_pr_refuses_other_flags_without_spawning(flag, sha):
     [
         lambda a: a.post_review("1", "--approve", "report"),
         lambda a: a.post_comment("1", "report"),
-        lambda a: a.merge_pr(1, "--merge", "abc"),
+        lambda a: a.gh(merge_argv(1, "--merge", "abc")),
     ],
 )
 def test_adapter_writes_still_reach_the_suite_write_guard(write, gh_write_guard: list[str]):

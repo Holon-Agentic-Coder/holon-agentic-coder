@@ -2,7 +2,7 @@
 
 ``FakeGitHub`` has the adapter's public methods and parameter names and returns the adapter's own ``GhResult``, so a
 shape drift fails loudly. Every call is recorded in ``calls`` as ``(method, args)``. It spawns nothing; the merge
-primitives delegate to an optional ``cli`` backend, any ``GhRunner`` (typically ``tests.flow.fake_gh.FakeGitHub``
+runner ``gh`` delegates to an optional ``cli`` backend, any ``GhRunner`` (typically ``tests.flow.fake_gh.FakeGitHub``
 imported as ``GhCliFake``), which simulates real merges over a bare origin.
 """
 
@@ -12,7 +12,6 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from sandbox_executor.flow.github.adapter import ALLOWED_MERGE_FLAGS, parse_gh_json
 from sandbox_executor.flow.github.adapter_runner import GH_MISSING, GhResult
 
 if TYPE_CHECKING:
@@ -43,7 +42,8 @@ class FakeGitHub:
     ``prs`` maps a head branch to its open PR number (an edit); any other branch is created as ``create_number``.
     ``checks`` is the ``gh pr checks`` payload, None for "no checks reported", or a scripted result. ``views`` are the
     successive ``gh pr view`` mergeability payloads (or scripted results); ``review_results`` the successive
-    ``post_review`` outcomes, default success. ``open_error`` makes the PR lookup fail to run.
+    ``post_review`` outcomes, default success. ``head_sha`` answers ``pr_head_sha``. ``open_error`` makes the PR lookup
+    fail to run.
     """
 
     available: bool = True
@@ -56,6 +56,7 @@ class FakeGitHub:
     views: list[dict[str, Any] | Scripted] = field(default_factory=list)
     review_results: list[Scripted] = field(default_factory=list)
     comment_result: Scripted = (0, "comment posted", "")
+    head_sha: str | None = None
     cli: GhRunner | None = None
     repo_dir: str = "/fake/repo"
     calls: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
@@ -118,27 +119,13 @@ class FakeGitHub:
         """Answer ``gh pr comment`` with ``comment_result``."""
         return self._call("post_comment", target, body) or _result(self.comment_result)
 
+    def pr_head_sha(self, target: str, timeout: float = 60) -> str | None:
+        """Answer ``gh pr view <target> --json headRefOid`` with ``head_sha``."""
+        return None if self._call("pr_head_sha", target, timeout) or not target else self.head_sha
+
     def gh(self, args: list[str], cwd: str | None = None) -> subprocess.CompletedProcess[str]:
         """Pass ``gh <args>`` to the ``cli`` backend (the merge runner)."""
         self.calls.append(("gh", (list(args), cwd)))
         if self.cli is None:
             raise AssertionError(f"FakeGitHub has no cli backend for gh {args}")
         return self.cli(list(args), cwd or self.repo_dir)
-
-    def view_pr(self, pr: str, fields: str) -> dict[str, Any] | None:
-        """``gh pr view <pr> --json <fields>`` through ``gh``."""
-        data = parse_gh_json(self.gh(["pr", "view", str(pr), "--json", fields]).stdout)
-        return data if isinstance(data, dict) else None
-
-    def default_branch(self) -> str | None:
-        """``gh repo view --json defaultBranchRef`` through ``gh``."""
-        data = parse_gh_json(self.gh(["repo", "view", "--json", "defaultBranchRef"]).stdout)
-        ref = data.get("defaultBranchRef") if isinstance(data, dict) else None
-        name = ref.get("name") if isinstance(ref, dict) else None
-        return name.strip() if isinstance(name, str) and name.strip() else None
-
-    def merge_pr(self, number: int | str, flag: str, head_sha: str) -> subprocess.CompletedProcess[str]:
-        """``gh pr merge <number> <flag> --match-head-commit <head_sha>``, refusing what the adapter refuses."""
-        if flag not in ALLOWED_MERGE_FLAGS or not head_sha:
-            raise ValueError(f"refusing gh pr merge with flag {flag!r} and head {head_sha!r}")
-        return self.gh(["pr", "merge", str(number), flag, "--match-head-commit", head_sha])

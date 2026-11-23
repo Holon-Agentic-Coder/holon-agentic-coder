@@ -64,7 +64,7 @@ _LAZY_EXPORTS: dict[str, str] = {
         "_origin_has_branch _read_ledger_rows _resolve_branch_ref _resolve_review_commit _snapshot_child_branches "
         "_sync_local_execution_refs _track_local_branch fast_forward_local_branch"
     ),
-    "sandbox_executor.flow.github.adapter": "GitHubAdapter parse_gh_json",
+    "sandbox_executor.flow.github.adapter": "GitHubAdapter merge_argv parse_gh_json",
     "sandbox_executor.flow.github.adapter_runner": "GhResult gh_env spawn_gh",
     "sandbox_executor.flow.github.ci": (
         "CI_REGISTRATION_TIMEOUT_ENV_VAR CI_REGISTRATION_TIMEOUT_SECONDS _wait_for_ci_registration probe_ci_checks "
@@ -428,6 +428,7 @@ __all__ = [
     "local_in_flight_flows",
     "local_tests_ci_status",
     "lookup_merge_flag",
+    "merge_argv",
     "merge_branch_detailed",
     "merge_findings",
     "merge_tree_verdict",

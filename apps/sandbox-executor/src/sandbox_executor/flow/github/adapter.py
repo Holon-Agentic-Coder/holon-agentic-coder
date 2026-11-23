@@ -1,5 +1,6 @@
 """The repository-scoped GitHub adapter: the only ``flow/github`` module that spawns ``gh`` for PR create/update, CI
-checks, mergeability, review and comment posting, and the guarded merge's ``gh`` runner.
+checks, mergeability, PR head lookups, review and comment posting, and the guarded merge's ``gh`` runner (whose
+``gh pr merge`` argv only :func:`merge_argv` builds).
 
 Each method is a thin argv builder over one spawn (:func:`.adapter_runner.spawn_gh`), with the timeouts of the call
 sites it replaced: 60 seconds for PR views, edits, creates, reviews and comments, the caller's timeout for
@@ -131,24 +132,21 @@ class GitHubAdapter:
         result = spawn_gh(self._runner(), args, cwd or self.repo_dir, MERGE_TIMEOUT_SECONDS, env)
         return subprocess.CompletedProcess(["gh", *args], result.returncode, result.stdout, result.stderr)
 
-    def view_pr(self, pr: str, fields: str) -> dict[str, Any] | None:
-        """Return the ``gh pr view <pr> --json <fields>`` object, or None when it cannot be read."""
-        data = parse_gh_json(self.gh(["pr", "view", str(pr), "--json", fields]).stdout)
-        return data if isinstance(data, dict) else None
+    def pr_head_sha(self, target: str, timeout: float = PR_TIMEOUT_SECONDS) -> str | None:
+        """The ``headRefOid`` of ``gh pr view <target> --json headRefOid``, or None when it cannot be read."""
+        if not target:
+            return None
+        result = self._gh(["pr", "view", target, "--json", "headRefOid"], timeout)
+        data = parse_gh_json(result.stdout) if result.ok else None
+        return (str(data.get("headRefOid") or "") or None) if isinstance(data, dict) else None
 
-    def default_branch(self) -> str | None:
-        """Return the repository default branch from ``gh repo view``, or None on any failure (never a guess)."""
-        data = parse_gh_json(self.gh(["repo", "view", "--json", "defaultBranchRef"]).stdout)
-        ref = data.get("defaultBranchRef") if isinstance(data, dict) else None
-        name = ref.get("name") if isinstance(ref, dict) else None
-        return name.strip() if isinstance(name, str) and name.strip() else None
 
-    def merge_pr(self, number: int | str, flag: str, head_sha: str) -> subprocess.CompletedProcess[str]:
-        """``gh pr merge <number> <flag> --match-head-commit <head_sha>``; refuses any flag but merge or squash.
+def merge_argv(number: int | str, flag: str, head_sha: str) -> list[str]:
+    """The ``gh pr merge <number> <flag> --match-head-commit <head_sha>`` argv; refuses any flag but merge or squash.
 
-        Raises:
-            ValueError: ``flag`` is not ``--merge`` or ``--squash``, or ``head_sha`` is empty.
-        """
-        if flag not in ALLOWED_MERGE_FLAGS or not head_sha:
-            raise ValueError(f"refusing gh pr merge with flag {flag!r} and head {head_sha!r}")
-        return self.gh(["pr", "merge", str(number), flag, "--match-head-commit", head_sha])
+    Raises:
+        ValueError: ``flag`` is not ``--merge`` or ``--squash``, or ``head_sha`` is empty.
+    """
+    if flag not in ALLOWED_MERGE_FLAGS or not head_sha:
+        raise ValueError(f"refusing gh pr merge with flag {flag!r} and head {head_sha!r}")
+    return ["pr", "merge", str(number), flag, "--match-head-commit", head_sha]

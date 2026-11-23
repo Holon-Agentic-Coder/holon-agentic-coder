@@ -396,7 +396,7 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
   otherwise (see
   [Entropy Budget and Decomposition Evaluation](executor/execution_architecture_specification.md#5-entropy-budget-and-decomposition-evaluation)).
 
-The guarantee has these deliberate limits:
+The guarantee has five deliberate limits:
 
 - **No fabricated plans.** If no planner agent produced `plans/I-.../P-*.md` on a plan branch under the intent branch,
   Stage 2 fails; the flow never writes a plan from a template.
@@ -432,25 +432,7 @@ The guarantee has these deliberate limits:
 - **Dispatch needs `origin`.** `--dry-run` validates the payload and names the branches without dispatching anything.
   `--skip-push` is rejected outside `--dry-run` -- on every run, including a `--from-stage` or `--checkpoint` resume
   from any stage -- before any stage runs, because the host fetches from and pushes to `origin` for the role containers,
-  Stage 4 opens the PR from the `origin` execution branch and Stage 5 pushes the `/calibrated` branch.
-- **Token scope pre-flight.** GitHub refuses a push that changes `.github/workflows/**` from a token without the
-  `workflow` scope, and the host only pushes after the executor has run. So when the plan's touch set or the intent's
-  declared `scope` names a path that is or may match a workflow file (`.github/workflows/ci.yml`, `.github/**`, `**`),
-  Stage 3 reads the token's scopes right after its dry-run and `--skip-push` checks (`flow/stages/token_scope_guard.py`,
-  `flow/github/token_scopes.py`). A token whose `X-OAuth-Scopes` header lacks `workflow`, or no token at all, fails the
-  stage before admission, the plan refresh and the executor container (`dispatched: false`, `token_scope: "missing"`,
-  `workflow_paths`), naming `gh auth refresh -h github.com -s workflow` (or `gh auth login -h github.com -s workflow`).
-  A fine-grained, app or user-to-server token, or a failed scope request, is unverifiable: the stage logs a note and
-  goes on. The check runs only when the worktree's remote pushes over HTTPS to github.com (`git remote get-url --push`);
-  an SSH push is authorised by the host's key, not the token, so it is skipped with a note. Plans that touch no workflow
-  path make no request. The token value is never logged or put in an error.
-- **A refused push keeps the commits.** When the host's Stage 3 push is refused, every new execution branch's tip is
-  pinned under `refs/holon/recovery/<execution id>` in the worktree's repository, so it survives worktree removal and
-  branch deletion, and a fast-forward-only push to `origin` `holon-recovery/<execution id>` is attempted (it succeeds
-  for a refusal tied to the branch name, not for one tied to the commits' content, such as the missing `workflow`
-  scope). The stage error names each ref and the republish command
-  (`git push origin refs/holon/recovery/<execution id>:refs/heads/<execution branch>`), plus the refresh command for a
-  workflow-scope refusal; the payload carries `recovery_refs` and `recovery_pushed` (`flow/execution_recovery.py`).
+  Stage 4 opens the PR from `origin`, Stage 5 pushes `/calibrated` ([push checks](executor/stage3_push_safeguards.md)).
 - **Unmeasured tests are never a pass.** The executor container runs `uv run task test` after the agent's turn and
   before the execution commit, and records `test_pass_rate`, the counts, `test_exit_code` and any `test_run_error` in
   its `executions.jsonl` summary row (bounded by `HOLON_TEST_MEASUREMENT_TIMEOUT_SECONDS`, default 900). Stage 3 carries

@@ -21,6 +21,7 @@ from sandbox_executor.ledger import parse_commit_trailers
 from tests.flow.github.fake_github import FakeGitHub, spawn_failure
 from tests.flow.helpers import _git, _init_mergeability_repo
 from tests.flow.lookup_patch import patch_lookup_sites
+from tests.flow.sleep_patch import scoped_sleep_patch
 
 # The local git path: gh is missing, so mergeability is decided by git merge-tree.
 NO_GH = FakeGitHub(available=False)
@@ -87,7 +88,7 @@ class TestReviewMergeabilityGuards:
         unknown = {"number": 7, "mergeable": "UNKNOWN", "mergeStateStatus": "UNKNOWN", "statusCheckRollup": []}
         clean = {"number": 7, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "statusCheckRollup": []}
         github = FakeGitHub(views=[unknown, (0, "", ""), clean])
-        with patch("sandbox_executor.flow.github.pr.time.sleep") as sleep:
+        with scoped_sleep_patch("sandbox_executor.flow.github.pr") as sleep:
             res = check_pr_mergeability(".", "my-branch", "main", github=github)
         assert github.methods() == ["mergeability"] * 3
         assert sleep.call_count == 1

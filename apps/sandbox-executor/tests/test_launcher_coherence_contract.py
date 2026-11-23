@@ -73,3 +73,9 @@ def test_in_container_dashboard_binds_all_interfaces_on_the_requested_port():
 def test_dashboard_password_env_is_the_one_holon_coherence_reads():
     assert f'os.getenv("{COHERENCE_WEB_PASSWORD_ENV}")' in _source("commands/web_token.py")
     assert "resolve_pwd(" in _in_container_branch()
+
+
+def test_sidecar_does_not_stream_large_bodies():
+    # Documented posture: `start` cannot take mitmproxy options, so large bodies are buffered (see _sidecar_command).
+    assert "stream_large_bodies" not in " ".join(_sidecar_command(_plan(mitm_web=True)))
+    assert "stream_large_bodies" not in _in_container_branch()

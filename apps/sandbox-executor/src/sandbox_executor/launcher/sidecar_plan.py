@@ -178,6 +178,8 @@ def _sidecar_command(plan: _SidecarPlan) -> list[str]:
             "-v",
             f"{plan.host_wire_log_dir}:/tmp/wire_logs",
             plan.image,
+            # `start` accepts no mitmproxy `--set`, so the old `stream_large_bodies=1m` is gone: the 256m-capped proxy
+            # now buffers whole bodies. Accepted in the plan; pinned by test_launcher_coherence_contract.
             "start",
             "--port",
             str(PROXY_LISTEN_PORT),

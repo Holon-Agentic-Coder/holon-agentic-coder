@@ -18,6 +18,7 @@ from sandbox_executor import cli, local_llm, token_reduction
 from sandbox_executor.agent_runner import get_runner
 from sandbox_executor.launcher import proxy_paths, sidecar
 
+from tests.env_file_capture import DockerEnvFileRecorder
 from tests.leak_assertions import assert_no_fragment, make_probe
 
 
@@ -416,7 +417,7 @@ class TestLauncherIntegration(unittest.TestCase):
         }
         with (
             patch("shutil.which", side_effect=lambda name: "/usr/bin/docker" if name == "docker" else None),
-            patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
+            patch("subprocess.run", side_effect=(docker := DockerEnvFileRecorder())) as mock_run,
             patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", side_effect=mounts or (lambda _: [])),
             patch.object(cli.git_flow, "sandbox_worktree_mounts", return_value=[]),
             patch.object(sidecar, "get_token_reduction_mounts_and_envs", return_value=([], dict(tr_envs or {}))),
@@ -432,6 +433,8 @@ class TestLauncherIntegration(unittest.TestCase):
                 token_reduce=token_reduce,
             )
         args = mock_run.call_args[0][0] if mock_run.called else []
+        self.assertFalse(any(a.startswith("HOLON_") for a in args))  # every HOLON_* item goes in the env-file
+        self.forwarded = docker.env_files[-1] if docker.env_files else {}
         return code, args, mock_rmtree
 
     def test_gateway_host_mapping_is_added_to_every_run(self):
@@ -479,10 +482,9 @@ class TestLauncherIntegration(unittest.TestCase):
             "HOLON_LOCAL_MODELS": "qwen3:test",
             "HOLON_LOCAL_PROVIDER": "vmlx",
         }
-        code, args, _ = self._run(env)
+        code, _args, _ = self._run(env)
         self.assertEqual(code, 0)
-        self.assertIn("-e", args)
-        self.assertIn("HOLON_AGENT_PROVIDER=vmlx", args)
+        self.assertEqual(self.forwarded["HOLON_AGENT_PROVIDER"], "vmlx")
 
     def test_local_provider_defaults_to_local_when_unset(self):
         env = {
@@ -491,10 +493,9 @@ class TestLauncherIntegration(unittest.TestCase):
             "HOLON_LOCAL_MODELS": "qwen3:test",
         }
         with patch.object(local_llm, "host_models_json", return_value=None):
-            code, args, _ = self._run(env)
+            code, _args, _ = self._run(env)
         self.assertEqual(code, 0)
-        self.assertIn("-e", args)
-        self.assertIn("HOLON_AGENT_PROVIDER=local", args)
+        self.assertEqual(self.forwarded["HOLON_AGENT_PROVIDER"], "local")
 
     def test_host_models_json_named_provider_aligns_agent_provider(self):
         host_config = {
@@ -506,10 +507,9 @@ class TestLauncherIntegration(unittest.TestCase):
             }
         }
         with patch.object(local_llm, "host_models_json", return_value=host_config):
-            code, args, _ = self._run({"HOLON_LOCAL_LLM": "1"})
+            code, _args, _ = self._run({"HOLON_LOCAL_LLM": "1"})
         self.assertEqual(code, 0)
-        self.assertEqual(args.count("HOLON_AGENT_PROVIDER=vmlx"), 1)
-        self.assertNotIn("HOLON_AGENT_PROVIDER=local", args)
+        self.assertEqual(self.forwarded["HOLON_AGENT_PROVIDER"], "vmlx")
 
     def test_multiple_local_providers_without_local_or_env_fails(self):
         host_config = {
@@ -531,9 +531,9 @@ class TestLauncherIntegration(unittest.TestCase):
             }
         }
         with patch.object(local_llm, "host_models_json", return_value=host_config):
-            code, args, _ = self._run({"HOLON_LOCAL_LLM": "1"})
+            code, _args, _ = self._run({"HOLON_LOCAL_LLM": "1"})
         self.assertEqual(code, 0)
-        self.assertEqual(args.count("HOLON_AGENT_PROVIDER=local"), 1)
+        self.assertEqual(self.forwarded["HOLON_AGENT_PROVIDER"], "local")
 
     def test_multiple_local_providers_with_env_provider_disambiguates(self):
         host_config = {
@@ -543,9 +543,9 @@ class TestLauncherIntegration(unittest.TestCase):
             }
         }
         with patch.object(local_llm, "host_models_json", return_value=host_config):
-            code, args, _ = self._run({"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_PROVIDER": "ollama"})
+            code, _args, _ = self._run({"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_PROVIDER": "ollama"})
         self.assertEqual(code, 0)
-        self.assertEqual(args.count("HOLON_AGENT_PROVIDER=ollama"), 1)
+        self.assertEqual(self.forwarded["HOLON_AGENT_PROVIDER"], "ollama")
 
     def test_agent_id_normalization_accepts_agent_pi(self):
         env = {

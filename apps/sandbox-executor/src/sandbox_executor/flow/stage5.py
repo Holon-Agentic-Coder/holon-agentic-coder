@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from sandbox_executor.calibration import LEDGER_EXECUTIONS_REL, CalibrationFormatError
+from sandbox_executor.calibration import LEDGER_EXECUTIONS_REL, CalibrationFormatError, CalibrationSelfCheckError
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.github.ci_reverify import approved_head_of
 from sandbox_executor.flow.stage5_ledger import recorded_verdicts
@@ -142,8 +142,9 @@ def run_stage5(
 ) -> Stage5Outcome:
     """Run Stage 5: calibrate, then reconcile and commit, then promote and commit.
 
-    ``LedgerRewriteError`` and ``CalibrationFormatError`` always propagate. Any other calibration exception goes to
-    ``steps.on_calibrate_error`` when set (its fallback report is used and nothing is committed), else re-raises.
+    ``LedgerRewriteError``, ``CalibrationFormatError`` and ``CalibrationSelfCheckError`` always propagate. Any other
+    calibration exception goes to ``steps.on_calibrate_error`` when set (its fallback report is used and nothing is
+    committed), else re-raises.
     ``report_only`` stops after the calibration report; a None ``verdict`` (CLI only) skips reconciliation and
     promotion.
     """
@@ -160,7 +161,7 @@ def run_stage5(
         context.calibrated_branch = report.calibrated_branch
         outcome.report_dict = report.to_dict()
         outcome.calibration_succeeded = True
-    except (LedgerRewriteError, CalibrationFormatError):
+    except (LedgerRewriteError, CalibrationFormatError, CalibrationSelfCheckError):
         raise
     except Exception as e:
         if steps.on_calibrate_error is None:

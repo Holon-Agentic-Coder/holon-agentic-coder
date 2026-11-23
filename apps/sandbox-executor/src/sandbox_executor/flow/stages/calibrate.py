@@ -13,11 +13,13 @@ from typing import Any
 from sandbox_executor.calibration import (
     LEDGER_EXECUTIONS_REL,
     CalibrationFormatError,
+    CalibrationSelfCheckError,
     calibration_commit_env,
     format_calibration_report,
     record_calibration_action,
     run_calibrate,
 )
+from sandbox_executor.calibration_self_check import FALLBACK_REPORT_MARKER
 from sandbox_executor.flow.calibrate_promotion import _commit_stage5_promoted_artifacts
 from sandbox_executor.flow.calibrate_sync import (
     CalibrationSyncError,
@@ -126,7 +128,7 @@ def _fallback_report(context: FlowContext, exc: Exception, calibrated_created: b
     fallback_report_written = not os.path.exists(report_path)
     if fallback_report_written:
         with open(report_path, "w", encoding="utf-8") as f:
-            f.write(f"# Calibration Report for {plan_id}\n\nFallback calibration generated.\n")
+            f.write(f"# Calibration Report for {plan_id}\n\n{FALLBACK_REPORT_MARKER}\n")
     try:
         format_calibration_report(report_rel, repo_dir)
     except Exception as fmt_exc:
@@ -173,6 +175,33 @@ def _prepare_execution_branch(context: FlowContext, start_time: str) -> tuple[St
     return None, start_sha, calibrated_created
 
 
+def _fail_closed(
+    context: FlowContext,
+    start_time: str,
+    calibrated_created: bool,
+    exc: CalibrationFormatError | CalibrationSelfCheckError,
+) -> StageResult:
+    """FAILED for a report that failed the Prettier check or its self-check: nothing is committed, pushed or
+    fast-forwarded, and the checkpoint stays at CALIBRATE."""
+    discard_empty_calibrated_branch(context, calibrated_created)
+    if isinstance(exc, CalibrationSelfCheckError):
+        return _stage_failure(
+            context,
+            FlowStage.CALIBRATE,
+            start_time,
+            f"Calibrate stage failed: the calibration report self-check found {', '.join(exc.conditions)}, "
+            "so nothing was committed or pushed.",
+            self_check_conditions=list(exc.conditions),
+        )
+    return _stage_failure(
+        context,
+        FlowStage.CALIBRATE,
+        start_time,
+        "Calibrate stage failed: the calibration report did not pass the repository Prettier check, "
+        f"so nothing was committed or pushed. {redact_agent_secrets(str(exc))}",
+    )
+
+
 def _calibrate_execution_branch(context: FlowContext) -> StageResult:
     """Execute Stage 5: Post-Execution Calibration.
 
@@ -207,16 +236,8 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:
         outcome = run_stage5(context, stage5_steps(on_calibrate_error), verdict)
     except LedgerRewriteError:
         raise
-    except CalibrationFormatError as e:
-        # Fail closed: the report and ledger stay uncommitted and nothing is pushed or fast-forwarded.
-        discard_empty_calibrated_branch(context, calibrated_created)
-        return _stage_failure(
-            context,
-            FlowStage.CALIBRATE,
-            start_time,
-            "Calibrate stage failed: the calibration report did not pass the repository Prettier check, "
-            f"so nothing was committed or pushed. {redact_agent_secrets(str(e))}",
-        )
+    except (CalibrationFormatError, CalibrationSelfCheckError) as e:
+        return _fail_closed(context, start_time, calibrated_created, e)
     report_dict = outcome.report_dict
     calibration_succeeded = outcome.calibration_succeeded
     promoted_candidates = outcome.promoted_candidates

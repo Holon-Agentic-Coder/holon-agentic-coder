@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, TypedDict, Unpack
+from typing import Any, Unpack
 
 from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL
 from sandbox_executor.calibration_diff import (
@@ -50,6 +50,8 @@ from sandbox_executor.calibration_predicted import (
     select_plans_row,
 )
 from sandbox_executor.calibration_rows import is_execution_row
+from sandbox_executor.calibration_self_check import CalibrateReview, enforce_report_self_check
+from sandbox_executor.calibration_self_check import CalibrationSelfCheckError as CalibrationSelfCheckError
 from sandbox_executor.calibration_touch_set import touch_set_metrics, touch_set_report_lines
 from sandbox_executor.git import METADATA_PATH_PREFIXES as METADATA_PATH_PREFIXES
 from sandbox_executor.git import is_metadata_path, run_git
@@ -75,16 +77,6 @@ PRETTIER_TIMEOUT_SECONDS = 120
 PRETTIER_OUTPUT_LINES = 5
 # Bounded write/check passes: Markdown output is not always a fixpoint after a single Prettier write.
 PRETTIER_PASSES = 3
-
-
-class CalibrateReview(TypedDict, total=False):
-    """What Stage 4 established about the execution head, passed to ``run_calibrate`` by keyword.
-
-    ``approved_head`` is the commit the review approval covered (``approved_head_of``); None (the CLI) skips the
-    self-check's approved-head condition.
-    """
-
-    approved_head: str | None
 
 
 class CalibrationCommitError(RuntimeError):
@@ -226,6 +218,10 @@ class CalibrationReport:
     merge_base_sha: str | None = None
     merged_commit_count: int = 0
     touch_set: dict[str, Any] | None = None
+    diff_base: str | None = None
+    # Self-check inputs, not serialised: the counted (non-metadata) paths and the ledger summary rows read.
+    changed_paths: list[str] | None = None
+    summary_records: list[dict[str, Any]] = dataclasses.field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -251,6 +247,7 @@ class CalibrationReport:
             "merge_base_sha": self.merge_base_sha,
             "merged_commit_count": self.merged_commit_count,
             "touch_set": self.touch_set,
+            "diff_base": self.diff_base,
         }
 
 
@@ -780,7 +777,7 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     best_record = latest_summary_row([r for r in matching if is_execution_row(r, execution_id)])
 
     if best_record is not None:
-        exec_meta = best_record
+        exec_meta = dict(best_record)
         # An integrated decomposed parent (its children merged into the plan branch, then the plan branch into the
         # execution branch) is a successful run: its superseding row carries no exit_code.
         converged = is_converged_record(best_record)
@@ -882,6 +879,7 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
         2,
     )
     exec_meta["ssa_obs"] = ssa_obs
+    exec_meta["summary_records"] = records
 
     lambda_p, mu_p = load_metrics_physics(target_worktree)
     cost_effort = round(actual.cost + (lambda_p * actual.entropy) - (mu_p * actual.learning_value), 2)
@@ -1296,6 +1294,9 @@ def generate_calibration(  # noqa: C901, PLR0915
         merge_base_sha=merge_base_sha,
         merged_commit_count=merged_commit_count,
         touch_set=report_dict["touch_set"],
+        diff_base=report_dict["diff_base"],
+        changed_paths=exec_meta.get("changed_paths"),
+        summary_records=exec_meta.get("summary_records") or [],
     )
 
 
@@ -1535,8 +1536,12 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
         CalibrationFormatError: If the report fails the repository Prettier check (or the check
             cannot run) when ``skip_commit`` is False. Raised before the ACT-CAL ledger append and
             any ``git add`` or ``git commit``, so nothing is recorded, committed or pushed.
+        CalibrationSelfCheckError: If the report fails its self-check (``calibration_self_check``).
+            Raised before any branch checkout, report write, ledger append or commit.
     """
     report = generate_calibration(execution_branch, target_worktree=target_worktree)
+    # Fail closed before any branch, file or commit is touched
+    enforce_report_self_check(report, target_worktree, review.get("approved_head"), log_fn)
     report.committed = not skip_commit
     if skip_commit:
         report.calibrated_branch = None

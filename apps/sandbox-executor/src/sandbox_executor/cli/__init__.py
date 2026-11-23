@@ -2,18 +2,15 @@
 """Host wrapper CLI for running Holon Docker sandbox roles (intent, plan, execute)."""
 
 import argparse
-import contextlib
 import importlib.metadata
 import logging
 import os
-import shutil
-import subprocess
 import sys
-import tempfile
 from collections.abc import Mapping
 from typing import Any, TextIO
 
-from sandbox_executor import git_flow, local_llm
+from sandbox_executor import git_flow as git_flow
+from sandbox_executor import local_llm
 from sandbox_executor.agent_defaults import (
     AGENT_IMAGE_MAPPING as AGENT_IMAGE_MAPPING,  # re-exported: the mapping moved to agent_defaults
 )
@@ -30,15 +27,24 @@ from sandbox_executor.agent_defaults import (
     resolve_model,
 )
 from sandbox_executor.agent_runner import (
-    HOST_WORKTREE_ROLES,
-    INTENT_CREATOR_ROLE,
-    RETIRED_ENV_VARS,
-    SANDBOX_UV_ENV,
-    SANDBOX_WORKSPACE_MOUNT,
+    HOST_WORKTREE_ROLES as HOST_WORKTREE_ROLES,
 )
-from sandbox_executor.budgets import stage_budget_handdown_env
+from sandbox_executor.agent_runner import (
+    INTENT_CREATOR_ROLE,
+)
+from sandbox_executor.agent_runner import (
+    RETIRED_ENV_VARS as RETIRED_ENV_VARS,
+)
+from sandbox_executor.agent_runner import (
+    SANDBOX_UV_ENV as SANDBOX_UV_ENV,
+)
+from sandbox_executor.agent_runner import (
+    SANDBOX_WORKSPACE_MOUNT as SANDBOX_WORKSPACE_MOUNT,
+)
+from sandbox_executor.budgets import stage_budget_handdown_env as stage_budget_handdown_env
 from sandbox_executor.calibration import run_calibrate
-from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES, resolve_claude_credential
+from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES as CLAUDE_CREDENTIAL_ENV_NAMES
+from sandbox_executor.claude_credential import resolve_claude_credential as resolve_claude_credential
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 from sandbox_executor.flow import (
     SKIP_PUSH_DISPATCH_ERROR,
@@ -69,6 +75,8 @@ from sandbox_executor.launcher.coherence import (
 from sandbox_executor.launcher.coherence import (
     _token_reduce_opt_in as _token_reduce_opt_in,
 )
+from sandbox_executor.launcher.containers import ContainerLaunch as ContainerLaunch
+from sandbox_executor.launcher.containers import run_docker_container
 from sandbox_executor.launcher.env_files import (
     _ENV_FILE_STALE_SECONDS as _ENV_FILE_STALE_SECONDS,
 )
@@ -93,7 +101,6 @@ from sandbox_executor.launcher.messages import (
 from sandbox_executor.launcher.messages import print_encodable, redact_cli_error
 from sandbox_executor.launcher.mounts import (
     BLOCKED_METADATA_HOSTS,
-    build_network_isolation_args,
     find_github_token,
     get_agent_session_mounts,
 )
@@ -102,6 +109,9 @@ from sandbox_executor.launcher.mounts import (
 )
 from sandbox_executor.launcher.mounts import (
     antigravity_session_mounts as antigravity_session_mounts,
+)
+from sandbox_executor.launcher.mounts import (
+    build_network_isolation_args as build_network_isolation_args,
 )
 from sandbox_executor.launcher.mounts import (
     get_pi_mounts as get_pi_mounts,
@@ -142,8 +152,10 @@ from sandbox_executor.launcher.proxy_paths import (
 )
 from sandbox_executor.launcher.proxy_paths import (
     _find_git_root,
-    _gateway_host_args,
     _proxy_host_port,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _gateway_host_args as _gateway_host_args,
 )
 from sandbox_executor.launcher.proxy_paths import (
     _mitm_proxy_ca_paths as _mitm_proxy_ca_paths,
@@ -189,8 +201,7 @@ from sandbox_executor.redaction import (
     redact_agent_secrets as redact_agent_secrets,
 )
 from sandbox_executor.redaction import (
-    redact_command,
-    url_userinfo_end,
+    redact_command as redact_command,
 )
 from sandbox_executor.redaction import (
     redact_env_literals as redact_env_literals,
@@ -200,6 +211,9 @@ from sandbox_executor.redaction import (
 )
 from sandbox_executor.redaction import (
     trusted_url_authority as trusted_url_authority,
+)
+from sandbox_executor.redaction import (
+    url_userinfo_end,
 )
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 from sandbox_executor.scaffold import init_project
@@ -320,243 +334,6 @@ __all__ = [
     "url_userinfo_end",
     "write_env_file",
 ]
-
-
-def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
-    role: str,
-    image_name: str,
-    container_args: list[str],
-    agent_id: str,
-    intent_file: str | None = None,
-    token_reduce: bool = False,
-    mitm_web: bool = False,
-    target_worktree: str | None = None,
-    result_file: str | None = None,
-) -> int:
-    """Constructs docker run command with auto-discovered credentials and executes it.
-
-    Every role (intent creator, planner, executor and review loop) works in place on the host worktree, so its
-    ``target_worktree`` is required, validated and bind-mounted at the sandbox workspace path (see
-    ``git_flow.sandbox_worktree_mounts``) with ``HOLON_TARGET_WORKTREE`` pinned to the mountpoint. No container
-    reaches the remote: the host fetches the base before the container starts and pushes after it returns.
-    """
-    if not shutil.which("docker"):
-        print("Error: 'docker' CLI command not found. Please install Docker.", file=sys.stderr)
-        return 1
-
-    workspace_mounts: list[str] = []
-    if role in HOST_WORKTREE_ROLES:
-        try:
-            workspace_mounts = git_flow.sandbox_worktree_mounts(target_worktree, SANDBOX_WORKSPACE_MOUNT, role)
-        except RuntimeError as exc:
-            print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
-            return 1
-
-    tty_flag = ["-it"] if sys.stdin.isatty() else ["-i"]
-    docker_cmd = ["docker", "run", "--rm", *tty_flag]
-    docker_cmd.extend(["-e", "DOCKER_CLI_HINTS=false"])
-
-    # Credentials never go on the docker command line, where `ps` and /proc/<pid>/cmdline can read
-    # them: they are collected here and handed over in a 0600 --env-file just before the run. That
-    # includes any value with a URL password (a proxy URL in any scheme, or none), whatever its name.
-    secret_env: dict[str, str] = {}
-
-    def add_env(key: str, value: str) -> None:
-        if is_secret_env_item(key, value):
-            secret_env[key] = value
-        else:
-            docker_cmd.extend(["-e", f"{key}={value}"])
-
-    # Forward all host environment variables prefixed with HOLON_ and GITHUB_TOKEN
-    env_to_forward = {}
-    gh_token = find_github_token()
-
-    for key, value in os.environ.items():
-        # A retired variable is ignored: no container needs a repository URL, as the host does every fetch and push.
-        if (key.startswith("HOLON_") and key not in RETIRED_ENV_VARS) or key == "GITHUB_TOKEN":
-            env_to_forward[key] = value
-
-    # Set after the host forwarding loop so a host GITHUB_TOKEN cannot displace the chosen token.
-    if gh_token:
-        env_to_forward["GITHUB_TOKEN"] = gh_token
-
-    # The claude runner never takes HOLON_AGENT_KEY: its credential is an explicit claude variable or the secrets
-    # file, exported under the name its format decides. Set after the loop so a stale host value cannot displace it.
-    if local_llm.normalize_agent_id(agent_id) == "claude":
-        env_to_forward.pop("HOLON_AGENT_KEY", None)
-        claude_credential = resolve_claude_credential()
-        if claude_credential:
-            for name in CLAUDE_CREDENTIAL_ENV_NAMES:
-                env_to_forward.pop(name, None)
-            env_to_forward[claude_credential[0]] = claude_credential[1]
-
-    # Inside a timed host stage (holon flow), hand the container the time this stage has left so its own ceiling fires
-    # first; this replaces any forwarded host HOLON_STAGE_BUDGET_SECONDS. Every role-container dispatch goes
-    # through here, so no caller has to pass it.
-    env_to_forward.update(stage_budget_handdown_env())
-
-    # Pin the container workspace to the host worktree mountpoint, and keep 'uv run' off the host's mounted .venv.
-    if workspace_mounts:
-        env_to_forward["HOLON_TARGET_WORKTREE"] = SANDBOX_WORKSPACE_MOUNT
-        env_to_forward.update(SANDBOX_UV_ENV)
-
-    norm_agent_id = local_llm.normalize_agent_id(agent_id)
-
-    # Ensure explicit role parameter takes strict precedence over host environment
-    env_to_forward["HOLON_ROLE"] = role
-    # The host already ran the readiness probe; nested invocations inside the container must not repeat it.
-    env_to_forward["HOLON_SKIP_PREFLIGHT"] = "1"
-
-    # Coherence for local mode: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER if unset (pi runner only)
-    if local_llm.local_llm_requested() and norm_agent_id == "pi":
-        local_provider = env_to_forward.get(local_llm.ENV_LOCAL_PROVIDER, "").strip()
-        if "HOLON_AGENT_PROVIDER" not in env_to_forward and local_provider:
-            env_to_forward["HOLON_AGENT_PROVIDER"] = local_provider
-
-    for key, value in sorted(env_to_forward.items()):
-        add_env(key, value)
-
-    # Containers reach the host only through the gateway name; make it resolvable on Linux as it already is on
-    # Docker Desktop, so agent base URLs rewritten to host.docker.internal work on every platform.
-    docker_cmd.extend(_gateway_host_args())
-
-    # Token Reduction Proxy & CA Mounts. From this point on the sidecar (and its network) may exist,
-    # so every remaining exit path — early returns included — must run teardown, not just the final
-    # subprocess.run.
-    local_agent_dir: str | None = None
-    env_file: str | None = None
-    tr_mounts, tr_envs = get_token_reduction_mounts_and_envs(token_reduce=token_reduce, mitm_web=mitm_web)
-    try:
-        docker_cmd.extend(tr_mounts)
-
-        # Host-local inference servers: loopback and the host's own LAN address are unreachable from the
-        # container namespace, so hand the agent a generated config whose authorities resolve via the gateway. The
-        # artifact is a pi agent directory, so it is produced for pi only; other runners still need real credentials.
-        if local_llm.local_llm_requested() and norm_agent_id != "pi" and role in ("planner", "executor"):
-            print(
-                f"Warning: host-local model mode applies to the pi runner only; ignoring it for '{agent_id}'.",
-                file=sys.stderr,
-            )
-        if local_llm.local_llm_requested() and norm_agent_id == "pi":
-            try:
-                base_tmp = os.path.expanduser("~/.holon/tmp")
-                os.makedirs(base_tmp, mode=0o755, exist_ok=True)
-                local_agent_dir = tempfile.mkdtemp(prefix="holon-pi-agent-", dir=base_tmp)
-                local_config = local_llm.prepare_agent_dir(
-                    local_agent_dir,
-                    host_config=local_llm.host_models_json(),
-                    allow_list=local_llm.host_local_allow_list(),
-                )
-                # If provider was unset, determine whether to use the single distinct provider or "local"
-                if "HOLON_AGENT_PROVIDER" not in env_to_forward:
-                    providers = local_config.get("providers", {})
-                    if len(providers) == 1:
-                        chosen = next(iter(providers.keys()))
-                    elif "local" in providers:
-                        chosen = "local"
-                    else:
-                        raise local_llm.LocalLLMConfigError(
-                            f"Multiple host-local providers found ({', '.join(sorted(providers))}). "
-                            "Please set HOLON_AGENT_PROVIDER or HOLON_LOCAL_PROVIDER to select one."
-                        )
-                    add_env("HOLON_AGENT_PROVIDER", chosen)
-            except local_llm.LocalLLMConfigError as exc:
-                print_encodable(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
-                return 1
-            docker_cmd.extend(local_llm.container_mount_args(local_agent_dir))
-            for key, value in local_llm.container_env(local_agent_dir).items():
-                add_env(key, value)
-            # That endpoint now points at the gateway, so it would otherwise be intercepted by the sidecar.
-            local_hosts = local_llm.rewritten_local_hosts(local_config)
-            if local_hosts and tr_envs.get("NO_PROXY"):
-                exempted = list(local_hosts)
-                # Some NO_PROXY implementations compare only the hostname, so a port-qualified entry can miss. Adding
-                # the bare gateway name is safe when the sidecar is addressed by container name, but not when an
-                # external proxy is reached through host.docker.internal itself.
-                proxy_url = tr_envs.get("HTTP_PROXY", "")
-                if (
-                    token_reduce or mitm_web or bool(_sidecar_state.container_name)
-                ) and local_llm.GATEWAY_HOST not in proxy_url:
-                    exempted.insert(0, local_llm.GATEWAY_HOST)
-                existing_no_proxy = [e.strip() for e in tr_envs.get("NO_PROXY", "").split(",") if e.strip()]
-                joined = ",".join(dict.fromkeys(existing_no_proxy + exempted))
-                tr_envs["NO_PROXY"] = joined
-                tr_envs["no_proxy"] = joined
-                print(
-                    f"Note: host-local endpoint(s) {', '.join(local_hosts)} are exempt from token reduction "
-                    "(no interception, caching, or wire telemetry for that traffic).",
-                    file=sys.stderr,
-                )
-
-        for k, v in tr_envs.items():
-            add_env(k, v)
-
-        # Intent file mount for intent-creator role
-        if role == "intent-creator":
-            if not intent_file:
-                print("Error: Intent file is mandatory for intent creation.", file=sys.stderr)
-                return 1
-            abs_intent = os.path.abspath(intent_file)
-            if not os.path.exists(abs_intent):
-                print(f"Error: Intent file '{intent_file}' does not exist.", file=sys.stderr)
-                return 1
-            docker_cmd.extend(["-v", f"{abs_intent}:/tmp/intent.json"])
-
-        # Result file mount for role containers (e.g. review-loop result transport)
-        if result_file:
-            abs_result = os.path.abspath(result_file)
-            docker_cmd.extend(["-v", f"{abs_result}:/tmp/review_result.json"])
-
-        # The validated host worktree, its git directories and the read-only git-config overlays.
-        docker_cmd.extend(workspace_mounts)
-
-        # Auto-detect Session Mounts
-        session_mounts = get_agent_session_mounts(agent_id)
-        docker_cmd.extend(session_mounts)
-
-        # Network isolation and egress controls
-        network_isolation_args = build_network_isolation_args(token_reduce=token_reduce)
-        docker_cmd.extend(network_isolation_args)
-
-        # Image and args
-        docker_cmd.append(image_name)
-        docker_cmd.extend(container_args)
-
-        if secret_env:
-            try:
-                sweep_stale_env_files(env_file_dir())
-                env_file = write_env_file(secret_env)
-            except ValueError as exc:
-                print(f"Error: {redact_cli_error(exc)}.", file=sys.stderr)
-                return 1
-            except OSError as exc:
-                # An unwritable or unreadable ~/.holon/tmp/env-files: fail closed with a clear message
-                # rather than a traceback, and never fall back to passing the credentials on the argv.
-                print(f"Error: could not write the credential env-file: {redact_cli_error(exc)}.", file=sys.stderr)
-                return 1
-            # Right after `docker run`. Docker reads --env-file on the client side, so the host path
-            # needs no bind mount.
-            docker_cmd[2:2] = ["--env-file", env_file]
-
-        # A forwarded HOLON_* value may hold a non-UTF-8 byte (surrogateescape); it must not crash the run here.
-        print_encodable(f"Executing: {redact_command(docker_cmd)}")
-        result = subprocess.run(docker_cmd, env={**os.environ, "DOCKER_CLI_HINTS": "false"})
-        return result.returncode
-    finally:
-        if env_file:
-            with contextlib.suppress(FileNotFoundError):
-                os.remove(env_file)
-        teardown_token_reduction_proxy()
-        if local_agent_dir:
-            shutil.rmtree(local_agent_dir, ignore_errors=True)
-        try:
-            from sandbox_executor.agent_runner import get_runner
-
-            runner = get_runner(agent_id)
-            if hasattr(runner, "cleanup_ephemeral_credentials"):
-                runner.cleanup_ephemeral_credentials()
-        except Exception:
-            pass
 
 
 def _doctor_section_failed(section: str, exc: BaseException) -> str:

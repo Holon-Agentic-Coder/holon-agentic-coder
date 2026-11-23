@@ -114,7 +114,7 @@ class TestTurnExecutionEnvironment(unittest.TestCase):
         with (
             patch("shutil.which", return_value="/usr/bin/docker"),
             patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=[]),
-            patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[]),
+            patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=[]),
         ):
             code = run_docker_container(
                 "planner",

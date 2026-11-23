@@ -585,10 +585,10 @@ def test_execute_with_unmapped_env_runner_fails_before_docker(probe_env, monkeyp
 
 def test_run_docker_container_disables_nested_preflight(probe_env):
     with (
-        patch("sandbox_executor.cli.shutil.which", return_value="/usr/bin/docker"),
+        patch("shutil.which", return_value="/usr/bin/docker"),
         patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=[]),
-        patch("sandbox_executor.cli.find_github_token", return_value=None),
-        patch("sandbox_executor.cli.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run,
+        patch("sandbox_executor.launcher.mounts.find_github_token", return_value=None),
+        patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run,
     ):
         from sandbox_executor.cli import run_docker_container
 

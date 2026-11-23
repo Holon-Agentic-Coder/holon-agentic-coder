@@ -25,6 +25,7 @@ import os
 import secrets
 import shutil
 import socket
+import subprocess
 import urllib.error
 from collections.abc import Callable, Iterator
 from unittest.mock import patch
@@ -394,9 +395,11 @@ class _DockerRecorder:
 def _patch_docker_host(monkeypatch) -> None:
     """Stand in a docker binary and empty mount helpers, so `run_docker_container` reaches the echo."""
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
-    monkeypatch.setattr(cli, "get_agent_session_mounts", lambda agent_id: [])
+    monkeypatch.setattr("sandbox_executor.launcher.mounts.get_agent_session_mounts", lambda agent_id: [])
     monkeypatch.setattr(cli.git_flow, "sandbox_worktree_mounts", lambda *args, **kwargs: [])
-    monkeypatch.setattr(cli, "get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {}))
+    monkeypatch.setattr(
+        "sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {})
+    )
 
 
 def _delimiter_texts(
@@ -448,7 +451,7 @@ def _run_delimiter_case(value: str) -> tuple[int, _DockerRecorder, list[str], di
     stdout = io.StringIO()
     with (
         patch.dict(os.environ, env),
-        patch.object(cli.subprocess, "run", docker),
+        patch.object(subprocess, "run", docker),
         contextlib.redirect_stdout(stdout),
         contextlib.redirect_stderr(io.StringIO()),
     ):
@@ -585,9 +588,11 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
         status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
     )
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
-    monkeypatch.setattr(cli, "get_agent_session_mounts", lambda agent_id: [])
+    monkeypatch.setattr("sandbox_executor.launcher.mounts.get_agent_session_mounts", lambda agent_id: [])
     monkeypatch.setattr(cli.git_flow, "sandbox_worktree_mounts", lambda *args, **kwargs: [])
-    monkeypatch.setattr(cli, "get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {}))
+    monkeypatch.setattr(
+        "sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {})
+    )
     for name in list(os.environ):
         monkeypatch.delenv(name)
     failures: list[str] = []
@@ -600,7 +605,7 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
         with (
             patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
             patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
-            patch.object(cli.subprocess, "run", docker),
+            patch.object(subprocess, "run", docker),
             _captured({**env, "HOME": str(tmp_path)}) as out,
         ):
             env_out = io.StringIO()

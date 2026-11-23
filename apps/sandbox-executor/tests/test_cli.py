@@ -4,6 +4,7 @@ import importlib.metadata
 import io
 import json
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -23,7 +24,7 @@ from sandbox_executor.cli import (
     run_docker_container,
 )
 from sandbox_executor.flow import SKIP_PUSH_DISPATCH_ERROR, FlowContext
-from sandbox_executor.launcher import proxy_paths
+from sandbox_executor.launcher import env_files, proxy_paths
 
 from tests.leak_assertions import (
     CREDENTIAL_FREE_URLS,
@@ -147,7 +148,7 @@ class TestHolonCLI(unittest.TestCase):
         self.assertNotIn(":ro", err_msg)
 
     @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
-    @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock:ro"])
+    @patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=["-v", "/mock:/mock:ro"])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_run_docker_container_includes_network_isolation(
@@ -168,7 +169,7 @@ class TestHolonCLI(unittest.TestCase):
             self.assertIn("169.254.169.254:127.0.0.1", executed_cmd)
 
     @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
-    @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
+    @patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_run_docker_container(self, mock_which, mock_run, mock_mounts, mock_worktree_mounts):
@@ -195,7 +196,7 @@ class TestHolonCLI(unittest.TestCase):
             self.assertFalse(any("HOLON_REPO_URL" in a or "SSH_AUTH_SOCK" in a or "GIT_CONFIG_" in a for a in args))
 
     @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
-    @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
+    @patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_run_docker_container_forward_env_vars(self, mock_which, mock_run, mock_mounts, mock_worktree_mounts):
@@ -233,7 +234,7 @@ class TestHolonCLI(unittest.TestCase):
             self.assertFalse(any("SOME_OTHER_VAR" in arg for arg in args))
 
     @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
-    @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
+    @patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_run_docker_container_hands_down_the_active_stage_remainder(
@@ -457,7 +458,7 @@ class TestRunDockerContainerWorktree(unittest.TestCase):
     """Every role works in the host worktree; no container is handed a repository URL or git credentials."""
 
     @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
-    @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[])
+    @patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=[])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_a_stale_repo_url_is_dropped_and_changes_nothing(self, mock_which, mock_run, mock_mounts, mock_worktree):
@@ -484,7 +485,7 @@ class TestRunDockerContainerWorktree(unittest.TestCase):
         self.assertNotIn("HOLON_REPO_URL", with_stale[1])
 
     @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
-    @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[])
+    @patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=[])
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_github_token_stays_in_the_env_file_and_out_of_the_echo(self, mock_which, mock_run, mock_mounts, mock_wt):
@@ -507,7 +508,7 @@ class TestRunDockerContainerWorktree(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as not_a_repo,
             patch.dict(os.environ, {}, clear=True),
-            patch.object(cli.subprocess, "run", docker),
+            patch.object(subprocess, "run", docker),
         ):
             for worktree in (None, not_a_repo):
                 with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
@@ -1381,14 +1382,13 @@ def leak_env(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "git@github.com:myorg/myrepo.git"], check=True)
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
-    monkeypatch.setattr(cli, "get_agent_session_mounts", lambda agent_id: [])
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr("sandbox_executor.launcher.mounts.get_agent_session_mounts", lambda agent_id: [])
     monkeypatch.setattr(cli.git_flow, "sandbox_worktree_mounts", lambda *args, **kwargs: list(_WORKTREE_MOUNTS))
     # A proxy URL carrying its own credential, as an external HOLON_PROXY_URL can.
     proxy_sample = make_probe("proxypw")
     monkeypatch.setattr(
-        cli,
-        "get_token_reduction_mounts_and_envs",
+        "sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs",
         lambda **kwargs: ([], {"HTTPS_PROXY": f"http://proxyuser:{proxy_sample}@proxy.internal:3128"}),
     )
     probes["HTTPS_PROXY"] = proxy_sample
@@ -1451,7 +1451,7 @@ def test_claude_container_gets_the_discovered_secrets_file_value_by_type(
         fh.write(value + "\n")
     monkeypatch.delenv("ANTHROPIC_API_KEY")
     docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
+    monkeypatch.setattr(subprocess, "run", docker)
 
     assert _run_planner(leak_env["repo"]) == 0
 
@@ -1465,7 +1465,7 @@ def test_claude_container_gets_the_discovered_secrets_file_value_by_type(
 
 def test_docker_echo_and_argv_carry_no_secret_fragment(leak_env, monkeypatch, capsys):
     docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
+    monkeypatch.setattr(subprocess, "run", docker)
 
     assert _run_planner(leak_env["repo"]) == 0
 
@@ -1483,7 +1483,7 @@ def test_docker_echo_and_argv_carry_no_secret_fragment(leak_env, monkeypatch, ca
 
 def test_secrets_travel_in_an_owner_only_env_file_that_is_removed(leak_env, monkeypatch):
     docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
+    monkeypatch.setattr(subprocess, "run", docker)
 
     assert _run_planner(leak_env["repo"]) == 0
 
@@ -1510,12 +1510,11 @@ def test_proxy_url_password_travels_only_in_the_env_file(leak_env, monkeypatch, 
     proxy_value = form.format(v=sample)
     monkeypatch.setenv("HOLON_PROXY_URL", proxy_value)
     monkeypatch.setattr(
-        cli,
-        "get_token_reduction_mounts_and_envs",
+        "sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs",
         lambda **kwargs: ([], {"HTTP_PROXY": proxy_value, "https_proxy": proxy_value, "NO_PROXY": "localhost"}),
     )
     docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
+    monkeypatch.setattr(subprocess, "run", docker)
 
     assert _run_planner(leak_env["repo"]) == 0
 
@@ -1543,7 +1542,7 @@ def test_url_userinfo_travels_only_in_the_env_file_in_every_shape(  # noqa: PLR0
     value, parts = make_url_probe(form, separators)
     monkeypatch.setenv(name, value)
     docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
+    monkeypatch.setattr(subprocess, "run", docker)
 
     assert _run_planner(leak_env["repo"]) == 0
 
@@ -1559,7 +1558,7 @@ def test_url_userinfo_travels_only_in_the_env_file_in_every_shape(  # noqa: PLR0
 def test_credential_free_url_stays_readable_on_the_argv(leak_env, monkeypatch, capsys, name, value):
     monkeypatch.setenv(name, value)
     docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
+    monkeypatch.setattr(subprocess, "run", docker)
 
     assert _run_planner(leak_env["repo"]) == 0
 
@@ -1572,12 +1571,12 @@ def test_credential_free_url_stays_readable_on_the_argv(leak_env, monkeypatch, c
 @pytest.mark.parametrize("failure", ["write", "directory"])
 def test_unwritable_env_file_fails_closed_with_a_clear_error(leak_env, monkeypatch, capsys, failure):
     """An OSError writing the env-file exits non-zero with a message, no traceback, and docker never runs."""
-    monkeypatch.setattr(cli.subprocess, "run", _RecordingDocker(outcome=AssertionError("docker must not run")))
+    monkeypatch.setattr(subprocess, "run", _RecordingDocker(outcome=AssertionError("docker must not run")))
 
     def refuse(*args, **kwargs):
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(cli, "write_env_file" if failure == "write" else "env_file_dir", refuse)
+    monkeypatch.setattr(env_files, "write_env_file" if failure == "write" else "env_file_dir", refuse)
 
     assert _run_planner(leak_env["repo"]) == 1
 
@@ -1595,7 +1594,7 @@ def test_unwritable_env_file_fails_closed_with_a_clear_error(leak_env, monkeypat
 )
 def test_env_file_is_removed_however_the_run_ends(leak_env, monkeypatch, outcome):
     docker = _RecordingDocker(outcome=outcome)
-    monkeypatch.setattr(cli.subprocess, "run", docker)
+    monkeypatch.setattr(subprocess, "run", docker)
 
     if isinstance(outcome, BaseException):
         with pytest.raises(type(outcome)):
@@ -1611,7 +1610,7 @@ def test_no_git_credential_or_ssh_agent_environment_reaches_the_container(leak_e
     """The container never talks to the remote, so it gets no credential helper, SSH agent or repository URL."""
     monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock")
     docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
+    monkeypatch.setattr(subprocess, "run", docker)
 
     assert _run_planner(leak_env["repo"]) == 0
 
@@ -1628,7 +1627,7 @@ def test_agent_settings_carrying_an_api_key_travel_in_the_env_file(leak_env, mon
     settings = '{"apiKey":"' + provider_sample + '"}'
     monkeypatch.setenv("HOLON_AGENT_SETTINGS", settings)
     docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
+    monkeypatch.setattr(subprocess, "run", docker)
 
     assert _run_planner(leak_env["repo"]) == 0
 
@@ -1640,7 +1639,7 @@ def test_agent_settings_carrying_an_api_key_travel_in_the_env_file(leak_env, mon
 
 def test_line_break_in_a_secret_aborts_before_docker_runs(leak_env, monkeypatch, capsys):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "first-line\nINJECTED=1")
-    monkeypatch.setattr(cli.subprocess, "run", _RecordingDocker(outcome=AssertionError("docker must not run")))
+    monkeypatch.setattr(subprocess, "run", _RecordingDocker(outcome=AssertionError("docker must not run")))
 
     assert _run_planner(leak_env["repo"]) == 1
 
@@ -1682,7 +1681,7 @@ def test_oauth_settings_json_travels_in_the_env_file(leak_env, monkeypatch, caps
     settings = '{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"' + settings_probe + '"}}'
     monkeypatch.setenv("HOLON_AGENT_SETTINGS", settings)
     docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
+    monkeypatch.setattr(subprocess, "run", docker)
 
     assert _run_planner(leak_env["repo"]) == 0
 
@@ -1696,7 +1695,7 @@ def test_multiline_non_secret_settings_stay_on_the_command_line(leak_env, monkey
     settings = '{\n  "model": "opus",\n  "permissions": {"allow": ["Bash"]}\n}'
     monkeypatch.setenv("HOLON_AGENT_SETTINGS", settings)
     docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
+    monkeypatch.setattr(subprocess, "run", docker)
 
     assert _run_planner(leak_env["repo"]) == 0
 
@@ -1706,7 +1705,7 @@ def test_multiline_non_secret_settings_stay_on_the_command_line(leak_env, monkey
 
 def test_mitm_web_password_is_neither_in_argv_nor_echoed(leak_env, monkeypatch, capsys):
     docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
+    monkeypatch.setattr(subprocess, "run", docker)
 
     assert _run_planner(leak_env["repo"]) == 0
 
@@ -1716,7 +1715,7 @@ def test_mitm_web_password_is_neither_in_argv_nor_echoed(leak_env, monkeypatch, 
 
 
 def test_intent_file_error_path_leaves_no_env_file(leak_env, monkeypatch, capsys):
-    monkeypatch.setattr(cli.subprocess, "run", _RecordingDocker(outcome=AssertionError("docker must not run")))
+    monkeypatch.setattr(subprocess, "run", _RecordingDocker(outcome=AssertionError("docker must not run")))
 
     code = run_docker_container(
         "intent-creator",
@@ -1735,7 +1734,7 @@ def test_intent_file_error_path_leaves_no_env_file(leak_env, monkeypatch, capsys
 def test_redact_command_echo_names_the_env_file_but_not_its_contents(leak_env, monkeypatch, capsys):
     """The echo shows `--env-file <path>` but never the env-file contents or the token."""
     docker = _RecordingDocker()
-    monkeypatch.setattr(cli.subprocess, "run", docker)
+    monkeypatch.setattr(subprocess, "run", docker)
 
     assert _run_planner(leak_env["repo"]) == 0
 
@@ -1828,7 +1827,7 @@ def _confine_git_lookups(monkeypatch, root):
             return False
         return real_exists(path)
 
-    monkeypatch.setattr(cli.os.path, "exists", fake_exists)
+    monkeypatch.setattr(os.path, "exists", fake_exists)
 
 
 def _find_git_root_within_deadline(start_dir, deadline_seconds=5.0):
@@ -1847,7 +1846,7 @@ def test_find_git_root_terminates_without_a_git_ancestor(tmp_path, monkeypatch):
     nested = tmp_path / "a" / "b" / "c"
     nested.mkdir(parents=True)
     _confine_git_lookups(monkeypatch, tmp_path)
-    monkeypatch.setattr(cli.os, "getcwd", lambda: str(nested))
+    monkeypatch.setattr(os, "getcwd", lambda: str(nested))
     monkeypatch.setattr(proxy_paths, "__file__", str(nested / "cli.py"))
 
     finished, root = _find_git_root_within_deadline(str(nested))

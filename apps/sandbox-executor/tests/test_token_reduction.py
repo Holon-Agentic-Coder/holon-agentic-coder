@@ -28,7 +28,7 @@ from sandbox_executor.cli import (
     setup_token_reduction_proxy,
     teardown_token_reduction_proxy,
 )
-from sandbox_executor.launcher import proxy_attach, proxy_paths, sidecar
+from sandbox_executor.launcher import containers, proxy_attach, proxy_paths, sidecar
 from sandbox_executor.token_reduction import ca_generator, proxy_readiness
 from sandbox_executor.token_reduction.ca_generator import generate_root_ca
 
@@ -129,9 +129,8 @@ class FakeDocker:
         return "\n".join(" ".join(call) for call in self.calls)
 
 
-# Every launcher module that spawns docker (or the cli code still holding a launch path) owns its own `subprocess`
-# binding, so a fake docker replaces each of them.
-_DOCKER_MODULES = (cli, proxy_paths, sidecar)
+# Every launcher module that spawns docker owns its own `subprocess` binding, so a fake docker replaces each of them.
+_DOCKER_MODULES = (containers, proxy_paths, sidecar)
 
 
 def _fake_docker_runs(monkeypatch: pytest.MonkeyPatch, run) -> None:
@@ -604,16 +603,17 @@ def test_build_proxy_envs_emits_lowercase_proxy_vars_and_no_proxy():
 def _stub_run_preconditions(monkeypatch, teardowns: list[bool]) -> None:
     """Neutralise host discovery and record teardown calls for run_docker_container tests."""
     monkeypatch.setattr(
-        cli, "shutil", SimpleNamespace(which=lambda name: "/usr/bin/docker" if name == "docker" else None)
+        containers, "shutil", SimpleNamespace(which=lambda name: "/usr/bin/docker" if name == "docker" else None)
     )
-    monkeypatch.setattr(cli, "find_github_token", lambda: None)
+    monkeypatch.setattr("sandbox_executor.launcher.mounts.find_github_token", lambda: None)
     monkeypatch.setattr(cli.git_flow, "sandbox_worktree_mounts", lambda *args, **kwargs: [])
     monkeypatch.setattr(
-        cli,
-        "get_token_reduction_mounts_and_envs",
+        "sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs",
         lambda **kwargs: (["--network", "holon-net-x"], {"HTTP_PROXY": "http://holon-proxy-x:8080"}),
     )
-    monkeypatch.setattr(cli, "teardown_token_reduction_proxy", lambda: teardowns.append(True))
+    monkeypatch.setattr(
+        "sandbox_executor.launcher.sidecar.teardown_token_reduction_proxy", lambda: teardowns.append(True)
+    )
 
 
 def test_run_docker_container_tears_down_sidecar_on_early_return(monkeypatch, tmp_path):
@@ -640,7 +640,7 @@ def test_run_docker_container_tears_down_sidecar_when_body_raises(monkeypatch):
     def boom(agent_id):
         raise RuntimeError("session mount exploded")
 
-    monkeypatch.setattr(cli, "get_agent_session_mounts", boom)
+    monkeypatch.setattr("sandbox_executor.launcher.mounts.get_agent_session_mounts", boom)
 
     with pytest.raises(RuntimeError, match="session mount exploded"):
         cli.run_docker_container("planner", "holon/agent-pi", [], agent_id="pi")

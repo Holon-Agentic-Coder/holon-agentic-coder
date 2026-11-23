@@ -72,8 +72,8 @@ def _docker_run(role: str, worktree: Path, tmp_path: Path, env: dict[str, str] |
         return str(tmp_path / "env-file")
 
     with (
-        patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[]),
-        patch("sandbox_executor.cli.write_env_file", side_effect=record_env),
+        patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=[]),
+        patch("sandbox_executor.launcher.env_files.write_env_file", side_effect=record_env),
         patch("subprocess.run", side_effect=record),
         patch("shutil.which", return_value="/usr/bin/docker"),
         patch.dict(os.environ, {"HOME": str(tmp_path), "PATH": os.environ["PATH"], **(env or {})}, clear=True),

@@ -22,15 +22,21 @@ SECRET_FILE_MAPPINGS: tuple[tuple[str, str, str], ...] = (
     ("HOLON_AGENT_OAUTH_TOKEN_FILE", "HOLON_AGENT_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
 )
 # Keys that reach the host, carry credential-bearing egress or replace the operator's credentials (a host directory
-# mounted into the container, a proxy, the proxy image, runner settings that can redirect the API endpoint, a host-local
-# endpoint, the trusted CA and the files the role dispatcher reads or writes, the GitHub and agent credentials); like a
-# token-file reference they may not come from a repository-controlled project layer.
+# mounted into the container, a proxy, its opt-ins and port, the proxy sidecar user and dashboard, the proxy image,
+# runner settings that can redirect the API endpoint, a host-local endpoint, the trusted CA and the files the role
+# dispatcher reads or writes, the GitHub and agent credentials); like a token-file reference they may not come from a
+# repository-controlled project layer.
 PROJECT_REFUSED_KEYS: tuple[str, ...] = (
     "HOLON_ANTIGRAVITY_SESSION_DIR",
     "HOLON_AGENT_SETTINGS",
     "HOLON_AGENT_CONFIG",
     "HOLON_TOKEN_REDUCE",
+    "HOLON_PASSIVE_MONITORING",
     "HOLON_PROXY_URL",
+    "HOLON_PROXY_PORT",
+    "HOLON_MITM_USER",
+    "HOLON_MITM_WEB_PORT",
+    "HOLON_MITM_WEB_PASSWORD",
     "HOLON_COHERENCE_IMAGE",
     "HOLON_LOCAL_BASE_URL",
     "HOLON_HOST_LOCAL_HOSTS",

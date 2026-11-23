@@ -126,7 +126,9 @@ is still reported among the shadowed layers as `<layer> (empty)`. A key that eve
 `HOLON_IN_SANDBOX` and `HOLON_TARGET_WORKTREE`) and the retired `HOLON_REPO_URL` are refused. The project `.env` is
 repository-controlled, so it may not set a token-file reference or a host-reach key either:
 `HOLON_ANTIGRAVITY_SESSION_DIR` (a host directory mounted into the container), `HOLON_AGENT_SETTINGS` and
-`HOLON_AGENT_CONFIG` (runner settings that can redirect the API endpoint), `HOLON_TOKEN_REDUCE`, `HOLON_PROXY_URL`,
+`HOLON_AGENT_CONFIG` (runner settings that can redirect the API endpoint), `HOLON_TOKEN_REDUCE`,
+`HOLON_PASSIVE_MONITORING`, `HOLON_PROXY_URL`, `HOLON_PROXY_PORT` (the credential-bearing proxy and its routing),
+`HOLON_MITM_USER`, `HOLON_MITM_WEB_PORT` and `HOLON_MITM_WEB_PASSWORD` (the proxy sidecar user and dashboard),
 `HOLON_COHERENCE_IMAGE` (the proxy sidecar image, which sees agent credentials), `HOLON_LOCAL_BASE_URL`,
 `HOLON_HOST_LOCAL_HOSTS`, `HOLON_ROOT_CA_PATH` and `HOLON_CA_BUNDLE_PATH` (the trusted CA), `HOLON_SECRET_BUNDLE_PATH`
 (a file the role dispatcher reads or writes), and the credentials `GITHUB_TOKEN`, `HOLON_AGENT_OAUTH_TOKEN` and

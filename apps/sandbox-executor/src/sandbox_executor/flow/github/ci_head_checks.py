@@ -83,7 +83,7 @@ def latest_checks_for_head(checks: list[HeadCheck], sha: str) -> list[HeadCheck]
 
 
 def probe_head_checks(repo_dir: str, sha: str, proxy_env: Mapping[str, str] | None = None) -> list[HeadCheck] | None:
-    """The newest check run per name on exactly ``sha``; None on any error, so an unreadable head is never passed."""
+    """Newest check run per suite/name on exactly ``sha``; None on any error, so an unreadable head is never passed."""
     argv = ["gh", "api", "--paginate", f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs", "--jq", CHECK_RUNS_JQ]
     try:
         proc = _run_gh(argv, repo_dir, proxy_env)

@@ -144,7 +144,7 @@ Stage 4 CI result and runs immediately. Any other head, for example one with `or
 check run on exactly that SHA, read from the GitHub check-runs API for the commit.
 
 - Only `success`, `neutral` and `skipped` pass. Runs registered against another SHA (superseded) are ignored, and the
-  newest run per check name counts.
+  newest run per check suite and check name counts.
 - A `cancelled` or `stale` run is never treated as passed. It is re-triggered once per run id; a second cancellation, or
   a cancelled check with no Actions run, fails Stage 5 closed.
 - Checks still pending when the CI wait budget runs out, or no readable checks, also fail Stage 5 closed. Nothing is

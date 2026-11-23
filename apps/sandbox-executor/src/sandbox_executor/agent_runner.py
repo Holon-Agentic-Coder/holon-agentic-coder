@@ -205,6 +205,9 @@ def get_workspace_dir() -> str:
 
 
 _TRUTHY = ("1", "true", "yes", "on")
+_FALSY = ("0", "false", "no", "off")
+ENV_CLAUDE_CODE_MODE = "HOLON_CLAUDE_CODE_MODE"
+CLAUDE_EXPERIMENTAL_CODE_MODE_ENV = "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE"
 
 
 def skip_permissions_enabled() -> bool:
@@ -213,6 +216,14 @@ def skip_permissions_enabled() -> bool:
     Read on every call, so a runner honours the value current when its command is built rather than at import time.
     """
     return os.getenv("HOLON_AGENT_SKIP_PERMISSIONS", "true").lower() in _TRUTHY
+
+
+def claude_code_mode_enabled() -> bool:
+    """Return whether ``HOLON_CLAUDE_CODE_MODE`` (default enabled) turns on Claude Code experimental code mode."""
+    val = os.getenv(ENV_CLAUDE_CODE_MODE)
+    if val is None:
+        return True
+    return val.strip().lower() not in _FALSY
 
 
 class EnvMapping:
@@ -673,7 +684,8 @@ class ClaudeAgentRunner(StandardAgentRunner):
     ) -> list[str]:
         """Build the launch argv with attribution disabled; the pre-flight probe (``compose_cmd``) makes no commits."""
         cmd = super().build_cmd(model_name, prompt_file, intent_file, full_prompt)
-        value = attribution_off_settings(os.getenv("HOLON_AGENT_SETTINGS"))
+        default_env = {CLAUDE_EXPERIMENTAL_CODE_MODE_ENV: "1"} if claude_code_mode_enabled() else None
+        value = attribution_off_settings(os.getenv("HOLON_AGENT_SETTINGS"), default_env=default_env)
         if "--settings" in cmd:
             cmd[cmd.index("--settings") + 1] = value
         else:

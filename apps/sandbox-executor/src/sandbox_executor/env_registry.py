@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
-ReadSide = Literal["host", "container", "both", "ci"]
+ReadSide = Literal["host", "container", "both", "ci", "ci and container"]
 Forwarding = Literal["env-file", "argv", "not forwarded"]
 
 _BOOLEAN = "boolean: `1`, `true`, `yes`, `on` (any case)"
@@ -863,7 +863,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         default="unset",
         when_unset="any change to the budget configuration fails the check",
         when_invalid="any value other than `1` does not authorise",
-        read_side="ci",
+        read_side="ci and container",
         since="`holon-config/hygiene/module_budgets.json`",
         internal=True,
     ),

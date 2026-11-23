@@ -34,6 +34,14 @@ NOT_ENVIRONMENT_NAMES = frozenset(
 TEXT_FILES = ("Dockerfile", "docker-bake.hcl", "build_all_images.sh", "Makefile", "holon")
 DOC_ROW = re.compile(r"^\|\s*`(HOLON_[A-Z0-9_]+)`\s*\|")
 TOKEN_PREFIXES = ("sk-" + "ant-", "gh" + "p_", "github" + "_pat_", "gh" + "o_")
+# How each registry ``read_side`` value is written in the document's "read by" column.
+READ_SIDE_CELLS = {
+    "host": "host",
+    "container": "container",
+    "both": "both",
+    "ci": "CI",
+    "ci and container": "CI, container",
+}
 
 
 def python_names(path: Path) -> set[str]:
@@ -177,6 +185,34 @@ def test_doc_marks_internal_variables():
     purposes = {row[0].strip("`"): row[1] for row in doc_rows(_doc_text())}
     for variable in env_registry.ENVIRONMENT_VARIABLES:
         assert purposes[variable.name].startswith("(internal)") == variable.internal, variable.name
+
+
+def expected_row(variable: env_registry.EnvironmentVariable) -> list[str]:
+    """The document row the registry entry renders to, cell by cell."""
+    return [
+        f"`{variable.name}`",
+        f"(internal) {variable.purpose}" if variable.internal else variable.purpose,
+        variable.value_type,
+        variable.default,
+        f"Unset: {variable.when_unset}. Invalid: {variable.when_invalid}.",
+        READ_SIDE_CELLS[variable.read_side],
+        variable.forwarding,
+        "yes" if variable.secret else "no",
+        variable.since,
+    ]
+
+
+def test_doc_cells_match_registry():
+    rows = {row[0].strip("`"): row for row in doc_rows(_doc_text())}
+    for variable in env_registry.ENVIRONMENT_VARIABLES:
+        assert rows[variable.name] == expected_row(variable), variable.name
+
+
+def test_layered_config_defaults_match_registry():
+    registry = {variable.name: variable for variable in env_registry.ENVIRONMENT_VARIABLES}
+    for key, default, _purpose in DOCUMENTED_KEYS:
+        if key in registry:
+            assert default == registry[key].default, key
 
 
 def test_doc_has_no_secret_values():

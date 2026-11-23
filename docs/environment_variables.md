@@ -25,7 +25,8 @@ reads. Adding or retiring a variable therefore means updating the registry and t
   command line (`HOLON_IN_CONTAINER=1` and the value-less `-e HOLON_COHERENCE_WEB_PASSWORD`). "not forwarded" means the
   host withholds it.
 - **Read by.** "host" is the `holon` process on the operator's machine, "container" a role container (or the proxy
-  sidecar), "both" either, and "CI" the GitHub Actions workflows.
+  sidecar), "both" either, "CI" the GitHub Actions workflows, and "CI, container" the workflows and a role container's
+  lint run.
 - **Secret.** "yes" marks a credential, as decided by `config_env.is_secret_key`. Secret values are redacted from logs
   and command echoes and never belong in a committed file.
 - **Internal.** "(internal)" marks a variable the host, the flow or a maintainer sets for one run; operators do not set
@@ -140,9 +141,9 @@ Budget semantics (the `unlimited` sentinel, the 7-day maximum, stall detection) 
 
 ## CI-only
 
-| Name                               | Purpose                                                                                                                                                                                                                 | Type and allowed values | Default | Unset or invalid                                                                                                     | Read by | Forwarded | Secret | Since or related                           |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | ------- | -------------------------------------------------------------------------------------------------------------------- | ------- | --------- | ------ | ------------------------------------------ |
-| `HOLON_ALLOW_MODULE_BUDGET_CHANGE` | (internal) Lets `scripts/check_module_budgets.py` accept a change to the frozen module budgets. CI sets it from a pull-request label; the flow sets it for a role container only when the intent quotes the maintainer. | `1`                     | unset   | Unset: any change to the budget configuration fails the check. Invalid: any value other than `1` does not authorise. | CI      | env-file  | no     | `holon-config/hygiene/module_budgets.json` |
+| Name                               | Purpose                                                                                                                                                                                                                 | Type and allowed values | Default | Unset or invalid                                                                                                     | Read by       | Forwarded | Secret | Since or related                           |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | ------- | -------------------------------------------------------------------------------------------------------------------- | ------------- | --------- | ------ | ------------------------------------------ |
+| `HOLON_ALLOW_MODULE_BUDGET_CHANGE` | (internal) Lets `scripts/check_module_budgets.py` accept a change to the frozen module budgets. CI sets it from a pull-request label; the flow sets it for a role container only when the intent quotes the maintainer. | `1`                     | unset   | Unset: any change to the budget configuration fails the check. Invalid: any value other than `1` does not authorise. | CI, container | env-file  | no     | `holon-config/hygiene/module_budgets.json` |
 
 ## Examples
 

@@ -7,8 +7,12 @@ from __future__ import annotations
 
 # (key, built-in default, purpose) for every key an operator may set in ~/.holon/.env or <repo>/.env.
 DOCUMENTED_KEYS: tuple[tuple[str, str, str], ...] = (
-    ("HOLON_AGENT", "detected from the harness", "Agent runner (`claude`, `pi`, `codex`, `opencode`, `antigravity`)."),
-    ("HOLON_MODEL", "the runner's default model", "Model the runner uses."),
+    (
+        "HOLON_AGENT",
+        "the harness agent detected from the runtime",
+        "Agent runner (`claude`, `pi`, `codex`, `opencode`, `antigravity`).",
+    ),
+    ("HOLON_MODEL", "unset", "Model the runner uses."),
     ("HOLON_AGENT_EFFORT", "`medium`", "Reasoning effort passed to the claude runner."),
     (
         "HOLON_AGENT_OAUTH_TOKEN_FILE",
@@ -18,7 +22,11 @@ DOCUMENTED_KEYS: tuple[tuple[str, str, str], ...] = (
     ("HOLON_AGENT_OAUTH_TOKEN", "unset", "Claude subscription token; prefer `HOLON_AGENT_OAUTH_TOKEN_FILE`."),
     ("HOLON_AGENT_KEY", "unset", "API key of a runner other than claude."),
     ("HOLON_AGENT_SETTINGS", "unset", "Extra claude `--settings` JSON (attribution); no longer needed for the token."),
-    ("HOLON_AGENT_PROVIDER", "unset", "Provider of the pi runner."),
+    (
+        "HOLON_AGENT_PROVIDER",
+        "unset; in host-local mode `HOLON_LOCAL_PROVIDER`, else `local`",
+        "Provider of the pi runner.",
+    ),
     ("HOLON_AGENT_MODE", "unset", "`--agent` value of the opencode runner."),
     ("HOLON_AGENT_OSS_MODE", "unset", "Pass `--oss` to the codex runner when `1` or `true`."),
     ("HOLON_AGENT_LOCAL_PROVIDER", "unset", "`--local-provider` value of the codex runner."),
@@ -51,8 +59,8 @@ DOCUMENTED_KEYS: tuple[tuple[str, str, str], ...] = (
     ("HOLON_GIT_LOCK_AGE_SECONDS", "`60`", "Age after which a stale git lock is removed."),
     ("HOLON_PREFLIGHT_TIMEOUT", "`60`", "Timeout of the pre-flight readiness probe."),
     ("HOLON_TOKEN_REDUCE", "unset", "Enable the token-reduction proxy when `1` or `true`."),
-    ("HOLON_PROXY_URL", "unset", "External token-reduction proxy to attach to."),
-    ("HOLON_COHERENCE_IMAGE", "local, else GHCR image", "Image of the token-reduction proxy sidecar."),
+    ("HOLON_PROXY_URL", "the host gateway on port `8080`", "External token-reduction proxy to attach to."),
+    ("HOLON_COHERENCE_IMAGE", "a local image, else the GHCR image", "Image of the token-reduction proxy sidecar."),
     ("HOLON_PROXY_PORT", "`8080`", "Port of the token-reduction proxy."),
     ("HOLON_PASSIVE_MONITORING", "unset", "Run the proxy in passive monitoring mode."),
     ("HOLON_MITM_USER", "unset", "User of the mitmweb dashboard."),
@@ -69,7 +77,11 @@ DOCUMENTED_KEYS: tuple[tuple[str, str, str], ...] = (
     ("HOLON_ACTION_LOGGING", "unset", "Record agent actions when `1` or `true` (alias `HOLON_RECORD_ACTIONS`)."),
     ("HOLON_RECORD_ACTIONS", "unset", "Alias of `HOLON_ACTION_LOGGING`."),
     ("HOLON_ATTRIBUTION_STRICT", "unset", "Fail, rather than warn, on a commit attribution problem."),
-    ("HOLON_ANTIGRAVITY_SESSION_DIR", "unset", "Session directory mounted for the antigravity runner."),
+    (
+        "HOLON_ANTIGRAVITY_SESSION_DIR",
+        "`~/.holon/sessions/antigravity`",
+        "Session directory mounted for the antigravity runner.",
+    ),
 )
 
 # Keys the host sets for a role container, or a maintainer sets for one run; a layer file never needs them, and the

@@ -1,6 +1,7 @@
-"""The repository-scoped GitHub adapter: the only ``flow/github`` module that spawns ``gh`` for PR create/update, CI
+"""The repository-scoped GitHub adapter: the ``flow/github`` module that spawns ``gh`` for PR create/update, CI
 checks, mergeability, PR head lookups, review and comment posting, and the guarded merge's ``gh`` runner (whose
-``gh pr merge`` argv only :func:`merge_argv` builds).
+``gh pr merge`` argv only :func:`merge_argv` builds). The one remaining direct ``gh`` caller is
+:mod:`.approval_invalidation`, whose comment lister and poster still run ``gh pr view`` and ``gh pr comment``.
 
 Each method is a thin argv builder over one spawn (:func:`.adapter_runner.spawn_gh`), with the timeouts of the call
 sites it replaced: 60 seconds for PR views, edits, creates, reviews and comments, the caller's timeout for

@@ -11,9 +11,12 @@ Nothing is forced, reset or deleted.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
+from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.token_scopes import REFRESH_COMMAND
 from sandbox_executor.flow.host_remote import new_local_child_branches, push_commit, remote_error
 from sandbox_executor.git import run_git
@@ -69,9 +72,16 @@ def rejected_push_error(push_error: str, recovered: list[RecoveredExecution]) ->
 
 
 def rejected_push_recovery(
-    repo_dir: str, plan_prefix: str, before: set[str], push_error: str | None
+    repo_dir: str,
+    plan_prefix: str,
+    before: set[str],
+    push_error: str | None,
+    log: Callable[[str], None] | None = None,
 ) -> tuple[str, dict[str, Any]] | None:
-    """For a refused push, keep the executions and return the stage error and payload; None when the push succeeded."""
+    """For a refused push, keep the executions and return the stage error and payload; None when the push succeeded.
+
+    ``log``, when given, also records the stage error now, for a caller that returns an earlier failure first.
+    """
     if push_error is None:
         return None
     recovered = keep_rejected_executions(repo_dir, plan_prefix, before)
@@ -79,4 +89,17 @@ def rejected_push_recovery(
         "recovery_refs": [kept.local_ref for kept in recovered],
         "recovery_pushed": any(kept.remote_branch for kept in recovered),
     }
-    return rejected_push_error(push_error, recovered), payload
+    error = rejected_push_error(push_error, recovered)
+    if log is not None:
+        log(error)
+    return error, payload
+
+
+def rejected_push_failure(
+    context: FlowContext, start_time: str, recovery: tuple[str, dict[str, Any]] | None, exit_code: int
+) -> StageResult | None:
+    """The failed Stage 3 result for a refused push, naming the recovery refs that pin the commits, or None."""
+    if recovery is None:
+        return None
+    error, payload = recovery
+    return _stage_failure(context, FlowStage.EXECUTE, start_time, error, exit_code=exit_code, **payload)

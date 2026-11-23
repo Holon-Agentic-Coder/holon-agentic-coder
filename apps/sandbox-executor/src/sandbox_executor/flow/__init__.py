@@ -58,7 +58,7 @@ _LAZY_EXPORTS: dict[str, str] = {
         "held_execution_failure hold_unrecorded_executions publish_with_first_row unrecorded_executions"
     ),
     "sandbox_executor.flow.execution_recovery": (
-        "RecoveredExecution keep_rejected_executions rejected_push_error rejected_push_recovery"
+        "RecoveredExecution keep_rejected_executions rejected_push_error rejected_push_failure rejected_push_recovery"
     ),
     "sandbox_executor.flow.git_refs": (
         "EXECUTOR_GIT_ENV _append_ledger_row _append_superseding_execution_row _discover_child_branch "
@@ -462,6 +462,7 @@ __all__ = [
     "refresh_plan_branch",
     "refusal",
     "rejected_push_error",
+    "rejected_push_failure",
     "rejected_push_recovery",
     "remote_error",
     "render_reviewer_summary_line",

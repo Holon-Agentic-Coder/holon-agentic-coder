@@ -83,13 +83,14 @@ def resolve_resumed_runner(args: argparse.Namespace, context: Any, checkpoint_pa
         model = context.model
         logger.info(Resolution(model, "checkpoint", recorded).describe("Model"))
         return agent, model
-    model = cli.resolve_model(agent, args.model).value
+    resolution = cli.resolve_model(agent, args.model)
+    model = resolution.value
     if model != context.model:
-        source = "--model" if args.model is not None else f"the {agent} default"
         logger.info(
-            "Model %s from %s overrides %s %s for every remaining stage and role.",
+            "Model %s from %s (%s) overrides %s %s for every remaining stage and role.",
             model,
-            source,
+            resolution.source,
+            resolution.reason,
             context.model,
             recorded,
         )

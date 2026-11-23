@@ -296,7 +296,7 @@ def test_only_the_switches_passed_to_this_run_take_effect(worktree, intent_file)
 
 
 @pytest.mark.parametrize("model_from", ["flag", "env"])
-def test_agent_on_resume_overrides_the_checkpoint_runner_for_review_and_calibration(
+def test_agent_on_resume_overrides_the_checkpoint_runner_in_the_resumed_context_and_checkpoint(
     worktree, intent_file, monkeypatch, caplog, model_from
 ):
     _save_runner_checkpoint(worktree, agent="antigravity-agent", model=default_model_for("antigravity-agent"))
@@ -313,6 +313,8 @@ def test_agent_on_resume_overrides_the_checkpoint_runner_for_review_and_calibrat
 
     assert seen == [("review", "claude-agent", claude_model), ("calibrate", "claude-agent", claude_model)]
     assert "Agent runner claude-agent from --agent overrides antigravity-agent" in caplog.text
+    model_source = "flag (--model)" if model_from == "flag" else "env (HOLON_MODEL)"
+    assert f"Model {claude_model} from {model_source} overrides" in caplog.text
     saved = load_checkpoint(args.checkpoint).context
     assert (saved.agent, saved.model) == ("claude-agent", claude_model)
 

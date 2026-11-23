@@ -6,15 +6,30 @@ import logging
 import os
 import shutil
 import subprocess
+from dataclasses import dataclass
 from typing import Any
 
+from sandbox_executor.flow.github.review_policy import (
+    GH_UNAVAILABLE_MESSAGE,
+    CommentAttempt,
+    ReviewAttempt,
+    comment_failed_output,
+    comment_not_attempted_output,
+    comment_posted_output,
+    gh_unavailable_outcome,
+    is_self_approval_rejection,
+    posting_outcome,
+    review_failed_output,
+    review_flag,
+    review_submitted_output,
+)
 from sandbox_executor.review_ensemble import ReviewerResult
 from sandbox_executor.review_report import build_pr_review_consensus_report, report_approves
 
 logger = logging.getLogger(__name__)
 
 
-def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
+def post_pr_review_consensus(  # noqa: PLR0913
     repo_dir: str,
     target: str,
     consensus_data: dict[str, Any],
@@ -61,156 +76,84 @@ def post_pr_review_consensus(  # noqa: PLR0912, PLR0913, PLR0915
         title=title,
     )
 
-    gh_available = bool(shutil.which("gh"))
-    gh_env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
+    if not shutil.which("gh"):
+        logger.warning(GH_UNAVAILABLE_MESSAGE)
+        return gh_unavailable_outcome(clean_target, approved)
 
-    if not gh_available:
-        diag_msg = "GitHub CLI ('gh') is not available in PATH; skipping review consensus posting."
-        logger.warning(diag_msg)
-        return {
-            "target": clean_target,
-            "gh_available": False,
-            "diagnostics": diag_msg,
-            "discussion_comment": {
-                "attempted": False,
-                "success": False,
-                "output": diag_msg,
-            },
-            "official_review": {
-                "attempted": False,
-                "flag": "--approve" if approved else "--comment",
-                "success": False,
-                "self_approval_fallback": False,
-                "output": diag_msg,
-            },
-            "dual_posted": False,
-        }
-
+    call = _GhCall(
+        repo_dir, clean_target, report_text, {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
+    )
     # Primary action: a single official review submission carries the consensus report.
-    review_attempted = bool(clean_target)
-    review_success = False
-    review_output = ""
-    self_approval_fallback = False
-    initial_flag = "--approve" if approved else "--comment"
-    submitted_flag = initial_flag
-
-    if review_attempted:
-        try:
-            review_proc = subprocess.run(
-                ["gh", "pr", "review", clean_target, initial_flag, "--body", report_text],
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=60,
-                env=gh_env,
-            )
-            raw_stderr = review_proc.stderr or ""
-            raw_stdout = review_proc.stdout or ""
-
-            if review_proc.returncode == 0:
-                review_success = True
-                review_output = raw_stdout.strip() or "Official review submitted."
-            else:
-                is_self_approval = (
-                    "422" in raw_stderr
-                    or "Can not approve your own pull request" in raw_stderr
-                    or "PullRequestReviewAuthorError" in raw_stderr
-                )
-                if is_self_approval and initial_flag == "--approve":
-                    logger.info(
-                        "Author self-approval restriction encountered (HTTP 422). "
-                        "Falling back to official review comment."
-                    )
-                    self_approval_fallback = True
-                    submitted_flag = "--comment"
-                    fallback_proc = subprocess.run(
-                        ["gh", "pr", "review", clean_target, "--comment", "--body", report_text],
-                        cwd=repo_dir,
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                        timeout=60,
-                        env=gh_env,
-                    )
-                    if fallback_proc.returncode == 0:
-                        review_success = True
-                        review_output = (fallback_proc.stdout or "").strip() or "Fallback review comment submitted."
-                    else:
-                        review_success = False
-                        fallback_err = fallback_proc.stderr or fallback_proc.stdout or ""
-                        review_output = (
-                            f"Fallback review comment failed (exit code {fallback_proc.returncode}): {fallback_err}"
-                        ).strip()
-                else:
-                    review_success = False
-                    review_output = (
-                        f"Official review submission failed (exit code {review_proc.returncode}): "
-                        f"{raw_stderr or raw_stdout}"
-                    ).strip()
-        except Exception as exc:
-            review_output = f"gh pr review encountered exception: {exc}"
-            logger.warning("gh pr review encountered exception: %s", exc)
-
+    if clean_target:
+        review = _submit_review(call, review_flag(approved))
+    else:
+        review = ReviewAttempt(False, review_flag(approved), False, False, "")
     # Last resort: only a failed review ladder posts a plain discussion comment, so the
     # consensus report still lands on the PR without ever being posted twice.
-    comment_attempted = review_attempted and not review_success
-    comment_success = False
-    comment_output = (
-        "Discussion comment not attempted: the official review submission posted the report."
-        if review_attempted
-        else "Discussion comment not attempted: no posting target was resolved."
+    return posting_outcome(clean_target, review, _post_discussion_comment(call, review))
+
+
+@dataclass(frozen=True)
+class _GhCall:
+    """The shared arguments of every ``gh pr`` posting command for one consensus report."""
+
+    repo_dir: str
+    target: str
+    report_text: str
+    env: dict[str, str]
+
+
+def _run_gh_pr(call: _GhCall, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run ``gh pr <args[0]> <target> <args[1:]> --body <report>`` in the repository."""
+    return subprocess.run(
+        ["gh", "pr", args[0], call.target, *args[1:], "--body", call.report_text],
+        cwd=call.repo_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+        env=call.env,
     )
 
-    if comment_attempted:
-        try:
-            comment_proc = subprocess.run(
-                ["gh", "pr", "comment", clean_target, "--body", report_text],
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=60,
-                env=gh_env,
-            )
-            raw_stdout = comment_proc.stdout or ""
-            raw_stderr = comment_proc.stderr or ""
-            if comment_proc.returncode == 0:
-                comment_success = True
-                comment_output = raw_stdout.strip() or "Discussion comment posted successfully."
-            else:
-                comment_output = (
-                    f"gh pr comment failed (exit code {comment_proc.returncode}): {raw_stderr or raw_stdout}".strip()
-                )
-                logger.warning(
-                    "gh pr comment failed with returncode %s: %s",
-                    comment_proc.returncode,
-                    comment_proc.stderr,
-                )
-        except Exception as exc:
-            comment_output = f"gh pr comment encountered exception: {exc}"
-            logger.warning("gh pr comment encountered exception: %s", exc)
 
-    posted_once = review_success or comment_success
-    return {
-        "target": clean_target,
-        "gh_available": True,
-        "diagnostics": (
-            "Review consensus posted once to GitHub."
-            if posted_once
-            else f"Review posting failed: review={review_success}, comment={comment_success}."
-        ),
-        "discussion_comment": {
-            "attempted": comment_attempted,
-            "success": comment_success,
-            "output": comment_output.strip(),
-        },
-        "official_review": {
-            "attempted": review_attempted,
-            "flag": submitted_flag,
-            "success": review_success,
-            "self_approval_fallback": self_approval_fallback,
-            "output": review_output.strip(),
-        },
-        "dual_posted": posted_once,
-    }
+def _review_exception(flag: str, self_approval_fallback: bool, exc: Exception) -> ReviewAttempt:
+    logger.warning("gh pr review encountered exception: %s", exc)
+    return ReviewAttempt(True, flag, False, self_approval_fallback, f"gh pr review encountered exception: {exc}")
+
+
+def _submit_review(call: _GhCall, flag: str) -> ReviewAttempt:
+    """Submit the official review once; on the HTTP 422 self-approval rejection, fall back once to ``--comment``."""
+    try:
+        proc = _run_gh_pr(call, "review", flag)
+        if proc.returncode == 0:
+            return ReviewAttempt(True, flag, True, False, review_submitted_output(proc.stdout))
+        if flag != "--approve" or not is_self_approval_rejection(proc.stderr or ""):
+            return ReviewAttempt(
+                True, flag, False, False, review_failed_output(proc.returncode, proc.stderr, proc.stdout)
+            )
+        logger.info("Author self-approval restriction encountered (HTTP 422). Falling back to official review comment.")
+    except Exception as exc:
+        return _review_exception(flag, False, exc)
+    try:
+        fallback = _run_gh_pr(call, "review", "--comment")
+    except Exception as exc:
+        return _review_exception("--comment", True, exc)
+    if fallback.returncode == 0:
+        return ReviewAttempt(True, "--comment", True, True, review_submitted_output(fallback.stdout, fallback=True))
+    output = review_failed_output(fallback.returncode, fallback.stderr, fallback.stdout, fallback=True)
+    return ReviewAttempt(True, "--comment", False, True, output)
+
+
+def _post_discussion_comment(call: _GhCall, review: ReviewAttempt) -> CommentAttempt:
+    """Post the report as a discussion comment only when an attempted review did not succeed."""
+    if not review.attempted or review.success:
+        return CommentAttempt(False, False, comment_not_attempted_output(review.attempted))
+    try:
+        proc = _run_gh_pr(call, "comment")
+        if proc.returncode == 0:
+            return CommentAttempt(True, True, comment_posted_output(proc.stdout))
+        logger.warning("gh pr comment failed with returncode %s: %s", proc.returncode, proc.stderr)
+        return CommentAttempt(True, False, comment_failed_output(proc.returncode, proc.stderr, proc.stdout))
+    except Exception as exc:
+        logger.warning("gh pr comment encountered exception: %s", exc)
+        return CommentAttempt(True, False, f"gh pr comment encountered exception: {exc}")

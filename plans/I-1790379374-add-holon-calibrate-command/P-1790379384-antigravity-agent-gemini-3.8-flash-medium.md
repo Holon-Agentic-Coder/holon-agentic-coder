@@ -152,21 +152,15 @@ pass rate with `uv run pytest`.
     execute `git diff --stat` against the plan branch to compute actual patch size (files changed, lines added, lines
     deleted) and infer execution success (`success_actual = 1.0` if status is success and exit code 0).
   - Compute actual entropy ($\Delta S_{\text{actual}}$) using the observable weights from
-    `holon-config/metrics/entropy_config.json`
-    ($u_1 \cdot \text{SSA} + u_2 \cdot \text{IRR} + u_3 \cdot \text{CL} + u_4
+    `holon-config/metrics/entropy_config.json` ($u_1 \cdot \text{SSA} + u_2 \cdot \text{IRR} + u_3 \cdot \text{CL} + u_4
     \cdot \text{SER} + u_5 \cdot \text{NOV}$).
 - Implement mathematical calibration calculations:
-  - Compute absolute error deltas: $p\_success\_error = |p\_success\_pred - p\_success\_actual|$,
-    $entropy\_error =
-    |entropy\_pred - entropy\_actual|$, $cost\_error = |cost\_pred - cost\_actual|$,
-    $impact\_error = |impact\_pred -
-    impact\_actual|$, and
-    $learning\_value\_error = |learning\_value\_pred - learning\_value\_actual|$.
-  - Compute actual Expected Value:
-    $EV_{\text{actual}} = P(\text{success})_{\text{actual}} \times
+  - Compute absolute error deltas: $p\_success\_error = |p\_success\_pred - p\_success\_actual|$, $entropy\_error =
+    |entropy\_pred - entropy\_actual|$, $cost\_error = |cost\_pred - cost\_actual|$, $impact\_error = |impact\_pred -
+    impact\_actual|$, and $learning\_value\_error = |learning\_value\_pred - learning\_value\_actual|$.
+  - Compute actual Expected Value: $EV_{\text{actual}} = P(\text{success})_{\text{actual}} \times
     \text{Impact}_{\text{actual}} + \mu \times \text{LearningValue}_{\text{actual}} - \lambda \times \Delta
-    S_{\text{actual}} - \text{Cost}_{\text{actual}}$
-    using $\lambda = 0.3$ and $\mu = 0.5$.
+    S_{\text{actual}} - \text{Cost}_{\text{actual}}$ using $\lambda = 0.3$ and $\mu = 0.5$.
   - Compute $\Delta EV = EV_{\text{actual}} - EV_{\text{pred}}$.
   - Compute qualitative accuracy ratings (Exact, High, Moderate, Low) and bias directions (Slight Underconfidence,
     Overestimated Risk, Conservative Underestimate, etc.) matching existing calibration reports.

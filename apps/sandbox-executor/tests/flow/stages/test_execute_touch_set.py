@@ -12,7 +12,15 @@ from sandbox_executor.budgets import MAX_REPLAN_ATTEMPTS
 from sandbox_executor.flow import PipelineEngine, StageStatus, admission
 from sandbox_executor.flow.admission import check_admission as REAL_CHECK
 
-from tests.flow.helpers import OTHER_HEAD, FakeGh, FakeRoleAgents, _dispatch_context, _ledger_rows, no_worktrees
+from tests.flow.helpers import (
+    OTHER_HEAD,
+    FakeGh,
+    FakeRoleAgents,
+    _dispatch_context,
+    _ledger_rows,
+    no_worktrees,
+    stage4_halts_at_consensus,
+)
 
 
 class TouchSetRoleAgents(FakeRoleAgents):
@@ -76,7 +84,8 @@ def test_allow_overlap_dispatches_once_and_records_one_override(flow_repos, tmp_
     open_overlapping_pr(fake_gh)
     agents = TouchSetRoleAgents(tmp_path, origin, [["src/"]])
     ctx = _dispatch_context(host, agents, allow_overlap=True)
-    results = PipelineEngine(ctx).run()
+    with stage4_halts_at_consensus():
+        results = PipelineEngine(ctx).run()
 
     assert results["execute"].status == StageStatus.SUCCESS
     assert agents.roles().count("executor") == 1
@@ -89,7 +98,8 @@ def test_allow_overlap_dispatches_once_and_records_one_override(flow_repos, tmp_
 def test_metadata_only_extras_stay_inside_the_touch_set(flow_repos, tmp_path, fake_gh):
     host, origin = flow_repos
     agents = TouchSetRoleAgents(tmp_path, origin, [["src/app.py"]], extra_files=("plans/notes.md",))
-    results = PipelineEngine(_dispatch_context(host, agents)).run()
+    with stage4_halts_at_consensus():
+        results = PipelineEngine(_dispatch_context(host, agents)).run()
     assert results["execute"].status == StageStatus.SUCCESS
 
 
@@ -97,7 +107,8 @@ def test_out_of_set_diff_returns_to_stage_2_once_then_succeeds(flow_repos, tmp_p
     host, origin = flow_repos
     agents = TouchSetRoleAgents(tmp_path, origin, [["src/app.py"], ["src/app.py", "lib/"]], ("lib/extra.py",))
     ctx = _dispatch_context(host, agents)
-    results = PipelineEngine(ctx).run()
+    with stage4_halts_at_consensus():
+        results = PipelineEngine(ctx).run()
 
     assert results["execute"].status == StageStatus.SUCCESS
     assert ctx.replan_attempts == 1

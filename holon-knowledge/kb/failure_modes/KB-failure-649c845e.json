@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-649c845e",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-22T23:37:41.426140+00:00",
+  "updated_ts": "2026-11-22T23:37:41.426140+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795265567-6419191a-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795222649-antigravity-tmpfs-empty-diff/P-1795222667-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 3 iteration(s): conflict gate: target branch merged; approval must be re-earned on the new head; final verdicts: Reviewer 1 APPROVED (0/0/0); Reviewer 2 APPROVED (0/0/0); Reviewer 3 APPROVED (0/0/0)",
+    "symptoms": []
+  }
+}

@@ -9,15 +9,19 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
-from sandbox_executor.flow.github.ci_head_checks import HeadCheck, RunRerunner, _run_gh, is_cancelled
+from sandbox_executor.flow.github.adapter import GitHubAdapter
+from sandbox_executor.flow.github.ci_head_checks import HeadCheck, RunRerunner, is_cancelled
 
 
-def gh_run_rerunner(repo_dir: str, proxy_env: Mapping[str, str] | None = None) -> RunRerunner:
-    """A dispatcher of ``gh run rerun <run-id>`` (the whole run: a cancelled run has no failed jobs); False on error."""
+def gh_run_rerunner(
+    repo_dir: str, proxy_env: Mapping[str, str] | None = None, github: GitHubAdapter | None = None
+) -> RunRerunner:
+    """A dispatcher of the adapter's whole-run ``gh run rerun <run-id>``; False on error."""
+    adapter = github or GitHubAdapter(repo_dir, dict(proxy_env) if proxy_env else None)
 
     def rerun(run_id: str) -> bool:
         try:
-            return _run_gh(["gh", "run", "rerun", run_id], repo_dir, proxy_env).returncode == 0
+            return adapter.rerun_run(run_id)
         except Exception:
             return False
 

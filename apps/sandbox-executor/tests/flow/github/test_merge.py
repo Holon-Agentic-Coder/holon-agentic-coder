@@ -15,6 +15,7 @@ from sandbox_executor.flow.github.merge import (
 )
 
 from tests.flow.fake_gh import FakeGitHub
+from tests.flow.github.fake_github import FakeGitHub as AdapterFake
 from tests.flow.helpers import _git
 
 PLAN = "I-1-root/P-2-agent-model/_"
@@ -443,3 +444,36 @@ def test_run_gh_reports_a_missing_binary_as_a_failed_process(tmp_path, monkeypat
     monkeypatch.setenv("PATH", str(tmp_path))
     proc = run_gh(["repo", "view"], str(tmp_path))
     assert proc.returncode == 127
+
+
+def test_an_injected_adapter_drives_the_whole_merge(repos, tmp_path):
+    origin, host, _ = repos
+    cli, number = _fake(tmp_path, origin)
+    github = AdapterFake(cli=cli, repo_dir=str(host))
+    head = cli.sha(CHILD_EXEC)
+
+    result = merge_child_pr(str(host), number, PLAN, runner=github.gh)
+
+    assert result.merged is True and result.merge_commit == cli.sha(PLAN)
+    assert cli.merge_calls() == [["pr", "merge", str(number), "--merge", "--match-head-commit", head]]
+    assert {name for name, _ in github.calls} == {"gh"}
+    assert not any(flag in call for call in cli.calls for flag in FORBIDDEN_FLAGS)
+
+
+def test_an_injected_adapter_reaches_the_same_refusals_and_lookups(repos, tmp_path):
+    origin, host, _ = repos
+    cli, number = _fake(tmp_path, origin, base="main")
+    github = AdapterFake(cli=cli, repo_dir=str(host))
+
+    result = merge_child_pr(str(host), number, PLAN, runner=github.gh)
+
+    assert result.merged is False
+    assert "'main' is main, master or the repository default" in (result.reason or "")
+    assert cli.merge_calls() == []
+    assert lookup_default_branch(str(host), github=github) == "main"
+    assert merge_module.view_pr(str(host), str(number), github=github)["baseRefName"] == "main"
+    cli.default_branch = None
+    assert lookup_default_branch(str(host), github=github) is None
+    # An explicit runner still wins over the adapter.
+    other = FakeGitHub(origin, tmp_path, default_branch="trunk")
+    assert lookup_default_branch(str(host), runner=other, github=github) == "trunk"

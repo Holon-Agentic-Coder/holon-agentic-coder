@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-e18306b0",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T03:44:58.818525+00:00",
+  "updated_ts": "2026-11-23T03:44:58.818525+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795399258-90dc1e7b-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 3,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795388456-github-adapter-pr-ci-review/P-1795397463-CLA-CO5.5--1-extract-the-pure-ci-verdict/P-1795397766-CLA-CO5.5/_",
+    "description": "Reproduced failure across 3 executions with identical context.",
+    "action": "Review Loop halted without consensus after 3 iteration(s): resolver failed: Resolver pre-push test failed (exit code 1); failed: apps/sandbox-executor/tests/test_knowledge.py::test_consult_latency_benchmark; full output: .holon/review/verification/test.log: =========================== short test summary info ============================\nFAILED apps/sandbox-executor/tests/test_knowledge.py::test_consult_latency_benchmark\n============= 1 failed, 5640 passed, 1 skipped in 82.44s (0:01:22) =============; final verdicts: Reviewer 1 APPROVED (0/0/0); Reviewer 2 APPROVED (0/0/0); Reviewer 3 APPROVED (0/0/0)",
+    "symptoms": []
+  }
+}

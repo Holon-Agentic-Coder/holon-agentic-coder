@@ -125,9 +125,11 @@ is still reported among the shadowed layers as `<layer> (empty)`. A key that eve
 (listed after the key table, among them `HOLON_ROLE`, `HOLON_CONFIG_RESOLVED`, `HOLON_SKIP_PREFLIGHT`,
 `HOLON_IN_SANDBOX` and `HOLON_TARGET_WORKTREE`) and the retired `HOLON_REPO_URL` are refused. The project `.env` is
 repository-controlled, so it may not set a token-file reference or a host-reach key either:
-`HOLON_ANTIGRAVITY_SESSION_DIR` (a host directory mounted into the container), `HOLON_TOKEN_REDUCE`, `HOLON_PROXY_URL`,
-`HOLON_LOCAL_BASE_URL` and `HOLON_HOST_LOCAL_HOSTS` are set only in `~/.holon/.env` or the process environment. Any
-other refused key draws `Warning: <file>: ignoring <KEY>: <reason>.`, which names the key and never the value.
+`HOLON_ANTIGRAVITY_SESSION_DIR` (a host directory mounted into the container), `HOLON_AGENT_SETTINGS` and
+`HOLON_AGENT_CONFIG` (runner settings that can redirect the API endpoint), `HOLON_TOKEN_REDUCE`, `HOLON_PROXY_URL`,
+`HOLON_COHERENCE_IMAGE` (the proxy sidecar image, which sees agent credentials), `HOLON_LOCAL_BASE_URL` and
+`HOLON_HOST_LOCAL_HOSTS` are set only in `~/.holon/.env` or the process environment. Any other refused key draws
+`Warning: <file>: ignoring <KEY>: <reason>.`, which names the key and never the value.
 
 **Warnings.** A layer or token file with group or other permission bits draws
 `Warning: <path> has mode 0NNN; expected 0600. The file is left unchanged.` A project `.env` that holds a secret key and
@@ -195,6 +197,7 @@ Supported keys (secret keys are also every key ending in `_TOKEN`, `_KEY`, `_PAS
 | `HOLON_PREFLIGHT_TIMEOUT`                     | `60`                           | no     | Timeout of the pre-flight readiness probe.                                                             |
 | `HOLON_TOKEN_REDUCE`                          | unset                          | no     | Enable the token-reduction proxy when `1` or `true`.                                                   |
 | `HOLON_PROXY_URL`                             | unset                          | no     | External token-reduction proxy to attach to.                                                           |
+| `HOLON_COHERENCE_IMAGE`                       | local, else GHCR image         | no     | Image of the token-reduction proxy sidecar.                                                            |
 | `HOLON_PROXY_PORT`                            | `8080`                         | no     | Port of the token-reduction proxy.                                                                     |
 | `HOLON_PASSIVE_MONITORING`                    | unset                          | no     | Run the proxy in passive monitoring mode.                                                              |
 | `HOLON_MITM_USER`                             | unset                          | no     | User of the mitmweb dashboard.                                                                         |
@@ -217,7 +220,8 @@ Set by the host for role containers (or by a maintainer for one run), not in lay
 `HOLON_CONFIG_RESOLVED`, `HOLON_SKIP_PREFLIGHT`, `HOLON_IN_SANDBOX`, `HOLON_AGENT_ID`, `HOLON_TARGET_WORKTREE`,
 `HOLON_TARGET_BRANCH`, `HOLON_STAGE_BUDGET_SECONDS`, `HOLON_REVIEW_ITERATION`, `HOLON_REVIEW_FINDING_IDS`,
 `HOLON_REVIEW_SEVERITY`, `HOLON_ACTION_ORIGIN`, `HOLON_PR_HEAD_SHA`, `HOLON_REPLAN_FEEDBACK`,
-`HOLON_ALLOW_MODULE_BUDGET_CHANGE`, `HOLON_REPO_URL`.
+`HOLON_ALLOW_MODULE_BUDGET_CHANGE`, `HOLON_REPO_URL`, `HOLON_COHERENCE_WEB_PASSWORD` (the launcher derives it from
+`HOLON_MITM_WEB_PASSWORD` for the proxy sidecar).
 
 ---
 

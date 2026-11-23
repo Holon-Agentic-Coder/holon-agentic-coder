@@ -42,6 +42,7 @@ DOCUMENTED_KEYS: tuple[tuple[str, str, str], ...] = (
     ("HOLON_PREFLIGHT_TIMEOUT", "`60`", "Timeout of the pre-flight readiness probe."),
     ("HOLON_TOKEN_REDUCE", "unset", "Enable the token-reduction proxy when `1` or `true`."),
     ("HOLON_PROXY_URL", "unset", "External token-reduction proxy to attach to."),
+    ("HOLON_COHERENCE_IMAGE", "local, else GHCR image", "Image of the token-reduction proxy sidecar."),
     ("HOLON_PROXY_PORT", "`8080`", "Port of the token-reduction proxy."),
     ("HOLON_PASSIVE_MONITORING", "unset", "Run the proxy in passive monitoring mode."),
     ("HOLON_MITM_USER", "unset", "User of the mitmweb dashboard."),
@@ -80,4 +81,5 @@ HOST_SET_KEYS: tuple[str, ...] = (
     "HOLON_REPLAN_FEEDBACK",
     "HOLON_ALLOW_MODULE_BUDGET_CHANGE",
     "HOLON_REPO_URL",
+    "HOLON_COHERENCE_WEB_PASSWORD",
 )

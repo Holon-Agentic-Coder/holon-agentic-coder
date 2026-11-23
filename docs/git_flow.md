@@ -369,9 +369,8 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
     and the list of `children` (slug, intent and execution branch, PR number and URL, merge commit). The parent's own
     Stage 4 and Stage 5 then run as for any execution: Stage 4 raises and reviews one combined PR from the parent
     execution branch into the intent's `target_branch`, carrying the parent plan, the parent execution record and every
-    child's plan, execution record and code, and completes with `APPROVED` (ready for maintainer merge, never merging
-    itself) when that target is `main`. A child that itself decomposed is merged into this plan branch through its own
-    combined PR in the same way.
+    child's plan, execution record and code, and completes `APPROVED` for maintainer merge when that target is `main`. A
+    child that itself decomposed is merged into this plan branch through its own combined PR in the same way.
   - **Resume.** Per-child progress (`children_progress`: intent branch, execution branch, PR, status and merge commit)
     lives in the parent's Stage 3 payload and is checkpointed after every change, and each child keeps its own
     checkpoint keyed on its branch. Resuming a decomposed Stage 3 never dispatches the parent executor: the recorded

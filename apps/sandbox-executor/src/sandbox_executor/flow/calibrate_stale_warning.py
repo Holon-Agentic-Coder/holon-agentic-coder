@@ -98,10 +98,14 @@ def superseded_body(evaluated: str, cause: str = FRESH_REPORT) -> str:
     )
 
 
+def _refreshed_marker(head: str) -> str:
+    """The hidden marker that deduplicates the refreshed note for ``head``."""
+    return f"{REFRESHED_MARKER_PREFIX}{head} -->"
+
+
 def refreshed_body(head: str) -> str:
     """The once-per-head note that a rerun refreshed the report to cover ``head``."""
-    marker = f"{REFRESHED_MARKER_PREFIX}{head} -->"
-    return f"Calibration refreshed: the report now covers head `{short_sha(head)}`.\n\n{marker}"
+    return f"Calibration refreshed: the report now covers head `{short_sha(head)}`.\n\n{_refreshed_marker(head)}"
 
 
 def _thread(
@@ -187,11 +191,10 @@ def post_refreshed(
         if isinstance(thread, dict):
             return thread
         target, records = thread
-        marker = f"{REFRESHED_MARKER_PREFIX}{head} -->"
-        if any(marker in record.body for record in records):
-            return {"posted": False, "reason": "already posted for this head"}
+        if any(_refreshed_marker(head) in record.body for record in records):
+            return {"posted": False, "edited": 0, "reason": "already posted for this head"}
         posted = seams.poster_for(context)(target, refreshed_body(head))
-        return {"posted": posted, "reason": "posted" if posted else "the comment could not be posted"}
+        return {"posted": posted, "edited": 0, "reason": "posted" if posted else "the comment could not be posted"}
     except Exception as exc:
         logger.warning("Calibration refreshed comment failed: %s", exc)
         return {"posted": False, "edited": 0, "reason": "comment posting failed"}

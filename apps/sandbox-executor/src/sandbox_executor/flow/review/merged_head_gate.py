@@ -34,6 +34,7 @@ from sandbox_executor.flow.github.ci_head_checks import (
     is_pending,
 )
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, next_poll_interval
+from sandbox_executor.flow.review.consensus_withdrawal import WithdrawalSeams
 from sandbox_executor.knowledge import CredentialRedactor
 
 MAX_REASON_CHARS = 300
@@ -49,7 +50,8 @@ class MergedHeadSeams:
     rerun_dispatcher: RunRerunner | None = None
     registration_timeout: float | None = None
     head_reader: Callable[[], str | None] | None = None
-    withdrawal: Any = None  # consensus_withdrawal.WithdrawalSeams; Any keeps this module free of the import.
+    bookkeeping_move: Callable[[str, str], bool] | None = None
+    withdrawal: WithdrawalSeams | None = None
 
 
 def _run_entry(check: Mapping[str, Any]) -> dict[str, Any]:
@@ -62,7 +64,10 @@ def _run_entry(check: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _record(state: str, head_sha: str, checks: list[HeadCheck], reruns: list[str], reason: str = "") -> dict[str, Any]:
+def gate_record(
+    state: str, head_sha: str, checks: list[HeadCheck], reruns: list[str], reason: str = ""
+) -> dict[str, Any]:
+    """The gate's record: state, full head SHA, every run with its conclusion, the reruns and a bounded reason."""
     bounded = CredentialRedactor.redact_text(reason)[:MAX_REASON_CHARS]
     runs = [_run_entry(check) for check in checks]
     return {"state": state, "head_sha": head_sha, "runs": runs, "reruns": list(reruns), "reason": bounded}
@@ -70,7 +75,7 @@ def _record(state: str, head_sha: str, checks: list[HeadCheck], reruns: list[str
 
 def skipped_record(head_sha: str | None, reason: str) -> dict[str, Any]:
     """The record of a gate that did not wait, so the Stage 5 payload always carries the key."""
-    return _record("skipped", str(head_sha or ""), [], [], reason)
+    return gate_record("skipped", str(head_sha or ""), [], [], reason)
 
 
 def _settle(checks: list[HeadCheck], reruns: CancelledReruns) -> tuple[str, str] | None:
@@ -93,14 +98,14 @@ def _poll_head(context: FlowContext, repo_dir: str, head_sha: str, seams: Merged
         checks = probe(head_sha) or []
         settled = _settle(checks, reruns) if checks else None
         if settled is not None:
-            return _record(settled[0], head_sha, checks, reruns.run_ids, settled[1])
+            return gate_record(settled[0], head_sha, checks, reruns.run_ids, settled[1])
         now = policy.clock()
         if not checks and now >= registration:
-            return _record("unknown", head_sha, [], reruns.run_ids, "no check run on the head could be read")
+            return gate_record("unknown", head_sha, [], reruns.run_ids, "no check run on the head could be read")
         if now >= deadline:
             names = ", ".join(str(c.get("name")) for c in checks if is_pending(c) or is_cancelled(c))
             reason = f"checks still unsettled when the CI wait budget ran out: {names}"
-            return _record("pending", head_sha, checks, reruns.run_ids, reason)
+            return gate_record("pending", head_sha, checks, reruns.run_ids, reason)
         until = registration if not checks else deadline
         policy.sleep(max(0.0, min(interval, until - now)))
         interval = next_poll_interval(interval, policy.ceiling)
@@ -113,7 +118,7 @@ def gate_merged_head_ci(
     try:
         return _poll_head(context, repo_dir, head_sha, seams or MergedHeadSeams())
     except Exception as exc:
-        return _record("unknown", head_sha, [], [], str(exc))
+        return gate_record("unknown", head_sha, [], [], str(exc))
 
 
 def format_merged_head_ci(record: Mapping[str, Any]) -> str:

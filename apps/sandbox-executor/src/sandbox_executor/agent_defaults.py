@@ -110,8 +110,15 @@ RUNNER_CAPABILITIES: tuple[ModelCapability, ...] = (
     # Claude Runner
     ModelCapability(
         runner="claude-agent",
+        canonical_model="claude-fable-5-2",
+        aliases=["fable", "claude-fable"],
+        effort_levels=[],
+        fallback_tier="Primary (Cloud/CLI)",
+    ),
+    ModelCapability(
+        runner="claude-agent",
         canonical_model="claude-opus-5-5",
-        aliases=["opus", "claude-opus", "fable"],
+        aliases=["opus", "claude-opus"],
         effort_levels=[],
         fallback_tier="Primary (Cloud/CLI)",
     ),
@@ -583,14 +590,18 @@ def resolve_model(
             raise MissingModelError(
                 f"Unrecognised model '{model_name}' for {canonical_agent_name(agent)}.{available_str}{hint_str}"
             )
-        resolution = Resolution(model_name, "flag", "--model")
+        canonical, _ = normalise_model_and_effort(agent, model_name)
+        reason = f"--model (alias '{model_name}')" if canonical != model_name else "--model"
+        resolution = Resolution(canonical, "flag", reason)
     elif (env.get("HOLON_MODEL") or "").strip():
         model_name = env["HOLON_MODEL"].strip()
         if validate and not is_valid_model_for_runner(agent, model_name):
             raise MissingModelError(
                 f"Unrecognised model '{model_name}' for {canonical_agent_name(agent)}.{available_str}{hint_str}"
             )
-        resolution = Resolution(model_name, "env", "HOLON_MODEL")
+        canonical, _ = normalise_model_and_effort(agent, model_name)
+        reason = f"HOLON_MODEL (alias '{model_name}')" if canonical != model_name else "HOLON_MODEL"
+        resolution = Resolution(canonical, "env", reason)
     else:
         raise MissingModelError(
             "Model is mandatory: no --model or HOLON_MODEL provided. "

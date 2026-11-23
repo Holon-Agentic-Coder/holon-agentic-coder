@@ -569,14 +569,6 @@ job. It never offers a rerun. When the tests cannot be fetched, the finding says
 `pytest --durations=10`. Stage 5 never reruns CI, never changes the 300 s timing limit, and the merge stays with the
 human maintainer.
 
-A calibration report is stale only when the pull request's own change moved after the commit the report evaluated.
-Merges of the target that leave that change unchanged, ledger-only commits and calibration commits do not count. The
-flow posts the one "Calibration report is stale" comment only when no Stage 5 in the same run replaces the report (a
-standalone review loop, `--skip-calibrate`), when Stage 5 failed without publishing a report that covers the head, or
-when the head outran the Stage 5 rerun; a run that is about to rerun Stage 5 posts nothing for the report it replaces.
-Stage 5 edits an open warning to "superseded", naming the commit the fresh report evaluated, as soon as that report is
-pushed and before the final-head CI wait.
-
 #### Approval & Merge Boundary
 
 Merging to `main` is reserved for the human maintainer. On Stage 4 consensus approval (`StageStatus.APPROVED`,

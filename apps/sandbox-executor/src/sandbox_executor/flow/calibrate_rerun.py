@@ -177,7 +177,8 @@ def _rerun_while_stale(
         result = run_stage(context)
         reran += 1
         if result.status is not StageStatus.SUCCESS:
-            return result, _warn_if_stale(context, thread)
+            failed = result.status is StageStatus.FAILED and not context.dry_run
+            return result, _warn_if_stale(context, thread) if failed else None
         check = _safe_staleness(context, thread.seams)
     return _settle_rerun(context, result, check, reran, thread)
 

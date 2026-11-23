@@ -6,12 +6,13 @@
 - **Execution Branch:** `I-1795437183-sidecar-scratch-outside-worktree/P-1795440538-ANA-G4A/E-1795440894-ANA-G4A/_`
 - **Intent Branch:** `I-1795437183-sidecar-scratch-outside-worktree/_`
 - **Evaluating Agent:** `antigravity-agent/gemini-4-argon`
-- **Evaluation Timestamp:** `2026-11-23T14:07:44.000Z`
-- **Evaluated Commit SHA:** `8fc95be21cb564089afbb23e3653fa6797ce45aa`
-- **Base SHA:** `2ca7e237aa59308f03a2edef9b5b05ba68a91718`
-- **Merge-Base SHA:** `2ca7e237aa59308f03a2edef9b5b05ba68a91718`
-- **Merged Commits:** `0`
-- **Patch Size Base:** `plan`
+- **Evaluation Timestamp:** `2026-11-23T14:40:59.000Z`
+- **Evaluated Commit SHA:** `c7bbf41e334796a00da1c1c09316ddb49a25e662`
+- **Base SHA:** `f49340f9bdfc60f35e95ff01acc5c80ecc2c57c5`
+- **Merge-Base SHA:** `f49340f9bdfc60f35e95ff01acc5c80ecc2c57c5`
+- **Merged Commits:** `1`
+- **Patch Size Base:** `target_merge_base` (merge-base `f49340f9bdfc60f35e95ff01acc5c80ecc2c57c5` with the target
+  branch)
 
 ---
 

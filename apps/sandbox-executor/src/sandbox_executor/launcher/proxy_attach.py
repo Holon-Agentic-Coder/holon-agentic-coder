@@ -1,4 +1,4 @@
-"""Attaching a role container to a proxy the user already runs (the ``HOLON_TOKEN_REDUCE`` opt-in path)."""
+"""Attaching a role container to a proxy the user already runs (env opt-in or flow attach)."""
 
 import logging
 import os
@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
     """Attach the sandbox to an already-running proxy (``HOLON_PROXY_URL`` or host gateway).
 
-    Used for the ``HOLON_TOKEN_REDUCE`` opt-in path: the proxy is owned by the user, so this run
-    neither starts nor tears it down. An unreachable proxy degrades to direct egress.
+    Used for the ``HOLON_TOKEN_REDUCE`` opt-in path and the flow's attach to a detected proxy: the proxy is owned
+    by the user, so this run neither starts nor tears it down. An unreachable proxy degrades to direct egress.
     """
     proxy_url = os.getenv("HOLON_PROXY_URL") or proxy_paths._proxy_gateway_url()
     host_port = proxy_paths._proxy_host_port(proxy_url)
@@ -25,7 +25,7 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
             "Proceeding with DIRECT egress fallback."
         )
         logger.error(
-            "HOLON_TOKEN_REDUCE is enabled but HOLON_PROXY_URL is not a valid proxy URL; ignoring it. "
+            "The token-reduction proxy attach failed: HOLON_PROXY_URL is not a valid proxy URL; ignoring it. "
             "This run continues with DIRECT egress (no token reduction)."
         )
         return [], {}
@@ -47,7 +47,7 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
             probe_target,
         )
         logger.error(
-            "HOLON_TOKEN_REDUCE is enabled but proxy probe failed at %s (%s: %s). "
+            "The token-reduction proxy attach failed: the proxy probe failed at %s (%s: %s). "
             "This run continues with DIRECT egress (no token reduction).",
             probe_target,
             type(exc).__name__,
@@ -61,8 +61,8 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
             proxy_target,
         )
         logger.error(
-            "HOLON_TOKEN_REDUCE is enabled but no proxy answered an HTTP proxy request at %s. Start the proxy or "
-            "point HOLON_PROXY_URL at it; this run continues with DIRECT egress (no token reduction).",
+            "The token-reduction proxy attach failed: no proxy answered an HTTP proxy request at %s. Start the "
+            "proxy or point HOLON_PROXY_URL at it; this run continues with DIRECT egress (no token reduction).",
             proxy_target,
         )
         return [], {}

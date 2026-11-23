@@ -162,7 +162,16 @@ class TestFlowDataModels:
         assert ctx.max_review_iterations == 25
         assert ctx.mitm_web is False
         assert ctx.token_reduce is False
+        assert ctx.proxy_attach is False
         assert ctx.allow_overlap is False
+
+    def test_proxy_attach_survives_the_checkpoint_round_trip(self):
+        ctx = FlowContext(token_reduce=False, proxy_attach=True)
+        d = ctx.to_dict()
+        assert d["proxy_attach"] is True
+        reconstructed = FlowContext.from_dict(d)
+        assert reconstructed.proxy_attach is True
+        assert reconstructed.token_reduce is False
 
     def test_atomic_checkpoint_save_and_load(self, tmp_path):
         ctx = FlowContext(

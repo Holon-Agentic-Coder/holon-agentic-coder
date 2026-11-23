@@ -62,6 +62,33 @@ def apply_run_switches(context: Any, args: argparse.Namespace) -> None:
     context.auto_calibrate = not context.skip_calibrate
 
 
+def apply_proxy_switches(
+    context: Any,
+    spawn_sidecar: bool,
+    attach_running_proxy: bool,
+    mitm_web: bool,
+    requested: tuple[bool, bool] = (False, False),
+) -> None:
+    """Set the proxy routing on a resumed ``context`` from this run, logging each dropped stored sidecar opt-in.
+
+    ``spawn_sidecar`` and ``attach_running_proxy`` come from this run's resolved proxy choice, and ``mitm_web`` is
+    kept only when this run passes ``--mitm-web`` and the choice spawns a sidecar, so a checkpoint never spawns one.
+    ``requested`` is whether this run asked for ``(token_reduce, mitm_web)``: a dropped opt-in this run asked for was
+    overridden by the ``HOLON_TOKEN_REDUCE`` opt-out, and is logged as such rather than as a missing flag.
+    """
+    for name, given, asked in zip(("token_reduce", "mitm_web"), (spawn_sidecar, mitm_web), requested, strict=True):
+        if getattr(context, name) and not given:
+            flag = "--" + name.replace("_", "-")
+            if asked:
+                message = f"The HOLON_TOKEN_REDUCE opt-out overrides the stored {name} from the checkpoint and {flag}."
+            else:
+                message = f"Resume dropped the stored {name} from the checkpoint: this run did not pass {flag}."
+            logger.warning(message)
+            context.log(message)
+        setattr(context, name, given)
+    context.proxy_attach = attach_running_proxy
+
+
 def resolve_resumed_runner(args: argparse.Namespace, context: Any, checkpoint_path: str) -> tuple[str, str]:
     """The runner and model for a checkpoint resume: ``--agent`` / ``--model`` when given, else the checkpoint's."""
     recorded = f"recorded in {checkpoint_path}"

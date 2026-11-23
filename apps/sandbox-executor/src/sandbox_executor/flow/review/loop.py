@@ -192,7 +192,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     effective_dry_run = bool(dry_run or context.dry_run)
 
     proxy_env: dict[str, str] = {}
-    if context.token_reduce:
+    if context.token_reduce or getattr(context, "proxy_attach", False):
         try:
             from sandbox_executor.launcher import sidecar
 

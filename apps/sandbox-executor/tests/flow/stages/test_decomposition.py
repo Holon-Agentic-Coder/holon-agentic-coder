@@ -20,6 +20,7 @@ from sandbox_executor.flow import (
     run_intent_stage,
     run_plan_stage,
 )
+from sandbox_executor.launcher.coherence import FlowProxyChoice
 
 from tests.flow.decomposition_fakes import decomposed_flow, parent_ctx
 from tests.flow.helpers import (
@@ -31,6 +32,8 @@ from tests.flow.helpers import (
     stage4_halts_at_consensus,
 )
 from tests.flow.lookup_patch import patch_lookup_sites
+
+_NO_PROXY = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
 
 
 @pytest.mark.usefixtures("no_origin_reconcile")
@@ -506,6 +509,7 @@ class TestEntropyBudgetHandoffInFlow:
             "dry_run": True,
             "auto_calibrate": False,
             "token_reduce": True,
+            "proxy_attach": True,
             "skip_push": True,
             "skip_calibrate": True,
             "max_review_iterations": 7,
@@ -555,8 +559,9 @@ class TestEntropyBudgetHandoffInFlow:
         for name, value in parent_values.items():
             assert getattr(defaults, name) != value, f"{name}: parent value must differ from the default"
 
-        # Pin proxy detection to the opposite of the parent's token_reduce so a dropped copy cannot pass by detection.
-        with patch("sandbox_executor.launcher.sidecar.detect_holon_coherence", return_value=False):
+        # Pin proxy detection to the opposite of the parent's token_reduce and proxy_attach so a dropped copy cannot
+        # pass by detection.
+        with patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY):
             child = flow_module._child_context(parent, child_intent)
 
         assert set(expected) == {f.name for f in dataclasses.fields(FlowContext)}, "classify every new field"

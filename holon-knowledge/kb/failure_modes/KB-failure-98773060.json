@@ -1,0 +1,26 @@
+{
+  "kb_id": "KB-failure-98773060",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-22T23:37:40.601117+00:00",
+  "updated_ts": "2026-11-22T23:37:40.601117+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "failure",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in unknown target",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "unknown action",
+    "symptoms": []
+  }
+}

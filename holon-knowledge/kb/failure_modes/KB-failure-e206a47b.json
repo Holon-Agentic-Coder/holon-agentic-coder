@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-e206a47b",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-22T23:37:41.419432+00:00",
+  "updated_ts": "2026-11-22T23:37:41.419432+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-GATE-1795265565-c33ffa31"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795222649-antigravity-tmpfs-empty-diff/P-1795222667-CLA-CO5.5/E-1795251360-ANA-G3.8F/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Approved consensus not posted for I-1795222649-antigravity-tmpfs-empty-diff/P-1795222667-CLA-CO5.5/E-1795251360-ANA-G3.8F/_: the head conflicts with the target branch",
+    "symptoms": [
+      "target branch merged; approval must be re-earned on the new head"
+    ]
+  }
+}

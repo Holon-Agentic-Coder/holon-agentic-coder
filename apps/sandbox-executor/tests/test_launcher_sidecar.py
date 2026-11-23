@@ -397,6 +397,7 @@ def test_setup_token_reduction_proxy_chmod_oserror_fallback(host_paths, monkeypa
 
 
 def test_setup_token_reduction_proxy_relative_paths(host_paths, monkeypatch):
+    monkeypatch.chdir(host_paths)
     monkeypatch.setenv("WIRE_LOG_DIR", "custom/rel_wire_logs")
     monkeypatch.setenv("CACHE_DIR", "custom/rel_cache")
     monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
@@ -414,9 +415,9 @@ def test_setup_token_reduction_proxy_relative_paths(host_paths, monkeypatch):
     host_wire = wire_mounts[0].split(":")[0]
     host_cache = cache_mounts[0].split(":")[0]
     assert os.path.isabs(host_wire)
-    assert host_wire.endswith("custom/rel_wire_logs")
+    assert host_wire == str(host_paths / "custom" / "rel_wire_logs")
     assert os.path.isabs(host_cache)
-    assert host_cache.endswith("custom/rel_cache")
+    assert host_cache == str(host_paths / "custom" / "rel_cache")
 
 
 def test_mitm_web_password_support(host_paths, monkeypatch):

@@ -8,10 +8,6 @@
 # The single uv pin for every image built from holon-base; override with --set *.args.UV_VERSION=<x.y.z>.
 ARG UV_VERSION=0.13.7
 
-# The single beads (bd) issue-tracker pin for every image built from holon-base; override with
-# --set *.args.BD_VERSION=<x.y.z> or the BD_VERSION variable in docker-bake.hcl.
-ARG BD_VERSION=1.3.4
-
 # --- uv source (not a build target): the official distroless uv image, multi-arch and pinned ---
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
 
@@ -40,25 +36,6 @@ RUN dpkgArch="$(dpkg --print-architecture)" && \
 # Bake in Prettier (the version formatting.py pins): the resolver's pre-push Markdown gate runs 'npx prettier', which
 # then resolves offline instead of downloading it inside the container.
 RUN npm install -g --no-audit --no-fund prettier@3.8.4
-
-# Install the pinned beads (bd) issue tracker (multi-architecture, checksum-verified against the
-# release's published checksums.txt); 'bd version' is the build-time proof it runs offline.
-ARG BD_VERSION
-RUN dpkgArch="$(dpkg --print-architecture)" && \
-    case "${dpkgArch##*-}" in \
-      amd64) ARCH='amd64';; \
-      arm64) ARCH='arm64';; \
-      *) echo "unsupported architecture"; exit 1 ;; \
-    esac && \
-    cd /tmp && \
-    curl -fsSL "https://github.com/steveyegge/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_${ARCH}.tar.gz" -o "beads_${BD_VERSION}_linux_${ARCH}.tar.gz" && \
-    curl -fsSL "https://github.com/steveyegge/beads/releases/download/v${BD_VERSION}/checksums.txt" -o beads-checksums.txt && \
-    grep " beads_${BD_VERSION}_linux_${ARCH}.tar.gz\$" beads-checksums.txt | sha256sum -c - && \
-    mkdir beads-extract && \
-    tar -xzf "beads_${BD_VERSION}_linux_${ARCH}.tar.gz" -C beads-extract && \
-    install -m 0755 "$(find beads-extract -maxdepth 2 -type f -name bd | head -n 1)" /usr/local/bin/bd && \
-    rm -rf "beads_${BD_VERSION}_linux_${ARCH}.tar.gz" beads-checksums.txt beads-extract && \
-    bd version
 
 # Install the pinned uv on the PATH of every user; the resolver's pre-push verification runs 'uv run task ...'
 COPY --from=uv-bin /uv /uvx /usr/local/bin/

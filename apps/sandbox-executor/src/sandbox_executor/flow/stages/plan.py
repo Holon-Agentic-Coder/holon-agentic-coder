@@ -27,6 +27,8 @@ from sandbox_executor.flow.stages.plan_support import (
     replan_feedback_env,
 )
 from sandbox_executor.flow.stages.stage_support import consult_knowledge, stage_success
+from sandbox_executor.flow.target_sync_hooks import at_stage_boundary, consume_target_merge_notice
+from sandbox_executor.flow.target_sync_result import SyncBoundary
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.ledger import build_plan_id
 from sandbox_executor.naming import MissingTickerError, model_code, ticker_for
@@ -84,6 +86,8 @@ class PlanStage:
         if self.context.skip_push:
             return self.fail(SKIP_PUSH_DISPATCH_ERROR)
         target_branch = self.context.intent_data.get("target_branch", "main")
+        if (failure := at_stage_boundary(self.context, FlowStage.PLAN, SyncBoundary.STAGE_START)) is not None:
+            return failure
         check_and_resolve_stage_conflicts(
             self.repo_dir, target_branch=target_branch, stage_name="plan", branch=self.context.intent_branch
         )
@@ -100,7 +104,7 @@ class PlanStage:
         """Dispatch the planner container and publish every plan branch it committed."""
         context = self.context
         replan_feedback = str(context.intent_data.get("replan_feedback") or "").strip()
-        with replan_feedback_env(replan_feedback):
+        with replan_feedback_env(replan_feedback, consume_target_merge_notice(context)):
             attempt_before = snapshot_plan_attempt(self.repo_dir, context.intent_branch)
             exit_code = _dispatch_role(context, "planner", [context.intent_branch, context.agent, context.model])
         # The host pushes every plan branch the container committed, a failed planner's salvage commit included.
@@ -154,13 +158,7 @@ class PlanStage:
 
 
 def run_plan_stage(context: FlowContext) -> StageResult:
-    """Execute Stage 2: dispatch the planner agent and adopt the plan branch it committed.
-
-    The host fetches the intent branch; the planner container (the same one 'holon plan' launches) authors
-    plans/P-*.md and appends plans.jsonl on a plan branch in the mounted worktree; the host pushes that branch. The
-    flow never writes a plan itself: if no planner produced a plan file,
-    the stage fails. Downstream stages operate unattended and never stall on interactive questions.
-    """
+    """Execute Stage 2: dispatch the planner agent and adopt the plan branch it committed."""
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 2: Plan Generation")
 
@@ -187,6 +185,8 @@ def run_plan_stage(context: FlowContext) -> StageResult:
     metrics = plan_metrics(stage.repo_dir, stage.plan_content, stage.plan_row)
     context.plan_branch = stage.plan_branch
     _track_local_branch(context, stage.plan_branch)
+    if (end_failure := at_stage_boundary(context, FlowStage.PLAN, SyncBoundary.STAGE_END)) is not None:
+        return end_failure
     ev_text = f"{metrics['ev']:.2f}" if isinstance(metrics.get("ev"), int | float) else "n/a"
     context.log(
         f"Stage 2 completed: planner agent produced '{stage.plan_file}' on '{stage.plan_branch}' (EV={ev_text})."

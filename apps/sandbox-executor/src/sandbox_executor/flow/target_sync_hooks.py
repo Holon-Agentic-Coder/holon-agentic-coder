@@ -11,11 +11,10 @@ import os
 from datetime import UTC, datetime
 
 from sandbox_executor.flow.base_files import base_branch_name
-from sandbox_executor.flow.calibrate_sync import record_starting_branch
 from sandbox_executor.flow.conflict_resolver_role import conflict_code_resolver
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
-from sandbox_executor.flow.git_refs import _resolve_branch_ref
+from sandbox_executor.flow.git_refs import _resolve_branch_ref, _track_local_branch
 from sandbox_executor.flow.target_probe import TargetProbe, TargetProbeError
 from sandbox_executor.flow.target_sync import sync_with_target
 from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest, SyncResult
@@ -86,18 +85,28 @@ def _can_sync_worktree(worktree: str, target_branch: str) -> bool:
     return res.returncode == 0 and isinstance(res.stdout, str) and bool(res.stdout.strip())
 
 
-def _checkout_active_branch(context: FlowContext, branch: str) -> str | None:
-    """Ensure ``branch`` is checked out at its latest ref in ``context.target_worktree``; return an error or None."""
+def _checkout_active_branch(context: FlowContext, branch: str) -> tuple[str, bool, str | None]:
+    """Check out ``branch`` at its latest ref in ``context.target_worktree``; return ``(prev, detached, error)``."""
     worktree = context.target_worktree
     ref = _resolve_branch_ref(worktree, branch, prefer_remote=True)
     if ref is None:
-        return None
-    record_starting_branch(context)
+        return "", False, None
+    current = _checked_out_branch(worktree)
+    detached = not current
+    prev = current or (run_git(["rev-parse", "HEAD"], cwd=worktree, check=False).stdout or "").strip()
     res = run_git(["checkout", "-q", "-B", branch, ref], cwd=worktree, check=False)
     if res.returncode != 0:
         detail = (res.stderr or "").strip() if isinstance(res.stderr, str) else ""
-        return detail or f"could not check out '{branch}' from '{ref}'"
-    return None
+        return prev, detached, detail or f"could not check out '{branch}' from '{ref}'"
+    return prev, detached, None
+
+
+def _restore_checked_out_branch(worktree: str, prev: str, detached: bool, active_branch: str) -> None:
+    """Return ``worktree`` to ``prev`` if the sync checked out ``active_branch`` from another ref."""
+    if not prev or prev == active_branch:
+        return
+    args = ["checkout", "-q", "--detach", prev] if detached else ["checkout", "-q", prev]
+    run_git(args, cwd=worktree, check=False)
 
 
 def _blocked_stage_failure(
@@ -136,7 +145,8 @@ def _run_boundary_sync(
         return noop, None
     if _resolve_branch_ref(worktree, branch, prefer_remote=True) is None:
         return noop, None
-    if (checkout_err := _checkout_active_branch(context, branch)) is not None:
+    prev, detached, checkout_err = _checkout_active_branch(context, branch)
+    if checkout_err is not None:
         blocked = SyncResult("blocked", "", "", "", error=checkout_err)
         return blocked, _blocked_stage_failure(context, stage, boundary, branch, blocked)
     last_probe: TargetProbe | None = getattr(context, _PROBE_ATTR, None)
@@ -156,9 +166,12 @@ def _run_boundary_sync(
     except TargetProbeError as exc:
         blocked = SyncResult("blocked", "", "", "", error=str(exc))
         return blocked, _blocked_stage_failure(context, stage, boundary, branch, blocked)
+    finally:
+        _restore_checked_out_branch(worktree, prev, detached, branch)
     if result.probe is not None:
         setattr(context, _PROBE_ATTR, result.probe)
     if result.status == "merged":
+        _track_local_branch(context, branch)
         notice = format_target_merge_notice(result.target_sha, result.changed_paths)
         setattr(context, _NOTICE_ATTR, notice)
     if result.status == "blocked":

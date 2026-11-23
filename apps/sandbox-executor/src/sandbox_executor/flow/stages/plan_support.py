@@ -15,6 +15,7 @@ from sandbox_executor.budgets import ENV_REPLAN_FEEDBACK
 from sandbox_executor.entrypoint.planner import load_metrics_config, parse_metrics
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.stages.stage_support import stage_success
+from sandbox_executor.flow.target_sync_hooks import ENV_TARGET_MERGED_NOTICE
 from sandbox_executor.plan_paths import plan_file_rel
 
 _ROW_METRIC_KEYS = ("p_success", "entropy", "impact", "cost", "learning_value", "ev")
@@ -67,19 +68,21 @@ def plan_metrics(repo_dir: str, plan_content: str, plan_row: dict[str, Any]) -> 
 
 
 @contextlib.contextmanager
-def replan_feedback_env(feedback: str) -> Iterator[None]:
-    """Set the replan feedback for the planner dispatch when non-empty, and restore the previous value afterwards.
+def replan_feedback_env(feedback: str, target_merged_notice: str = "") -> Iterator[None]:
+    """Set the replan feedback and target-merge notice for the planner dispatch when non-empty, then restore.
 
     Forwarded into the planner container like every HOLON_* variable; never written to a ledger.
     """
-    previous = os.environ.get(ENV_REPLAN_FEEDBACK)
-    if feedback:
-        os.environ[ENV_REPLAN_FEEDBACK] = feedback
+    updates = {ENV_REPLAN_FEEDBACK: feedback, ENV_TARGET_MERGED_NOTICE: target_merged_notice}
+    previous = {key: os.environ.get(key) for key, val in updates.items() if val}
+    for key, val in updates.items():
+        if val:
+            os.environ[key] = val
     try:
         yield
     finally:
-        if feedback:
-            if previous is None:
-                os.environ.pop(ENV_REPLAN_FEEDBACK, None)
+        for key, prev in previous.items():
+            if prev is None:
+                os.environ.pop(key, None)
             else:
-                os.environ[ENV_REPLAN_FEEDBACK] = previous
+                os.environ[key] = prev

@@ -449,6 +449,9 @@ Include metrics in this format:
 
             if replan_feedback:
                 f.write(build_replan_paragraph(replan_feedback, entropy_budget))
+            merged_notice = os.getenv("HOLON_TARGET_MERGED_NOTICE", "").strip()
+            if merged_notice:
+                f.write(f"\n\n{merged_notice}\n")
 
         with open(intent_file, "w") as f:
             json.dump({**intent_data, "replan_feedback": replan_feedback} if replan_feedback else intent_data, f)

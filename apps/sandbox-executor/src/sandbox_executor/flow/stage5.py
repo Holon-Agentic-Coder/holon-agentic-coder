@@ -8,8 +8,6 @@ knowledge/wisdom promotion (``promote_pending_candidates``). The callers pass th
 
 from __future__ import annotations
 
-import contextlib
-import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -17,6 +15,7 @@ from typing import Any
 
 from sandbox_executor.calibration import LEDGER_EXECUTIONS_REL, CalibrationFormatError
 from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.flow.stage5_ledger import recorded_verdicts
 from sandbox_executor.knowledge import ActionIndexDatabase
 from sandbox_executor.ledger import LedgerRewriteError
 
@@ -65,20 +64,6 @@ def _reconciliation(status: str, verdict: str | None, rows_appended: int = 0) ->
     return {"status": status, "verdict": verdict, "rows_appended": rows_appended}
 
 
-def _already_reconciled(ledger_path: str, execution_branch: str) -> bool:
-    """True when the ledger already holds a ``reconciliation`` event for ``execution_branch``."""
-    wanted = {"event_type": "reconciliation", "parent_action_id": execution_branch}
-    with open(ledger_path, encoding="utf-8") as f:
-        return any(wanted.items() <= _json_row(line).items() for line in f)
-
-
-def _json_row(line: str) -> dict[str, Any]:
-    with contextlib.suppress(ValueError):
-        row = json.loads(line)
-        return row if isinstance(row, dict) else {}
-    return {}
-
-
 def _reconcile_execution(
     context: FlowContext, steps: Stage5Steps, verdict: str | None, committed: bool
 ) -> dict[str, Any]:
@@ -93,8 +78,17 @@ def _reconcile_execution(
     if verdict is None:
         context.log("Stage 5 reconciliation and promotion skipped: no execution verdict was found in the ledger.")
         return _reconciliation("skipped_no_verdict", verdict)
-    if _already_reconciled(executions_file, str(context.execution_branch)):
+    recorded = recorded_verdicts(executions_file, str(context.execution_branch))
+    if recorded:
         context.log(f"Stage 5 reconciliation already recorded for '{context.execution_branch}': nothing appended.")
+        if verdict not in recorded:
+            context.log(
+                f"Stage 5 verdict '{verdict}' differs from the recorded reconciliation verdict '{recorded[-1]}' "
+                f"for '{context.execution_branch}': the recorded verdict is kept."
+            )
+        # Commits rows an earlier failed calibration left uncommitted; a no-op when there are none.
+        if committed:
+            steps.commit_reconciliation(context, repo_dir)
         return _reconciliation("already_recorded", verdict)
     result = steps.reconcile(
         ledger_path=executions_file,

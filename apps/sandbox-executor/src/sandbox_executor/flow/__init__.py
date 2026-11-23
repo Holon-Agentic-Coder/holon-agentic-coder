@@ -139,6 +139,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.review.verdict": "review_loop_approved review_summary_lines",
     "sandbox_executor.flow.review.workspace": "HOST_REVIEW_REFUSAL reviewers_sandboxed",
     "sandbox_executor.flow.stage5": "Stage5Outcome Stage5Steps run_stage5 standalone_context",
+    "sandbox_executor.flow.stage5_ledger": "already_reconciled recorded_verdicts",
     "sandbox_executor.flow.stage5_verdict": "resolve_execution_verdict",
     "sandbox_executor.flow.stage_conflict_resolution": "ConflictKind classify_conflicts resolve_classified_conflicts",
     "sandbox_executor.flow.stage_conflicts": (
@@ -336,6 +337,7 @@ __all__ = [
     "admission_lock_path",
     "admission_stage_failure",
     "admitted_record",
+    "already_reconciled",
     "answered_by_id",
     "answered_by_text",
     "base_branch_name",
@@ -425,6 +427,7 @@ __all__ = [
     "record_review_action",
     "record_starting_branch",
     "recorded_test_pass_rate",
+    "recorded_verdicts",
     "redact_agent_secrets",
     "refresh_already_recorded",
     "refresh_due",

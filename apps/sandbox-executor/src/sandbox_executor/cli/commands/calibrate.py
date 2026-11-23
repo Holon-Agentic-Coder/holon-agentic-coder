@@ -69,11 +69,11 @@ def _run_stage5(args: argparse.Namespace) -> Stage5Outcome:
     verdict = None if report_only else resolve_execution_verdict(args.target_worktree, args.execution_branch)
 
     def calibrate(**kwargs: Any) -> CalibrationReport:
-        # The command's own run_calibrate call, unchanged: cli.run_calibrate read at call time, no flow log_fn.
+        # cli.run_calibrate read at call time, no flow log_fn; the command prints the combined JSON itself.
         return cli.run_calibrate(
             execution_branch=kwargs["execution_branch"],
             target_worktree=kwargs["target_worktree"],
-            json_output=args.json,
+            json_output=False,
             skip_commit=kwargs["skip_commit"],
         )
 

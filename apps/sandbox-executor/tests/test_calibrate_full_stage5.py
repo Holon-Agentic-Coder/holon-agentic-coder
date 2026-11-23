@@ -13,12 +13,13 @@ import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sandbox_executor.cli.commands import calibrate as calibrate_command
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
-from sandbox_executor.flow.stage5 import _already_reconciled
+from sandbox_executor.flow.stage5 import _reconcile_execution
+from sandbox_executor.flow.stage5_ledger import already_reconciled
 from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
 from sandbox_executor.knowledge.index import ActionIndexDatabase
 from sandbox_executor.ref_names import calibration_branch
@@ -259,4 +260,35 @@ def test_missing_summary_row_skips_reconciliation_without_guessing(repo: SimpleN
 def test_already_reconciled_guard(tmp_path: Path, rows: list, expected: bool) -> None:
     ledger = tmp_path / "executions.jsonl"
     ledger.write_text("".join((row if isinstance(row, str) else json.dumps(row)) + "\n" for row in rows))
-    assert _already_reconciled(str(ledger), EXEC) is expected
+    assert already_reconciled(str(ledger), EXEC) is expected
+
+
+def _recorded_ledger_context(tmp_path: Path) -> FlowContext:
+    ledger = tmp_path / LEDGER_REL
+    ledger.parent.mkdir(parents=True)
+    row = {"event_type": "reconciliation", "parent_action_id": EXEC, "verdict": "success"}
+    ledger.write_text(json.dumps(row) + "\n")
+    return FlowContext(target_worktree=str(tmp_path), execution_branch=EXEC, dry_run=False, token_reduce=False)
+
+
+@pytest.mark.parametrize("committed", [True, False])
+def test_already_recorded_commits_leftover_rows_only_when_calibration_succeeded(
+    tmp_path: Path, committed: bool
+) -> None:
+    steps = MagicMock()
+    context = _recorded_ledger_context(tmp_path)
+
+    result = _reconcile_execution(context, steps, "success", committed)
+
+    assert result["status"] == "already_recorded"
+    steps.reconcile.assert_not_called()
+    assert steps.commit_reconciliation.called is committed
+
+
+def test_already_recorded_logs_a_verdict_mismatch(tmp_path: Path) -> None:
+    context = _recorded_ledger_context(tmp_path)
+
+    result = _reconcile_execution(context, MagicMock(), "failure", True)
+
+    assert result == {"status": "already_recorded", "verdict": "failure", "rows_appended": 0}
+    assert any("'failure' differs from the recorded reconciliation verdict 'success'" in line for line in context.logs)

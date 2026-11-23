@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-38048f98",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T10:20:55.242367+00:00",
+  "updated_ts": "2026-11-23T10:20:55.242367+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-RES-1795423801-6099b6cc"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795420649-no-fallback-calibration-report/P-1795421790-CLA-CO5.5/E-1795421974-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding R1-F1 left open (no evidenced adjudication)",
+    "symptoms": []
+  }
+}

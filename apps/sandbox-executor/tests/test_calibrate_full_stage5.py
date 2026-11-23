@@ -270,24 +270,21 @@ def _recorded_ledger_context(tmp_path: Path) -> FlowContext:
     return FlowContext(target_worktree=str(tmp_path), execution_branch=EXEC, dry_run=False, token_reduce=False)
 
 
-@pytest.mark.parametrize("committed", [True, False])
-def test_already_recorded_commits_leftover_rows_only_when_calibration_succeeded(
-    tmp_path: Path, committed: bool
-) -> None:
+def test_already_recorded_commits_leftover_rows(tmp_path: Path) -> None:
     steps = MagicMock()
     context = _recorded_ledger_context(tmp_path)
 
-    result = _reconcile_execution(context, steps, "success", committed)
+    result = _reconcile_execution(context, steps, "success")
 
     assert result["status"] == "already_recorded"
     steps.reconcile.assert_not_called()
-    assert steps.commit_reconciliation.called is committed
+    steps.commit_reconciliation.assert_called_once()
 
 
 def test_already_recorded_logs_a_verdict_mismatch(tmp_path: Path) -> None:
     context = _recorded_ledger_context(tmp_path)
 
-    result = _reconcile_execution(context, MagicMock(), "failure", True)
+    result = _reconcile_execution(context, MagicMock(), "failure")
 
     assert result == {"status": "already_recorded", "verdict": "failure", "rows_appended": 0}
     assert any("'failure' differs from the recorded reconciliation verdict 'success'" in line for line in context.logs)

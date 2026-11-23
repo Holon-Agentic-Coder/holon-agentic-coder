@@ -143,8 +143,8 @@ class TestStageTargetsIgnoreOperatorHead:
         ctx.skip_push = True
         main_tip = _git(host, "rev-parse", "main")
 
-        # A resume entering at Stage 5: the operator is still on 'main' and calibration throws,
-        # so the fallback report must still be written into the execution branch's tree, never 'main'.
+        # A resume entering at Stage 5: the operator is still on 'main' and calibration throws. Calibration must
+        # still run on the execution branch, never 'main', and the failed stage writes no report.
         heads: list[str] = []
 
         def _boom(**_kwargs: Any) -> None:
@@ -154,10 +154,10 @@ class TestStageTargetsIgnoreOperatorHead:
         with patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=_boom):
             res = run_calibrate_stage(ctx)
 
-        assert res.status == StageStatus.SUCCESS
+        assert res.status == StageStatus.FAILED
         assert heads == [ctx.execution_branch]
         assert _git(host, "rev-parse", "--abbrev-ref", "HEAD") == ctx.execution_branch
-        assert list((host / "plans").rglob("P-*_calibration.md")), "fallback report missing from the execution tree"
+        assert not list((host / "plans").rglob("P-*_calibration.md")), "a failed calibration must write no report"
         assert _git(host, "log", "-1", "--format=%H", "main") == main_tip
 
     def test_calibrate_stage_fails_cleanly_when_execution_branch_cannot_be_checked_out(self, flow_repos, tmp_path):

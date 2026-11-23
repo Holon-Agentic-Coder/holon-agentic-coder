@@ -162,7 +162,7 @@ def test_parse_actual_metrics_diff_argv_ends_with_a_separator(
     if diff_base == "plan":
         assert ["rev-list", "--count", "--merges", f"refs/heads/{plan_ref}..refs/heads/{EXEC}", "--"] in calls
     else:
-        assert not [c for c in calls if c[0] == "merge-base"]
+        assert not [c for c in calls if c[0] == "merge-base" and "--is-ancestor" not in c]
 
 
 @pytest.mark.parametrize("case", ["local", "absent"])

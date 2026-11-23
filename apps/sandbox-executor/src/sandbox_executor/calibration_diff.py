@@ -1,5 +1,15 @@
 """Stage 5 patch-size diff range: which qualified revisions the calibration diff compares, and how it is labelled.
 
+The patch is measured from the merge-base of the execution head with the intent's target branch (``origin/<target>``
+first, then the local ``<target>``), labelled ``target_merge_base``. The caller's three-dot diff (``base...head``)
+compares against ``git merge-base base head``, which is derived from the current head on every run, so files that
+arrived only through a merge of the target branch into the execution branch are never counted. The plan-branch base
+below is used when no target branch resolves, when the target already contains the execution head, or when the plan
+branch (or, when it is gone, the first resolvable fallback branch) already contains the target merge-base: its base is
+then the newer one. Known limitation: once the PR is merged into the target with a merge commit, a re-run falls back
+to the plan-branch base, so files the execution branch took in from the target since the plan branch are counted
+again; calibrate before the merge (as Stage 5 does) for a target-relative patch size.
+
 A decomposed flow calibrates nested branches such as ``I-.../P-.../E-.../_``. Every revision handed to git here is a
 fully qualified ref or a SHA, followed by ``--`` where git accepts one, so a plan branch the host cannot resolve never
 reaches ``git diff`` as a bare name (git would report exit 128 "ambiguous argument"). An unresolvable plan branch
@@ -10,7 +20,9 @@ degrades the measurement to the merge-base with a fallback branch (the intent br
 
 from __future__ import annotations
 
+import json
 import logging
+import subprocess
 from typing import Any
 
 from sandbox_executor.git import run_git
@@ -18,13 +30,80 @@ from sandbox_executor.git_revisions import qualify_branch_revision, revision_arg
 
 logger = logging.getLogger(__name__)
 
+INTENTS_LEDGER_REL = "holon-knowledge/ledger/intents.jsonl"
+DEFAULT_TARGET_BRANCH = "main"
+
+DIFF_BASE_TARGET_MERGE_BASE = "target_merge_base"
 DIFF_BASE_PLAN = "plan"
 DIFF_BASE_MERGE_BASE = "merge_base_fallback"
 DIFF_BASE_FIRST_PARENT = "first_parent_fallback"
 
 
+def intent_target_branch(intent_branch: str, head_rev: str, target_worktree: str) -> str:
+    """The ``target_branch`` of the intent's latest row in the intents ledger at ``head_rev``, else ``main``.
+
+    A decomposed child intent targets its parent's plan branch, so its patch is measured against that branch.
+    """
+    intent = intent_branch.removesuffix("/_").strip()
+    res = run_git(["show", f"{head_rev}:{INTENTS_LEDGER_REL}"], cwd=target_worktree, check=False, timeout=30)
+    if not intent or res.returncode != 0:
+        return DEFAULT_TARGET_BRANCH
+    target = ""
+    for line in res.stdout.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and str(row.get("branch") or "").removesuffix("/_") == intent:
+            target = str(row.get("target_branch") or "") or target
+    return target or DEFAULT_TARGET_BRANCH
+
+
+def target_branch_refs(target_branch: str) -> tuple[str, ...]:
+    """The qualified refs to try for the target branch: the origin tracking ref first, then the local branch."""
+    bare = target_branch.strip().removeprefix("refs/heads/").removeprefix("origin/")
+    return (f"refs/remotes/origin/{bare}", f"refs/heads/{bare}") if bare else ()
+
+
+def _verified(target_worktree: str, revision: str) -> bool:
+    res = run_git(["rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"], cwd=target_worktree, check=False)
+    return res.returncode == 0
+
+
+def _is_ancestor(target_worktree: str, ancestor: str, descendant: str) -> bool:
+    res = run_git(["merge-base", "--is-ancestor", ancestor, descendant], cwd=target_worktree, check=False)
+    return res.returncode == 0
+
+
+def _target_merge_base_ref(
+    target_rev: str, target_worktree: str, target_refs: tuple[str, ...], plan_rev: str | None
+) -> str | None:
+    """The first target ref to measure from, or None to keep the plan-branch base.
+
+    A ref is skipped when it does not verify, already contains the execution head (a merged PR) or shares no history
+    with it (no merge-base). The plan branch is
+    kept when it already contains the target merge-base: its base is then the newer one (a decomposed child whose plan
+    branch carries its parent's integrated work, or an execution branch that never merged the target).
+    """
+    for ref in target_refs:
+        if not _verified(target_worktree, ref) or _is_ancestor(target_worktree, target_rev, ref):
+            continue
+        res = run_git(["merge-base", ref, target_rev], cwd=target_worktree, check=False, timeout=30)
+        merge_base = res.stdout.strip() if res.returncode == 0 else ""
+        if not merge_base:
+            continue
+        if plan_rev and _is_ancestor(target_worktree, merge_base, plan_rev):
+            return None
+        return ref
+    return None
+
+
 def patch_diff_range(
-    base_ref: str, target_ref: str, target_worktree: str, fallback_refs: tuple[str, ...] = ()
+    base_ref: str,
+    target_ref: str,
+    target_worktree: str,
+    fallback_refs: tuple[str, ...] = (),
+    target_refs: tuple[str, ...] = (),
 ) -> tuple[str, str, str]:
     """Choose the qualified revisions the patch-size diff compares, and label how the size is measured.
 
@@ -40,13 +119,20 @@ def patch_diff_range(
         target_ref: Execution branch, resolved ref or SHA.
         target_worktree: Git worktree to resolve in.
         fallback_refs: Branches to measure from, in order, when ``base_ref`` cannot be resolved.
+        target_refs: Qualified refs of the intent's target branch (``target_branch_refs``), tried first.
 
     Returns:
-        ``(base revision, target revision, label)``: the label is ``DIFF_BASE_PLAN`` or ``DIFF_BASE_MERGE_BASE`` with
-        a qualified base, or ``DIFF_BASE_FIRST_PARENT`` with an empty base revision.
+        ``(base revision, target revision, label)``: the label is ``DIFF_BASE_TARGET_MERGE_BASE``, ``DIFF_BASE_PLAN``
+        or ``DIFF_BASE_MERGE_BASE`` with a qualified base, or ``DIFF_BASE_FIRST_PARENT`` with an empty base revision.
     """
     target_rev = qualify_branch_revision(target_worktree, target_ref) or target_ref
     base_rev = qualify_branch_revision(target_worktree, base_ref) if base_ref else None
+    anchor_rev = base_rev or next(
+        (rev for ref in fallback_refs if ref and (rev := qualify_branch_revision(target_worktree, ref))), None
+    )
+    target_base = _target_merge_base_ref(target_rev, target_worktree, target_refs, anchor_rev)
+    if target_base:
+        return target_base, target_rev, DIFF_BASE_TARGET_MERGE_BASE
     if base_rev and base_rev != target_rev:
         return base_rev, target_rev, DIFF_BASE_PLAN
     if base_ref and not base_rev:
@@ -106,3 +192,46 @@ def merge_history(base_rev: str, target_rev: str, target_worktree: str) -> dict[
         "merge_base_sha": res_mb.stdout.strip(),
         "merged_commit_count": merged_commit_count,
     }
+
+
+def execution_patch_numstat(
+    plan_branch: str, execution_branch: str, target_ref: str, target_worktree: str, intent_branch: str
+) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
+    """Run ``git diff --numstat`` over the execution's patch range (``patch_diff_range``).
+
+    The intent's target branch is tried first; the plan branch, then ``intent_branch`` and ``main``, apply only when no
+    target branch resolves. Returns the git result and the ``diff_base`` label (with ``merge_history`` for a plan or
+    target merge-base).
+
+    Raises:
+        RuntimeError: If ``git diff`` exits non-zero.
+    """
+    fallback_refs = (intent_branch, DEFAULT_TARGET_BRANCH) if plan_branch else ()
+    target_refs = (
+        target_branch_refs(intent_target_branch(intent_branch, target_ref, target_worktree)) if execution_branch else ()
+    )
+    base_rev, target_rev, diff_base = patch_diff_range(
+        plan_branch if execution_branch else "", target_ref, target_worktree, fallback_refs, target_refs
+    )
+    patch_meta: dict[str, Any] = {"diff_base": diff_base}
+    diff_range = f"{base_rev}...{target_rev}" if base_rev else f"{target_rev}~1..{target_rev}"
+    res = run_git(["diff", "--numstat", diff_range, "--"], cwd=target_worktree, check=False, timeout=30)
+    if res.returncode != 0:
+        raise RuntimeError(
+            f"Git diff failed between '{base_rev or f'{target_rev}~1'}' and '{target_rev}' "
+            f"with exit code {res.returncode}: {res.stderr.strip()}"
+        )
+    if diff_base in (DIFF_BASE_PLAN, DIFF_BASE_TARGET_MERGE_BASE):
+        patch_meta.update(merge_history(base_rev, target_rev, target_worktree))
+    return res, patch_meta
+
+
+def patch_size_base_line(report_data: dict[str, Any]) -> str:
+    """The report's ``Patch Size Base`` line: the ``diff_base`` label, and the merge-base SHA the diff started from."""
+    label = report_data["diff_base"]
+    line = f"- **Patch Size Base:** `{label}`"
+    if label == DIFF_BASE_TARGET_MERGE_BASE and report_data.get("merge_base_sha"):
+        line += f" (merge-base `{report_data['merge_base_sha']}` with the target branch)"
+    elif label in (DIFF_BASE_MERGE_BASE, DIFF_BASE_FIRST_PARENT):
+        line += " (not measured against the plan branch)"
+    return line

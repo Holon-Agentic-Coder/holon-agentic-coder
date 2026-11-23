@@ -10,15 +10,18 @@ SHA inspected here.
 
 from __future__ import annotations
 
-from sandbox_executor.calibration import LEDGER_EXECUTIONS_REL
+from sandbox_executor.calibration_evaluated_sha import (
+    CALIBRATION_DIR_PREFIXES as CALIBRATION_DIR_PREFIXES,
+)
+from sandbox_executor.calibration_evaluated_sha import (
+    CALIBRATION_SUBJECT_PREFIX as CALIBRATION_SUBJECT_PREFIX,
+)
+from sandbox_executor.calibration_evaluated_sha import is_calibration_commit as is_calibration_commit
+from sandbox_executor.calibration_evaluated_sha import is_calibration_path as is_calibration_path
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.host_remote import DEFAULT_REMOTE
 from sandbox_executor.git import run_git
-from sandbox_executor.plan_paths import is_calibration_report_path
 from sandbox_executor.ref_names import calibration_branch
-
-CALIBRATION_SUBJECT_PREFIX = "chore(calibration): "
-CALIBRATION_DIR_PREFIXES = ("holon-knowledge/kb/", "holon-knowledge/wisdom/")
 
 
 class CalibrationSyncError(RuntimeError):
@@ -34,27 +37,10 @@ def is_ancestor(repo_dir: str, ancestor: str, descendant: str) -> bool:
     return run_git(["merge-base", "--is-ancestor", ancestor, descendant], cwd=repo_dir, check=False).returncode == 0
 
 
-def is_calibration_path(path: str) -> bool:
-    """True for a path Stage 5 commits: a plans/ calibration report, the executions ledger, kb or wisdom files."""
-    return (
-        path == LEDGER_EXECUTIONS_REL or path.startswith(CALIBRATION_DIR_PREFIXES) or is_calibration_report_path(path)
-    )
-
-
 def _commits_missing_from_head(repo_dir: str, start_sha: str, existing_sha: str) -> list[str] | None:
     """The commits on ``existing_sha`` that ``start_sha`` lacks; None when git cannot tell."""
     out = _git_out(repo_dir, ["rev-list", f"{start_sha}..{existing_sha}", "--"])
     return None if out is None else out.split()
-
-
-def is_calibration_commit(repo_dir: str, sha: str) -> bool:
-    """True for a non-merge commit with a ``chore(calibration): `` subject touching only calibration paths."""
-    parents = _git_out(repo_dir, ["rev-list", "--parents", "-n", "1", sha, "--"])
-    subject = _git_out(repo_dir, ["log", "-1", "--format=%s", sha, "--"])
-    paths = _git_out(repo_dir, ["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha, "--"])
-    if parents is None or subject is None or paths is None or len(parents.split()) > 2:
-        return False
-    return subject.startswith(CALIBRATION_SUBJECT_PREFIX) and all(map(is_calibration_path, paths.splitlines()))
 
 
 def holds_only_calibration_commits(repo_dir: str, start_sha: str, existing_sha: str) -> bool:

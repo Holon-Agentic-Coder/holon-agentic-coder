@@ -335,15 +335,14 @@ def _report_review_outcome(review_res: StageResult | None) -> None:
         return
     raw_consensus = review_res.payload.get("consensus")
     consensus = raw_consensus if isinstance(raw_consensus, Mapping) else {}
-    is_approved = review_res.status == StageStatus.APPROVED or bool(
-        review_res.payload.get("halted_for_human") and consensus.get("approved")
-    )
+    is_halt = review_res.status == StageStatus.HALTED_FOR_HUMAN or bool(review_res.payload.get("halted_for_human"))
+    is_approved = review_res.status == StageStatus.APPROVED or (is_halt and bool(consensus.get("approved")))
     if is_approved:
         print(
             "[REVIEW APPROVED] Review Loop reached consensus approval; "
             "the PR is ready for the maintainer to merge (the flow never merges to main).\n"
         )
-    elif review_res.status == StageStatus.HALTED_FOR_HUMAN or review_res.payload.get("halted_for_human"):
+    elif is_halt:
         print("[SAFETY HALT] Pipeline safely halted for human review (autonomous merge prohibited).")
         cmd = review_res.payload.get("human_approval_command")
         if cmd:

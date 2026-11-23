@@ -26,6 +26,23 @@ MITM_PROXY_CA_DIR = "/home/mitmproxy/.mitmproxy"
 PROXY_LISTEN_PORT = 8080
 PROXY_ATTACH_TIMEOUT_SECONDS = 3.0
 PROXY_CONNECT_TIMEOUT_SECONDS = 0.5
+DEFAULT_WIRE_LOG_SUBDIR = "mitm_wire_logs"
+DEFAULT_CACHE_SUBDIR = "cache"
+
+
+def _user_state_dir() -> str:
+    """Per-user state directory outside any repository worktree (``~/.holon``)."""
+    return os.path.expanduser(os.path.join("~", ".holon"))
+
+
+def _default_wire_log_dir() -> str:
+    """Default host directory for proxy wire logs under ``~/.holon/mitm_wire_logs``."""
+    return os.path.join(_user_state_dir(), DEFAULT_WIRE_LOG_SUBDIR)
+
+
+def _default_cache_dir() -> str:
+    """Default host directory for the proxy cache under ``~/.holon/cache``."""
+    return os.path.join(_user_state_dir(), DEFAULT_CACHE_SUBDIR)
 
 
 def _run_docker(*args: str) -> subprocess.CompletedProcess[str]:

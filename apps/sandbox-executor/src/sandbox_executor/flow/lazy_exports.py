@@ -166,6 +166,7 @@ LAZY_EXPORTS: dict[str, str] = {
         "superseding_failure_row touch_set_replan_exhausted touch_set_replan_feedback touch_set_violation "
         "touch_set_violation_result"
     ),
+    "sandbox_executor.flow.merge_git": "git_out has_conflict_markers",
     "sandbox_executor.flow.target_probe": (
         "TargetProbe TargetProbeError merge_tree_conflicts parse_merge_tree_paths probe_target"
     ),

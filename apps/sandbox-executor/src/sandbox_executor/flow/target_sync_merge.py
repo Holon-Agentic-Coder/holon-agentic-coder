@@ -16,6 +16,7 @@ from pathlib import Path
 from sandbox_executor.flow.conflict_classes import classify_merge_conflicts
 from sandbox_executor.flow.conflict_classes_resolve import resolve_mechanical
 from sandbox_executor.flow.host_remote import push_commit
+from sandbox_executor.flow.merge_git import git_out, has_conflict_markers
 from sandbox_executor.flow.target_probe import TargetProbe
 from sandbox_executor.flow.target_sync_record import append_sync_row
 from sandbox_executor.flow.target_sync_result import SyncRequest, SyncResult
@@ -23,15 +24,9 @@ from sandbox_executor.git import run_git
 
 logger = logging.getLogger(__name__)
 
-_MARKER_PREFIXES = ("<<<<<<< ", ">>>>>>> ")
 # Every merge the sync starts carries this message, so a resume adopts only merges the flow itself started.
 SYNC_MERGE_PREFIX = "sync: merge target "
 _Step = Callable[[SyncRequest, TargetProbe, SyncResult], SyncResult]
-
-
-def _git_out(worktree: str, *args: str) -> str:
-    res = run_git(list(args), cwd=worktree, check=False)
-    return res.stdout if res.returncode == 0 and isinstance(res.stdout, str) else ""
 
 
 def merge_in_progress(worktree: str) -> bool:
@@ -41,15 +36,7 @@ def merge_in_progress(worktree: str) -> bool:
 
 def unmerged_paths(worktree: str) -> list[str]:
     """The paths the in-progress merge left unmerged, in git's order."""
-    return [path for path in _git_out(worktree, "diff", "--name-only", "--diff-filter=U", "-z").split("\0") if path]
-
-
-def _has_markers(path: Path) -> bool:
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return False
-    return any(line.startswith(_MARKER_PREFIXES) for line in lines)
+    return [path for path in git_out(worktree, "diff", "--name-only", "--diff-filter=U", "-z").split("\0") if path]
 
 
 def merge_verification_error(worktree: str, conflicted_paths: tuple[str, ...] | list[str]) -> str:
@@ -61,7 +48,8 @@ def merge_verification_error(worktree: str, conflicted_paths: tuple[str, ...] | 
     remaining = unmerged_paths(worktree)
     if remaining:
         return f"unmerged paths remain: {', '.join(remaining)}"
-    marked = [p for p in conflicted_paths if (Path(worktree) / p).is_file() and _has_markers(Path(worktree) / p)]
+    files = [(p, Path(worktree) / p) for p in conflicted_paths]
+    marked = [p for p, file in files if file.is_file() and has_conflict_markers(file)]
     return f"conflict markers remain in: {', '.join(marked)}" if marked else ""
 
 
@@ -110,8 +98,8 @@ def _commit_and_push(request: SyncRequest, probe: TargetProbe, result: SyncResul
     if commit.returncode != 0:
         raise RuntimeError(f"merge commit failed: {(commit.stderr or '').strip()}")
     try:  # the merge commit (with its row) has landed: any later error keeps the row id, so it is never aborted
-        head_after = _git_out(request.worktree, "rev-parse", "HEAD").strip()
-        changed = _git_out(request.worktree, "diff", "--name-only", "-z", f"{result.head_before}..{head_after}")
+        head_after = git_out(request.worktree, "rev-parse", "HEAD").strip()
+        changed = git_out(request.worktree, "diff", "--name-only", "-z", f"{result.head_before}..{head_after}")
         result = replace(result, head_after=head_after, changed_paths=tuple(p for p in changed.split("\0") if p))
         push_commit(request.worktree, head_after, request.branch)
     except Exception as exc:
@@ -122,9 +110,9 @@ def _commit_and_push(request: SyncRequest, probe: TargetProbe, result: SyncResul
 
 def _changed_on_both_sides(worktree: str) -> tuple[str, ...]:
     """The paths both ``HEAD`` and ``MERGE_HEAD`` changed since their merge base (every path that could conflict)."""
-    base = _git_out(worktree, "merge-base", "HEAD", "MERGE_HEAD").strip()
+    base = git_out(worktree, "merge-base", "HEAD", "MERGE_HEAD").strip()
     ours, theirs = (
-        _git_out(worktree, "diff", "--name-only", "-z", base, side).split("\0") for side in ("HEAD", "MERGE_HEAD")
+        git_out(worktree, "diff", "--name-only", "-z", base, side).split("\0") for side in ("HEAD", "MERGE_HEAD")
     )
     return tuple(p for p in theirs if p and p in set(ours)) if base else ()
 
@@ -153,7 +141,7 @@ def _guarded(request: SyncRequest, probe: TargetProbe, step: _Step, *, record_bl
     except Exception as exc:
         logger.warning("Target sync of %s aborted: %s", request.branch, exc)
         result = replace(started, status="blocked", error=str(exc))
-        head = _git_out(request.worktree, "rev-parse", "HEAD").strip()
+        head = git_out(request.worktree, "rev-parse", "HEAD").strip()
         if head and head != probe.head_sha and not merge_in_progress(request.worktree):
             return replace(result, head_after=head)  # the merge commit (with its row) already landed
     if result.status == "blocked" and not result.ledger_row_id:
@@ -171,7 +159,7 @@ def _commit_blocked_row(request: SyncRequest, result: SyncResult) -> SyncResult:
     if commit.returncode != 0:
         logger.warning("Could not commit the blocked target_sync row: %s", (commit.stderr or "").strip())
         return result
-    return replace(result, head_after=_git_out(request.worktree, "rev-parse", "HEAD").strip() or result.head_after)
+    return replace(result, head_after=git_out(request.worktree, "rev-parse", "HEAD").strip() or result.head_after)
 
 
 def merge_target(request: SyncRequest, probe: TargetProbe) -> SyncResult:
@@ -182,7 +170,7 @@ def merge_target(request: SyncRequest, probe: TargetProbe) -> SyncResult:
     first, then its row is appended to the clean worktree and committed on its own (not pushed). A push failure after
     the merge commit returns ``blocked`` with the push error and no second row.
     """
-    if _git_out(request.worktree, "status", "--porcelain", "--untracked-files=no").strip():
+    if git_out(request.worktree, "status", "--porcelain", "--untracked-files=no").strip():
         logger.warning("Target sync of %s blocked: the worktree has uncommitted tracked changes", request.branch)
         error = "the worktree has uncommitted tracked changes; commit them before the target sync"
         return SyncResult("blocked", probe.head_sha, probe.head_sha, probe.target_sha, probe=probe, error=error)

@@ -283,6 +283,8 @@ __all__ = [
     "gh_comment_records",
     "gh_head_checks_probe",
     "gh_run_rerunner",
+    "git_out",
+    "has_conflict_markers",
     "has_inline_answer",
     "has_pass_marker",
     "head_move_since_calibration",

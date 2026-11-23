@@ -17,21 +17,16 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from sandbox_executor.flow.merge_git import git_out, has_conflict_markers
 from sandbox_executor.flow.target_sync_merge import merge_in_progress, merge_verification_error, unmerged_paths
 from sandbox_executor.git import run_git
 
 # Where failed attempts' diffs are kept for the human, under the flow's git-ignored ``tmp/``.
 ARTEFACT_DIR = "tmp/conflict-resolver"
-_MARKER_PREFIXES = ("<<<<<<< ", ">>>>>>> ")
-
-
-def _git_out(worktree: str, *args: str) -> str:
-    res = run_git(list(args), cwd=worktree, check=False)
-    return res.stdout if res.returncode == 0 and isinstance(res.stdout, str) else ""
 
 
 def _nul_paths(worktree: str, *args: str) -> list[str]:
-    return list(dict.fromkeys(path for path in _git_out(worktree, *args).split("\0") if path))
+    return list(dict.fromkeys(path for path in git_out(worktree, *args).split("\0") if path))
 
 
 @dataclass(frozen=True)
@@ -46,10 +41,10 @@ class MergeSnapshot:
 
 def snapshot_merge(worktree: str) -> MergeSnapshot:
     return MergeSnapshot(
-        index=_git_out(worktree, "ls-files", "-s", "-z"),
+        index=git_out(worktree, "ls-files", "-s", "-z"),
         untracked=frozenset(_nul_paths(worktree, "ls-files", "-o", "--exclude-standard", "-z")),
-        head=_git_out(worktree, "rev-parse", "-q", "--verify", "HEAD").strip(),
-        merge_head=_git_out(worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD").strip(),
+        head=git_out(worktree, "rev-parse", "-q", "--verify", "HEAD").strip(),
+        merge_head=git_out(worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD").strip(),
     )
 
 
@@ -69,14 +64,6 @@ class AttemptCheck:
         return not (self.tampered or self.out_of_set or self.new_untracked or self.markers)
 
 
-def _has_markers(path: Path) -> bool:
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return False
-    return any(line.startswith(_MARKER_PREFIXES) for line in lines)
-
-
 def _tamper_reason(worktree: str, before: MergeSnapshot) -> str:
     if not merge_in_progress(worktree):
         return "the merge is no longer in progress"
@@ -94,7 +81,7 @@ def check_attempt(worktree: str, paths: list[str], before: MergeSnapshot) -> Att
     out_of_set = tuple(p for p in _nul_paths(worktree, "diff", "--name-only", "-z") if p not in in_set)
     untracked = _nul_paths(worktree, "ls-files", "-o", "--exclude-standard", "-z")
     new = tuple(p for p in untracked if p not in before.untracked and not p.startswith(f"{ARTEFACT_DIR}/"))
-    markers = tuple(p for p in paths if _has_markers(Path(worktree) / p))
+    markers = tuple(p for p in paths if has_conflict_markers(Path(worktree) / p))
     reasons = [
         f"{label}: {', '.join(found)}"
         for label, found in (("edits outside the conflict set", out_of_set), ("new files", new), ("markers", markers))
@@ -112,7 +99,7 @@ def stage_resolution(worktree: str, paths: list[str]) -> str:
 
 
 def _unmerged_stages(worktree: str, path: str) -> set[str]:
-    entries = _git_out(worktree, "ls-files", "-u", "-z", "--", path).split("\0")
+    entries = git_out(worktree, "ls-files", "-u", "-z", "--", path).split("\0")
     return {entry.split("\t", 1)[0].split()[2] for entry in entries if "\t" in entry}
 
 
@@ -150,7 +137,7 @@ def discard_tampered(worktree: str, before: MergeSnapshot) -> str:
 
     The hard reset also drops the merge state, which the fail-closed caller would abort anyway.
     """
-    head = _git_out(worktree, "rev-parse", "-q", "--verify", "HEAD").strip()
+    head = git_out(worktree, "rev-parse", "-q", "--verify", "HEAD").strip()
     if not before.head or head == before.head:
         return ""
     res = run_git(["reset", "-q", "--hard", before.head], cwd=worktree, check=False)
@@ -164,7 +151,7 @@ def save_attempt_diff(worktree: str, paths: list[str], label: str) -> str:
         target.parent.mkdir(parents=True, exist_ok=True)
         # Self-ignoring, so an artefact is never swept into a commit even where ``tmp/`` is not git-ignored.
         (target.parent / ".gitignore").write_text("*\n", encoding="utf-8")
-        target.write_text(_git_out(worktree, "diff", "--", *paths), encoding="utf-8")
+        target.write_text(git_out(worktree, "diff", "--", *paths), encoding="utf-8")
     except OSError:
         return ""
     return str(target)

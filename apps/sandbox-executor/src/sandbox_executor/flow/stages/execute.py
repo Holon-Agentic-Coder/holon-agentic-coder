@@ -278,6 +278,8 @@ class ExecuteStage:
         state.push_error = remote_error(publish_new_child_branches, state.repo_dir, state.plan_prefix, "E", left_alone)
         recovery = rejected_push_recovery(state.repo_dir, state.plan_prefix, left_alone, state.push_error)
         held = left_alone - state.existing_executions
+        if recovery is not None and (held or exit_code not in (0, OVER_BUDGET_EXIT_CODE)):  # may return first below
+            context.log(recovery[0])
         if held_failure := held_execution_failure(context, state.start_time, held, exit_code):
             return held_failure
         # The executor exits OVER_BUDGET_EXIT_CODE only once its over_budget row is committed; that row decides.

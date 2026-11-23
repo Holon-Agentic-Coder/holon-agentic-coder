@@ -68,7 +68,7 @@ _LAZY_EXPORTS: dict[str, str] = {
         "_sync_local_execution_refs _track_local_branch fast_forward_local_branch"
     ),
     "sandbox_executor.flow.github.token_scopes": (
-        "TokenScopeReport fetch_scopes resolve_github_token scope_report token_type touches_workflows "
+        "TokenScopeReport doctor_lines fetch_scopes resolve_github_token scope_report token_type touches_workflows "
         "workflow_scope_error"
     ),
     "sandbox_executor.flow.github.ci": (
@@ -371,6 +371,7 @@ __all__ = [
     "detect_stage_conflicts",
     "discard_empty_calibrated_branch",
     "discover_in_flight_flows",
+    "doctor_lines",
     "dry_run_plan_result",
     "empty_diff_failure",
     "execution_veto_error",

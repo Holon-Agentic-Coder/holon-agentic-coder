@@ -163,3 +163,22 @@ def workflow_scope_error(report: TokenScopeReport, workflow_paths: list[str]) ->
         f"lacks the '{WORKFLOW_SCOPE}' scope (scopes: {scopes}), so its push would be refused; run: "
         f"{REFRESH_COMMAND} (a token set in the environment must be regenerated with the '{WORKFLOW_SCOPE}' scope)"
     )
+
+
+def doctor_lines(report: TokenScopeReport | None = None) -> list[str]:
+    """``holon doctor``'s token lines: the value-free report, then a warning when workflow pushes may be refused."""
+    report = scope_report() if report is None else report
+    lines = [report.format_line()]
+    if report.token_type == "none":
+        return lines
+    if report.verifiable and not report.has_workflow:
+        lines.append(
+            "WARNING: the GitHub token lacks the workflow scope; plans that touch .github/workflows/** will fail "
+            f"before Stage 3 (run: {REFRESH_COMMAND})"
+        )
+    elif not report.verifiable:
+        lines.append(
+            f"WARNING: the GitHub token's workflow scope cannot be verified ({report.detail}); a fine-grained "
+            "token needs Workflows read/write to push workflow files"
+        )
+    return lines

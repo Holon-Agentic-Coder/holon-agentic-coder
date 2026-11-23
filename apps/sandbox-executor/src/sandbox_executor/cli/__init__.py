@@ -1380,7 +1380,8 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
 
     Each part (budgets, envelope, base-URL check, gateway probe) is isolated: an invalid configuration prints an
     ``Error:`` line, and any unexpected exception becomes a value-free ``WARNING: doctor <part> check failed
-    unexpectedly (<ExceptionClass>)`` line; either makes the result 1, and the doctor never raises from here.
+    unexpectedly (<ExceptionClass>)`` line; either makes the result 1, and the doctor never raises from here. The
+    github token part (one ``GET api.github.com/user`` for a classic or OAuth token) only warns, never changing it.
     """
     env = os.environ
     out = out or sys.stdout
@@ -1391,7 +1392,9 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
         print(_doctor_section_failed("budgets", exc), file=out)
         code = 1
     try:
-        _report_github_token(out)
+        from sandbox_executor.flow.github.token_scopes import doctor_lines
+
+        print("\n".join(doctor_lines()), file=out)
     except Exception as exc:
         print(_doctor_section_failed("github token", exc), file=out)
 
@@ -1430,31 +1433,6 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
         print(_doctor_section_failed("gateway probe", exc), file=out)
         code = 1
     return code
-
-
-def _report_github_token(out: TextIO) -> None:
-    """The GitHub token's type, source and scopes (never its value), warning when it cannot push workflow files.
-
-    Warnings leave the doctor's result alone: a missing ``workflow`` scope only matters to plans touching workflows.
-    """
-    from sandbox_executor.flow.github import token_scopes
-
-    report = token_scopes.scope_report()
-    print(report.format_line(), file=out)
-    if report.token_type == "none":
-        return
-    if report.verifiable and not report.has_workflow:
-        print(
-            "WARNING: the GitHub token lacks the workflow scope; plans that touch .github/workflows/** will fail "
-            f"before Stage 3 (run: {token_scopes.REFRESH_COMMAND})",
-            file=out,
-        )
-    elif not report.verifiable:
-        print(
-            f"WARNING: the GitHub token's workflow scope cannot be verified ({report.detail}); a fine-grained "
-            "token needs Workflows read/write to push workflow files",
-            file=out,
-        )
 
 
 def _report_budgets(env: Mapping[str, str], out: TextIO) -> None:

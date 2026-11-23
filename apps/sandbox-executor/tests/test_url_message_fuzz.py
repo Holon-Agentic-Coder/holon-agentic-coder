@@ -19,6 +19,7 @@ Failure messages name the case id only, never the value.
 import argparse
 import contextlib
 import io
+import itertools
 import json
 import logging
 import os
@@ -418,18 +419,27 @@ def _delimiter_texts(
 
 
 ENV_FILE_PLACEHOLDER = "<env-file>"
+AGENT_DIR_PLACEHOLDER = "<agent-dir>"
 
 
 def _without_env_file_path(texts: list[str], argv: list[str]) -> list[str]:
-    """Replace the exact `--env-file` path of `argv` in `texts` with a placeholder, and nothing else.
+    """Replace the exact `--env-file` path and pi agent-dir mount source of `argv` in `texts` with placeholders.
 
-    The path comes from `mkstemp` in a fixture-owned directory, so its random characters can share a
-    4-letter run with a password part without any part having leaked.
+    Both paths come from `mkstemp`/`mkdtemp` in a fixture-owned directory (on macOS itself a random
+    `/var/folders` path), so their random characters can share a 4-letter run with a password part
+    without any part having leaked. Nothing else is masked.
     """
-    if "--env-file" not in argv:
-        return list(texts)
-    path = argv[argv.index("--env-file") + 1]
-    return [text.replace(path, ENV_FILE_PLACEHOLDER) for text in texts]
+    masks = []
+    if "--env-file" in argv:
+        masks.append((argv[argv.index("--env-file") + 1], ENV_FILE_PLACEHOLDER))
+    for flag, mount in itertools.pairwise(argv):
+        source = mount.split(":", 1)[0]
+        if flag == "-v" and os.path.basename(source).startswith("holon-pi-agent-"):
+            masks.append((source, AGENT_DIR_PLACEHOLDER))
+    out = list(texts)
+    for path, placeholder in masks:
+        out = [text.replace(path, placeholder) for text in out]
+    return out
 
 
 def _leak_sites(texts: dict[str, list[str]], argv: list[str], parts: list[str]) -> list[str]:

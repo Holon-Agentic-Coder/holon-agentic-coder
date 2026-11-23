@@ -184,5 +184,7 @@ def _sidecar_command(plan: _SidecarPlan) -> list[str]:
         ]
     )
     if plan.mitm_web:
+        # `start` has no `--web-host`: in-container it always runs mitmweb with `--web-host 0.0.0.0`, which the
+        # loopback-only `-p 127.0.0.1:<port>:<port>` publish above relies on (see test_launcher_coherence_contract).
         docker_run_proxy.extend(["--web", "--web-port", str(plan.web_port)])
     return docker_run_proxy

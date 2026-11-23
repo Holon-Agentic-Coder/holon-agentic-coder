@@ -369,3 +369,21 @@ class TestPlanBudget:
             decision = budget.decision()
         assert decision is not None and decision.decision == "execute"
         backfill.assert_called_once_with(budget.context, row, decision)
+
+
+def test_engine_replan_with_replan_feedback_dispatches_planner_despite_existing_complete_plan(flow_repos, tmp_path):
+    host, origin = flow_repos
+    agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, ""), (3.0, "")])
+    ctx = _budget_context(host, agents, 5.0)
+    assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+    assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+    first_plan = ctx.plan_branch
+
+    ctx.intent_data["replan_feedback"] = "over budget: write a smaller plan"
+    ctx.plan_branch = None
+    res = run_plan_stage(ctx)
+
+    assert res.status == StageStatus.SUCCESS
+    assert agents.planner_calls == 2
+    assert ctx.plan_branch is not None and ctx.plan_branch != first_plan
+

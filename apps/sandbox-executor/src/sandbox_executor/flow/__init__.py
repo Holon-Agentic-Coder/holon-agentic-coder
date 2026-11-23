@@ -311,6 +311,7 @@ __all__ = [
     "plan_id_of",
     "plan_metrics",
     "plan_refresh_stage_failure",
+    "plan_stage_payload",
     "post_pr_review_consensus",
     "post_refreshed",
     "post_stale_signal",

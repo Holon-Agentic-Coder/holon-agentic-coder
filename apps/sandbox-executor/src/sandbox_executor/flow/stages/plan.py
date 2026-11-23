@@ -18,12 +18,13 @@ from sandbox_executor.flow.git_refs import (
     _snapshot_child_branches,
     _track_local_branch,
 )
-from sandbox_executor.flow.host_remote import publish_new_child_branches, remote_error
+from sandbox_executor.flow.host_remote import new_local_child_branches, publish_new_child_branches, remote_error
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
+from sandbox_executor.flow.stages.plan_resume import AMBIGUOUS_PLAN_BRANCHES_HINT, adopt_existing_plan
 from sandbox_executor.flow.stages.plan_support import (
     dry_run_plan_result,
-    plan_id_of,
     plan_metrics,
+    plan_stage_payload,
     replan_feedback_env,
 )
 from sandbox_executor.flow.stages.stage_support import consult_knowledge, stage_success
@@ -71,16 +72,27 @@ class PlanStage:
             return self.fail(f"Plan stage failed: {exc}")
         return None
 
+    def adopt_existing(self) -> StageResult | None:
+        """Adopt the newest complete plan branch under this intent if one already exists."""
+        branch, error = adopt_existing_plan(self.context, self.intent_prefix)
+        if error is not None:
+            return self.fail(f"Plan stage failed: {error}")
+        self.plan_branch = branch
+        return None
+
     def produce(self) -> StageResult | None:
-        """Run the planner and read back its plan: the first failing step's result, or None."""
-        for step in (self.prepare, self.dispatch_planner, self.adopt_plan_branch, self.read_plan):
-            failure = step()
-            if failure is not None:
+        """Run the planner (or adopt an existing complete plan branch) and read back its plan."""
+        for step in (self.prepare, self.adopt_existing):
+            if (failure := step()) is not None:
+                return failure
+        steps = (self.read_plan,) if self.plan_branch else (self.dispatch_planner, self.adopt_plan_branch, self.read_plan)
+        for step in steps:
+            if (failure := step()) is not None:
                 return failure
         return None
 
     def prepare(self) -> StageResult | None:
-        """Refuse a skip-push run, resolve stage conflicts and snapshot the plan branches already on origin."""
+        """Refuse a skip-push run, resolve stage conflicts and snapshot the plan branches on origin and locally."""
         if self.context.skip_push:
             return self.fail(SKIP_PUSH_DISPATCH_ERROR)
         target_branch = self.context.intent_data.get("target_branch", "main")
@@ -93,7 +105,8 @@ class PlanStage:
                 f"Plan stage failed: could not fetch origin branches under {self.intent_prefix} before dispatching "
                 "the planner."
             )
-        self.existing_plans = existing_plans
+        local_plans = set(new_local_child_branches(self.repo_dir, self.intent_prefix, "P", set()))
+        self.existing_plans = existing_plans | local_plans
         return None
 
     def dispatch_planner(self) -> StageResult | None:
@@ -132,7 +145,7 @@ class PlanStage:
             preferred_suffix=self.preferred_suffix,
         )
         if ambiguity:
-            return self.fail(f"Plan stage failed: {ambiguity}.")
+            return self.fail(f"Plan stage failed: {ambiguity}; {AMBIGUOUS_PLAN_BRANCHES_HINT}.")
         if not plan_branch:
             return self.fail(self.no_plan_error)
         self.plan_branch = plan_branch
@@ -187,17 +200,7 @@ def run_plan_stage(context: FlowContext) -> StageResult:
     metrics = plan_metrics(stage.repo_dir, stage.plan_content, stage.plan_row)
     context.plan_branch = stage.plan_branch
     _track_local_branch(context, stage.plan_branch)
-    ev_text = f"{metrics['ev']:.2f}" if isinstance(metrics.get("ev"), int | float) else "n/a"
-    context.log(
-        f"Stage 2 completed: planner agent produced '{stage.plan_file}' on '{stage.plan_branch}' (EV={ev_text})."
-    )
-    payload = {
-        "plan_id": plan_id_of(stage.plan_branch),
-        "plan_branch": stage.plan_branch,
-        "plan_file": stage.plan_file,
-        "metrics": metrics,
-        "consulted_knowledge_ids": consulted_ids,
-    }
+    payload = plan_stage_payload(context, stage.plan_branch, stage.plan_file, metrics, consulted_ids)
     return stage_success(context, FlowStage.PLAN, "plan", start_time, payload)
 
 

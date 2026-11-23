@@ -12,6 +12,7 @@ from sandbox_executor.flow.stages.plan_support import (
     dry_run_plan_result,
     plan_id_of,
     plan_metrics,
+    plan_stage_payload,
     replan_feedback_env,
 )
 
@@ -92,3 +93,22 @@ def test_the_dry_run_result_names_the_plan_branch_without_metrics():
 
 def test_plan_id_of_reads_the_last_segment_of_a_plan_branch():
     assert plan_id_of("I-1-x/I-3-y/P-2-CLA-CO5.5/_") == "P-2-CLA-CO5.5"
+
+
+def test_plan_stage_payload_records_plan_id_and_stage_fields():
+    context = FlowContext()
+    payload = plan_stage_payload(
+        context,
+        "I-1-x/P-2-CLA-CO5.5/_",
+        "plans/I-1-x/P-2-CLA-CO5.5.md",
+        {"ev": 35.4},
+        ["K-1"],
+    )
+    assert payload == {
+        "plan_id": "P-2-CLA-CO5.5",
+        "plan_branch": "I-1-x/P-2-CLA-CO5.5/_",
+        "plan_file": "plans/I-1-x/P-2-CLA-CO5.5.md",
+        "metrics": {"ev": 35.4},
+        "consulted_knowledge_ids": ["K-1"],
+    }
+    assert any("EV=35.40" in line for line in context.logs)

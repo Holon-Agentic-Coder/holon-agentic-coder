@@ -288,3 +288,72 @@ class TestPlanCandidatesAndAdoption:
         assert adopted == local_branch
         assert _plan_branches(origin) == [local_branch]
 
+
+class TestStage2AdoptionWiring:
+    """Step 3 tests: two complete plan branches, no/incomplete branches, and failed push of local-only branch."""
+
+    def test_two_complete_plan_branches_adopt_the_newest_without_redispatching(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        first_agents = FakeRoleAgents(tmp_path, origin, clock_offset=0)
+        ctx = _dispatch_context(host, first_agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+        first_branch = ctx.plan_branch
+        assert first_branch is not None
+
+        second_agents = FakeRoleAgents(tmp_path, origin, clock_offset=10)
+        ctx.dispatcher = second_agents
+        ctx.intent_data["replan_feedback"] = "re-plan requested"
+        ctx.plan_branch = None
+        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+        second_branch = ctx.plan_branch
+        assert second_branch is not None and second_branch != first_branch
+
+        third_agents = FakeRoleAgents(tmp_path, origin, clock_offset=20)
+        ctx.dispatcher = third_agents
+        ctx.intent_data.pop("replan_feedback", None)
+        ctx.logs.clear()
+        res = run_plan_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        assert "planner" not in third_agents.roles()
+        assert ctx.plan_branch == second_branch
+        assert _plan_branches(origin) == sorted([first_branch, second_branch])
+        assert any(first_branch in line and second_branch in line for line in ctx.logs)
+        assert any(second_branch in line and "newest complete" in line for line in ctx.logs)
+
+    def test_no_complete_plan_branch_dispatches_planner_and_succeeds(self, flow_repos, tmp_path):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+
+        stale = _push_child_branch(tmp_path, origin, ctx.intent_branch, "P-1000-CLA-CO5.5")
+        res = run_plan_stage(ctx)
+
+        assert res.status == StageStatus.SUCCESS
+        assert agents.roles() == ["intent-creator", "planner"]
+        assert ctx.plan_branch is not None and ctx.plan_branch != stale
+        assert any(stale in line and "ignored" in line for line in ctx.logs)
+
+    def test_failed_push_of_local_only_complete_branch_fails_stage2_and_leaves_plan_branch_unset(
+        self, flow_repos, tmp_path
+    ):
+        host, origin = flow_repos
+        agents = FakeRoleAgents(tmp_path, origin)
+        ctx = _dispatch_context(host, agents)
+        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        agents("planner", ctx.agent, ctx.model, [ctx.intent_branch, ctx.agent, ctx.model], target_worktree=str(host))
+        agents.calls.clear()
+        (local_branch,) = _plan_branches(host)
+
+        _git(host, "config", "remote.origin.pushurl", "https://127.0.0.1:9/unreachable/repo.git")
+        ctx.plan_branch = None
+        res = run_plan_stage(ctx)
+
+        assert res.status == StageStatus.FAILED
+        assert f"host push of '{local_branch}'" in (res.error or "")
+        assert ctx.plan_branch is None
+        assert "planner" not in agents.roles()
+
+

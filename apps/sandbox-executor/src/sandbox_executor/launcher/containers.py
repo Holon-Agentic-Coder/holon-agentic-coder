@@ -171,7 +171,8 @@ class ContainerLaunch:
         self.docker_cmd[2:2] = ["--env-file", self.env_file_path]
 
     def _add_env(self, key: str, value: str) -> None:
-        """Pass a variable with ``-e`` unless it is secret, in which case it goes to the env-file."""
+        """Route a variable: every ``HOLON_*`` item to the env-file, or a bare ``-e NAME`` when no env-file line
+        can carry it; any other item to the env-file if secret, else ``-e KEY=VALUE``."""
         if env_files.is_passthrough_env_item(key, value):
             self.passthrough_env[key] = value
             self.docker_cmd.extend(["-e", key])

@@ -415,10 +415,9 @@ class TestLauncherIntegration(unittest.TestCase):
             "HOLON_LOCAL_CONTEXT_WINDOW": "32768",
             **env,
         }
-        docker = DockerEnvFileRecorder()
         with (
             patch("shutil.which", side_effect=lambda name: "/usr/bin/docker" if name == "docker" else None),
-            patch("subprocess.run", side_effect=docker) as mock_run,
+            patch("subprocess.run", side_effect=(docker := DockerEnvFileRecorder())) as mock_run,
             patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", side_effect=mounts or (lambda _: [])),
             patch.object(cli.git_flow, "sandbox_worktree_mounts", return_value=[]),
             patch.object(sidecar, "get_token_reduction_mounts_and_envs", return_value=([], dict(tr_envs or {}))),
@@ -434,8 +433,7 @@ class TestLauncherIntegration(unittest.TestCase):
                 token_reduce=token_reduce,
             )
         args = mock_run.call_args[0][0] if mock_run.called else []
-        # Every HOLON_* item travels in the env-file, never on the docker command line.
-        self.assertFalse(any(a.startswith("HOLON_") for a in args))
+        self.assertFalse(any(a.startswith("HOLON_") for a in args))  # every HOLON_* item goes in the env-file
         self.forwarded = docker.env_files[-1] if docker.env_files else {}
         return code, args, mock_rmtree
 

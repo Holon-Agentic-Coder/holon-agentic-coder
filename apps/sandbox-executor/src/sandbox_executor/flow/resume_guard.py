@@ -56,8 +56,9 @@ def _resume_sync_request(context: FlowContext, start_stage: FlowStage) -> SyncRe
 def resume_merge_error(context: FlowContext, start_stage: FlowStage | None) -> str | None:
     """Adopt a target merge the resumed flow left in progress; why the run must not start, or ``None``.
 
-    Only resumed runs adopt; a dry run never touches the worktree. The error is returned only when adoption could not
-    leave the worktree without a merge in progress (for example a merge of another branch an operator started).
+    Only resumed runs adopt; a dry run never touches the worktree. An aborted adoption is not redone here: the flow's
+    next boundary sync merges the target again. The error is returned only when adoption could not leave the worktree
+    without a merge in progress (for example a merge an operator started by hand).
     """
     worktree = context.target_worktree
     if start_stage is None or not merge_in_progress(worktree):

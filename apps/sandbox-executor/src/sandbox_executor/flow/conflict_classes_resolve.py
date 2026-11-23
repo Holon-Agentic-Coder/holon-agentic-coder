@@ -107,7 +107,9 @@ def _restore_stages(worktree: str, path: str, entries: str) -> None:
     """Put the unmerged stages (and the flow copy git left in the worktree) back after a failed ``git rm``."""
     if not entries or unmerged_stages(worktree, path):
         return
-    subprocess.run(["git", "update-index", "-z", "--index-info"], cwd=worktree, input=entries, text=True, check=False)
+    subprocess.run(
+        ["git", "update-index", "-z", "--index-info"], cwd=worktree, input=entries, text=True, check=False, timeout=60
+    )
     if not (Path(worktree) / path).exists() and 2 in unmerged_stages(worktree, path):
         run_git(["checkout-index", "-f", "--stage=2", "--", path], cwd=worktree, check=False)
 

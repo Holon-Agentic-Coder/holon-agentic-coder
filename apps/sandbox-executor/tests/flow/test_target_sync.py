@@ -162,6 +162,22 @@ def test_a_code_conflict_with_the_default_resolver_blocks_cleanly(repos):
     assert _git(work, "status", "--porcelain") == ""
 
 
+def test_uncommitted_ledger_rows_block_the_sync_before_it_merges_or_commits(repos, git_calls):
+    _, work = repos
+    commit_on(work, "main", {"docs/new.md": "n\n"}, "target")
+    head = _git(work, "rev-parse", "HEAD")
+    stage_row = json.dumps({"execution_id": "E-3-z", "created_at": "2026-11-05T00:00:00Z"}) + "\n"
+    (work / LEDGER).write_text(BASE_ROW + stage_row, encoding="utf-8")
+
+    result = sync_with_target(_request(work))
+
+    assert result.status == "blocked" and "uncommitted" in result.error
+    assert _git(work, "rev-parse", "HEAD") == head
+    assert not [call for call in git_calls if call[0] in ("merge", "commit", "push")]
+    assert (work / LEDGER).read_text(encoding="utf-8") == BASE_ROW + stage_row
+    assert _sync_rows(work) == []
+
+
 def test_a_sync_after_a_blocked_one_merges_a_target_that_changed_the_ledger(repos):
     _, work = repos
     _code_conflict(work)

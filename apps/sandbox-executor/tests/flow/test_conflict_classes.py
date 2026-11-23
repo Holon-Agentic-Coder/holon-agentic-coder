@@ -140,6 +140,18 @@ def test_an_appended_list_plus_a_body_change_is_code(tmp_path: Path):
             'M = {\n    "a": "1",\n    **R,\n    "c": "3",\n    "b": "2",\n}\n',
         ),
         ("X: list[str] = ['a']\n", "X: list[str] = ['a', 'b']\n", "X: list[str] = ['a', 'b']\n", None),
+        (
+            "X = [\n    'a',\n]\n",
+            "X = [\n    'a',\n    'b',\n]\n",
+            "X = [\n    'a',\n    f(\n        1),\n]\n",
+            "X = [\n    'a',\n    f(\n        1),\n    'b',\n]\n",
+        ),
+        (
+            "X = [\n    'a',\n]\n",
+            "X = [\n    'a',\n    'b',\n]\n",
+            "X = [\n    'a',\n    'c'  # note\n]\n",
+            "X = [\n    'a',\n    'c',  # note\n    'b',\n]\n",
+        ),
     ],
 )
 def test_list_union_layouts(base, ours, theirs, expected):

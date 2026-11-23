@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from sandbox_executor.flow.target_sync_merge import merge_in_progress
+from sandbox_executor.flow.target_sync_merge import SYNC_MERGE_PREFIX, merge_in_progress
 from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest
 from sandbox_executor.flow.target_sync_resume import adopt_merge_in_progress
 
@@ -22,8 +22,9 @@ def _row(execution_id: str, day: int) -> str:
     return json.dumps({"execution_id": execution_id, "created_at": f"2026-11-{day:02d}T00:00:00Z"}) + "\n"
 
 
-def _interrupted_merge(work: Path, ref: str) -> None:
-    proc = subprocess.run(["git", "merge", "--no-ff", "--no-commit", ref], cwd=work, capture_output=True, text=True)
+def _interrupted_merge(work: Path, ref: str, message: str = f"{SYNC_MERGE_PREFIX}origin/main") -> None:
+    args = ["git", "merge", "--no-ff", "--no-commit", *(["-m", message] if message else []), ref]
+    proc = subprocess.run(args, cwd=work, capture_output=True, text=True)
     assert proc.returncode in (0, 1), proc.stderr
     assert merge_in_progress(str(work))
 
@@ -97,4 +98,18 @@ def test_a_merge_of_another_branch_is_left_untouched(work: Path):
 
     assert adoption is not None and adoption.action == "refused"
     assert "not from origin/main" in adoption.error
+    assert merge_in_progress(str(work))
+
+
+def test_a_hand_merge_of_a_branch_already_in_the_target_is_left_untouched(work: Path):
+    _git(work, "checkout", "-q", "-b", "landed", "origin/main")
+    commit_on(work, "landed", {"docs/landed.md": "l\n"}, "landed work")
+    _git(work, "push", "-q", "origin", "landed:main")
+    _git(work, "checkout", "-q", FLOW_BRANCH)
+    _interrupted_merge(work, "landed", message="")
+
+    adoption = adopt_merge_in_progress(_request(work))
+
+    assert adoption is not None and adoption.action == "refused"
+    assert "not started by the target sync" in adoption.error
     assert merge_in_progress(str(work))

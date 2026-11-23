@@ -97,6 +97,12 @@ def _entry_segments(side: _ListSide, literal: _Literal, indexes: list[int]) -> l
     return segments
 
 
+def _line_end(data: bytes, pos: int) -> int:
+    """The offset of the newline ending the line at ``pos`` (the end of ``data`` on its last line)."""
+    newline = data.find(b"\n", pos)
+    return len(data) if newline < 0 else newline
+
+
 def _insert(side: _ListSide, literal: _Literal, segments: list[bytes]) -> bytes | None:
     """The target file with ``segments`` appended after the literal's last entry, in the literal's own layout."""
     last = (literal.elts or [None])[-1] if isinstance(literal, ast.List) else (literal.values or [None])[-1]
@@ -105,14 +111,19 @@ def _insert(side: _ListSide, literal: _Literal, segments: list[bytes]) -> bytes 
     end = _offset(side.data, last.end_lineno or 0, last.end_col_offset or 0)
     if literal.lineno == literal.end_lineno:
         return side.data[:end] + b"".join(b", " + segment for segment in segments) + side.data[end:]
-    line_start = side.data.rfind(b"\n", 0, end) + 1
-    first_line = side.data[line_start:end]
-    indent = first_line[: len(first_line) - len(first_line.lstrip())]
+    first = last if isinstance(literal, ast.List) else (literal.keys[-1] or last)
+    line_start = _offset(side.data, first.lineno, 0)
+    start_line = side.data[line_start : _line_end(side.data, line_start)]
+    indent = start_line[: len(start_line) - len(start_line.lstrip())]
     rest = side.data[end:]
     comma = len(rest) - len(rest.lstrip(b" \t")) if rest.lstrip(b" \t").startswith(b",") else -1
     insert_at = end + comma + 1 if comma >= 0 else end
+    line_rest = side.data[insert_at : _line_end(side.data, insert_at)]
+    if line_rest.strip().startswith(b"#"):  # keep the last entry's trailing comment on its own line
+        insert_at += len(line_rest)
+    prefix = side.data[:end] + (b"" if comma >= 0 else b",") + side.data[end:insert_at]
     lines = b"".join(b"\n" + indent + segment + b"," for segment in segments)
-    return side.data[:insert_at] + (b"" if comma >= 0 else b",") + lines + side.data[insert_at:]
+    return prefix + lines + side.data[insert_at:]
 
 
 def _branch_only(start: int, ours_entries: list[str], theirs_entries: list[str]) -> list[int]:

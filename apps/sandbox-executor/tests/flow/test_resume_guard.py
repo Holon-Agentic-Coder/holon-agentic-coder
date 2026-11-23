@@ -8,7 +8,7 @@ import pytest
 from sandbox_executor.flow import FlowContext, FlowStage
 from sandbox_executor.flow.checkpoint import save_checkpoint
 from sandbox_executor.flow.resume_guard import REQUIRED_BRANCH, _resume_context_error
-from sandbox_executor.flow.target_sync_merge import merge_in_progress
+from sandbox_executor.flow.target_sync_merge import SYNC_MERGE_PREFIX, merge_in_progress
 
 from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
 
@@ -87,7 +87,10 @@ def _flow_repo_with_interrupted_merge(tmp_path: Path) -> Path:
     _, work = build_flow_repos(tmp_path, {ledger: base})
     commit_on(work, "main", {ledger: base + json.dumps({"execution_id": "E-main"}) + "\n"}, "target")
     commit_on(work, FLOW_BRANCH, {ledger: base + json.dumps({"execution_id": "E-flow"}) + "\n"}, "flow")
-    subprocess.run(["git", "merge", "--no-ff", "--no-commit", "origin/main"], cwd=work, capture_output=True)
+    message = f"{SYNC_MERGE_PREFIX}origin/main"
+    subprocess.run(
+        ["git", "merge", "--no-ff", "--no-commit", "-m", message, "origin/main"], cwd=work, capture_output=True
+    )
     return work
 
 

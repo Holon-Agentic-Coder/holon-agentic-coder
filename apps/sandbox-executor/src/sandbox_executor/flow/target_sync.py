@@ -4,7 +4,8 @@
 with a normal merge commit, resolves the mechanical conflict classes without an agent, hands ``CODE`` paths to the
 injected code resolver (the default fails closed by aborting the merge), verifies, commits, pushes through
 ``host_remote`` and appends exactly one ``target_sync`` row to ``executions.jsonl``. It never rebases and never forces
-a push. An unchanged target costs one fetch and two ``rev-parse`` calls and writes nothing.
+a push. An unchanged target costs one fetch, two ``rev-parse`` calls and one ``merge-base --is-ancestor`` call and
+writes nothing.
 """
 
 from __future__ import annotations

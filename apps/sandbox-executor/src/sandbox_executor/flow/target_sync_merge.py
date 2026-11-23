@@ -24,6 +24,8 @@ from sandbox_executor.git import run_git
 logger = logging.getLogger(__name__)
 
 _MARKER_PREFIXES = ("<<<<<<< ", ">>>>>>> ")
+# Every merge the sync starts carries this message, so a resume adopts only merges the flow itself started.
+SYNC_MERGE_PREFIX = "sync: merge target "
 _Step = Callable[[SyncRequest, TargetProbe, SyncResult], SyncResult]
 
 
@@ -93,7 +95,7 @@ def _resolve(request: SyncRequest, probe: TargetProbe, result: SyncResult) -> Sy
 
 def _commit_message(probe: TargetProbe, result: SyncResult) -> str:
     classes = sorted({cls for _, cls, _ in result.resolutions}) or ["clean"]
-    return f"sync: merge target {probe.target_ref} at {probe.target_sha[:12]} ({', '.join(classes)})"
+    return f"{SYNC_MERGE_PREFIX}{probe.target_ref} at {probe.target_sha[:12]} ({', '.join(classes)})"
 
 
 def _commit_and_push(request: SyncRequest, probe: TargetProbe, result: SyncResult) -> SyncResult:
@@ -126,7 +128,8 @@ def _complete(request: SyncRequest, probe: TargetProbe, result: SyncResult) -> S
 
 
 def _merge_and_resolve(request: SyncRequest, probe: TargetProbe, result: SyncResult) -> SyncResult:
-    run_git(["merge", "--no-ff", "--no-commit", probe.target_sha], cwd=request.worktree, check=False)
+    message = _commit_message(probe, result)
+    run_git(["merge", "--no-ff", "--no-commit", "-m", message, probe.target_sha], cwd=request.worktree, check=False)
     if not merge_in_progress(request.worktree):
         return replace(result, status="blocked", error="git merge did not start (is the worktree clean?)")
     return _complete(request, probe, result)
@@ -160,9 +163,15 @@ def _commit_blocked_row(request: SyncRequest, result: SyncResult) -> SyncResult:
 def merge_target(request: SyncRequest, probe: TargetProbe) -> SyncResult:
     """Merge ``probe.target_sha`` into the flow branch and return ``merged`` or ``blocked``, with its one ledger row.
 
-    A blocked merge is aborted first, then its row is appended to the clean worktree and committed on its own (not
-    pushed). A push failure after the merge commit returns ``blocked`` with the push error and no second row.
+    A worktree with uncommitted tracked changes (for example the running stage's ledger rows) is blocked before the
+    merge starts, with no row and no commit, so nothing it holds is swept into a sync commit. A blocked merge is aborted
+    first, then its row is appended to the clean worktree and committed on its own (not pushed). A push failure after
+    the merge commit returns ``blocked`` with the push error and no second row.
     """
+    if _git_out(request.worktree, "status", "--porcelain", "--untracked-files=no").strip():
+        logger.warning("Target sync of %s blocked: the worktree has uncommitted tracked changes", request.branch)
+        error = "the worktree has uncommitted tracked changes; commit them before the target sync"
+        return SyncResult("blocked", probe.head_sha, probe.head_sha, probe.target_sha, probe=probe, error=error)
     return _guarded(request, probe, _merge_and_resolve)
 
 

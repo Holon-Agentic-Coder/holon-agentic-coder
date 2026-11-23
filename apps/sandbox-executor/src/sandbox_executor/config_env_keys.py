@@ -26,6 +26,16 @@ DOCUMENTED_KEYS: tuple[tuple[str, str, str], ...] = (
     ("HOLON_AGENT_SKIP_PERMISSIONS", "`true`", "Run the agent with its permission prompts bypassed."),
     ("HOLON_AGENT_LOG_BYTES", "`65536`", "Bytes of agent output kept in execution logs."),
     ("HOLON_SECRET_BUNDLE_PATH", "`/run/secrets/holon_auth.json`", "Secret bundle read inside the container."),
+    (
+        "HOLON_ROOT_CA_PATH",
+        "`/usr/local/share/ca-certificates/holon-root-ca.crt`",
+        "Holon Root CA trusted inside the container when present.",
+    ),
+    (
+        "HOLON_CA_BUNDLE_PATH",
+        "`/home/holon/.holon-ca-bundle.crt`",
+        "Merged CA bundle the role dispatcher writes inside the container.",
+    ),
     ("GITHUB_TOKEN", "`gh auth token`", "GitHub token for pushes and pull requests."),
     ("HOLON_TURN_TIMEOUT_SECONDS", "`3600`", "Wall-clock ceiling of one agent turn."),
     ("HOLON_TURN_STALL_SECONDS", "`90`", "Silence after which a turn counts as stalled."),

@@ -312,6 +312,15 @@ def test_tracked_project_file_without_secret_keys_does_not_warn(layers):
     assert layers.load().warnings == []
 
 
+def test_tracked_project_file_naming_only_a_token_file_does_not_warn(layers, tmp_path):
+    (layers.repo / ".git").rmdir()
+    _git(layers.repo, "init", "-q")
+    token_file = write(tmp_path / "token", fake_token())
+    write(layers.project, f"HOLON_AGENT_OAUTH_TOKEN_FILE={token_file}\n")
+    _git(layers.repo, "add", ".env")
+    assert layers.load().warnings == []
+
+
 # --- secret files and credential pinning ----------------------------------------------------------------------------
 
 
@@ -322,6 +331,18 @@ def test_token_file_yields_a_secret_user_value(layers, tmp_path):
     found = config.settings["HOLON_AGENT_OAUTH_TOKEN"]
     assert (found.value, found.source, found.secret) == (token, "user", True)
     assert config.settings["HOLON_AGENT_OAUTH_TOKEN_FILE"].secret is False
+
+
+def test_process_token_file_beats_the_user_token_file_and_is_applied(layers, tmp_path):
+    user_token, process_token = fake_token(), fake_token()
+    user_file = write(tmp_path / "user-token", user_token)
+    process_file = write(tmp_path / "process-token", process_token)
+    environ = {"HOLON_AGENT_OAUTH_TOKEN_FILE": str(process_file)}
+    config = layers.load(user=f"HOLON_AGENT_OAUTH_TOKEN_FILE={user_file}\n", environ=environ)
+    assert setting(config, "HOLON_AGENT_OAUTH_TOKEN") == (process_token, "process", ("user",))
+    assert setting(config, "HOLON_AGENT_OAUTH_TOKEN_FILE")[1] == "process"
+    assert config_env.apply_to_environ(config, environ) == ["HOLON_AGENT_OAUTH_TOKEN"]
+    assert environ["HOLON_AGENT_OAUTH_TOKEN"] == process_token
 
 
 def test_token_file_path_expands_the_home_only(layers):

@@ -33,6 +33,7 @@ from sandbox_executor.config_env_parse import parse_env_text
 
 LAYERS = ("default", "user", "project", "process", "cli")
 FILE_LAYERS = ("user", "project")
+_APPLIED_LAYERS = (*FILE_LAYERS, "process")
 RESOLVED_MARKER = "HOLON_CONFIG_RESOLVED"
 ALLOWED_NON_HOLON_KEYS = frozenset({"GITHUB_TOKEN"})
 RESERVED_KEYS = frozenset({"HOLON_ROLE", RESOLVED_MARKER, preflight.SKIP_ENV_VAR}) | RETIRED_ENV_VARS
@@ -48,6 +49,30 @@ DEFAULTS: Mapping[str, str] = {
     preflight.TIMEOUT_ENV_VAR: f"{preflight.DEFAULT_TIMEOUT_SECONDS:g}",
 }
 _HOLON_KEY_RE = re.compile(r"HOLON_[A-Z0-9_]+\Z")
+
+__all__ = [
+    "DEFAULTS",
+    "DOCUMENTED_KEYS",
+    "FILE_LAYERS",
+    "LAYERS",
+    "RESERVED_KEYS",
+    "RESOLVED_MARKER",
+    "SECRET_KEYS",
+    "EffectiveConfig",
+    "ParsedLayer",
+    "ResolvedSetting",
+    "accept_key",
+    "apply_to_environ",
+    "current",
+    "is_secret_key",
+    "load_effective_config",
+    "parse_env_text",
+    "project_env_path",
+    "remember",
+    "resolve",
+    "user_env_path",
+    "with_cli_overrides",
+]
 
 
 def user_env_path() -> Path:
@@ -133,9 +158,14 @@ def _read_layer(path: Path, warnings: list[str]) -> dict[str, str]:
             warnings.append(f"Warning: {path}: ignoring {key}: {reason}.")
         else:
             accepted[key] = value
-    values, secret_warnings = config_env_secrets.expand_secret_files(accepted, str(path))
+    return accepted
+
+
+def _expand(values: Mapping[str, str], origin: str, warnings: list[str]) -> dict[str, str]:
+    """Read the token files one layer references into that same layer."""
+    expanded, secret_warnings = config_env_secrets.expand_secret_files(values, origin)
     warnings.extend(secret_warnings)
-    return values
+    return expanded
 
 
 def load_effective_config(environ: Mapping[str, str] | None = None, cwd: str | None = None) -> EffectiveConfig:
@@ -144,35 +174,33 @@ def load_effective_config(environ: Mapping[str, str] | None = None, cwd: str | N
     if environ.get(RESOLVED_MARKER) == "1":
         return EffectiveConfig(resolve({}, {}, environ).settings, [], inherited=True)
     warnings: list[str] = []
-    user = _read_layer(user_env_path(), warnings)
+    user_path = user_env_path()
+    user = _expand(_read_layer(user_path, warnings), str(user_path), warnings)
     project_path = project_env_path(cwd or os.getcwd())
-    project = _read_layer(project_path, warnings) if project_path else {}
+    project: dict[str, str] = {}
     if project_path:
-        secret_keys = [key for key, value in project.items() if value and is_secret_key(key)]
+        parsed = _read_layer(project_path, warnings)
+        # Only the keys the file itself holds: a token-file path is not a secret, the token it names is not tracked.
+        secret_keys = [key for key, value in parsed.items() if value and is_secret_key(key)]
         warnings.extend(config_env_secrets.tracked_secret_warning(str(project_path), secret_keys))
-    return EffectiveConfig(resolve(user, project, environ).settings, warnings)
+        project = _expand(parsed, str(project_path), warnings)
+    # An exported token-file reference is a process-layer setting, read like the file layers' references.
+    process = _expand({k: v for k, v in environ.items() if accept_key(k) is None}, "process environment", warnings)
+    return EffectiveConfig(resolve(user, project, process).settings, warnings)
 
 
 def apply_to_environ(config: EffectiveConfig, environ: MutableMapping[str, str]) -> list[str]:
-    """Fill ``environ`` with every file-sourced value it lacks or holds empty; never replaces a non-empty value.
+    """Fill ``environ`` with each file-sourced or derived value it lacks or holds empty; never replaces a set one.
 
-    Returns the keys it set.
+    A derived value is a token read from a token file the process environment names. Returns the keys it set.
     """
     added = []
     for setting in config.settings.values():
-        if setting.source in FILE_LAYERS and setting.value is not None and not environ.get(setting.key):
+        if setting.source in _APPLIED_LAYERS and setting.value is not None and not environ.get(setting.key):
             environ[setting.key] = setting.value
             added.append(setting.key)
     return added
 
-
-__all__ = [
-    "DOCUMENTED_KEYS",
-    "EffectiveConfig",
-    "ParsedLayer",
-    "ResolvedSetting",
-    "parse_env_text",
-]
 
 _CURRENT: list[EffectiveConfig] = []
 

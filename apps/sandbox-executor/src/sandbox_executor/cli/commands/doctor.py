@@ -17,9 +17,9 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help=(
             "Check that the selected agent runner is ready (one minimal real model call in its "
             "container), and show the effective budgets ('unlimited' for a budget variable set to "
-            "'unlimited'), the GitHub token type and scopes (never its value), the local-LLM model envelope, the local gateway state and every effective HOLON_* "
-            "setting with the layer it came from (~/.holon/.env, <repo>/.env, process env or flag) and the layers it "
-            "shadowed; secrets are shown only as 'set (<layer>)'."
+            "'unlimited'), the GitHub token type and scopes (never its value), the local-LLM model envelope, the "
+            "local gateway state and every effective HOLON_* setting with the layer it came from (~/.holon/.env, "
+            "<repo>/.env, process env or flag) and the layers it shadowed; secrets are shown only as 'set (<layer>)'."
         ),
     )
     add_runner_options(parser)

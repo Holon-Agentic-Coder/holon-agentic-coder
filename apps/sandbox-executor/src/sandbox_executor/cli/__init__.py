@@ -9,8 +9,8 @@ import sys
 from collections.abc import Mapping
 from typing import Any, TextIO
 
+from sandbox_executor import config_env, local_llm
 from sandbox_executor import git_flow as git_flow
-from sandbox_executor import local_llm
 from sandbox_executor.agent_defaults import (
     AGENT_IMAGE_MAPPING as AGENT_IMAGE_MAPPING,  # re-exported: the mapping moved to agent_defaults
 )
@@ -343,6 +343,7 @@ __all__ = [
     "reconcile_records",
     "redact_cli_error",
     "report_budgets_and_envelope",
+    "resolve_layered_configuration",
     "resolve_role_image",
     "run_calibrate",
     "run_docker_container",
@@ -543,13 +544,29 @@ def preflight_gate(agent: str, model: str, skip: bool = False) -> PreflightResul
     return result
 
 
+def _configuration_section(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    """``holon doctor`` configuration section: the ``--json`` payload and the text lines of the layered configuration.
+
+    The resolution ``main`` remembered is reported (a fresh one when none is held, as when a test calls
+    ``run_doctor`` directly); an explicit ``--agent`` or ``--model`` is reported as the ``cli`` layer.
+    """
+    from sandbox_executor import config_env_report
+
+    config = config_env.current() or config_env.load_effective_config()
+    flags = {"HOLON_AGENT": getattr(args, "agent", None), "HOLON_MODEL": getattr(args, "model", None)}
+    config = config_env.with_cli_overrides(config, {key: value for key, value in flags.items() if value})
+    return config_env_report.configuration_payload(config), config_env_report.format_config_report(config)
+
+
 def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None) -> int:
     """Implement ``holon doctor``: one readiness report for the runner, the model and the local environment.
 
     It resolves the agent runner and model and runs the pre-flight probe on them, then reports the effective turn and
     stage budgets and, when local-LLM mode is enabled, the model envelope and the local gateway probe
-    (:func:`report_budgets_and_envelope`). With ``--json`` the environment section is carried under ``environment``
-    as its report lines, with its ``WARNING:`` lines also listed under ``warnings``.
+    (:func:`report_budgets_and_envelope`), then every effective ``HOLON_*`` setting with its source layer and the layers
+    it shadowed (secrets shown only as ``set (<layer>)``). With ``--json`` the environment section is carried under
+    ``environment`` as its report lines, with its ``WARNING:`` lines also listed under ``warnings``, and the settings
+    under ``configuration``.
 
     Args:
         args: Parsed namespace with ``agent``, ``model``, ``json``, ``timeout`` and ``target_worktree``.
@@ -577,6 +594,7 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
     env_lines = env_out.getvalue().splitlines()
     warnings = [line for line in env_lines if line.startswith("WARNING: ")]
     environment = {"ok": env_code == 0, "lines": env_lines, "warnings": warnings}
+    configuration, config_lines = _configuration_section(args)
 
     try:
         # The text report prints both decisions on stdout, so the resolvers' INFO log would show them twice.
@@ -596,10 +614,11 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
                         f"Run 'holon models --agent {norm_a}' to inspect supported models and effort levels."
                     )
             error_payload["environment"] = environment
+            error_payload["configuration"] = configuration
             print(json.dumps(error_payload, indent=2))
         else:
             print_encodable(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
-            print_encodable("\n".join(env_lines))
+            print_encodable("\n".join([*env_lines, *config_lines]))
         return 1
 
     result = run_preflight_probe(agent_res.value, model_res.value, timeout=resolve_timeout(args.timeout))
@@ -609,6 +628,7 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
             "model": {"value": model_res.value, "source": model_res.source, "reason": model_res.reason},
             "preflight": result.to_dict(),
             "environment": environment,
+            "configuration": configuration,
         }
         print(json.dumps(payload, indent=2))
     else:
@@ -616,7 +636,7 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
         print_encodable(agent_res.describe("Agent runner"))
         print_encodable(model_res.describe("Model"))
         print_encodable(result.format_report())
-        print_encodable("\n".join(env_lines))
+        print_encodable("\n".join([*env_lines, *config_lines]))
     return 0 if result.ok and env_code == 0 else 1
 
 
@@ -639,9 +659,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def resolve_layered_configuration() -> config_env.EffectiveConfig:
+    """Resolve the layered configuration once for this invocation and fold it into the host environment.
+
+    Each warning goes to stderr (redacted as defence in depth; it names keys, paths and modes only). The file-sourced
+    values fill only the variables the process environment leaves unset, so the process environment and explicit CLI
+    flags keep winning, and every role container and the pre-flight probe inherit them through the 0600 env-file.
+    The resolution is remembered with its pre-apply provenance for ``holon doctor``.
+    """
+    config = config_env.load_effective_config()
+    for warning in config.warnings:
+        print_encodable(redact_cli_error(warning), file=sys.stderr)
+    config_env.apply_to_environ(config, os.environ)
+    config_env.remember(config)
+    return config
+
+
 def main(argv: list[str] | None = None) -> None:
     """Run the Holon CLI."""
     configure_cli_logging()
+    # Before the parser is built: argparse defaults may read the environment.
+    resolve_layered_configuration()
     parser = build_parser()
     args = parser.parse_args(argv)
     if hasattr(args, "_run"):

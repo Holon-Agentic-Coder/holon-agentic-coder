@@ -238,6 +238,7 @@ __all__ = [
     "classify_conflicts",
     "classify_head_checks",
     "classify_merge_conflicts",
+    "classify_path",
     "classify_sides",
     "command_failure",
     "complete_merge",

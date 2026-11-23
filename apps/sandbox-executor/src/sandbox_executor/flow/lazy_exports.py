@@ -40,7 +40,7 @@ LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.checkpoint_store": "CheckpointStore FileCheckpointStore",
     "sandbox_executor.flow.child_progress": "_child_intent_branch _sub_intent_depth",
     "sandbox_executor.flow.conflict_classes": (
-        "ConflictClass ConflictSides classify_merge_conflicts classify_sides read_sides unmerged_stages"
+        "ConflictClass ConflictSides classify_merge_conflicts classify_path classify_sides read_sides unmerged_stages"
     ),
     "sandbox_executor.flow.conflict_classes_lists": "appended_list_union",
     "sandbox_executor.flow.conflict_classes_resolve": "MechanicalResolution resolve_mechanical resolve_path",

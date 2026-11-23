@@ -2,7 +2,8 @@
 
 The merge is a normal ``--no-ff`` merge of the probed target SHA (never a rebase, never a forced push). ``--no-commit``
 stops before the merge commit so the ``target_sync`` ledger row is part of it. Any unhandled error aborts the merge,
-so the worktree is never left half-merged; a merge that cannot be completed is aborted before its row is appended.
+so the worktree is never left half-merged; a merge that cannot be completed is aborted before its row is appended,
+and that blocked row is committed on its own so a dirty ledger never stops the next sync's merge from starting.
 """
 
 from __future__ import annotations
@@ -49,12 +50,16 @@ def _has_markers(path: Path) -> bool:
     return any(line.startswith(_MARKER_PREFIXES) for line in lines)
 
 
-def merge_verification_error(worktree: str) -> str:
-    """Why the staged merge must not be committed (unmerged paths, conflict markers), or ``""``."""
-    if unmerged_paths(worktree):
-        return f"unmerged paths remain: {', '.join(unmerged_paths(worktree))}"
-    staged = [p for p in _git_out(worktree, "diff", "--cached", "--name-only", "-z", "HEAD").split("\0") if p]
-    marked = [p for p in staged if (Path(worktree) / p).is_file() and _has_markers(Path(worktree) / p)]
+def merge_verification_error(worktree: str, conflicted_paths: tuple[str, ...] | list[str]) -> str:
+    """Why the staged merge must not be committed (unmerged paths, markers in a conflicted path), or ``""``.
+
+    Only the paths the merge left conflicted are scanned for markers: a cleanly merged file whose own content has
+    marker-like lines must not block every sync.
+    """
+    remaining = unmerged_paths(worktree)
+    if remaining:
+        return f"unmerged paths remain: {', '.join(remaining)}"
+    marked = [p for p in conflicted_paths if (Path(worktree) / p).is_file() and _has_markers(Path(worktree) / p)]
     return f"conflict markers remain in: {', '.join(marked)}" if marked else ""
 
 
@@ -92,7 +97,11 @@ def _commit_message(probe: TargetProbe, result: SyncResult) -> str:
 
 
 def _commit_and_push(request: SyncRequest, probe: TargetProbe, result: SyncResult) -> SyncResult:
-    """Record the merged row, commit the merge (row included) and push it; a push failure keeps the local commit."""
+    """Record the merged row, commit the merge (row included) and push it; a push failure keeps the local commit.
+
+    The row is part of the merge commit, so its ``success`` outcome records the local merge commit only; a push
+    failure is reported by the returned ``blocked`` result and its error, not by the row.
+    """
     result = append_sync_row(request, replace(result, status="merged"))
     run_git(["add", "--", request.ledger_path], cwd=request.worktree, check=False)
     commit = run_git(["commit", "--no-edit", "-m", _commit_message(probe, result)], cwd=request.worktree, check=False)
@@ -112,7 +121,7 @@ def _complete(request: SyncRequest, probe: TargetProbe, result: SyncResult) -> S
     result = _resolve(request, probe, result)
     if result.status == "blocked":
         return result
-    error = merge_verification_error(request.worktree)
+    error = merge_verification_error(request.worktree, result.conflicted_paths)
     return replace(result, status="blocked", error=error) if error else _commit_and_push(request, probe, result)
 
 
@@ -134,15 +143,25 @@ def _guarded(request: SyncRequest, probe: TargetProbe, step: _Step, *, record_bl
     if result.status == "blocked" and not result.ledger_row_id:
         abort_merge(request.worktree)
         result = replace(result, head_after=probe.head_sha)
-        return append_sync_row(request, result) if record_blocked else result
+        return _commit_blocked_row(request, append_sync_row(request, result)) if record_blocked else result
     return result
+
+
+def _commit_blocked_row(request: SyncRequest, result: SyncResult) -> SyncResult:
+    """Commit the blocked row alone (not pushed), so the next merge of a target that changed the ledger can start."""
+    message = f"sync: record blocked target sync of {result.target_sha[:12]}"
+    commit = run_git(["commit", "-q", "-m", message, "--", request.ledger_path], cwd=request.worktree, check=False)
+    if commit.returncode != 0:
+        logger.warning("Could not commit the blocked target_sync row: %s", (commit.stderr or "").strip())
+        return result
+    return replace(result, head_after=_git_out(request.worktree, "rev-parse", "HEAD").strip() or result.head_after)
 
 
 def merge_target(request: SyncRequest, probe: TargetProbe) -> SyncResult:
     """Merge ``probe.target_sha`` into the flow branch and return ``merged`` or ``blocked``, with its one ledger row.
 
-    A blocked merge is aborted first, then its row is appended to the clean worktree (committed with the flow's next
-    commit). A push failure after the merge commit returns ``blocked`` with the push error and no second row.
+    A blocked merge is aborted first, then its row is appended to the clean worktree and committed on its own (not
+    pushed). A push failure after the merge commit returns ``blocked`` with the push error and no second row.
     """
     return _guarded(request, probe, _merge_and_resolve)
 

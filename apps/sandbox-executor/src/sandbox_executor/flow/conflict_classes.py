@@ -84,9 +84,16 @@ def _is_timestamp_only(sides: ConflictSides) -> bool:
     return _without_timestamps(ours) == _without_timestamps(theirs)
 
 
+def _indent(line: str, python: bool) -> str:
+    return line[: len(line) - len(line.lstrip())] if python else ""
+
+
 def _normalised_lines(text: str, python: bool) -> list[str]:
-    """Non-blank lines with whitespace collapsed; for Python, each contiguous import block sorted."""
-    lines = [" ".join(line.split()) for line in text.splitlines() if line.strip()]
+    """Non-blank lines with whitespace collapsed; for Python, leading indentation kept and import blocks sorted.
+
+    Python indentation is semantic, so a re-indent is a real change and never counts as mechanical.
+    """
+    lines = [_indent(line, python) + " ".join(line.split()) for line in text.splitlines() if line.strip()]
     if not python:
         return lines
     result: list[str] = []
@@ -127,6 +134,14 @@ def classify_sides(sides: ConflictSides) -> ConflictClass:
     return ConflictClass.CODE
 
 
+def classify_path(worktree: str, path: str) -> ConflictClass:
+    """The class of one unmerged ``path``; a side that is not UTF-8 text (a binary file) is ``CODE``."""
+    try:
+        return classify_sides(read_sides(worktree, path))
+    except UnicodeDecodeError:
+        return ConflictClass.CODE
+
+
 def classify_merge_conflicts(worktree: str, paths: list[str]) -> list[tuple[str, ConflictClass]]:
     """Classify each unmerged path of the in-progress merge in ``worktree``, keeping the order of ``paths``."""
-    return [(path, classify_sides(read_sides(worktree, path))) for path in paths]
+    return [(path, classify_path(worktree, path)) for path in paths]

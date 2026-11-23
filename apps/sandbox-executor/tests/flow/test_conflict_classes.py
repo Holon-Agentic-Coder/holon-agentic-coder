@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from sandbox_executor.flow import conflict_classes_resolve
 from sandbox_executor.flow.conflict_classes import ConflictClass, classify_merge_conflicts
 from sandbox_executor.flow.conflict_classes_lists import appended_list_union
 from sandbox_executor.flow.conflict_classes_resolve import resolve_mechanical
@@ -149,3 +150,67 @@ def test_list_union_layouts(base, ours, theirs, expected):
 
 def test_list_union_refuses_a_removed_entry():
     assert appended_list_union("X = ['a', 'b']\n", "X = ['a']\n", "X = ['a', 'b', 'c']\n") is None
+
+
+def test_a_target_deletion_against_a_branch_reindent_is_code(tmp_path: Path):
+    source = "if flag:\n    x = 1\ny = 2\n"
+    reindented = "if flag:\n    x = 1\n    y = 2\n"
+    work, paths = _conflicted(tmp_path, {"old.py": source}, {"old.py": reindented}, {"old.py": None})
+
+    classified, outcome = _classify_and_resolve(work, paths)
+
+    assert classified == [("old.py", ConflictClass.CODE)]
+    assert outcome.code_paths == ["old.py"]
+    assert (work / "old.py").read_text(encoding="utf-8") == reindented
+
+
+def test_a_failed_delete_resolution_restores_the_unmerged_stages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    source = "import os\nimport json\n"
+    work, paths = _conflicted(tmp_path, {"old.py": source}, {"old.py": "import json\nimport os\n"}, {"old.py": None})
+
+    def rm_then_doubt(worktree: str, sides) -> bool:
+        _git(Path(worktree), "rm", "-q", "--", sides.path)
+        return False
+
+    monkeypatch.setitem(conflict_classes_resolve._RESOLVERS, ConflictClass.DELETE_VS_TOUCH, rm_then_doubt)
+
+    _, outcome = _classify_and_resolve(work, paths)
+
+    assert outcome.code_paths == ["old.py"]
+    assert _git(work, "diff", "--name-only", "--diff-filter=U") == "old.py"
+    assert (work / "old.py").exists()
+
+
+def _commit_bytes(work: Path, branch: str, rel: str, data: bytes) -> None:
+    _git(work, "checkout", "-q", "-B", branch, f"origin/{branch}")
+    (work / rel).write_bytes(data)
+    _git(work, "add", "--", rel)
+    _git(work, "commit", "-q", "-m", f"{branch} bytes")
+    _git(work, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
+
+
+def test_a_non_utf8_conflict_is_code(tmp_path: Path):
+    _, work = build_flow_repos(tmp_path, {"blob.py": "x = 0\n"})
+    _commit_bytes(work, "main", "blob.py", b"x = '\xff\xfe main'\n")
+    _commit_bytes(work, FLOW_BRANCH, "blob.py", b"x = '\xff\xfe flow'\n")
+    _git(work, "fetch", "-q", "origin")
+    merge = subprocess.run(["git", "merge", "--no-ff", "--no-edit", "origin/main"], cwd=work, capture_output=True)
+    assert merge.returncode == 1
+
+    classified, outcome = _classify_and_resolve(work, ["blob.py"])
+
+    assert classified == [("blob.py", ConflictClass.CODE)]
+    assert outcome.code_paths == ["blob.py"]
+
+
+@pytest.mark.parametrize(
+    ("base", "ours", "theirs"),
+    [
+        ("M = {'a': 1}\n", "M = {'a': 1, 'k': 2}\n", "M = {'a': 1, 'k': 3}\n"),
+        ("M = {'a': 1}\n", "M = {'a': 1, 'a': 2}\n", "M = {'a': 1, 'c': 3}\n"),
+        ("M = {'a': 1}\n", "M = {'a': 1, **R}\n", "M = {'a': 1, 'c': 3}\n"),
+        ("X = []\n", "X = ['b']\n", "X = []\n"),
+    ],
+)
+def test_list_union_refuses_overlapping_keys_splats_and_empty_targets(base, ours, theirs):
+    assert appended_list_union(base, ours, theirs) is None

@@ -11,7 +11,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from sandbox_executor.flow.conflict_classes import ConflictClass, _is_ledger_path, classify_sides, read_sides
+from sandbox_executor.flow.conflict_classes import ConflictClass, _is_ledger_path, classify_path
 from sandbox_executor.flow.conflict_classes_resolve import resolve_path
 from sandbox_executor.flow.ledger_reconcile import _resolve_conflicting_ledger
 
@@ -39,7 +39,7 @@ def _classify_conflict(path: str, detection: ConflictDetection, repo_dir: str) -
         if not repo_dir or path in detection.probed_files:
             # A probed-only path is not unmerged in this checkout, so it has no index stages to classify.
             return path, ConflictKind.CODE
-        return path, ConflictKind(classify_sides(read_sides(repo_dir, path)).value)
+        return path, ConflictKind(classify_path(repo_dir, path).value)
     if detection.probe_branch != "HEAD" and path in detection.probed_files:
         # The probed branch is not checked out, so the working-tree copy is not its ledger; append-only
         # ledgers reconcile at merge time and must not be rewritten in the operator's checkout here.

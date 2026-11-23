@@ -1,13 +1,15 @@
 """Resolve the mechanical conflict classes of an in-progress merge, each resolver verifying its own result.
 
 A resolver returns True only after its output passed its check and was staged. On any doubt (a missing side, a check
-that fails, a git error) the path's conflicted state is restored with ``git checkout -m`` and the path is handed back
-as ``CODE``, so a mechanical resolver can never silently drop a ledger row, a knowledge-base change or a list entry.
+that fails, a git error) the path's unmerged index stages are put back if a resolver removed them, its conflicted
+copy is restored with ``git checkout -m`` and the path is handed back as ``CODE``, so a mechanical resolver can never
+silently drop a ledger row, a knowledge-base change or a list entry.
 """
 
 from __future__ import annotations
 
 import logging
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -95,17 +97,34 @@ _RESOLVERS: dict[ConflictClass, Callable[[str, ConflictSides], bool]] = {
 }
 
 
+def _unmerged_entries(worktree: str, path: str) -> str:
+    """The path's unmerged index entries (``mode sha stage<TAB>path``, NUL-terminated), for ``_restore_stages``."""
+    res = run_git(["ls-files", "-u", "-z", "--", path], cwd=worktree, check=False)
+    return res.stdout if res.returncode == 0 and isinstance(res.stdout, str) else ""
+
+
+def _restore_stages(worktree: str, path: str, entries: str) -> None:
+    """Put the unmerged stages (and the flow copy git left in the worktree) back after a failed ``git rm``."""
+    if not entries or unmerged_stages(worktree, path):
+        return
+    subprocess.run(["git", "update-index", "-z", "--index-info"], cwd=worktree, input=entries, text=True, check=False)
+    if not (Path(worktree) / path).exists() and 2 in unmerged_stages(worktree, path):
+        run_git(["checkout-index", "-f", "--stage=2", "--", path], cwd=worktree, check=False)
+
+
 def resolve_path(worktree: str, path: str, conflict_class: ConflictClass) -> bool:
     """Resolve one unmerged path of class ``conflict_class``; restore its conflicted state and return False on doubt."""
     resolver = _RESOLVERS.get(conflict_class)
     if resolver is None:
         return False
+    entries = _unmerged_entries(worktree, path)
     try:
         resolved = resolver(worktree, read_sides(worktree, path))
     except (OSError, UnicodeError, RuntimeError) as exc:
         logger.warning("Mechanical %s resolution of %s failed: %s", conflict_class.value, path, exc)
         resolved = False
     if not resolved:
+        _restore_stages(worktree, path, entries)
         run_git(["checkout", "-m", "--", path], cwd=worktree, check=False)
     return resolved
 

@@ -99,7 +99,7 @@ def _entry_segments(side: _ListSide, literal: _Literal, indexes: list[int]) -> l
 
 def _insert(side: _ListSide, literal: _Literal, segments: list[bytes]) -> bytes | None:
     """The target file with ``segments`` appended after the literal's last entry, in the literal's own layout."""
-    last = literal.elts[-1] if isinstance(literal, ast.List) else (literal.values or [None])[-1]
+    last = (literal.elts or [None])[-1] if isinstance(literal, ast.List) else (literal.values or [None])[-1]
     if last is None:
         return None
     end = _offset(side.data, last.end_lineno or 0, last.end_col_offset or 0)
@@ -124,6 +124,18 @@ def _branch_only(start: int, ours_entries: list[str], theirs_entries: list[str])
             seen.add(ours_entries[index])
             picked.append(index)
     return picked
+
+
+def _overlapping_keys(ours: _Literal, theirs: _Literal, branch_only: list[int]) -> bool:
+    """Whether an appended flow-branch dict entry is a ``**`` splat or reuses a key the target already has.
+
+    Either would let the flow branch's value silently override the target's, so the union is not mechanical.
+    """
+    if not isinstance(ours, ast.Dict) or not isinstance(theirs, ast.Dict):
+        return False
+    target_keys = {ast.dump(key) for key in theirs.keys if key is not None}
+    appended = [ours.keys[i] for i in branch_only]
+    return any(key is None or ast.dump(key) in target_keys for key in appended)
 
 
 def _verified(result: bytes, theirs: _ListSide, index: int, expected: list[str]) -> str | None:
@@ -155,9 +167,11 @@ def appended_list_union(base_text: str, ours_text: str, theirs_text: str) -> str
     if base_lit is None or ours_lit is None or theirs_lit is None:
         return None
     base_entries, ours_entries, theirs_entries = (_entries(lit) for lit in (base_lit, ours_lit, theirs_lit))
-    if ours_entries[: len(base_entries)] != base_entries or theirs_entries[: len(base_entries)] != base_entries:
+    prefix = len(base_entries)
+    branch_only = _branch_only(prefix, ours_entries, theirs_entries)
+    appended_only = ours_entries[:prefix] == base_entries and theirs_entries[:prefix] == base_entries
+    if not appended_only or _overlapping_keys(ours_lit, theirs_lit, branch_only):
         return None
-    branch_only = _branch_only(len(base_entries), ours_entries, theirs_entries)
     if not branch_only:
         return theirs_text
     result = _insert(theirs, theirs_lit, _entry_segments(ours, ours_lit, branch_only))

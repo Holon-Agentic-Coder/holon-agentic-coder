@@ -155,9 +155,32 @@ def test_a_code_conflict_with_the_default_resolver_blocks_cleanly(repos):
     assert result.status == "blocked"
     assert result.code_paths == ("src/app.py",)
     assert run_git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=str(work), check=False).returncode != 0
-    assert (_git(work, "rev-parse", "HEAD"), _origin_flow_sha(work)) == (head, pushed)
+    assert (_git(work, "rev-parse", "HEAD~1"), _origin_flow_sha(work)) == (head, pushed)
+    assert result.head_after == _git(work, "rev-parse", "HEAD")
+    assert _git(work, "diff", "--name-only", "HEAD~1", "HEAD") == LEDGER
     assert [row["outcome"] for row in _sync_rows(work)] == ["blocked"]
-    assert _git(work, "status", "--porcelain") == f"M {LEDGER}"
+    assert _git(work, "status", "--porcelain") == ""
+
+
+def test_a_sync_after_a_blocked_one_merges_a_target_that_changed_the_ledger(repos):
+    _, work = repos
+    _code_conflict(work)
+    assert sync_with_target(_request(work)).status == "blocked"
+    target_row = json.dumps({"execution_id": "E-main", "created_at": "2026-11-04T00:00:00Z"}) + "\n"
+    commit_on(work, "main", {LEDGER: BASE_ROW + target_row}, "target row")
+
+    result = sync_with_target(_request(work, resolver=RecordingResolver(resolve=True)))
+
+    assert result.status == "merged", result.error
+    assert [row["outcome"] for row in _sync_rows(work)] == ["blocked", "success"]
+    assert (work / LEDGER).read_text(encoding="utf-8").startswith(BASE_ROW + target_row)
+
+
+def test_marker_like_lines_outside_the_conflicted_paths_do_not_block(repos):
+    _, work = repos
+    commit_on(work, "main", {"docs/markers.md": "<<<<<<< not a conflict\n>>>>>>> either\n"}, "target")
+
+    assert sync_with_target(_request(work)).status == "merged"
 
 
 def test_an_injected_resolver_that_resolves_merges_with_its_tier(repos):
@@ -183,7 +206,7 @@ def test_a_resolver_error_aborts_the_merge_and_blocks(repos):
     assert result.status == "blocked" and "boom" in result.error
     assert run_git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=str(work), check=False).returncode != 0
     assert len(_sync_rows(work)) == 1
-    assert _git(work, "status", "--porcelain") == f"M {LEDGER}"
+    assert _git(work, "status", "--porcelain") == ""
 
 
 def test_a_push_failure_keeps_the_local_merge_and_blocks_with_one_row(repos, monkeypatch):

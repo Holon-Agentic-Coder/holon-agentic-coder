@@ -1,13 +1,20 @@
-"""A ``--from-stage`` resume keeps the intent's checkpoint intact: it is loaded, never clobbered, and stays complete."""
+"""A ``--from-stage`` resume keeps the intent's checkpoint intact: it is loaded, never clobbered, and stays complete.
+
+Its per-run switches come only from the flags of the resume, and ``--agent`` / ``--model`` override the checkpoint's
+runner and model for every remaining role.
+"""
 
 import argparse
 import json
+import logging
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
-from sandbox_executor.cli.commands._flow_resume import discover_resume_checkpoint
-from sandbox_executor.cli.commands.flow import _resolve_checkpoint_and_intent
+from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL, default_model_for
+from sandbox_executor.cli.commands._flow_resume import RUN_SWITCHES, discover_resume_checkpoint
+from sandbox_executor.cli.commands.flow import _build_flow_context, _resolve_checkpoint_and_intent
 from sandbox_executor.flow import FlowContext, FlowStage, PipelineEngine, StageResult, StageStatus
 from sandbox_executor.flow.checkpoint import load_checkpoint, save_checkpoint
 
@@ -197,3 +204,155 @@ def test_the_dedicated_flow_worktree_is_probed_after_the_target(tmp_path, intent
     saved = save_checkpoint(_completed_context(dedicated))
 
     assert discover_resume_checkpoint(_resume_args(intent_file, target)) == saved
+
+
+def _run_args(intent_file: Path, worktree: Path, **flags: Any) -> argparse.Namespace:
+    """Every ``holon flow`` flag of a dry, non-pushing resume from review, with ``flags`` overriding."""
+    args = _resume_args(intent_file, worktree)
+    defaults = {
+        "dry_run": True,
+        "skip_push": True,
+        "skip_calibrate": False,
+        "allow_overlap": False,
+        "max_review_iterations": None,
+        "ensemble_size": None,
+        "token_reduce": False,
+        "mitm_web": False,
+    }
+    for name, value in {**defaults, **flags}.items():
+        setattr(args, name, value)
+    return args
+
+
+def _resume(args: argparse.Namespace) -> tuple[FlowContext, list[tuple[str, str, str]]]:
+    """Resume as ``holon flow`` does, with fake Stage 4 and Stage 5 that record the runner and model they see."""
+    context, intent_data, agent, model = _resolve_checkpoint_and_intent(args)
+    with patch("sandbox_executor.cli.detect_holon_coherence", return_value=False):
+        context = _build_flow_context(args, context, intent_data, agent, model)
+    seen: list[tuple[str, str, str]] = []
+
+    def stage(flow_stage: FlowStage):
+        def run(ctx: FlowContext) -> StageResult:
+            seen.append((flow_stage.value, ctx.agent, ctx.model))
+            return StageResult(stage=flow_stage, status=StageStatus.SUCCESS)
+
+        return run
+
+    with (
+        patch("sandbox_executor.flow.pipeline.run_review_stage", side_effect=stage(FlowStage.REVIEW)),
+        patch("sandbox_executor.flow.pipeline.run_calibrate_stage", side_effect=stage(FlowStage.CALIBRATE)),
+    ):
+        PipelineEngine(context, from_stage=args.from_stage, checkpoint_path=args.checkpoint).run()
+    return context, seen
+
+
+def _save_runner_checkpoint(worktree: Path, **attributes: Any) -> Path:
+    context = _completed_context(worktree)
+    for name, value in attributes.items():
+        setattr(context, name, value)
+    return Path(save_checkpoint(context))
+
+
+def test_a_stored_skip_calibrate_is_dropped_and_logged_when_the_resume_does_not_pass_it(worktree, intent_file, caplog):
+    _save_runner_checkpoint(worktree, skip_calibrate=True, auto_calibrate=False)
+    args = _run_args(intent_file, worktree)
+
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.cli.commands._flow_resume"):
+        context, seen = _resume(args)
+
+    assert [role for role, _agent, _model in seen] == ["review", "calibrate"]
+    dropped = "Resume dropped the stored skip_calibrate from the checkpoint"
+    assert dropped in caplog.text
+    assert any(dropped in line for line in context.logs)
+    assert "dropped the stored dry_run" not in caplog.text
+    assert (context.skip_calibrate, context.auto_calibrate) == (False, True)
+    assert load_checkpoint(args.checkpoint).context.skip_calibrate is False
+
+
+def test_a_legacy_checkpoint_skip_review_never_skips_review_on_resume(worktree, intent_file):
+    path = _save_runner_checkpoint(worktree)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["context"]["skip_review"] = True
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    context, seen = _resume(_run_args(intent_file, worktree))
+
+    assert [role for role, _agent, _model in seen] == ["review", "calibrate"]
+    assert not hasattr(context, "skip_review")
+    assert "skip_review" not in RUN_SWITCHES
+
+
+def test_only_the_switches_passed_to_this_run_take_effect(worktree, intent_file):
+    _save_runner_checkpoint(worktree, skip_calibrate=True, auto_calibrate=False)
+    args = _run_args(intent_file, worktree, skip_calibrate=True)
+
+    context, seen = _resume(args)
+
+    assert [role for role, _agent, _model in seen] == ["review"]
+    assert {name: getattr(context, name) for name in RUN_SWITCHES} == {
+        "dry_run": True,
+        "skip_push": True,
+        "skip_calibrate": True,
+    }
+
+
+@pytest.mark.parametrize("model_from", ["flag", "env"])
+def test_agent_on_resume_overrides_the_checkpoint_runner_in_the_resumed_context_and_checkpoint(
+    worktree, intent_file, monkeypatch, caplog, model_from
+):
+    _save_runner_checkpoint(worktree, agent="antigravity-agent", model=default_model_for("antigravity-agent"))
+    claude_model = default_model_for("claude-agent")
+    args = _run_args(intent_file, worktree)
+    args.agent = "claude-agent"
+    if model_from == "flag":
+        args.model = claude_model
+    else:
+        monkeypatch.setenv("HOLON_MODEL", claude_model)
+
+    with caplog.at_level(logging.INFO, logger="sandbox_executor.cli.commands._flow_resume"):
+        _context, seen = _resume(args)
+
+    assert seen == [("review", "claude-agent", claude_model), ("calibrate", "claude-agent", claude_model)]
+    assert "Agent runner claude-agent from --agent overrides antigravity-agent" in caplog.text
+    model_source = "flag (--model)" if model_from == "flag" else "env (HOLON_MODEL)"
+    assert f"Model {claude_model} from {model_source} overrides" in caplog.text
+    saved = load_checkpoint(args.checkpoint).context
+    assert (saved.agent, saved.model) == ("claude-agent", claude_model)
+
+
+def test_a_resume_without_agent_or_model_keeps_the_checkpoint_runner(worktree, intent_file, monkeypatch):
+    monkeypatch.setenv("HOLON_AGENT", "claude-agent")
+    monkeypatch.setenv("HOLON_MODEL", default_model_for("claude-agent"))
+    stored_model = default_model_for("antigravity-agent")
+    _save_runner_checkpoint(worktree, agent="antigravity-agent", model=stored_model)
+    args = _run_args(intent_file, worktree)
+
+    assert _resolve_checkpoint_and_intent(_run_args(intent_file, worktree))[2:] == ("antigravity-agent", stored_model)
+    _context, seen = _resume(args)
+
+    assert seen == [("review", "antigravity-agent", stored_model), ("calibrate", "antigravity-agent", stored_model)]
+    saved = load_checkpoint(args.checkpoint).context
+    assert (saved.agent, saved.model) == ("antigravity-agent", stored_model)
+
+
+def test_a_checkpoint_without_switches_or_attribution_still_loads_and_resumes(worktree, intent_file):
+    legacy_context = _completed_context(worktree).to_dict()
+    for key in ("schema_version", "agent", "model", "dry_run", *RUN_SWITCHES):
+        legacy_context.pop(key, None)
+    path = worktree / ".holon" / "flow" / f"checkpoint-{SLUG}.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"intent_slug": SLUG, "current_stage": "review", "completed_stages": [], "context": legacy_context}),
+        encoding="utf-8",
+    )
+
+    loaded = load_checkpoint(str(path)).context
+    assert not any(getattr(loaded, name) for name in RUN_SWITCHES)
+    assert (loaded.agent, loaded.model) == (LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL)
+
+    _context, seen = _resume(_run_args(intent_file, worktree))
+
+    assert seen == [
+        ("review", LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL),
+        ("calibrate", LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL),
+    ]

@@ -11,8 +11,11 @@ from collections.abc import Mapping
 from typing import Any
 
 from sandbox_executor import cli
-from sandbox_executor.agent_defaults import Resolution
-from sandbox_executor.cli.commands._flow_resume import discover_resume_checkpoint
+from sandbox_executor.cli.commands._flow_resume import (
+    apply_run_switches,
+    discover_resume_checkpoint,
+    resolve_resumed_runner,
+)
 from sandbox_executor.cli.commands._flow_worktree import (
     TARGET_WORKTREE_HELP,
     ensure_flow_worktree,
@@ -31,6 +34,8 @@ from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZ
 logger = logging.getLogger(__name__)
 
 ORDER = 60
+
+_RUN_ONLY = "Applies to this run only; a resume does not inherit it from the checkpoint."
 
 _FROM_STAGE_CHOICES = [s.value for s in FlowStage if s != FlowStage.COMPLETED]
 
@@ -65,18 +70,28 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         ),
     )
     parser.add_argument(
-        "--agent", default=None, help=f"{_AGENT_HELP} A --checkpoint resume keeps the checkpoint's runner by default."
+        "--agent",
+        default=None,
+        help=(
+            f"{_AGENT_HELP} On a resume it applies to every remaining stage and role (the Stage 4 "
+            "reviewers and resolver and the Stage 5 evaluating agent) and is recorded in the checkpoint; "
+            "without it the checkpoint's runner is kept."
+        ),
     )
     parser.add_argument(
         "--model",
         default=None,
-        help=f"{_MODEL_HELP} A --checkpoint resume keeps the checkpoint's model unless --agent switches the runner.",
+        help=(
+            f"{_MODEL_HELP} On a resume it applies to every remaining stage and role (the Stage 4 "
+            "reviewers and resolver and the Stage 5 evaluating agent) and is recorded in the checkpoint; "
+            "without it the checkpoint's model is kept unless --agent switches the runner."
+        ),
     )
     parser.add_argument("--skip-preflight", action="store_true", help=_SKIP_PREFLIGHT_HELP)
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Validate stages and branches without executing external agents or git commits.",
+        help=f"Validate stages and branches without executing external agents or git commits. {_RUN_ONLY}",
     )
     parser.add_argument(
         "--json",
@@ -91,13 +106,13 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
             "Skip pushing git branches to remote origin. Only valid with --dry-run: the intent, plan and "
             "execute stages dispatch role agents that fetch from origin, the review stage reviews the origin "
             "execution branch and the calibrate stage pushes to origin, so any non-dry run, including a "
-            "--from-stage or --checkpoint resume, is rejected before any stage runs."
+            f"--from-stage or --checkpoint resume, is rejected before any stage runs. {_RUN_ONLY}"
         ),
     )
     parser.add_argument(
         "--skip-calibrate",
         action="store_true",
-        help="Skip Stage 5 (post-execution calibration report generation).",
+        help=f"Skip Stage 5 (post-execution calibration report generation). {_RUN_ONLY}",
     )
     parser.add_argument(
         "--allow-overlap",
@@ -177,28 +192,21 @@ def _resolve_checkpoint_and_intent(
         agent_res, model_res = cli.resolve_runner_and_model(args.agent, args.model)
         flow_agent, flow_model = agent_res.value, model_res.value
     else:
-        from_checkpoint = f"recorded in {args.checkpoint}"
-        if args.agent is not None:
-            flow_agent = cli.resolve_agent_runner(args.agent).value
-        else:
-            flow_agent = context.agent
-            logger.info(Resolution(flow_agent, "checkpoint", from_checkpoint).describe("Agent runner"))
-        if args.model is not None or (
-            args.agent is not None and cli.normalise_agent_id(flow_agent) != cli.normalise_agent_id(context.agent)
-        ):
-            flow_model = cli.resolve_model(flow_agent, args.model).value
-        else:
-            flow_model = context.model
-            logger.info(Resolution(flow_model, "checkpoint", from_checkpoint).describe("Model"))
+        flow_agent, flow_model = resolve_resumed_runner(args, context, args.checkpoint)
+        apply_run_switches(context, args)
         intent_data = {}
 
     return context, intent_data, flow_agent, flow_model
 
 
 def _check_skip_push(args: argparse.Namespace, context: Any | None) -> bool:
-    """Reject --skip-push (given or recorded in the checkpoint) outside a dry run, before any other gate."""
-    effective_dry_run = bool(args.dry_run or (context is not None and context.dry_run))
-    if (args.skip_push or (context is not None and context.skip_push)) and not effective_dry_run:
+    """Reject --skip-push outside a dry run, before any other gate.
+
+    A resumed ``context`` already carries this run's switches (a stored skip was dropped), so it is the source of truth.
+    """
+    effective_dry_run = bool(context.dry_run if context is not None else args.dry_run)
+    effective_skip_push = bool(context.skip_push if context is not None else args.skip_push)
+    if effective_skip_push and not effective_dry_run:
         print(f"Error: {cli.SKIP_PUSH_DISPATCH_ERROR}", file=sys.stderr)
         sys.exit(1)
         return False
@@ -211,7 +219,7 @@ def _check_dry_run_and_preflight(
     flow_agent: str,
     flow_model: str,
 ) -> bool:
-    effective_dry_run = bool(args.dry_run or (context is not None and context.dry_run))
+    effective_dry_run = bool(context.dry_run if context is not None else args.dry_run)
     if effective_dry_run:
         logger.info("Pre-flight probe skipped for a dry-run flow (no agent is called).")
     elif not cli.flow_dispatches_agent(args.from_stage):
@@ -239,13 +247,7 @@ def _update_flow_context(
         context.target_worktree = target_worktree
     context.agent = flow_agent
     context.model = flow_model
-    if args.dry_run:
-        context.dry_run = True
-    if args.skip_push:
-        context.skip_push = True
-    if args.skip_calibrate:
-        context.skip_calibrate = True
-        context.auto_calibrate = False
+    apply_run_switches(context, args)
     context.allow_overlap = bool(context.allow_overlap or getattr(args, "allow_overlap", False))
     if args.max_review_iterations is not None:
         context.max_review_iterations = args.max_review_iterations

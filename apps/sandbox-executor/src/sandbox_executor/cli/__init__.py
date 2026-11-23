@@ -2,51 +2,53 @@
 """Host wrapper CLI for running Holon Docker sandbox roles (intent, plan, execute)."""
 
 import argparse
-import contextlib
 import importlib.metadata
 import logging
 import os
-import re
-import shutil
-import socket
-import subprocess
 import sys
-import tempfile
-import time
-import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Any, TextIO
-from urllib.parse import urlparse
 
-from sandbox_executor import git_flow, local_llm
+from sandbox_executor import config_env, local_llm
+from sandbox_executor import git_flow as git_flow
 from sandbox_executor.agent_defaults import (
     AGENT_IMAGE_MAPPING as AGENT_IMAGE_MAPPING,  # re-exported: the mapping moved to agent_defaults
 )
 from sandbox_executor.agent_defaults import (
-    FALLBACK_AGENT,
+    FALLBACK_AGENT as FALLBACK_AGENT,
+)
+from sandbox_executor.agent_defaults import (
     MissingAgentRunnerError,
     MissingModelError,
     Resolution,
     UnmappedAgentRunnerError,
     get_available_models_for_runner,
-    image_for_agent,
     normalise_agent_id,
     resolve_agent_runner,
     resolve_model,
 )
-from sandbox_executor.agent_runner import (
-    HOST_WORKTREE_ROLES,
-    INTENT_CREATOR_ROLE,
-    RETIRED_ENV_VARS,
-    SANDBOX_UV_ENV,
-    SANDBOX_WORKSPACE_MOUNT,
+from sandbox_executor.agent_defaults import (
+    image_for_agent as image_for_agent,
 )
-from sandbox_executor.budgets import stage_budget_handdown_env
+from sandbox_executor.agent_runner import (
+    HOST_WORKTREE_ROLES as HOST_WORKTREE_ROLES,
+)
+from sandbox_executor.agent_runner import (
+    INTENT_CREATOR_ROLE as INTENT_CREATOR_ROLE,
+)
+from sandbox_executor.agent_runner import (
+    RETIRED_ENV_VARS as RETIRED_ENV_VARS,
+)
+from sandbox_executor.agent_runner import (
+    SANDBOX_UV_ENV as SANDBOX_UV_ENV,
+)
+from sandbox_executor.agent_runner import (
+    SANDBOX_WORKSPACE_MOUNT as SANDBOX_WORKSPACE_MOUNT,
+)
+from sandbox_executor.budgets import stage_budget_handdown_env as stage_budget_handdown_env
 from sandbox_executor.calibration import run_calibrate
-from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES, resolve_claude_credential
-from sandbox_executor.cli.antigravity_mounts import antigravity_session_mounts
-from sandbox_executor.cli.pi_mounts import get_pi_mounts
+from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES as CLAUDE_CREDENTIAL_ENV_NAMES
+from sandbox_executor.claude_credential import resolve_claude_credential as resolve_claude_credential
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 from sandbox_executor.flow import (
     SKIP_PUSH_DISPATCH_ERROR,
@@ -68,6 +70,138 @@ from sandbox_executor.knowledge import (
 )
 from sandbox_executor.knowledge.consult import format_consult_results_table
 from sandbox_executor.knowledge.stats import format_stats_dashboard
+from sandbox_executor.launcher import proxy_readiness
+
+# The container plumbing lives in sandbox_executor.launcher; every name it took from this module stays importable here.
+# `name as name` marks a re-export this module no longer uses itself.
+from sandbox_executor.launcher.coherence import (
+    _EXPLICIT_OPT_OUT_VALUES as _EXPLICIT_OPT_OUT_VALUES,
+)
+from sandbox_executor.launcher.coherence import (
+    _TRUTHY_ENV_VALUES as _TRUTHY_ENV_VALUES,
+)
+from sandbox_executor.launcher.coherence import (
+    _token_reduce_opt_in as _token_reduce_opt_in,
+)
+from sandbox_executor.launcher.containers import ContainerLaunch as ContainerLaunch
+from sandbox_executor.launcher.containers import run_docker_container
+from sandbox_executor.launcher.env_files import (
+    _ENV_FILE_STALE_SECONDS as _ENV_FILE_STALE_SECONDS,
+)
+from sandbox_executor.launcher.env_files import (
+    ENV_FILE_PREFIX as ENV_FILE_PREFIX,
+)
+from sandbox_executor.launcher.env_files import (
+    env_file_dir,
+    is_env_file_item,
+    is_passthrough_env_item,
+    is_secret_env_item,
+    sweep_stale_env_files,
+    write_env_file,
+)
+from sandbox_executor.launcher.messages import (
+    _URL_DELIMITER_SPLIT_RE as _URL_DELIMITER_SPLIT_RE,
+)
+from sandbox_executor.launcher.messages import (
+    _URL_ENV_NAME_RE as _URL_ENV_NAME_RE,
+)
+from sandbox_executor.launcher.messages import (
+    _url_env_credential_parts as _url_env_credential_parts,
+)
+from sandbox_executor.launcher.messages import print_encodable, redact_cli_error
+from sandbox_executor.launcher.mounts import (
+    BLOCKED_METADATA_HOSTS,
+    find_github_token,
+    get_agent_session_mounts,
+)
+from sandbox_executor.launcher.mounts import (
+    SINKHOLE_IP as SINKHOLE_IP,
+)
+from sandbox_executor.launcher.mounts import (
+    antigravity_session_mounts as antigravity_session_mounts,
+)
+from sandbox_executor.launcher.mounts import (
+    build_network_isolation_args as build_network_isolation_args,
+)
+from sandbox_executor.launcher.mounts import (
+    get_pi_mounts as get_pi_mounts,
+)
+from sandbox_executor.launcher.proxy_attach import _attach_external_proxy
+from sandbox_executor.launcher.proxy_paths import (
+    CONTAINER_CA_BUNDLE_PATH as CONTAINER_CA_BUNDLE_PATH,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    CONTAINER_CA_DIR as CONTAINER_CA_DIR,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    MITM_PROXY_CA_DIR as MITM_PROXY_CA_DIR,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    NO_PROXY_HOSTS as NO_PROXY_HOSTS,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    PROXY_ATTACH_TIMEOUT_SECONDS as PROXY_ATTACH_TIMEOUT_SECONDS,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    PROXY_CONNECT_TIMEOUT_SECONDS as PROXY_CONNECT_TIMEOUT_SECONDS,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    PROXY_LISTEN_PORT as PROXY_LISTEN_PORT,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _build_proxy_envs as _build_proxy_envs,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _ca_mount_args as _ca_mount_args,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _container_ca_path as _container_ca_path,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _ensure_network as _ensure_network,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _find_git_root,
+    _proxy_host_port,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _gateway_host_args as _gateway_host_args,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _mitm_proxy_ca_paths as _mitm_proxy_ca_paths,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _proxy_gateway_url as _proxy_gateway_url,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _published_loopback_port as _published_loopback_port,
+)
+from sandbox_executor.launcher.proxy_paths import (
+    _run_docker as _run_docker,
+)
+from sandbox_executor.launcher.proxy_readiness import PROXY_READY_TIMEOUT_SECONDS as PROXY_READY_TIMEOUT_SECONDS
+from sandbox_executor.launcher.role_dispatch import (
+    INTENT_CREATOR_AGENT_ID as INTENT_CREATOR_AGENT_ID,
+)
+from sandbox_executor.launcher.role_dispatch import (
+    INTENT_CREATOR_IMAGE as INTENT_CREATOR_IMAGE,
+)
+from sandbox_executor.launcher.role_dispatch import (
+    RoleLaunchOptions as RoleLaunchOptions,
+)
+from sandbox_executor.launcher.role_dispatch import dispatch_role_agent, resolve_role_image
+from sandbox_executor.launcher.root_ca import generate_root_ca as generate_root_ca
+from sandbox_executor.launcher.sidecar import (
+    _sidecar_state,
+    detect_holon_coherence,
+    get_host_proxy_envs,
+    get_token_reduction_mounts_and_envs,
+    setup_token_reduction_proxy,
+    teardown_token_reduction_proxy,
+)
+from sandbox_executor.launcher.sidecar import (
+    _SidecarState as _SidecarState,
+)
 from sandbox_executor.ledger import format_query_results_table, query_ledger
 from sandbox_executor.naming import MissingTickerError, ticker_for
 from sandbox_executor.preflight import (
@@ -77,23 +211,39 @@ from sandbox_executor.preflight import (
     run_preflight_probe,
 )
 from sandbox_executor.redaction import (
-    COMMAND_ECHO_ENV_NAMES,
-    carries_url_password,
-    is_secret_env_name,
-    redact_agent_secrets,
-    redact_command,
-    redact_env_literals,
-    starts_with_url_authority,
-    trusted_url_authority,
+    COMMAND_ECHO_ENV_NAMES as COMMAND_ECHO_ENV_NAMES,
+)
+from sandbox_executor.redaction import (
+    carries_url_password as carries_url_password,
+)
+from sandbox_executor.redaction import (
+    is_secret_env_name as is_secret_env_name,
+)
+from sandbox_executor.redaction import (
+    redact_agent_secrets as redact_agent_secrets,
+)
+from sandbox_executor.redaction import (
+    redact_command as redact_command,
+)
+from sandbox_executor.redaction import (
+    redact_env_literals as redact_env_literals,
+)
+from sandbox_executor.redaction import (
+    starts_with_url_authority as starts_with_url_authority,
+)
+from sandbox_executor.redaction import (
+    trusted_url_authority as trusted_url_authority,
+)
+from sandbox_executor.redaction import (
     url_userinfo_end,
 )
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 from sandbox_executor.scaffold import init_project
-from sandbox_executor.token_reduction import generate_root_ca
-from sandbox_executor.token_reduction.proxy_readiness import PROXY_READY_TIMEOUT_SECONDS
-from sandbox_executor.token_reduction.proxy_readiness import wait_for_proxy as _wait_for_proxy
 
 logger = logging.getLogger(__name__)
+
+# Kept for import compatibility; the launcher calls `proxy_readiness.wait_for_proxy` itself.
+_wait_for_proxy = proxy_readiness.wait_for_proxy
 
 # Root of Holon's own logger hierarchy; the CLI routes its INFO records to stderr (see configure_cli_logging).
 PACKAGE_LOGGER_NAME = "sandbox_executor"
@@ -126,24 +276,6 @@ def configure_cli_logging() -> None:
     if package_logger.level == logging.NOTSET:
         package_logger.setLevel(logging.INFO)
 
-
-# Directory the Root CA certificate is mounted into inside the sandbox. The sandbox image runs as
-# the unprivileged `holon` user, so update-ca-certificates can never run there; the entrypoint
-# instead concatenates this mount with the image's system bundle into CONTAINER_CA_BUNDLE_PATH.
-CONTAINER_CA_DIR = "/usr/local/share/ca-certificates"
-# Merged trust bundle (image system roots + Holon Root CA) materialised by the sandbox entrypoint.
-# SSL_CERT_FILE / REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE REPLACE the trust store of the clients that
-# read them, so they must point here and never at the single-cert Holon mount.
-CONTAINER_CA_BUNDLE_PATH = "/home/holon/.holon-ca-bundle.crt"
-# Loopback tooling and link-local metadata endpoints must never be force-proxied.
-NO_PROXY_HOSTS = "localhost,127.0.0.1,::1,169.254.169.254"
-# mitmproxy loads its signing CA from this directory inside the sidecar image.
-MITM_PROXY_CA_DIR = "/home/mitmproxy/.mitmproxy"
-PROXY_LISTEN_PORT = 8080
-PROXY_ATTACH_TIMEOUT_SECONDS = 3.0
-PROXY_CONNECT_TIMEOUT_SECONDS = 0.5
-_TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
-_EXPLICIT_OPT_OUT_VALUES = {"0", "false", "no", "off"}
 
 from sandbox_executor.cli.options import (  # noqa: E402
     _AGENT_HELP,
@@ -196,6 +328,8 @@ __all__ = [
     "get_host_proxy_envs",
     "get_token_reduction_mounts_and_envs",
     "init_project",
+    "is_env_file_item",
+    "is_passthrough_env_item",
     "is_secret_env_item",
     "lift_veto",
     "list_vetoes",
@@ -209,6 +343,7 @@ __all__ = [
     "reconcile_records",
     "redact_cli_error",
     "report_budgets_and_envelope",
+    "resolve_layered_configuration",
     "resolve_role_image",
     "run_calibrate",
     "run_docker_container",
@@ -221,1154 +356,6 @@ __all__ = [
     "url_userinfo_end",
     "write_env_file",
 ]
-
-
-@dataclass
-class _SidecarState:
-    """Tracks the proxy resources created by THIS run so teardown never touches foreign ones."""
-
-    container_name: str | None = None
-    network_name: str | None = None
-    network_created: bool = False
-
-
-_sidecar_state = _SidecarState()
-
-BLOCKED_METADATA_HOSTS: list[str] = [
-    "169.254.169.254",
-    "metadata.google.internal",
-    "instance-data",
-]
-SINKHOLE_IP: str = "127.0.0.1"
-
-
-def build_network_isolation_args(
-    token_reduce: bool = False,
-    network_mode: str | None = None,
-) -> list[str]:
-    """Construct Docker CLI arguments enforcing container network isolation and egress controls.
-
-    Drops NET_RAW capability to prevent packet sniffing and port scanning, and sinkholes cloud
-    metadata endpoints to 127.0.0.1.
-    If network_mode is provided and token_reduce is False, sets --network.
-    When token_reduce is True, container network routing is managed by the proxy sidecar.
-
-    Args:
-        token_reduce: Whether token reduction proxy network is active.
-        network_mode: Optional Docker network mode (e.g. bridge, host) when token_reduce is False.
-
-    Returns:
-        List of Docker CLI argument strings.
-    """
-    args = [
-        "--cap-drop=ALL",
-        "--security-opt=no-new-privileges",
-    ]
-
-    for host in BLOCKED_METADATA_HOSTS:
-        args.extend(["--add-host", f"{host}:{SINKHOLE_IP}"])
-
-    if network_mode and not token_reduce:
-        args.extend(["--network", network_mode])
-
-    return args
-
-
-def find_github_token() -> str | None:
-    """Auto-detect GitHub token from environment variables or gh CLI."""
-    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
-    if token:
-        return token
-    if shutil.which("gh"):
-        try:
-            res = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True)
-            if res.returncode == 0 and res.stdout.strip():
-                return res.stdout.strip()
-        except Exception as e:
-            logger.debug("Failed to retrieve token via gh CLI: %s", e)
-    return None
-
-
-def get_agent_session_mounts(agent_id: str) -> list[str]:
-    """Auto-detect and construct session mounts for supported agents."""
-    mounts = []
-    home = os.path.expanduser("~")
-
-    # Handle Antigravity specific mounts
-    if agent_id.lower() in ("antigravity", "antigravity-agent"):
-        dedicated_session = os.getenv(
-            "HOLON_ANTIGRAVITY_SESSION_DIR",
-            os.path.join(home, ".holon", "sessions", "antigravity"),
-        )
-
-        # If HOLON_AGENT_KEY is supplied, session mount is optional
-        has_key = bool(os.getenv("HOLON_AGENT_KEY"))
-
-        # Prefer ~/.holon/sessions/antigravity, then fall back to host ~/.gemini/antigravity-cli
-        if os.path.exists(dedicated_session):
-            return antigravity_session_mounts(dedicated_session)
-
-        # On macOS, ~/.holon/sessions/antigravity is required if not using HOLON_AGENT_KEY
-        if sys.platform == "darwin" and not has_key:
-            print(
-                "Error: Missing Antigravity sandbox session directory on macOS.\n"
-                f"The session directory '{dedicated_session}' does not exist.\n\n"
-                "Please initialise the Antigravity session in an interactive TTY by running:\n\n"
-                f"  mkdir -p {dedicated_session}\n"
-                "  docker run -it "
-                f"-v {dedicated_session}:/home/holon/.gemini/antigravity-cli:rw holon/agent-antigravity agy\n\n"
-                "After completing interactive authentication, rerun this command.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        host_agy_cli = os.path.join(home, ".gemini", "antigravity-cli")
-        if os.path.exists(host_agy_cli):
-            return antigravity_session_mounts(host_agy_cli)
-
-        return mounts
-
-    session_mapping = {
-        "claude": [
-            (os.path.join(home, ".config/claude"), "/home/holon/.config/claude"),
-        ],
-        "codex": [
-            (os.path.join(home, ".codex"), "/home/holon/.codex"),
-        ],
-    }
-
-    norm_agent_id = local_llm.normalize_agent_id(agent_id)
-    dirs = session_mapping.get(norm_agent_id, [])
-    # In host-local model mode the container receives a generated agent directory whose base URLs are reachable from it,
-    # so the host's own provider config is deliberately not mounted.
-    if norm_agent_id == "pi":
-        return mounts if local_llm.local_llm_requested() else get_pi_mounts(home)
-    for host_path, container_path in dirs:
-        if os.path.exists(host_path):
-            mounts.extend(["-v", f"{host_path}:{container_path}:ro"])
-            if norm_agent_id == "codex" and container_path == "/home/holon/.codex":
-                mounts.extend(["--tmpfs", "/home/holon/.codex/log:uid=1000,gid=1000"])
-                mounts.extend(["--tmpfs", "/home/holon/.codex/cache:uid=1000,gid=1000"])
-
-    return mounts
-
-
-def _run_docker(*args: str) -> subprocess.CompletedProcess[str]:
-    """Run a docker command without raising, capturing stdout/stderr for diagnostics."""
-    try:
-        return subprocess.run(
-            ["docker", *args],
-            capture_output=True,
-            text=True,
-            check=False,
-            env={**os.environ, "DOCKER_CLI_HINTS": "false"},
-        )
-    except OSError as e:
-        return subprocess.CompletedProcess(args=["docker", *args], returncode=127, stdout="", stderr=str(e))
-
-
-def _container_ca_path(ca_cert_path: str) -> str:
-    """Map a host Root CA path onto its read-only in-container location."""
-    return f"{CONTAINER_CA_DIR}/{os.path.basename(ca_cert_path)}"
-
-
-def _ca_mount_args(ca_cert_path: str) -> list[str]:
-    """Docker args mounting the host Root CA certificate read-only into the sandbox."""
-    return ["-v", f"{ca_cert_path}:{_container_ca_path(ca_cert_path)}:ro"]
-
-
-def _build_proxy_envs(ca_cert_path: str, proxy_url: str) -> dict[str, str]:
-    """Env vars that route the sandbox through ``proxy_url`` and make it trust the Holon Root CA.
-
-    ``NODE_EXTRA_CA_CERTS`` *augments* Node's built-in roots, so it may point straight at the
-    read-only Holon CA mount. ``SSL_CERT_FILE`` / ``REQUESTS_CA_BUNDLE`` / ``CURL_CA_BUNDLE``
-    *replace* the trust store, so they point at the merged bundle the sandbox entrypoint writes at
-    startup (system roots + Holon CA). Pointing them at the single-cert mount would make every
-    legitimate HTTPS endpoint (github.com, api.openai.com, the agent's own LLM) fail verification.
-    """
-    container_ca = _container_ca_path(ca_cert_path)
-    return {
-        "HTTP_PROXY": proxy_url,
-        "HTTPS_PROXY": proxy_url,
-        # curl and many CLIs only ever read the lowercase spellings.
-        "http_proxy": proxy_url,
-        "https_proxy": proxy_url,
-        "NO_PROXY": NO_PROXY_HOSTS,
-        "no_proxy": NO_PROXY_HOSTS,
-        "NODE_EXTRA_CA_CERTS": container_ca,
-        "SSL_CERT_FILE": CONTAINER_CA_BUNDLE_PATH,
-        "REQUESTS_CA_BUNDLE": CONTAINER_CA_BUNDLE_PATH,
-        # CURL_CA_BUNDLE is honoured by `requests`, not by the curl binary itself.
-        "CURL_CA_BUNDLE": CONTAINER_CA_BUNDLE_PATH,
-    }
-
-
-def _mitm_proxy_ca_paths(ca_cert_path: str, ca_key_path: str) -> tuple[str, str]:
-    """Materialise the mitmproxy CA pair under ``~/.holon/proxy-ca`` and return the host paths.
-
-    A MITM proxy inherently requires the CA **private key**: without it the sidecar cannot sign the
-    forged leaf certificates that make interception work, and it would fall back to its own
-    ephemeral CA that the sandbox does not trust. Exposure is therefore narrowed to exactly two
-    files (combined key+cert and cert-only) mounted read-only into ``/home/mitmproxy/.mitmproxy``.
-    The private key is never mounted into the *agent* container, which only receives the public
-    certificate.
-    """
-    ca_dir = os.path.join(os.path.expanduser(os.path.join("~", ".holon")), "proxy-ca")
-    os.makedirs(ca_dir, exist_ok=True)
-    os.chmod(ca_dir, 0o700)  # this directory holds the CA private key
-
-    combined_path = os.path.join(ca_dir, "mitmproxy-ca.pem")
-    cert_only_path = os.path.join(ca_dir, "mitmproxy-ca-cert.pem")
-
-    with open(ca_cert_path) as cert_handle:
-        cert_blob = cert_handle.read()
-    with open(ca_key_path) as key_handle:
-        key_blob = key_handle.read()
-
-    # Created with 0o600 up front so the combined key+cert file is never world-readable, whatever
-    # the caller's umask is, and re-chmodded in case a previous run left a looser mode behind.
-    fd = os.open(combined_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as handle:
-        handle.write(f"{key_blob}{cert_blob}")
-    os.chmod(combined_path, 0o600)
-
-    shutil.copyfile(ca_cert_path, cert_only_path)
-    os.chmod(cert_only_path, 0o644)
-
-    return combined_path, cert_only_path
-
-
-def _proxy_gateway_url(port: int = PROXY_LISTEN_PORT) -> str:
-    """URL of a proxy listening on the Docker host, correct for the current platform.
-
-    ``172.17.0.1`` is the Linux bridge gateway only; Docker Desktop (macOS/Windows) does not route
-    it, so ``host.docker.internal`` is used there instead.
-    """
-    if sys.platform in ("darwin", "win32"):
-        return f"http://host.docker.internal:{port}"
-    return f"http://172.17.0.1:{port}"
-
-
-def _gateway_host_args() -> list[str]:
-    """Docker args that make ``host.docker.internal`` resolvable on Linux."""
-    if sys.platform in ("darwin", "win32"):
-        return []
-    return ["--add-host", "host.docker.internal:host-gateway"]
-
-
-def _proxy_host_port(proxy_url: str) -> tuple[str, int] | None:
-    """Split a proxy URL into ``(host, port)``; None when it cannot be parsed.
-
-    The userinfo is removed first with the shared `redaction.url_userinfo_end` rule, so a password
-    holding a raw `/`, `?` or `#` is never read as the host or port. A port that is not a valid
-    integer makes the URL unparseable (None) rather than raising, because `urlparse`'s `ValueError`
-    quotes the offending text, while the callers' "not a valid proxy URL" messages never echo the value.
-    """
-    url = proxy_url if starts_with_url_authority(proxy_url) else f"//{proxy_url}"
-    head, sep, rest = url.partition("//")
-    at = url_userinfo_end(rest)
-    parsed = urlparse(head + sep + (rest[at + 1 :] if at is not None else rest))
-    try:
-        port = parsed.port
-    except ValueError:
-        return None
-    if not parsed.hostname:
-        return None
-    return parsed.hostname, port or PROXY_LISTEN_PORT
-
-
-_URL_ENV_NAME_RE = re.compile(r"(?:URL|URI|PROXY)$", re.IGNORECASE)
-_URL_DELIMITER_SPLIT_RE = re.compile(r"[/?#]")
-
-
-def _url_env_credential_parts() -> set[str]:
-    """Return the userinfo credential of every URL-valued environment variable, whole and in pieces.
-
-    A parse error can quote only the part of a password before its first raw `/`, `?` or `#`, which
-    no shape-based redactor recognises, so each delimiter-separated piece of at least 4 characters
-    is returned alongside the whole credential.
-    """
-    parts: set[str] = set()
-    for name, value in os.environ.items():
-        if not value or not _URL_ENV_NAME_RE.search(name):
-            continue
-        url = value if starts_with_url_authority(value) else f"//{value}"
-        rest = url.partition("//")[2]
-        at = url_userinfo_end(rest)
-        if at is None:
-            continue
-        userinfo = rest[:at]
-        user, colon, password = userinfo.partition(":")
-        credential = password if colon else user
-        for piece in (userinfo, credential, *_URL_DELIMITER_SPLIT_RE.split(credential)):
-            if len(piece) >= 4:
-                parts.add(piece)
-    return parts
-
-
-def redact_cli_error(message: object) -> str:
-    """Redact an exception message before a top-level CLI handler prints or logs it.
-
-    Applies `redact_agent_secrets`, then masks the userinfo credential of every URL-valued
-    environment variable (and each piece of it between raw URL delimiters), so a parse error that
-    quotes part of a configured password, such as `urlparse`'s "Port could not be cast" message,
-    cannot echo it.
-
-    Args:
-        message: The exception (or any object) whose string form is printed.
-
-    Returns:
-        The redacted message.
-    """
-    text = redact_agent_secrets(str(message))
-    for part in sorted(_url_env_credential_parts(), key=len, reverse=True):
-        text = text.replace(part, "*******")
-    return text
-
-
-def detect_holon_coherence(token_reduce: bool = False) -> bool:  # noqa: C901, PLR0911, PLR0912
-    """Detect whether holon-coherence proxy is available or explicitly requested.
-
-    Evaluation hierarchy:
-    - Tier 1 (Explicit Opt-Out): If HOLON_TOKEN_REDUCE is in ("0", "false", "no", "off"),
-      return False immediately.
-    - Tier 2 (Explicit Opt-In): If token_reduce is True, or HOLON_TOKEN_REDUCE /
-      HOLON_PASSIVE_MONITORING is truthy, return True.
-    - Tier 3 (TCP Port Probe): Determine target proxy host and port from HOLON_PROXY_URL,
-      or 127.0.0.1 and HOLON_PROXY_PORT (default 8080). Attempt a quick non-blocking TCP socket
-      connection with a 0.2-second timeout. If successful, return True.
-    - Tier 4 (Docker Image Probe): If docker CLI exists on host PATH, probe if either
-      'holon-coherence:latest' or 'ghcr.io/holon-agentic-coder/holon-coherence:latest' is present
-      locally via docker image inspect. If found, return True.
-    - Tier 5 (CLI Binary Probe): Check if 'holon-coherence' executable exists on PATH.
-      If found, return True.
-    - If all tiers evaluate negative, return False.
-    """
-    env_reduce = os.getenv("HOLON_TOKEN_REDUCE", "").strip().lower()
-    if env_reduce in _EXPLICIT_OPT_OUT_VALUES:
-        return False
-
-    if token_reduce:
-        return True
-    if env_reduce in _TRUTHY_ENV_VALUES:
-        return True
-    if os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES:
-        return True
-
-    # Tier 3: TCP Port Probe
-    proxy_url = os.getenv("HOLON_PROXY_URL")
-    if proxy_url:
-        host_port = _proxy_host_port(proxy_url)
-        if host_port is None:
-            # Never echo the value: an unparseable URL has no reliable userinfo boundary to mask.
-            logger.warning("HOLON_PROXY_URL is not a valid proxy URL; skipping the proxy port probe.")
-    else:
-        try:
-            port = int(os.getenv("HOLON_PROXY_PORT", str(PROXY_LISTEN_PORT)))
-        except ValueError:
-            port = PROXY_LISTEN_PORT
-        host_port = ("127.0.0.1", port)
-
-    if host_port is not None:
-        try:
-            sock = socket.create_connection(host_port, timeout=0.2)
-            if hasattr(sock, "close"):
-                sock.close()
-            return True
-        except (OSError, TimeoutError):
-            pass
-
-    # Tier 4: Docker Image Probe (checks for coherence or mitmproxy images that sidecar runner supports)
-    if shutil.which("docker"):
-        for img in (
-            "holon-coherence:latest",
-            "ghcr.io/holon-agentic-coder/holon-coherence:latest",
-            "mitmproxy/mitmproxy:12.2.3",
-        ):
-            try:
-                proc = subprocess.run(
-                    ["docker", "image", "inspect", img],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=2.0,
-                )
-                if proc.returncode == 0:
-                    return True
-            except (subprocess.SubprocessError, OSError):
-                pass
-
-    # Tier 5: CLI Binary Probe
-    return bool(shutil.which("holon-coherence"))
-
-
-def _token_reduce_opt_in(token_reduce: bool = False) -> bool:
-    """True only on explicit opt-in; respects opt-out."""
-    env_reduce = os.getenv("HOLON_TOKEN_REDUCE", "").strip().lower()
-    if env_reduce in _EXPLICIT_OPT_OUT_VALUES:
-        return False
-    if token_reduce:
-        return True
-    if env_reduce in _TRUTHY_ENV_VALUES:
-        return True
-    return os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES
-
-
-def _ensure_network(network_name: str) -> bool:
-    """Create a per-run bridge network; returns True when THIS run created it."""
-    result = _run_docker("network", "create", network_name)
-    stderr = (result.stderr or "").strip()
-    if result.returncode == 0:
-        return True
-    logger.debug("docker network create %s exited %s: %s", network_name, result.returncode, stderr)
-    if "already exists" in stderr.lower():
-        return False
-    raise RuntimeError(f"could not create Docker network '{network_name}': {stderr or 'unknown docker error'}")
-
-
-def _published_loopback_port(container_name: str) -> int | None:
-    """Read the host loopback port Docker published for the sidecar's proxy port."""
-    result = _run_docker("port", container_name, f"{PROXY_LISTEN_PORT}/tcp")
-    if result.returncode != 0:
-        logger.debug("docker port %s exited %s: %s", container_name, result.returncode, (result.stderr or "").strip())
-        return None
-    for line in (result.stdout or "").splitlines():
-        candidate = line.strip().rsplit(":", 1)[-1]
-        if candidate.isdigit():
-            return int(candidate)
-    return None
-
-
-def _find_git_root(start_dir: str | None = None) -> str:
-    """Walk upwards to the nearest directory containing .git, or fall back to start_dir / getcwd.
-
-    Each walk ends at the filesystem root, so the search always terminates.
-    """
-    for base in (start_dir, os.getcwd(), os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
-        if not base:
-            continue
-        cur = os.path.abspath(base)
-        while True:
-            if os.path.exists(os.path.join(cur, ".git")):
-                return cur
-            parent = os.path.dirname(cur)
-            if parent == cur:
-                break
-            cur = parent
-    return os.path.abspath(start_dir or os.getcwd())
-
-
-def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict[str, str]]:  # noqa: C901, PLR0912, PLR0915
-    """Start this run's mitmproxy sidecar and return the sandbox mounts and env vars.
-
-    Resources are named per run (pid + uuid suffix) and recorded in ``_sidecar_state`` so teardown
-    only ever removes what this run created.
-
-    Raises:
-        FileNotFoundError: If the mitmproxy addon script is missing.
-        RuntimeError: If Docker networking, the sidecar spawn, or the readiness probe fails.
-    """
-    run_suffix = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
-    container_name = f"holon-proxy-{run_suffix}"
-    network_name = f"holon-net-{run_suffix}"
-
-    addon_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "token_reduction", "mitm_addon.py"
-    )
-    if not os.path.isfile(addon_path):
-        raise FileNotFoundError(
-            f"mitmproxy addon script not found at '{addon_path}'. Token reduction cannot start its proxy "
-            "without it; re-run without --token-reduce to execute with direct egress."
-        )
-
-    ca_cert_path, ca_key_path = generate_root_ca()
-
-    # Share ONLY a narrow proxy cache dir, read-only. Never mount ~/.holon: that subtree holds the
-    # Root CA private key (~/.holon/certs) and the agent auth session stores (~/.holon/sessions).
-    proxy_cache_dir = os.path.join(os.path.expanduser(os.path.join("~", ".holon")), "proxy-cache")
-    os.makedirs(proxy_cache_dir, exist_ok=True)
-
-    # mitmproxy needs the CA private key to sign leaves (see _mitm_proxy_ca_paths); hand it exactly
-    # the two files it expects, read-only, instead of the whole certificate directory.
-    mitm_ca_combined, mitm_ca_cert = _mitm_proxy_ca_paths(ca_cert_path, ca_key_path)
-
-    repo_root = _find_git_root()
-    wire_dir_env = os.getenv("WIRE_LOG_DIR")
-    if wire_dir_env:
-        host_wire_log_dir = (
-            wire_dir_env if os.path.isabs(wire_dir_env) else os.path.abspath(os.path.join(repo_root, wire_dir_env))
-        )
-    else:
-        host_wire_log_dir = os.path.abspath(os.path.join(repo_root, "todo", "mitm_wire_logs"))
-    os.makedirs(host_wire_log_dir, exist_ok=True)
-
-    cache_dir_env = os.getenv("CACHE_DIR")
-    if cache_dir_env:
-        host_cache_dir = (
-            cache_dir_env if os.path.isabs(cache_dir_env) else os.path.abspath(os.path.join(repo_root, cache_dir_env))
-        )
-    else:
-        host_cache_dir = os.path.abspath(os.path.join(repo_root, "todo", "cache"))
-    os.makedirs(host_cache_dir, exist_ok=True)
-
-    # Ensure non-root container UID 1000 can write without permission errors on Linux hosts.
-    # Note: On shared multi-user hosts or environments where host UID/GID != 1000, setting
-    # HOLON_MITM_USER="$(id -u):$(id -g)" is strongly recommended, allowing the host
-    # directories to use restrictive 0o700 or 0o750 permissions rather than 0o775.
-    for d in (host_wire_log_dir, host_cache_dir):
-        try:
-            os.chmod(d, 0o775)
-        except OSError as e:
-            logger.debug("Could not chmod 0o775 on %s: %s", d, e)
-
-    try:
-        web_port = int(os.getenv("HOLON_MITM_WEB_PORT", "8081"))
-    except ValueError:
-        logger.warning("Invalid HOLON_MITM_WEB_PORT; falling back to 8081.")
-        web_port = 8081
-
-    if mitm_web:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(PROXY_CONNECT_TIMEOUT_SECONDS)
-            if s.connect_ex(("127.0.0.1", web_port)) == 0:
-                raise RuntimeError(
-                    f"Port {web_port} is already in use on 127.0.0.1. "
-                    "Specify a different dashboard port using HOLON_MITM_WEB_PORT=<port>."
-                )
-
-    _sidecar_state.network_name = network_name
-    _sidecar_state.network_created = _ensure_network(network_name)
-    _sidecar_state.container_name = container_name
-
-    src_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".."))
-
-    docker_run_proxy = [
-        "docker",
-        "run",
-        "-d",
-        "--name",
-        container_name,
-        "--network",
-        network_name,
-        "--memory=256m",
-        "--cpus=0.5",
-        "--log-opt",
-        "max-size=5m",
-        "--log-opt",
-        "max-file=2",
-        "--restart=no",
-        # Loopback-only publish so the host can run a real TCP readiness probe.
-        "-p",
-        f"127.0.0.1::{PROXY_LISTEN_PORT}",
-    ]
-    mitm_user = os.getenv("HOLON_MITM_USER")
-    if mitm_user:
-        docker_run_proxy.extend(["--user", mitm_user])
-    if mitm_web:
-        docker_run_proxy.extend(["-p", f"127.0.0.1:{web_port}:{web_port}"])
-
-    passive_val = "1" if os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES else "0"
-    docker_run_proxy.extend(
-        [
-            "-e",
-            "PYTHONPATH=/tmp/src",
-            "-e",
-            "WIRE_LOG_DIR=/tmp/wire_logs",
-            "-e",
-            "CACHE_DIR=/tmp/cache",
-            "-e",
-            f"HOLON_PASSIVE_MONITORING={passive_val}",
-            "-v",
-            f"{src_dir}:/tmp/src:ro",
-            "-v",
-            f"{proxy_cache_dir}:/home/mitmproxy/.holon/proxy-cache:ro",
-            "-v",
-            f"{host_cache_dir}:/tmp/cache",
-            "-v",
-            f"{mitm_ca_combined}:{MITM_PROXY_CA_DIR}/mitmproxy-ca.pem:ro",
-            "-v",
-            f"{mitm_ca_cert}:{MITM_PROXY_CA_DIR}/mitmproxy-ca-cert.pem:ro",
-            "-v",
-            f"{addon_path}:/tmp/mitm_addon.py:ro",
-            "-v",
-            f"{host_wire_log_dir}:/tmp/wire_logs",
-            "mitmproxy/mitmproxy:12.2.3",
-            "mitmweb" if mitm_web else "mitmdump",
-            "-s",
-            "/tmp/mitm_addon.py",
-            "--listen-port",
-            str(PROXY_LISTEN_PORT),
-            "--set",
-            "stream_large_bodies=1m",
-        ]
-    )
-    if mitm_web:
-        docker_run_proxy.extend(["--web-host", "0.0.0.0", "--web-port", str(web_port)])
-        web_password = os.getenv("HOLON_MITM_WEB_PASSWORD")
-        if web_password:
-            docker_run_proxy.extend(["--set", f"web_password={web_password}"])
-
-    logger.info(
-        "Starting mitmproxy sidecar '%s'; the first run has to pull the 'mitmproxy/mitmproxy:12.2.3' "
-        "image, which can take a while before the container appears.",
-        container_name,
-    )
-    proxy_spawn = subprocess.run(docker_run_proxy, capture_output=True, text=True, check=False)
-    if proxy_spawn.returncode != 0:
-        # The sidecar's output can echo the mitmweb `?token=` login URL or the `web_password=` setting.
-        stderr = redact_env_literals(
-            redact_agent_secrets((proxy_spawn.stderr or "").strip() or (proxy_spawn.stdout or "").strip()),
-            names=COMMAND_ECHO_ENV_NAMES,
-        )
-        teardown_token_reduction_proxy()
-        raise RuntimeError(
-            f"mitmproxy sidecar '{container_name}' failed to start: {stderr or 'unknown docker error'}. "
-            "Re-run without --token-reduce to execute with direct egress."
-        )
-
-    host_port = _published_loopback_port(container_name)
-    if host_port is None:
-        teardown_token_reduction_proxy()
-        raise RuntimeError(
-            f"mitmproxy sidecar '{container_name}' published no host loopback port, so its readiness cannot be "
-            "verified. Re-run without --token-reduce to execute with direct egress."
-        )
-    if not _wait_for_proxy("127.0.0.1", host_port):
-        teardown_token_reduction_proxy()
-        raise RuntimeError(
-            f"mitmproxy sidecar '{container_name}' never answered an HTTP proxy request on "
-            f"127.0.0.1:{host_port} within {PROXY_READY_TIMEOUT_SECONDS}s (the addon likely crashed on startup). "
-            "Re-run without --token-reduce to execute with direct egress."
-        )
-
-    if mitm_web:
-        logger.info("🌐 mitmweb dashboard active at http://127.0.0.1:%s", web_port)
-
-    mounts = ["--network", network_name, *_ca_mount_args(ca_cert_path)]
-    return mounts, _build_proxy_envs(ca_cert_path, f"http://{container_name}:{PROXY_LISTEN_PORT}")
-
-
-def teardown_token_reduction_proxy() -> None:
-    """Remove only the sidecar container and network THIS run created (no-op otherwise)."""
-    if _sidecar_state.container_name:
-        result = _run_docker("rm", "-f", _sidecar_state.container_name)
-        if result.returncode != 0:
-            logger.debug(
-                "docker rm -f %s exited %s: %s",
-                _sidecar_state.container_name,
-                result.returncode,
-                (result.stderr or "").strip(),
-            )
-        _sidecar_state.container_name = None
-
-    if _sidecar_state.network_created and _sidecar_state.network_name:
-        result = _run_docker("network", "rm", _sidecar_state.network_name)
-        if result.returncode != 0:
-            logger.debug(
-                "docker network rm %s exited %s: %s",
-                _sidecar_state.network_name,
-                result.returncode,
-                (result.stderr or "").strip(),
-            )
-
-    _sidecar_state.network_name = None
-    _sidecar_state.network_created = False
-
-
-def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
-    """Attach the sandbox to an already-running proxy (``HOLON_PROXY_URL`` or host gateway).
-
-    Used for the ``HOLON_TOKEN_REDUCE`` opt-in path: the proxy is owned by the user, so this run
-    neither starts nor tears it down. An unreachable proxy degrades to direct egress.
-    """
-    proxy_url = os.getenv("HOLON_PROXY_URL") or _proxy_gateway_url()
-    host_port = _proxy_host_port(proxy_url)
-    if host_port is None:
-        # Never echo the value: an unparseable URL has no reliable userinfo boundary to mask.
-        logger.warning(
-            "holon-coherence proxy probe failed: HOLON_PROXY_URL is not a valid proxy URL; ignoring it. "
-            "Proceeding with DIRECT egress fallback."
-        )
-        logger.error(
-            "HOLON_TOKEN_REDUCE is enabled but HOLON_PROXY_URL is not a valid proxy URL; ignoring it. "
-            "This run continues with DIRECT egress (no token reduction)."
-        )
-        return [], {}
-
-    # Probe before generating: an unreachable proxy must not leave a fresh CA behind on a host that
-    # is about to run with direct egress.
-    ready = False
-    probe_host = "127.0.0.1" if host_port[0] in ("host.docker.internal", "172.17.0.1", "localhost") else host_port[0]
-    # Messages show the target only when its host was validated after the userinfo was removed;
-    # otherwise the parsed host and port may be part of a credential, so only the variable is named.
-    trusted = trusted_url_authority(proxy_url) is not None
-    probe_target = f"{probe_host}:{host_port[1]}" if trusted else "the HOLON_PROXY_URL target"
-    proxy_target = f"{host_port[0]}:{host_port[1]}" if trusted else "the HOLON_PROXY_URL target"
-    try:
-        ready = _wait_for_proxy(probe_host, host_port[1], timeout=PROXY_ATTACH_TIMEOUT_SECONDS)
-    except (OSError, TimeoutError) as exc:
-        logger.warning(
-            "holon-coherence proxy probe failed at %s. Proceeding with DIRECT egress fallback.",
-            probe_target,
-        )
-        logger.error(
-            "HOLON_TOKEN_REDUCE is enabled but proxy probe failed at %s (%s: %s). "
-            "This run continues with DIRECT egress (no token reduction).",
-            probe_target,
-            type(exc).__name__,
-            redact_cli_error(exc),
-        )
-        return [], {}
-
-    if not ready:
-        logger.warning(
-            "holon-coherence proxy probe failed at %s. Proceeding with DIRECT egress fallback.",
-            proxy_target,
-        )
-        logger.error(
-            "HOLON_TOKEN_REDUCE is enabled but no proxy answered an HTTP proxy request at %s. Start the proxy or "
-            "point HOLON_PROXY_URL at it; this run continues with DIRECT egress (no token reduction).",
-            proxy_target,
-        )
-        return [], {}
-
-    ca_cert_path, _ = generate_root_ca()
-
-    # No gateway --add-host here: run_docker_container adds it once for every agent container, and emitting it from
-    # both places produced a duplicate flag whenever an externally attached proxy was in use.
-    return _ca_mount_args(ca_cert_path), _build_proxy_envs(ca_cert_path, proxy_url)
-
-
-def get_token_reduction_mounts_and_envs(
-    token_reduce: bool = False,
-    mitm_web: bool = False,
-) -> tuple[list[str], dict[str, str]]:
-    """Build token-reduction mounts/env vars for an explicitly opted-in or auto-detected run.
-
-    Opt-in is strictly ``--token-reduce``, ``--mitm-web``, ``HOLON_TOKEN_REDUCE`` in ``("1", "true", "yes",
-    "on")``, or auto-detected holon-coherence proxy. Host ``HTTP_PROXY``/``HTTPS_PROXY`` alone never
-    change sandbox networking. Any failure degrades to direct egress (empty mounts/envs) with an
-    actionable warning log.
-    """
-    if not _token_reduce_opt_in(token_reduce or mitm_web):
-        return [], {}
-
-    try:
-        is_passive = os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES
-        if token_reduce or mitm_web or is_passive:
-            if mitm_web:
-                return setup_token_reduction_proxy(mitm_web=True)
-            return setup_token_reduction_proxy()
-        return _attach_external_proxy()
-    except (FileNotFoundError, RuntimeError, OSError) as exc:
-        logger.warning(
-            "holon-coherence proxy configuration failed (%s: %s). Proceeding with DIRECT egress fallback.",
-            type(exc).__name__,
-            redact_cli_error(exc),
-        )
-        logger.error(
-            "Token reduction is enabled but could not be configured (%s: %s). This run continues with DIRECT "
-            "egress (no TLS interception, no token reduction).",
-            type(exc).__name__,
-            redact_cli_error(exc),
-        )
-        return [], {}
-
-
-def get_host_proxy_envs() -> dict[str, str]:
-    """Return environment variables for host-side processes to route through an active coherence proxy.
-
-    Only returns proxy env vars if a proxy is actively listening on localhost or HOLON_PROXY_URL,
-    and the root CA certificate exists on the host. Otherwise returns empty dict (direct egress).
-    """
-    env_reduce = os.getenv("HOLON_TOKEN_REDUCE", "").strip().lower()
-    if env_reduce in _EXPLICIT_OPT_OUT_VALUES:
-        return {}
-
-    proxy_url = os.getenv("HOLON_PROXY_URL")
-    if proxy_url:
-        host_port = _proxy_host_port(proxy_url)
-    else:
-        try:
-            port = int(os.getenv("HOLON_PROXY_PORT", str(PROXY_LISTEN_PORT)))
-        except ValueError:
-            port = PROXY_LISTEN_PORT
-        host_port = ("127.0.0.1", port)
-        proxy_url = f"http://127.0.0.1:{port}"
-
-    if host_port is None:
-        return {}
-
-    # Probe if proxy is actively accepting connections
-    try:
-        with socket.create_connection(host_port, timeout=0.2):
-            pass
-    except (OSError, TimeoutError):
-        return {}
-
-    # Check for host CA cert
-    ca_dir = os.path.join(os.path.expanduser(os.path.join("~", ".holon")), "proxy-ca")
-    ca_cert_path = os.path.join(ca_dir, "mitmproxy-ca-cert.pem")
-    if not os.path.exists(ca_cert_path):
-        try:
-            ca_cert_path, _ = generate_root_ca()
-        except Exception:
-            return {}
-
-    envs = {
-        "HTTP_PROXY": proxy_url,
-        "HTTPS_PROXY": proxy_url,
-        "http_proxy": proxy_url,
-        "https_proxy": proxy_url,
-    }
-    if os.path.exists(ca_cert_path):
-        envs["NODE_EXTRA_CA_CERTS"] = ca_cert_path
-        envs["SSL_CERT_FILE"] = ca_cert_path
-        envs["REQUESTS_CA_BUNDLE"] = ca_cert_path
-
-    return envs
-
-
-# Credential env-files live in an owner-only directory, apart from ~/.holon/tmp itself, which also
-# holds directories that are bind-mounted into the container.
-ENV_FILE_PREFIX = "holon-env-"
-_ENV_FILE_STALE_SECONDS = 24 * 60 * 60
-
-
-def env_file_dir() -> str:
-    """Return the directory for temporary credential env-files, creating it owner-only (0700).
-
-    Returns:
-        The absolute path of `~/.holon/tmp/env-files`. Looser permission bits on an existing
-        directory are tightened back to 0700.
-    """
-    path = os.path.expanduser(os.path.join("~", ".holon", "tmp", "env-files"))
-    os.makedirs(path, mode=0o700, exist_ok=True)
-    if os.stat(path).st_mode & 0o077:
-        os.chmod(path, 0o700)
-    return path
-
-
-def sweep_stale_env_files(directory: str, max_age_seconds: float = _ENV_FILE_STALE_SECONDS) -> None:
-    """Best-effort removal of credential env-files left behind by a killed run.
-
-    Args:
-        directory: The env-file directory to sweep.
-        max_age_seconds: Files whose modification time is older than this are removed.
-    """
-    cutoff = time.time() - max_age_seconds
-    try:
-        entries = os.listdir(directory)
-    except OSError:
-        return
-    for name in entries:
-        if not name.startswith(ENV_FILE_PREFIX):
-            continue
-        path = os.path.join(directory, name)
-        try:
-            if os.path.getmtime(path) < cutoff:
-                os.remove(path)
-                logger.debug("Removed stale credential env-file %s", path)
-        except OSError as exc:
-            logger.debug("Could not sweep env-file %s: %s", path, exc)
-
-
-def write_env_file(env: dict[str, str]) -> str:
-    """Write credential variables to a new 0600 docker `--env-file`, one `KEY=VALUE` line each.
-
-    Docker reads the file on the client side and applies no quoting, so a value containing a line
-    break would be cut short or smuggle in a second variable; such values are rejected.
-
-    Args:
-        env: The variables to write, which are emitted in sorted key order.
-
-    Returns:
-        The path of the new file. The caller owns it and must remove it.
-
-    Raises:
-        ValueError: If a value contains a line break. The message names the key, never the value.
-    """
-    for key, value in env.items():
-        if "\n" in value or "\r" in value:
-            raise ValueError(f"the value of {key} contains a line break and cannot be passed to the container")
-    fd, path = tempfile.mkstemp(prefix=ENV_FILE_PREFIX, dir=env_file_dir())
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.writelines(f"{key}={value}\n" for key, value in sorted(env.items()))
-    except BaseException:
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(path)
-        raise
-    return path
-
-
-def is_secret_env_item(key: str, value: str) -> bool:
-    """Decide whether a container variable must travel in the 0600 `--env-file`, not on the argv.
-
-    Args:
-        key: The variable name.
-        value: The variable value.
-
-    Returns:
-        True for a credential-bearing name, a `KEY=VALUE` item the command redactor would mask, or a
-        value with a URL password (a proxy URL in any scheme, or none), whatever its name.
-    """
-    item = f"{key}={value}"
-    return is_secret_env_name(key) or redact_command([item]) != item or carries_url_password(value)
-
-
-def run_docker_container(  # noqa: C901, PLR0911, PLR0912, PLR0913, PLR0915
-    role: str,
-    image_name: str,
-    container_args: list[str],
-    agent_id: str,
-    intent_file: str | None = None,
-    token_reduce: bool = False,
-    mitm_web: bool = False,
-    target_worktree: str | None = None,
-    result_file: str | None = None,
-) -> int:
-    """Constructs docker run command with auto-discovered credentials and executes it.
-
-    Every role (intent creator, planner, executor and review loop) works in place on the host worktree, so its
-    ``target_worktree`` is required, validated and bind-mounted at the sandbox workspace path (see
-    ``git_flow.sandbox_worktree_mounts``) with ``HOLON_TARGET_WORKTREE`` pinned to the mountpoint. No container
-    reaches the remote: the host fetches the base before the container starts and pushes after it returns.
-    """
-    if not shutil.which("docker"):
-        print("Error: 'docker' CLI command not found. Please install Docker.", file=sys.stderr)
-        return 1
-
-    workspace_mounts: list[str] = []
-    if role in HOST_WORKTREE_ROLES:
-        try:
-            workspace_mounts = git_flow.sandbox_worktree_mounts(target_worktree, SANDBOX_WORKSPACE_MOUNT, role)
-        except RuntimeError as exc:
-            print(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
-            return 1
-
-    tty_flag = ["-it"] if sys.stdin.isatty() else ["-i"]
-    docker_cmd = ["docker", "run", "--rm", *tty_flag]
-    docker_cmd.extend(["-e", "DOCKER_CLI_HINTS=false"])
-
-    # Credentials never go on the docker command line, where `ps` and /proc/<pid>/cmdline can read
-    # them: they are collected here and handed over in a 0600 --env-file just before the run. That
-    # includes any value with a URL password (a proxy URL in any scheme, or none), whatever its name.
-    secret_env: dict[str, str] = {}
-
-    def add_env(key: str, value: str) -> None:
-        if is_secret_env_item(key, value):
-            secret_env[key] = value
-        else:
-            docker_cmd.extend(["-e", f"{key}={value}"])
-
-    # Forward all host environment variables prefixed with HOLON_ and GITHUB_TOKEN
-    env_to_forward = {}
-    gh_token = find_github_token()
-
-    for key, value in os.environ.items():
-        # A retired variable is ignored: no container needs a repository URL, as the host does every fetch and push.
-        if (key.startswith("HOLON_") and key not in RETIRED_ENV_VARS) or key == "GITHUB_TOKEN":
-            env_to_forward[key] = value
-
-    # Set after the host forwarding loop so a host GITHUB_TOKEN cannot displace the chosen token.
-    if gh_token:
-        env_to_forward["GITHUB_TOKEN"] = gh_token
-
-    # The claude runner never takes HOLON_AGENT_KEY: its credential is an explicit claude variable or the secrets
-    # file, exported under the name its format decides. Set after the loop so a stale host value cannot displace it.
-    if local_llm.normalize_agent_id(agent_id) == "claude":
-        env_to_forward.pop("HOLON_AGENT_KEY", None)
-        claude_credential = resolve_claude_credential()
-        if claude_credential:
-            for name in CLAUDE_CREDENTIAL_ENV_NAMES:
-                env_to_forward.pop(name, None)
-            env_to_forward[claude_credential[0]] = claude_credential[1]
-
-    # Inside a timed host stage (holon flow), hand the container the time this stage has left so its own ceiling fires
-    # first; this replaces any forwarded host HOLON_STAGE_BUDGET_SECONDS. Every role-container dispatch goes
-    # through here, so no caller has to pass it.
-    env_to_forward.update(stage_budget_handdown_env())
-
-    # Pin the container workspace to the host worktree mountpoint, and keep 'uv run' off the host's mounted .venv.
-    if workspace_mounts:
-        env_to_forward["HOLON_TARGET_WORKTREE"] = SANDBOX_WORKSPACE_MOUNT
-        env_to_forward.update(SANDBOX_UV_ENV)
-
-    norm_agent_id = local_llm.normalize_agent_id(agent_id)
-
-    # Ensure explicit role parameter takes strict precedence over host environment
-    env_to_forward["HOLON_ROLE"] = role
-    # The host already ran the readiness probe; nested invocations inside the container must not repeat it.
-    env_to_forward["HOLON_SKIP_PREFLIGHT"] = "1"
-
-    # Coherence for local mode: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER if unset (pi runner only)
-    if local_llm.local_llm_requested() and norm_agent_id == "pi":
-        local_provider = env_to_forward.get(local_llm.ENV_LOCAL_PROVIDER, "").strip()
-        if "HOLON_AGENT_PROVIDER" not in env_to_forward and local_provider:
-            env_to_forward["HOLON_AGENT_PROVIDER"] = local_provider
-
-    for key, value in sorted(env_to_forward.items()):
-        add_env(key, value)
-
-    # Containers reach the host only through the gateway name; make it resolvable on Linux as it already is on
-    # Docker Desktop, so agent base URLs rewritten to host.docker.internal work on every platform.
-    docker_cmd.extend(_gateway_host_args())
-
-    # Token Reduction Proxy & CA Mounts. From this point on the sidecar (and its network) may exist,
-    # so every remaining exit path — early returns included — must run teardown, not just the final
-    # subprocess.run.
-    local_agent_dir: str | None = None
-    env_file: str | None = None
-    tr_mounts, tr_envs = get_token_reduction_mounts_and_envs(token_reduce=token_reduce, mitm_web=mitm_web)
-    try:
-        docker_cmd.extend(tr_mounts)
-
-        # Host-local inference servers: loopback and the host's own LAN address are unreachable from the
-        # container namespace, so hand the agent a generated config whose authorities resolve via the gateway. The
-        # artifact is a pi agent directory, so it is produced for pi only; other runners still need real credentials.
-        if local_llm.local_llm_requested() and norm_agent_id != "pi" and role in ("planner", "executor"):
-            print(
-                f"Warning: host-local model mode applies to the pi runner only; ignoring it for '{agent_id}'.",
-                file=sys.stderr,
-            )
-        if local_llm.local_llm_requested() and norm_agent_id == "pi":
-            try:
-                base_tmp = os.path.expanduser("~/.holon/tmp")
-                os.makedirs(base_tmp, mode=0o755, exist_ok=True)
-                local_agent_dir = tempfile.mkdtemp(prefix="holon-pi-agent-", dir=base_tmp)
-                local_config = local_llm.prepare_agent_dir(
-                    local_agent_dir,
-                    host_config=local_llm.host_models_json(),
-                    allow_list=local_llm.host_local_allow_list(),
-                )
-                # If provider was unset, determine whether to use the single distinct provider or "local"
-                if "HOLON_AGENT_PROVIDER" not in env_to_forward:
-                    providers = local_config.get("providers", {})
-                    if len(providers) == 1:
-                        chosen = next(iter(providers.keys()))
-                    elif "local" in providers:
-                        chosen = "local"
-                    else:
-                        raise local_llm.LocalLLMConfigError(
-                            f"Multiple host-local providers found ({', '.join(sorted(providers))}). "
-                            "Please set HOLON_AGENT_PROVIDER or HOLON_LOCAL_PROVIDER to select one."
-                        )
-                    add_env("HOLON_AGENT_PROVIDER", chosen)
-            except local_llm.LocalLLMConfigError as exc:
-                print_encodable(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
-                return 1
-            docker_cmd.extend(local_llm.container_mount_args(local_agent_dir))
-            for key, value in local_llm.container_env(local_agent_dir).items():
-                add_env(key, value)
-            # That endpoint now points at the gateway, so it would otherwise be intercepted by the sidecar.
-            local_hosts = local_llm.rewritten_local_hosts(local_config)
-            if local_hosts and tr_envs.get("NO_PROXY"):
-                exempted = list(local_hosts)
-                # Some NO_PROXY implementations compare only the hostname, so a port-qualified entry can miss. Adding
-                # the bare gateway name is safe when the sidecar is addressed by container name, but not when an
-                # external proxy is reached through host.docker.internal itself.
-                proxy_url = tr_envs.get("HTTP_PROXY", "")
-                if (
-                    token_reduce or mitm_web or bool(_sidecar_state.container_name)
-                ) and local_llm.GATEWAY_HOST not in proxy_url:
-                    exempted.insert(0, local_llm.GATEWAY_HOST)
-                existing_no_proxy = [e.strip() for e in tr_envs.get("NO_PROXY", "").split(",") if e.strip()]
-                joined = ",".join(dict.fromkeys(existing_no_proxy + exempted))
-                tr_envs["NO_PROXY"] = joined
-                tr_envs["no_proxy"] = joined
-                print(
-                    f"Note: host-local endpoint(s) {', '.join(local_hosts)} are exempt from token reduction "
-                    "(no interception, caching, or wire telemetry for that traffic).",
-                    file=sys.stderr,
-                )
-
-        for k, v in tr_envs.items():
-            add_env(k, v)
-
-        # Intent file mount for intent-creator role
-        if role == "intent-creator":
-            if not intent_file:
-                print("Error: Intent file is mandatory for intent creation.", file=sys.stderr)
-                return 1
-            abs_intent = os.path.abspath(intent_file)
-            if not os.path.exists(abs_intent):
-                print(f"Error: Intent file '{intent_file}' does not exist.", file=sys.stderr)
-                return 1
-            docker_cmd.extend(["-v", f"{abs_intent}:/tmp/intent.json"])
-
-        # Result file mount for role containers (e.g. review-loop result transport)
-        if result_file:
-            abs_result = os.path.abspath(result_file)
-            docker_cmd.extend(["-v", f"{abs_result}:/tmp/review_result.json"])
-
-        # The validated host worktree, its git directories and the read-only git-config overlays.
-        docker_cmd.extend(workspace_mounts)
-
-        # Auto-detect Session Mounts
-        session_mounts = get_agent_session_mounts(agent_id)
-        docker_cmd.extend(session_mounts)
-
-        # Network isolation and egress controls
-        network_isolation_args = build_network_isolation_args(token_reduce=token_reduce)
-        docker_cmd.extend(network_isolation_args)
-
-        # Image and args
-        docker_cmd.append(image_name)
-        docker_cmd.extend(container_args)
-
-        if secret_env:
-            try:
-                sweep_stale_env_files(env_file_dir())
-                env_file = write_env_file(secret_env)
-            except ValueError as exc:
-                print(f"Error: {redact_cli_error(exc)}.", file=sys.stderr)
-                return 1
-            except OSError as exc:
-                # An unwritable or unreadable ~/.holon/tmp/env-files: fail closed with a clear message
-                # rather than a traceback, and never fall back to passing the credentials on the argv.
-                print(f"Error: could not write the credential env-file: {redact_cli_error(exc)}.", file=sys.stderr)
-                return 1
-            # Right after `docker run`. Docker reads --env-file on the client side, so the host path
-            # needs no bind mount.
-            docker_cmd[2:2] = ["--env-file", env_file]
-
-        # A forwarded HOLON_* value may hold a non-UTF-8 byte (surrogateescape); it must not crash the run here.
-        print_encodable(f"Executing: {redact_command(docker_cmd)}")
-        result = subprocess.run(docker_cmd, env={**os.environ, "DOCKER_CLI_HINTS": "false"})
-        return result.returncode
-    finally:
-        if env_file:
-            with contextlib.suppress(FileNotFoundError):
-                os.remove(env_file)
-        teardown_token_reduction_proxy()
-        if local_agent_dir:
-            shutil.rmtree(local_agent_dir, ignore_errors=True)
-        try:
-            from sandbox_executor.agent_runner import get_runner
-
-            runner = get_runner(agent_id)
-            if hasattr(runner, "cleanup_ephemeral_credentials"):
-                runner.cleanup_ephemeral_credentials()
-        except Exception:
-            pass
-
-
-def print_encodable(text: str, file: TextIO | None = None) -> None:
-    """``print(text, file=file)`` that cannot raise ``UnicodeEncodeError``.
-
-    Characters the stream's encoding cannot represent (a lone surrogate, a non-UTF-8 byte that ``os.environ`` decoded
-    with ``surrogateescape``, or non-ASCII text on an ASCII terminal) are written backslash-escaped; text the stream
-    can encode is written unchanged.
-    """
-    stream = sys.stdout if file is None else file
-    encoding = getattr(stream, "encoding", None) or "utf-8"
-    try:
-        text = text.encode(encoding, "backslashreplace").decode(encoding)
-    except LookupError:
-        text = text.encode("ascii", "backslashreplace").decode("ascii")
-    print(text, file=stream)
 
 
 def _doctor_section_failed(section: str, exc: BaseException) -> str:
@@ -1386,9 +373,9 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
     the ``effective_defaults.max_output_tokens`` or ``max_prompt_tokens`` of the server that serves it. Nothing is
     written; only loopback or allow-listed endpoints are probed.
 
-    Each part (budgets, envelope, base-URL check, gateway probe) is isolated: an invalid configuration prints an
-    ``Error:`` line, and any unexpected exception becomes a value-free ``WARNING: doctor <part> check failed
-    unexpectedly (<ExceptionClass>)`` line; either makes the result 1, and the doctor never raises from here.
+    Each part (budgets, GitHub token, envelope, base-URL check, gateway probe) is isolated: an invalid configuration
+    prints an ``Error:`` line, and any unexpected exception becomes a value-free ``WARNING: doctor <part> check
+    failed unexpectedly (<ExceptionClass>)`` line; either makes the result 1, and the doctor never raises from here.
     """
     env = os.environ
     out = out or sys.stdout
@@ -1397,6 +384,13 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
         _report_budgets(env, out)
     except Exception as exc:  # The doctor reports; it never crashes.
         print(_doctor_section_failed("budgets", exc), file=out)
+        code = 1
+    try:
+        from sandbox_executor.flow.github.token_scopes import doctor_lines
+
+        print("\n".join(doctor_lines()), file=out)
+    except Exception as exc:
+        print(_doctor_section_failed("github token", exc), file=out)
         code = 1
 
     if env.get(local_llm.ENV_LOCAL_MODE, "").strip().lower() not in ("1", "true", "yes", "on"):
@@ -1481,79 +475,6 @@ def _report_gateways(  # noqa: PLR0913
         print("prefill_cache=unknown (no loopback or allow-listed endpoint to probe)", file=out)
 
 
-INTENT_CREATOR_IMAGE: str = "holon/orchestrator"
-# The intent-creator entrypoint never invokes a runner, so its container keeps the historical antigravity
-# mount profile whatever runner the caller resolved.
-INTENT_CREATOR_AGENT_ID: str = "antigravity"
-
-
-def resolve_role_image(role: str, agent_id: str) -> str:
-    """Resolve the container image that hosts a role agent.
-
-    Args:
-        role: Role name ('intent-creator', 'planner' or 'executor').
-        agent_id: Runner name or normalised agent id (see agent_defaults.normalise_agent_id).
-
-    Returns:
-        str: 'holon/orchestrator' for the intent creator, otherwise the mapped 'holon/agent-<runner>' image.
-
-    Raises:
-        UnmappedAgentRunnerError: If a planner or executor runner has no mapped image.
-    """
-    if role == INTENT_CREATOR_ROLE:
-        return INTENT_CREATOR_IMAGE
-    return image_for_agent(agent_id)
-
-
-def dispatch_role_agent(  # noqa: PLR0913
-    role: str,
-    runner: str | None,
-    model: str | None,
-    positional_args: list[str],
-    *,
-    target_worktree: str | None = None,
-    intent_file: str | None = None,
-    result_file: str | None = None,
-    token_reduce: bool = False,
-    mitm_web: bool = False,
-) -> int:
-    """Launch the containerised role agent shared by 'holon intent|plan|execute' and 'holon flow'.
-
-    This is the single dispatch path for the authoring roles: the per-stage commands and the flow
-    stages both call it, so the two invocations launch the same image with the same arguments.
-
-    Args:
-        role: Role name ('intent-creator', 'planner' or 'executor').
-        runner: Resolved runner name (e.g. 'claude-agent'); selects the 'holon/agent-<runner>' image.
-        model: Resolved model name. Planner and executor receive it through positional_args; the
-            intent creator does not run a model.
-        positional_args: Container arguments (e.g. [plan_branch, runner, model] for the executor).
-        target_worktree: Host git worktree the role container works in (required).
-        intent_file: Intent payload path, mandatory for the intent creator.
-        result_file: Structured outcome payload path for container-to-host result transport.
-        token_reduce: Whether to route container traffic through the token reduction proxy.
-        mitm_web: Whether to start the proxy with the mitmweb interface.
-
-    Returns:
-        int: Container exit code (non-zero on failure).
-    """
-    del model  # Carried in positional_args for the roles that run a model.
-    if role == INTENT_CREATOR_ROLE:
-        kwargs: dict[str, Any] = {"agent_id": INTENT_CREATOR_AGENT_ID, "intent_file": intent_file}
-        if token_reduce:
-            kwargs["token_reduce"] = True
-    else:
-        kwargs = {"agent_id": normalise_agent_id(runner or FALLBACK_AGENT), "token_reduce": token_reduce}
-    if mitm_web:
-        kwargs["mitm_web"] = True
-    if target_worktree:
-        kwargs["target_worktree"] = target_worktree
-    if result_file:
-        kwargs["result_file"] = result_file
-    image_name = resolve_role_image(role, kwargs["agent_id"])
-    return run_docker_container(role, image_name, list(positional_args), **kwargs)
-
-
 def resolve_runner_and_model(agent: str | None, model: str | None) -> tuple[Resolution, Resolution]:
     """Resolve the agent runner and model for a command.
 
@@ -1623,13 +544,29 @@ def preflight_gate(agent: str, model: str, skip: bool = False) -> PreflightResul
     return result
 
 
+def _configuration_section(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+    """``holon doctor`` configuration section: the ``--json`` payload and the text lines of the layered configuration.
+
+    The resolution ``main`` remembered is reported (a fresh one when none is held, as when a test calls
+    ``run_doctor`` directly); an explicit ``--agent`` or ``--model`` is reported as the ``cli`` layer.
+    """
+    from sandbox_executor import config_env_report
+
+    config = config_env.current() or config_env.load_effective_config()
+    flags = {"HOLON_AGENT": getattr(args, "agent", None), "HOLON_MODEL": getattr(args, "model", None)}
+    config = config_env.with_cli_overrides(config, {key: value for key, value in flags.items() if value})
+    return config_env_report.configuration_payload(config), config_env_report.format_config_report(config)
+
+
 def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None) -> int:
     """Implement ``holon doctor``: one readiness report for the runner, the model and the local environment.
 
     It resolves the agent runner and model and runs the pre-flight probe on them, then reports the effective turn and
     stage budgets and, when local-LLM mode is enabled, the model envelope and the local gateway probe
-    (:func:`report_budgets_and_envelope`). With ``--json`` the environment section is carried under ``environment``
-    as its report lines, with its ``WARNING:`` lines also listed under ``warnings``.
+    (:func:`report_budgets_and_envelope`), then every effective ``HOLON_*`` setting with its source layer and the layers
+    it shadowed (secrets shown only as ``set (<layer>)``). With ``--json`` the environment section is carried under
+    ``environment`` as its report lines, with its ``WARNING:`` lines also listed under ``warnings``, and the settings
+    under ``configuration``.
 
     Args:
         args: Parsed namespace with ``agent``, ``model``, ``json``, ``timeout`` and ``target_worktree``.
@@ -1657,6 +594,7 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
     env_lines = env_out.getvalue().splitlines()
     warnings = [line for line in env_lines if line.startswith("WARNING: ")]
     environment = {"ok": env_code == 0, "lines": env_lines, "warnings": warnings}
+    configuration, config_lines = _configuration_section(args)
 
     try:
         # The text report prints both decisions on stdout, so the resolvers' INFO log would show them twice.
@@ -1676,10 +614,11 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
                         f"Run 'holon models --agent {norm_a}' to inspect supported models and effort levels."
                     )
             error_payload["environment"] = environment
+            error_payload["configuration"] = configuration
             print(json.dumps(error_payload, indent=2))
         else:
             print_encodable(f"Error: {redact_cli_error(exc)}", file=sys.stderr)
-            print_encodable("\n".join(env_lines))
+            print_encodable("\n".join([*env_lines, *config_lines]))
         return 1
 
     result = run_preflight_probe(agent_res.value, model_res.value, timeout=resolve_timeout(args.timeout))
@@ -1689,6 +628,7 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
             "model": {"value": model_res.value, "source": model_res.source, "reason": model_res.reason},
             "preflight": result.to_dict(),
             "environment": environment,
+            "configuration": configuration,
         }
         print(json.dumps(payload, indent=2))
     else:
@@ -1696,7 +636,7 @@ def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None)
         print_encodable(agent_res.describe("Agent runner"))
         print_encodable(model_res.describe("Model"))
         print_encodable(result.format_report())
-        print_encodable("\n".join(env_lines))
+        print_encodable("\n".join([*env_lines, *config_lines]))
     return 0 if result.ok and env_code == 0 else 1
 
 
@@ -1719,9 +659,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def resolve_layered_configuration() -> config_env.EffectiveConfig:
+    """Resolve the layered configuration once for this invocation and fold it into the host environment.
+
+    Each warning goes to stderr (redacted as defence in depth; it names keys, paths and modes only). The file-sourced
+    values fill only the variables the process environment leaves unset, so the process environment and explicit CLI
+    flags keep winning, and every role container and the pre-flight probe inherit them through the 0600 env-file.
+    The resolution is remembered with its pre-apply provenance for ``holon doctor``.
+    """
+    config = config_env.load_effective_config()
+    for warning in config.warnings:
+        print_encodable(redact_cli_error(warning), file=sys.stderr)
+    config_env.apply_to_environ(config, os.environ)
+    config_env.remember(config)
+    return config
+
+
 def main(argv: list[str] | None = None) -> None:
     """Run the Holon CLI."""
     configure_cli_logging()
+    # Before the parser is built: argparse defaults may read the environment.
+    resolve_layered_configuration()
     parser = build_parser()
     args = parser.parse_args(argv)
     if hasattr(args, "_run"):

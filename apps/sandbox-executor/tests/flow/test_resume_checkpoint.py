@@ -17,6 +17,9 @@ from sandbox_executor.cli.commands._flow_resume import RUN_SWITCHES, discover_re
 from sandbox_executor.cli.commands.flow import _build_flow_context, _resolve_checkpoint_and_intent
 from sandbox_executor.flow import FlowContext, FlowStage, PipelineEngine, StageResult, StageStatus
 from sandbox_executor.flow.checkpoint import load_checkpoint, save_checkpoint
+from sandbox_executor.launcher.coherence import FlowProxyChoice
+
+_NO_PROXY = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
 
 SLUG = "resume-keeps-checkpoint-intact"
 INTENT_BRANCH = f"I-1-{SLUG}/_"
@@ -137,6 +140,7 @@ def test_a_resume_that_cannot_start_leaves_the_checkpoint_byte_for_byte(
     "case",
     [
         (StageStatus.SUCCESS, StageStatus.SUCCESS, "completed", STAGES),
+        (StageStatus.APPROVED, StageStatus.SUCCESS, "completed", STAGES),
         (StageStatus.HALTED_FOR_HUMAN, StageStatus.SUCCESS, "completed", STAGES),
         (StageStatus.SUCCESS, StageStatus.FAILED, "calibrate", STAGES[:4]),
     ],
@@ -226,7 +230,7 @@ def _run_args(intent_file: Path, worktree: Path, **flags: Any) -> argparse.Names
 def _resume(args: argparse.Namespace) -> tuple[FlowContext, list[tuple[str, str, str]]]:
     """Resume as ``holon flow`` does, with fake Stage 4 and Stage 5 that record the runner and model they see."""
     context, intent_data, agent, model = _resolve_checkpoint_and_intent(args)
-    with patch("sandbox_executor.cli.detect_holon_coherence", return_value=False):
+    with patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY):
         context = _build_flow_context(args, context, intent_data, agent, model)
     seen: list[tuple[str, str, str]] = []
 

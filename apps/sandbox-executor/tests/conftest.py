@@ -6,9 +6,11 @@ import subprocess
 from collections.abc import Iterator
 
 import pytest
-from sandbox_executor import cli
+from sandbox_executor import config_env
 from sandbox_executor.agent_defaults import detected_harness_markers
 from sandbox_executor.flow.admission import AdmissionDecision
+from sandbox_executor.flow.github import token_scopes
+from sandbox_executor.launcher import env_files, mounts
 
 from tests import network_guard
 from tests.credential_env import CREDENTIAL_ENV_NAMES
@@ -96,6 +98,10 @@ def hermetic_git_config(tmp_path_factory) -> Iterator[str]:
         yield str(config_file)
 
 
+def _no_github_api(url, headers, timeout):
+    raise OSError("the GitHub API is not reachable from the test suite")
+
+
 @pytest.fixture(autouse=True)
 def no_ambient_credentials(monkeypatch):
     """Run every test without the developer's or the sandbox's own credentials.
@@ -111,7 +117,14 @@ def no_ambient_credentials(monkeypatch):
             continue
         if name in _AMBIENT_CREDENTIAL_NAMES or name.startswith(_AMBIENT_PREFIX):
             monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(cli, "find_github_token", lambda: os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN"))
+    # The token scope report (holon doctor, the Stage 3 pre-flight) never runs the real `gh` nor calls the GitHub API.
+    monkeypatch.setattr(mounts, "_run_gh", lambda argv: subprocess.CompletedProcess(argv, 1, "", "gh disabled"))
+    monkeypatch.setattr(token_scopes, "_urllib_fetch", _no_github_api)
+
+    def env_token() -> str | None:
+        return os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+
+    monkeypatch.setattr(mounts, "find_github_token", env_token)
 
 
 @pytest.fixture(autouse=True)
@@ -142,7 +155,7 @@ def isolated_env_file_dir(tmp_path_factory, monkeypatch):
     """
     env_dir = tmp_path_factory.mktemp("env-files")
     os.chmod(env_dir, 0o700)
-    monkeypatch.setattr(cli, "env_file_dir", lambda: str(env_dir))
+    monkeypatch.setattr(env_files, "env_file_dir", lambda: str(env_dir))
     return env_dir
 
 
@@ -160,6 +173,37 @@ def _isolate_agent_defaults(no_ambient_credentials, monkeypatch: pytest.MonkeyPa
     for name in ("HOLON_AGENT", "HOLON_MODEL", "HOLON_PREFLIGHT_TIMEOUT"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("HOLON_SKIP_PREFLIGHT", "1")
+
+
+def _layered_config_env() -> dict[str, str]:
+    """The `os.environ` keys a layered configuration can fill: every `HOLON_*` variable and `GITHUB_TOKEN`."""
+    return {key: value for key, value in os.environ.items() if key.startswith(_AMBIENT_PREFIX) or key == "GITHUB_TOKEN"}
+
+
+@pytest.fixture(autouse=True)
+def isolated_layered_config(
+    _isolate_agent_defaults, tmp_path_factory, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Keep every test off the developer's `~/.holon/.env` and the checkout's `.env`, and undo what `cli.main` applies.
+
+    Both layer paths point into an empty temporary directory. `cli.main` folds the layered configuration into
+    `os.environ` directly, which no monkeypatch would undo, so the `HOLON_*` and `GITHUB_TOKEN` keys are restored
+    after the test and any key added during it is removed. The remembered resolution is reset on both sides.
+    """
+    layer_dir = tmp_path_factory.mktemp("layered-config")
+    monkeypatch.setattr(config_env, "user_env_path", lambda: layer_dir / "user.env")
+    monkeypatch.setattr(config_env, "project_env_path", lambda start: layer_dir / "project.env")
+    config_env.remember(None)
+    before = _layered_config_env()
+    yield
+    config_env.remember(None)
+    for key, value in _layered_config_env().items():
+        if key not in before:
+            del os.environ[key]
+        elif before[key] != value:
+            os.environ[key] = before[key]
+    for key, value in before.items():
+        os.environ.setdefault(key, value)
 
 
 @pytest.fixture(autouse=True)
@@ -353,3 +397,15 @@ def stub_review_local_test_measurement(monkeypatch: pytest.MonkeyPatch) -> None:
 
     unmeasured = TestMeasurement(None, None, None, None, 127, "test task not run in this test", "")
     monkeypatch.setattr("sandbox_executor.flow.review.local_tests.run_measurement", lambda _workspace: unmeasured)
+
+
+@pytest.fixture(autouse=True)
+def stub_review_workspace_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Read the review workspace HEAD as ``stage3-head``, the commit test Stage 3 payloads record as tested.
+
+    A test that moves the head patches ``sandbox_executor.flow.review.local_tests.run_git`` itself.
+    """
+    from unittest.mock import MagicMock
+
+    head = MagicMock(returncode=0, stdout="stage3-head\n")
+    monkeypatch.setattr("sandbox_executor.flow.review.local_tests.run_git", lambda *_a, **_k: head)

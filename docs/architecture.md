@@ -477,7 +477,8 @@ split from the former single `flow.py` by moving code only. Three tests guard th
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `flow/__init__.py`                     | Re-exports every engine name lazily through `__all__`, so `from sandbox_executor.flow import ...` works.         |
 | `flow/constants.py`                    | Constants shared by two or more modules (`CURRENT_CONTEXT_SCHEMA_VERSION`, `CI_REGISTRATION_POLL_SECONDS`).      |
-| `flow/context.py`                      | The data model: `FlowStage`, `StageStatus`, `StageResult` and `FlowContext`.                                     |
+| `flow/stage_status.py`                 | `StageStatus`, `SUMMARY_STATUS_WORDS` and `REVIEW_BOUNDARY_STATUSES`, re-exported by `flow/context.py`.          |
+| `flow/context.py`                      | The data model: `FlowStage`, `StageResult`, `FlowContext` and re-exported `StageStatus`.                         |
 | `flow/checkpoint.py`                   | Checkpoint schema migration, `FlowCheckpoint`, and saving and loading checkpoints.                               |
 | `flow/checkpoint_store.py`             | The `CheckpointStore` protocol and the `FileCheckpointStore` adapter that persists a `FlowCheckpoint`.           |
 | `flow/ledger_reconcile.py`             | Compatibility shim re-exporting the ledger conflict resolution that now lives in `ledger/reconcile.py`.          |
@@ -491,6 +492,9 @@ split from the former single `flow.py` by moving code only. Three tests guard th
 | `flow/host_remote.py`                  | Host-side fetch of the base and push of the committed branch; containers never touch the remote.                 |
 | `flow/git_refs.py`                     | Branch fetches, child-branch discovery, ledger readers, execution refs and the effective diff.                   |
 | `flow/partial_head.py`                 | Recovers the `partial_head` of a failed execution from the branch's latest execution summary row.                |
+| `flow/github/adapter.py`               | `GitHubAdapter`: the repository-scoped `gh` argv builders for PRs, CI checks, reviews, comments and merges.      |
+| `flow/github/adapter_runner.py`        | The single `gh` spawn behind `GitHubAdapter` (`spawn_gh`), its `GhResult` and the proxy environment.             |
+| `flow/github/pr_head.py`               | `pr_head_sha`: the PR head commit as GitHub reports it, read once through `GitHubAdapter`.                       |
 | `flow/github/pr.py`                    | Mergeability checks, review git trailers, semantic PR metadata and creating the PR.                              |
 | `flow/github/ci.py`                    | Probes CI checks and waits for them to register and settle.                                                      |
 | `flow/github/review_post.py`           | Posts the Stage 4 consensus review to the pull request.                                                          |
@@ -499,6 +503,7 @@ split from the former single `flow.py` by moving code only. Three tests guard th
 | `flow/review/records.py`               | Refused-review results, review action rows in the ledger and the reviewer summary line.                          |
 | `flow/review/ensemble.py`              | Dispatches the reviewer ensemble for one review iteration.                                                       |
 | `flow/review/resolver.py`              | The resolver pass: filters adjudicated findings and records finding dispositions.                                |
+| `flow/review/head_test_evidence.py`    | Pure current-head test evidence selection (`resolver_evidence`, `ci_head`, `stage_3`, `review_local`).           |
 | `flow/review/loop.py`                  | The review-resolve iteration loop and the engine's Stage 4 pass window.                                          |
 | `flow/review/cli.py`                   | The `holon review-loop` CLI entry and the review loop summary helpers.                                           |
 | `flow/stages/intent.py`                | Stage 1 (`IntentStage`): dispatches the intent creator and verifies its branch.                                  |
@@ -511,7 +516,8 @@ split from the former single `flow.py` by moving code only. Three tests guard th
 | `flow/stages/children.py`              | Stage 3 child loop: runs, resumes and merges each sub-intent under the plan branch, one after another.           |
 | `flow/stages/integration.py`           | Stage 3 integration: merges the plan branch into the parent execution branch for the combined PR.                |
 | `flow/stages/execute.py`               | Stage 3: dispatches the executor, adopts its branch and resumes failed partial executions.                       |
-| `flow/stages/review.py`                | Stage 4: runs the review loop and halts at consensus approval without merging.                                   |
+| `flow/stages/review.py`                | Stage 4: runs the review loop and completes with APPROVED at consensus without merging.                          |
+| `flow/stages/review_outcome.py`        | Stage 4 outcome construction for consensus approval and dry-run halts.                                           |
 | `flow/stages/calibrate.py`             | Stage 5: runs calibration and commits the calibrated artefacts.                                                  |
 | `flow/pipeline.py`                     | `PipelineEngine` and `run_flow_pipeline`, which run the five stages in order with checkpoints.                   |
 

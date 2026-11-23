@@ -25,10 +25,15 @@ important or critical finding counts only with a reason other than `out of scope
 `path:line` or a test; otherwise the finding stays `open` and goes back to the resolver when it is raised again. The
 posted review is headed `APPROVED` only for an `APPROVED` ensemble verdict with every reviewer approved with zero open
 findings and no role at `CHANGES`; its fraction counts only those clean approvals, and the PR review is submitted with
-`--approve` only under the same rule. End-of-flow messages (the `REV-...` summary row, the action event, the Stage 4
-error, the `[SAFETY HALT]` line and the `holon review-loop` summary) state each reviewer's final verdict as
-`Reviewer N VERDICT (critical/important/nit)` and say `not approved: reviewer N final verdict X` for any reviewer that
-did not approve cleanly; such a run never halts as approved and is never described as ready to merge.
+`--approve` only under the same rule. Consensus approval completes Stage 4 with `StageStatus.APPROVED`
+(`halted_for_human=False`), writes `status: "approved"` on the `REV-...` summary row, logs `[REVIEW APPROVED]` in the
+CLI summary and proceeds to Stage 5 calibration without merging to `main`. `StageStatus.HALTED_FOR_HUMAN` and
+`[SAFETY HALT]` apply only to safety halts and dry-run boundaries (legacy `halted_for_human` checkpoints and summary
+rows remain recognised as converged on read). Non-approved runs write `status: "failed"`; end-of-flow messages (the
+`REV-...` summary row, the action event, the Stage 4 error, the Stage 4 outcome log and the `holon review-loop` summary)
+state each reviewer's final verdict as `Reviewer N VERDICT (critical/important/nit)` and say
+`not approved: reviewer N final verdict X` for any reviewer that did not approve cleanly; such a run never approves and
+is never described as ready to merge.
 
 When every reviewer approved cleanly but one of these checks withheld consensus, the Stage 4 error names the blocker
 (`Autonomous review blocked: consensus withheld by ...`) rather than a test failure.
@@ -101,14 +106,26 @@ failure row and ends the loop as `post_failed`.
 
 ## Test evidence and its source
 
-The CI gate reads one test result and names where it came from, in the review evidence and on the posted `Checks` line:
-`stage_3` (the executor's own measurement in its summary row), `ci` (GitHub checks) or `review_local` (the review loop's
-own run). When no CI checks register and Stage 3 recorded no rate, the loop's `local_tests` fallback runs
-`uv run task test` in the review container after the CI-registration wait, once per head commit (the result is cached on
-the head SHA and re-measured only after the resolver pushes a fix). A dry run never runs it. `null` still means "not
-measured" and withholds consensus: a run that could not execute records its `run_error`, and a measured result, passing
-or failing, is never reported as unmeasured. A rate below `1.0`, or a non-zero exit code of a completed run, is a failed
-test result and raises `FIND-CI`.
+The CI gate (`flow/review/head_test_evidence.py` and `flow/review/local_tests.py`) evaluates test evidence for the
+current git `HEAD` commit (after waiting for pending GitHub CI checks to settle) and records `test_source`,
+`test_head_sha` and `test_counts` in the CI evidence and on the posted `Checks` line, selecting the first applicable
+source in strict precedence order:
+
+1. `resolver_evidence`: a `FIND-CI` finding rejected by the resolver with passing code or test evidence on the current
+   head, confirmed by a local `uv run task test` measurement on that head (preserved across loop-authored ledger-only
+   commits).
+2. `ci_head`: green GitHub CI checks (`source == "github_cli"`, `all_passed == True`, `pending == 0`) verified against
+   the PR's `headRefOid` matching the current `HEAD`.
+3. `stage_3`: Stage 3's recorded test result (passing or failing) when `stage_3_head` matches the current `HEAD` (a
+   Stage 3 failure on that head raises `FIND-CI` unless `resolver_evidence` or `ci_head` supersedes it).
+4. `review_local`: a local `uv run task test` re-run in the review container, cached per head commit and re-run only
+   when `HEAD` advances (used when Stage 3 recorded no measurement, `stage_3_head` is missing, or `HEAD` moved past
+   `stage_3_head`).
+
+A dry run never executes local tests and attributes the Stage 3 or GitHub CI probe (`ci` or `stage_3`). `null` still
+means "not measured" and withholds consensus: a run that could not execute records its `run_error`, and a measured
+result, passing or failing, is never reported as unmeasured. A rate below `1.0`, or a non-zero exit code of a completed
+run, is a failed test result and raises `FIND-CI`.
 
 ## Approval covers one head
 
@@ -117,6 +134,73 @@ head `abc1234`; CI at that commit: 11 of 11 checks passed." It never says "all C
 When Stage 5 later finds CI red on a different head, one follow-up comment says the approval no longer stands (see
 [Final-head CI check](git_flow.md#final-head-ci-check-stage-5)). A later green head needs its own approval, which names
 its own head.
+
+## CI gate on the merged head
+
+Stage 5 pushes no calibration commit until CI has passed on the head it would calibrate. After the conflict gate, it
+compares the execution head with the approved head. If the head is unchanged, or moved only by non-merge commits that
+touch `plans/`, `executions/` or `holon-knowledge/` (the ledger rows Stage 4 commits on exit), Stage 5 relies on the
+Stage 4 CI result and runs immediately. Any other head, for example one with `origin/main` merged in, waits for every
+check run on exactly that SHA, read from the GitHub check-runs API for the commit.
+
+- Only `success`, `neutral` and `skipped` pass. Runs registered against another SHA (superseded) are ignored, and the
+  newest run per check suite and check name counts.
+- A `cancelled` or `stale` run is never treated as passed. It is re-triggered once per run id; a second cancellation, or
+  a cancelled check with no Actions run, fails Stage 5 closed.
+- Checks still pending when the CI wait budget runs out, or no readable checks, also fail Stage 5 closed. Nothing is
+  pushed and the approval is not withdrawn, because no check failed.
+- A failed check withdraws the consensus. A new ledger row (labels `consensus-withdrawn` and `merged-head-ci`) records
+  it, and no earlier row is edited. One PR comment per merged head says the approval was withdrawn. The pipeline then
+  restarts Stage 4 at iteration 1, with a fresh reviewer ensemble, for the new head. It does this at most 3 times; after
+  that, Stage 5 fails and nothing is calibrated.
+
+The Stage 5 log names the head SHA, the run ids and the conclusions it relied on. Dry runs and `--skip-push` skip the
+gate.
+
+## Approval carry-over across target merges
+
+An approval is bound to the PR's own change as well as to the SHA the reviewers saw. Stage 4 records a change
+fingerprint with every approval, so a merge of the target branch that only resolved ledger rows does not send the PR
+back through a full review. The fingerprint never stands in for CI.
+
+The fingerprint (`flow/review/approval_fingerprint.py`) covers the diff from `merge-base(head, origin/<target>)` to the
+head. It excludes `holon-knowledge/**` (the ledgers and the knowledge base) and the Stage 5 calibration reports
+(`plans/**/*_calibration.md`). It hashes `git patch-id --stable` of that diff together with the sorted status, mode,
+blob and path of each changed file, so mode-only and binary changes count. It is written as `pf1:` and 40 hex
+characters; the `pf1` prefix keeps a later reduction from ever matching an old fingerprint. An empty PR-own change or
+unreadable git gives no fingerprint, and a missing fingerprint never matches.
+
+The post-time conflict gate keeps the approval when:
+
+- the head conflicted with the target branch and the gate merged it cleanly, or with ledger-only conflicts resolved
+  mechanically; and
+- the merged head's fingerprint equals the fingerprint recorded with the approval.
+
+It keeps the gate's block, and the approval must be re-earned, when:
+
+- a code conflict aborts the merge (a knowledge-base file conflict also aborts: only ledger conflicts are
+  auto-resolved);
+- a push after the approval changed a PR-own file, so the fingerprint differs;
+- the target branch edited a file the PR also changes, even in lines the PR did not touch: the hunk context or the file
+  blob differs, which costs a re-review but never misses one;
+- the approval has no fingerprint (a checkpoint from before this change).
+
+Each carry-over is logged with both SHAs and the fingerprint, and appends exactly one ledger row (`ACT-CARRY`, labels
+`review`, `conflict-gate` and `approval-carry-over`, fields `approved_head`, `merged_head` and `approval_fingerprint`).
+No earlier row is edited, and a re-run on the merged head probes clean and writes no second row. Stage 5's own conflict
+gate records the same row when its merge keeps the change.
+
+The approval stamp names the head, the fingerprint and the CI result at that head, for example "Covers head `def5678`;
+change fingerprint `pf1:0123456789ab`; carried over from `abc1234` (same change); CI at that commit: not measured." A
+carried approval never shows the earlier head's green CI: its CI result is "not measured" until Stage 5 measures it.
+
+The consensus keeps `target_commit` as the SHA the reviewers saw and adds `carried_from` and `carried_to`, so the CI
+gate on the merged head still sees a moved head. It waits for every check on the new SHA, and withdraws the consensus
+and restarts Stage 4 when one fails, exactly as for any merged head. In Stage 5 a head whose fingerprint differs from
+the approved one is not covered: the consensus is withdrawn, with the reason "PR-own change changed since approval" in
+the ledger row and the PR comment, and Stage 4 reviews the change again, within the same limit of 3 restarts. The
+automatic timing-gate rerun of the final-head CI check stays limited to bookkeeping-only moves; a merged target branch
+is not one.
 
 ## Resolver pre-push verification
 

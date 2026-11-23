@@ -749,6 +749,8 @@ flowchart TD
   - [`docs/metrics.md`](docs/metrics.md) — Detailed formulation of estimators ($P(success)$, $\Delta S$, $EV$, and
     calibration).
   - [`docs/safety.md`](docs/safety.md) — Resource limits, budgets, sandboxing, and trust ladders.
+  - [`docs/environment_variables.md`](docs/environment_variables.md) — Every `HOLON_*` environment variable: purpose,
+    values, defaults, where it is read and whether it reaches the containers.
 - **Knowledge & Ledgers:**
   - [`docs/knowledgebase_schema.md`](docs/knowledgebase_schema.md) — Propose/validate/promote schemas.
   - [`docs/wisdombase_schema.md`](docs/wisdombase_schema.md) — Universal code invariants and meta-principles.
@@ -881,9 +883,9 @@ flowchart TD
     H1 -- "No" --> F1["FAILED (Review Rejection)"]
     C2 -- "--skip-calibrate" --> S_SKIP["Stage 5: SKIPPED"]
     C2 -- "default" --> S5["Stage 5: Post-Execution Calibration (/calibrated branch)"]
-    S5 --> HALT["HALTED_FOR_HUMAN (Safety Merge Boundary)"]
-    S_SKIP --> HALT
-    HALT --> DONE["Human Maintainer Merges PR"]
+    S5 --> APPROVED["APPROVED (Ready for Maintainer Merge)"]
+    S_SKIP --> APPROVED
+    APPROVED --> DONE["Human Maintainer Merges PR"]
 ```
 
 ##### Command Options Reference
@@ -906,7 +908,7 @@ calibration or any later step runs.
 | `--skip-calibrate`        | Flag       | `False`  | Skip Stage 5 (post-execution calibration report generation).                                                                                                                                                                                                                  |
 | `--max-review-iterations` | Integer    | `25`     | Maximum autonomous review loop iterations in Stage 4 (must be `>= 1`, default: `25`). The loop runs at most one iteration: it stops after the first, approved or not (no automatic resolver).                                                                                 |
 | `--ensemble-size`         | Integer    | `3`      | Number of independent reviewer agent turns per iteration; approval needs every reviewer to approve with zero findings (default: 3). Must be `>= 1`. Reviewer turns run only inside a sandbox: on a host, Stage 4 fails closed and the review is run with `holon review-loop`. |
-| `--token-reduce`          | Flag       | `False`  | Route through mitmproxy sidecar for token compression and prompt caching.                                                                                                                                                                                                     |
+| `--token-reduce`          | Flag       | `False`  | Route through the holon-coherence proxy sidecar for token compression and prompt caching.                                                                                                                                                                                     |
 | `--mitm-web`              | Flag       | `False`  | Launch mitmweb web UI on port 8081 (configurable via `HOLON_MITM_WEB_PORT`) for live traffic inspection.                                                                                                                                                                      |
 
 ##### Common Usage Examples
@@ -938,15 +940,17 @@ For in-depth architecture details, state diagrams, and lifecycle hooks, see
 
 ### Token reduction (`--token-reduce`)
 
-`--token-reduce` starts a locally-owned mitmproxy sidecar and moves the sandbox onto a per-run Docker network so agent
-responses can be compacted before they are tokenized.
+`--token-reduce` starts a locally-owned holon-coherence proxy sidecar and moves the sandbox onto a per-run Docker
+network so agent responses can be compacted before they are tokenized.
 
-> [!WARNING] **`--token-reduce` is experimental and not yet functional.** The Phase 2 mitmproxy addon (`mitm_addon.py`)
-> is not shipped yet, so the preflight raises `FileNotFoundError`, the CLI logs an actionable error, and the run
-> continues with **direct egress** — no interception takes place.
+> [!WARNING] **`--token-reduce` is experimental.** The sidecar runs the holon-coherence proxy image and the mitmproxy
+> addon that image ships: `holon-coherence:latest` when built locally with `holon-coherence build`, otherwise
+> `ghcr.io/holon-agentic-coder/holon-coherence:latest`, pulled on first use (`HOLON_COHERENCE_IMAGE` pins another
+> image). If the image cannot start or its proxy never answers, the CLI logs an actionable error and the run continues
+> with **direct egress**: no interception takes place.
 
-> [!WARNING] Once functional, `--token-reduce` performs **local TLS interception** against that locally-owned proxy. A
-> Holon Root CA is generated at `~/.holon/certs/holon-root-ca.crt` with `basicConstraints=critical,CA:TRUE` and
+> [!WARNING] `--token-reduce` performs **local TLS interception** against that locally-owned proxy. A Holon Root CA is
+> generated at `~/.holon/certs/holon-root-ca.crt` with `basicConstraints=critical,CA:TRUE` and
 > `keyUsage=critical,keyCertSign,cRLSign` (a CA without `keyUsage` is refused as a trust anchor by several TLS stacks)
 > and is rotated automatically before it would expire within 30 days.
 >
@@ -982,6 +986,9 @@ responses can be compacted before they are tokenized.
 
 > [!IMPORTANT] Host `HTTP_PROXY` / `HTTPS_PROXY` are **never** interpreted as opt-in; sandbox networking only changes
 > when `--token-reduce` or `HOLON_TOKEN_REDUCE` is set explicitly.
+
+Every other `HOLON_*` variable (runner, budgets, proxy, git, ledger, review loop, logging and CI) is listed in
+[`docs/environment_variables.md`](docs/environment_variables.md).
 
 ---
 

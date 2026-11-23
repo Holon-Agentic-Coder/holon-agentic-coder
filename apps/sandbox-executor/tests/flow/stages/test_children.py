@@ -338,6 +338,16 @@ class TestChildLoopWithStubbedPipelines:
         )
         assert children == []
 
+    @pytest.mark.parametrize("review_status", [StageStatus.APPROVED, StageStatus.HALTED_FOR_HUMAN])
+    def test_child_at_either_consensus_boundary_status_merges(self, review_status):
+        approved = {**self._READY, "review": halted_review(7, "https://github.com/o/r/pull/7", status=review_status)}
+        res, _ctx, _children = self._run_children(
+            {"slug": "parent"}, self._ROW, child_results=approved, plan_branch=self._ROW["plan_branch"]
+        )
+
+        assert res.status == StageStatus.SUCCESS
+        assert res.payload["children_progress"][0]["status"] == "merged"
+
     def test_a_child_that_is_not_ready_to_merge_or_is_refused_fails_the_stage_naming_it(self):
         skipped = {**self._READY, "review": StageResult(stage=FlowStage.REVIEW, status=StageStatus.SKIPPED)}
         res, _ctx, _children = self._run_children(
@@ -345,7 +355,7 @@ class TestChildLoopWithStubbedPipelines:
         )
         assert res.error == (
             "Execute stage failed: sub-intent 1/1 'first' is not ready to merge into 'I-1-parent/P-2-agent-model/_': "
-            "its Stage 4 did not halt at consensus (status skipped)"
+            "its Stage 4 did not reach consensus approval (status skipped)"
         )
         assert res.payload["children_progress"][0]["status"] == "failed"
 
@@ -487,7 +497,7 @@ class TestChildLoopWithStubbedPipelines:
 
         assert res.status == StageStatus.FAILED
         assert "sub-intent 1/2 'first' is not ready to merge" in (res.error or "")
-        assert "its Stage 4 did not halt at consensus" in (res.error or "")
+        assert "its Stage 4 did not reach consensus approval" in (res.error or "")
         assert [c.intent_data["slug"] for c in children] == ["first"]
         assert getattr(children[0], flag) is True
         assert [e["status"] for e in res.payload["children_progress"]] == ["failed", "pending"]

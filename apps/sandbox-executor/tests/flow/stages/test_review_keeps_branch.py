@@ -54,7 +54,7 @@ def _detach_and_append_a_row(repo_dir: str) -> None:
         ledger.write('{"action_id": "ACT-REV-1"}\n')
 
 
-def _approved_loop(context: FlowContext) -> dict[str, Any]:
+def _approved_loop(context: FlowContext, *, github: Any = None) -> dict[str, Any]:
     _detach_and_append_a_row(context.target_worktree)
     return {
         "consensus": {"approved": True, "status": "approved", "iterations": 1},
@@ -64,7 +64,7 @@ def _approved_loop(context: FlowContext) -> dict[str, Any]:
     }
 
 
-def _crashing_loop(context: FlowContext) -> dict[str, Any]:
+def _crashing_loop(context: FlowContext, *, github: Any = None) -> dict[str, Any]:
     _detach_and_append_a_row(context.target_worktree)
     raise RuntimeError("container dispatch crashed")
 
@@ -99,7 +99,7 @@ def _assert_on_branch_with_the_row_committed(worktree: Path) -> None:
 def test_after_a_review_iteration_the_worktree_is_on_the_execution_branch(flow_worktree: Path) -> None:
     ctx, result, calls = _run_stage(flow_worktree, _approved_loop)
 
-    assert result.status is StageStatus.HALTED_FOR_HUMAN
+    assert result.status is StageStatus.APPROVED
     _assert_on_branch_with_the_row_committed(flow_worktree)
     assert any("Stage 4 review loop left the worktree HEAD detached at" in line for line in ctx.logs)
     assert any(f"re-attached '{EXEC}'" in line for line in ctx.logs)
@@ -122,9 +122,9 @@ def test_a_head_detached_at_the_tip_before_the_stage_is_reattached_not_checked_o
     _git(flow_worktree, "checkout", "-q", "--detach", "HEAD")
     loop = {"consensus": {"approved": True}, "ensemble_verdict": "APPROVED", "reviewers": [clean_reviewer(1)]}
 
-    ctx, result, calls = _run_stage(flow_worktree, lambda _ctx: loop)
+    ctx, result, calls = _run_stage(flow_worktree, lambda _ctx, **_kw: loop)
 
-    assert result.status is StageStatus.HALTED_FOR_HUMAN
+    assert result.status is StageStatus.APPROVED
     assert _git(flow_worktree, "symbolic-ref", "--short", "HEAD") == EXEC
     assert ["checkout", EXEC] not in calls
     assert (ctx.starting_branch, ctx.starting_detached) == (EXEC, False)

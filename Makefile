@@ -363,14 +363,14 @@ check-prerequisites:
 		if [ -z "$$(printf '%s' "$$OPENSSL_VER" | tr -d '[:space:]')" ]; then OPENSSL_VER=$$(printf '%s\n' "$$OPENSSL_OUT" | head -n 1); fi; \
 		if [ "$$OPENSSL_STATUS" -ne 0 ] || [ -z "$$(printf '%s' "$$OPENSSL_OUT" | tr -d '[:space:]')" ]; then \
 			echo "$(COLOR_RED)❌ Unusable: openssl is on PATH but 'openssl version' failed (exit $$OPENSSL_STATUS) or produced no output$(COLOR_RESET)"; \
-			echo "   ca_generator.py cannot mint or read certificates through a build that cannot report its version; reinstall it, or repair the PATH entry shadowing it."; \
+			echo "   launcher/root_ca.py cannot mint or read certificates through a build that cannot report its version; reinstall it, or repair the PATH entry shadowing it."; \
 			ERRORS=$$((ERRORS + 1)); \
 		else \
 			echo "$(COLOR_GREEN)✅ Found: $$OPENSSL_VER$(COLOR_RESET)"; \
 			case "$$OPENSSL_VER" in \
 				OpenSSL*) : ;; \
 				*) \
-					echo "$(COLOR_YELLOW)⚠️  Not OpenSSL: the Root CA step needs it (ca_generator.py passes -addext, which LibreSSL does not support), so this build may still fail.$(COLOR_RESET)"; \
+					echo "$(COLOR_YELLOW)⚠️  Not OpenSSL: the Root CA step needs it (launcher/root_ca_openssl.py passes -addext, which LibreSSL does not support), so this build may still fail.$(COLOR_RESET)"; \
 					echo "   Install real OpenSSL — on macOS: brew install openssl; on Debian/Ubuntu: sudo apt install openssl.$(COLOR_RESET)"; \
 					WARNINGS=$$((WARNINGS + 1)); \
 					;; \
@@ -378,7 +378,7 @@ check-prerequisites:
 		fi; \
 	else \
 		echo "$(COLOR_RED)❌ Missing: openssl not found$(COLOR_RESET)"; \
-		echo "   OpenSSL is required for token reduction Root CA generation (ca_generator.py)."; \
+		echo "   OpenSSL is required for token reduction Root CA generation (launcher/root_ca.py)."; \
 		if [ "$(DETECTED_OS)" = "Darwin" ]; then \
 			echo "   Install OpenSSL via: brew install openssl"; \
 		else \

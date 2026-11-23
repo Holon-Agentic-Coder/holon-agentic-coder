@@ -257,8 +257,8 @@ This ensures:
 - **Isolation:** Agents cannot interfere with each other.
 - **Consistency:** Single source of truth (ledger + KB).
 
-Work items live in the repository's own beads (`bd`) issue tracker; see [`issue_tracking.md`](issue_tracking.md) for the
-agent workflow and the narrow issue-data write exception.
+Work items live in this repository's GitHub Issues, referenced as `#N`; see [`issue_tracking.md`](issue_tracking.md) for
+the labels, `Closes #N` and how issue text reaches role agents through the intent.
 
 ### Agent-to-human communication (via review packages)
 
@@ -531,6 +531,6 @@ runner that cannot start makes the reviewer `FAILED`, so the review fails closed
 - [`ledger_schema.md`](ledger_schema.md) — agent events logged to ledger
 - [`kb_schema.md`](kb_schema.md) — agent proposals to KB
 - [`metrics.md`](metrics.md) — metrics agents use for decision-making
-- [`issue_tracking.md`](issue_tracking.md) — the beads (`bd`) issue tracker agents use for work items
+- [`issue_tracking.md`](issue_tracking.md) — how work items are tracked in GitHub Issues
 - [`git_flow.md`](git_flow.md) — git discipline agents must follow
 - [`architecture.md`](architecture.md) — how agents fit into system architecture

@@ -1,21 +1,23 @@
 """The conflict gate: no approved consensus is posted, and Stage 5 never starts, on a CONFLICTING or DIRTY head.
 
-The mergeability probe is scripted, the post is a mock, and the merge either is a recorded fake or runs real git
-against a local bare ``origin``; no test reaches GitHub.
+The mergeability reads and the post are answered by an injected ``FakeGitHub``, and the merge either is a recorded
+fake or runs real git against a local bare ``origin``; no test reaches GitHub.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from sandbox_executor.flow import FlowContext, StageResult, StageStatus, run_review_loop
 from sandbox_executor.flow.review import conflict_gate
 from sandbox_executor.flow.review.posting import PostRequest, post_review_consensus
 from sandbox_executor.flow.stages import calibrate
+from sandbox_executor.review_report import _mergeability_word
 
+from tests.flow.github.fake_github import view_for
 from tests.flow.helpers import _git
 from tests.ledger_conflict_repos import BRANCH, LEDGER, build_conflicting_repos, refuse_test_runs
 from tests.review_fakes import FakeEnsemble, clean_reviewer
@@ -60,16 +62,12 @@ def test_only_an_explicit_conflict_or_dirty_state_counts(probe, expected):
 def test_loop_never_posts_an_approval_when_the_head_turns_conflicting_before_the_post(tmp_path, monkeypatch):
     merge = _RecordingMerge(CODE_CONFLICT)
     monkeypatch.setattr(conflict_gate, "_merge_and_push", merge)
-    probes = [dict(_CLEAN_MERGE), dict(CONFLICTING)]
     stubs = _LoopStubs()
+    # The iteration reads a clean head; every later read (the pre-post conflict gate) sees it conflicting.
+    stubs.github.views = [view_for(_CLEAN_MERGE)]
+    stubs.github.standing_view = view_for(CONFLICTING)
     ctx = _ensemble_ctx(tmp_path)
-    with (
-        stubs,
-        patch(
-            "sandbox_executor.flow.review.loop.check_pr_mergeability",
-            side_effect=lambda *a, **k: dict(probes.pop(0) if len(probes) > 1 else probes[0]),
-        ),
-    ):
+    with stubs:
         res = run_review_loop(
             ctx,
             target=EXEC_TARGET,
@@ -78,7 +76,7 @@ def test_loop_never_posts_an_approval_when_the_head_turns_conflicting_before_the
             run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
         )
 
-    stubs.post.assert_not_called()
+    assert stubs.posts() == []
     assert merge.calls == [(str(tmp_path), EXEC_TARGET, "main")]
     assert res["consensus"]["approved"] is False
     assert res["consensus"]["status"] == "conflict_gate"
@@ -101,7 +99,7 @@ def test_a_clean_head_posts_the_approval_unchanged(tmp_path, monkeypatch):
         )
 
     assert res["consensus"]["approved"] is True
-    assert stubs.post.call_count == 1
+    assert len(stubs.posts()) == 1
     assert merge.calls == []
     assert not _rows(tmp_path, "ACT-GATE")
 
@@ -367,3 +365,192 @@ def test_the_gate_never_pushes_an_unpushed_code_commit(tmp_path):
 
     assert conflict_gate._local_commits_unpushed(ctx, BRANCH)
     assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") == before
+
+
+# --- Approval carry-over across a mechanical target merge ------------------------------------------------------------
+
+GREEN_AT_A = {"total": 2, "passed": 2, "failed": 0, "pending": 0, "measured": True}
+
+
+def _approved_at_head(work: Path, origin: Path, *, fingerprinted: bool = True) -> dict:
+    """The consensus data of an approval of origin's head commit, fingerprinted against origin/main."""
+    from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of
+
+    head = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
+    _git(work, "fetch", "-q", "origin")
+    data = {"approved": True, "base_branch": "main", "target_commit": head, "ci_checks": dict(GREEN_AT_A)}
+    data["mergeability"] = {"merge_state_status": "CLEAN", "mergeable": "MERGEABLE", "is_dirty": False}  # A's probe.
+    if fingerprinted:
+        data["approval_fingerprint"] = approval_fingerprint_of(str(work), head, "main")
+        assert str(data["approval_fingerprint"]).startswith("pf1:")
+    return data
+
+
+def _post_through_gate(work: Path, exec_file: Path, consensus_data: dict) -> tuple[str | None, dict, MagicMock]:
+    post = MagicMock(return_value={"dual_posted": True, "official_review": {"success": True}})
+    request = PostRequest(
+        repo_dir=str(work),
+        review_target=BRANCH,
+        consensus_data=consensus_data,
+        proxy_env=None,
+        reviewers=[],
+        title="t",
+        iteration=1,
+        mergeability_probe=lambda *a, **k: dict(CONFLICTING),
+    )
+    ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
+    post_error, posting_res = post_review_consensus(post, ctx, str(exec_file), request)
+    return post_error, posting_res, post
+
+
+def _gate_rows(exec_file: Path) -> list[dict]:
+    return [json.loads(line) for line in exec_file.read_text(encoding="utf-8").splitlines()]
+
+
+def test_a_ledger_only_merge_with_the_same_fingerprint_carries_the_approval_over(tmp_path, monkeypatch):
+    refuse_test_runs(monkeypatch)
+    origin, work = build_conflicting_repos(tmp_path)
+    consensus_data = _approved_at_head(work, origin)
+    approved = consensus_data["target_commit"]
+    exec_file = tmp_path / "gate-ledger.jsonl"
+    earlier = json.dumps({"action_id": "ACT-EARLIER-1", "execution_id": "E-0"}) + "\n"
+    exec_file.write_text(earlier, encoding="utf-8")
+
+    post_error, posting_res, post = _post_through_gate(work, exec_file, consensus_data)
+
+    merged = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
+    assert merged != approved
+    assert post_error is None and posting_res["dual_posted"] is True
+    post.assert_called_once()
+    assert post.call_args.kwargs["consensus_data"] is consensus_data
+    assert consensus_data["target_commit"] == approved  # The SHA the reviewers saw is never rewritten.
+    assert (consensus_data["carried_from"], consensus_data["carried_to"]) == (approved, merged)
+    assert consensus_data["ci_checks"]["measured"] is False  # Never A's green CI for B.
+    assert _mergeability_word(consensus_data) == "UNMEASURED"  # Nor A's clean probe for the unprobed B.
+    text = exec_file.read_text(encoding="utf-8")
+    assert text.startswith(earlier)  # Append-only: earlier bytes are a prefix.
+    rows = _gate_rows(exec_file)
+    assert [row["action_id"].split("-")[1] for row in rows] == ["EARLIER", "CARRY", "POST"]
+    carry = rows[1]
+    assert (carry["approved_head"], carry["merged_head"]) == (approved, merged)
+    assert carry["approval_fingerprint"] == consensus_data["approval_fingerprint"]
+    assert carry["outcome"] == "success" and "approval-carry-over" in carry["labels"]
+
+
+def test_the_carry_over_is_logged_with_both_shas_and_the_fingerprint(tmp_path, monkeypatch):
+    refuse_test_runs(monkeypatch)
+    origin, work = build_conflicting_repos(tmp_path)
+    consensus_data = _approved_at_head(work, origin)
+    logged: list[str] = []
+    monkeypatch.setattr(FlowContext, "log", lambda self, message: logged.append(message))
+
+    _post_through_gate(work, tmp_path / "gate-ledger.jsonl", consensus_data)
+
+    (line,) = [message for message in logged if "approval carried over" in message]
+    assert consensus_data["target_commit"] in line and consensus_data["carried_to"] in line
+    assert consensus_data["approval_fingerprint"] in line and "CI on" in line
+
+
+def test_a_pr_own_change_after_approval_blocks_the_merged_head(tmp_path, monkeypatch):
+    refuse_test_runs(monkeypatch)
+    origin, work = build_conflicting_repos(tmp_path)
+    consensus_data = _approved_at_head(work, origin)
+    _git(work, "checkout", "-q", BRANCH)
+    (work / "src/feature.py").write_text("x = 2\n", encoding="utf-8")
+    _git(work, "commit", "-q", "-am", "post-approval push")
+    _git(work, "push", "-q", "origin", f"HEAD:refs/heads/{BRANCH}")
+    exec_file = tmp_path / "gate-ledger.jsonl"
+
+    post_error, posting_res, post = _post_through_gate(work, exec_file, consensus_data)
+
+    post.assert_not_called()
+    assert post_error == f"conflict gate: {conflict_gate.MERGED_REASON}"
+    assert posting_res["conflict_gate"]["merged"] is True
+    assert "carried_to" not in consensus_data
+    assert [row["action_id"].split("-")[1] for row in _gate_rows(exec_file)] == ["GATE"]
+
+
+def test_a_code_conflict_still_aborts_with_a_fingerprinted_approval(tmp_path, monkeypatch):
+    refuse_test_runs(monkeypatch)
+    origin, work = build_conflicting_repos(tmp_path)
+    consensus_data = _approved_at_head(work, origin)
+    before = consensus_data["target_commit"]
+    (work / "src").mkdir(exist_ok=True)
+    (work / "src/feature.py").write_text("x = 3\n", encoding="utf-8")
+    _git(work, "add", "src/feature.py")
+    _git(work, "commit", "-q", "-m", "main edits the PR's file")
+    _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    exec_file = tmp_path / "gate-ledger.jsonl"
+
+    post_error, _, post = _post_through_gate(work, exec_file, consensus_data)
+
+    post.assert_not_called()
+    assert post_error is not None and "code conflicts with main in:" in post_error and "src/feature.py" in post_error
+    assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") == before
+    assert [row["action_id"].split("-")[1] for row in _gate_rows(exec_file)] == ["GATE"]
+
+
+def test_a_legacy_approval_without_a_fingerprint_is_blocked_as_before(tmp_path, monkeypatch):
+    refuse_test_runs(monkeypatch)
+    origin, work = build_conflicting_repos(tmp_path)
+    consensus_data = _approved_at_head(work, origin, fingerprinted=False)
+    exec_file = tmp_path / "gate-ledger.jsonl"
+
+    post_error, _, post = _post_through_gate(work, exec_file, consensus_data)
+
+    post.assert_not_called()
+    assert post_error == f"conflict gate: {conflict_gate.MERGED_REASON}"
+    assert [row["action_id"].split("-")[1] for row in _gate_rows(exec_file)] == ["GATE"]
+
+
+def test_a_carried_approval_ends_the_loop_approved_without_another_reviewer_dispatch(tmp_path, monkeypatch):
+    merged_head = "b" * 40
+    merge = _RecordingMerge(conflict_gate._MergeOutcome(merged=True, ledger_only=True, head_sha=merged_head))
+    monkeypatch.setattr(conflict_gate, "_merge_and_push", merge)
+    same_change = MagicMock(return_value="pf1:" + "c" * 40)
+    monkeypatch.setattr("sandbox_executor.flow.review.loop.approval_fingerprint_of", same_change)
+    monkeypatch.setattr("sandbox_executor.flow.review.approval_carry_over.approval_fingerprint_of", same_change)
+    ensemble = FakeEnsemble([clean_reviewer(1)])
+    stubs = _LoopStubs()
+    stubs.github.views = [view_for(_CLEAN_MERGE)]
+    stubs.github.standing_view = view_for(CONFLICTING)
+    ctx = _ensemble_ctx(tmp_path)
+    with stubs:
+        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=3, ensemble_size=1, run_ensemble_fn=ensemble)
+
+    assert len(ensemble.calls) == 1  # The single approving pass; no reviewer is dispatched again.
+    assert len(stubs.posts()) == 1
+    assert res["consensus"]["approved"] is True and res["consensus"]["status"] == "approved"
+    approved = res["consensus"]["target_commit"]  # The SHA the reviewers saw, never the merged head.
+    assert approved and approved != merged_head
+    assert (res["consensus"]["carried_from"], res["consensus"]["carried_to"]) == (approved, merged_head)
+    assert res["consensus"]["approval_fingerprint"] == "pf1:" + "c" * 40
+    (carry,) = _rows(tmp_path, "ACT-CARRY")
+    assert carry["merged_head"] == merged_head
+    assert not _rows(tmp_path, "ACT-GATE")
+
+
+def test_stage5_records_one_carry_over_row_for_a_merge_that_kept_the_change(tmp_path, monkeypatch):
+    refuse_test_runs(monkeypatch)
+    origin, work = build_conflicting_repos(tmp_path)
+    consensus_data = _approved_at_head(work, origin)
+    _git(work, "checkout", "-q", BRANCH)
+    monkeypatch.setattr(conflict_gate.stage_conflicts, "check_pr_mergeability", lambda *a, **k: dict(CONFLICTING))
+    ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
+    ctx.stage_results["review"] = StageResult(
+        stage=calibrate.FlowStage.REVIEW, status=StageStatus.APPROVED, payload={"consensus": dict(consensus_data)}
+    )
+    ledger = work / LEDGER
+    before = ledger.read_text(encoding="utf-8")
+
+    assert conflict_gate._stage5_conflict_gate(ctx) is None
+
+    merged = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
+    after = ledger.read_text(encoding="utf-8")
+    assert after.startswith(_git(work, "show", f"{merged}:{LEDGER}"))  # Appended after the merged rows only.
+    (carry,) = [json.loads(line) for line in after.splitlines() if "ACT-CARRY-" in line]
+    assert (carry["approved_head"], carry["merged_head"]) == (consensus_data["target_commit"], merged)
+    assert len(after.splitlines()) == len(_git(work, "show", f"{merged}:{LEDGER}").splitlines()) + 1
+    consensus = ctx.stage_results["review"].payload["consensus"]
+    assert consensus["target_commit"] == consensus_data["target_commit"] and consensus["carried_to"] == merged
+    assert before != after

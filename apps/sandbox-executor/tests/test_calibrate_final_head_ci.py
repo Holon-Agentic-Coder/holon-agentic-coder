@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from sandbox_executor.flow import FlowContext, StageStatus
+from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.github import ci_final_head
 from sandbox_executor.flow.github.ci_failure_detail import gh_detail_lookup, parse_run_id
 from sandbox_executor.flow.github.ci_final_head import (
@@ -16,7 +17,12 @@ from sandbox_executor.flow.github.ci_final_head import (
     format_final_head_ci,
 )
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy
+from sandbox_executor.flow.review.consensus_withdrawal import WithdrawalSeams
+from sandbox_executor.flow.review.merged_head_gate import MergedHeadSeams
+from sandbox_executor.flow.review_restart import stage5_merged_head_gate
 from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
+
+from tests.flow.github.fake_github import FakeGitHub
 
 BRANCH = "I-1-x/P-2-y/E-3-z/_"
 GATE = "CI Timing Gate (Check <= 5 min)"
@@ -250,3 +256,129 @@ def test_failure_does_not_end_the_wait_while_other_checks_are_pending(tmp_path: 
     assert record["state"] == "failed"
     assert record["failed_checks"] == ["lint", "unit"]
     assert fakes.sleeps
+
+
+# --- the merged-head CI gate runs before any calibration commit is pushed --------------------------------------------
+
+APPROVED = "a" * 40
+MERGED = "b" * 40
+
+
+def _approved_ctx(tmp_path: Path) -> FlowContext:
+    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True, exist_ok=True)
+    ctx = _ctx(tmp_path)
+    ctx.target_worktree = str(tmp_path)
+    consensus = {"approved": True, "target_commit": APPROVED, "pr_number": 7}
+    checks = {"checks": [{"name": "unit", "bucket": "pass", "link": "https://x/actions/runs/5/job/1"}]}
+    ctx.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW,
+        status=StageStatus.APPROVED,
+        payload={"consensus": consensus, "posting": {"dual_posted": True}, "ci_checks": checks},
+    )
+    return ctx
+
+
+def _run_gated_stage(tmp_path: Path, head: str, conclusion: str) -> tuple[FlowContext, object, MagicMock, list[str]]:
+    ctx = _approved_ctx(tmp_path)
+    probed: list[str] = []
+    comments: list[str] = []
+
+    def probe(sha: str) -> list[dict]:
+        probed.append(sha)
+        return [{"check_run_id": 1, "name": "unit", "status": "completed", "conclusion": conclusion, "run_id": "9"}]
+
+    seams = MergedHeadSeams(
+        policy=CiWaitPolicy(60.0, clock=lambda: 0.0, sleep=lambda _s: None),
+        probe=probe,
+        registration_timeout=0,
+        head_reader=lambda: head,
+        bookkeeping_move=lambda _a, _h: False,
+        withdrawal=WithdrawalSeams(lister=lambda _pr: list(comments), poster=lambda _t, b: comments.append(b) or True),
+    )
+    report = MagicMock(calibrated_branch=BRANCH + "calibrated")
+    report.to_dict.return_value = {}
+    ok = SimpleNamespace(returncode=0, stdout="", stderr="")
+    green = {"state": "success", "failed_checks": [], "ci_wait": None}
+    publish = MagicMock(return_value=True)
+    with (
+        patch("sandbox_executor.flow.stages.calibrate._stage5_conflict_gate", return_value=None),
+        patch(
+            "sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate",
+            functools.partial(stage5_merged_head_gate, seams=seams),
+        ),
+        patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
+        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=report),
+        patch("sandbox_executor.flow.stages.calibrate.run_git", return_value=ok),
+        patch("sandbox_executor.flow.calibrate_sync.run_git", return_value=ok),
+        patch("sandbox_executor.flow.stages.calibrate.publish_calibration", publish),
+        patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", return_value=green),
+        patch("sandbox_executor.flow.stages.calibrate.reverify_and_report", return_value={"verdict": "green"}),
+    ):
+        result = run_calibrate_stage(ctx)
+    return ctx, result, publish, probed
+
+
+def test_an_unmerged_green_head_calibrates_as_before_without_an_extra_probe(tmp_path: Path) -> None:
+    ctx, result, publish, probed = _run_gated_stage(tmp_path, APPROVED, "failure")
+    assert result.status == StageStatus.SUCCESS
+    publish.assert_called_once()
+    assert probed == []
+    assert result.payload["merged_head_ci"]["state"] == "stage4"
+    assert any(f"Stage 5 relies on Stage 4 CI for head {APPROVED}" in line for line in ctx.logs)
+
+
+def test_a_red_merged_head_pushes_no_calibration_and_asks_for_a_review_restart(tmp_path: Path) -> None:
+    ctx, result, publish, probed = _run_gated_stage(tmp_path, MERGED, "failure")
+    publish.assert_not_called()
+    assert probed == [MERGED]
+    assert result.status == StageStatus.SKIPPED
+    assert result.payload["review_restart"] is True
+    assert result.payload["merged_head_ci"]["head_sha"] == MERGED
+    assert result.payload["consensus_withdrawal"]["merged_head"] == MERGED
+    assert ctx.review_iterations_done == 0
+
+
+def test_a_green_merged_head_is_calibrated_and_the_record_names_its_runs(tmp_path: Path) -> None:
+    ctx, result, publish, probed = _run_gated_stage(tmp_path, MERGED, "success")
+    publish.assert_called_once()
+    assert probed == [MERGED]
+    assert result.status == StageStatus.SUCCESS
+    record = result.payload["merged_head_ci"]
+    assert (record["state"], record["head_sha"]) == ("passed", MERGED)
+    assert record["runs"] == [{"run_id": "9", "check_run_id": 1, "name": "unit", "conclusion": "success"}]
+    assert any(MERGED in line and "unit (run 9, check run 1): success" in line for line in ctx.logs)
+
+
+# --- an approval carried over a target merge is not a bookkeeping move ------------------------------------------------
+
+
+def _carried_timing_check(tmp_path: Path, changed: list[str]) -> ci_final_head._FinalHeadCheck:
+    """A final-head check whose approval of A carried over by fingerprint to the merged head B."""
+    approved, merged = "a" * 40, "b" * 40
+    context = FlowContext(repo_dir=str(tmp_path), execution_branch=BRANCH, agent="a", model="m")
+    consensus = {
+        "approved": True,
+        "target_commit": approved,
+        "approval_fingerprint": "pf1:" + "f" * 40,
+        "carried_from": approved,
+        "carried_to": merged,
+    }
+    context.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW, status=StageStatus.APPROVED, payload={"consensus": consensus}
+    )
+    seams = ci_final_head.FinalHeadSeams(pr_head=lambda: merged, changed_paths=lambda _a, _h: list(changed))
+    return ci_final_head._FinalHeadCheck(context, str(tmp_path), BRANCH, seams, FakeGitHub())
+
+
+def test_a_fingerprint_carried_merged_head_is_not_eligible_for_the_automatic_timing_rerun(tmp_path: Path) -> None:
+    record = {"failed_checks": ["unit"], "failed_details": [{"name": "unit", "timing_gate": True}]}
+    ci_status = {"checks": [{"name": "unit", "link": "https://github.com/o/r/actions/runs/77/job/1"}]}
+    merged_main = ["src/from_main.py", "holon-knowledge/ledger/executions.jsonl"]
+
+    carried = _carried_timing_check(tmp_path, merged_main)
+    bookkeeping = _carried_timing_check(tmp_path, ["holon-knowledge/ledger/executions.jsonl"])
+
+    # ci_final_head stays bookkeeping-only: a merge of main is not a bookkeeping move, even when the approval carried.
+    assert ci_final_head._eligible_run_ids(carried, record, ci_status) is None
+    assert ci_final_head._eligible_run_ids(bookkeeping, record, ci_status) == ["77"]  # The positive control.

@@ -206,6 +206,42 @@ def test_approved_report_follows_the_template_shape():
     assert body.endswith(CLOSING_NOTICE)
 
 
+FINGERPRINT = "pf1:0123456789abcdef0123456789abcdef01234567"
+CARRIED_TO = "def5678def5678def5678def5678def5678def56"
+
+
+def _stamp_line(body: str) -> str:
+    return next(line for line in body.splitlines() if line.startswith("**Covers head**"))
+
+
+def test_approval_stamp_without_a_fingerprint_is_unchanged():
+    body = build_review_consensus_report("/nonexistent", "42", _approved(), approved_reviewers())
+
+    assert _stamp_line(body) == f"**Covers head** `{COMMIT}`; CI at that commit: 2 of 2 checks passed."
+
+
+def test_approval_stamp_names_the_head_the_fingerprint_and_the_ci_result():
+    consensus = _approved(approval_fingerprint=FINGERPRINT)
+    body = build_review_consensus_report("/nonexistent", "42", consensus, approved_reviewers())
+
+    assert _stamp_line(body) == (
+        f"**Covers head** `{COMMIT}`; change fingerprint `pf1:0123456789ab`; CI at that commit: 2 of 2 checks passed."
+    )
+
+
+def test_carried_approval_stamp_names_both_heads_and_never_the_old_heads_ci():
+    not_measured = {"measured": False, "reason": "CI on merged head not yet measured"}
+    consensus = _approved(
+        approval_fingerprint=FINGERPRINT, carried_from=COMMIT, carried_to=CARRIED_TO, ci_checks=not_measured
+    )
+    body = build_review_consensus_report("/nonexistent", "42", consensus, approved_reviewers())
+
+    assert _stamp_line(body) == (
+        "**Covers head** `def5678`; change fingerprint `pf1:0123456789ab`; carried over from "
+        f"`{COMMIT}` (same change); CI at that commit: not measured."
+    )
+
+
 def test_evaluation_paragraph_names_commit_base_counts_ci_and_mergeability():
     body = _report(changes_reviewers(), title="Widget fix")
     paragraph = body.split("\n\n")[1]

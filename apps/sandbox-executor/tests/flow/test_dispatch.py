@@ -22,7 +22,9 @@ from sandbox_executor.flow import (
     run_plan_stage,
     save_checkpoint,
 )
+from sandbox_executor.launcher.coherence import FlowProxyChoice
 
+from tests.flow.github.fake_github import FakeGitHub
 from tests.flow.helpers import (
     FakeRoleAgents,
     _append_jsonl,
@@ -34,6 +36,8 @@ from tests.flow.helpers import (
     stage4_halts_at_consensus,
 )
 from tests.flow.lookup_patch import patch_lookup_sites
+
+_NO_PROXY = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
 
 
 class TestFlowRoleDispatch:
@@ -453,6 +457,7 @@ class TestFlowRoleDispatch:
         ctx = _dispatch_context(host, agents)
         real_run = subprocess.run
         gh_calls: list[list[str]] = []
+        github = FakeGitHub()
 
         def fake_run(cmd, *args, **kwargs):
             if isinstance(cmd, list) and cmd and cmd[0] == "gh":
@@ -463,7 +468,7 @@ class TestFlowRoleDispatch:
         with (
             patch("shutil.which", return_value="/usr/bin/gh"),
             patch("subprocess.run", side_effect=fake_run),
-            patch("sandbox_executor.flow.review.loop.create_or_update_pr") as mock_pr,
+            patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github),
         ):
             results = PipelineEngine(ctx).run()
 
@@ -472,7 +477,7 @@ class TestFlowRoleDispatch:
         assert results["execute"].payload["status"] == "failed"
         assert results["execute"].payload["superseding_row_recorded"] is True
         assert "review" not in results
-        mock_pr.assert_not_called()
+        assert "open_or_update" not in github.methods()
         assert not any(call[:3] == ["gh", "pr", "create"] for call in gh_calls)
 
         rows = _ledger_rows(host, f"origin/{ctx.execution_branch}", "executions.jsonl")
@@ -640,19 +645,25 @@ class TestFlowRoleDispatch:
         assert _git(host, "rev-parse", f"refs/heads/{branch}") == _git(host, "rev-parse", f"origin/{branch}")
         assert not any("Warning" in line for line in ctx.logs)
 
-    def test_flow_auto_detects_token_reduction_but_manual_commands_require_opt_in(self, monkeypatch):
-        """Documented limit of the equivalence guarantee: only 'holon flow' auto-detects holon-coherence."""
+    def test_flow_attaches_a_detected_proxy_but_manual_commands_require_opt_in(self, monkeypatch):
+        """Documented limit of the equivalence guarantee: only 'holon flow' attaches to a detected running proxy.
+
+        Detection never asks for a spawned sidecar: the flow dispatches ``proxy_attach=True`` with
+        ``token_reduce=False``, so both paths spawn only on an explicit opt-in.
+        """
         from sandbox_executor import flow as flow_module
 
         monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
         monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
         monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
         monkeypatch.setenv("HOLON_MODEL", "gemini-3.8-flash-medium")
-        with patch("sandbox_executor.cli.detect_holon_coherence", return_value=True):
+        detected = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=True)
+        with patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=detected):
             dispatcher = MagicMock(return_value=0)
             ctx = FlowContext(repo_dir=".", dispatcher=dispatcher)
             flow_module._dispatch_role(ctx, "planner", ["I-1-x/_"])
-            assert dispatcher.call_args.kwargs["token_reduce"] is True
+            assert dispatcher.call_args.kwargs["token_reduce"] is False
+            assert dispatcher.call_args.kwargs["proxy_attach"] is True
 
             with (
                 patch("sandbox_executor.cli.dispatch_role_agent", return_value=0) as mock_dispatch,
@@ -725,11 +736,11 @@ class TestFlowRoleDispatch:
         assert results["execute"].status == StageStatus.SUCCESS
         dispatcher.assert_not_called()
 
-    def test_default_dispatcher_is_cli_dispatch_role_agent(self, flow_repos, tmp_path):
+    def test_default_dispatcher_is_launcher_dispatch_role_agent(self, flow_repos, tmp_path):
         host, origin = flow_repos
         agents = FakeRoleAgents(tmp_path, origin)
         ctx = _dispatch_context(host, None)
-        with patch("sandbox_executor.cli.dispatch_role_agent", side_effect=agents) as mock_dispatch:
+        with patch("sandbox_executor.launcher.role_dispatch.dispatch_role_agent", side_effect=agents) as mock_dispatch:
             res = run_intent_stage(ctx)
         assert res.status == StageStatus.SUCCESS
         mock_dispatch.assert_called_once()
@@ -771,8 +782,8 @@ class TestFlowDispatchMergeInteractions:
 
         with (
             patch("sandbox_executor.cli.run_preflight_probe", order.probe),
-            patch("sandbox_executor.cli.dispatch_role_agent", order.dispatch),
-            patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
+            patch("sandbox_executor.launcher.role_dispatch.dispatch_role_agent", order.dispatch),
+            patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY),
             patch("sys.argv", ["holon", "flow", str(intent_file), "--target-worktree", str(host)]),
             pytest.raises(SystemExit),
         ):

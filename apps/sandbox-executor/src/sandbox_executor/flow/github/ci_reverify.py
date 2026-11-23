@@ -1,7 +1,8 @@
 """Stage 5's verdict on the head it published: green, red or unverified, and which head the approval covered.
 
 Only ``green`` (or nothing pushed) lets Stage 5 end as a success; ``red`` blocks it and ``unverified`` is reported as
-not verified, never as ready to merge. Merging stays with the human maintainer.
+not verified, never as ready to merge. Merging stays with the human maintainer. Whether the approval still covers a
+head is :mod:`sandbox_executor.flow.review.approval_coverage`.
 """
 
 from __future__ import annotations
@@ -27,10 +28,14 @@ def _same_commit(first: str | None, second: str | None) -> bool:
     return bool(a and b) and (a.startswith(b) or b.startswith(a))
 
 
+def _consensus_of(context: FlowContext) -> Mapping[str, Any]:
+    review = context.stage_results.get("review")
+    return (review.payload.get("consensus") if review else None) or {}
+
+
 def approved_head_of(context: FlowContext) -> str | None:
     """The commit the Stage 4 approval covered, or None when no approval recorded one."""
-    review = context.stage_results.get("review")
-    consensus = (review.payload.get("consensus") if review else None) or {}
+    consensus = _consensus_of(context)
     commit = str(consensus.get("target_commit") or "").strip()
     return commit if consensus.get("approved") and commit and commit != "HEAD" else None
 
@@ -55,7 +60,15 @@ def _timing_rerun_clause(record: Mapping[str, Any]) -> str:
     return " after one automatic rerun of the timing gate" if note.get("attempted") else ""
 
 
-def _report(verdict: str, record: Mapping[str, Any], final_head: str | None, moved: bool | None) -> str:
+def _moved_clause(moved: bool | None, carried: bool) -> str:
+    """How a green report ends: whether the head moved after approval, and whether the approval carried over."""
+    if not moved:
+        return "."
+    carry = ", which carried over by PR-own fingerprint" if carried else ""
+    return f"; the head moved after approval{carry}."
+
+
+def _report(verdict: str, record: Mapping[str, Any], final_head: str | None, moved: bool | None, carried: bool) -> str:
     head = short_sha(final_head)
     rerun = _timing_rerun_clause(record)
     if verdict == RED:
@@ -64,12 +77,18 @@ def _report(verdict: str, record: Mapping[str, Any], final_head: str | None, mov
     if verdict == UNVERIFIED:
         return f"CI on final head {head} is not verified ({record.get('reason') or 'no result'}). Not merge-ready."
     if verdict == GREEN:
-        return f"CI is green on final head {head}{rerun}" + ("; the head moved after approval." if moved else ".")
+        return f"CI is green on final head {head}{rerun}" + _moved_clause(moved, carried)
     return "CI was not re-verified: nothing was pushed."
 
 
-def reverify_final_head(record: Mapping[str, Any], approved_head: str | None, final_head: str | None) -> dict[str, Any]:
-    """Map a final-head CI record to the Stage 5 verdict, naming the approved and final heads and whether it moved."""
+def reverify_final_head(
+    record: Mapping[str, Any], approved_head: str | None, final_head: str | None, carried: bool = False
+) -> dict[str, Any]:
+    """Map a final-head CI record to the Stage 5 verdict, naming the approved and final heads and whether it moved.
+
+    ``carried`` says the approval was carried over a target-branch merge by PR-own fingerprint; only a green report
+    on a moved head names it, and it never changes the verdict.
+    """
     verdict = _VERDICT_BY_STATE.get(str(record.get("state")), UNVERIFIED)
     moved = None if not (approved_head and final_head) else not _same_commit(approved_head, final_head)
     return {
@@ -79,7 +98,8 @@ def reverify_final_head(record: Mapping[str, Any], approved_head: str | None, fi
         "head_moved": moved,
         "failed_details": _failed_details(record) if verdict == RED else [],
         "timing_rerun": record.get("timing_rerun"),
-        "report": _report(verdict, record, final_head, moved),
+        "approval_carried_over": bool(carried and moved),
+        "report": _report(verdict, record, final_head, moved, carried),
     }
 
 
@@ -98,7 +118,9 @@ def blocked_error(reverified: Mapping[str, Any]) -> str:
 
 def reverify_and_report(context: FlowContext, repo_dir: str, record: Mapping[str, Any], pushed: bool) -> dict[str, Any]:
     """Re-verify the published head, log the verdict and, on red, post the once-per-head approval invalidation."""
-    reverified = reverify_final_head(record, approved_head_of(context), published_head_of(repo_dir) if pushed else None)
+    carried = bool(_consensus_of(context).get("carried_to"))
+    final_head = published_head_of(repo_dir) if pushed else None
+    reverified = reverify_final_head(record, approved_head_of(context), final_head, carried)
     context.log(f"Stage 5 re-verification: {reverified['report']}")
     if reverified["verdict"] == RED:
         reverified["invalidation"] = invalidate_approval(context, reverified)

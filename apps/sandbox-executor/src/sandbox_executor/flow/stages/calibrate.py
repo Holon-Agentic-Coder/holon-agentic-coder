@@ -13,11 +13,13 @@ from typing import Any
 from sandbox_executor.calibration import (
     LEDGER_EXECUTIONS_REL,
     CalibrationFormatError,
+    CalibrationSelfCheckError,
     calibration_commit_env,
     format_calibration_report,
     record_calibration_action,
     run_calibrate,
 )
+from sandbox_executor.calibration_self_check import FALLBACK_REPORT_MARKER
 from sandbox_executor.flow.calibrate_promotion import _commit_stage5_promoted_artifacts
 from sandbox_executor.flow.calibrate_sync import (
     CalibrationSyncError,
@@ -34,6 +36,7 @@ from sandbox_executor.flow.github.ci_reverify import RED, blocked_error, reverif
 from sandbox_executor.flow.ledger_warning import _warn_ledger_failure
 from sandbox_executor.flow.review.conflict_gate import _stage5_conflict_gate
 from sandbox_executor.flow.review.records import _bounded_error_context
+from sandbox_executor.flow.review_restart import stage5_merged_head_gate
 from sandbox_executor.flow.stage5 import Stage5Steps, run_stage5
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.review import _checkout_execution_branch
@@ -105,9 +108,16 @@ def stage5_steps(
 
 
 def run_calibrate_stage(context: FlowContext) -> StageResult:
-    """Execute Stage 5 unless the conflict gate refuses the head, then return the worktree to its starting branch."""
+    """Execute Stage 5 unless the conflict gate or the merged-head CI gate stops it, then restore the starting branch.
+
+    The merged-head CI gate runs after the conflict gate's merge and before any calibration commit is pushed.
+    """
     try:
-        return _stage5_conflict_gate(context) or _calibrate_execution_branch(context)
+        refused = _stage5_conflict_gate(context)
+        if refused is not None:
+            return refused
+        stopped, merged_head_ci = stage5_merged_head_gate(context)
+        return stopped or _calibrate_execution_branch(context, merged_head_ci)
     finally:
         restore_starting_branch(context)
 
@@ -126,7 +136,7 @@ def _fallback_report(context: FlowContext, exc: Exception, calibrated_created: b
     fallback_report_written = not os.path.exists(report_path)
     if fallback_report_written:
         with open(report_path, "w", encoding="utf-8") as f:
-            f.write(f"# Calibration Report for {plan_id}\n\nFallback calibration generated.\n")
+            f.write(f"# Calibration Report for {plan_id}\n\n{FALLBACK_REPORT_MARKER}\n")
     try:
         format_calibration_report(report_rel, repo_dir)
     except Exception as fmt_exc:
@@ -173,12 +183,40 @@ def _prepare_execution_branch(context: FlowContext, start_time: str) -> tuple[St
     return None, start_sha, calibrated_created
 
 
-def _calibrate_execution_branch(context: FlowContext) -> StageResult:
+def _fail_closed(
+    context: FlowContext,
+    start_time: str,
+    calibrated_created: bool,
+    exc: CalibrationFormatError | CalibrationSelfCheckError,
+) -> StageResult:
+    """FAILED for a report that failed the Prettier check or its self-check: nothing is committed, pushed or
+    fast-forwarded, and the checkpoint stays at CALIBRATE."""
+    discard_empty_calibrated_branch(context, calibrated_created)
+    if isinstance(exc, CalibrationSelfCheckError):
+        return _stage_failure(
+            context,
+            FlowStage.CALIBRATE,
+            start_time,
+            f"Calibrate stage failed: the calibration report self-check found {', '.join(exc.conditions)}, "
+            "so nothing was committed or pushed.",
+            self_check_conditions=list(exc.conditions),
+        )
+    return _stage_failure(
+        context,
+        FlowStage.CALIBRATE,
+        start_time,
+        "Calibrate stage failed: the calibration report did not pass the repository Prettier check, "
+        f"so nothing was committed or pushed. {redact_agent_secrets(str(exc))}",
+    )
+
+
+def _calibrate_execution_branch(context: FlowContext, merged_head_ci: dict[str, Any] | None = None) -> StageResult:
     """Execute Stage 5: Post-Execution Calibration.
 
     Runs the shared Stage 5 core (``flow.stage5.run_stage5``) on the execution branch: the calibration report, the
     execution reconciliation and the knowledge/wisdom promotion, each committed on the /calibrated branch. Then
-    publishes the /calibrated branch and checks the final head's CI.
+    publishes the /calibrated branch and checks the final head's CI. ``merged_head_ci`` is the record of the CI Stage 5
+    relied on before calibrating (see :func:`sandbox_executor.flow.review_restart.stage5_merged_head_gate`).
     Operates unattended: applies conservative calibrated updates automatically.
     """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -207,16 +245,8 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:
         outcome = run_stage5(context, stage5_steps(on_calibrate_error), verdict)
     except LedgerRewriteError:
         raise
-    except CalibrationFormatError as e:
-        # Fail closed: the report and ledger stay uncommitted and nothing is pushed or fast-forwarded.
-        discard_empty_calibrated_branch(context, calibrated_created)
-        return _stage_failure(
-            context,
-            FlowStage.CALIBRATE,
-            start_time,
-            "Calibrate stage failed: the calibration report did not pass the repository Prettier check, "
-            f"so nothing was committed or pushed. {redact_agent_secrets(str(e))}",
-        )
+    except (CalibrationFormatError, CalibrationSelfCheckError) as e:
+        return _fail_closed(context, start_time, calibrated_created, e)
     report_dict = outcome.report_dict
     calibration_succeeded = outcome.calibration_succeeded
     promoted_candidates = outcome.promoted_candidates
@@ -259,6 +289,7 @@ def _calibrate_execution_branch(context: FlowContext) -> StageResult:
             "calibration_report": report_dict,
             "promoted_candidates": promoted_candidates,
             "stage5_reconciliation": outcome.reconciliation,
+            "merged_head_ci": merged_head_ci,
             "final_head_ci": final_head_ci,
             "ci_verdict": reverified,
         },

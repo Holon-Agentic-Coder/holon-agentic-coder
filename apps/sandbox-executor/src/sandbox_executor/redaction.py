@@ -294,6 +294,7 @@ _CREDENTIAL_ENV_NAMES: tuple[str, ...] = (
     "HOLON_AGENT_KEY",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "ANTHROPIC_API_KEY",
+    "HOLON_AGENT_OAUTH_TOKEN",
 )
 
 # Environment variables whose literal values `redact_env_literals` sweeps by default (the ledger and

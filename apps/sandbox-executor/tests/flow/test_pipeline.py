@@ -103,8 +103,8 @@ class TestFlowStages:
     def test_stage4_review_human_only_merge_halt(self, tmp_path):
         """CRITICAL INVARIANT TEST: human-only PR merging rule.
 
-        Ensures autonomous review loop halts unconditionally with HALTED_FOR_HUMAN
-        upon reaching consensus approval, and strictly NEVER executes a git merge to main.
+        Ensures autonomous review loop completes with APPROVED upon reaching
+        consensus approval and strictly NEVER executes a git merge to main.
         """
         ctx = FlowContext(
             repo_dir=str(tmp_path),
@@ -116,7 +116,7 @@ class TestFlowStages:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
-            payload={"test_pass_rate": 1.0, "exit_code": 0},
+            payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
         )
 
         # The empty-diff guard allows the PR: only an allowed diff can reach consensus.
@@ -125,7 +125,6 @@ class TestFlowStages:
                 "sandbox_executor.flow.stage_conflicts.run_git", "sandbox_executor.flow.stages.review.run_git"
             ) as mock_git,
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
-            patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
             _review_loop_gh_stubs(),
         ):
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 5 insertions(+)\n")
@@ -136,8 +135,8 @@ class TestFlowStages:
                 args = call[0][0]
                 assert "merge" not in args, f"HUMAN-ONLY MERGE RULE VIOLATED: merge invoked with args {args}"
 
-        assert res.status == StageStatus.HALTED_FOR_HUMAN
-        assert res.payload["halted_for_human"] is True
+        assert res.status == StageStatus.APPROVED
+        assert (res.payload["halted_for_human"], res.payload["approved"]) == (False, True)
         assert res.payload["human_merge_gate_enforced"] is True
         assert res.payload["consensus"]["approved"] is True
         assert "holon review approve" in res.payload["human_approval_command"]
@@ -185,7 +184,7 @@ class TestFlowStages:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.FAILED,
-            payload={"test_pass_rate": 0.0, "exit_code": 1},
+            payload={"head_sha": "stage3-head", "test_pass_rate": 0.0, "exit_code": 1},
         )
         res = run_review_stage(ctx)
         assert res.status == StageStatus.FAILED
@@ -828,7 +827,7 @@ class TestStageBudgets:
     def test_review_iteration_ceiling_stops_the_loop(self, tmp_path):
         ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-y/E-3-z/_", dry_run=True)
         ctx.stage_results["execute"] = StageResult(
-            stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 0.0, "exit_code": 1}
+            stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"head_sha": "stage3-head", "exit_code": 1}
         )
         with patch_lookup_sites(
             "sandbox_executor.flow.git_refs.run_git", "sandbox_executor.flow.github.pr.run_git"

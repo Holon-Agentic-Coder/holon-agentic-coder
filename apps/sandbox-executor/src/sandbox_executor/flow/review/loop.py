@@ -6,7 +6,6 @@ import dataclasses
 import functools
 import logging
 import os
-import shutil
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -19,6 +18,7 @@ from sandbox_executor.flow.calibrate_rerun import review_calibration_freshness
 from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.git_refs import _resolve_review_commit
+from sandbox_executor.flow.github.adapter import GitHubAdapter
 from sandbox_executor.flow.github.ci import (
     _ci_green,
     _extract_failed_ci_check_names,
@@ -28,6 +28,7 @@ from sandbox_executor.flow.github.ci import (
 )
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, CiWaitResult, settle_pending_ci
 from sandbox_executor.flow.github.pr import check_pr_mergeability, create_or_update_pr, format_review_git_trailers
+from sandbox_executor.flow.github.pr_head import PR_HEAD_TIMEOUT_SECONDS
 from sandbox_executor.flow.github.review_post import post_pr_review_consensus
 from sandbox_executor.flow.ledger_warning import _warn_ledger_failure
 from sandbox_executor.flow.review.adjudication import (
@@ -36,6 +37,7 @@ from sandbox_executor.flow.review.adjudication import (
     _filter_adjudicated_findings,
     record_nit_rejections,
 )
+from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of, approval_record
 from sandbox_executor.flow.review.carried_findings import (
     CarriedPass,
     carried_blocker,
@@ -45,7 +47,7 @@ from sandbox_executor.flow.review.carried_findings import (
     serialize_open,
     undisposed,
 )
-from sandbox_executor.flow.review.ci_evidence import apply_local_test_evidence
+from sandbox_executor.flow.review.ci_evidence import _apply_guarded_test_evidence
 from sandbox_executor.flow.review.ci_outcome import gate_ci_flags
 from sandbox_executor.flow.review.ci_timing_finding import gh_timing_seams, timing_gate_finding
 from sandbox_executor.flow.review.ensemble import (
@@ -65,6 +67,7 @@ from sandbox_executor.flow.review.posting import (
     log_skipped_post,
     post_review_consensus,
 )
+from sandbox_executor.flow.review.proxy_env import review_proxy_env
 from sandbox_executor.flow.review.records import (
     _bounded_error_context,
     _record_infrastructure_findings,
@@ -139,6 +142,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     skip_post: bool = False,
     first_iteration: int = 1,
     ledger_file: str | None = None,
+    github: GitHubAdapter | None = None,
 ) -> dict[str, Any]:
     """Execute the native Stage 4 review loop with the real reviewer ensemble.
 
@@ -148,7 +152,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     the resolver. Only when all reviewers approve cleanly with zero open findings and mergeability is clean does the
     loop wait for CI checks to settle as a post-review safety gate before calling ``decide_consensus()``. Reviewers run
     only inside a sandbox: on the host the loop refuses before any PR, iteration or post. It enforces the
-    human-only PR merge rule by halting at approval without merging.
+    human-only PR merge rule by completing with approved consensus without merging to main.
 
     Args:
         context: Active FlowContext carrying repository and pipeline state.
@@ -169,6 +173,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             fields, finding IDs, trailers and the posted ``Iteration {n}`` heading carry it, while ``max_iterations``
             alone caps how many passes run. The engine passes its own continued count here.
         ledger_file: Where this pass appends ledger rows (default: the worktree's holon-knowledge ledger).
+        github: The stage's GitHub adapter, used for every PR, CI, mergeability and posting call (default: one built
+            here over the worktree with the token-reduction proxy environment); tests inject a ``FakeGitHub``.
 
     The empty-diff guard runs for every target whatever ``auto_pr`` is: an empty diff is rejected and an
     unverifiable one fails, before any PR, iteration or post. A dry run never measures anything, so it reports
@@ -191,20 +197,12 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     target_branch = context.intent_data.get("target_branch", "main")
     effective_dry_run = bool(dry_run or context.dry_run)
 
-    proxy_env: dict[str, str] = {}
-    if context.token_reduce:
-        try:
-            from sandbox_executor.cli import get_host_proxy_envs
+    proxy_env = dict(github.proxy_env or {}) if github is not None else review_proxy_env(context)
+    github = github or GitHubAdapter(repo_dir, proxy_env)
 
-            proxy_env = get_host_proxy_envs()
-            if proxy_env:
-                context.log("Token reduction proxy active for review loop.")
-        except Exception as exc:
-            context.log(f"Warning: Failed to configure token reduction proxy in review loop: {exc}.")
-            proxy_env = {}
-
-    test_gate = _ReviewTestGate(context, repo_dir)
-    test_pass_rate, tests_failed = test_gate.stage_3_evidence
+    pr_head = functools.partial(github.pr_head_sha, timeout=PR_HEAD_TIMEOUT_SECONDS)
+    test_gate = _ReviewTestGate(context, repo_dir, target=review_target, pr_head=pr_head, proxy_env=proxy_env)
+    _, tests_failed = test_gate.stage_3_evidence
     iteration = first_label - 1
     consensus_reached = False
     last_ci_status: dict[str, Any] = {}
@@ -260,7 +258,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             pr_allowed = False
             pr_res = {"success": False, "skipped": True, "reason": "review_refused"}
     pr_text = _semantic_pr_text(context)
-    if pr_allowed and auto_pr and not effective_dry_run and shutil.which("gh"):
+    if pr_allowed and auto_pr and not effective_dry_run and github.available:
         try:
             pr_res = create_or_update_pr(
                 repo_dir=repo_dir,
@@ -269,6 +267,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 title=pr_text[0],
                 body=pr_text[1],
                 proxy_env=proxy_env,
+                github=github,
             )
             if pr_res.get("success"):
                 context.log(f"[Review Loop] PR {pr_res.get('action')} successful for '{review_target}'.")
@@ -277,7 +276,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
     iteration_budget_seconds = load_budgets(os.environ).stage_seconds("review_iteration")
     ci_wait_budget_seconds = resolve_review_ci_wait_seconds(os.environ) if ci_wait_budget is None else ci_wait_budget
-    probe_ci = functools.partial(probe_ci_checks, repo_dir, review_target, proxy_env=proxy_env)
+    probe_ci = functools.partial(probe_ci_checks, repo_dir, review_target, proxy_env=proxy_env, github=github)
     ci_policy = CiWaitPolicy(ci_wait_budget_seconds, ci_poll_interval, clock=clock, sleep=sleep)
     ci_wait: CiWaitResult | None = None  # The first wait that spent its budget; recorded once, never waited out again.
     iteration_summaries: list[str] = []
@@ -328,13 +327,15 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         boundary = "" if iteration >= 1 else f"before iteration {iteration + 1}"
         last_commit = None if effective_dry_run else _commit_pending_ledger_rows(context, iteration, boundary)
         resolved_target, prev_head_sha = _advance_past_ledger_commit(resolved_target, prev_head_sha, last_commit)
+        if last_commit is not None:
+            test_gate.advance_ledger_head(last_commit.parent, last_commit.sha)
         iteration += 1
         context.log(f"[Review Loop] Starting review iteration {iteration}/{last_label} for target '{review_target}'.")
         iteration_timer = StageTimer("review", iteration_budget_seconds, clock=clock)
 
         # 1. Mergeability inspection
         last_mergeability = check_pr_mergeability(
-            repo_dir, review_target, target_branch=target_branch, proxy_env=proxy_env
+            repo_dir, review_target, target_branch=target_branch, proxy_env=proxy_env, github=github
         )
         is_dirty = bool(last_mergeability.get("is_dirty"))
         # MISSING_REF means mergeability cannot be evaluated: neither clean nor a conflict.
@@ -371,21 +372,21 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         # 3. CI status inspection: post-review gate or fast-path probe
         if reviewer_objected:
             # Fast path on reviewer findings: probe CI once without waiting on pending checks.
-            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-            apply_local_test_evidence(last_ci_status, tests_failed, test_pass_rate, effective_dry_run, False)
+            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env, github=github)
+            tests_failed, _ = _apply_guarded_test_evidence(
+                test_gate, last_ci_status, effective_dry_run, infra_error is not None or missing_ref, False
+            )
             ci_wait = ci_wait if last_ci_status.get("pending", 0) else None  # Never keep a stale wait record.
 
             # Include FIND-CI only if CI has already failed or local tests failed; pending checks are omitted.
-            ci_failed = last_ci_status.get("failed", 0) > 0 or (
-                last_ci_status.get("source") == "local_tests" and tests_failed
-            )
+            ci_failed = last_ci_status.get("failed", 0) > 0 or tests_failed
             ci_finding = ci_failed
             ensemble_verdict = decide_returned_consensus(
                 reviewers, ensemble_size, None if missing_ref else not is_dirty, False if ci_failed else None, blockers
             )
         elif not is_dirty and not missing_ref and not effective_dry_run and infra_error is None:
             # Post-review CI gate on clean review: wait for CI registration and pending checks to settle.
-            if pr_allowed and test_pass_rate is None and not tests_failed and shutil.which("gh"):
+            if pr_allowed and test_gate.needs_ci_registration() and github.available:
                 reg_timeout = iteration_timer.remaining_capped(resolve_ci_registration_timeout(ci_registration_timeout))
                 _wait_for_ci_registration(
                     context,
@@ -396,22 +397,24 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                     ci_poll_interval,
                     clock=clock,
                     sleep=sleep,
+                    probe=probe_ci,
                 )
 
-            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-            gate_rate, tests_failed = test_gate.evidence(last_ci_status)
-            tests_not_measured |= apply_local_test_evidence(last_ci_status, tests_failed, gate_rate, False, True)
+            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env, github=github)
             last_ci_status, waited = settle_pending_ci(context, probe_ci, last_ci_status, ci_policy, bool(ci_wait))
             iteration_timer.credit(waited.waited_seconds if waited else 0.0)  # The wait has its own budget.
             ci_wait = waited if waited and waited.exhausted else (ci_wait if last_ci_status.get("pending", 0) else None)
+            tests_failed, unmeasured = _apply_guarded_test_evidence(test_gate, last_ci_status, False, False, True)
+            tests_not_measured |= unmeasured
             ci_green, ci_finding = gate_ci_flags(last_ci_status, tests_failed)
             ensemble_verdict = decide_returned_consensus(reviewers, ensemble_size, True, ci_green, blockers)
         else:
             # Fallback for dry runs, dirty mergeability, or infra failures: probe once without waiting.
-            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
-            tests_not_measured |= apply_local_test_evidence(
-                last_ci_status, tests_failed, test_pass_rate, effective_dry_run, True
+            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env, github=github)
+            tests_failed, unmeasured = _apply_guarded_test_evidence(
+                test_gate, last_ci_status, effective_dry_run, infra_error is not None or missing_ref, True
             )
+            tests_not_measured |= unmeasured
             ci_wait = ci_wait if last_ci_status.get("pending", 0) else None  # Never keep a stale wait record.
 
             ci_finding = not last_ci_status.get("all_passed", False) or tests_failed
@@ -627,6 +630,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if rejected_now:
             suppressed_ledger_records += recorder.record(iteration, rejected_now)
             record_nit_rejections(rejected_history, rejected_now)
+            test_gate.accept_resolver_evidence(current_sha, rejected_now)
 
         head_changed = bool(resolver_outcome.pushed)
         if applied_now or (head_changed and pending_dispositions):
@@ -688,6 +692,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         logger.debug("Could not resolve the reviewed commit for %s: %s", review_target, exc)
 
     review_data = dataclasses.replace(collect_review_data(reviewers), dispositions=tuple(all_dispositions))
+    base_branch = (resolved_target.base_branch if resolved_target else None) or target_branch
+    fingerprint = approval_fingerprint_of(repo_dir, current_commit_sha, base_branch) if consensus_reached else None
     consensus_data = {
         "approved": consensus_reached,
         "status": consensus_status,
@@ -709,9 +715,10 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "review_data": review_data_summary(review_data, all_dispositions),
         "dispositions": [serialize_finding_disposition(d) for d in all_dispositions],
         "no_convergence": no_convergence,
-        "base_branch": (resolved_target.base_branch if resolved_target else None) or target_branch,
+        "base_branch": base_branch,
         "intent_data": context.intent_data,
         "target_commit": current_commit_sha,
+        "approval_fingerprint": fingerprint,
         "pr_url": (
             pr_res.get("pr_url") or (pr_res.get("output") if str(pr_res.get("output", "")).startswith("http") else None)
         ),
@@ -740,7 +747,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         suppressed_ledger_records += 1
     if decision.post:
         post_error, posting_res = post_review_consensus(
-            post_pr_review_consensus,
+            functools.partial(post_pr_review_consensus, github=github),
             context,
             exec_file,
             PostRequest(
@@ -751,7 +758,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 reviewers=reviewers,
                 title=resolve_report_title(context.intent_data, resolved_target, review_target),
                 iteration=iteration,
-                mergeability_probe=check_pr_mergeability,
+                mergeability_probe=functools.partial(check_pr_mergeability, github=github),
             ),
         )
         if post_error:  # A conflict-gate block is not a posting failure: the approval is re-earned on the merged head.
@@ -789,10 +796,10 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "agent": context.agent,
         "agent_version": "1.4.0",
         "model": context.model,
-        "status": "halted_for_human" if consensus_reached else "failed",
+        "status": "approved" if consensus_reached else "failed",
         "entry_type": "summary",
         "summary": (
-            f"Review Loop reached consensus approval after {iteration} iteration(s) (human-only merge safety halt)"
+            f"Review Loop reached consensus approval after {iteration} iteration(s); PR ready for maintainer merge"
             if consensus_reached
             else f"Review Loop halted without consensus after {iteration} iteration(s)"
             + (f": {'; '.join(halt_reasons)}" if halt_reasons else "")
@@ -850,6 +857,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
     loop_result: dict[str, Any] = {
         "target": review_target,
+        "approved": consensus_reached,
+        "ready_for_maintainer_merge": consensus_reached,
         "consensus": {
             "approved": consensus_reached,
             "score": approval_score,
@@ -857,8 +866,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             "passes": passes,
             "max_review_iterations": last_label,
             "status": consensus_status,
+            **approval_record(consensus_data),  # Stage 5 compares the head it calibrates with the approved one.
         },
-        "halted_for_human": consensus_reached,
+        "halted_for_human": False,
         "human_merge_gate_enforced": consensus_reached,
         "human_approval_command": f"holon review approve {review_target}",
         "mergeability": last_mergeability,
@@ -906,8 +916,10 @@ def _review_window(context: FlowContext) -> tuple[int, int]:
     return done + 1, context.max_review_iterations - done
 
 
-def _run_engine_review_loop(context: FlowContext) -> dict[str, Any]:
+def _run_engine_review_loop(context: FlowContext, *, github: GitHubAdapter | None = None) -> dict[str, Any]:
     """Run the remaining engine passes of Stage 4, continuing the checkpointed count; dispatch nothing when spent.
+
+    ``github`` is the stage's adapter, handed to every pass of the loop.
 
     The engine's checkpoint save after Stage 4 persists the updated count, whatever the stage outcome.
     """
@@ -929,6 +941,7 @@ def _run_engine_review_loop(context: FlowContext) -> dict[str, Any]:
         ensemble_size=context.review_ensemble_size,
         dry_run=context.dry_run,
         first_iteration=first_label,
+        github=github,
     )
     context.review_iterations_done = max(context.review_iterations_done, int(loop_res.get("total_iterations") or 0))
     if "open_findings" in loop_res:  # Saved with the checkpoint after Stage 4, so a resume resolves them first.

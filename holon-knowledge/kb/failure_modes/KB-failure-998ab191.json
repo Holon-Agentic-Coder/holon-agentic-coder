@@ -1,0 +1,33 @@
+{
+  "kb_id": "KB-failure-998ab191",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T01:43:21.185359+00:00",
+  "updated_ts": "2026-11-23T01:43:21.185359+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-1795257883-07dd5bca",
+      "ACT-1795257875-619d9ef1",
+      "ACT-1795256469-b0715e6f",
+      "ACT-1795256453-2ae8d311"
+    ],
+    "success_count": 0,
+    "failure_count": 4,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "test",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795246931-review-approved-and-fresh-tests/P-1795246949-CLA-CO5.5/E-1795253469-ANA-G3.8FM/_",
+    "description": "Reproduced failure across 4 executions with identical context.",
+    "action": "Review Loop executed for I-1795246931-review-approved-and-fresh-tests/P-1795246949-CLA-CO5.5/E-1795253469-ANA-G3.8FM/_",
+    "symptoms": [
+      "Consensus failed: findings=[]; not approved: reviewer 1 final verdict FAILED, reviewer 2 final verdict FAILED; final verdicts: Reviewer 1 FAILED (0/0/0); Reviewer 2 FAILED (0/0/0); Reviewer 3 APPROVED (0/0/0)"
+    ]
+  }
+}

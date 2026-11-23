@@ -7,10 +7,12 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Mapping
 from typing import Any
 
 from sandbox_executor import cli
 from sandbox_executor.cli.commands._flow_resume import (
+    apply_proxy_switches,
     apply_run_switches,
     discover_resume_checkpoint,
     resolve_resumed_runner,
@@ -27,7 +29,8 @@ from sandbox_executor.cli.options import (
     _TOKEN_REDUCE_HELP,
     add_target_worktree_option,
 )
-from sandbox_executor.flow import FlowContext, FlowStage, format_final_head_ci
+from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, format_final_head_ci
+from sandbox_executor.launcher import coherence
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 
 logger = logging.getLogger(__name__)
@@ -239,8 +242,14 @@ def _update_flow_context(
     args: argparse.Namespace,
     flow_agent: str,
     flow_model: str,
-    effective_token_reduce: bool,
+    proxy_choice: coherence.FlowProxyChoice,
 ) -> None:
+    """Apply this run's flags to a resumed context.
+
+    The proxy routing is overwritten from this run's ``proxy_choice``, so an opt-out wins and a stale checkpointed
+    ``token_reduce=True`` or ``mitm_web=True`` no longer spawns a sidecar: a resumed run must repeat
+    ``--token-reduce`` or ``--mitm-web`` to keep one, and each dropped opt-in is logged.
+    """
     target_worktree = getattr(args, "target_worktree", None)
     if target_worktree and target_worktree != ".":
         context.target_worktree = target_worktree
@@ -252,10 +261,13 @@ def _update_flow_context(
         context.max_review_iterations = args.max_review_iterations
     if args.ensemble_size is not None:
         context.review_ensemble_size = args.ensemble_size
-    if effective_token_reduce:
-        context.token_reduce = True
-    if args.mitm_web:
-        context.mitm_web = True
+    apply_proxy_switches(
+        context,
+        proxy_choice.spawn_sidecar,
+        proxy_choice.attach_running_proxy,
+        bool(args.mitm_web) and proxy_choice.spawn_sidecar,
+        (bool(args.token_reduce or args.mitm_web), bool(args.mitm_web)),
+    )
 
 
 def _build_flow_context(
@@ -265,7 +277,7 @@ def _build_flow_context(
     flow_agent: str,
     flow_model: str,
 ) -> Any:
-    effective_token_reduce = cli.detect_holon_coherence(bool(args.token_reduce or args.mitm_web))
+    proxy_choice = coherence.resolve_flow_proxy_choice(bool(args.token_reduce or args.mitm_web))
     target_worktree = getattr(args, "target_worktree", ".")
     kw = {"target_worktree": target_worktree}
     if context is None:
@@ -279,12 +291,13 @@ def _build_flow_context(
             auto_calibrate=not args.skip_calibrate,
             max_review_iterations=args.max_review_iterations,
             review_ensemble_size=args.ensemble_size or DEFAULT_ENSEMBLE_SIZE,
-            token_reduce=effective_token_reduce,
-            mitm_web=args.mitm_web,
+            token_reduce=proxy_choice.spawn_sidecar,
+            proxy_attach=proxy_choice.attach_running_proxy,
+            mitm_web=bool(args.mitm_web) and proxy_choice.spawn_sidecar,
             allow_overlap=bool(getattr(args, "allow_overlap", False)),
             **kw,
         )
-    _update_flow_context(context, args, flow_agent, flow_model, effective_token_reduce)
+    _update_flow_context(context, args, flow_agent, flow_model, proxy_choice)
     return context
 
 
@@ -326,11 +339,26 @@ def _report_flow_summary(context: Any, result_dict: dict[str, Any], json_output:
         print(line)
     if decomposition_lines:
         print()
-    review_res = context.stage_results.get("review")
-    if review_res and review_res.payload.get("halted_for_human"):
+    _report_review_outcome(context.stage_results.get("review"))
+
+
+def _report_review_outcome(review_res: StageResult | None) -> None:
+    if not review_res:
+        return
+    raw_consensus = review_res.payload.get("consensus")
+    consensus = raw_consensus if isinstance(raw_consensus, Mapping) else {}
+    is_halt = review_res.status == StageStatus.HALTED_FOR_HUMAN or bool(review_res.payload.get("halted_for_human"))
+    is_approved = review_res.status == StageStatus.APPROVED or (is_halt and bool(consensus.get("approved")))
+    if is_approved:
+        print(
+            "[REVIEW APPROVED] Review Loop reached consensus approval; "
+            "the PR is ready for the maintainer to merge (the flow never merges to main).\n"
+        )
+    elif is_halt:
         print("[SAFETY HALT] Pipeline safely halted for human review (autonomous merge prohibited).")
-        if review_res.payload.get("human_approval_command"):
-            print(f"To approve manually, run: {review_res.payload['human_approval_command']}\n")
+        cmd = review_res.payload.get("human_approval_command")
+        if cmd:
+            print(f"To approve manually, run: {cmd}\n")
 
 
 def run(args: argparse.Namespace) -> int | None:

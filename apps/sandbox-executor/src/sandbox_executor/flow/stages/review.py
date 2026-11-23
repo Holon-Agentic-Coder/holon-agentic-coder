@@ -1,5 +1,5 @@
-"""Stage 4 (Review Loop): run the review loop on the execution branch and halt at consensus approval,
-strictly enforcing the human-only PR merge rule.
+"""Stage 4 (Review Loop): run the review loop on the execution branch and return APPROVED at consensus,
+preserving human-only merge boundaries without merging to main.
 """
 
 from __future__ import annotations
@@ -13,12 +13,15 @@ from sandbox_executor.calibration import is_metadata_path
 from sandbox_executor.flow.calibrate_sync import record_starting_branch
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure, _test_evidence
+from sandbox_executor.flow.github.adapter import GitHubAdapter
 from sandbox_executor.flow.review.ci_outcome import describe_ci_outcome
 from sandbox_executor.flow.review.ledger_commit import _close_review_stage
 from sandbox_executor.flow.review.loop import _reviewers_objected, _run_engine_review_loop
+from sandbox_executor.flow.review.proxy_env import review_proxy_env
 from sandbox_executor.flow.review.records import render_reviewer_summary_line
 from sandbox_executor.flow.review.verdict import not_approved_verdicts, render_final_verdicts
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
+from sandbox_executor.flow.stages.review_outcome import ReviewOutcomeContext, build_review_stage_outcome
 from sandbox_executor.flow.test_evidence import _test_results_package
 from sandbox_executor.git import run_git
 from sandbox_executor.git_revisions import qualify_branch_revision, revision_args
@@ -72,7 +75,8 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
     """Execute Stage 4: Review Loop.
 
     Evaluates diffs, test logs, and safety invariants. Enforces the human-only PR merge rule:
-    Upon consensus approval, halts unconditionally with status HALTED_FOR_HUMAN and NEVER merges to main.
+    Upon consensus approval returns APPROVED: the PR is left ready for the maintainer to merge;
+    the flow never merges to main.
     Operates unattended: never prompts for interactive review questions.
     """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -150,7 +154,9 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
                 "deletions": deletions,
             }
 
-    loop_res = _run_engine_review_loop(context)
+    # One adapter for the whole stage: every PR, CI, mergeability and posting call of the loop goes through it.
+    github = GitHubAdapter(context.target_worktree, review_proxy_env(context))
+    loop_res = _run_engine_review_loop(context, github=github)
     # The payload reports the engine's configured budget, not the remaining passes of this run.
     consensus_info = {**loop_res.get("consensus", {}), "max_review_iterations": context.max_review_iterations}
 
@@ -160,7 +166,8 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
     merge_status = str(mergeability.get("merge_state_status", "UNKNOWN"))
     mergeable_state = str(mergeability.get("mergeable", "UNKNOWN"))
 
-    proxy_env_active = bool(context.token_reduce)
+    # A spawned sidecar or an attached user-owned proxy both route host-side review traffic.
+    proxy_env_active = bool(context.token_reduce or getattr(context, "proxy_attach", False))
 
     review_package = {
         "intent_branch": context.intent_branch,
@@ -263,34 +270,16 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
         context.stage_results["review"] = result
         return result
 
-    human_instruction = f"holon review approve {context.intent_branch or 'intent'}"
-    halt_reason = (
-        "Dry-run review loop finished; consensus not measured and not approved."
-        if dry_run_simulation
-        else f"Review Loop reached consensus approval (final verdicts: {render_final_verdicts(reviewers)})."
+    return build_review_stage_outcome(
+        context,
+        ReviewOutcomeContext(
+            start_time=start_time,
+            end_time=end_time,
+            review_package=review_package,
+            consensus_info=consensus_info,
+            mergeability=mergeability,
+            loop_res=loop_res,
+            reviewers=reviewers,
+            dry_run_simulation=dry_run_simulation,
+        ),
     )
-    context.log(
-        f"[SAFETY HALT] {halt_reason} "
-        "Autonomous merge to main is strictly prohibited. "
-        f"Pipeline halted for human review. To approve manually, run: '{human_instruction}'"
-    )
-
-    result = StageResult(
-        stage=FlowStage.REVIEW,
-        status=StageStatus.HALTED_FOR_HUMAN,
-        start_time=start_time,
-        end_time=end_time,
-        payload={
-            "review_package": review_package,
-            "consensus": consensus_info,
-            "halted_for_human": True,
-            "human_merge_gate_enforced": True,
-            "human_approval_command": human_instruction,
-            "mergeability": mergeability,
-            "posting": loop_res.get("posting"),
-            "pr": loop_res.get("pr"),
-        },
-        error=None,
-    )
-    context.stage_results["review"] = result
-    return result

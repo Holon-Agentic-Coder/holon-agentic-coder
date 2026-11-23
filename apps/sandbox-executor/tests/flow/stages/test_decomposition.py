@@ -20,6 +20,7 @@ from sandbox_executor.flow import (
     run_intent_stage,
     run_plan_stage,
 )
+from sandbox_executor.launcher.coherence import FlowProxyChoice
 
 from tests.flow.decomposition_fakes import decomposed_flow, parent_ctx
 from tests.flow.helpers import (
@@ -31,6 +32,8 @@ from tests.flow.helpers import (
     stage4_halts_at_consensus,
 )
 from tests.flow.lookup_patch import patch_lookup_sites
+
+_NO_PROXY = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
 
 
 @pytest.mark.usefixtures("no_origin_reconcile")
@@ -506,6 +509,7 @@ class TestEntropyBudgetHandoffInFlow:
             "dry_run": True,
             "auto_calibrate": False,
             "token_reduce": True,
+            "proxy_attach": True,
             "skip_push": True,
             "skip_calibrate": True,
             "max_review_iterations": 7,
@@ -528,6 +532,7 @@ class TestEntropyBudgetHandoffInFlow:
             review_iterations_done=3,
             admission={"state": "admitted"},
             carried_review_findings=[{"id": "R1-F1", "severity": "nit", "summary": "A parent nit."}],
+            merged_head_restart_allowed=False,
             **parent_values,
         )
         child_intent = {"slug": "child", "goal": "Add the parser"}
@@ -548,13 +553,15 @@ class TestEntropyBudgetHandoffInFlow:
             "admission": None,  # A child intent runs its own Stage 3 admission.
             "carried_review_findings": [],  # The parent's open findings belong to the parent's review.
             "checkpoint_path": None,  # A child intent checkpoints at its own default path.
+            "merged_head_restart_allowed": True,  # A child intent's Stage 5 has its own restart budget.
         }
         defaults = FlowContext(token_reduce=False)
         for name, value in parent_values.items():
             assert getattr(defaults, name) != value, f"{name}: parent value must differ from the default"
 
-        # Pin proxy detection to the opposite of the parent's token_reduce so a dropped copy cannot pass by detection.
-        with patch("sandbox_executor.cli.detect_holon_coherence", return_value=False):
+        # Pin proxy detection to the opposite of the parent's token_reduce and proxy_attach so a dropped copy cannot
+        # pass by detection.
+        with patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY):
             child = flow_module._child_context(parent, child_intent)
 
         assert set(expected) == {f.name for f in dataclasses.fields(FlowContext)}, "classify every new field"
@@ -606,7 +613,7 @@ class TestEntropyBudgetHandoffInFlow:
         execute_body = source.split("def run_execute_stage(", 1)[1].split("\ndef ", 1)[0]
         assert "HALTED_FOR_HUMAN" not in execute_body
         assert source.count("status=StageStatus.HALTED_FOR_HUMAN") == 1
-        review_body = source.split("def _run_review_stage_body(", 1)[1].split("\ndef ", 1)[0]
+        review_body = source.split("def build_review_stage_outcome(", 1)[1].split("\ndef ", 1)[0]
         assert "status=StageStatus.HALTED_FOR_HUMAN" in review_body
 
     def test_child_branch_that_cannot_fit_fails_stage_three_with_the_named_limit(self, tmp_path):

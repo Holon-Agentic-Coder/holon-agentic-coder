@@ -22,13 +22,16 @@ from synthetic throughput data, and the tests that exercise them use injected cl
 | Intent stage          | 10 min  | `HOLON_STAGE_BUDGET_INTENT_MINUTES`           | The intent stage.                                                   |
 | Plan stage            | 35 min  | `HOLON_STAGE_BUDGET_PLAN_MINUTES`             | The plan stage, including the resume turn.                          |
 | Execute stage         | 45 min  | `HOLON_STAGE_BUDGET_EXECUTE_MINUTES`          | The execute stage, including the executor container's own test run. |
-| Review iteration      | 15 min  | `HOLON_STAGE_BUDGET_REVIEW_ITERATION_MINUTES` | Each review-loop iteration.                                         |
+| Review iteration      | 120 min | `HOLON_STAGE_BUDGET_REVIEW_ITERATION_MINUTES` | Each review-loop iteration.                                         |
 | Calibration stage     | 10 min  | `HOLON_STAGE_BUDGET_CALIBRATION_MINUTES`      | The calibration stage.                                              |
 | Review CI wait        | 1800 s  | `HOLON_REVIEW_CI_WAIT_SECONDS`                | Waiting for pending CI checks; separate from the review iteration.  |
 | Stage ceiling (exact) | (unset) | `HOLON_STAGE_BUDGET_SECONDS`                  | Replaces every per-stage value above, in seconds.                   |
 
 The turn timeout and every stage variable also accept `unlimited` to remove that ceiling; see
 [Unlimited budgets](#unlimited-budgets).
+
+For every other `HOLON_*` variable, with its type, default and unset or invalid handling, see
+[environment_variables.md](environment_variables.md).
 
 `HOLON_REVIEW_CI_WAIT_SECONDS` is in seconds, not minutes, and is not part of `HOLON_STAGE_BUDGET_SECONDS`: the wait
 backs off from 15 s to a 120 s ceiling and ends once no check is pending or one has failed (the Stage 5 final-head check
@@ -275,7 +278,7 @@ unlimited stage prints `unlimited` in place of the budget, for example `execute:
 
 - The planner and executor entrypoints print the line when they finish (`plan: ok ...`, `execute: failed ...`).
 - `holon flow` logs it for every stage and prints it in the flow summary. The review stage's budget is one review
-  iteration budget per iteration it ran; each iteration also logs `iteration N review: ok (... / 15 min)`. Within an
+  iteration budget per iteration it ran; each iteration also logs `iteration N review: ok (... / 120 min)`. Within an
   iteration, pending GitHub CI checks are re-probed every `CI_REGISTRATION_POLL_SECONDS` (15 s) for at most the rest of
   that iteration's `review_iteration` budget; checks still pending at that deadline count as a CI finding, never a pass.
 - A `holon flow` intent, plan or execute stage that returns after its ceiling is marked failed with an error naming the

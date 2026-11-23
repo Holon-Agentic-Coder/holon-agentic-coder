@@ -54,7 +54,10 @@ def test_publish_fast_forwards_from_the_qualified_calibrated_ref() -> None:
 
 def test_rebuild_inspection_calls_end_with_a_separator() -> None:
     calls, run = recorder(stdout=f"{SHA_B}\n")
-    with patch("sandbox_executor.flow.calibrate_rebuild.run_git", run):
+    with (
+        patch("sandbox_executor.flow.calibrate_rebuild.run_git", run),
+        patch("sandbox_executor.calibration_evaluated_sha.run_git", run),
+    ):
         holds_only_calibration_commits("/repo", SHA_A, SHA_B)
     assert calls[0] == ["rev-list", f"{SHA_A}..{SHA_B}", "--"]
     assert ["rev-list", "--parents", "-n", "1", SHA_B, "--"] in calls

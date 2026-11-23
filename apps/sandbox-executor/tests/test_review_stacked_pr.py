@@ -28,7 +28,10 @@ _PENDING = {**_PASS, "bucket": "pending", "state": "IN_PROGRESS"}
 
 
 class FakeGh:
-    """A ``gh`` stand-in playing a stacked pull request from creation to green checks; other commands run for real."""
+    """A ``gh`` stand-in playing a stacked pull request from creation to green checks and the posted review.
+
+    Other commands run for real.
+    """
 
     def __init__(self, checks_replies: list[tuple[int, list[dict[str, Any]]]], real_run: Callable[..., Any]) -> None:
         """Answer ``gh pr checks`` with ``checks_replies`` in order (the last one repeats)."""
@@ -54,7 +57,9 @@ class FakeGh:
         if verb == ["pr", "view"] and "mergeable" in cmd[-1]:
             return 0, json.dumps({"number": 7, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"})
         if verb == ["pr", "view"]:
-            return 0, json.dumps({"number": 7, "title": "child"})
+            return 0, json.dumps({"number": 7, "title": "child", "headRefOid": "stage3-head"})
+        if verb == ["pr", "review"]:
+            return 0, ""
         if verb == ["pr", "checks"]:
             returncode, checks = (
                 self._checks_replies.pop(0) if len(self._checks_replies) > 1 else self._checks_replies[0]
@@ -118,10 +123,6 @@ def test_review_loop_awaits_reads_and_records_checks_of_a_pull_request_into_a_pa
     with (
         patch("sandbox_executor.review_target.verify_review_diff", side_effect=verified_diff),
         patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"),
-        patch(
-            "sandbox_executor.flow.review.loop.post_pr_review_consensus",
-            return_value={"dual_posted": True, "official_review": {"success": True}},
-        ) as post,
     ):
         res = run_review_loop(
             _stacked_context(tmp_path),
@@ -146,7 +147,7 @@ def test_review_loop_awaits_reads_and_records_checks_of_a_pull_request_into_a_pa
     assert res["mergeability"]["merge_state_status"] == "CLEAN"
     assert res["ci_checks"]["source"] == "github_cli"
     assert res["ci_checks"]["all_passed"] is True
-    assert post.call_count == 1
+    assert len([cmd for cmd in fake_gh.calls if cmd[1:3] == ["pr", "review"]]) == 1
     summaries = [row for row in _ledger_rows(tmp_path) if row.get("entry_type") == "summary"]
     assert [row["ci_checks_summary"]["checks"] for row in summaries] == [[_PASS]]
 
@@ -181,7 +182,7 @@ def stacked_repo(tmp_path: Path) -> Path:
 def test_local_mergeability_of_a_stacked_branch_never_needs_main(
     stacked_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("sandbox_executor.flow.github.pr.shutil.which", lambda name: None)
+    monkeypatch.setattr("sandbox_executor.flow.github.adapter.shutil.which", lambda name: None)
 
     clean = check_pr_mergeability(str(stacked_repo), CHILD_EXECUTION_BRANCH, target_branch=PARENT_BRANCH)
     assert (clean["source"], clean["mergeable"], clean["merge_state_status"]) == ("git_local", "MERGEABLE", "CLEAN")

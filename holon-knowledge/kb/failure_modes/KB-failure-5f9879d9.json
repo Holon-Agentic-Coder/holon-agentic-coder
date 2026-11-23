@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-5f9879d9",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T01:44:59.105122+00:00",
+  "updated_ts": "2026-11-23T01:44:59.105122+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-RES-1795395918-354d806e"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795388455-launcher-breaks-flow-cli-cycle/P-1795392376-CLA-CO5.5/E-1795392749-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 resolver change rejected: pre-push tests failed",
+    "symptoms": [
+      "=========================== short test summary info ============================\nFAILED apps/sandbox-executor/tests/test_turns.py::TestBackgroundCommandOnThisHost::test_backgrounded_sleep_is_named_after_the_runner_exits\n================== 1 failed, 5600 passed, 1 skipped in 42.36s =================="
+    ]
+  }
+}

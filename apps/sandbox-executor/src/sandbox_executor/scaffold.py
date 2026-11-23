@@ -8,6 +8,8 @@ import json
 import os
 import sys
 
+from sandbox_executor.config_env_report import env_example_text
+
 RULESET_PYTHON = """# Holon World Ruleset
 
 This document defines the static coding conventions, runtime constraints, package specifications,
@@ -291,7 +293,8 @@ consensus model and post one short consensus review built only from what the rev
    `sandbox_executor.flow.record_review_action()` (or, without a `FlowContext`, the context-free
    `sandbox_executor.ledger.try_append_action_record(..., preserve_shape=True)`), never by writing to the file directly.
 10. **Human-only merging**: never run `gh pr merge`, enable auto-merge or add the PR to a merge queue. Merging remains
-    with the human maintainer; on consensus approval, halt and request human review.
+    with the human maintainer; on consensus approval, complete with `APPROVED` and leave the PR ready for maintainer
+    merge.
 11. **Resolver discipline**: when the resolver container runs on `CHANGES_REQUESTED`, it adjudicates every finding to
     `applied` or `rejected`, runs `uv run task lint` and `uv run task test` before pushing, commits applied fixes with
     the finding ids in the commit message, and never force-pushes or rewrites history.
@@ -472,9 +475,14 @@ The final lines of a report with no findings:
 ````
 """
 
+# The project layer of the layered configuration (see config_env) may hold secrets, so it is never committed;
+# .env.example stays tracked.
+ENV_GITIGNORE = ".env"
+
 PYTHON_GITIGNORE = [
     ".venv/",
     ".holon-cache/",
+    ENV_GITIGNORE,
     "__pycache__/",
     "*.pyc",
     ".pytest_cache/",
@@ -483,6 +491,7 @@ PYTHON_GITIGNORE = [
 
 GENERIC_GITIGNORE = [
     ".holon-cache/",
+    ENV_GITIGNORE,
 ]
 
 
@@ -605,6 +614,8 @@ def init_project(target_dir: str = ".", template: str = "python", force: bool = 
             (os.path.join(config_dir, "prompts", "planner.template.md"), PLANNER_TEMPLATE),
             (os.path.join(config_dir, "prompts", "executor.template.md"), EXECUTOR_TEMPLATE),
             (os.path.join(config_dir, "prompts", "review_loop.template.md"), REVIEW_LOOP_TEMPLATE),
+            # Commented example only: init never creates .env itself, so no tooling ever writes a secret file.
+            (os.path.join(target_dir, ".env.example"), env_example_text()),
         ]
 
         for path, content in files_to_scaffold:

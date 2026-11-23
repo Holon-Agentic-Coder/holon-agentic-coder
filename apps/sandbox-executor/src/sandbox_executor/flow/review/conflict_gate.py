@@ -4,7 +4,8 @@ The loop probes mergeability once per iteration, so the target branch can move b
 probed ``CONFLICTING`` or ``DIRTY`` (``UNKNOWN`` and ``MISSING_REF`` keep the loop's handling) is never approved or
 calibrated as it stands: the target branch is merged first, in a temporary detached worktree on ``origin/<branch>``.
 Ledger-only conflicts are resolved without a test run (target rows stay a byte prefix, head-only rows follow in
-``created_at`` order) and pushed; the approval must then be re-earned. A code conflict aborts the merge and blocks.
+``created_at`` order) and pushed; the approval is re-earned unless :mod:`.approval_carry_over` finds the PR-own change
+unchanged (Stage 5 still awaits CI on the merged head). A code conflict aborts the merge and blocks.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.pr import format_review_git_trailers
 from sandbox_executor.flow.host_remote import push_commit, remote_error
+from sandbox_executor.flow.review.approval_carry_over import carry_approval_over, record_stage5_carry_over
 from sandbox_executor.flow.review.conflict_merge import _merge_and_push, _MergeOutcome
 from sandbox_executor.flow.review.ledger_commit import (
     _commit_pending_ledger_rows,
@@ -33,7 +35,7 @@ if TYPE_CHECKING:
     from sandbox_executor.flow.review.posting import PostRequest
 
 MergeabilityProbe = Callable[..., dict[str, Any]]
-MERGED_REASON = "target branch merged; approval must be re-earned on the new head"
+MERGED_REASON = "target branch merged; approval must be re-earned on the new head unless its PR-own fingerprint matches"
 UNPUSHED_ROWS_REASON = "pending ledger rows could not be pushed"
 
 
@@ -45,6 +47,7 @@ class _ConflictGateResult:
     merged: bool = False
     ledger_only: bool = False
     blocked_reason: str | None = None
+    merged_head: str = ""
 
 
 def _is_conflicting(mergeability: Mapping[str, Any] | None) -> bool:
@@ -129,7 +132,7 @@ def _gate_conflicting_head(
     outcome = _merge_and_push(context.target_worktree, branch, target_branch, merge.trailers)
     reason = _blocked_reason(outcome, target_branch)
     context.log(f"[Review Loop] Conflict gate on '{branch}': {reason} (no test suite was run).")
-    return _ConflictGateResult(True, outcome.merged, outcome.ledger_only, reason)
+    return _ConflictGateResult(True, outcome.merged, outcome.ledger_only, reason, outcome.head_sha)
 
 
 def _gate_record(review_target: str, gate: _ConflictGateResult) -> dict[str, Any]:
@@ -167,6 +170,8 @@ def _approved_post_gate(
     gate = _gate_conflicting_head(context, branch, target_branch, mergeability, merge)
     if gate.blocked_reason is None:
         return None
+    if gate.merged and carry_approval_over(context, exec_file, request.consensus_data, review_target, gate.merged_head):
+        return None  # The approval stands for the merged head; Stage 5 still waits for its CI.
     record_review_action(context, exec_file, _gate_record(review_target, gate))
     return f"conflict gate: {gate.blocked_reason}", {"posted": False, "conflict_gate": asdict(gate)}
 
@@ -174,8 +179,7 @@ def _approved_post_gate(
 def _stage5_conflict_gate(context: FlowContext) -> StageResult | None:
     """Fail Stage 5 on a conflicting execution head; None lets it start.
 
-    Once the target branch is merged and pushed, Stage 5 proceeds on the new head (its sync levels the local ref with
-    origin). A dry run probes without merging.
+    A merged and pushed target lets Stage 5 proceed on the new head (its sync levels it with origin); a dry run probes.
     """
     if not context.execution_branch:
         return None
@@ -188,6 +192,8 @@ def _stage5_conflict_gate(context: FlowContext) -> StageResult | None:
     )
     merge = None if context.dry_run else _GateMerge(format_commit_trailers("calibration"), iteration, committed)
     gate = _gate_conflicting_head(context, context.execution_branch, target_branch, mergeability, merge)
+    if gate.merged:  # Proceeds either way; the merged-head gate waits for CI on the new head.
+        record_stage5_carry_over(context, target_branch, gate.merged_head)
     if gate.blocked_reason is None or gate.merged:
         return None
     reason = f"Calibrate stage refused: {gate.blocked_reason}"

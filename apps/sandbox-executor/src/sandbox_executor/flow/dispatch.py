@@ -25,15 +25,15 @@ def _test_evidence(exec_result: StageResult | None) -> tuple[float | None, int]:
 
 
 def _get_dispatcher(context: FlowContext) -> Callable[..., int]:
-    """Return the role-agent dispatcher, defaulting lazily to cli.dispatch_role_agent.
+    """Return the role-agent dispatcher, defaulting lazily to launcher.role_dispatch.dispatch_role_agent.
 
-    The import is deferred because cli imports this module at load time.
+    The launcher never imports the flow engine; the import is deferred only to keep importing the flow engine light.
     """
     if context.dispatcher is not None:
         return context.dispatcher
-    from sandbox_executor.cli import dispatch_role_agent
+    from sandbox_executor.launcher import role_dispatch
 
-    return dispatch_role_agent
+    return role_dispatch.dispatch_role_agent
 
 
 def _dispatch_role(
@@ -46,6 +46,7 @@ def _dispatch_role(
 ) -> int:
     """Dispatch one role agent through the same function the per-stage commands use.
 
+    ``proxy_attach`` is forwarded only when set, so dispatchers see the same keywords as before when it is off.
     Non-None ``extra`` keywords are forwarded to the dispatcher; None values are dropped so injected
     dispatchers without those parameters keep working unchanged. The container sees
     ``HOLON_ALLOW_MODULE_BUDGET_CHANGE=1`` (forwarded with the ``HOLON_`` variables) only when the intent carries
@@ -61,6 +62,8 @@ def _dispatch_role(
     }
     if result_file is not None:
         kwargs["result_file"] = result_file
+    if getattr(context, "proxy_attach", False):
+        kwargs["proxy_attach"] = True
     kwargs.update({key: value for key, value in extra.items() if value is not None})
     with module_budget_flag(context.intent_data):
         return int(dispatcher(role, context.agent, context.model, positional_args, **kwargs))

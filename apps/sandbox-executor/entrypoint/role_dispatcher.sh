@@ -29,9 +29,11 @@ if [ -f "$SECRET_BUNDLE" ]; then
     fi
 fi
 
+# The normalised agent id ('Claude-Agent' and 'agent-claude' give 'claude'), shared by the mappings below.
+AGENT_ID=$(echo "${HOLON_AGENT_ID:-}" | tr '[:upper:]' '[:lower:]' | sed 's/-agent//g' | sed 's/agent-//g')
+
 # Map HOLON_AGENT_KEY to legacy/vendor-specific API variables (not for claude, see below)
 if [ -n "${HOLON_AGENT_KEY:-}" ] && [ -n "${HOLON_AGENT_ID:-}" ]; then
-    AGENT_ID=$(echo "${HOLON_AGENT_ID}" | tr '[:upper:]' '[:lower:]' | sed 's/-agent//g' | sed 's/agent-//g')
     case "${AGENT_ID}" in
         antigravity)
             export AGY_USER_TOKEN="${HOLON_AGENT_KEY}"
@@ -39,7 +41,7 @@ if [ -n "${HOLON_AGENT_KEY:-}" ] && [ -n "${HOLON_AGENT_ID:-}" ]; then
             ;;
         claude)
             # The claude runner never consults HOLON_AGENT_KEY: the host exports CLAUDE_CODE_OAUTH_TOKEN or
-            # ANTHROPIC_API_KEY directly, chosen by the credential's format.
+            # ANTHROPIC_API_KEY directly, chosen by the credential's format, or HOLON_AGENT_OAUTH_TOKEN (mapped below).
             ;;
         pi)
             export PI_API_KEY="${HOLON_AGENT_KEY}"
@@ -51,6 +53,15 @@ if [ -n "${HOLON_AGENT_KEY:-}" ] && [ -n "${HOLON_AGENT_ID:-}" ]; then
             export OPENCODE_API_KEY="${HOLON_AGENT_KEY}"
             ;;
     esac
+fi
+
+# The layered-configuration route of the claude subscription token: the host passes HOLON_AGENT_OAUTH_TOKEN in the 0600
+# docker env-file (read from the file HOLON_AGENT_OAUTH_TOKEN_FILE names), never on the argv. An explicit
+# CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY wins. The value is never echoed. HOLON_AGENT_OAUTH_TOKEN stays exported
+# so a nested holon can forward it again; HOLON_CONFIG_RESOLVED keeps that nested run from re-reading layer files.
+if [ -n "${HOLON_AGENT_OAUTH_TOKEN:-}" ] && [ "${AGENT_ID}" = "claude" ] \
+    && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    export CLAUDE_CODE_OAUTH_TOKEN="${HOLON_AGENT_OAUTH_TOKEN}"
 fi
 
 # Trust the host-provided Holon Root CA when token reduction is enabled.

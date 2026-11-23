@@ -43,10 +43,12 @@ class TestFlowDataModels:
         assert StageStatus.SUCCESS.value == "success"
         assert StageStatus.FAILED.value == "failed"
         assert StageStatus.HALTED_FOR_HUMAN.value == "halted_for_human"
+        assert StageStatus.APPROVED.value == "approved"
         assert StageStatus.SKIPPED.value == "skipped"
 
         assert StageStatus.from_str("pending") == StageStatus.PENDING
         assert StageStatus.from_str("HALTED_FOR_HUMAN") == StageStatus.HALTED_FOR_HUMAN
+        assert StageStatus.from_str("APPROVED") == StageStatus.APPROVED
         with pytest.raises(ValueError, match="Unknown StageStatus"):
             StageStatus.from_str("unknown_status")
 
@@ -68,6 +70,17 @@ class TestFlowDataModels:
         assert reconstructed.stage == FlowStage.INTENT
         assert reconstructed.status == StageStatus.SUCCESS
         assert reconstructed.payload == {"branch": "I-123-test/_"}
+
+    def test_stage_result_summary_line_respects_patched_summary_status_words(self, monkeypatch):
+        from sandbox_executor.flow import context as context_module
+
+        monkeypatch.setattr(
+            context_module,
+            "_SUMMARY_STATUS_WORDS",
+            {**context_module._SUMMARY_STATUS_WORDS, StageStatus.APPROVED: "consented"},
+        )
+        res = StageResult(stage=FlowStage.REVIEW, status=StageStatus.APPROVED)
+        assert res.summary_line() == "review: consented"
 
     def test_flow_context_serialization_and_logging(self):
         ctx = FlowContext(
@@ -149,7 +162,16 @@ class TestFlowDataModels:
         assert ctx.max_review_iterations == 25
         assert ctx.mitm_web is False
         assert ctx.token_reduce is False
+        assert ctx.proxy_attach is False
         assert ctx.allow_overlap is False
+
+    def test_proxy_attach_survives_the_checkpoint_round_trip(self):
+        ctx = FlowContext(token_reduce=False, proxy_attach=True)
+        d = ctx.to_dict()
+        assert d["proxy_attach"] is True
+        reconstructed = FlowContext.from_dict(d)
+        assert reconstructed.proxy_attach is True
+        assert reconstructed.token_reduce is False
 
     def test_atomic_checkpoint_save_and_load(self, tmp_path):
         ctx = FlowContext(

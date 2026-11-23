@@ -32,6 +32,8 @@ from sandbox_executor import git_flow
 from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.entrypoint.execution_workspace import validate_mounted_workspace
 
+from tests.env_file_capture import DockerEnvFileRecorder
+
 MOUNT = "/sandbox/workspace"
 
 #: Plays the review-loop container: prepares the mounted worktree, writes an edit, an untracked file and a log, then
@@ -603,7 +605,7 @@ def test_f_review_loop_dispatch_runs_one_docker_run_with_no_volume_and_no_root_i
 
     env = {key: value for key, value in os.environ.items() if key in ("PATH", "HOME") or key.startswith("GIT_")}
     with (
-        patch("sandbox_executor.cli.get_agent_session_mounts", return_value=[]),
+        patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=[]),
         patch("subprocess.run", side_effect=record),
         patch("shutil.which", side_effect=lambda name: "/usr/bin/docker" if name == "docker" else real_which(name)),
         patch.dict(os.environ, env, clear=True),
@@ -780,26 +782,24 @@ def _remove_argv_pair(argv: list[str], pair: list[str]) -> list[str]:
 _FAKE_WORKTREE_MOUNTS = ["-v", "/work/flow-demo:/sandbox", "-v", "/work/repo/.git/config:/work/repo/.git/config:ro"]
 
 
-def _docker_argvs(
+def _docker_runs(
     role: str, target_worktree: str | None, mounts: list[str] | Exception, intent_file: str | None = None
-) -> tuple[int, list[list[str]]]:
-    """Run run_docker_container for role with the worktree mount builder faked; return (exit code, docker argvs)."""
+) -> tuple[int, list[list[str]], list[dict[str, str]]]:
+    """Run run_docker_container for role with the worktree mount builder faked.
+
+    Returns the exit code, the docker argvs (env-file path as ``<env-file>``) and each run's env-file variables.
+    """
     from sandbox_executor.cli import run_docker_container
 
-    captured: list[list[str]] = []
-
-    def record_run(cmd, *args, **kwargs):
-        captured.append(list(cmd))
-        return MagicMock(returncode=0)
-
+    docker = DockerEnvFileRecorder()
     mount_patch = (
         patch("sandbox_executor.git_flow.sandbox_worktree_mounts", side_effect=mounts)
         if isinstance(mounts, Exception)
         else patch("sandbox_executor.git_flow.sandbox_worktree_mounts", return_value=list(mounts))
     )
     with (
-        patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"]),
-        patch("subprocess.run", side_effect=record_run),
+        patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=["-v", "/mock:/mock"]),
+        patch("subprocess.run", side_effect=docker),
         patch("shutil.which", return_value="/usr/bin/docker"),
         patch.dict(os.environ, {"HOLON_TARGET_WORKTREE": "/home/dev/own-checkout"}, clear=True),
         mount_patch,
@@ -812,7 +812,7 @@ def _docker_argvs(
             target_worktree=target_worktree,
             intent_file=intent_file,
         )
-    return code, captured
+    return code, docker.argvs, docker.env_files
 
 
 ALL_WORKTREE_ROLES = ["intent-creator", "planner", "review-loop", "executor"]
@@ -830,29 +830,28 @@ def test_worktree_roles_add_only_the_worktree_mounts_and_pin_the_workspace(role,
     """Every role argv is a role-neutral argv plus worktree mounts, the pinned workspace and venv only."""
     from sandbox_executor.agent_runner import SANDBOX_UV_PROJECT_ENVIRONMENT, SANDBOX_WORKSPACE_MOUNT
 
-    _code, (baseline,) = _docker_argvs("unmounted-role", None, [], intent_file)
-    code, (review,) = _docker_argvs(role, "/work/flow-demo", _FAKE_WORKTREE_MOUNTS, intent_file)
+    _code, (baseline,), (baseline_env,) = _docker_runs("unmounted-role", None, [], intent_file)
+    code, (review,), (review_env,) = _docker_runs(role, "/work/flow-demo", _FAKE_WORKTREE_MOUNTS, intent_file)
 
     assert code == 0
-    # Removing the mounts, the pinned workspace and the role restores the neutral argv byte for byte, so nothing
-    # else (--rm, --cap-drop=ALL, no-new-privileges, env forwarding) changed.
+    # Removing the mounts and the venv pins restores the neutral argv byte for byte, so nothing else (--rm,
+    # --cap-drop=ALL, no-new-privileges, env forwarding) changed. Every HOLON_* item travels in the env-file.
     reduced = review
     for pair in (_FAKE_WORKTREE_MOUNTS[:2], _FAKE_WORKTREE_MOUNTS[2:]):
         reduced = _remove_argv_pair(reduced, pair)
-    reduced = _remove_argv_pair(reduced, ["-e", f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"])
     reduced = _remove_argv_pair(reduced, ["-e", f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}"])
     reduced = _remove_argv_pair(reduced, ["-e", "UV_FROZEN=1"])
-    reduced = _remove_argv_pair(reduced, ["-e", f"HOLON_ROLE={role}"])
     if role == "intent-creator":
         reduced = _remove_argv_pair(reduced, ["-v", f"{intent_file}:/tmp/intent.json"])
-    baseline = _remove_argv_pair(baseline, ["-e", "HOLON_TARGET_WORKTREE=/home/dev/own-checkout"])
-    baseline = _remove_argv_pair(baseline, ["-e", "HOLON_ROLE=unmounted-role"])
     assert reduced == baseline
+    assert not any(a.startswith("HOLON_") for a in review)
+    # The env-files differ only in the pinned workspace and the role.
+    baseline_pins = {"HOLON_TARGET_WORKTREE": "/home/dev/own-checkout", "HOLON_ROLE": "unmounted-role"}
+    assert baseline_env == {**review_env, **baseline_pins}
+    assert review_env["HOLON_ROLE"] == role
     assert "--cap-drop=ALL" in review and "--security-opt=no-new-privileges" in review
     # A forwarded host HOLON_TARGET_WORKTREE cannot displace the pinned container workspace path.
-    assert [a for a in review if a.startswith("HOLON_TARGET_WORKTREE=")] == [
-        f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}"
-    ]
+    assert review_env["HOLON_TARGET_WORKTREE"] == SANDBOX_WORKSPACE_MOUNT
     # 'uv run' in the container must not rebuild the host's .venv inside the shared worktree.
     assert f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}" in review
     assert not SANDBOX_UV_PROJECT_ENVIRONMENT.startswith(SANDBOX_WORKSPACE_MOUNT)
@@ -866,7 +865,6 @@ def test_every_role_mounts_the_worktree_exactly_as_the_executor_does(role, inten
     from sandbox_executor.agent_runner import SANDBOX_UV_PROJECT_ENVIRONMENT, SANDBOX_WORKSPACE_MOUNT
 
     wanted = {
-        f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}",
         f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}",
         "UV_FROZEN=1",
         *_FAKE_WORKTREE_MOUNTS[1::2],
@@ -875,12 +873,14 @@ def test_every_role_mounts_the_worktree_exactly_as_the_executor_does(role, inten
     def worktree_args(argv: list[str]) -> list[tuple[str, str]]:
         return [(argv[i], argv[i + 1]) for i in range(len(argv) - 1) if argv[i + 1] in wanted]
 
-    _code, (executor_argv,) = _docker_argvs("executor", "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
-    code, (argv,) = _docker_argvs(role, "/work/flow-demo", _FAKE_WORKTREE_MOUNTS, intent_file)
+    _code, (executor_argv,), (executor_env,) = _docker_runs("executor", "/work/flow-demo", _FAKE_WORKTREE_MOUNTS)
+    code, (argv,), (env,) = _docker_runs(role, "/work/flow-demo", _FAKE_WORKTREE_MOUNTS, intent_file)
 
     assert code == 0
     assert len(worktree_args(argv)) == len(wanted)
     assert worktree_args(argv) == worktree_args(executor_argv)
+    # The workspace pin travels in the env-file, identical to the executor's.
+    assert env["HOLON_TARGET_WORKTREE"] == executor_env["HOLON_TARGET_WORKTREE"] == SANDBOX_WORKSPACE_MOUNT
 
 
 @pytest.mark.parametrize("role", ALL_WORKTREE_ROLES)
@@ -888,7 +888,7 @@ def test_worktree_role_without_a_valid_worktree_fails_before_any_docker_command(
     """A missing or refused worktree fails closed: exit 1, an actionable error, and no docker run at all."""
     from sandbox_executor import git_flow
 
-    code, captured = _docker_argvs(role, None, RuntimeError("needs an explicit target worktree"), intent_file)
+    code, captured, _env = _docker_runs(role, None, RuntimeError("needs an explicit target worktree"), intent_file)
 
     assert code == 1
     assert captured == []

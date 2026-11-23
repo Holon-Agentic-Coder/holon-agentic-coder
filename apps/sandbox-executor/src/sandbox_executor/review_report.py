@@ -783,8 +783,17 @@ def _findings_section(findings: Sequence[FindingRow]) -> list[str]:
 
 
 def _approval_stamp(repo_dir: str, consensus_data: Mapping[str, Any]) -> str:
-    """The line naming the head an approval covers and the CI result at that commit."""
-    return approval_stamp(_target_commit(repo_dir, consensus_data), consensus_data.get("ci_checks") or {})
+    """The line naming the head an approval covers, its change fingerprint and the CI result at that commit.
+
+    A carried-over approval names the head it was carried to (the one posted on) and the head the reviewers saw.
+    """
+    carried_to = str(consensus_data.get("carried_to") or "").strip()
+    return approval_stamp(
+        carried_to or _target_commit(repo_dir, consensus_data),
+        consensus_data.get("ci_checks") or {},
+        fingerprint=consensus_data.get("approval_fingerprint"),
+        carried_from=consensus_data.get("carried_from") if carried_to else None,
+    )
 
 
 def _checks_line(consensus_data: Mapping[str, Any]) -> str:

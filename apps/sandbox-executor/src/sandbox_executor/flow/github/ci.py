@@ -7,13 +7,17 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
-import subprocess
 import time
 from collections.abc import Callable
 from typing import Any
 
 from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.flow.github.adapter import GitHubAdapter
+from sandbox_executor.flow.github.ci_policy import _ci_green as _ci_green
+from sandbox_executor.flow.github.ci_policy import (
+    _extract_failed_ci_check_names as _extract_failed_ci_check_names,
+)
+from sandbox_executor.flow.github.ci_policy import local_tests_ci_status, summarise_ci_checks
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +27,8 @@ def probe_ci_checks(
     branch_or_pr: str,
     timeout: float = 30.0,
     proxy_env: dict[str, str] | None = None,
+    *,
+    github: GitHubAdapter | None = None,
 ) -> dict[str, Any]:
     """Inspect CI check status using GitHub CLI (gh pr checks) with local fallback.
 
@@ -31,6 +37,7 @@ def probe_ci_checks(
         branch_or_pr: Branch name, PR number, or PR URL.
         timeout: Maximum timeout in seconds for gh execution.
         proxy_env: Optional proxy environment variables.
+        github: The GitHub adapter to read the checks through; defaults to one for repo_dir and proxy_env.
 
     Returns:
         dict[str, Any]: Status summary dictionary with keys:
@@ -44,75 +51,19 @@ def probe_ci_checks(
             - checks: list[dict[str, Any]]
     """
     clean_target = str(branch_or_pr).strip()
-    if shutil.which("gh") and clean_target:
-        gh_env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
+    github = github or GitHubAdapter(repo_dir, proxy_env)
+    if clean_target and github.available:
         try:
-            cmd = ["gh", "pr", "checks", clean_target, "--json", "bucket,name,state,event,workflow,link"]
-            proc = subprocess.run(
-                cmd,
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=timeout,
-                env=gh_env,
-            )
-            if proc.returncode == 0 and proc.stdout.strip():
+            proc = github.ci_checks(clean_target, timeout)
+            if proc.ok and proc.stdout.strip():
                 raw_checks = json.loads(proc.stdout)
                 if isinstance(raw_checks, list):
-                    total = len(raw_checks)
-                    passed = sum(
-                        1
-                        for c in raw_checks
-                        if str(c.get("bucket", "")).lower() == "pass"
-                        or (
-                            str(c.get("state", "")).upper() in ("SUCCESS", "COMPLETED")
-                            and str(c.get("bucket", "")).lower() != "fail"
-                        )
-                    )
-                    failed = sum(
-                        1
-                        for c in raw_checks
-                        if str(c.get("bucket", "")).lower() == "fail"
-                        or str(c.get("state", "")).upper() in ("FAILURE", "TIMED_OUT", "ACTION_REQUIRED")
-                    )
-                    pending = sum(
-                        1
-                        for c in raw_checks
-                        if str(c.get("bucket", "")).lower() == "pending"
-                        or str(c.get("state", "")).upper() in ("IN_PROGRESS", "QUEUED", "PENDING")
-                    )
-                    skipped = sum(
-                        1
-                        for c in raw_checks
-                        if str(c.get("bucket", "")).lower() in ("skipping", "skip")
-                        or str(c.get("state", "")).upper() == "SKIPPED"
-                    )
-                    all_passed = (total > 0) and (failed == 0) and (pending == 0)
-                    return {
-                        "source": "github_cli",
-                        "total": total,
-                        "passed": passed,
-                        "failed": failed,
-                        "pending": pending,
-                        "skipped": skipped,
-                        "all_passed": all_passed,
-                        "checks": raw_checks,
-                    }
+                    return summarise_ci_checks(raw_checks)
         except Exception as e:
             logger.debug(f"probe_ci_checks gh check failed: {e}")
 
     # Fallback to local tests inspection
-    return {
-        "source": "local_tests",
-        "total": 1,
-        "passed": 1,
-        "failed": 0,
-        "pending": 0,
-        "skipped": 0,
-        "all_passed": True,
-        "checks": [{"name": "local_tests", "bucket": "pass", "state": "SUCCESS"}],
-    }
+    return local_tests_ci_status()
 
 
 # How long the review loop waits for GitHub CI checks to register on a PR when Stage 3 recorded no test result.
@@ -146,6 +97,7 @@ def _wait_for_ci_registration(  # noqa: PLR0913
     poll_interval: float,
     clock: Callable[[], float] | None = None,
     sleep: Callable[[float], None] | None = None,
+    probe: Callable[[], dict[str, Any]] | None = None,
 ) -> None:
     """Poll until GitHub CI checks register on ``review_target`` or ``timeout`` elapses.
 
@@ -158,7 +110,8 @@ def _wait_for_ci_registration(  # noqa: PLR0913
     deadline = clock() + timeout
     context.log(f"[Review Loop] No recorded test result: waiting up to {timeout:g}s for CI checks to register.")
     while True:
-        if probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env).get("source") == "github_cli":
+        status = probe() if probe is not None else probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env)
+        if status.get("source") == "github_cli":
             context.log("[Review Loop] CI checks registered.")
             return
         remaining = deadline - clock()
@@ -166,28 +119,3 @@ def _wait_for_ci_registration(  # noqa: PLR0913
             context.log(f"[Review Loop] No CI checks registered within {timeout:g}s.")
             return
         sleep(max(0.0, min(poll_interval, remaining)))
-
-
-def _ci_green(ci_status: dict[str, Any], tests_failed: bool) -> bool | None:
-    """True or False when CI was measured, None when it was not (unknown is never green)."""
-    if ci_status.get("measured") is False or "all_passed" not in ci_status:
-        return None
-    return ci_status.get("all_passed") is True and not tests_failed
-
-
-def _extract_failed_ci_check_names(ci_status: dict[str, Any] | None, tests_failed: bool = False) -> list[str]:
-    """Extract unique names of failing CI checks or local tests."""
-    failing: list[str] = []
-    if ci_status and isinstance(ci_status.get("checks"), list):
-        for check in ci_status["checks"]:
-            if not isinstance(check, dict):
-                continue
-            bucket = str(check.get("bucket") or "").lower()
-            state = str(check.get("state") or "").upper()
-            if bucket == "fail" or state in ("FAILURE", "TIMED_OUT", "ACTION_REQUIRED"):
-                name = str(check.get("name") or "").strip()
-                if name and name not in failing:
-                    failing.append(name)
-    if tests_failed and "local_tests" not in failing:
-        failing.append("local_tests")
-    return failing

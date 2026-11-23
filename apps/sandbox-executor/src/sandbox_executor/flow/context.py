@@ -21,10 +21,29 @@ from sandbox_executor.agent_defaults import (
 )
 from sandbox_executor.budgets import format_stage_summary
 from sandbox_executor.flow.constants import CURRENT_CONTEXT_SCHEMA_VERSION
+from sandbox_executor.flow.stage_status import (
+    REVIEW_BOUNDARY_STATUSES,
+    SUMMARY_STATUS_WORDS,
+    StageStatus,
+)
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE
 
 logger = logging.getLogger(__name__)
+
+# Kept for backward compatibility with tests/callers that read or patch _SUMMARY_STATUS_WORDS.
+_SUMMARY_STATUS_WORDS = SUMMARY_STATUS_WORDS
+
+__all__ = [
+    "REVIEW_BOUNDARY_STATUSES",
+    "SUMMARY_STATUS_WORDS",
+    "_SUMMARY_STATUS_WORDS",
+    "FlowContext",
+    "FlowStage",
+    "StageResult",
+    "StageStatus",
+    "_support_legacy_repo_dir",
+]
 
 
 class FlowStage(StrEnum):
@@ -47,28 +66,6 @@ class FlowStage(StrEnum):
             if stage.value == clean:
                 return stage
         raise ValueError(f"Unknown FlowStage '{val}'. Valid stages: {[s.value for s in cls]}")
-
-
-class StageStatus(StrEnum):
-    """Execution status of an individual pipeline stage."""
-
-    PENDING = "pending"
-    RUNNING = "running"
-    SUCCESS = "success"
-    FAILED = "failed"
-    HALTED_FOR_HUMAN = "halted_for_human"
-    SKIPPED = "skipped"
-
-    @classmethod
-    def from_str(cls, val: str | StageStatus) -> StageStatus:
-        """Parse string or enum instance to StageStatus case-insensitively."""
-        if isinstance(val, StageStatus):
-            return val
-        clean = str(val).strip().lower()
-        for status in cls:
-            if status.value == clean:
-                return status
-        raise ValueError(f"Unknown StageStatus '{val}'. Valid statuses: {[s.value for s in cls]}")
 
 
 @dataclass
@@ -120,16 +117,6 @@ class StageResult:
         )
 
 
-_SUMMARY_STATUS_WORDS: dict[StageStatus, str] = {
-    StageStatus.SUCCESS: "ok",
-    StageStatus.FAILED: "failed",
-    StageStatus.HALTED_FOR_HUMAN: "halted",
-    StageStatus.SKIPPED: "skipped",
-    StageStatus.PENDING: "pending",
-    StageStatus.RUNNING: "running",
-}
-
-
 def _support_legacy_repo_dir(cls: type) -> type:
     orig_init = cls.__init__
 
@@ -160,7 +147,8 @@ class FlowContext:
     model: str = DEFAULT_MODELS[normalise_agent_id(FALLBACK_AGENT)]
     dry_run: bool = False
     auto_calibrate: bool = True
-    token_reduce: bool | None = None
+    token_reduce: bool | None = None  # Spawn this run's sidecar; only an explicit flag sets it.
+    proxy_attach: bool = False  # Attach role containers to a running user-owned proxy; never spawns one.
     skip_push: bool = False
     skip_calibrate: bool = False
     max_review_iterations: int = 25
@@ -179,7 +167,9 @@ class FlowContext:
     review_iterations_done: int = 0
     # Stage 4 findings a halted pass left without a disposition; a resume sends them to the resolver first.
     carried_review_findings: list[dict[str, Any]] = field(default_factory=list)
-    # Role-agent dispatcher for Stages 1-3; None means cli.dispatch_role_agent. Never checkpointed.
+    # Whether a merged-head CI failure may still restart Stage 4 (False at the restart cap). Never checkpointed.
+    merged_head_restart_allowed: bool = field(default=True, repr=False, compare=False)
+    # Role-agent dispatcher for Stages 1-3; None means launcher.role_dispatch.dispatch_role_agent. Never checkpointed.
     dispatcher: Callable[..., int] | None = field(default=None, repr=False, compare=False)
     checkpoint_path: str | None = field(default=None, repr=False)  # The engine's --checkpoint path; never checkpointed.
 
@@ -193,11 +183,11 @@ class FlowContext:
         self.target_worktree = value
 
     def __post_init__(self) -> None:
-        """Resolve dynamic defaults such as proxy auto-detection."""
+        """Resolve dynamic defaults: proxy auto-detection may only attach to a running proxy, never spawn one."""
         if self.token_reduce is None:
-            from sandbox_executor.cli import detect_holon_coherence
+            from sandbox_executor.launcher import coherence
 
-            self.token_reduce = detect_holon_coherence()
+            self.token_reduce, self.proxy_attach = coherence.resolve_flow_proxy_choice()
 
     def log(self, message: str) -> None:
         """Append a timestamped, secret-redacted message to context logs."""
@@ -222,6 +212,7 @@ class FlowContext:
             "dry_run": self.dry_run,
             "auto_calibrate": self.auto_calibrate,
             "token_reduce": self.token_reduce,
+            "proxy_attach": self.proxy_attach,
             "skip_push": self.skip_push,
             "skip_calibrate": self.skip_calibrate,
             "max_review_iterations": self.max_review_iterations,
@@ -262,6 +253,7 @@ class FlowContext:
             dry_run=data.get("dry_run", False),
             auto_calibrate=data.get("auto_calibrate", True),
             token_reduce=data.get("token_reduce", False),
+            proxy_attach=bool(data.get("proxy_attach", False)),
             skip_push=data.get("skip_push", False),
             skip_calibrate=data.get("skip_calibrate", False),
             max_review_iterations=data.get("max_review_iterations", 25),

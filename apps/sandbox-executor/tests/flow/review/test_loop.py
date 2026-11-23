@@ -21,8 +21,10 @@ from sandbox_executor.flow import (
     run_review_stage,
     save_checkpoint,
 )
+from sandbox_executor.flow.github.pr_head import PR_HEAD_TIMEOUT_SECONDS
 from sandbox_executor.review_target import ReviewTarget
 
+from tests.flow.github.fake_github import FakeGitHub, ci_checks_payload
 from tests.flow.helpers import _git, _review_loop_gh_stubs
 from tests.flow.lookup_patch import patch_lookup_sites
 from tests.review_fakes import FakeEnsemble, clean_reviewer, objecting_reviewer
@@ -97,7 +99,7 @@ class TestReviewLoopStage:
         assert "Review-Severity: clean" in clean_trailers
 
     def test_review_loop_consensus_approval_halts_without_merge(self, tmp_path):
-        """Verify review loop halts with HALTED_FOR_HUMAN and never invokes git merge main."""
+        """Verify review loop approves without halting for human and never invokes git merge main."""
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
@@ -106,7 +108,7 @@ class TestReviewLoopStage:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
-            payload={"test_pass_rate": 1.0, "exit_code": 0},
+            payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
         )
         with (
             patch_lookup_sites(
@@ -118,7 +120,6 @@ class TestReviewLoopStage:
                 "sandbox_executor.flow.stages.review.run_git",
             ) as mock_git,
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
-            patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
             _review_loop_gh_stubs(),
         ):
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 10 insertions(+)\n")
@@ -130,7 +131,8 @@ class TestReviewLoopStage:
                 assert "merge" not in args, f"HUMAN-ONLY MERGE RULE VIOLATED: merge invoked with args {args}"
 
         assert res["consensus"]["approved"] is True
-        assert res["halted_for_human"] is True
+        assert res["halted_for_human"] is False
+        assert res["approved"] is True
         assert res["human_merge_gate_enforced"] is True
         assert "holon review approve" in res["human_approval_command"]
 
@@ -144,7 +146,7 @@ class TestReviewLoopStage:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.FAILED,
-            payload={"test_pass_rate": 0.0, "exit_code": 1},
+            payload={"head_sha": "stage3-head", "test_pass_rate": 0.0, "exit_code": 1},
         )
         res = run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=3, dry_run=True)
         assert res["consensus"]["approved"] is False
@@ -164,18 +166,20 @@ class TestReviewLoopStage:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
-            payload={"test_pass_rate": 1.0, "exit_code": 0},
+            payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
         )
 
+        # No PR view and no checks: mergeability falls back to local git and CI to local tests, as without gh.
+        github = FakeGitHub()
         with (
             patch("sandbox_executor.flow.github.pr.run_git") as mock_git,
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus") as mock_post,
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
-            patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
         ):
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 10 insertions(+)\n")
-            mock_post.return_value = {"dual_posted": True, "official_review": {"success": True}}
-            run_review_loop(ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=2, dry_run=False)
+            run_review_loop(
+                ctx, target="I-100-intent/P-200-plan/E-300-exec/_", max_iterations=2, dry_run=False, github=github
+            )
+        assert github.methods().count("post_review") == 1
 
         exec_file = ledger_dir / "executions.jsonl"
         assert exec_file.exists()
@@ -189,7 +193,7 @@ class TestReviewLoopStage:
         assert action_records[0]["review_iteration"] == 1
 
         assert len(summary_records) >= 1
-        assert summary_records[0]["status"] == "halted_for_human"
+        assert summary_records[0]["status"] == "approved"
         assert summary_records[0]["total_iterations"] == 1
         assert summary_records[0]["trailers"]["action_origin"] == "pr_review"
 
@@ -217,8 +221,8 @@ class TestReviewLoopStage:
             assert code == 0
             captured = capsys.readouterr().out
             assert "Holon Review Loop Summary" in captured
-            assert "[SAFETY HALT]" in captured
-            assert "holon review approve" in captured
+            assert "[REVIEW APPROVED]" in captured
+            assert "To merge manually" not in captured
 
         # Test rejected exit code
         with patch("sandbox_executor.flow.review.cli.run_review_loop") as mock_loop:
@@ -481,3 +485,92 @@ class TestReviewLoopCommitsItsLedgerRows:
         assert res["consensus"]["iterations"] == 3
         assert _git(work, "status", "--porcelain") == ""
         assert len(ledger_commits(work)) == 3
+
+
+def test_an_injected_adapter_receives_every_github_call_of_the_loop(tmp_path):
+    """``run_review_loop(github=...)`` routes PR, mergeability, CI and posting through that one adapter."""
+    from sandbox_executor.review_target import DiffVerdict
+
+    github = FakeGitHub(
+        views=[{"number": 7, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}] * 2,
+        checks=ci_checks_payload(passed=1),
+        head_sha="stage3-head",
+    )
+    with (
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc1234"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+    ):
+        res = run_review_loop(_ensemble_ctx(tmp_path), max_iterations=1, run_ensemble_fn=FakeEnsemble(), github=github)
+
+    assert res["consensus"]["approved"] is True
+    assert {"open_or_update", "mergeability", "ci_checks", "post_review"} <= set(github.methods())
+    assert github.methods()[0] == "open_or_update"
+    assert all(args[0] == EXEC_TARGET for name, args in github.calls if name in {"open_or_update", "ci_checks"})
+
+
+def test_an_injected_adapter_supplies_the_proxy_environment_of_the_loop(tmp_path):
+    """With ``github=...`` the loop takes its proxy environment from the adapter and never resolves its own."""
+    from sandbox_executor.flow.review import loop as loop_module
+    from sandbox_executor.review_target import DiffVerdict
+
+    github = FakeGitHub(
+        views=[{"number": 7, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}] * 2,
+        checks=ci_checks_payload(passed=1),
+        head_sha="stage3-head",
+        proxy_env={"HTTPS_PROXY": "http://p"},
+    )
+    with (
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc1234"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+        patch.object(loop_module, "review_proxy_env") as resolve,
+        patch.object(loop_module, "_ReviewTestGate", wraps=loop_module._ReviewTestGate) as gate,
+    ):
+        res = run_review_loop(_ensemble_ctx(tmp_path), max_iterations=1, run_ensemble_fn=FakeEnsemble(), github=github)
+
+    assert res["consensus"]["approved"] is True
+    resolve.assert_not_called()
+    assert gate.call_args.kwargs["proxy_env"] == {"HTTPS_PROXY": "http://p"}
+    assert gate.call_args.kwargs["pr_head"]("feat") == "stage3-head"
+    assert github.calls[-1] == ("pr_head_sha", ("feat", PR_HEAD_TIMEOUT_SECONDS))
+
+
+def test_without_an_injected_adapter_the_loop_builds_one_with_the_resolved_proxy_environment(tmp_path):
+    """Without ``github=...`` the loop builds its adapter over the worktree with the proxy environment it resolved."""
+    from sandbox_executor.flow.review import loop as loop_module
+    from sandbox_executor.review_target import DiffVerdict
+
+    github = FakeGitHub(
+        views=[{"number": 7, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}] * 2,
+        checks=ci_checks_payload(passed=1),
+        head_sha="stage3-head",
+    )
+    ctx = _ensemble_ctx(tmp_path)
+    with (
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc1234"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+        patch.object(loop_module, "review_proxy_env", return_value={"HTTPS_PROXY": "http://p"}) as resolve,
+        patch.object(loop_module, "GitHubAdapter", return_value=github) as adapter,
+    ):
+        res = run_review_loop(ctx, max_iterations=1, run_ensemble_fn=FakeEnsemble())
+
+    assert res["consensus"]["approved"] is True
+    resolve.assert_called_once_with(ctx)
+    adapter.assert_called_once_with(ctx.target_worktree, {"HTTPS_PROXY": "http://p"})
+
+
+def test_an_unavailable_adapter_attempts_no_pr(tmp_path):
+    """Without ``gh`` the loop skips PR creation outright: no PR record and no adapter call for it."""
+    from sandbox_executor.review_target import DiffVerdict
+
+    github = FakeGitHub(available=False)
+    with (
+        patch("shutil.which", return_value=None),
+        patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc1234"),
+        patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
+    ):
+        res = run_review_loop(
+            _ensemble_ctx(tmp_path), max_iterations=1, auto_pr=True, run_ensemble_fn=FakeEnsemble(), github=github
+        )
+
+    assert res["pr"] == {}
+    assert "open_or_update" not in github.methods()

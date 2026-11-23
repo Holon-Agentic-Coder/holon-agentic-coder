@@ -1,7 +1,8 @@
 """The one follow-up comment that says a consensus approval no longer stands because CI is red on a later head.
 
 The comment is posted once per failing head: a hidden marker holding the failing SHA is checked against the PR's
-existing comments first, and a PR whose comments cannot be listed gets no comment. It never approves or merges.
+existing comments first, and a PR whose comments cannot be listed gets no comment. It never approves or merges. The
+module also provides the comment read and edit adapters the stale-calibration warning reuses.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import logging
 import os
 import subprocess
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from sandbox_executor.flow.context import FlowContext
@@ -21,9 +23,23 @@ logger = logging.getLogger(__name__)
 
 MARKER_PREFIX = "<!-- holon-approval-invalidated:"
 MAX_COMMENT_CHARS = 4000
+UPDATE_COMMENT_MUTATION = (
+    "mutation($id: ID!, $body: String!) { updateIssueComment(input: {id: $id, body: $body}) { issueComment { id } } }"
+)
+
+
+@dataclass(frozen=True)
+class CommentRecord:
+    """One PR comment: its GraphQL node id (empty when unknown) and its body."""
+
+    id: str
+    body: str
+
 
 CommentLister = Callable[[str], "list[str] | None"]
+CommentRecordLister = Callable[[str], "list[CommentRecord] | None"]
 CommentPoster = Callable[[str, str], bool]
+CommentEditor = Callable[[str, str], bool]
 
 
 def invalidation_marker(failing_head: str) -> str:
@@ -68,50 +84,71 @@ def render_invalidation(
     return f"{text}\n\n{marker}"
 
 
-def gh_comment_lister(repo_dir: str, proxy_env: Mapping[str, str] | None = None) -> CommentLister:
-    """A lister of the comment bodies of a PR through ``gh pr view``; None when they cannot be read."""
-    env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
+def _gh_env(proxy_env: Mapping[str, str] | None) -> dict[str, str]:
+    return {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
 
-    def lister(pr_number: str) -> list[str] | None:
+
+def _run_gh(argv: list[str], repo_dir: str, env: Mapping[str, str]) -> subprocess.CompletedProcess[str] | None:
+    """Run one ``gh`` command in ``repo_dir`` with the shared capture and timeout settings; None when it cannot run."""
+    try:
+        timeout = STEP_LOOKUP_TIMEOUT_SECONDS
+        return subprocess.run(argv, cwd=repo_dir, capture_output=True, text=True, check=False, timeout=timeout, env=env)
+    except Exception:
+        return None
+
+
+def gh_comment_records(repo_dir: str, proxy_env: Mapping[str, str] | None = None) -> CommentRecordLister:
+    """A lister of the comments (GraphQL node id and body) of a PR through ``gh pr view``; None when unreadable."""
+    env = _gh_env(proxy_env)
+
+    def records(pr_number: str) -> list[CommentRecord] | None:
+        proc = _run_gh(["gh", "pr", "view", pr_number, "--json", "comments"], repo_dir, env)
+        if proc is None or proc.returncode != 0:
+            return None
         try:
-            proc = subprocess.run(
-                ["gh", "pr", "view", pr_number, "--json", "comments"],
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=STEP_LOOKUP_TIMEOUT_SECONDS,
-                env=env,
-            )
-            if proc.returncode != 0:
-                return None
-            return [str(c.get("body") or "") for c in json.loads(proc.stdout).get("comments") or []]
+            comments = json.loads(proc.stdout).get("comments") or []
+            return [CommentRecord(str(c.get("id") or ""), str(c.get("body") or "")) for c in comments]
         except Exception:
             return None
+
+    return records
+
+
+def gh_comment_lister(repo_dir: str, proxy_env: Mapping[str, str] | None = None) -> CommentLister:
+    """A lister of the comment bodies of a PR through ``gh pr view``; None when they cannot be read."""
+    records = gh_comment_records(repo_dir, proxy_env)
+
+    def lister(pr_number: str) -> list[str] | None:
+        found = records(pr_number)
+        return None if found is None else [record.body for record in found]
 
     return lister
 
 
 def gh_comment_poster(repo_dir: str, proxy_env: Mapping[str, str] | None = None) -> CommentPoster:
     """A poster of one PR comment through ``gh pr comment``; False when it fails."""
-    env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
+    env = _gh_env(proxy_env)
 
     def poster(pr_number: str, body: str) -> bool:
-        try:
-            proc = subprocess.run(
-                ["gh", "pr", "comment", pr_number, "--body", body],
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=STEP_LOOKUP_TIMEOUT_SECONDS,
-                env=env,
-            )
-        except Exception:
-            return False
-        return proc.returncode == 0
+        proc = _run_gh(["gh", "pr", "comment", pr_number, "--body", body], repo_dir, env)
+        return proc is not None and proc.returncode == 0
 
     return poster
+
+
+def gh_comment_editor(repo_dir: str, proxy_env: Mapping[str, str] | None = None) -> CommentEditor:
+    """An editor of one PR comment by node id through GraphQL ``updateIssueComment``; False when it fails."""
+    env = _gh_env(proxy_env)
+
+    def editor(comment_id: str, body: str) -> bool:
+        if not comment_id:
+            return False
+        redacted = CredentialRedactor.redact_text(body)
+        fields = [f"query={UPDATE_COMMENT_MUTATION}", f"id={comment_id}", f"body={redacted}"]
+        proc = _run_gh(["gh", "api", "graphql", *(arg for field in fields for arg in ("-f", field))], repo_dir, env)
+        return proc is not None and proc.returncode == 0
+
+    return editor
 
 
 def approval_pr_number(context: FlowContext) -> str | None:

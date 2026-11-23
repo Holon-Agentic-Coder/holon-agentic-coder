@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, run_review_loop, run_review_stage
 
+from tests.flow.github.fake_github import FakeGitHub, merge_view
 from tests.flow.helpers import _verified_diff
 
 
@@ -28,13 +29,11 @@ class TestStage4TestEvidence:
         return ctx
 
     def _loop(self, ctx: FlowContext) -> dict[str, Any]:
-        with (
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
-            patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
-            _verified_diff(),
-        ):
-            return run_review_loop(ctx, auto_pr=False, max_iterations=1)
+        # A clean PR with no CI checks reported (CI falls back to local tests); the post succeeds on the fake.
+        github = FakeGitHub(standing_view=merge_view())
+        with patch("shutil.which", return_value=None), _verified_diff():
+            # No CI registration wait: these tests are about Stage 3 evidence, as when gh was absent.
+            return run_review_loop(ctx, auto_pr=False, max_iterations=1, ci_registration_timeout=0, github=github)
 
     def test_local_tests_fallback_without_recorded_result_is_not_measured_and_never_approves(self, tmp_path):
         res = self._loop(self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": None}))
@@ -52,14 +51,14 @@ class TestStage4TestEvidence:
         assert res["ci_checks"]["measured"] is False
 
     def test_recorded_passing_result_approves(self, tmp_path):
-        res = self._loop(self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": 1.0}))
+        res = self._loop(self._ctx(tmp_path, {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 1.0}))
 
         assert res["consensus"]["approved"] is True
         assert res["ci_checks"]["all_passed"] is True
         assert "measured" not in res["ci_checks"]
 
     def test_recorded_failing_result_fails_local_tests(self, tmp_path):
-        res = self._loop(self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": 0.5}))
+        res = self._loop(self._ctx(tmp_path, {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 0.5}))
 
         assert res["consensus"]["approved"] is False
         assert res["ci_checks"]["checks"] == [{"name": "local_tests", "bucket": "fail", "state": "FAILURE"}]
@@ -79,11 +78,11 @@ class TestStage4TestEvidence:
             ),
             ({"exit_code": 0}, {"exit_code": 0, "pass_rate": None, "measured": False, "passed": None}),
             (
-                {"exit_code": 0, "test_pass_rate": 1.0},
+                {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 1.0},
                 {"exit_code": 0, "pass_rate": 1.0, "measured": True, "passed": True},
             ),
             (
-                {"exit_code": 0, "test_pass_rate": 0.5},
+                {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 0.5},
                 {"exit_code": 0, "pass_rate": 0.5, "measured": True, "passed": False},
             ),
             ({"exit_code": 2}, {"exit_code": 2, "pass_rate": None, "measured": False, "passed": False}),
@@ -102,3 +101,64 @@ class TestStage4TestEvidence:
         results = res.payload["review_package"]["test_results"]
         assert {key: results[key] for key in expected} == expected
         assert {results[key] for key in ("source", "run_error")} == {None}
+
+    def test_review_stage_approval_wording_and_status(self, tmp_path):
+        ctx = self._ctx(tmp_path, {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 1.0})
+        loop_res = {
+            "consensus": {"approved": True, "status": "approved"},
+            "mergeability": {"is_dirty": False},
+            "reviewers": [{"status": "COMPLETED", "verdict": "APPROVED"}],
+        }
+        with (
+            patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
+            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
+            patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
+        ):
+            res = run_review_stage(ctx)
+
+        assert res.status == StageStatus.APPROVED
+        assert res.summary_line() == "review: approved"
+        assert res.payload["approved"] is True
+        assert res.payload["ready_for_maintainer_merge"] is True
+        assert res.payload["halted_for_human"] is False
+        assert any("Stage 4 approved: Review Loop reached consensus approval" in log for log in ctx.logs)
+        assert not any("SAFETY HALT" in log for log in ctx.logs)
+
+    def test_review_stage_dry_run_wording_and_status(self, tmp_path):
+        ctx = self._ctx(tmp_path, {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 1.0}, dry_run=True)
+        loop_res = {
+            "consensus": {"approved": False, "status": "not_measured"},
+            "mergeability": {"is_dirty": False},
+            "reviewers": [{"status": "COMPLETED", "verdict": "APPROVED"}],
+        }
+        with (
+            patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
+            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
+        ):
+            res = run_review_stage(ctx)
+
+        assert res.status == StageStatus.HALTED_FOR_HUMAN
+        assert res.summary_line() == "review: halted"
+        assert res.payload["halted_for_human"] is True
+        assert any("SAFETY HALT" in log for log in ctx.logs)
+        assert any("Dry-run review loop finished; consensus not measured and not approved." in log for log in ctx.logs)
+
+
+def test_the_review_stage_builds_one_adapter_and_hands_it_to_the_loop(tmp_path):
+    """Stage 4 constructs exactly one ``GitHubAdapter`` over the worktree and passes that instance to the loop."""
+    ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-a-b/E-3-a-b/_", token_reduce=False)
+    loop_res = {"consensus": {"approved": False, "status": "failed"}, "mergeability": {"is_dirty": False}}
+    github = FakeGitHub()
+    with (
+        patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
+        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
+        patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github) as adapter,
+        patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res) as loop,
+    ):
+        run_review_stage(ctx)
+
+    adapter.assert_called_once_with(ctx.target_worktree, {})
+    assert loop.call_args.kwargs["github"] is github

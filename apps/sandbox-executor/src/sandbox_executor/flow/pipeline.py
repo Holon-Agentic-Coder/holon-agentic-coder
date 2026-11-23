@@ -26,6 +26,8 @@ from sandbox_executor.flow.child_progress import has_recorded_decomposition
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.resume_guard import _resume_context_error
+from sandbox_executor.flow.review_restart import approval_stands, calibrate_with_review_restart
+from sandbox_executor.flow.stage_status import REVIEW_BOUNDARY_STATUSES
 from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
 from sandbox_executor.flow.stages.children import resume_children
 from sandbox_executor.flow.stages.decomposition import _sub_intent_depth_error
@@ -165,6 +167,16 @@ class PipelineEngine:
             return result
         return rerun_calibration(self.context, result, run_calibrate_stage)
 
+    def _run_stage_once(self, stage: FlowStage) -> StageResult:
+        """Enter ``stage`` and run it under its budget; a Stage 5 result also passes the head-move rerun trigger."""
+        self.before_stage(stage)
+        return self._rerun_if_calibrate(stage, self.timed_execute_stage(stage))
+
+    def _record_stage(self, stage: FlowStage, result: StageResult) -> None:
+        """Record ``result`` as the stage's result and checkpoint it."""
+        self.after_stage(stage, result)
+        self.save_checkpoint()
+
     def before_stage(self, stage: FlowStage) -> None:
         """Lifecycle hook invoked before executing a stage."""
         self.context.log(f"--> [Flow Engine] Entering stage: {stage.value.upper()}")
@@ -282,14 +294,12 @@ class PipelineEngine:
                 plan_result = self.timed_execute_stage(FlowStage.PLAN)
             finally:
                 self.context.intent_data.pop("replan_feedback", None)
-            self.after_stage(FlowStage.PLAN, plan_result)
-            self.save_checkpoint()
+            self._record_stage(FlowStage.PLAN, plan_result)
             if plan_result.status != StageStatus.SUCCESS:
                 return plan_result
             self.before_stage(FlowStage.EXECUTE)
             result = self.timed_execute_stage(FlowStage.EXECUTE)
-            self.after_stage(FlowStage.EXECUTE, result)
-            self.save_checkpoint()
+            self._record_stage(FlowStage.EXECUTE, result)
 
         error = self._replan_exhausted_error(result)
         if error is not None:
@@ -342,12 +352,11 @@ class PipelineEngine:
                 self._skip_calibration()
                 continue
 
-            self.before_stage(stage)
-            result = self.timed_execute_stage(stage)
-
-            result = self._rerun_if_calibrate(stage, result)
-            self.after_stage(stage, result)
-            self.save_checkpoint()
+            if stage == FlowStage.CALIBRATE:  # A resumed Stage 5 may restart Stage 4 on a red merged head too.
+                result = calibrate_with_review_restart(self.context, self._run_stage_once, self._record_stage)
+            else:
+                result = self._run_stage_once(stage)
+                self._record_stage(stage, result)
 
             if stage == FlowStage.EXECUTE:
                 result = self._replan_after_over_budget(result)
@@ -357,34 +366,36 @@ class PipelineEngine:
                 self.context.log(f"Pipeline halted due to failure in stage '{result.stage.value}'.")
                 break
 
-            # Only Stage 4 (the review consensus halt before merge) may halt; no earlier stage waits for a human.
-            if result.status == StageStatus.HALTED_FOR_HUMAN:
-                if stage == FlowStage.REVIEW:
-                    self._calibrate_after_consensus_halt()
-                self.context.log(
-                    f"Pipeline safely halted for human intervention at stage '{stage.value}'. "
-                    "Halting execution without merging."
-                )
+            # Stage 4 ends at the consensus boundary before merge; no earlier stage halts or waits for human.
+            if result.status in REVIEW_BOUNDARY_STATUSES:
+                self._handle_review_boundary(stage, result)
                 break
 
         return self.context.stage_results
 
+    def _handle_review_boundary(self, stage: FlowStage, result: StageResult) -> None:
+        """Handle calibrate dispatch and logging when Stage 4 ends at the consensus boundary."""
+        if stage == FlowStage.REVIEW:
+            self._calibrate_after_consensus_halt()
+
+        verb = (
+            f"finished at the merge boundary: review approved, PR ready for maintainer merge (stage '{stage.value}')."
+            if approval_stands(self.context, result)  # not after a merged-head CI failure withdrew it
+            else f"safely halted for human intervention at stage '{stage.value}'. Halting execution without merging."
+        )
+        self.context.log(f"Pipeline {verb}")
+
     def _calibrate_after_consensus_halt(self) -> None:
-        """Run Stage 5 (or record it as skipped by --skip-calibrate) after Stage 4 halted at consensus approval."""
+        """Run Stage 5 (or record it as skipped by --skip-calibrate) after Stage 4 ended at the consensus boundary."""
         if self.context.skip_calibrate:
             self._skip_calibration()
         elif self.context.auto_calibrate:
-            self.before_stage(FlowStage.CALIBRATE)
-            cal_result = self.timed_execute_stage(FlowStage.CALIBRATE)
-            cal_result = rerun_calibration(self.context, cal_result, run_calibrate_stage)
-            self.after_stage(FlowStage.CALIBRATE, cal_result)
-            self.save_checkpoint()
+            calibrate_with_review_restart(self.context, self._run_stage_once, self._record_stage)
 
     def _skip_calibration(self) -> None:
         """Record Stage 5 as skipped by --skip-calibrate and checkpoint it."""
         self.context.log("Stage 5 (CALIBRATE) skipped due to --skip-calibrate flag.")
-        self.after_stage(FlowStage.CALIBRATE, _skipped_by_flag(FlowStage.CALIBRATE))
-        self.save_checkpoint()
+        self._record_stage(FlowStage.CALIBRATE, _skipped_by_flag(FlowStage.CALIBRATE))
 
 
 def _skipped_by_flag(stage: FlowStage) -> StageResult:
@@ -412,8 +423,8 @@ def run_flow_pipeline(
     finally:
         if context.token_reduce:
             try:
-                from sandbox_executor.cli import teardown_token_reduction_proxy
+                from sandbox_executor.launcher import sidecar
 
-                teardown_token_reduction_proxy()
+                sidecar.teardown_token_reduction_proxy()
             except Exception:
                 pass

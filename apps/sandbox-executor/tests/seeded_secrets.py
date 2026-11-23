@@ -31,7 +31,8 @@ TEMP_NAME_LENGTH = 8
 def resolve_seed() -> int:
     """Return the seed for this process: `CREDENTIAL_TEST_SEED`, a fresh one in stress mode, or `DEFAULT_SEED`.
 
-    Memoised, so every test in one process (one xdist worker) sees the same seed, in stress mode too.
+    Memoised, so every test in one process (one xdist worker) sees the same seed, in stress mode too. The module
+    resolves it once on import (at collection), because several tests empty `os.environ` before drawing.
 
     Raises:
         ValueError: The variable holds neither an integer nor `random`.
@@ -70,3 +71,7 @@ def name_sequence(rng: random.Random) -> Iterator[str]:
     """
     while True:
         yield "".join(rng.choice(TEMP_NAME_CHARACTERS) for _ in range(TEMP_NAME_LENGTH))
+
+
+# Resolve now, while the environment is the one the run was started with; a later call returns this value.
+resolve_seed()

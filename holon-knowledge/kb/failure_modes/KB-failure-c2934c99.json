@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-c2934c99",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T08:27:27.806998+00:00",
+  "updated_ts": "2026-11-23T08:27:27.806998+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795418086-f57f094e",
+      "ACT-FIND-1795418072-040a8449"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795409207-flow-no-auto-sidecar-spawn-v2/P-1795409223-CLA-CO5.5/E-1795409586-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 13 finding detected: FIND-R1-013-01",
+    "symptoms": [
+      "The intent asks for the confirmed cause of role containers failing to connect to holon-proxy:8080 after the host readiness probe succeeds, but neither the change description nor the diff reports one; add the diagnosis (or state it is unconfirmed and why)."
+    ]
+  }
+}

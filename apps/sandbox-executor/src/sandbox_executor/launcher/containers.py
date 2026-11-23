@@ -41,7 +41,9 @@ class ContainerLaunch:
 
     Credentials never go on the docker command line, where ``ps`` and /proc/<pid>/cmdline can read them: they are
     collected in ``secret_env`` and handed over in a 0600 --env-file just before the run. That includes any value with
-    a URL password (a proxy URL in any scheme, or none), whatever its name.
+    a URL password (a proxy URL in any scheme, or none), whatever its name, and every forwarded HOLON_* value,
+    whatever its name or shape (see `env_files.is_env_file_item`). A HOLON_* value no env-file line can carry goes as a
+    bare `-e NAME`, its value in the docker client env (`passthrough_env`).
     """
 
     role: str
@@ -55,6 +57,7 @@ class ContainerLaunch:
     result_file: str | None = None
     docker_cmd: list[str] = field(default_factory=list, init=False)
     secret_env: dict[str, str] = field(default_factory=dict, init=False)
+    passthrough_env: dict[str, str] = field(default_factory=dict, init=False)
     forwarded_env: dict[str, str] = field(default_factory=dict, init=False)
     workspace_mounts: list[str] = field(default_factory=list, init=False)
     env_file_path: str | None = field(default=None, init=False)
@@ -91,7 +94,9 @@ class ContainerLaunch:
             self.env_file()
             # A forwarded HOLON_* value may hold a non-UTF-8 byte (surrogateescape); it must not crash the run here.
             messages.print_encodable(f"Executing: {redact_command(self.docker_cmd)}")
-            result = subprocess.run(self.docker_cmd, env={**os.environ, "DOCKER_CLI_HINTS": "false"})
+            result = subprocess.run(
+                self.docker_cmd, env={**os.environ, **self.passthrough_env, "DOCKER_CLI_HINTS": "false"}
+            )
             return result.returncode
         except _LaunchAborted as aborted:
             return aborted.exit_code
@@ -166,8 +171,12 @@ class ContainerLaunch:
         self.docker_cmd[2:2] = ["--env-file", self.env_file_path]
 
     def _add_env(self, key: str, value: str) -> None:
-        """Pass a variable with ``-e`` unless it is secret, in which case it goes to the env-file."""
-        if env_files.is_secret_env_item(key, value):
+        """Route a variable: every ``HOLON_*`` item to the env-file, or a bare ``-e NAME`` when no env-file line
+        can carry it; any other item to the env-file if secret, else ``-e KEY=VALUE``."""
+        if env_files.is_passthrough_env_item(key, value):
+            self.passthrough_env[key] = value
+            self.docker_cmd.extend(["-e", key])
+        elif env_files.is_env_file_item(key, value):
             self.secret_env[key] = value
         else:
             self.docker_cmd.extend(["-e", f"{key}={value}"])

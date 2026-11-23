@@ -149,9 +149,7 @@ def _executing(command: str) -> str:
 
 
 _PLANNER_CLAUDE_ARGV = (
-    "docker run --env-file <ENV_FILE> --rm -i -e DOCKER_CLI_HINTS=false -e HOLON_ROLE=planner -e "
-    "HOLON_SKIP_PREFLIGHT=1 -e HOLON_STAGE_BUDGET_SECONDS=540 -e "
-    "HOLON_TARGET_WORKTREE=/home/holon/.holon-sandbox/workspace -e HOLON_TRACE=1 -e UV_FROZEN=1 -e "
+    "docker run --env-file <ENV_FILE> --rm -i -e DOCKER_CLI_HINTS=false -e UV_FROZEN=1 -e "
     "UV_PROJECT_ENVIRONMENT=/home/holon/.cache/holon-venv --add-host host.docker.internal:host-gateway -v "
     "/work/flow-x:/home/holon/.holon-sandbox/workspace --cap-drop=ALL --security-opt=no-new-privileges "
     "--add-host 169.254.169.254:127.0.0.1 --add-host metadata.google.internal:127.0.0.1 --add-host "
@@ -159,9 +157,7 @@ _PLANNER_CLAUDE_ARGV = (
 )
 
 _EXECUTOR_RESULT_FILE_ARGV = (
-    "docker run --env-file <ENV_FILE> --rm -i -e DOCKER_CLI_HINTS=false -e HOLON_ROLE=executor -e "
-    "HOLON_SKIP_PREFLIGHT=1 -e HOLON_STAGE_BUDGET_SECONDS=540 -e "
-    "HOLON_TARGET_WORKTREE=/home/holon/.holon-sandbox/workspace -e UV_FROZEN=1 -e "
+    "docker run --env-file <ENV_FILE> --rm -i -e DOCKER_CLI_HINTS=false -e UV_FROZEN=1 -e "
     "UV_PROJECT_ENVIRONMENT=/home/holon/.cache/holon-venv --add-host host.docker.internal:host-gateway -v "
     "<TMP>/result.json:/tmp/review_result.json -v /work/flow-x:/home/holon/.holon-sandbox/workspace "
     "--cap-drop=ALL --security-opt=no-new-privileges --add-host 169.254.169.254:127.0.0.1 --add-host "
@@ -170,21 +166,15 @@ _EXECUTOR_RESULT_FILE_ARGV = (
 )
 
 _INTENT_CREATOR_ARGV = (
-    "docker run --rm -i -e DOCKER_CLI_HINTS=false -e HOLON_ROLE=intent-creator -e HOLON_SKIP_PREFLIGHT=1 -e "
-    "HOLON_STAGE_BUDGET_SECONDS=540 -e HOLON_TARGET_WORKTREE=/home/holon/.holon-sandbox/workspace -e "
-    "UV_FROZEN=1 -e UV_PROJECT_ENVIRONMENT=/home/holon/.cache/holon-venv --add-host "
-    "host.docker.internal:host-gateway -v <TMP>/intent.json:/tmp/intent.json -v "
-    "/work/flow-x:/home/holon/.holon-sandbox/workspace --cap-drop=ALL --security-opt=no-new-privileges "
-    "--add-host 169.254.169.254:127.0.0.1 --add-host metadata.google.internal:127.0.0.1 --add-host "
-    "instance-data:127.0.0.1 holon/orchestrator --slug x"
+    "docker run --env-file <ENV_FILE> --rm -i -e DOCKER_CLI_HINTS=false -e UV_FROZEN=1 -e "
+    "UV_PROJECT_ENVIRONMENT=/home/holon/.cache/holon-venv --add-host host.docker.internal:host-gateway -v "
+    "<TMP>/intent.json:/tmp/intent.json -v /work/flow-x:/home/holon/.holon-sandbox/workspace "
+    "--cap-drop=ALL --security-opt=no-new-privileges --add-host 169.254.169.254:127.0.0.1 --add-host "
+    "metadata.google.internal:127.0.0.1 --add-host instance-data:127.0.0.1 holon/orchestrator --slug x"
 )
 
 _PI_LOCAL_LLM_ARGV = (
-    "docker run --env-file <ENV_FILE> --rm -i -e DOCKER_CLI_HINTS=false -e HOLON_AGENT_PROVIDER=vmlx -e "
-    "HOLON_LOCAL_BASE_URL=http://localhost:8081/v1 -e HOLON_LOCAL_CONTEXT_WINDOW=32768 -e HOLON_LOCAL_LLM=1 "
-    "-e HOLON_LOCAL_MODELS=qwen3:test -e HOLON_LOCAL_PROVIDER=vmlx -e HOLON_ROLE=executor -e "
-    "HOLON_SKIP_PREFLIGHT=1 -e HOLON_STAGE_BUDGET_SECONDS=540 -e "
-    "HOLON_TARGET_WORKTREE=/home/holon/.holon-sandbox/workspace -e UV_FROZEN=1 -e "
+    "docker run --env-file <ENV_FILE> --rm -i -e DOCKER_CLI_HINTS=false -e UV_FROZEN=1 -e "
     "UV_PROJECT_ENVIRONMENT=/home/holon/.cache/holon-venv --add-host host.docker.internal:host-gateway -v "
     "<TMP>/home/.holon/tmp/holon-pi-agent-<ID>:/home/holon/.holon-pi-agent:rw -e "
     "PI_CODING_AGENT_DIR=/home/holon/.holon-pi-agent -v /work/flow-x:/home/holon/.holon-sandbox/workspace "
@@ -194,14 +184,13 @@ _PI_LOCAL_LLM_ARGV = (
 )
 
 _TOKEN_REDUCE_ATTACH_ARGV = (
-    "docker run --env-file <ENV_FILE> --rm -i -e DOCKER_CLI_HINTS=false -e HOLON_ROLE=executor -e "
-    "HOLON_SKIP_PREFLIGHT=1 -e HOLON_STAGE_BUDGET_SECONDS=540 -e "
-    "HOLON_TARGET_WORKTREE=/home/holon/.holon-sandbox/workspace -e HOLON_TOKEN_REDUCE=1 -e UV_FROZEN=1 -e "
+    "docker run --env-file <ENV_FILE> --rm -i -e DOCKER_CLI_HINTS=false -e UV_FROZEN=1 -e "
     "UV_PROJECT_ENVIRONMENT=/home/holon/.cache/holon-venv --add-host host.docker.internal:host-gateway -v "
     "<TMP>/home/.holon/certs/ca.crt:/usr/local/share/ca-certificates/ca.crt:ro -e "
-    "NO_PROXY=localhost,127.0.0.1,::1,169.254.169.254 -e no_proxy=localhost,127.0.0.1,::1,169.254.169.254 -e "
-    "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/ca.crt -e "
-    "SSL_CERT_FILE=/home/holon/.holon-ca-bundle.crt -e REQUESTS_CA_BUNDLE=/home/holon/.holon-ca-bundle.crt -e "
+    "NO_PROXY=localhost,127.0.0.1,::1,169.254.169.254 -e no_proxy=localhost,127.0.0.1,::1,169.254.169.254 "
+    "-e NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/ca.crt -e "
+    "SSL_CERT_FILE=/home/holon/.holon-ca-bundle.crt -e "
+    "REQUESTS_CA_BUNDLE=/home/holon/.holon-ca-bundle.crt -e "
     "CURL_CA_BUNDLE=/home/holon/.holon-ca-bundle.crt -v /work/flow-x:/home/holon/.holon-sandbox/workspace "
     "--cap-drop=ALL --security-opt=no-new-privileges --add-host 169.254.169.254:127.0.0.1 --add-host "
     "metadata.google.internal:127.0.0.1 --add-host instance-data:127.0.0.1 holon/agent-codex b"
@@ -215,6 +204,11 @@ EXPECTED: dict[str, Launch] = {
             f"ANTHROPIC_API_KEY={CLAUDE_API_KEY}",
             f"GITHUB_TOKEN={GITHUB_TOKEN}",
             f"HOLON_MIRROR_URL=https://holon:{URL_PASSWORD}@mirror.example/repo",
+            "HOLON_ROLE=planner",
+            "HOLON_SKIP_PREFLIGHT=1",
+            "HOLON_STAGE_BUDGET_SECONDS=540",
+            "HOLON_TARGET_WORKTREE=/home/holon/.holon-sandbox/workspace",
+            "HOLON_TRACE=1",
         ],
         stdout=_executing(_PLANNER_CLAUDE_ARGV),
         stderr="",
@@ -222,14 +216,25 @@ EXPECTED: dict[str, Launch] = {
     "executor_result_file": Launch(
         code=0,
         docker_runs=[_argv(_EXECUTOR_RESULT_FILE_ARGV)],
-        env_file_lines=[f"GITHUB_TOKEN={GITHUB_TOKEN}"],
+        env_file_lines=[
+            f"GITHUB_TOKEN={GITHUB_TOKEN}",
+            "HOLON_ROLE=executor",
+            "HOLON_SKIP_PREFLIGHT=1",
+            "HOLON_STAGE_BUDGET_SECONDS=540",
+            "HOLON_TARGET_WORKTREE=/home/holon/.holon-sandbox/workspace",
+        ],
         stdout=_executing(_EXECUTOR_RESULT_FILE_ARGV),
         stderr="",
     ),
     "intent_creator": Launch(
         code=0,
         docker_runs=[_argv(_INTENT_CREATOR_ARGV)],
-        env_file_lines=[],
+        env_file_lines=[
+            "HOLON_ROLE=intent-creator",
+            "HOLON_SKIP_PREFLIGHT=1",
+            "HOLON_STAGE_BUDGET_SECONDS=540",
+            "HOLON_TARGET_WORKTREE=/home/holon/.holon-sandbox/workspace",
+        ],
         stdout=_executing(_INTENT_CREATOR_ARGV),
         stderr="",
     ),
@@ -264,7 +269,19 @@ EXPECTED: dict[str, Launch] = {
     "pi_local_llm": Launch(
         code=0,
         docker_runs=[_argv(_PI_LOCAL_LLM_ARGV)],
-        env_file_lines=[f"GITHUB_TOKEN={GITHUB_TOKEN}"],
+        env_file_lines=[
+            f"GITHUB_TOKEN={GITHUB_TOKEN}",
+            "HOLON_AGENT_PROVIDER=vmlx",
+            "HOLON_LOCAL_BASE_URL=http://localhost:8081/v1",
+            "HOLON_LOCAL_CONTEXT_WINDOW=32768",
+            "HOLON_LOCAL_LLM=1",
+            "HOLON_LOCAL_MODELS=qwen3:test",
+            "HOLON_LOCAL_PROVIDER=vmlx",
+            "HOLON_ROLE=executor",
+            "HOLON_SKIP_PREFLIGHT=1",
+            "HOLON_STAGE_BUDGET_SECONDS=540",
+            "HOLON_TARGET_WORKTREE=/home/holon/.holon-sandbox/workspace",
+        ],
         stdout=_executing(_PI_LOCAL_LLM_ARGV),
         stderr="",
     ),
@@ -287,6 +304,11 @@ EXPECTED: dict[str, Launch] = {
         docker_runs=[_argv(_TOKEN_REDUCE_ATTACH_ARGV)],
         env_file_lines=[
             f"HOLON_PROXY_URL=http://proxy:{URL_PASSWORD}@proxy.example:3128",
+            "HOLON_ROLE=executor",
+            "HOLON_SKIP_PREFLIGHT=1",
+            "HOLON_STAGE_BUDGET_SECONDS=540",
+            "HOLON_TARGET_WORKTREE=/home/holon/.holon-sandbox/workspace",
+            "HOLON_TOKEN_REDUCE=1",
             f"HTTPS_PROXY=http://proxy:{URL_PASSWORD}@proxy.example:3128",
             f"HTTP_PROXY=http://proxy:{URL_PASSWORD}@proxy.example:3128",
             f"http_proxy=http://proxy:{URL_PASSWORD}@proxy.example:3128",

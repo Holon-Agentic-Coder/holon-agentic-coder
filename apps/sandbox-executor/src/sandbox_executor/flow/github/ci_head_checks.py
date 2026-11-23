@@ -8,6 +8,11 @@ check name, so a re-triggered run replaces the cancelled one. Only ``success``, 
 A workflow registers the check run of a ``needs:``-dependent job only once the jobs it needs finish, so every visible
 run can be complete while its workflow is still running. Each run therefore carries the status of its check suite (read
 from ``commits/<sha>/check-suites``), and the head only passes once every suite holding one of its runs completed.
+
+Known gap: a suite with no visible run yet (e.g. a workflow queued behind a ``concurrency`` group) is not considered.
+GitHub can leave a run-less ``github-actions`` suite ``queued`` indefinitely when no workflow matches the push, so
+treating such suites as pending would hold the head pending forever; a workflow that has not registered any run
+cannot hold the head pending.
 """
 
 from __future__ import annotations

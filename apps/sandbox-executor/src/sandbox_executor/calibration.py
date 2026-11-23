@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypedDict, Unpack
 
 from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL
 from sandbox_executor.calibration_diff import (
@@ -39,6 +39,8 @@ from sandbox_executor.calibration_ev import (
     is_matching_record,
     parse_summary_records,
 )
+from sandbox_executor.calibration_evaluated_sha import LEDGER_EXECUTIONS_REL as LEDGER_EXECUTIONS_REL
+from sandbox_executor.calibration_evaluated_sha import evaluated_code_commit
 from sandbox_executor.calibration_execution_owner import unique_plan_branch_of_execution
 from sandbox_executor.calibration_outcome import is_converged_record, latest_summary_row
 from sandbox_executor.calibration_predicted import (
@@ -63,7 +65,6 @@ from sandbox_executor.redaction import redact_agent_secrets
 
 logger = logging.getLogger(__name__)
 
-LEDGER_EXECUTIONS_REL = "holon-knowledge/ledger/executions.jsonl"
 
 # Prettier invocation for the calibration report. It mirrors ``lint-docs`` in the root pyproject.toml and the
 # ``lint-md`` Makefile target (``npx prettier``, unpinned, repository .prettierrc.json found from cwd). ``--yes`` only
@@ -74,6 +75,16 @@ PRETTIER_TIMEOUT_SECONDS = 120
 PRETTIER_OUTPUT_LINES = 5
 # Bounded write/check passes: Markdown output is not always a fixpoint after a single Prettier write.
 PRETTIER_PASSES = 3
+
+
+class CalibrateReview(TypedDict, total=False):
+    """What Stage 4 established about the execution head, passed to ``run_calibrate`` by keyword.
+
+    ``approved_head`` is the commit the review approval covered (``approved_head_of``); None (the CLI) skips the
+    self-check's approved-head condition.
+    """
+
+    approved_head: str | None
 
 
 class CalibrationCommitError(RuntimeError):
@@ -564,6 +575,8 @@ def is_calibration_stale(
     target_head = current_head_ref or "HEAD"
     try:
         current_head_sha = resolve_commit_sha(target_head, target_worktree=target_worktree).lower()
+        # Stage 5's own calibration commits on top of the evaluated head do not make the report stale
+        current_head_sha = (evaluated_code_commit(current_head_sha, target_worktree) or current_head_sha).lower()
     except Exception as e:
         logger.debug("Failed to resolve current head SHA for %s: %s", target_head, e)
         current_head_sha = ""
@@ -1157,10 +1170,11 @@ def generate_calibration(  # noqa: C901, PLR0915
             logger.debug("Could not resolve plan_branch '%s': %s", plan_branch, e)
             resolved_plan_ref = plan_branch
 
-    # Resolve canonical commit SHA for execution ref
+    # Resolve the evaluated commit: the execution head with Stage 5's own calibration commits discounted
     evaluated_commit_sha: str | None = None
     try:
-        evaluated_commit_sha = resolve_commit_sha(resolved_exec_ref, target_worktree=target_worktree)
+        head_sha = resolve_commit_sha(resolved_exec_ref, target_worktree=target_worktree)
+        evaluated_commit_sha = evaluated_code_commit(head_sha, target_worktree) or head_sha
     except Exception as e:
         logger.debug("Could not resolve commit SHA for '%s': %s", resolved_exec_ref, e)
         if re.fullmatch(r"[0-9a-fA-F]{40}", execution_branch.strip()):
@@ -1496,6 +1510,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
     json_output: bool = False,
     skip_commit: bool = False,
     log_fn: Callable[[str], None] | None = None,
+    **review: Unpack[CalibrateReview],
 ) -> CalibrationReport:
     """Execute holon calibrate workflow: checkout calibrated branch, generate & commit report.
 
@@ -1507,6 +1522,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
         log_fn: Optional operator-facing log callable (for example ``FlowContext.log``) that
             receives a failed ACT-CAL ledger append warning. When None, the warning goes to the
             module logger only.
+        **review: ``CalibrateReview`` keywords; ``approved_head`` feeds the report self-check.
 
     Returns:
         CalibrationReport: Generated calibration report.

@@ -31,6 +31,7 @@ from tests.flow.helpers import (
     _git,
     _ledger_rows,
     _push_child_branch,
+    stage4_halts_at_consensus,
 )
 from tests.flow.lookup_patch import patch_lookup_sites
 
@@ -43,7 +44,8 @@ class TestFlowRoleDispatch:
         agents = FakeRoleAgents(tmp_path, origin)
         ctx = _dispatch_context(host, agents)
 
-        results = PipelineEngine(ctx).run()
+        with stage4_halts_at_consensus():
+            results = PipelineEngine(ctx).run()
 
         assert agents.roles() == ["intent-creator", "planner", "executor"]
         for call in agents.calls:
@@ -76,7 +78,8 @@ class TestFlowRoleDispatch:
         agents = FakeRoleAgents(tmp_path, origin, recorded_test_pass_rate=recorded)
         ctx = _dispatch_context(host, agents)
 
-        results = PipelineEngine(ctx).run()
+        with stage4_halts_at_consensus():
+            results = PipelineEngine(ctx).run()
 
         assert results["execute"].status == StageStatus.SUCCESS
         assert results["execute"].payload["test_pass_rate"] == expected
@@ -447,7 +450,7 @@ class TestFlowRoleDispatch:
     def test_empty_execution_fails_records_failed_and_never_opens_pr(self, flow_repos, tmp_path):
         host, origin = flow_repos
         agents = FakeRoleAgents(tmp_path, origin, executor_mode="empty")
-        ctx = _dispatch_context(host, agents, skip_review=False)
+        ctx = _dispatch_context(host, agents)
         real_run = subprocess.run
         gh_calls: list[list[str]] = []
 
@@ -770,7 +773,7 @@ class TestFlowDispatchMergeInteractions:
             patch("sandbox_executor.cli.run_preflight_probe", order.probe),
             patch("sandbox_executor.launcher.role_dispatch.dispatch_role_agent", order.dispatch),
             patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
-            patch("sys.argv", ["holon", "flow", str(intent_file), "--target-worktree", str(host), "--skip-review"]),
+            patch("sys.argv", ["holon", "flow", str(intent_file), "--target-worktree", str(host)]),
             pytest.raises(SystemExit),
         ):
             cli_main()

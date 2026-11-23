@@ -162,7 +162,6 @@ class FlowContext:
     auto_calibrate: bool = True
     token_reduce: bool | None = None
     skip_push: bool = False
-    skip_review: bool = False
     skip_calibrate: bool = False
     max_review_iterations: int = 25
     review_ensemble_size: int = DEFAULT_ENSEMBLE_SIZE  # Independent reviewer agent turns per Stage 4 iteration.
@@ -224,7 +223,6 @@ class FlowContext:
             "auto_calibrate": self.auto_calibrate,
             "token_reduce": self.token_reduce,
             "skip_push": self.skip_push,
-            "skip_review": self.skip_review,
             "skip_calibrate": self.skip_calibrate,
             "max_review_iterations": self.max_review_iterations,
             "review_ensemble_size": self.review_ensemble_size,
@@ -265,7 +263,6 @@ class FlowContext:
             auto_calibrate=data.get("auto_calibrate", True),
             token_reduce=data.get("token_reduce", False),
             skip_push=data.get("skip_push", False),
-            skip_review=data.get("skip_review", False),
             skip_calibrate=data.get("skip_calibrate", False),
             max_review_iterations=data.get("max_review_iterations", 25),
             review_ensemble_size=int(data.get("review_ensemble_size") or DEFAULT_ENSEMBLE_SIZE),

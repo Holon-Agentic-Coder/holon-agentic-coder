@@ -9,13 +9,13 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from sandbox_executor import flow as flow_module
 from sandbox_executor.budgets import resolve_entropy_budget
 from sandbox_executor.decomposition_rule import DecompositionDecision, should_decompose
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
-from sandbox_executor.flow import FlowContext
+from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.naming import model_code, ticker_for
 from sandbox_executor.review_ensemble import (
     ParsedTrailer,
@@ -38,6 +38,16 @@ def _verified_diff():
     return patch(
         "sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 changed path(s)")
     )
+
+
+@contextmanager
+def stage4_halts_at_consensus() -> Iterator[MagicMock]:
+    """Stand in for Stage 4 with the consensus halt the real stage returns, for an engine run about Stages 1-3."""
+    halted = StageResult(
+        stage=FlowStage.REVIEW, status=StageStatus.HALTED_FOR_HUMAN, payload={"halted_for_human": True}
+    )
+    with patch("sandbox_executor.flow.pipeline.run_review_stage", return_value=halted) as review:
+        yield review
 
 
 @contextmanager
@@ -281,7 +291,6 @@ def _dispatch_context(host: Path, agents: FakeRoleAgents, **overrides: Any) -> F
         "model": "claude-opus-5-5",
         "dry_run": False,
         "token_reduce": False,
-        "skip_review": True,
         "skip_calibrate": True,
         "auto_calibrate": False,
         "dispatcher": agents,

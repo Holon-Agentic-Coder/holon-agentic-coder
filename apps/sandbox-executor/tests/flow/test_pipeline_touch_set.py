@@ -44,7 +44,7 @@ class TestTouchSetReplan:
 
     @staticmethod
     def _run(execute_results: list[StageResult]) -> tuple[FlowContext, dict[str, StageResult], list[Any]]:
-        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_review=True, skip_calibrate=True)
+        ctx = FlowContext(token_reduce=False, intent_data={"slug": "parent"}, skip_calibrate=True)
         feedback: list[Any] = []
 
         def plan(context: FlowContext) -> StageResult:

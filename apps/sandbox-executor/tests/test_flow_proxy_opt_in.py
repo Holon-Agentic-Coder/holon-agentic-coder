@@ -297,3 +297,14 @@ def test_the_port_probe_stub_is_the_one_the_resolver_uses(monkeypatch):
     resolve_flow_proxy_choice()
 
     assert probed == [("127.0.0.1", 18080)]
+
+
+@pytest.mark.parametrize("variable", ["HOLON_TOKEN_REDUCE", "HOLON_PASSIVE_MONITORING"])
+def test_an_env_opt_in_attaches_without_a_local_listener(monkeypatch, recorder, variable):
+    monkeypatch.setenv(variable, "1")
+    monkeypatch.setenv("HOLON_PROXY_URL", "http://proxy.example:3128")
+    monkeypatch.setattr(coherence.socket, "create_connection", _must_not_run("the port probe"))
+
+    assert resolve_flow_proxy_choice() == FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=True)
+    assert _flow_routing() == [(False, True)] * 3
+    assert recorder.calls == []

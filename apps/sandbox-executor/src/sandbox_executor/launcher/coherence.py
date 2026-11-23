@@ -58,16 +58,19 @@ def resolve_flow_proxy_choice(token_reduce: bool = False) -> FlowProxyChoice:
     - ``HOLON_TOKEN_REDUCE`` in ("0", "false", "no", "off") returns (False, False) before any probe runs.
     - ``token_reduce`` (the flow's ``--token-reduce`` or ``--mitm-web``) returns (True, False), as on the per-stage
       commands.
+    - An env-only opt-in (``HOLON_TOKEN_REDUCE=1``, ``HOLON_PASSIVE_MONITORING=1``) returns (False, True) without a
+      probe: the launcher reads those variables itself, exactly as on the per-stage path, and the flag routes host-side
+      review traffic through the proxy as the per-stage ``review-loop`` command does.
     - Otherwise a proxy accepting connections on the probed port is attached to: (False, True).
 
-    The Docker image and CLI binary probes never run here: a present but unused image must not change routing. An
-    env-only opt-in (``HOLON_TOKEN_REDUCE=1``, ``HOLON_PASSIVE_MONITORING=1``) needs no flow-side value, because the
-    launcher reads those variables itself, exactly as on the per-stage path.
+    The Docker image and CLI binary probes never run here: a present but unused image must not change routing.
     """
     if _token_reduce_opted_out():
         return FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
     if token_reduce:
         return FlowProxyChoice(spawn_sidecar=True, attach_running_proxy=False)
+    if _explicit_coherence_choice(False) is True:
+        return FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=True)
     return FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=_proxy_port_reachable())
 
 

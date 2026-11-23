@@ -168,3 +168,54 @@ def test_intent_target_branch_defaults_to_main(tmp_path: Path) -> None:
     assert intent_target_branch(INTENT, EXEC, str(tmp_path)) == "main"
     assert intent_target_branch("", EXEC, str(tmp_path)) == "main"
     assert target_branch_refs("") == ()
+
+
+def _intents_ledger(tmp_path: Path, *lines: str) -> None:
+    git(tmp_path, "checkout", "-q", EXEC)
+    commit(tmp_path, {"holon-knowledge/ledger/intents.jsonl": "".join(f"{line}\n" for line in lines)}, "intents")
+
+
+def test_intent_target_branch_reads_the_matching_row(tmp_path: Path) -> None:
+    make_flow(tmp_path)
+    _intents_ledger(
+        tmp_path,
+        "not json",
+        "[1]",
+        json.dumps({"target_branch": "no-branch-key"}),
+        json.dumps({"branch": "I-9-other/_", "target_branch": "other"}),
+        json.dumps({"branch": INTENT, "target_branch": "I-0-parent/P-0-parent/_"}),
+    )
+    assert intent_target_branch(INTENT, EXEC, str(tmp_path)) == "I-0-parent/P-0-parent/_"
+    assert intent_target_branch("", EXEC, str(tmp_path)) == "main"
+
+
+def test_intent_target_branch_without_a_matching_target_is_main(tmp_path: Path) -> None:
+    make_flow(tmp_path)
+    _intents_ledger(
+        tmp_path, json.dumps({"branch": "I-1-prop"}), json.dumps({"branch": "I-9-other", "target_branch": "x"})
+    )
+    assert intent_target_branch(INTENT, EXEC, str(tmp_path)) == "main"
+
+
+def test_target_branch_refs_strip_qualifiers() -> None:
+    expected = ("refs/remotes/origin/main", "refs/heads/main")
+    assert target_branch_refs("origin/main") == target_branch_refs("refs/heads/main") == expected
+
+
+def test_target_with_unrelated_history_is_skipped(tmp_path: Path) -> None:
+    make_flow(tmp_path)
+    commit(tmp_path, {"src/own.py": "own\n"}, "pr")
+    git(tmp_path, "checkout", "-q", "--orphan", "unrelated")
+    commit(tmp_path, {"other.txt": "other\n"}, "unrelated root")
+    git(tmp_path, "checkout", "-q", EXEC)
+    refs = ("refs/heads/unrelated", *target_branch_refs("main"))
+    _base, _target, label = patch_diff_range(PLAN, EXEC, str(tmp_path), (), refs)
+    assert label == DIFF_BASE_PLAN
+
+
+def test_gone_plan_branch_keeps_a_fallback_that_contains_the_target_merge_base(tmp_path: Path) -> None:
+    make_flow(tmp_path)
+    commit(tmp_path, {"src/own.py": "own\n"}, "pr")
+    git(tmp_path, "branch", "-D", PLAN)
+    base, _target, label = patch_diff_range(PLAN, EXEC, str(tmp_path), (INTENT, "main"), target_branch_refs("main"))
+    assert (base, label) == (f"refs/heads/{INTENT}", "merge_base_fallback")

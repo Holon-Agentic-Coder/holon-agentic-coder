@@ -77,18 +77,20 @@ def _target_merge_base_ref(
 ) -> str | None:
     """The first target ref to measure from, or None to keep the plan-branch base.
 
-    A ref is skipped when it does not verify or already contains the execution head (a merged PR). The plan branch is
+    A ref is skipped when it does not verify, already contains the execution head (a merged PR) or shares no history
+    with it (no merge-base). The plan branch is
     kept when it already contains the target merge-base: its base is then the newer one (a decomposed child whose plan
     branch carries its parent's integrated work, or an execution branch that never merged the target).
     """
     for ref in target_refs:
         if not _verified(target_worktree, ref) or _is_ancestor(target_worktree, target_rev, ref):
             continue
-        if plan_rev:
-            res = run_git(["merge-base", ref, target_rev], cwd=target_worktree, check=False, timeout=30)
-            merge_base = res.stdout.strip() if res.returncode == 0 else ""
-            if merge_base and _is_ancestor(target_worktree, merge_base, plan_rev):
-                return None
+        res = run_git(["merge-base", ref, target_rev], cwd=target_worktree, check=False, timeout=30)
+        merge_base = res.stdout.strip() if res.returncode == 0 else ""
+        if not merge_base:
+            continue
+        if plan_rev and _is_ancestor(target_worktree, merge_base, plan_rev):
+            return None
         return ref
     return None
 

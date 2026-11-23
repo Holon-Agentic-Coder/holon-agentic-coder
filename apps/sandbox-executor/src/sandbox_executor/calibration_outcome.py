@@ -96,9 +96,13 @@ def _is_superseded_failure(
 
 
 def _rows_after(record: dict[str, Any], ordered_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The rows strictly after ``record`` in flow order (``record`` itself excluded, by identity or order key)."""
+    """The rows after ``record`` in ``ordered_rows`` (flow order, ledger order on a full tie); a row that is not in
+    the list falls back to the rows with a later order key."""
+    index = next((i for i, row in enumerate(ordered_rows) if row is record), None)
+    if index is not None:
+        return ordered_rows[index + 1 :]
     key = summary_row_order_key(record)
-    return [row for row in ordered_rows if row is not record and summary_row_order_key(row) > key]
+    return [row for row in ordered_rows if summary_row_order_key(row) > key]
 
 
 def latest_row_per_execution(ordered_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -135,12 +139,11 @@ def has_unresolved_failure(
     Args:
         ordered_records: The plan's Stage 3 execution rows in flow order.
         plan_rows: Every summary row of the plan (any stage), consulted only to resolve a ``sync_conflict`` row; None
-            uses ``ordered_records``.
+            resolves it by a later execution row only.
     """
-    rows = ordered_records if plan_rows is None else plan_rows
     return any(
         _counts_as_failure(record)
         and not is_infrastructure_failure(record)
-        and not _is_superseded_failure(record, ordered_records[index + 1 :], _later_plan_rows(record, rows))
+        and not _is_superseded_failure(record, ordered_records[index + 1 :], _later_plan_rows(record, plan_rows))
         for index, record in enumerate(ordered_records)
     )

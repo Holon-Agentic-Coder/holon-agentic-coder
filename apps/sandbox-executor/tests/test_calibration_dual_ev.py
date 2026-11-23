@@ -480,3 +480,63 @@ def test_row_stage(record: dict[str, Any], stage: str) -> None:
 
 def test_row_stage_accepts_the_plan_execution_id_as_execution() -> None:
     assert row_stage({"execution_id": "legacy-1"}, "legacy-1") == "execution"
+
+
+# Targeted cases for mutants that survived the scoped mutation pass on changed lines.
+
+
+def test_failed_status_with_a_zero_exit_code_is_a_failure() -> None:
+    rows = [_ledger_row("E-1", "success", 1), {**_ledger_row("E-2", "failed", 2), "exit_code": 0}]
+    assert _matrix_drag(rows) == 50.0
+
+
+def test_final_sync_conflict_with_a_zero_exit_code_is_unresolved() -> None:
+    rows = [_ledger_row("E-1", "success", 1), {**_ledger_row("E-2", "sync_conflict", 2), "exit_code": 0}]
+    assert _matrix_drag(rows) == 50.0
+
+
+def test_a_later_row_of_the_same_execution_moves_to_its_own_place_in_flow_order() -> None:
+    """E-1 fails, E-2 fails, then E-1's superseding success: the success comes last and resolves both."""
+    rows = [_ledger_row("E-1", "failed", 1), _ledger_row("E-2", "failed", 2), _ledger_row("E-1", "success", 3)]
+    assert _matrix_drag(rows) == 0.0
+
+
+def test_rows_without_an_id_supersede_each_other_in_flow_order() -> None:
+    no_id = {key: value for key, value in _ledger_row("", "success", 1).items() if key != "execution_id"}
+    rows = [no_id, _ledger_row("E-2", "failed", 2), {**no_id, "created_at": "2026-11-20T01:03:00Z"}]
+    assert _matrix_drag(rows) == 0.0
+
+
+@pytest.mark.parametrize(("approval_first", "drag"), [(False, 0.0), (True, 50.0)])
+def test_sync_conflict_and_approval_at_the_same_instant_follow_ledger_order(approval_first: bool, drag: float) -> None:
+    conflict = {**_ledger_row("E-1", "sync_conflict", 2), "exit_code": 0}
+    approval = {**_ledger_row("REV-1", "approved", 2), "exit_code": 0}
+    tail = [approval, conflict] if approval_first else [conflict, approval]
+    assert _matrix_drag([_ledger_row("E-0", "success", 1), *tail]) == drag
+
+
+def test_another_plans_rows_are_never_used_when_the_plan_has_rows() -> None:
+    other = {**_ledger_row("E-9", "failed", 5), "plan_branch": "I-other/P-other/_"}
+    assert _matrix_drag([_ledger_row("E-1", "success", 1), other]) == 0.0
+
+
+def test_legacy_fallback_uses_every_execution_summary_row() -> None:
+    """No row of the plan: every execution summary row (``entry_type`` defaulting to summary) is evaluated."""
+    rows = [
+        {"execution_id": "E-x", "status": "success", "exit_code": 0, "created_at": "2026-11-20T01:01:00Z"},
+        {"execution_id": "E-y", "status": "failed", "exit_code": 1, "created_at": "2026-11-20T01:02:00Z"},
+        {"execution_id": "REV-z", "status": "failed", "exit_code": 1, "created_at": "2026-11-20T01:03:00Z"},
+    ]
+    metrics = evaluate_dual_ev_outcomes(rows, "E-unknown", "", predicted_impact=50.0, cost_effort=5.0)
+    assert metrics.bug_ev_drag == 50.0
+
+
+def test_execution_rows_match_by_id_without_a_plan_branch() -> None:
+    from sandbox_executor.calibration_ev import is_matching_execution_record
+    from sandbox_executor.calibration_rows import is_execution_row
+
+    assert is_matching_execution_record({"execution_id": "E-9"}, "E-9", MATRIX_PLAN)
+    assert is_matching_execution_record({"execution_id": "legacy-9"}, "legacy-9", "")
+    assert is_execution_row({"execution_id": "legacy-9"}, "legacy-9")
+    assert not is_execution_row({"execution_id": "XXXX"})
+    assert row_stage({"execution_id": "XXXX"}) == "other"

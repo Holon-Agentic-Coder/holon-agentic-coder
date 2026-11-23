@@ -589,8 +589,8 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
     failures: list[str] = []
     cases = list(_invalid_value_cases())
     for case_id, env, host_config, credential in cases:
-        # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variables to
-        # the container unchanged (pre-existing behaviour, outside this rule); only its doctor output is checked.
+        # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variable to the
+        # container unchanged: through the env-file, so neither the argv nor the echo may hold a fragment of it.
         rejected = "TIMEOUT" not in case_id and "BUDGET" not in case_id
         docker = _DockerRecorder()
         with (
@@ -612,16 +612,82 @@ def test_invalid_envelope_value_never_echoed_by_doctor_or_run_path(monkeypatch, 
                         fetch=lambda url, timeout: b"{}",
                     )
                 )
-            if rejected:
-                codes.append(cli.run_docker_container("planner", "img", [], agent_id="pi"))
-        if _leaks(out, credential):
+            codes.append(cli.run_docker_container("planner", "img", [], agent_id="pi"))
+        if _leaks(_without_env_file_path(out, docker.argv), credential):
             failures.append(case_id)
         if rejected and (codes != [1, 1, 1, 1] or docker.argv):
             failures.append(f"{case_id}:not-rejected")
+        if not rejected:
+            failures.extend(f"{case_id}:{where}" for where in _forwarded_run_failures(env, docker, credential))
     assert len(cases) == (len(INVALID_VALUE_ENV) + len(INVALID_VALUE_HOST_FIELDS)) * MATRIX_SIZE // (
         len(HOSTS) * len(SUFFIXES)
     )
     assert not failures, f"{len(failures)}/{len(cases)} invalid-value cases failed, e.g. {failures[:5]}"
+
+
+def _forwarded_run_failures(env: dict[str, str], docker: _DockerRecorder, credential: str) -> list[str]:
+    """Name what is wrong with a run that forwarded every `HOLON_*` variable of `env` to the container."""
+    failures = []
+    if not docker.argv:
+        failures.append("no-run")
+    if _leaks(_without_env_file_path([" ".join(docker.argv)], docker.argv), credential):
+        failures.append("main-argv")
+    failures.extend(f"not-env-file:{name}" for name in env if docker.env_file.get(name) != env[name])
+    return failures
+
+
+# Every forwarded `HOLON_*` name checked by the env-file routing fuzz: the invalid-value names (including the
+# `TIMEOUT` and `BUDGET` ones), names whose value is not secret-shaped, and an arbitrary name.
+FORWARDED_HOLON_NAMES = (
+    *INVALID_VALUE_ENV,
+    "HOLON_AGENT_SETTINGS",
+    "HOLON_AGENT_EFFORT",
+    "HOLON_MODEL",
+    "HOLON_PROXY_URL",
+    "HOLON_EXAMPLE_SETTING",
+)
+
+
+def _run_forwarded_value(name: str, value: str) -> tuple[int, _DockerRecorder, list[str], dict[str, str], list[str]]:
+    """Run the main container and the probe with only `name=value` set (plus the isolated `HOME`)."""
+    from sandbox_executor import preflight
+
+    docker = _DockerRecorder()
+    stdout = io.StringIO()
+    with (
+        patch.dict(os.environ, {name: value, "HOME": os.environ["HOME"]}, clear=True),
+        patch.object(cli.subprocess, "run", docker),
+        contextlib.redirect_stdout(stdout),
+        contextlib.redirect_stderr(io.StringIO()),
+    ):
+        rc = cli.run_docker_container("planner", "img", [], agent_id="claude-agent")
+        probe_argv, probe_env = preflight.build_probe_docker_cmd("claude-agent", "m", "img", "probe", session_mounts=[])
+    echo = [line for line in stdout.getvalue().splitlines() if line.startswith("Executing:")]
+    return rc, docker, probe_argv, probe_env, echo
+
+
+def _forwarded_value_failures(name: str, value: str) -> list[str]:
+    """Name every site where a forwarded `HOLON_*` value shows, or the env-file that lacks it."""
+    rc, docker, probe_argv, probe_env, echo = _run_forwarded_value(name, value)
+    texts = {"main-argv": [" ".join(docker.argv)], "probe-argv": [" ".join(probe_argv)], "echo": echo}
+    failures = _leak_sites(texts, docker.argv, [value])
+    if rc != 0 or not echo:
+        failures.append("no-run")
+    if docker.env_file.get(name) != value or probe_env.get(name) != value:
+        failures.append("not-env-file")
+    return failures
+
+
+@pytest.mark.parametrize("name", FORWARDED_HOLON_NAMES)
+def test_every_forwarded_holon_value_stays_off_argv_and_echo(name, monkeypatch):
+    """A bare credential under any forwarded `HOLON_*` name reaches only the env-file, in the main run and probe."""
+    _patch_docker_host(monkeypatch)
+    failures = [
+        f"{name}:{shape}:{where}"
+        for shape, make in _credential_shapes().items()
+        for where in _forwarded_value_failures(name, make())
+    ]
+    assert not failures, f"{len(failures)} forwarded-value cases failed, e.g. {failures[:20]}"
 
 
 # Base URLs `urlsplit` (or its lazy port check) rejects, or that have no usable `scheme://host`.

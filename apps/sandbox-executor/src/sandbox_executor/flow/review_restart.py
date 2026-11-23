@@ -128,6 +128,13 @@ def stage5_merged_head_gate(
     return _decide(context, start, record, seams), record
 
 
+def approval_stands(context: FlowContext, result: StageResult) -> bool:
+    """Whether ``result`` and Stage 4's latest result are approvals no merged-head CI failure has withdrawn."""
+    latest = context.stage_results.get(FlowStage.REVIEW.value) or result
+    approved = result.status == StageStatus.APPROVED and latest.status == StageStatus.APPROVED
+    return approved and withdrawn_consensus_of(context) is None
+
+
 def is_review_restart(result: StageResult) -> bool:
     """Whether a Stage 5 result withdrew the consensus and asks for a fresh Stage 4."""
     return result.stage == FlowStage.CALIBRATE and bool(result.payload.get("review_restart"))

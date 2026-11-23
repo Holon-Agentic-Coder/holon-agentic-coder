@@ -73,6 +73,10 @@ _LAZY_EXPORTS: dict[str, str] = {
         "_wait_for_ci_registration probe_ci_checks resolve_ci_registration_timeout"
     ),
     "sandbox_executor.flow.github.ci_final_head": "format_final_head_ci",
+    "sandbox_executor.flow.github.ci_head_checks": (
+        "CancelledReruns classify_head_checks gh_head_checks_probe gh_run_rerunner is_cancelled is_failed is_pending "
+        "latest_checks_for_head parse_check_runs probe_head_checks"
+    ),
     "sandbox_executor.flow.github.ci_reverify": "rerun_note",
     "sandbox_executor.flow.github.ci_wait": (
         "CiWaitPolicy CiWaitResult is_pending_only next_poll_interval pending_check_names settle_pending_ci "
@@ -121,6 +125,9 @@ _LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.review.ci_outcome": "describe_ci_outcome gate_ci_flags",
     "sandbox_executor.flow.review.cli": "run_review_loop_cli",
+    "sandbox_executor.flow.review.consensus_withdrawal": (
+        "WithdrawalSeams failed_runs_of render_withdrawal withdraw_consensus withdrawal_marker withdrawn_consensus_of"
+    ),
     "sandbox_executor.flow.review.ensemble": (
         "_ENGINE_PASSES_PER_DISPATCH _dispatch_review_ensemble _ensemble_iteration _resolve_reviewed_target "
         "_review_base_ref _semantic_pr_text"
@@ -130,6 +137,9 @@ _LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.review.ids": "build_review_id",
     "sandbox_executor.flow.review.loop": (
         "_loop_status _review_window _reviewers_objected _run_engine_review_loop run_review_loop"
+    ),
+    "sandbox_executor.flow.review.merged_head_gate": (
+        "MergedHeadSeams format_merged_head_ci gate_merged_head_ci gate_record skipped_record"
     ),
     "sandbox_executor.flow.review.posting": "is_terminal_verdict",
     "sandbox_executor.flow.review.records": (
@@ -144,6 +154,9 @@ _LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.review.verdict": "review_loop_approved review_summary_lines",
     "sandbox_executor.flow.review.workspace": "HOST_REVIEW_REFUSAL reviewers_sandboxed",
+    "sandbox_executor.flow.review_restart": (
+        "approval_stands calibrate_with_review_restart is_review_restart stage5_merged_head_gate"
+    ),
     "sandbox_executor.flow.stage5": "Stage5Outcome Stage5Steps run_stage5 standalone_context",
     "sandbox_executor.flow.stage5_ledger": "already_reconciled recorded_verdicts",
     "sandbox_executor.flow.stage5_verdict": "resolve_execution_verdict",
@@ -226,6 +239,7 @@ __all__ = [
     "BlockedWaiter",
     "BranchMerge",
     "CalibrationSyncError",
+    "CancelledReruns",
     "CarriedPass",
     "CheckpointStore",
     "CiWaitPolicy",
@@ -247,6 +261,7 @@ __all__ = [
     "InFlightFlow",
     "IntentQuestions",
     "IntentStage",
+    "MergedHeadSeams",
     "MigrationTransform",
     "PipelineEngine",
     "PlanBudget",
@@ -267,6 +282,7 @@ __all__ = [
     "StageStatus",
     "StaleRange",
     "WarningSeams",
+    "WithdrawalSeams",
     "WorktreeCheckpoint",
     "_append_ledger_row",
     "_append_only_union",
@@ -352,12 +368,14 @@ __all__ = [
     "already_reconciled",
     "answered_by_id",
     "answered_by_text",
+    "approval_stands",
     "base_branch_name",
     "blocked_record",
     "blocker_is_clear",
     "build_pr_review_consensus_report",
     "build_review_id",
     "build_review_stage_outcome",
+    "calibrate_with_review_restart",
     "carried_blocker",
     "check_admission",
     "check_and_resolve_stage_conflicts",
@@ -365,6 +383,7 @@ __all__ = [
     "choose_evidence",
     "choose_merge_flag",
     "classify_conflicts",
+    "classify_head_checks",
     "command_failure",
     "consult_knowledge",
     "create_or_update_pr",
@@ -379,17 +398,23 @@ __all__ = [
     "execution_veto_error",
     "extract_valid_ledger_rows",
     "failed_partial_head",
+    "failed_runs_of",
     "fast_forward_local_branch",
     "fetch_base",
     "format_decomposition_summary",
     "format_final_head_ci",
+    "format_merged_head_ci",
     "format_refusal",
     "format_review_git_trailers",
     "gate_ci_flags",
+    "gate_merged_head_ci",
+    "gate_record",
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
     "gh_comment_editor",
     "gh_comment_records",
+    "gh_head_checks_probe",
+    "gh_run_rerunner",
     "has_inline_answer",
     "has_pass_marker",
     "head_move_since_calibration",
@@ -401,9 +426,14 @@ __all__ = [
     "is_ancestor",
     "is_calibration_commit",
     "is_calibration_path",
+    "is_cancelled",
+    "is_failed",
     "is_marked_open",
+    "is_pending",
     "is_pending_only",
+    "is_review_restart",
     "is_terminal_verdict",
+    "latest_checks_for_head",
     "leftover_paths",
     "list_base_files",
     "load_checkpoint",
@@ -420,6 +450,7 @@ __all__ = [
     "open_flow_pull_requests",
     "other_checkpoints",
     "override_already_recorded",
+    "parse_check_runs",
     "parse_metrics",
     "pending_check_names",
     "plan_id_of",
@@ -431,6 +462,7 @@ __all__ = [
     "pr_head_sha",
     "prepare_calibrated_branch",
     "probe_ci_checks",
+    "probe_head_checks",
     "publish_calibration",
     "publish_new_child_branches",
     "publish_with_first_row",
@@ -456,6 +488,7 @@ __all__ = [
     "refusal",
     "remote_error",
     "render_reviewer_summary_line",
+    "render_withdrawal",
     "replan_feedback_env",
     "report_staleness",
     "rerun_calibration",
@@ -488,6 +521,8 @@ __all__ = [
     "save_checkpoint",
     "serialize_open",
     "settle_pending_ci",
+    "skipped_record",
+    "stage5_merged_head_gate",
     "stage5_steps",
     "stage_success",
     "stale_body",
@@ -508,5 +543,8 @@ __all__ = [
     "wait_for_pending_ci",
     "waiter_key",
     "warn_stale",
+    "withdraw_consensus",
+    "withdrawal_marker",
+    "withdrawn_consensus_of",
     "worktree_checkpoints",
 ]

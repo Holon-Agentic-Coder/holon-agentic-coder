@@ -21,6 +21,9 @@ from typing import Any
 
 from sandbox_executor.flow.git_refs import EXECUTOR_GIT_ENV, _fetch_refspecs_error
 from sandbox_executor.flow.github.merge_method import lookup_merge_flag
+from sandbox_executor.flow.github.mergeability_policy import PROTECTED_BRANCHES as PROTECTED_BRANCHES
+from sandbox_executor.flow.github.mergeability_policy import _bare_branch as _bare_branch
+from sandbox_executor.flow.github.mergeability_policy import merge_refusal_reason as merge_refusal_reason
 from sandbox_executor.flow.ledger_interleave import resolve_ledger_only_conflicts
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
@@ -28,7 +31,6 @@ from sandbox_executor.redaction import redact_agent_secrets
 #: Runs ``gh <args>`` in a directory and returns the completed process; tests pass a fake.
 GhRunner = Callable[[list[str], str], subprocess.CompletedProcess[str]]
 
-PROTECTED_BRANCHES = frozenset({"main", "master"})
 PR_VIEW_FIELDS = "number,state,baseRefName,headRefName,headRefOid,mergeable,mergeCommit,url"
 # How long a merge waits for GitHub to recompute mergeability and for CI to settle after the head moved.
 MERGE_SETTLE_SECONDS = 900.0
@@ -57,35 +59,6 @@ class MergeResult:
     merge_commit: str | None = None
     reason: str | None = None
     already_merged: bool = False
-
-
-def _bare_branch(name: str | None) -> str:
-    """Strip ``refs/heads/``, ``refs/remotes/`` and ``origin/`` prefixes and surrounding blanks from a branch name."""
-    clean = str(name or "").strip()
-    for prefix in ("refs/heads/", "refs/remotes/", "origin/"):
-        clean = clean.removeprefix(prefix)
-    return clean
-
-
-def merge_refusal_reason(base_branch: str | None, expected_base: str | None, default_branch: str | None) -> str | None:
-    """Return why a PR with base ``base_branch`` must not be merged into ``expected_base``, or None when it may.
-
-    Fail closed: a failed default-branch lookup (``default_branch`` None or blank), an empty base or expected base,
-    ``main``, ``master`` or the default branch on either side, and any base other than the expected plan branch are
-    all refused.
-    """
-    default = _bare_branch(default_branch)
-    if not default:
-        return "the repository default branch could not be determined, so the merge is refused (fail closed)"
-    base, expected = _bare_branch(base_branch), _bare_branch(expected_base)
-    if not base or not expected:
-        return "the PR base or the expected plan branch is empty"
-    for name, label in ((expected, "expected base"), (base, "PR base")):
-        if name in PROTECTED_BRANCHES or name == default:
-            return f"the {label} '{name}' is main, master or the repository default branch '{default}'"
-    if base != expected:
-        return f"the PR base '{base}' is not the expected plan branch '{expected}'"
-    return None
 
 
 def _gh_json(repo_dir: str, args: list[str], runner: GhRunner) -> Any:

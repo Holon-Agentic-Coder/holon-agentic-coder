@@ -11,6 +11,13 @@ import subprocess
 import time
 from typing import Any
 
+from sandbox_executor.flow.github.mergeability_policy import (
+    gh_view_verdict,
+    local_error_result,
+    merge_tree_verdict,
+    missing_ref_result,
+    not_a_repository_result,
+)
 from sandbox_executor.git import run_git
 
 logger = logging.getLogger(__name__)
@@ -42,7 +49,7 @@ def _resolve_commit_ref(repo_dir: str, ref: str) -> tuple[str | None, str]:
     return (stdout or ref), stderr
 
 
-def check_pr_mergeability(  # noqa: C901, PLR0912, PLR0915
+def check_pr_mergeability(
     repo_dir: str,
     branch: str,
     target_branch: str = "main",
@@ -88,153 +95,96 @@ def check_pr_mergeability(  # noqa: C901, PLR0912, PLR0915
 
     # 1. Attempt GitHub CLI inspection if gh is installed and available
     if shutil.which("gh") and clean_branch:
-        gh_env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
-        for attempt in range(3):
-            try:
-                gh_proc = subprocess.run(
-                    [
-                        "gh",
-                        "pr",
-                        "view",
-                        clean_branch,
-                        "--json",
-                        "number,mergeable,mergeStateStatus,statusCheckRollup",
-                    ],
-                    cwd=repo_dir,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=60,
-                    env=gh_env,
-                )
-                if gh_proc.returncode != 0:
-                    break
-                if gh_proc.returncode == 0 and gh_proc.stdout.strip():
-                    data = json.loads(gh_proc.stdout)
-                    mergeable = str(data.get("mergeable") or "UNKNOWN").upper()
-                    merge_state_status = str(data.get("mergeStateStatus") or "UNKNOWN").upper()
-
-                    # Retry briefly if GitHub is still computing mergeability (UNKNOWN)
-                    if mergeable == "UNKNOWN" and attempt < 2:
-                        time.sleep(2)
-                        continue
-
-                    is_dirty = (merge_state_status == "DIRTY") or (mergeable == "CONFLICTING")
-                    return {
-                        "mergeable": mergeable,
-                        "merge_state_status": merge_state_status,
-                        "is_dirty": is_dirty,
-                        "source": "github_cli",
-                        "pr_number": data.get("number"),
-                        "status_check_rollup": data.get("statusCheckRollup"),
-                        "diagnostics": {},
-                    }
-            except Exception as e:
-                logger.debug(f"gh pr view check failed: {e}")
-                break
+        gh_result = _gh_mergeability(repo_dir, clean_branch, proxy_env)
+        if gh_result is not None:
+            return gh_result
 
     # 2. Fallback to local git inspection
-    is_dirty = False
-    mergeable = "UNKNOWN"
-    merge_state_status = "UNKNOWN"
-    diagnostics: dict[str, Any] = {}
+    return _local_mergeability(repo_dir, clean_branch, target_branch)
 
+
+def _gh_mergeability(repo_dir: str, clean_branch: str, proxy_env: dict[str, str] | None) -> dict[str, Any] | None:
+    """Return the ``gh pr view`` mergeability verdict, retrying while GitHub computes it, or None to fall back."""
+    gh_env = {**os.environ, **(proxy_env or {}), "DOCKER_CLI_HINTS": "false"}
+    for attempt in range(3):
+        try:
+            gh_proc = subprocess.run(
+                ["gh", "pr", "view", clean_branch, "--json", "number,mergeable,mergeStateStatus,statusCheckRollup"],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+                env=gh_env,
+            )
+            if gh_proc.returncode != 0:
+                return None
+            if not gh_proc.stdout.strip():
+                continue
+            result, still_computing = gh_view_verdict(json.loads(gh_proc.stdout))
+            # Retry briefly if GitHub is still computing mergeability (UNKNOWN)
+            if still_computing and attempt < 2:
+                time.sleep(2)
+                continue
+            return result
+        except Exception as e:
+            logger.debug(f"gh pr view check failed: {e}")
+            return None
+    return None
+
+
+def _local_candidate_refs(repo_dir: str, clean_branch: str, target_branch: str) -> list[tuple[str, str, list[str]]]:
+    """Choose the local refs to compare as ``(role, ref, candidates_tried)``, branch first, then target."""
+    target_candidates = [f"origin/{target_branch}"]
+    target_ref = target_candidates[0]
+    ref_check = run_git(["rev-parse", "--verify", target_ref], cwd=repo_dir, check=False)
+    if ref_check.returncode != 0:
+        target_ref = target_branch
+        target_candidates.append(target_ref)
+
+    branch_ref = clean_branch or "HEAD"
+    branch_candidates = [branch_ref]
+    if clean_branch:
+        b_check = run_git(["rev-parse", "--verify", clean_branch], cwd=repo_dir, check=False)
+        if b_check.returncode != 0:
+            remote_b_ref = f"origin/{clean_branch}"
+            branch_candidates.append(remote_b_ref)
+            rb_check = run_git(["rev-parse", "--verify", remote_b_ref], cwd=repo_dir, check=False)
+            if rb_check.returncode == 0:
+                branch_ref = remote_b_ref
+    return [("branch", branch_ref, branch_candidates), ("target", target_ref, target_candidates)]
+
+
+def _unresolved_ref_result(repo_dir: str, role: str, ref: str, candidates: list[str], stderr: str) -> dict[str, Any]:
+    """Return the verdict for a ref that did not resolve: UNKNOWN outside a repository, otherwise MISSING_REF."""
+    # Outside a repository every ref fails to resolve; that is UNKNOWN, not a missing ref.
+    git_dir = run_git(["rev-parse", "--git-dir"], cwd=repo_dir, check=False)
+    if git_dir.returncode != 0:
+        return not_a_repository_result(repo_dir, stderr)
+    # Report the name that was actually checked; candidates_tried lists every substitution.
+    logger.info("Cannot evaluate mergeability for ref %s (%s): ref could not be resolved to a commit.", ref, role)
+    return missing_ref_result(ref, role, candidates, stderr)
+
+
+def _local_mergeability(repo_dir: str, clean_branch: str, target_branch: str) -> dict[str, Any]:
+    """Return the local ``git merge-tree`` mergeability verdict once both refs resolve to commits."""
     try:
-        target_candidates = [f"origin/{target_branch}"]
-        target_ref = target_candidates[0]
-        ref_check = run_git(["rev-parse", "--verify", target_ref], cwd=repo_dir, check=False)
-        if ref_check.returncode != 0:
-            target_ref = target_branch
-            target_candidates.append(target_ref)
-
-        branch_ref = clean_branch or "HEAD"
-        branch_candidates = [branch_ref]
-        if clean_branch:
-            b_check = run_git(["rev-parse", "--verify", clean_branch], cwd=repo_dir, check=False)
-            if b_check.returncode != 0:
-                remote_b_ref = f"origin/{clean_branch}"
-                branch_candidates.append(remote_b_ref)
-                rb_check = run_git(["rev-parse", "--verify", remote_b_ref], cwd=repo_dir, check=False)
-                if rb_check.returncode == 0:
-                    branch_ref = remote_b_ref
-
         # Gate: both refs must resolve to commits before a merge is simulated. merge-tree exits 1 for an
         # unresolvable ref as well as for a real conflict, so passing it through would report a false DIRTY.
         resolved: dict[str, str] = {}
-        for role, ref, candidates in (
-            ("branch", branch_ref, branch_candidates),
-            ("target", target_ref, target_candidates),
-        ):
+        for role, ref, candidates in _local_candidate_refs(repo_dir, clean_branch, target_branch):
             sha, rp_stderr = _resolve_commit_ref(repo_dir, ref)
             if sha is None:
-                # Outside a repository every ref fails to resolve; that is UNKNOWN, not a missing ref.
-                git_dir = run_git(["rev-parse", "--git-dir"], cwd=repo_dir, check=False)
-                if git_dir.returncode != 0:
-                    return {
-                        "mergeable": "UNKNOWN",
-                        "merge_state_status": "UNKNOWN",
-                        "is_dirty": False,
-                        "source": "git_local",
-                        "pr_number": None,
-                        "status_check_rollup": None,
-                        "diagnostics": {"error": f"not a git repository: {repo_dir}", "stderr": rp_stderr},
-                    }
-                # Report the name that was actually checked; candidates_tried lists every substitution.
-                missing_ref = ref
-                logger.info(
-                    "Cannot evaluate mergeability for ref %s (%s): ref could not be resolved to a commit.",
-                    missing_ref,
-                    role,
-                )
-                return {
-                    "mergeable": "UNKNOWN",
-                    "merge_state_status": "MISSING_REF",
-                    "is_dirty": False,
-                    "source": "git_local",
-                    "pr_number": None,
-                    "status_check_rollup": None,
-                    "diagnostics": {
-                        "missing_ref": missing_ref,
-                        "ref_role": role,
-                        "candidates_tried": candidates,
-                        "stderr": rp_stderr,
-                        "message": f"cannot evaluate mergeability for ref {missing_ref}",
-                    },
-                }
+                return _unresolved_ref_result(repo_dir, role, ref, candidates, rp_stderr)
             resolved[role] = sha
 
         mt_proc = run_git(
             ["merge-tree", "--write-tree", resolved["branch"], resolved["target"]], cwd=repo_dir, check=False
         )
-        if mt_proc.returncode == 0:
-            mergeable = "MERGEABLE"
-            merge_state_status = "CLEAN"
-        elif mt_proc.returncode == 1:
-            is_dirty = True
-            mergeable = "CONFLICTING"
-            merge_state_status = "DIRTY"
-        else:
-            # Unrelated histories, a git too old for --write-tree, or any other failure: an honest UNKNOWN.
-            diagnostics = {
-                "merge_tree_exit_code": mt_proc.returncode,
-                "stderr": mt_proc.stderr.strip() if isinstance(mt_proc.stderr, str) else "",
-            }
+        return merge_tree_verdict(mt_proc.returncode, mt_proc.stderr)
     except Exception as exc:
         logger.debug(f"Local git mergeability check encountered error: {exc}")
-        is_dirty = False
-        mergeable = "UNKNOWN"
-        merge_state_status = "UNKNOWN"
-        diagnostics = {"error": str(exc)}
-
-    return {
-        "mergeable": mergeable,
-        "merge_state_status": merge_state_status,
-        "is_dirty": is_dirty,
-        "source": "git_local",
-        "pr_number": None,
-        "status_check_rollup": None,
-        "diagnostics": diagnostics,
-    }
+        return local_error_result(exc)
 
 
 def format_review_git_trailers(

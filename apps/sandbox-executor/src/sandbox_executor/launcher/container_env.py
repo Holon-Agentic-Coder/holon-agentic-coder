@@ -1,8 +1,9 @@
 """The environment a role container receives, assembled in an order where each later assignment deliberately wins.
 
-The host ``HOLON_*`` and ``GITHUB_TOKEN`` values are forwarded first; the chosen GitHub token, the claude credential,
-the stage budget, the workspace pin, the role and the preflight skip flag are set after them, so a stale host value can
-never displace one of them.
+The host ``HOLON_*`` and ``GITHUB_TOKEN`` values are forwarded first (they include the layered configuration that
+``cli.main`` folded into the host environment, see ``config_env``); the inheritance marker, the chosen GitHub token,
+the claude credential, the stage budget, the workspace pin, the role, the agent id and the preflight skip flag are set
+after them, so a stale host value can never displace one of them.
 """
 
 import os
@@ -10,7 +11,7 @@ import sys
 
 from sandbox_executor import budgets, claude_credential, local_llm
 from sandbox_executor.agent_runner import RETIRED_ENV_VARS, SANDBOX_UV_ENV, SANDBOX_WORKSPACE_MOUNT
-from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES
+from sandbox_executor.config_env import RESOLVED_MARKER
 from sandbox_executor.launcher import mounts
 
 
@@ -28,12 +29,15 @@ def forwarded_env(role: str, agent_id: str, pin_workspace: bool) -> dict[str, st
     # Forward all host environment variables prefixed with HOLON_ and GITHUB_TOKEN
     gh_token = mounts.find_github_token()
     env_to_forward = _host_env()
+    # The configuration is resolved once per invocation: a nested holon in the container reads no layer file.
+    env_to_forward[RESOLVED_MARKER] = "1"
 
     # Set after the host forwarding loop so a host GITHUB_TOKEN cannot displace the chosen token.
     if gh_token:
         env_to_forward["GITHUB_TOKEN"] = gh_token
 
-    _pin_claude_credential(env_to_forward, agent_id)
+    # Set after the host forwarding loop so a stale host value cannot displace the resolved credential.
+    claude_credential.pin_claude_credential(env_to_forward, agent_id)
 
     # Inside a timed host stage (holon flow), hand the container the time this stage has left so its own ceiling fires
     # first; this replaces any forwarded host HOLON_STAGE_BUDGET_SECONDS. Every role-container dispatch goes
@@ -49,6 +53,8 @@ def forwarded_env(role: str, agent_id: str, pin_workspace: bool) -> dict[str, st
 
     # Ensure explicit role parameter takes strict precedence over host environment
     env_to_forward["HOLON_ROLE"] = role
+    # The role dispatcher keys its credential mappings (HOLON_AGENT_OAUTH_TOKEN to CLAUDE_CODE_OAUTH_TOKEN) on this id.
+    env_to_forward["HOLON_AGENT_ID"] = norm_agent_id
     # The host already ran the readiness probe; nested invocations inside the container must not repeat it.
     env_to_forward["HOLON_SKIP_PREFLIGHT"] = "1"
 
@@ -68,19 +74,6 @@ def _host_env() -> dict[str, str]:
         if (key.startswith("HOLON_") and key not in RETIRED_ENV_VARS) or key == "GITHUB_TOKEN":
             env_to_forward[key] = value
     return env_to_forward
-
-
-def _pin_claude_credential(env_to_forward: dict[str, str], agent_id: str) -> None:
-    """Replace any forwarded claude credential with the resolved one, under the name its format decides."""
-    # The claude runner never takes HOLON_AGENT_KEY: its credential is an explicit claude variable or the secrets
-    # file, exported under the name its format decides. Set after the loop so a stale host value cannot displace it.
-    if local_llm.normalize_agent_id(agent_id) == "claude":
-        env_to_forward.pop("HOLON_AGENT_KEY", None)
-        resolved = claude_credential.resolve_claude_credential()
-        if resolved:
-            for name in CLAUDE_CREDENTIAL_ENV_NAMES:
-                env_to_forward.pop(name, None)
-            env_to_forward[resolved[0]] = resolved[1]
 
 
 def local_provider(local_config: dict) -> str:

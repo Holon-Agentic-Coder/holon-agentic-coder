@@ -28,8 +28,9 @@ OTHER = "c" * 40
 
 
 def check(name: str = "unit", conclusion: str | None = "success", status: str = "completed", **extra: Any) -> dict:
-    """One check run on the merged head; ``extra`` overrides ``check_run_id``, ``run_id`` or ``head_sha``."""
+    """One check run on the merged head; ``extra`` overrides ``check_run_id``, ``run_id``, ``head_sha`` or the suite."""
     base = {"check_run_id": 1, "name": name, "status": status, "conclusion": conclusion or "", "head_sha": MERGED}
+    base["check_suite_id"] = 0
     return {**base, "run_id": "11", **extra}
 
 
@@ -119,6 +120,16 @@ def test_superseded_runs_are_ignored_and_the_newest_run_per_name_wins() -> None:
     ]
 
 
+def test_same_named_checks_of_two_suites_are_kept_apart() -> None:
+    checks = [
+        check("build", "failure", check_run_id=4, check_suite_id=100),  # docker-build.yml
+        check("build", "success", check_run_id=9, check_suite_id=200),  # build-images.yml, newer
+    ]
+    latest = latest_checks_for_head(checks, MERGED)
+    assert [(c["check_suite_id"], c["conclusion"]) for c in latest] == [(100, "failure"), (200, "success")]
+    assert classify_head_checks(latest) == "failed"
+
+
 def test_check_runs_are_parsed_from_the_api_with_their_actions_run_id() -> None:
     line = {
         "id": 77,
@@ -179,6 +190,13 @@ def test_pending_then_passed_waits_on_the_fake_clock(tmp_path: Path) -> None:
     assert len(fakes.sleeps) == 2
 
 
+def test_a_transient_probe_failure_keeps_polling_until_the_checks_settle(tmp_path: Path) -> None:
+    fakes = Fakes([check(conclusion=None, status="in_progress")], None, [check()])
+    record = _gate(tmp_path, fakes)
+    assert record["state"] == "passed"
+    assert len(fakes.probed) == 3
+
+
 def test_pending_past_the_budget_is_pending_never_passed(tmp_path: Path) -> None:
     fakes = Fakes([check(), check("slow", None, "in_progress", check_run_id=2)])
     record = _gate(tmp_path, fakes, budget=30.0)
@@ -230,7 +248,9 @@ def test_no_registered_checks_or_an_unreadable_probe_is_unknown(tmp_path: Path) 
     record = _gate(tmp_path, fakes, registration=60.0)
     assert record["state"] == "unknown"
     assert fakes.now == pytest.approx(60.0)
-    assert _gate(tmp_path, Fakes(None))["state"] == "unknown"
+    unreadable = Fakes(None)
+    assert _gate(tmp_path, unreadable, budget=30.0)["state"] == "unknown"
+    assert unreadable.now == pytest.approx(30.0)
 
 
 def test_a_probe_exception_is_unknown_with_a_redacted_reason(tmp_path: Path) -> None:

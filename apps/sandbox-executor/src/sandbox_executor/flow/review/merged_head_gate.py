@@ -95,18 +95,21 @@ def _poll_head(context: FlowContext, repo_dir: str, head_sha: str, seams: Merged
     deadline = registration + max(0.0, policy.budget_seconds)
     interval = policy.poll_interval if policy.poll_interval > 0 else CI_REGISTRATION_POLL_SECONDS
     while True:
-        checks = probe(head_sha) or []
+        probed = probe(head_sha)
+        checks = probed or []
         settled = _settle(checks, reruns) if checks else None
         if settled is not None:
             return gate_record(settled[0], head_sha, checks, reruns.run_ids, settled[1])
         now = policy.clock()
-        if not checks and now >= registration:
+        if probed is None and now >= deadline:
+            return gate_record("unknown", head_sha, [], reruns.run_ids, "the checks on the head could not be read")
+        if probed is not None and not checks and now >= registration:
             return gate_record("unknown", head_sha, [], reruns.run_ids, "no check run on the head could be read")
-        if now >= deadline:
+        if probed is not None and now >= deadline:
             names = ", ".join(str(c.get("name")) for c in checks if is_pending(c) or is_cancelled(c))
             reason = f"checks still unsettled when the CI wait budget ran out: {names}"
             return gate_record("pending", head_sha, checks, reruns.run_ids, reason)
-        until = registration if not checks else deadline
+        until = registration if probed is not None and not checks else deadline  # A failed probe keeps polling.
         policy.sleep(max(0.0, min(interval, until - now)))
         interval = next_poll_interval(interval, policy.ceiling)
 

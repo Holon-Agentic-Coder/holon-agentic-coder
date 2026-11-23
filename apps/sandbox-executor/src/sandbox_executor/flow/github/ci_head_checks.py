@@ -24,7 +24,8 @@ FAILED = "failed"
 
 PASSING_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
 CANCELLED_CONCLUSIONS = frozenset({"cancelled", "stale"})
-CHECK_RUNS_JQ = ".check_runs[] | {id, name, status, conclusion, head_sha, details_url}"
+PENDING_STATUSES = frozenset({"queued", "in_progress", "waiting", "requested", "pending"})
+CHECK_RUNS_JQ = ".check_runs[] | {id, name, status, conclusion, head_sha, details_url, check_suite_id: .check_suite.id}"
 
 HeadCheck = dict[str, Any]
 HeadChecksProbe = Callable[[str], "list[HeadCheck] | None"]
@@ -55,6 +56,7 @@ def _as_check(raw: Mapping[str, Any]) -> HeadCheck:
         "status": str(raw.get("status") or "").lower(),
         "conclusion": str(raw.get("conclusion") or "").lower(),
         "head_sha": str(raw.get("head_sha") or ""),
+        "check_suite_id": int(raw.get("check_suite_id") or 0),
         "run_id": parse_run_id(raw.get("details_url")),
     }
 
@@ -65,15 +67,19 @@ def parse_check_runs(output: str) -> list[HeadCheck]:
 
 
 def latest_checks_for_head(checks: list[HeadCheck], sha: str) -> list[HeadCheck]:
-    """Only the runs on exactly ``sha``, keeping the newest run (highest check-run id) per check name."""
-    newest: dict[str, HeadCheck] = {}
+    """Only the runs on exactly ``sha``, keeping the newest run (highest check-run id) per check suite and name.
+
+    Keying on the suite as well keeps two workflows that both define a job of the same name apart, so a passing run
+    of one never hides a failed run of the other; a re-run stays in its suite and still replaces the cancelled run.
+    """
+    newest: dict[tuple[int, str], HeadCheck] = {}
     for check in checks:
         if check.get("head_sha") != sha:
             continue
-        name = str(check.get("name") or "")
-        if name not in newest or int(check.get("check_run_id") or 0) > int(newest[name].get("check_run_id") or 0):
-            newest[name] = check
-    return sorted(newest.values(), key=lambda check: str(check.get("name")))
+        key = (int(check.get("check_suite_id") or 0), str(check.get("name") or ""))
+        if key not in newest or int(check.get("check_run_id") or 0) > int(newest[key].get("check_run_id") or 0):
+            newest[key] = check
+    return sorted(newest.values(), key=lambda check: (str(check.get("name")), int(check.get("check_suite_id") or 0)))
 
 
 def probe_head_checks(repo_dir: str, sha: str, proxy_env: Mapping[str, str] | None = None) -> list[HeadCheck] | None:

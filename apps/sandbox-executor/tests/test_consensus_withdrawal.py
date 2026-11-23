@@ -5,16 +5,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.github.ci_reverify import approved_head_of
 from sandbox_executor.flow.review.consensus_withdrawal import (
     WithdrawalSeams,
+    failed_runs_of,
     render_withdrawal,
     withdraw_consensus,
     withdrawal_marker,
     withdrawn_consensus_of,
 )
+from sandbox_executor.flow.review.loop import _run_engine_review_loop
 from sandbox_executor.flow.review.records import record_review_action
 
 BRANCH = "I-1-x/P-1-A/E-1-A/_"
@@ -156,3 +159,34 @@ def test_render_names_both_heads_and_each_failing_run() -> None:
     assert "an earlier commit" in body
     assert "- unit (run 12): timed_out" in body
     assert body.endswith(withdrawal_marker(MERGED))
+
+
+def test_only_failed_runs_are_named_never_pending_or_cancelled_ones() -> None:
+    runs = [
+        {"run_id": "1", "name": "unit", "conclusion": "failure"},
+        {"run_id": "2", "name": "slow", "conclusion": "in_progress"},
+        {"run_id": "3", "name": "queued", "conclusion": "queued"},
+        {"run_id": "4", "name": "lint", "conclusion": "cancelled"},
+        {"run_id": "5", "name": "docs", "conclusion": "success"},
+        {"run_id": "6", "name": "e2e", "conclusion": "timed_out"},
+    ]
+    assert [run["name"] for run in failed_runs_of({"runs": runs})] == ["unit", "e2e"]
+
+
+def test_stage4_after_a_consensus_withdrawal_starts_at_iteration_one_with_the_full_budget(tmp_path: Path) -> None:
+    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
+    ctx = FlowContext(repo_dir=str(tmp_path), execution_branch=BRANCH, max_review_iterations=6, token_reduce=False)
+    ctx.review_iterations_done = 4
+    ctx.carried_review_findings = [{"id": "F-1"}]
+    consensus = {"approved": True, "target_commit": APPROVED}
+    ctx.stage_results["review"] = StageResult(FlowStage.REVIEW, StageStatus.APPROVED, payload={"consensus": consensus})
+    record = {"head_sha": MERGED, "runs": [{"run_id": "9", "name": "unit", "conclusion": "failure"}]}
+    withdraw_consensus(ctx, record, WithdrawalSeams(lister=lambda _pr: [], poster=lambda _t, _b: True))
+
+    loop = MagicMock(return_value={"consensus": {"approved": True}, "total_iterations": 1})
+    with patch("sandbox_executor.flow.review.loop.run_review_loop", loop):
+        _run_engine_review_loop(ctx)
+
+    assert loop.call_args.kwargs["first_iteration"] == 1
+    assert loop.call_args.kwargs["max_iterations"] == 6
+    assert ctx.review_iterations_done == 1

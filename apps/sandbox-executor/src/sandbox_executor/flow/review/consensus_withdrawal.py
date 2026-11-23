@@ -25,7 +25,11 @@ from sandbox_executor.flow.github.approval_invalidation import (
     gh_comment_poster,
 )
 from sandbox_executor.flow.github.ci_failure_detail import short_sha
-from sandbox_executor.flow.github.ci_head_checks import PASSING_CONCLUSIONS
+from sandbox_executor.flow.github.ci_head_checks import (
+    CANCELLED_CONCLUSIONS,
+    PASSING_CONCLUSIONS,
+    PENDING_STATUSES,
+)
 from sandbox_executor.flow.github.ci_reverify import approved_head_of
 from sandbox_executor.knowledge import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id
@@ -52,9 +56,10 @@ def withdrawal_marker(merged_head: str) -> str:
 
 
 def failed_runs_of(record: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """The runs of a gate record that did not pass, as ``{run_id, name, conclusion}``."""
+    """The runs of a gate record that failed, as ``{run_id, name, conclusion}``; pending and cancelled runs are not."""
+    not_failed = PASSING_CONCLUSIONS | CANCELLED_CONCLUSIONS | PENDING_STATUSES
     runs = record.get("runs") or []
-    failed = [run for run in runs if str(run.get("conclusion")) not in PASSING_CONCLUSIONS]
+    failed = [run for run in runs if str(run.get("conclusion")) not in not_failed]
     return [
         {"run_id": run.get("run_id"), "name": run.get("name"), "conclusion": run.get("conclusion")} for run in failed
     ]

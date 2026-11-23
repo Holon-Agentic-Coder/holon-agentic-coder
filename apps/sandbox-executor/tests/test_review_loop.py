@@ -2598,26 +2598,3 @@ def test_review_loop_does_not_advance_head_when_pushed_is_false(tmp_path, monkey
     assert res["consensus"]["approved"] is False
     assert not any("Resolver pushed new head" in log for log in ctx.logs)
     assert res.get("head_sha") != "new_unpushed_sha_9999"
-
-
-def test_stage4_after_a_consensus_withdrawal_starts_at_iteration_one_with_the_full_budget(tmp_path):
-    from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
-    from sandbox_executor.flow.review.consensus_withdrawal import WithdrawalSeams, withdraw_consensus
-    from sandbox_executor.flow.review.loop import _run_engine_review_loop
-
-    (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
-    ctx = FlowContext(repo_dir=str(tmp_path), execution_branch=EXEC_TARGET, max_review_iterations=6, token_reduce=False)
-    ctx.review_iterations_done = 4
-    ctx.carried_review_findings = [{"id": "F-1"}]
-    consensus = {"approved": True, "target_commit": "a" * 40}
-    ctx.stage_results["review"] = StageResult(FlowStage.REVIEW, StageStatus.APPROVED, payload={"consensus": consensus})
-    record = {"head_sha": "b" * 40, "runs": [{"run_id": "9", "name": "unit", "conclusion": "failure"}]}
-    withdraw_consensus(ctx, record, WithdrawalSeams(lister=lambda _pr: [], poster=lambda _t, _b: True))
-
-    loop = MagicMock(return_value={"consensus": {"approved": True}, "total_iterations": 1})
-    with patch("sandbox_executor.flow.review.loop.run_review_loop", loop):
-        _run_engine_review_loop(ctx)
-
-    assert loop.call_args.kwargs["first_iteration"] == 1
-    assert loop.call_args.kwargs["max_iterations"] == 6
-    assert ctx.review_iterations_done == 1

@@ -78,9 +78,10 @@ def imports_subprocess(source: str) -> bool:
 
 
 def imports_spawn_gh(source: str) -> bool:
-    """Whether the module imports the single gh spawn, ``spawn_gh``, from anywhere."""
+    """Whether the module imports the single gh spawn, ``spawn_gh``, or reaches it as a module attribute."""
     return any(
-        isinstance(node, ast.ImportFrom) and any(alias.name == "spawn_gh" for alias in node.names)
+        (isinstance(node, ast.ImportFrom) and any(alias.name == "spawn_gh" for alias in node.names))
+        or (isinstance(node, ast.Attribute) and node.attr == "spawn_gh")
         for node in ast.walk(ast.parse(source))
     )
 
@@ -95,6 +96,7 @@ def test_the_detector_reports_an_in_scope_argv_and_ignores_generic_spawns():
     assert calls_which_gh('shutil.which("gh")') and not calls_which_gh('shutil.which("git")')
     assert imports_subprocess("import os, subprocess") and not imports_subprocess("import shutil")
     assert imports_spawn_gh("from sandbox_executor.flow.github.adapter_runner import GhResult, spawn_gh")
+    assert imports_spawn_gh("from pkg import adapter_runner\nadapter_runner.spawn_gh(run, [], '.', 1, {})")
     assert not imports_spawn_gh('from x import GhResult\nEXPORTS = {"x": "GhResult gh_env spawn_gh"}')
 
 
@@ -111,7 +113,7 @@ def test_only_the_adapter_spawns_the_in_scope_gh_operations():
 
 
 def test_only_the_adapter_imports_the_gh_spawn():
-    """A ``gh``-less argv handed to ``spawn_gh`` is invisible to ``gh_operations``, so the import itself is refused."""
+    """A ``gh``-less argv handed to ``spawn_gh`` is invisible to ``gh_operations``, so any import or use is refused."""
     offenders = [
         relative
         for path in sorted(FLOW_DIR.rglob("*.py"))

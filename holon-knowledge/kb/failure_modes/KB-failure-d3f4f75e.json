@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-d3f4f75e",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T04:11:52.134514+00:00",
+  "updated_ts": "2026-11-23T04:11:52.134514+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795405858-334871aa-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795404186-clear-stale-calibration-warning/P-1795404871-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 2 iteration(s): not approved: reviewer 1 final verdict CHANGES_REQUESTED, reviewer 1 Engineering role CHANGES, reviewer 2 final verdict CHANGES_REQUESTED, reviewer 2 Engineering role CHANGES, reviewer 3 final verdict CHANGES_REQUESTED, reviewer 3 Engineering role CHANGES; final verdicts: Reviewer 1 CHANGES_REQUESTED (0/0/1); Reviewer 1 Engineering role CHANGES; Reviewer 2 CHANGES_REQUESTED (0/0/1); Reviewer 2 Engineering role CHANGES; Reviewer 3 CHANGES_REQUESTED (0/0/1); Reviewer 3 Engineering role CHANGES",
+    "symptoms": []
+  }
+}

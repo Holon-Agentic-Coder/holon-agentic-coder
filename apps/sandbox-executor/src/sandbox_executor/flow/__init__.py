@@ -36,6 +36,9 @@ _LAZY_EXPORTS: dict[str, str] = {
         "HeadMoveCheck RerunSeams head_move_since_calibration post_stale_signal report_staleness rerun_calibration "
         "review_calibration_freshness"
     ),
+    "sandbox_executor.flow.calibrate_stale_warning": (
+        "StaleRange WarningSeams post_refreshed refreshed_body resolve_stale stale_body superseded_body warn_stale"
+    ),
     "sandbox_executor.flow.calibrate_sync": (
         "CalibrationSyncError discard_empty_calibrated_branch prepare_calibrated_branch publish_calibration "
         "record_starting_branch restore_starting_branch sync_execution_ref"
@@ -71,6 +74,7 @@ _LAZY_EXPORTS: dict[str, str] = {
         "TokenScopeReport doctor_lines fetch_scopes resolve_github_token scope_report token_type touches_workflows "
         "workflow_scope_error"
     ),
+    "sandbox_executor.flow.github.approval_invalidation": "CommentRecord gh_comment_editor gh_comment_records",
     "sandbox_executor.flow.github.ci": (
         "CI_REGISTRATION_TIMEOUT_ENV_VAR CI_REGISTRATION_TIMEOUT_SECONDS _ci_green _extract_failed_ci_check_names "
         "_wait_for_ci_registration probe_ci_checks resolve_ci_registration_timeout"
@@ -236,6 +240,7 @@ __all__ = [
     "CheckpointStore",
     "CiWaitPolicy",
     "CiWaitResult",
+    "CommentRecord",
     "ConflictDetection",
     "ConflictKind",
     "ConflictResolutionError",
@@ -271,7 +276,9 @@ __all__ = [
     "Stage5Steps",
     "StageResult",
     "StageStatus",
+    "StaleRange",
     "TokenScopeReport",
+    "WarningSeams",
     "WorktreeCheckpoint",
     "_append_ledger_row",
     "_append_only_union",
@@ -396,6 +403,8 @@ __all__ = [
     "gate_ci_flags",
     "generate_semantic_pr_metadata",
     "get_default_checkpoint_path",
+    "gh_comment_editor",
+    "gh_comment_records",
     "has_inline_answer",
     "has_pass_marker",
     "head_move_since_calibration",
@@ -433,6 +442,7 @@ __all__ = [
     "plan_metrics",
     "plan_refresh_stage_failure",
     "post_pr_review_consensus",
+    "post_refreshed",
     "post_stale_signal",
     "pr_head_sha",
     "prepare_calibrated_branch",
@@ -460,6 +470,7 @@ __all__ = [
     "refresh_due",
     "refresh_payload",
     "refresh_plan_branch",
+    "refreshed_body",
     "refusal",
     "rejected_push_error",
     "rejected_push_failure",
@@ -476,6 +487,7 @@ __all__ = [
     "resolve_classified_conflicts",
     "resolve_execution_verdict",
     "resolve_github_token",
+    "resolve_stale",
     "restore_starting_branch",
     "review_calibration_freshness",
     "review_loop_approved",
@@ -501,8 +513,10 @@ __all__ = [
     "settle_pending_ci",
     "stage5_steps",
     "stage_success",
+    "stale_body",
     "stale_calibrated_refs",
     "standalone_context",
+    "superseded_body",
     "superseding_failure_row",
     "sync_conflict_result",
     "sync_execution_ref",
@@ -519,6 +533,7 @@ __all__ = [
     "validate_intent_questions",
     "wait_for_pending_ci",
     "waiter_key",
+    "warn_stale",
     "workflow_scope_error",
     "worktree_checkpoints",
 ]

@@ -1,0 +1,167 @@
+"""Withdraw a Stage 4 consensus whose approval CI failed on the merged head, so Stage 4 restarts for the new head.
+
+The withdrawal appends one ACT row to the ledger (earlier rows, the approval included, are never edited: the new row
+supersedes the approval by time), posts one PR comment per merged head (a hidden marker keyed on the full SHA is checked
+against the existing comments first) and resets the engine-owned review state: the iteration counter goes back to 0,
+the carried findings are cleared and the recorded consensus is marked not approved, so nothing can calibrate it later.
+It never approves, merges or pushes.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
+
+from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.flow.github.approval_invalidation import (
+    CommentLister,
+    CommentPoster,
+    approval_pr_number,
+    gh_comment_lister,
+    gh_comment_poster,
+)
+from sandbox_executor.flow.github.ci_failure_detail import short_sha
+from sandbox_executor.flow.github.ci_head_checks import PASSING_CONCLUSIONS
+from sandbox_executor.flow.github.ci_reverify import approved_head_of
+from sandbox_executor.knowledge import CredentialRedactor
+from sandbox_executor.ledger import generate_action_id
+from sandbox_executor.redaction import redact_agent_secrets
+
+logger = logging.getLogger(__name__)
+
+MARKER_PREFIX = "<!-- holon-consensus-withdrawn:"
+MAX_COMMENT_CHARS = 4000
+WITHDRAWAL_LABELS = ["review", "consensus-withdrawn", "merged-head-ci"]
+
+
+@dataclass(frozen=True)
+class WithdrawalSeams:
+    """Optional comment collaborators; tests inject fakes, the flow uses the ``gh`` adapters."""
+
+    lister: CommentLister | None = None
+    poster: CommentPoster | None = None
+
+
+def withdrawal_marker(merged_head: str) -> str:
+    """The hidden marker that keys the withdrawal comment on the full merged SHA."""
+    return f"{MARKER_PREFIX}{merged_head} -->"
+
+
+def failed_runs_of(record: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The runs of a gate record that did not pass, as ``{run_id, name, conclusion}``."""
+    runs = record.get("runs") or []
+    failed = [run for run in runs if str(run.get("conclusion")) not in PASSING_CONCLUSIONS]
+    return [
+        {"run_id": run.get("run_id"), "name": run.get("name"), "conclusion": run.get("conclusion")} for run in failed
+    ]
+
+
+def render_withdrawal(approved_head: str | None, merged_head: str, failed_runs: list[Mapping[str, Any]]) -> str:
+    """The comment body: the withdrawn approval, the merged head, each failing check and the restart."""
+    covered = f"`{short_sha(approved_head)}`" if approved_head else "an earlier commit"
+    marker = withdrawal_marker(merged_head)
+    lines = [
+        "## ⚠️ Ensemble Consensus Approval withdrawn",
+        "",
+        f"The consensus approval of {covered} was withdrawn: CI failed on merged head `{short_sha(merged_head)}`:",
+        "",
+        *(f"- {run.get('name')} (run {run.get('run_id') or 'n/a'}): {run.get('conclusion')}" for run in failed_runs),
+        "",
+        "No calibration commit was pushed for this head. The review restarts at iteration 1 for the new head; "
+        "merging stays with a human maintainer.",
+    ]
+    text = CredentialRedactor.redact_text("\n".join(lines))[: MAX_COMMENT_CHARS - len(marker) - 2]
+    return f"{text}\n\n{marker}"
+
+
+def _withdrawal_row(
+    context: FlowContext, approved: str | None, merged: str, failed: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """The ACT row recording the withdrawn approval; free text is redacted and bounded."""
+    named = ", ".join(f"{run.get('name')}: {run.get('conclusion')}" for run in failed) or "no check named"
+    detail = f"CI failed on merged head {merged} after the approval of {approved or 'an earlier head'}: {named}"
+    return {
+        "action_id": generate_action_id("ACT-WITHDRAW"),
+        "execution_id": f"REV-WITHDRAW-{int(datetime.now(UTC).timestamp())}",
+        "action": f"Consensus approval withdrawn for {context.execution_branch}: CI failed on the merged head",
+        "category": "code",
+        "target": str(context.execution_branch or ""),
+        "outcome": "failure",
+        "entry_type": "action",
+        "action_origin": "pr_review",
+        "labels": list(WITHDRAWAL_LABELS),
+        "error_context": redact_agent_secrets(detail)[:2000],
+        "approved_head": approved,
+        "merged_head": merged,
+        "failed_runs": failed,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _post_once(
+    context: FlowContext, pr_target: str | None, body: str, merged: str, seams: WithdrawalSeams
+) -> dict[str, Any]:
+    """Post the withdrawal comment unless one for ``merged`` exists; a failure is logged and never raised."""
+    if context.dry_run or context.skip_push:
+        return {"posted": False, "reason": "dry run or push skipped"}
+    if not pr_target:
+        return {"posted": False, "reason": "no pull request to comment on"}
+    repo_dir = context.target_worktree
+    try:
+        existing = (seams.lister or gh_comment_lister(repo_dir))(pr_target)
+        if existing is None:
+            return {"posted": False, "reason": "comments could not be listed"}
+        if any(withdrawal_marker(merged) in comment for comment in existing):
+            return {"posted": False, "reason": "already posted for this head"}
+        posted = (seams.poster or gh_comment_poster(repo_dir))(pr_target, body)
+    except Exception as exc:
+        logger.warning("Consensus withdrawal comment failed: %s", redact_agent_secrets(str(exc)))
+        posted = False
+    if not posted:
+        context.log(f"Warning: the consensus withdrawal comment on {pr_target} could not be posted.")
+    return {"posted": posted, "reason": "posted" if posted else "the comment could not be posted"}
+
+
+def _reset_review(context: FlowContext, withdrawn: dict[str, Any]) -> None:
+    """Mark the recorded consensus withdrawn and not approved, and reset the Stage 4 counter and carried findings."""
+    review = context.stage_results.get("review")
+    if review is not None:
+        consensus = {**(review.payload.get("consensus") or {}), "approved": False, "withdrawn": withdrawn}
+        review.payload = {**review.payload, "consensus": consensus}
+    context.review_iterations_done = 0
+    context.carried_review_findings = []
+
+
+def withdraw_consensus(
+    context: FlowContext, record: Mapping[str, Any], seams: WithdrawalSeams | None = None
+) -> dict[str, Any]:
+    """Record, announce and reset a consensus whose merged head failed CI; returns the withdrawal record."""
+    from sandbox_executor.flow.review.records import record_review_action  # Lazy: records imports review_report.
+
+    approved, merged = approved_head_of(context), str(record.get("head_sha") or "")
+    pr_target = approval_pr_number(context) or context.execution_branch
+    failed = failed_runs_of(record)
+    ledger_path = os.path.join(context.target_worktree, "holon-knowledge", "ledger", "executions.jsonl")
+    row = record_review_action(context, ledger_path, _withdrawal_row(context, approved, merged, failed))
+    action_id = (row or {}).get("action_id")
+    comment = _post_once(
+        context, pr_target, render_withdrawal(approved, merged, failed), merged, seams or WithdrawalSeams()
+    )
+    withdrawn = {"merged_head": merged, "approved_head": approved, "action_id": action_id}
+    _reset_review(context, withdrawn)
+    context.log(
+        f"Consensus withdrawn: the approval of {short_sha(approved)} no longer stands because CI failed on merged "
+        f"head {merged}; ledger row {action_id or 'not written'}, comment {comment['reason']}."
+    )
+    return {**withdrawn, "comment_posted": comment["posted"], "comment": comment, "failed_runs": failed}
+
+
+def withdrawn_consensus_of(context: FlowContext) -> dict[str, Any] | None:
+    """The withdrawal recorded on the Stage 4 consensus, or None when the consensus still stands."""
+    review = context.stage_results.get("review")
+    withdrawn = ((review.payload.get("consensus") if review else None) or {}).get("withdrawn")
+    return withdrawn if isinstance(withdrawn, dict) else None

@@ -30,6 +30,7 @@ from sandbox_executor.knowledge.stats import TelemetryCollector, format_stats_da
 from sandbox_executor.knowledge.wisdom import (
     lift_veto,
     list_vetoes,
+    load_index,
     persist_kb_fact,
     persist_wb_rule,
     promote_pending_candidates,
@@ -458,7 +459,9 @@ def test_knowledge_persistence_and_promotion(temp_dir: str) -> None:
         kb_dir=kb_dir,
     )
     assert os.path.exists(fact_path)
-    assert os.path.exists(os.path.join(kb_dir, "patterns", "index.json"))
+    kb_entries = load_index(os.path.join(kb_dir, "patterns"))
+    assert [e["kb_id"] for e in kb_entries] == [os.path.splitext(os.path.basename(fact_path))[0]]
+    assert not os.path.exists(os.path.join(kb_dir, "patterns", "index.json"))
 
     # Persist manual WB rule
     wb_path = persist_wb_rule(
@@ -470,7 +473,9 @@ def test_knowledge_persistence_and_promotion(temp_dir: str) -> None:
         wb_dir=wb_dir,
     )
     assert os.path.exists(wb_path)
-    assert os.path.exists(os.path.join(wb_dir, "heuristics", "index.json"))
+    wb_entries = load_index(os.path.join(wb_dir, "heuristics"))
+    assert [e["wb_id"] for e in wb_entries] == [os.path.splitext(os.path.basename(wb_path))[0]]
+    assert not os.path.exists(os.path.join(wb_dir, "heuristics", "index.json"))
 
     # Seed 10 successes to qualify for promotion
     fp = "fp_qual_success"

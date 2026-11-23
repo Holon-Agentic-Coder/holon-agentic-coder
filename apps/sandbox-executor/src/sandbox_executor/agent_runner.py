@@ -656,6 +656,8 @@ class ClaudeAgentRunner(StandardAgentRunner):
                     "bypassPermissions",
                 ],
             ),
+            # HOLON_AGENT_SETTINGS carries non-credential settings (attribution) only: the OAuth token has its own
+            # route, HOLON_AGENT_OAUTH_TOKEN, which the image's role dispatcher maps to CLAUDE_CODE_OAUTH_TOKEN.
             env_mappings=kwargs.pop("env_mappings", [EnvMapping("HOLON_AGENT_SETTINGS", "--settings")]),
             required_keys=kwargs.pop("required_keys", list(CLAUDE_CREDENTIAL_ENV_NAMES)),
             custom_validator=kwargs.pop("custom_validator", None),

@@ -13,7 +13,10 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     """Register the init subcommand parser."""
     parser = subparsers.add_parser(
         "init",
-        help="Scaffold Holon configuration and knowledge directories in a target project.",
+        help=(
+            "Scaffold Holon configuration and knowledge directories in a target project, a commented .env.example "
+            "for the layered configuration, and a .gitignore entry for .env."
+        ),
     )
     parser.add_argument(
         "target_dir",

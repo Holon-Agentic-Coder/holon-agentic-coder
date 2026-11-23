@@ -19,16 +19,10 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Unpack
 
 from sandbox_executor.agent_defaults import LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL
-from sandbox_executor.calibration_diff import (
-    DIFF_BASE_FIRST_PARENT,
-    DIFF_BASE_MERGE_BASE,
-    DIFF_BASE_PLAN,
-    merge_history,
-    patch_diff_range,
-)
+from sandbox_executor.calibration_diff import execution_patch_numstat, patch_size_base_line
 from sandbox_executor.calibration_ev import (
     evaluate_dual_ev_outcomes,
     format_dual_ev_derivation_lines,
@@ -36,6 +30,8 @@ from sandbox_executor.calibration_ev import (
     is_matching_record,
     parse_summary_records,
 )
+from sandbox_executor.calibration_evaluated_sha import LEDGER_EXECUTIONS_REL as LEDGER_EXECUTIONS_REL
+from sandbox_executor.calibration_evaluated_sha import evaluated_code_commit
 from sandbox_executor.calibration_execution_owner import unique_plan_branch_of_execution
 from sandbox_executor.calibration_outcome import is_converged_record, latest_summary_row
 from sandbox_executor.calibration_predicted import (
@@ -44,6 +40,9 @@ from sandbox_executor.calibration_predicted import (
     read_plans_rows,
     select_plans_row,
 )
+from sandbox_executor.calibration_rows import is_execution_row
+from sandbox_executor.calibration_self_check import CalibrateReview, enforce_report_self_check
+from sandbox_executor.calibration_self_check import CalibrationSelfCheckError as CalibrationSelfCheckError
 from sandbox_executor.calibration_touch_set import touch_set_metrics, touch_set_report_lines
 from sandbox_executor.git import METADATA_PATH_PREFIXES as METADATA_PATH_PREFIXES
 from sandbox_executor.git import is_metadata_path, run_git
@@ -59,7 +58,6 @@ from sandbox_executor.redaction import redact_agent_secrets
 
 logger = logging.getLogger(__name__)
 
-LEDGER_EXECUTIONS_REL = "holon-knowledge/ledger/executions.jsonl"
 
 # Prettier invocation for the calibration report. It mirrors ``lint-docs`` in the root pyproject.toml and the
 # ``lint-md`` Makefile target (``npx prettier``, unpinned, repository .prettierrc.json found from cwd). ``--yes`` only
@@ -211,6 +209,10 @@ class CalibrationReport:
     merge_base_sha: str | None = None
     merged_commit_count: int = 0
     touch_set: dict[str, Any] | None = None
+    diff_base: str | None = None
+    # Self-check inputs, not serialised: the counted (non-metadata) paths and the ledger summary rows read.
+    changed_paths: list[str] | None = None
+    summary_records: list[dict[str, Any]] = dataclasses.field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -236,6 +238,7 @@ class CalibrationReport:
             "merge_base_sha": self.merge_base_sha,
             "merged_commit_count": self.merged_commit_count,
             "touch_set": self.touch_set,
+            "diff_base": self.diff_base,
         }
 
 
@@ -560,6 +563,8 @@ def is_calibration_stale(
     target_head = current_head_ref or "HEAD"
     try:
         current_head_sha = resolve_commit_sha(target_head, target_worktree=target_worktree).lower()
+        # Stage 5's own calibration commits on top of the evaluated head do not make the report stale
+        current_head_sha = (evaluated_code_commit(current_head_sha, target_worktree) or current_head_sha).lower()
     except Exception as e:
         logger.debug("Failed to resolve current head SHA for %s: %s", target_head, e)
         current_head_sha = ""
@@ -759,10 +764,11 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
                     records = disk_records
                     matching = disk_matching
 
-    best_record = latest_summary_row(matching)
+    # Only a Stage 3 execution row sets exit_code and p_success: a Stage 4 or Stage 5 row describes a later stage.
+    best_record = latest_summary_row([r for r in matching if is_execution_row(r, execution_id)])
 
     if best_record is not None:
-        exec_meta = best_record
+        exec_meta = dict(best_record)
         # An integrated decomposed parent (its children merged into the plan branch, then the plan branch into the
         # execution branch) is a successful run: its superseding row carries no exit_code.
         converged = is_converged_record(best_record)
@@ -776,28 +782,11 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
         if isinstance(raw_rate, int | float) and not isinstance(raw_rate, bool) and 0.0 <= float(raw_rate) <= 1.0:
             actual.test_pass_rate = float(raw_rate)
 
-    # 2. Compute patch size via git diff between plan_branch and execution_branch (fail loudly on non-zero exit)
-    fallback_refs = (extract_branch_components(plan_branch)["intent_branch"], "main") if plan_branch else ()
-    base_rev, target_rev, diff_base = patch_diff_range(
-        plan_branch if execution_branch else "", target_ref, target_worktree, fallback_refs
-    )
-    exec_meta["diff_base"] = diff_base
-    diff_range = f"{base_rev}...{target_rev}" if base_rev else f"{target_rev}~1..{target_rev}"
-    res = run_git(
-        ["diff", "--numstat", diff_range, "--"],
-        cwd=target_worktree,
-        check=False,
-        timeout=30,
-    )
-    if res.returncode != 0:
-        error_message = res.stderr.strip()
-        raise RuntimeError(
-            f"Git diff failed between '{base_rev or f'{target_rev}~1'}' and '{target_rev}' "
-            f"with exit code {res.returncode}: {error_message}"
-        )
-
-    if diff_base == DIFF_BASE_PLAN:
-        exec_meta.update(merge_history(base_rev, target_rev, target_worktree))
+    # 2. Compute patch size via git diff from the merge-base with the intent's target branch (fail loudly on non-zero
+    # exit); the plan branch and its fallbacks apply only when no target branch resolves
+    intent_branch = extract_branch_components(plan_branch)["intent_branch"] if plan_branch else ""
+    res, patch_meta = execution_patch_numstat(plan_branch, execution_branch, target_ref, target_worktree, intent_branch)
+    exec_meta.update(patch_meta)
 
     actual.files_changed = 0
     actual.insertions = 0
@@ -859,6 +848,7 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
         2,
     )
     exec_meta["ssa_obs"] = ssa_obs
+    exec_meta["summary_records"] = records
 
     lambda_p, mu_p = load_metrics_physics(target_worktree)
     cost_effort = round(actual.cost + (lambda_p * actual.entropy) - (mu_p * actual.learning_value), 2)
@@ -984,8 +974,8 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
         report_data.get("merge_base_sha") or report_data["merged_commit_count"] > 0
     ):
         lines.append(f"- **Merged Commits:** `{report_data['merged_commit_count']}`")
-    if report_data.get("diff_base") in (DIFF_BASE_MERGE_BASE, DIFF_BASE_FIRST_PARENT):
-        lines.append(f"- **Patch Size Base:** `{report_data['diff_base']}` (not measured against the plan branch)")
+    if report_data.get("diff_base"):
+        lines.append(patch_size_base_line(report_data))
     lines.extend(
         [
             "",
@@ -1136,10 +1126,11 @@ def generate_calibration(  # noqa: C901, PLR0915
             logger.debug("Could not resolve plan_branch '%s': %s", plan_branch, e)
             resolved_plan_ref = plan_branch
 
-    # Resolve canonical commit SHA for execution ref
+    # Resolve the evaluated commit: the execution head with Stage 5's own calibration commits discounted
     evaluated_commit_sha: str | None = None
     try:
-        evaluated_commit_sha = resolve_commit_sha(resolved_exec_ref, target_worktree=target_worktree)
+        head_sha = resolve_commit_sha(resolved_exec_ref, target_worktree=target_worktree)
+        evaluated_commit_sha = evaluated_code_commit(head_sha, target_worktree) or head_sha
     except Exception as e:
         logger.debug("Could not resolve commit SHA for '%s': %s", resolved_exec_ref, e)
         if re.fullmatch(r"[0-9a-fA-F]{40}", execution_branch.strip()):
@@ -1261,6 +1252,9 @@ def generate_calibration(  # noqa: C901, PLR0915
         merge_base_sha=merge_base_sha,
         merged_commit_count=merged_commit_count,
         touch_set=report_dict["touch_set"],
+        diff_base=report_dict["diff_base"],
+        changed_paths=exec_meta.get("changed_paths"),
+        summary_records=exec_meta.get("summary_records") or [],
     )
 
 
@@ -1475,6 +1469,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
     json_output: bool = False,
     skip_commit: bool = False,
     log_fn: Callable[[str], None] | None = None,
+    **review: Unpack[CalibrateReview],
 ) -> CalibrationReport:
     """Execute holon calibrate workflow: checkout calibrated branch, generate & commit report.
 
@@ -1486,6 +1481,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
         log_fn: Optional operator-facing log callable (for example ``FlowContext.log``) that
             receives a failed ACT-CAL ledger append warning. When None, the warning goes to the
             module logger only.
+        **review: ``CalibrateReview`` keywords; ``approved_head`` feeds the report self-check.
 
     Returns:
         CalibrationReport: Generated calibration report.
@@ -1498,8 +1494,12 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
         CalibrationFormatError: If the report fails the repository Prettier check (or the check
             cannot run) when ``skip_commit`` is False. Raised before the ACT-CAL ledger append and
             any ``git add`` or ``git commit``, so nothing is recorded, committed or pushed.
+        CalibrationSelfCheckError: If the report fails its self-check (``calibration_self_check``).
+            Raised before any branch checkout, report write, ledger append or commit.
     """
     report = generate_calibration(execution_branch, target_worktree=target_worktree)
+    # Fail closed before any branch, file or commit is touched
+    enforce_report_self_check(report, target_worktree, review.get("approved_head"), log_fn)
     report.committed = not skip_commit
     if skip_commit:
         report.calibrated_branch = None

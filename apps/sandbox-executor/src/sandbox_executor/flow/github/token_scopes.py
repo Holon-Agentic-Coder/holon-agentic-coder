@@ -99,7 +99,7 @@ def token_type(token: str) -> str:
 
 def _urllib_fetch(url: str, headers: Mapping[str, str], timeout: float) -> tuple[int, Mapping[str, str]]:
     request = urllib.request.Request(url, headers=dict(headers), method="GET")
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - a fixed https URL
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return response.status, dict(response.headers.items())
 
 
@@ -113,7 +113,7 @@ def fetch_scopes(
     except Exception as exc:  # A failed request only makes the scopes unverifiable.
         reason = redact_agent_secrets(f"the scope request failed ({type(exc).__name__}: {exc})")
         return None, reason.replace(token, "***")[:200]
-    if status != 200:  # noqa: PLR2004 - the HTTP OK status
+    if status != 200:
         return None, f"the scope request returned HTTP {status}"
     lowered = {key.lower(): value for key, value in response_headers.items()}
     if "x-oauth-scopes" not in lowered:

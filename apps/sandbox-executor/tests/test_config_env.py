@@ -492,6 +492,9 @@ def test_readme_documents_every_key():
         assert re.search(rf"^\| `{key}` +\|", readme, re.MULTILINE), key
     for key in HOST_SET_KEYS:
         assert f"`{key}`" in readme, key
+    refused = readme.split("**Accepted keys.**", 1)[1].split("**Warnings.**", 1)[0]
+    for key in config_env_secrets.PROJECT_REFUSED_KEYS:
+        assert f"`{key}`" in refused, key
     assert "`HOLON_AGENT_OAUTH_TOKEN_FILE`" in readme and "`CLAUDE_CODE_OAUTH_TOKEN`" in readme
 
 

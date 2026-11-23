@@ -127,8 +127,10 @@ is still reported among the shadowed layers as `<layer> (empty)`. A key that eve
 repository-controlled, so it may not set a token-file reference or a host-reach key either:
 `HOLON_ANTIGRAVITY_SESSION_DIR` (a host directory mounted into the container), `HOLON_AGENT_SETTINGS` and
 `HOLON_AGENT_CONFIG` (runner settings that can redirect the API endpoint), `HOLON_TOKEN_REDUCE`, `HOLON_PROXY_URL`,
-`HOLON_COHERENCE_IMAGE` (the proxy sidecar image, which sees agent credentials), `HOLON_LOCAL_BASE_URL` and
-`HOLON_HOST_LOCAL_HOSTS` are set only in `~/.holon/.env` or the process environment. Any other refused key draws
+`HOLON_COHERENCE_IMAGE` (the proxy sidecar image, which sees agent credentials), `HOLON_LOCAL_BASE_URL`,
+`HOLON_HOST_LOCAL_HOSTS`, `HOLON_ROOT_CA_PATH` and `HOLON_CA_BUNDLE_PATH` (the trusted CA), `HOLON_SECRET_BUNDLE_PATH`
+(a file the role dispatcher reads or writes), and the credentials `GITHUB_TOKEN`, `HOLON_AGENT_OAUTH_TOKEN` and
+`HOLON_AGENT_KEY` are set only in `~/.holon/.env` or the process environment. Any other refused key draws
 `Warning: <file>: ignoring <KEY>: <reason>.`, which names the key and never the value.
 
 **Warnings.** A layer or token file with group or other permission bits draws

@@ -1,6 +1,6 @@
 {
   "index_version": "1.0",
-  "updated_ts": "2026-11-22T23:37:41.505025+00:00",
+  "updated_ts": "2026-11-23T00:41:26.290012+00:00",
   "entries": [
     {
       "kb_id": "KB-failure-d25f1b01",
@@ -23658,6 +23658,83 @@
       "kb_type": "failure_mode",
       "status": "active",
       "created_ts": "2026-11-22T23:37:41.503912+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-c0c1c890",
+      "file": "KB-failure-c0c1c890.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-23T00:41:26.052154+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-becd8737",
+      "file": "KB-failure-becd8737.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-23T00:41:26.251787+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-9a1e2199",
+      "file": "KB-failure-9a1e2199.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-23T00:41:26.259254+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-a6ee6f86",
+      "file": "KB-failure-a6ee6f86.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-23T00:41:26.266584+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-60582fe6",
+      "file": "KB-failure-60582fe6.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-23T00:41:26.274253+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-93db1ca8",
+      "file": "KB-failure-93db1ca8.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-23T00:41:26.281574+00:00",
+      "tags": [
+        "code",
+        "veto"
+      ]
+    },
+    {
+      "kb_id": "KB-failure-41d54973",
+      "file": "KB-failure-41d54973.json",
+      "kb_type": "failure_mode",
+      "status": "active",
+      "created_ts": "2026-11-23T00:41:26.288770+00:00",
       "tags": [
         "code",
         "veto"

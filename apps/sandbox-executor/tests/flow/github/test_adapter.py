@@ -171,6 +171,23 @@ def test_pr_head_sha_reads_head_ref_oid_or_none():
     assert _adapter(RecordingRun(), which=lambda _: None).pr_head_sha("7") is None
 
 
+def test_rerun_failed_pins_argv_cwd_env_and_timeout_and_reads_the_exit_code():
+    run = RecordingRun((0, "", ""), (1, "", "run is not failed"))
+    github = _adapter(run)
+    assert github.rerun_failed("4242", 10) is True
+    _assert_pr_call(run.calls[0], ["gh", "run", "rerun", "4242", "--failed"], 10)
+    assert github.rerun_failed("4242") is False
+    assert run.calls[1][1]["timeout"] == 60
+
+
+def test_rerun_failed_is_false_when_gh_is_missing_or_cannot_be_spawned():
+    run = RecordingRun()
+    assert _adapter(run, which=lambda _: None).rerun_failed("1", 10) is False
+    assert run.calls == []
+    assert _adapter(RecordingRun(OSError("exec failed"))).rerun_failed("1", 10) is False
+    assert _adapter(RecordingRun(subprocess.TimeoutExpired(["gh"], 10))).rerun_failed("1", 10) is False
+
+
 @pytest.mark.parametrize("flag", ["--merge", "--squash"])
 def test_merge_argv_builds_the_match_head_commit_argv(flag):
     assert merge_argv(5, flag, "abc") == ["pr", "merge", "5", flag, "--match-head-commit", "abc"]

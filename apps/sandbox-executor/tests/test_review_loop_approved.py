@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.flow.github.fake_github import FakeGitHub, merge_view
 from tests.review_fakes import install_fake_reviewers
 from tests.review_loop_stubs import _green_loop_patches, _loop_ctx
 
@@ -27,7 +28,8 @@ def _ledger_rows(repo_dir: Path) -> list[dict]:
 def test_approved_loop_records_summary_row_status_approved(tmp_path):
     from sandbox_executor.flow import run_review_loop
 
-    stack, _verify, _mock_post = _green_loop_patches()
+    stack, _verify, github = _green_loop_patches()
+    github.available = True  # ``gh`` for the post; ``shutil.which`` still fences the gh callers outside the adapter
     with stack:
         res = run_review_loop(_loop_ctx(tmp_path), target="feature/x", auto_pr=False, max_iterations=1)
 
@@ -75,6 +77,24 @@ def test_approved_loop_records_summary_row_status_approved(tmp_path):
         (
             "halted_for_human",
             {"halted_for_human": True, "consensus": True},
+            ["[SAFETY HALT]"],
+            ["[REVIEW APPROVED]"],
+        ),
+        (
+            "halted_for_human",
+            {"consensus": {"approved": True}},
+            ["[REVIEW APPROVED]"],
+            ["[SAFETY HALT]", "To approve manually"],
+        ),
+        (
+            "halted_for_human",
+            {"consensus": {"approved": False}, "human_approval_command": "holon review approve X"},
+            ["[SAFETY HALT]", "To approve manually, run: holon review approve X"],
+            ["[REVIEW APPROVED]"],
+        ),
+        (
+            "halted_for_human",
+            {},
             ["[SAFETY HALT]"],
             ["[REVIEW APPROVED]"],
         ),
@@ -150,14 +170,9 @@ def test_resolver_rejected_find_ci_survives_ledger_commit_on_next_iteration(tmp_
     with (
         patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", return_value=(target_obj, None)),
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 file")),
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
-        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
-        patch(
-            "sandbox_executor.flow.review.loop.probe_ci_checks",
-            side_effect=lambda *a, **k: {"all_passed": True, "source": "local_tests"},
-        ),
-        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+        patch("shutil.which", return_value=None),
     ):
+        # A clean PR with no GitHub checks reported, so CI falls back to local tests.
         res = run_review_loop(
             ctx,
             target=EXEC_TARGET,
@@ -165,6 +180,7 @@ def test_resolver_rejected_find_ci_survives_ledger_commit_on_next_iteration(tmp_
             ensemble_size=1,
             auto_pr=False,
             run_resolver_fn=fake_resolver,
+            github=FakeGitHub(standing_view=merge_view()),
         )
 
     commits = ledger_commits(work)

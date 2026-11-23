@@ -2,8 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from sandbox_executor import flow as flow_module
 from sandbox_executor.flow import (
@@ -11,14 +10,19 @@ from sandbox_executor.flow import (
     FlowStage,
     StageResult,
     StageStatus,
-    post_pr_review_consensus,
     run_review_loop,
 )
 from sandbox_executor.review_report import collect_review_data
 from sandbox_executor.review_target import ReviewTarget
 
+from tests.flow.github.fake_github import FakeGitHub, merge_view
 from tests.flow.helpers import _reviewer_with_data_block, _verified_diff
 from tests.review_fakes import FakeEnsemble, install_fake_reviewers
+
+
+def _posts(github: FakeGitHub) -> list[tuple]:
+    """The ``post_review`` calls made on the fake, as ``(target, flag, body)``."""
+    return [args for name, args in github.calls if name == "post_review"]
 
 
 class TestReviewDataSeam:
@@ -30,28 +34,13 @@ class TestReviewDataSeam:
         ctx.stage_results["execute"] = StageResult(
             stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"test_pass_rate": 1.0, "exit_code": 0}
         )
-        posted: list[dict[str, Any]] = []
+        github = FakeGitHub(standing_view=merge_view())
+        with patch("shutil.which", return_value=None), _verified_diff():
+            res = run_review_loop(ctx, auto_pr=False, ensemble_size=1, max_iterations=1, github=github)
 
-        def capture_post(**kwargs: Any) -> dict[str, Any]:
-            gh = MagicMock(return_value=MagicMock(returncode=0, stdout="ok", stderr=""))
-            with patch("shutil.which", return_value="/usr/bin/gh"), patch("subprocess.run", gh):
-                result = post_pr_review_consensus(**kwargs)
-            posted.extend({"argv": call.args[0]} for call in gh.call_args_list)
-            return result
-
-        with (
-            patch(
-                "sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"merge_state_status": "CLEAN"}
-            ),
-            patch(
-                "sandbox_executor.flow.review.loop.probe_ci_checks",
-                return_value={"all_passed": True, "source": "local_tests"},
-            ),
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", side_effect=capture_post),
-            _verified_diff(),
-        ):
-            res = run_review_loop(ctx, auto_pr=False, ensemble_size=1, max_iterations=1)
-
+        posted = [
+            {"argv": ["gh", "pr", "review", target, flag, "--body", body]} for target, flag, body in _posts(github)
+        ]
         bodies = [entry["argv"][entry["argv"].index("--body") + 1] for entry in posted]
         assert len(bodies) == 1
         body = bodies[0]

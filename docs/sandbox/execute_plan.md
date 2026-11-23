@@ -93,14 +93,16 @@ mounted and a worktree whose `origin` is an SSH URL works.
   --agent antigravity-agent --model gemini-3.8-flash-medium --token-reduce
 ```
 
-`--token-reduce` routes the sandbox's HTTP(S) egress through a locally-owned mitmproxy sidecar so agent responses can be
-compacted before they are tokenized.
+`--token-reduce` routes the sandbox's HTTP(S) egress through a locally-owned holon-coherence proxy sidecar so agent
+responses can be compacted before they are tokenized.
 
-> [!WARNING] **`--token-reduce` is experimental and not yet functional.** The Phase 2 mitmproxy addon (`mitm_addon.py`)
-> is not shipped yet, so the preflight raises `FileNotFoundError`, the CLI logs an actionable error, and the run
-> continues with **direct egress** — no interception takes place.
+> [!WARNING] **`--token-reduce` is experimental.** The sidecar runs the holon-coherence proxy image and the mitmproxy
+> addon that image ships: `holon-coherence:latest` when built locally with `holon-coherence build`, otherwise
+> `ghcr.io/holon-agentic-coder/holon-coherence:latest`, pulled on first use (`HOLON_COHERENCE_IMAGE` pins another
+> image). If the image cannot start or its proxy never answers, the CLI logs an actionable error and the run continues
+> with **direct egress**: no interception takes place.
 
-> [!WARNING] Once functional, `--token-reduce` performs **local TLS interception**. A Holon Root CA is generated at
+> [!WARNING] `--token-reduce` performs **local TLS interception**. A Holon Root CA is generated at
 > `~/.holon/certs/holon-root-ca.crt` (with `basicConstraints=critical,CA:TRUE` and
 > `keyUsage=critical,keyCertSign,cRLSign`, and rotated automatically once it would expire within 30 days).
 >

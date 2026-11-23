@@ -23,6 +23,8 @@ from sandbox_executor.review_ensemble import (
 )
 from sandbox_executor.review_target import DiffVerdict, ReviewTarget
 
+from tests.flow.github.fake_github import FakeGitHub, ci_checks_payload, merge_view
+
 EXEC_TARGET = "I-100-intent/P-200-plan/E-300-exec/_"
 
 
@@ -138,42 +140,24 @@ def test_stage4_host_integrity_dirty_merge_blocks_approval(tmp_path: Path, monke
         return 0
 
     ctx = _make_context(tmp_path, dispatcher=fake_dispatcher)
+    github = FakeGitHub(standing_view=merge_view("CONFLICTING", "DIRTY"), checks=ci_checks_payload(passed=1))
 
     with (
         patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
         patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
-        patch(
-            "sandbox_executor.flow.review.loop.create_or_update_pr",
-            return_value={"success": True, "action": "created", "pr": {"number": 1, "url": "https://github.com/pr/1"}},
-        ),
+        patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github),
         patch(
             "sandbox_executor.flow.review.ensemble.resolve_review_target",
             return_value=ReviewTarget(raw=EXEC_TARGET, head_branch=EXEC_TARGET, head_sha="abc1234"),
         ),
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
-        patch(
-            "sandbox_executor.flow.review.loop.check_pr_mergeability",
-            return_value={"is_dirty": True, "merge_state_status": "DIRTY", "mergeable": "CONFLICTING"},
-        ),
-        patch(
-            "sandbox_executor.flow.review.loop.probe_ci_checks",
-            return_value={
-                "all_passed": True,
-                "passed": 1,
-                "failed": 0,
-                "pending": 0,
-                "total": 1,
-                "source": "github_cli",
-            },
-        ),
-        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus") as mock_post,
     ):
         result = run_review_stage(ctx)
 
     assert result.status is StageStatus.FAILED
     assert "Pull Request has merge conflicts" in (result.error or "")
     # A dirty merge halts before the iteration cap: not terminal, so nothing is posted.
-    assert not mock_post.called
+    assert "post_review" not in github.methods()
 
 
 def test_stage4_host_integrity_failed_ci_blocks_approval(tmp_path: Path, monkeypatch) -> None:
@@ -190,47 +174,30 @@ def test_stage4_host_integrity_failed_ci_blocks_approval(tmp_path: Path, monkeyp
         return 0
 
     ctx = _make_context(tmp_path, dispatcher=fake_dispatcher)
+    failing_checks = [
+        {"name": "lint", "bucket": "fail", "state": "FAILURE"},
+        {"name": "unit", "bucket": "fail", "state": "FAILURE"},
+    ]
+    github = FakeGitHub(standing_view=merge_view(), checks=failing_checks)
 
     with (
         patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
         patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
-        patch(
-            "sandbox_executor.flow.review.loop.create_or_update_pr",
-            return_value={"success": True, "action": "created", "pr": {"number": 1, "url": "https://github.com/pr/1"}},
-        ),
+        patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github),
         patch(
             "sandbox_executor.flow.review.ensemble.resolve_review_target",
             return_value=ReviewTarget(raw=EXEC_TARGET, head_branch=EXEC_TARGET, head_sha="abc1234"),
         ),
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
-        patch(
-            "sandbox_executor.flow.review.loop.check_pr_mergeability",
-            return_value={"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE"},
-        ),
-        patch(
-            "sandbox_executor.flow.review.loop.probe_ci_checks",
-            return_value={
-                "all_passed": False,
-                "passed": 0,
-                "failed": 2,
-                "pending": 0,
-                "total": 2,
-                "source": "github_cli",
-                "checks": [
-                    {"name": "lint", "bucket": "fail", "state": "FAILURE"},
-                    {"name": "unit", "bucket": "fail", "state": "FAILURE"},
-                ],
-            },
-        ),
-        patch("sandbox_executor.flow.review.loop.post_pr_review_consensus") as mock_post,
     ):
         result = run_review_stage(ctx)
 
     assert result.status is StageStatus.FAILED
     assert "CI failed: lint, unit." in (result.error or "")
     assert "test suite reported failures" not in (result.error or "")
-    assert mock_post.called
-    assert mock_post.call_args[1]["consensus_data"]["approved"] is False
+    posts = [args for name, args in github.calls if name == "post_review"]
+    assert posts
+    assert posts[-1][1] == "--comment"  # The consensus was not approved: the review comments, never approves.
 
 
 def test_stage4_canonical_ledger_records_verified_results(tmp_path: Path, monkeypatch) -> None:
@@ -244,46 +211,24 @@ def test_stage4_canonical_ledger_records_verified_results(tmp_path: Path, monkey
         return 0
 
     ctx = _make_context(tmp_path, dispatcher=fake_dispatcher)
+    github = FakeGitHub(standing_view=merge_view(), checks=ci_checks_payload(passed=1), head_sha="stage3-head")
 
     with (
         patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
         patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
-        patch(
-            "sandbox_executor.flow.review.loop.create_or_update_pr",
-            return_value={"success": True, "action": "created", "pr": {"number": 1, "url": "https://github.com/pr/1"}},
-        ),
+        patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github),
         patch(
             "sandbox_executor.flow.review.ensemble.resolve_review_target",
             return_value=ReviewTarget(raw=EXEC_TARGET, head_branch=EXEC_TARGET, head_sha="abc1234"),
         ),
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
-        patch(
-            "sandbox_executor.flow.review.loop.check_pr_mergeability",
-            return_value={"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE"},
-        ),
-        patch(
-            "sandbox_executor.flow.review.loop.probe_ci_checks",
-            return_value={
-                "all_passed": True,
-                "passed": 1,
-                "failed": 0,
-                "pending": 0,
-                "total": 1,
-                "source": "github_cli",
-            },
-        ),
-        patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"),
-        patch(
-            "sandbox_executor.flow.review.loop.post_pr_review_consensus",
-            return_value={"dual_posted": True, "official_review": {"success": True}},
-        ) as mock_post,
     ):
         result = run_review_stage(ctx)
 
     assert result.status is StageStatus.APPROVED
     assert result.payload["halted_for_human"] is False
     assert result.payload["approved"] is True
-    mock_post.assert_called_once()
+    assert github.methods().count("post_review") == 1
 
     ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
     assert ledger.exists()
@@ -304,24 +249,10 @@ def _host_loop_patches():
 
     from sandbox_executor.review_target import DiffVerdict
 
-    clean_merge = {"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE", "source": "github_cli"}
-    green_ci = {
-        "all_passed": True,
-        "passed": 1,
-        "failed": 0,
-        "pending": 0,
-        "total": 1,
-        "source": "github_cli",
-        "checks": [],
-    }
+    github = FakeGitHub(standing_view=merge_view(), checks=ci_checks_payload(passed=1), head_sha="a" * 40)
     return (
-        patch("sandbox_executor.flow.review.loop.shutil.which", return_value=None),
-        patch("sandbox_executor.flow.review.loop.check_pr_mergeability", side_effect=lambda *a, **k: dict(clean_merge)),
-        patch("sandbox_executor.flow.review.loop.probe_ci_checks", side_effect=lambda *a, **k: dict(green_ci)),
-        patch(
-            "sandbox_executor.flow.review.loop.post_pr_review_consensus",
-            MagicMock(return_value={"dual_posted": True, "official_review": {"success": True}}),
-        ),
+        patch("shutil.which", return_value=None),
+        patch("sandbox_executor.flow.review.loop.GitHubAdapter", return_value=github),
         patch(
             "sandbox_executor.flow.review.ensemble.resolve_review_target",
             return_value=ReviewTarget(raw=EXEC_TARGET, head_branch=EXEC_TARGET, head_sha="a" * 40),
@@ -330,7 +261,6 @@ def _host_loop_patches():
             "sandbox_executor.flow.review.local_tests.run_git",
             return_value=MagicMock(returncode=0, stdout="a" * 40 + "\n"),
         ),
-        patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="a" * 40),
         patch("sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 path")),
     )
 
@@ -398,7 +328,8 @@ def test_every_stage4_dispatch_reviews_the_flow_worktree_in_place(tmp_path: Path
             # The ledger commits run git by design; tests/flow/review/test_ledger_commit.py covers them with real git.
             patch("sandbox_executor.flow.review.loop._commit_pending_ledger_rows", return_value=None),
         ):
-            res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=5)
+            # The old stubs had no gh but GitHub-sourced CI; without auto_pr the fake opens no PR, as before.
+            res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=5, auto_pr=False)
     finally:
         for p in reversed(patches):
             p.stop()

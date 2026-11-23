@@ -3,11 +3,9 @@
 import logging
 import os
 
-from sandbox_executor import token_reduction
-from sandbox_executor.launcher import messages, proxy_paths
+from sandbox_executor.launcher import messages, proxy_paths, proxy_readiness, root_ca
 from sandbox_executor.launcher.proxy_paths import PROXY_ATTACH_TIMEOUT_SECONDS
 from sandbox_executor.redaction import trusted_url_authority
-from sandbox_executor.token_reduction import proxy_readiness
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +67,7 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
         )
         return [], {}
 
-    ca_cert_path, _ = token_reduction.generate_root_ca()
+    ca_cert_path, _ = root_ca.generate_root_ca()
 
     # No gateway --add-host here: run_docker_container adds it once for every agent container, and emitting it from
     # both places produced a duplicate flag whenever an externally attached proxy was in use.

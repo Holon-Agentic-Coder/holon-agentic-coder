@@ -70,6 +70,7 @@ from sandbox_executor.knowledge import (
 )
 from sandbox_executor.knowledge.consult import format_consult_results_table
 from sandbox_executor.knowledge.stats import format_stats_dashboard
+from sandbox_executor.launcher import proxy_readiness
 
 # The container plumbing lives in sandbox_executor.launcher; every name it took from this module stays importable here.
 # `name as name` marks a re-export this module no longer uses itself.
@@ -178,6 +179,7 @@ from sandbox_executor.launcher.proxy_paths import (
 from sandbox_executor.launcher.proxy_paths import (
     _run_docker as _run_docker,
 )
+from sandbox_executor.launcher.proxy_readiness import PROXY_READY_TIMEOUT_SECONDS as PROXY_READY_TIMEOUT_SECONDS
 from sandbox_executor.launcher.role_dispatch import (
     INTENT_CREATOR_AGENT_ID as INTENT_CREATOR_AGENT_ID,
 )
@@ -188,6 +190,7 @@ from sandbox_executor.launcher.role_dispatch import (
     RoleLaunchOptions as RoleLaunchOptions,
 )
 from sandbox_executor.launcher.role_dispatch import dispatch_role_agent, resolve_role_image
+from sandbox_executor.launcher.root_ca import generate_root_ca as generate_root_ca
 from sandbox_executor.launcher.sidecar import (
     _sidecar_state,
     detect_holon_coherence,
@@ -236,9 +239,6 @@ from sandbox_executor.redaction import (
 )
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 from sandbox_executor.scaffold import init_project
-from sandbox_executor.token_reduction import generate_root_ca as generate_root_ca
-from sandbox_executor.token_reduction import proxy_readiness
-from sandbox_executor.token_reduction.proxy_readiness import PROXY_READY_TIMEOUT_SECONDS as PROXY_READY_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -372,9 +372,9 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
     the ``effective_defaults.max_output_tokens`` or ``max_prompt_tokens`` of the server that serves it. Nothing is
     written; only loopback or allow-listed endpoints are probed.
 
-    Each part (budgets, envelope, base-URL check, gateway probe) is isolated: an invalid configuration prints an
-    ``Error:`` line, and any unexpected exception becomes a value-free ``WARNING: doctor <part> check failed
-    unexpectedly (<ExceptionClass>)`` line; either makes the result 1, and the doctor never raises from here.
+    Each part (budgets, GitHub token, envelope, base-URL check, gateway probe) is isolated: an invalid configuration
+    prints an ``Error:`` line, and any unexpected exception becomes a value-free ``WARNING: doctor <part> check
+    failed unexpectedly (<ExceptionClass>)`` line; either makes the result 1, and the doctor never raises from here.
     """
     env = os.environ
     out = out or sys.stdout
@@ -383,6 +383,13 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
         _report_budgets(env, out)
     except Exception as exc:  # The doctor reports; it never crashes.
         print(_doctor_section_failed("budgets", exc), file=out)
+        code = 1
+    try:
+        from sandbox_executor.flow.github.token_scopes import doctor_lines
+
+        print("\n".join(doctor_lines()), file=out)
+    except Exception as exc:
+        print(_doctor_section_failed("github token", exc), file=out)
         code = 1
 
     if env.get(local_llm.ENV_LOCAL_MODE, "").strip().lower() not in ("1", "true", "yes", "on"):

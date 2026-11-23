@@ -14,7 +14,7 @@ from sandbox_executor.flow import (
     run_review_loop,
 )
 
-from tests.flow.github.fake_github import FakeGitHub, spawn_failure
+from tests.flow.github.fake_github import FakeGitHub, checks_for, spawn_failure, view_for
 from tests.review_fakes import clean_reviewer
 
 
@@ -303,37 +303,31 @@ class TestSemanticPRAndConsensusReview:
             payload={"test_pass_rate": 1.0, "exit_code": 0},
         )
 
+        # Iteration 1: finding detected (dirty conflict). There is no resolver, so the loop stops there and the
+        # clean second view is never reached by the iteration.
+        github = FakeGitHub(
+            views=[
+                view_for({"is_dirty": True, "merge_state_status": "DIRTY", "mergeable": "CONFLICTING"}),
+                view_for({"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE"}),
+            ],
+            checks=checks_for({"all_passed": True, "passed": 1, "total": 1, "source": "github_cli"}),
+            head_sha="stage3-head",
+        )
         with (
-            patch("sandbox_executor.flow.review.loop.check_pr_mergeability") as mock_merge,
-            patch("sandbox_executor.flow.review.loop.probe_ci_checks") as mock_ci,
-            patch("sandbox_executor.flow.review.local_tests._default_pr_head", return_value="stage3-head"),
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus") as mock_post,
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(True, "1 file changed")),
-            patch("sandbox_executor.flow.review.loop.create_or_update_pr", return_value={"success": True}),
         ):
-            # Iteration 1: finding detected (dirty conflict). There is no resolver, so the loop stops there and the
-            # clean second probe is never reached.
-            mock_merge.side_effect = [
-                {"is_dirty": True, "merge_state_status": "DIRTY", "mergeable": "CONFLICTING"},
-                {"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE"},
-            ]
-            mock_ci.return_value = {"all_passed": True, "passed": 1, "total": 1, "source": "github_cli"}
-            mock_post.return_value = {
-                "target": "I-100-intent/P-200-plan/E-300-exec/_",
-                "dual_posted": True,
-                "official_review": {"success": True},
-            }
-
             res = run_review_loop(
                 ctx,
                 target="I-100-intent/P-200-plan/E-300-exec/_",
                 max_iterations=1,
                 dry_run=False,
+                github=github,
             )
             assert res["consensus"]["approved"] is False
             assert res["consensus"]["status"] == "conflicted_dirty"
             assert res["ensemble_verdict"] == "CHANGES_REQUESTED"
             assert res["total_iterations"] == 1
+            assert github.methods()[0] == "open_or_update" and "post_review" in github.methods()
 
         exec_file = ledger_dir / "executions.jsonl"
         assert exec_file.exists()

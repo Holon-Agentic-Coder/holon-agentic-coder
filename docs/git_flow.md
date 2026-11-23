@@ -432,7 +432,7 @@ The guarantee has five deliberate limits:
 - **Dispatch needs `origin`.** `--dry-run` validates the payload and names the branches without dispatching anything.
   `--skip-push` is rejected outside `--dry-run` -- on every run, including a `--from-stage` or `--checkpoint` resume
   from any stage -- before any stage runs, because the host fetches from and pushes to `origin` for the role containers,
-  Stage 4 opens the PR from the `origin` execution branch and Stage 5 pushes the `/calibrated` branch.
+  Stage 4 opens the PR from `origin`, Stage 5 pushes `/calibrated` ([push checks](executor/stage3_push_safeguards.md)).
 - **Unmeasured tests are never a pass.** The executor container runs `uv run task test` after the agent's turn and
   before the execution commit, and records `test_pass_rate`, the counts, `test_exit_code` and any `test_run_error` in
   its `executions.jsonl` summary row (bounded by `HOLON_TEST_MEASUREMENT_TIMEOUT_SECONDS`, default 900). Stage 3 carries

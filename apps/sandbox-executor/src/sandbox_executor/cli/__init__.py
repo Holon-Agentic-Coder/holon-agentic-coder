@@ -373,9 +373,9 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
     the ``effective_defaults.max_output_tokens`` or ``max_prompt_tokens`` of the server that serves it. Nothing is
     written; only loopback or allow-listed endpoints are probed.
 
-    Each part (budgets, envelope, base-URL check, gateway probe) is isolated: an invalid configuration prints an
-    ``Error:`` line, and any unexpected exception becomes a value-free ``WARNING: doctor <part> check failed
-    unexpectedly (<ExceptionClass>)`` line; either makes the result 1, and the doctor never raises from here.
+    Each part (budgets, GitHub token, envelope, base-URL check, gateway probe) is isolated: an invalid configuration
+    prints an ``Error:`` line, and any unexpected exception becomes a value-free ``WARNING: doctor <part> check
+    failed unexpectedly (<ExceptionClass>)`` line; either makes the result 1, and the doctor never raises from here.
     """
     env = os.environ
     out = out or sys.stdout
@@ -384,6 +384,13 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
         _report_budgets(env, out)
     except Exception as exc:  # The doctor reports; it never crashes.
         print(_doctor_section_failed("budgets", exc), file=out)
+        code = 1
+    try:
+        from sandbox_executor.flow.github.token_scopes import doctor_lines
+
+        print("\n".join(doctor_lines()), file=out)
+    except Exception as exc:
+        print(_doctor_section_failed("github token", exc), file=out)
         code = 1
 
     if env.get(local_llm.ENV_LOCAL_MODE, "").strip().lower() not in ("1", "true", "yes", "on"):

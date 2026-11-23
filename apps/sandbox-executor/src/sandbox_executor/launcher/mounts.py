@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable, Mapping
 
 from sandbox_executor import local_llm
 from sandbox_executor.launcher.antigravity_mounts import antigravity_session_mounts
@@ -52,19 +53,43 @@ def build_network_isolation_args(
     return args
 
 
+#: Runs ``gh auth token``-style argv and returns the completed process.
+CommandRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]
+_GH_TIMEOUT = 10.0
+
+
+def _run_gh(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, capture_output=True, text=True, timeout=_GH_TIMEOUT, check=False)
+
+
+def resolve_github_token(
+    environ: Mapping[str, str] | None = None, run: CommandRunner | None = None
+) -> tuple[str | None, str]:
+    """The token and its source: ``GITHUB_TOKEN``, then ``GH_TOKEN``, then ``gh auth token``; ``(None, "none")``.
+
+    The one resolver for the token handed to the sandbox, so the token scope pre-flight and ``holon doctor`` check
+    exactly that token.
+    """
+    env = os.environ if environ is None else environ
+    for name in ("GITHUB_TOKEN", "GH_TOKEN"):
+        if env.get(name):
+            return env[name], name
+    if run is None:
+        if not shutil.which("gh"):
+            return None, "none"
+        run = _run_gh
+    try:
+        res = run(["gh", "auth", "token"])
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.debug("Failed to retrieve token via gh CLI: %s", e)
+        return None, "none"
+    token = (res.stdout or "").strip() if res.returncode == 0 and isinstance(res.stdout, str) else ""
+    return (token, "gh") if token else (None, "none")
+
+
 def find_github_token() -> str | None:
     """Auto-detect GitHub token from environment variables or gh CLI."""
-    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
-    if token:
-        return token
-    if shutil.which("gh"):
-        try:
-            res = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True)
-            if res.returncode == 0 and res.stdout.strip():
-                return res.stdout.strip()
-        except Exception as e:
-            logger.debug("Failed to retrieve token via gh CLI: %s", e)
-    return None
+    return resolve_github_token()[0]
 
 
 def get_agent_session_mounts(agent_id: str) -> list[str]:

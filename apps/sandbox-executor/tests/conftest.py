@@ -9,6 +9,7 @@ import pytest
 from sandbox_executor import config_env
 from sandbox_executor.agent_defaults import detected_harness_markers
 from sandbox_executor.flow.admission import AdmissionDecision
+from sandbox_executor.flow.github import token_scopes
 from sandbox_executor.launcher import env_files, mounts
 
 from tests import network_guard
@@ -97,6 +98,10 @@ def hermetic_git_config(tmp_path_factory) -> Iterator[str]:
         yield str(config_file)
 
 
+def _no_github_api(url, headers, timeout):
+    raise OSError("the GitHub API is not reachable from the test suite")
+
+
 @pytest.fixture(autouse=True)
 def no_ambient_credentials(monkeypatch):
     """Run every test without the developer's or the sandbox's own credentials.
@@ -112,6 +117,9 @@ def no_ambient_credentials(monkeypatch):
             continue
         if name in _AMBIENT_CREDENTIAL_NAMES or name.startswith(_AMBIENT_PREFIX):
             monkeypatch.delenv(name, raising=False)
+    # The token scope report (holon doctor, the Stage 3 pre-flight) never runs the real `gh` nor calls the GitHub API.
+    monkeypatch.setattr(mounts, "_run_gh", lambda argv: subprocess.CompletedProcess(argv, 1, "", "gh disabled"))
+    monkeypatch.setattr(token_scopes, "_urllib_fetch", _no_github_api)
 
     def env_token() -> str | None:
         return os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")

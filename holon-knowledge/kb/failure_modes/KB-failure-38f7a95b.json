@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-38f7a95b",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T03:18:07.885818+00:00",
+  "updated_ts": "2026-11-23T03:18:07.885818+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795401557-4a8ca732-claude-agent",
+      "REV-1795401551-f03af890-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 5,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795398772-preflight-github-token-scopes-v2/P-1795400072-CLA-CO5.5/_",
+    "description": "Reproduced failure across 5 executions with identical context.",
+    "action": "Review Loop halted without consensus after 4 iteration(s); final verdicts: Reviewer 1 APPROVED (0/0/0); Reviewer 2 APPROVED (0/0/0); Reviewer 3 APPROVED (0/0/0)",
+    "symptoms": []
+  }
+}

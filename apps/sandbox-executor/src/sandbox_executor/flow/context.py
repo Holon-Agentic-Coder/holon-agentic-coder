@@ -166,6 +166,8 @@ class FlowContext:
     review_iterations_done: int = 0
     # Stage 4 findings a halted pass left without a disposition; a resume sends them to the resolver first.
     carried_review_findings: list[dict[str, Any]] = field(default_factory=list)
+    # Whether a merged-head CI failure may still restart Stage 4 (False at the restart cap). Never checkpointed.
+    merged_head_restart_allowed: bool = field(default=True, repr=False, compare=False)
     # Role-agent dispatcher for Stages 1-3; None means launcher.role_dispatch.dispatch_role_agent. Never checkpointed.
     dispatcher: Callable[..., int] | None = field(default=None, repr=False, compare=False)
     checkpoint_path: str | None = field(default=None, repr=False)  # The engine's --checkpoint path; never checkpointed.

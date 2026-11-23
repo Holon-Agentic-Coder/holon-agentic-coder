@@ -395,3 +395,114 @@ def test_a_withdrawn_consensus_restarts_stage4_on_resume_without_a_second_withdr
     assert record["head_sha"] == MERGED and record["state"] == "failed"
     assert fakes.probed == []
     assert not (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").exists()
+
+
+# --- the PR-own change fingerprint at the merged head ---------------------------------------------------------------
+
+FINGERPRINT = "pf1:" + "f" * 40
+OTHER_FINGERPRINT = "pf1:" + "e" * 40
+
+
+def _fingerprinted_ctx(
+    tmp_path: Path, merged_fingerprint: str | None, monkeypatch: pytest.MonkeyPatch
+) -> tuple[FlowContext, list[tuple]]:
+    """An approval of ``APPROVED`` recording ``FINGERPRINT``, and the recorded fingerprint computations.
+
+    The merged head's fingerprint is ``merged_fingerprint``.
+    """
+    from sandbox_executor.flow.github import ci_reverify
+
+    ctx = _approved_ctx(tmp_path)
+    consensus = ctx.stage_results["review"].payload["consensus"]
+    consensus.update(approval_fingerprint=FINGERPRINT, base_branch="main")
+    computed: list[tuple] = []
+
+    def fingerprint_of(repo_dir: str, head: str | None, base: str | None) -> str | None:
+        computed.append((head, base))
+        return merged_fingerprint
+
+    monkeypatch.setattr(ci_reverify, "approval_fingerprint_of", fingerprint_of)
+    return ctx, computed
+
+
+def _withdrawal_seams(posted: list[str]) -> WithdrawalSeams:
+    return WithdrawalSeams(lambda _: [], lambda _p, body: posted.append(body) or True)
+
+
+def test_a_carried_approval_still_waits_for_ci_on_the_merged_head_and_proceeds_when_green(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, computed = _fingerprinted_ctx(tmp_path, FINGERPRINT, monkeypatch)
+    fakes = Fakes([check()])
+    stopped, record = stage5_merged_head_gate(ctx, _seams(fakes))
+    assert stopped is None
+    assert fakes.probed == [MERGED]  # CI on the exact merged head was awaited, the fingerprint notwithstanding.
+    assert record["state"] == "passed"
+    assert record["approval_carry_over"] == {
+        "approved_head": APPROVED,
+        "merged_head": MERGED,
+        "approval_fingerprint": FINGERPRINT,
+    }
+    assert any("approval carried over" in line and f"waiting for CI on {MERGED}" in line for line in ctx.logs)
+    assert computed == [(MERGED, "main")]
+
+
+def test_a_carried_approval_with_red_ci_is_withdrawn_and_stage4_restarts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = _fingerprinted_ctx(tmp_path, FINGERPRINT, monkeypatch)
+    posted: list[str] = []
+    fakes = Fakes([check("unit", "failure")])
+    stopped, record = stage5_merged_head_gate(ctx, _seams(fakes, withdrawal=_withdrawal_seams(posted)))
+    assert fakes.probed == [MERGED]
+    assert stopped is not None and stopped.status == StageStatus.SKIPPED
+    assert stopped.payload["review_restart"] is True
+    assert record["state"] == "failed" and record["approval_carry_over"]["merged_head"] == MERGED
+    withdrawal = stopped.payload["consensus_withdrawal"]
+    assert withdrawal["approval_fingerprint"] == FINGERPRINT
+    assert "CI failed on merged head" in posted[0]
+    assert ctx.stage_results["review"].payload["consensus"]["approved"] is False
+
+
+def test_a_changed_pr_own_change_withdraws_the_approval_without_waiting_for_ci(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, _ = _fingerprinted_ctx(tmp_path, OTHER_FINGERPRINT, monkeypatch)
+    posted: list[str] = []
+    fakes = Fakes([check()])
+    stopped, record = stage5_merged_head_gate(ctx, _seams(fakes, withdrawal=_withdrawal_seams(posted)))
+    assert fakes.probed == []
+    assert stopped is not None and stopped.status == StageStatus.SKIPPED
+    assert stopped.payload["review_restart"] is True
+    assert record["state"] == "failed" and record["head_sha"] == MERGED
+    assert "changed since approval" in record["withdrawal_reason"]
+    assert FINGERPRINT in record["withdrawal_reason"] and OTHER_FINGERPRINT in record["withdrawal_reason"]
+    assert "changed since approval" in posted[0] and "CI failed" not in posted[0]
+    rows = [
+        json.loads(line) for line in (tmp_path / "holon-knowledge/ledger/executions.jsonl").read_text().splitlines()
+    ]
+    (row,) = rows
+    assert row["action_id"].startswith("ACT-WITHDRAW-") and "changed since approval" in row["action"]
+    assert ctx.stage_results["review"].payload["consensus"]["approved"] is False
+
+
+def test_a_legacy_approval_without_a_fingerprint_keeps_todays_ci_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx, computed = _fingerprinted_ctx(tmp_path, OTHER_FINGERPRINT, monkeypatch)
+    del ctx.stage_results["review"].payload["consensus"]["approval_fingerprint"]
+    fakes = Fakes([check()])
+    stopped, record = stage5_merged_head_gate(ctx, _seams(fakes))
+    assert stopped is None and record["state"] == "passed"
+    assert fakes.probed == [MERGED]
+    assert "approval_carry_over" not in record and "withdrawal_reason" not in record
+    assert computed == []
+
+
+def test_an_unreadable_merged_fingerprint_keeps_todays_ci_wait(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx, _ = _fingerprinted_ctx(tmp_path, None, monkeypatch)
+    fakes = Fakes([check()])
+    stopped, record = stage5_merged_head_gate(ctx, _seams(fakes))
+    assert stopped is None and record["state"] == "passed"
+    assert fakes.probed == [MERGED]
+    assert "approval_carry_over" not in record

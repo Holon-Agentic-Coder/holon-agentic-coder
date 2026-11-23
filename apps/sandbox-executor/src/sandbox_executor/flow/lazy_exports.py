@@ -72,7 +72,7 @@ LAZY_EXPORTS: dict[str, str] = {
         "parse_check_runs parse_suite_statuses probe_head_checks suite_pending with_suite_status"
     ),
     "sandbox_executor.flow.github.ci_head_reruns": "CancelledReruns gh_run_rerunner",
-    "sandbox_executor.flow.github.ci_reverify": "rerun_note",
+    "sandbox_executor.flow.github.ci_reverify": "ApprovalCoverage approval_covers approved_fingerprint_of rerun_note",
     "sandbox_executor.flow.github.ci_wait": (
         "CiWaitPolicy CiWaitResult is_pending_only next_poll_interval pending_check_names settle_pending_ci "
         "wait_for_pending_ci"
@@ -115,6 +115,13 @@ LAZY_EXPORTS: dict[str, str] = {
         "refresh_due refresh_payload refresh_plan_branch"
     ),
     "sandbox_executor.flow.review.adjudication": "_augment_pr_text_with_rejected _filter_adjudicated_findings",
+    "sandbox_executor.flow.review.approval_carry_over": (
+        "CarryOver apply_carry_over carry_approval_over carry_over_message carry_over_record decide_carry_over "
+        "merged_head_coverage record_stage5_carry_over"
+    ),
+    "sandbox_executor.flow.review.approval_fingerprint": (
+        "approval_fingerprint_of approval_record fingerprints_match pr_change_fingerprint"
+    ),
     "sandbox_executor.flow.review.carried_findings": (
         "CarriedPass carried_blocker deserialize_carried merge_findings resolve_carried_first serialize_open undisposed"
     ),

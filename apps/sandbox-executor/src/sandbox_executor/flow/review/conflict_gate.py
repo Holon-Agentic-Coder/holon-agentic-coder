@@ -4,7 +4,9 @@ The loop probes mergeability once per iteration, so the target branch can move b
 probed ``CONFLICTING`` or ``DIRTY`` (``UNKNOWN`` and ``MISSING_REF`` keep the loop's handling) is never approved or
 calibrated as it stands: the target branch is merged first, in a temporary detached worktree on ``origin/<branch>``.
 Ledger-only conflicts are resolved without a test run (target rows stay a byte prefix, head-only rows follow in
-``created_at`` order) and pushed; the approval must then be re-earned. A code conflict aborts the merge and blocks.
+``created_at`` order) and pushed; the approval must then be re-earned, unless the merged head's PR-own change
+fingerprint equals the approval's (:mod:`.approval_carry_over` keeps it then, and CI on the merged head is still
+awaited by Stage 5). A code conflict aborts the merge and blocks.
 """
 
 from __future__ import annotations
@@ -19,6 +21,11 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.pr import format_review_git_trailers
 from sandbox_executor.flow.host_remote import push_commit, remote_error
+from sandbox_executor.flow.review.approval_carry_over import (
+    _gate_record,
+    carry_approval_over,
+    record_stage5_carry_over,
+)
 from sandbox_executor.flow.review.conflict_merge import _merge_and_push, _MergeOutcome
 from sandbox_executor.flow.review.ledger_commit import (
     _commit_pending_ledger_rows,
@@ -26,14 +33,13 @@ from sandbox_executor.flow.review.ledger_commit import (
     _only_ledger_commits_ahead,
 )
 from sandbox_executor.git import run_git
-from sandbox_executor.ledger import format_commit_trailers, generate_action_id
-from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.ledger import format_commit_trailers
 
 if TYPE_CHECKING:
     from sandbox_executor.flow.review.posting import PostRequest
 
 MergeabilityProbe = Callable[..., dict[str, Any]]
-MERGED_REASON = "target branch merged; approval must be re-earned on the new head"
+MERGED_REASON = "target branch merged; approval must be re-earned on the new head unless its PR-own fingerprint matches"
 UNPUSHED_ROWS_REASON = "pending ledger rows could not be pushed"
 
 
@@ -45,6 +51,7 @@ class _ConflictGateResult:
     merged: bool = False
     ledger_only: bool = False
     blocked_reason: str | None = None
+    merged_head: str = ""
 
 
 def _is_conflicting(mergeability: Mapping[str, Any] | None) -> bool:
@@ -129,24 +136,7 @@ def _gate_conflicting_head(
     outcome = _merge_and_push(context.target_worktree, branch, target_branch, merge.trailers)
     reason = _blocked_reason(outcome, target_branch)
     context.log(f"[Review Loop] Conflict gate on '{branch}': {reason} (no test suite was run).")
-    return _ConflictGateResult(True, outcome.merged, outcome.ledger_only, reason)
-
-
-def _gate_record(review_target: str, gate: _ConflictGateResult) -> dict[str, Any]:
-    """The ACT row recording a blocked approval; its ``error_context`` is redacted."""
-    return {
-        "action_id": generate_action_id("ACT-GATE"),
-        "execution_id": f"REV-GATE-{int(datetime.now(UTC).timestamp())}",
-        "action": f"Approved consensus not posted for {review_target}: the head conflicts with the target branch",
-        "category": "code",
-        "target": review_target,
-        "outcome": "failure",
-        "entry_type": "action",
-        "action_origin": "pr_review",
-        "labels": ["review", "conflict-gate"],
-        "error_context": redact_agent_secrets(str(gate.blocked_reason)),
-        "created_at": datetime.now(UTC).isoformat(),
-    }
+    return _ConflictGateResult(True, outcome.merged, outcome.ledger_only, reason, outcome.head_sha)
 
 
 def _approved_post_gate(
@@ -167,6 +157,8 @@ def _approved_post_gate(
     gate = _gate_conflicting_head(context, branch, target_branch, mergeability, merge)
     if gate.blocked_reason is None:
         return None
+    if gate.merged and carry_approval_over(context, exec_file, request.consensus_data, review_target, gate.merged_head):
+        return None  # The approval stands for the merged head; Stage 5 still waits for its CI.
     record_review_action(context, exec_file, _gate_record(review_target, gate))
     return f"conflict gate: {gate.blocked_reason}", {"posted": False, "conflict_gate": asdict(gate)}
 
@@ -188,6 +180,8 @@ def _stage5_conflict_gate(context: FlowContext) -> StageResult | None:
     )
     merge = None if context.dry_run else _GateMerge(format_commit_trailers("calibration"), iteration, committed)
     gate = _gate_conflicting_head(context, context.execution_branch, target_branch, mergeability, merge)
+    if gate.merged:  # Proceeds either way; the merged-head gate waits for CI on the new head.
+        record_stage5_carry_over(context, target_branch, gate.merged_head)
     if gate.blocked_reason is None or gate.merged:
         return None
     reason = f"Calibrate stage refused: {gate.blocked_reason}"

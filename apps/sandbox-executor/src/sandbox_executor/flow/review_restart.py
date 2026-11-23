@@ -3,10 +3,12 @@
 :func:`stage5_merged_head_gate` runs after the conflict gate and before any calibration commit. A head that is the
 approved head, or moved past it only by non-merge bookkeeping commits (the ledger rows Stage 4 commits on exit), keeps
 today's path: Stage 5 relies on the Stage 4 CI of the approved code. Any other head (a merge of the target branch, or a
-code change) waits for CI on exactly that SHA (:mod:`sandbox_executor.flow.review.merged_head_gate`). A failed check
-withdraws the consensus and returns a SKIPPED Stage 5 flagged ``review_restart``; anything unsettled fails Stage 5
-closed. :func:`calibrate_with_review_restart` turns that flag into a fresh Stage 4 at iteration 1 and, on a new
-approval, a new Stage 5, at most ``MAX_MERGED_HEAD_REVIEW_RESTARTS`` times.
+code change) waits for CI on exactly that SHA (:mod:`sandbox_executor.flow.review.merged_head_gate`), also when the
+approval carried over by PR-own fingerprint; a PR-own change that differs from the approved one withdraws the consensus
+without waiting (:mod:`sandbox_executor.flow.review.approval_carry_over`). A failed check withdraws the consensus and
+returns a SKIPPED Stage 5 flagged ``review_restart``; anything unsettled fails Stage 5 closed.
+:func:`calibrate_with_review_restart` turns that flag into a fresh Stage 4 at iteration 1 and, on a new approval, a new
+Stage 5, at most ``MAX_MERGED_HEAD_REVIEW_RESTARTS`` times.
 """
 
 from __future__ import annotations
@@ -20,8 +22,9 @@ from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.ci_failure_detail import parse_run_id
 from sandbox_executor.flow.github.ci_final_head import _bookkeeping_only, _git_changed_paths
 from sandbox_executor.flow.github.ci_head_checks import FAILED, PASSED
-from sandbox_executor.flow.github.ci_reverify import _same_commit, approved_head_of
+from sandbox_executor.flow.github.ci_reverify import CHANGED, _same_commit, approved_head_of
 from sandbox_executor.flow.github.pr_head import pr_head_sha
+from sandbox_executor.flow.review.approval_carry_over import merged_head_coverage
 from sandbox_executor.flow.review.consensus_withdrawal import withdraw_consensus, withdrawn_consensus_of
 from sandbox_executor.flow.review.merged_head_gate import (
     MergedHeadSeams,
@@ -123,8 +126,11 @@ def stage5_merged_head_gate(
             f"Stage 5 relies on Stage 4 CI for head {head} (approved {approved}). {format_merged_head_ci(record)}"
         )
         return None, record
+    coverage, annotation = merged_head_coverage(context, approved, head)
+    if coverage == CHANGED:  # The PR-own change differs from the approved one: Stage 4 reviews it again.
+        return _decide(context, start, annotation, seams), annotation
     context.log(f"Merged-head CI gate: head {head} is not the approved head {approved}; waiting for its CI.")
-    record = gate_merged_head_ci(context, context.target_worktree, head, seams)
+    record = {**gate_merged_head_ci(context, context.target_worktree, head, seams), **annotation}
     context.log(format_merged_head_ci(record))
     return _decide(context, start, record, seams), record
 
@@ -176,9 +182,10 @@ def calibrate_with_review_restart(
     result = _run_calibrate(context, run_stage, record, restarts)
     while is_review_restart(result):
         restarts += 1
-        head = (result.payload.get("merged_head_ci") or {}).get("head_sha")
+        gate = result.payload.get("merged_head_ci") or {}
+        why = gate.get("withdrawal_reason") or f"CI failed on merged head {gate.get('head_sha')}"
         context.log(
-            f"Consensus withdrawn: CI failed on merged head {head}; restarting Stage 4 at iteration 1 "
+            f"Consensus withdrawn: {why}; restarting Stage 4 at iteration 1 "
             f"(restart {restarts} of {MAX_MERGED_HEAD_REVIEW_RESTARTS})."
         )
         review = run_stage(FlowStage.REVIEW)

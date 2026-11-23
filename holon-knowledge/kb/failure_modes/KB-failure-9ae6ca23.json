@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-9ae6ca23",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T08:27:27.799876+00:00",
+  "updated_ts": "2026-11-23T08:27:27.799876+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795416604-7d7b5b3a",
+      "ACT-FIND-1795416572-d0570ef3"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795409207-flow-no-auto-sidecar-spawn-v2/P-1795409223-CLA-CO5.5/E-1795409586-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 9 finding detected: FIND-R2-009-01",
+    "symptoms": [
+      "The goal asks for the confirmed sidecar connectivity cause, but the PR description omits it; state there that the cause is an unconfirmed hypothesis (H4 first) and link the execution record section."
+    ]
+  }
+}

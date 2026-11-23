@@ -346,3 +346,37 @@ def test_a_green_merged_head_is_calibrated_and_the_record_names_its_runs(tmp_pat
     assert (record["state"], record["head_sha"]) == ("passed", MERGED)
     assert record["runs"] == [{"run_id": "9", "check_run_id": 1, "name": "unit", "conclusion": "success"}]
     assert any(MERGED in line and "unit (run 9, check run 1): success" in line for line in ctx.logs)
+
+
+# --- an approval carried over a target merge is not a bookkeeping move ------------------------------------------------
+
+
+def _carried_timing_check(tmp_path: Path, changed: list[str]) -> ci_final_head._FinalHeadCheck:
+    """A final-head check whose approval of A carried over by fingerprint to the merged head B."""
+    approved, merged = "a" * 40, "b" * 40
+    context = FlowContext(repo_dir=str(tmp_path), execution_branch=BRANCH, agent="a", model="m")
+    consensus = {
+        "approved": True,
+        "target_commit": approved,
+        "approval_fingerprint": "pf1:" + "f" * 40,
+        "carried_from": approved,
+        "carried_to": merged,
+    }
+    context.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW, status=StageStatus.APPROVED, payload={"consensus": consensus}
+    )
+    seams = ci_final_head.FinalHeadSeams(pr_head=lambda: merged, changed_paths=lambda _a, _h: list(changed))
+    return ci_final_head._FinalHeadCheck(context, str(tmp_path), BRANCH, seams)
+
+
+def test_a_fingerprint_carried_merged_head_is_not_eligible_for_the_automatic_timing_rerun(tmp_path: Path) -> None:
+    record = {"failed_checks": ["unit"], "failed_details": [{"name": "unit", "timing_gate": True}]}
+    ci_status = {"checks": [{"name": "unit", "link": "https://github.com/o/r/actions/runs/77/job/1"}]}
+    merged_main = ["src/from_main.py", "holon-knowledge/ledger/executions.jsonl"]
+
+    carried = _carried_timing_check(tmp_path, merged_main)
+    bookkeeping = _carried_timing_check(tmp_path, ["holon-knowledge/ledger/executions.jsonl"])
+
+    # ci_final_head stays bookkeeping-only: a merge of main is not a bookkeeping move, even when the approval carried.
+    assert ci_final_head._eligible_run_ids(carried, record, ci_status) is None
+    assert ci_final_head._eligible_run_ids(bookkeeping, record, ci_status) == ["77"]  # The positive control.

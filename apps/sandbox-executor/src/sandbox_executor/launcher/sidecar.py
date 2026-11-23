@@ -11,14 +11,13 @@ import uuid
 from dataclasses import dataclass
 
 from sandbox_executor import token_reduction
-from sandbox_executor.launcher import coherence, messages, proxy_attach, proxy_paths, sidecar_plan
+from sandbox_executor.launcher import coherence, messages, proxy_attach, proxy_paths, proxy_readiness, sidecar_plan
 from sandbox_executor.launcher.coherence import _TRUTHY_ENV_VALUES
 from sandbox_executor.launcher.coherence import detect_holon_coherence as detect_holon_coherence
 from sandbox_executor.launcher.coherence import get_host_proxy_envs as get_host_proxy_envs
 from sandbox_executor.launcher.proxy_paths import PROXY_LISTEN_PORT
+from sandbox_executor.launcher.proxy_readiness import PROXY_READY_TIMEOUT_SECONDS
 from sandbox_executor.redaction import COMMAND_ECHO_ENV_NAMES, redact_agent_secrets, redact_env_literals
-from sandbox_executor.token_reduction import proxy_readiness
-from sandbox_executor.token_reduction.proxy_readiness import PROXY_READY_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 

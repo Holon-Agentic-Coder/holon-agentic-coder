@@ -33,8 +33,7 @@ from urllib.parse import urlsplit
 
 import pytest
 from sandbox_executor import cli, local_llm, token_reduction
-from sandbox_executor.launcher import env_files
-from sandbox_executor.token_reduction import proxy_readiness
+from sandbox_executor.launcher import env_files, proxy_readiness
 
 FRAGMENT_LEN = 4
 _LETTERS = "FGJQVZ"

@@ -464,7 +464,7 @@ class TestLauncherIntegration(unittest.TestCase):
                 proxy_paths, "_mitm_proxy_ca_paths", return_value=("/tmp/mock-ca.pem", "/tmp/mock-ca-cert.pem")
             ),
             patch.object(os.path, "isfile", lambda path: True),
-            patch("sandbox_executor.token_reduction.proxy_readiness.wait_for_proxy", lambda *a, **k: True),
+            patch("sandbox_executor.launcher.proxy_readiness.wait_for_proxy", lambda *a, **k: True),
             patch("subprocess.run") as mock_subproc,
         ):
             mock_subproc.return_value = MagicMock(returncode=0, stdout="8080\n")

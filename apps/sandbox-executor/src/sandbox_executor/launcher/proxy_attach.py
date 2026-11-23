@@ -4,10 +4,9 @@ import logging
 import os
 
 from sandbox_executor import token_reduction
-from sandbox_executor.launcher import messages, proxy_paths
+from sandbox_executor.launcher import messages, proxy_paths, proxy_readiness
 from sandbox_executor.launcher.proxy_paths import PROXY_ATTACH_TIMEOUT_SECONDS
 from sandbox_executor.redaction import trusted_url_authority
-from sandbox_executor.token_reduction import proxy_readiness
 
 logger = logging.getLogger(__name__)
 

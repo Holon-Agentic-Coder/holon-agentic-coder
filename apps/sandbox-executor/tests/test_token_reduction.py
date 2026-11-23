@@ -28,8 +28,8 @@ from sandbox_executor.cli import (
     setup_token_reduction_proxy,
     teardown_token_reduction_proxy,
 )
-from sandbox_executor.launcher import containers, proxy_attach, proxy_paths, sidecar
-from sandbox_executor.token_reduction import ca_generator, proxy_readiness
+from sandbox_executor.launcher import containers, proxy_attach, proxy_paths, proxy_readiness, sidecar
+from sandbox_executor.token_reduction import ca_generator
 from sandbox_executor.token_reduction.ca_generator import generate_root_ca
 
 from tests.fake_docker import fake_docker_runs

@@ -1412,7 +1412,7 @@ def test_record_calibration_action_accepts_failure_dict(tmp_path, guard_real_led
     assert row is not None
     assert row["action_id"].startswith("ACT-CAL-")
     assert row["outcome"] == "failure"
-    assert row["action"] == "Calibration failed for plan P-9; no report written, row left uncommitted"
+    assert row["action"] == "Calibration failed for plan P-9; nothing committed, row left uncommitted"
     assert row["predicted_metrics"] is None
     written = (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").read_text(encoding="utf-8")
     assert json.loads(written) == row
@@ -1500,7 +1500,7 @@ def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
     assert [r["outcome"] for r in _cal_rows(working)] == ["success", "failure"]
     failure = _cal_rows(working)[-1]
     assert "Git commit of calibration report plans/I-1-cal/P-2_calibration.md failed" in failure["error_context"]
-    assert failure["action"] == "Calibration failed for plan P-2; no report written, row left uncommitted"
+    assert failure["action"] == "Calibration failed for plan P-2; nothing committed, row left uncommitted"
     assert _HOOK_SECRET not in working
     recon = [json.loads(line) for line in working.splitlines() if line.strip()]
     assert not [r for r in recon if r.get("event_type") == "reconciliation"]

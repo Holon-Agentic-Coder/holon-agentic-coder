@@ -1295,8 +1295,9 @@ def record_calibration_action(  # noqa: PLR0913
         target_worktree: Target git worktree directory.
         report_rel: Repository-relative path of the calibration report.
         outcome: Action outcome, ``"success"`` or ``"failure"``. A failure row is written by a
-            Stage 5 run that failed closed: no report was written and the row stays uncommitted
-            until a ``--from-stage calibrate`` resume commits it.
+            Stage 5 run that failed closed: nothing was committed (a report rejected at commit time
+            may remain in the working tree) and the row stays uncommitted until a
+            ``--from-stage calibrate`` resume commits it.
         error_context: Optional failure detail (the redacted cause of a failure row).
         log_fn: Optional operator-facing log callable (for example ``FlowContext.log``).
 
@@ -1309,7 +1310,7 @@ def record_calibration_action(  # noqa: PLR0913
     if outcome == "success":
         action = f"Calibration report generated for plan {plan_id}"
     else:
-        action = f"Calibration failed for plan {plan_id}; no report written, row left uncommitted"
+        action = f"Calibration failed for plan {plan_id}; nothing committed, row left uncommitted"
     record: dict[str, Any] = {
         "action_id": generate_action_id("ACT-CAL"),
         "execution_id": f"CAL-{plan_id}-{int(time.time())}",

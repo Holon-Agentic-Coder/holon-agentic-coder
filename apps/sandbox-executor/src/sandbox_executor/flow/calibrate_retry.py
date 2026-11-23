@@ -4,11 +4,12 @@ Stage 5 used to write a stub "fallback" report whenever ``run_calibrate`` raised
 #249, where checking out the /calibrated branch failed with ``fatal: gitfile does not point to a valid repository``).
 Stage 5 now fails closed instead, after retrying only failures that a second attempt can fix:
 
-- transient: ``git``/subprocess timeouts, connection errors, a budget breach, and provider API errors (``API Error:``,
-  HTTP 5xx, ``overloaded``) surfacing through the exception message; retried after a short backoff;
+- transient: ``git``/subprocess timeouts, connection errors, a turn or stall budget breach, and provider API errors
+  (``API Error:``, HTTP 5xx, ``overloaded``) surfacing through the exception message; retried after a short backoff;
 - quota: a usage-limit or rate-limit message naming a reset within the wait ceiling
   (``HOLON_REVIEW_QUOTA_WAIT_SECONDS``, see :mod:`sandbox_executor.review_failure`); waited out at most once;
-- permanent: everything else (``git`` ``fatal:`` messages, ``CalibrationSyncError``, ``ValueError`` ...); not retried.
+- permanent: everything else (a stage budget breach, ``git`` ``fatal:`` messages, ``CalibrationSyncError``,
+  ``ValueError`` ...); not retried.
 
 A retry happens only while ``retry_safe()`` holds (the caller checks that the failed attempt left no report change and
 no new /calibrated commit), so a retry never re-appends a ledger row or commits twice. Each failed attempt is logged
@@ -47,7 +48,9 @@ CALIBRATE_RETRY_BACKOFF_SECONDS = (10.0, 30.0)
 
 # Fail-closed errors the stage handles itself; they are re-raised unchanged, never classified or retried.
 _NEVER_RETRIED = (LedgerRewriteError, CalibrationFormatError, CalibrationSelfCheckError)
-_TRANSIENT_TYPES = (subprocess.TimeoutExpired, TimeoutError, ConnectionError, BudgetBreach)
+_TRANSIENT_TYPES = (subprocess.TimeoutExpired, TimeoutError, ConnectionError)
+# A fired stage budget leaves no time for another attempt; only turn and stall breaches are retried.
+_TRANSIENT_BUDGETS = frozenset({"turn", "stall"})
 _AUTH_STATUSES = {PreflightStatus.NOT_LOGGED_IN, PreflightStatus.EXPIRED_KEY}
 _OVERLOADED_RE = re.compile(
     r"\boverloaded\b|(?:HTTP|status|code|error)[\s:=]*5\d\d\b|\b5\d\d\s+(?:server\s+error|service\s+unavailable)",
@@ -88,11 +91,19 @@ def redacted_cause(exc: BaseException) -> str:
     return text[:MESSAGE_MAX_CHARS]
 
 
+def _kind_by_type(exc: Exception) -> RetryKind | None:
+    """The retry kind ``exc``'s type alone decides, or None when its message must be inspected."""
+    if isinstance(exc, BudgetBreach):
+        return RetryKind.TRANSIENT if exc.budget_name in _TRANSIENT_BUDGETS else RetryKind.PERMANENT
+    return RetryKind.TRANSIENT if isinstance(exc, _TRANSIENT_TYPES) else None
+
+
 def classify_calibrate_error(exc: Exception, now: datetime, ceiling: float) -> CalibrateFailure:
     """Classify a ``run_calibrate`` exception (never one of the fail-closed errors, which callers re-raise first)."""
     cause = redacted_cause(exc)
-    if isinstance(exc, _TRANSIENT_TYPES):
-        return CalibrateFailure(RetryKind.TRANSIENT, cause)
+    kind = _kind_by_type(exc)
+    if kind is not None:
+        return CalibrateFailure(kind, cause)
     text = str(exc)
     statuses = matching_statuses(text)
     if statuses & _AUTH_STATUSES:

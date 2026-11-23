@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import sandbox_executor.calibration
+from sandbox_executor.budgets import BudgetBreach
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, run_calibrate_stage
 from sandbox_executor.flow.calibrate_rebuild import CalibrationSyncError
 from sandbox_executor.flow.calibrate_retry import RetryKind, classify_calibrate_error
@@ -146,7 +147,7 @@ def test_failure_row_is_a_pure_append(repo, sleep):
     row = rows[0]
     assert row["action_id"].startswith("ACT-CAL-")
     assert row["outcome"] == "failure"
-    assert row["action"] == "Calibration failed for plan P-200-plan; no report written, row left uncommitted"
+    assert row["action"] == "Calibration failed for plan P-200-plan; nothing committed, row left uncommitted"
     assert row["error_context"].startswith(f"Calibration run failed: {PR_249_ERROR}")
     assert row["calibration_report_path"] == REPORT_REL
     assert TOKEN not in (repo / LEDGER_REL).read_text(encoding="utf-8")
@@ -260,6 +261,9 @@ _NOW = datetime(2026, 11, 23, 8, 0, tzinfo=UTC)
         (subprocess.TimeoutExpired(["git", "fetch"], 30), RetryKind.TRANSIENT),
         (TimeoutError("timed out"), RetryKind.TRANSIENT),
         (ConnectionResetError("connection reset by peer"), RetryKind.TRANSIENT),
+        (BudgetBreach("calibrate", "turn", 300, 301), RetryKind.TRANSIENT),
+        (BudgetBreach("calibrate", "stall", 90, 91), RetryKind.TRANSIENT),
+        (BudgetBreach("calibrate", "stage", 900, 900), RetryKind.PERMANENT),
         (RuntimeError("API Error: 500 internal server error"), RetryKind.TRANSIENT),
         (RuntimeError("upstream overloaded, try again"), RetryKind.TRANSIENT),
         (RuntimeError("usage limit reached, resets in 2 minutes"), RetryKind.QUOTA),

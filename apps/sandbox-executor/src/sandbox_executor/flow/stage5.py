@@ -40,7 +40,6 @@ class Stage5Outcome:
     """What one Stage 5 run did: the report, the reconciliation outcome and the newly promoted candidates."""
 
     report_dict: dict[str, Any] = field(default_factory=dict)
-    calibration_succeeded: bool = False
     report_only: bool = False
     reconciliation: dict[str, Any] = field(default_factory=dict)
     promoted_candidates: list[dict[str, Any]] = field(default_factory=list)
@@ -63,10 +62,8 @@ def _reconciliation(status: str, verdict: str | None, rows_appended: int = 0) ->
     return {"status": status, "verdict": verdict, "rows_appended": rows_appended}
 
 
-def _reconcile_execution(
-    context: FlowContext, steps: Stage5Steps, verdict: str | None, committed: bool
-) -> dict[str, Any]:
-    """Append the execution's reconciliation rows once and commit them when calibration succeeded."""
+def _reconcile_execution(context: FlowContext, steps: Stage5Steps, verdict: str | None) -> dict[str, Any]:
+    """Append the execution's reconciliation rows once and commit them."""
     repo_dir = context.target_worktree
     executions_file = os.path.join(repo_dir, LEDGER_EXECUTIONS_REL)
     # Dry runs append nothing, so the reconciliation events are only written on a real run.
@@ -86,8 +83,7 @@ def _reconcile_execution(
                 f"for '{context.execution_branch}': the recorded verdict is kept."
             )
         # Commits rows an earlier failed calibration left uncommitted; a no-op when there are none.
-        if committed:
-            steps.commit_reconciliation(context, repo_dir)
+        steps.commit_reconciliation(context, repo_dir)
         return _reconciliation("already_recorded", verdict)
     result = steps.reconcile(
         ledger_path=executions_file,
@@ -98,18 +94,12 @@ def _reconcile_execution(
         db_path=os.path.join(repo_dir, ACTION_INDEX_REL),
     )
     rows = sum(int(result.get(key, 0)) for key in ("reconciled", "expired")) if isinstance(result, dict) else 0
-    if committed:
-        steps.commit_reconciliation(context, repo_dir)
-        return _reconciliation("recorded", verdict, rows)
-    context.log(
-        f"Stage 5 failure ACT-CAL and reconciliation rows left uncommitted in {LEDGER_EXECUTIONS_REL}: "
-        "calibration failed."
-    )
-    return _reconciliation("left_uncommitted", verdict, rows)
+    steps.commit_reconciliation(context, repo_dir)
+    return _reconciliation("recorded", verdict, rows)
 
 
-def _promote_candidates(context: FlowContext, steps: Stage5Steps, committed: bool) -> list[dict[str, Any]]:
-    """Promote qualified knowledge/wisdom candidates and commit the artefacts when calibration succeeded."""
+def _promote_candidates(context: FlowContext, steps: Stage5Steps) -> list[dict[str, Any]]:
+    """Promote qualified knowledge/wisdom candidates and commit the artefacts (outside a dry run)."""
     repo_dir = context.target_worktree
     db_path = os.path.join(repo_dir, ACTION_INDEX_REL)
     if not os.path.exists(db_path):
@@ -128,10 +118,8 @@ def _promote_candidates(context: FlowContext, steps: Stage5Steps, committed: boo
         else "Stage 5 promoted no new knowledge/wisdom candidates this run."
     )
     # Runs even when nothing is new, so artefacts an earlier failed calibration left behind are committed.
-    if committed and not context.dry_run:
+    if not context.dry_run:
         steps.commit_promoted(context, repo_dir, new_count)
-    elif not committed and new_count:
-        context.log("Stage 5 promoted knowledge/wisdom artifacts left uncommitted: calibration failed.")
     return promoted
 
 
@@ -156,16 +144,15 @@ def run_stage5(
     )
     context.calibrated_branch = report.calibrated_branch
     outcome.report_dict = report.to_dict()
-    outcome.calibration_succeeded = True
     if report_only:
         outcome.reconciliation = _reconciliation("skipped_report_only", verdict)
         return outcome
     outcome.reconciliation = _reconciliation("failed", verdict)
     try:
-        outcome.reconciliation = _reconcile_execution(context, steps, verdict, outcome.calibration_succeeded)
+        outcome.reconciliation = _reconcile_execution(context, steps, verdict)
         # An execution with no verdict is unknown to the ledger: it contributes no lessons, so nothing is promoted.
         if verdict is not None:
-            outcome.promoted_candidates = _promote_candidates(context, steps, outcome.calibration_succeeded)
+            outcome.promoted_candidates = _promote_candidates(context, steps)
     except LedgerRewriteError:
         raise
     except Exception as e:

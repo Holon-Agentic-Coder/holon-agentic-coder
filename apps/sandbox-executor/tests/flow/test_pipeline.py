@@ -285,7 +285,7 @@ class TestFlowStages:
         assert cal_rows[0]["outcome"] == "failure"
         assert "calibration failed" in cal_rows[0]["error_context"]
         assert (
-            cal_rows[0]["action"] == "Calibration failed for plan P-200-plan; no report written, row left uncommitted"
+            cal_rows[0]["action"] == "Calibration failed for plan P-200-plan; nothing committed, row left uncommitted"
         )
         assert cal_rows[0]["calibration_report_path"] == "plans/I-100-intent/P-200-plan_calibration.md"
 

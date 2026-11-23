@@ -147,7 +147,8 @@ class FlowContext:
     model: str = DEFAULT_MODELS[normalise_agent_id(FALLBACK_AGENT)]
     dry_run: bool = False
     auto_calibrate: bool = True
-    token_reduce: bool | None = None
+    token_reduce: bool | None = None  # Spawn this run's sidecar; only an explicit flag sets it.
+    proxy_attach: bool = False  # Attach role containers to a running user-owned proxy; never spawns one.
     skip_push: bool = False
     skip_calibrate: bool = False
     max_review_iterations: int = 25
@@ -180,11 +181,11 @@ class FlowContext:
         self.target_worktree = value
 
     def __post_init__(self) -> None:
-        """Resolve dynamic defaults such as proxy auto-detection."""
+        """Resolve dynamic defaults: proxy auto-detection may only attach to a running proxy, never spawn one."""
         if self.token_reduce is None:
-            from sandbox_executor.launcher import sidecar
+            from sandbox_executor.launcher import coherence
 
-            self.token_reduce = sidecar.detect_holon_coherence()
+            self.token_reduce, self.proxy_attach = coherence.resolve_flow_proxy_choice()
 
     def log(self, message: str) -> None:
         """Append a timestamped, secret-redacted message to context logs."""
@@ -209,6 +210,7 @@ class FlowContext:
             "dry_run": self.dry_run,
             "auto_calibrate": self.auto_calibrate,
             "token_reduce": self.token_reduce,
+            "proxy_attach": self.proxy_attach,
             "skip_push": self.skip_push,
             "skip_calibrate": self.skip_calibrate,
             "max_review_iterations": self.max_review_iterations,
@@ -249,6 +251,7 @@ class FlowContext:
             dry_run=data.get("dry_run", False),
             auto_calibrate=data.get("auto_calibrate", True),
             token_reduce=data.get("token_reduce", False),
+            proxy_attach=bool(data.get("proxy_attach", False)),
             skip_push=data.get("skip_push", False),
             skip_calibrate=data.get("skip_calibrate", False),
             max_review_iterations=data.get("max_review_iterations", 25),

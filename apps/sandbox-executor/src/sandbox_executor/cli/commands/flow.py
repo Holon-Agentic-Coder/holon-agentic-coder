@@ -29,6 +29,7 @@ from sandbox_executor.cli.options import (
     add_target_worktree_option,
 )
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, format_final_head_ci
+from sandbox_executor.launcher import coherence
 from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 
 logger = logging.getLogger(__name__)
@@ -240,8 +241,13 @@ def _update_flow_context(
     args: argparse.Namespace,
     flow_agent: str,
     flow_model: str,
-    effective_token_reduce: bool,
+    proxy_choice: coherence.FlowProxyChoice,
 ) -> None:
+    """Apply this run's flags to a resumed context.
+
+    The proxy routing is overwritten from this run's ``proxy_choice``, so an opt-out wins and a stale checkpointed
+    ``token_reduce=True`` no longer spawns a sidecar: a resumed run must repeat ``--token-reduce`` to keep one.
+    """
     target_worktree = getattr(args, "target_worktree", None)
     if target_worktree and target_worktree != ".":
         context.target_worktree = target_worktree
@@ -253,8 +259,8 @@ def _update_flow_context(
         context.max_review_iterations = args.max_review_iterations
     if args.ensemble_size is not None:
         context.review_ensemble_size = args.ensemble_size
-    if effective_token_reduce:
-        context.token_reduce = True
+    context.token_reduce = proxy_choice.spawn_sidecar
+    context.proxy_attach = proxy_choice.attach_running_proxy
     if args.mitm_web:
         context.mitm_web = True
 
@@ -266,7 +272,7 @@ def _build_flow_context(
     flow_agent: str,
     flow_model: str,
 ) -> Any:
-    effective_token_reduce = cli.detect_holon_coherence(bool(args.token_reduce or args.mitm_web))
+    proxy_choice = coherence.resolve_flow_proxy_choice(bool(args.token_reduce or args.mitm_web))
     target_worktree = getattr(args, "target_worktree", ".")
     kw = {"target_worktree": target_worktree}
     if context is None:
@@ -280,12 +286,13 @@ def _build_flow_context(
             auto_calibrate=not args.skip_calibrate,
             max_review_iterations=args.max_review_iterations,
             review_ensemble_size=args.ensemble_size or DEFAULT_ENSEMBLE_SIZE,
-            token_reduce=effective_token_reduce,
+            token_reduce=proxy_choice.spawn_sidecar,
+            proxy_attach=proxy_choice.attach_running_proxy,
             mitm_web=args.mitm_web,
             allow_overlap=bool(getattr(args, "allow_overlap", False)),
             **kw,
         )
-    _update_flow_context(context, args, flow_agent, flow_model, effective_token_reduce)
+    _update_flow_context(context, args, flow_agent, flow_model, proxy_choice)
     return context
 
 

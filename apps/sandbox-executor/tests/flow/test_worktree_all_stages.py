@@ -100,12 +100,14 @@ def test_the_intent_and_plan_containers_mount_the_worktree_exactly_as_the_execut
     _main, flow = sandbox_repo
     executor_mounts = git_flow.sandbox_worktree_mounts(str(flow), SANDBOX_WORKSPACE_MOUNT, "executor")
 
-    argv, _ = _docker_run(role, flow, tmp_path)
+    argv, env_file = _docker_run(role, flow, tmp_path)
 
     assert git_flow.sandbox_worktree_mounts(str(flow), SANDBOX_WORKSPACE_MOUNT, role) == executor_mounts
     for pair in _mount_pairs(executor_mounts):
         assert pair in argv
-    assert f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}" in argv
+    # The workspace pin travels in the env-file with every other HOLON_* item, never on the argv.
+    assert env_file["HOLON_TARGET_WORKTREE"] == SANDBOX_WORKSPACE_MOUNT
+    assert not any(a.startswith("HOLON_") for a in argv)
     assert f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}" in argv
     assert "clone" not in argv
 

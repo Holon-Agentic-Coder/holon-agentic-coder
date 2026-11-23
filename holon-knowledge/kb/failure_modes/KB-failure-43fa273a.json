@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-43fa273a",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T03:05:55.678173+00:00",
+  "updated_ts": "2026-11-23T03:05:55.678173+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795402022-267fdd71-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795398860-holon-env-all-via-env-file-v2/P-1795398882-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 3 iteration(s): conflict gate: code conflicts with main in: apps/sandbox-executor/src/sandbox_executor/cli/__init__.py, apps/sandbox-executor/src/sandbox_executor/preflight.py, apps/sandbox-executor/tests/test_host_worktree_sandbox.py, apps/sandbox-executor/tests/test_local_llm.py, apps/sandbox-executor/tests/test_preflight.py, holon-knowledge/kb/failure_modes/index.json, holon-knowledge/ledger/executions.jsonl, holon-knowledge/ledger/plans.jsonl; final verdicts: Reviewer 1 APPROVED (0/0/0); Reviewer 2 APPROVED (0/0/0); Reviewer 3 APPROVED (0/0/0)",
+    "symptoms": []
+  }
+}

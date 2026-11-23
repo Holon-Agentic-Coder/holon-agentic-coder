@@ -3,10 +3,11 @@
 A calibration report covers exactly one execution head. When the pull request head moves after Stage 5 (a conflict
 merge with main, a resolver push, a review-loop re-run), the report no longer names the head that merges, so the two
 re-entrant trigger sites (the pipeline's Stage 5 block and the review loop's report-back gate) call into this module:
-it detects the move, posts a de-duplicated stale comment on the pull request and reruns Stage 5, bounded by
-``MAX_RERUN_ATTEMPTS``. Invariant: a calibration commit is never, by itself, a head move — Stage 5's own report,
-reconciliation and promotion commits are discounted, so a rerun can never trigger another rerun (the no-loop
-guarantee). Merging stays with the human maintainer; this module only refreshes the report a human reads.
+it detects the move, keeps one stale comment on the pull request through ``calibrate_stale_warning`` (superseded
+once the report is fresh) and reruns Stage 5, bounded by ``MAX_RERUN_ATTEMPTS``. Invariant: a calibration commit is
+never, by itself, a head move — Stage 5's own report, reconciliation and promotion commits are discounted, so a rerun
+can never trigger another rerun (the no-loop guarantee). Merging stays with the human maintainer; this module only
+refreshes the report a human reads.
 """
 
 from __future__ import annotations
@@ -19,15 +20,20 @@ from typing import Any
 
 from sandbox_executor.calibration import parse_evaluated_commit_sha, read_git_file
 from sandbox_executor.flow.calibrate_rebuild import is_ancestor, is_calibration_commit
+from sandbox_executor.flow.calibrate_stale_warning import (
+    StaleRange,
+    WarningSeams,
+    post_refreshed,
+    resolve_stale,
+    warn_stale,
+)
 from sandbox_executor.flow.context import FlowContext, StageResult, StageStatus
 from sandbox_executor.flow.github.approval_invalidation import (
+    CommentEditor,
     CommentLister,
     CommentPoster,
-    approval_pr_number,
-    gh_comment_lister,
-    gh_comment_poster,
+    CommentRecordLister,
 )
-from sandbox_executor.flow.github.ci_failure_detail import short_sha
 from sandbox_executor.flow.github.ci_reverify import rerun_note
 from sandbox_executor.flow.host_remote import DEFAULT_REMOTE, HostRemoteError, fetch_base
 from sandbox_executor.git import run_git
@@ -36,8 +42,6 @@ from sandbox_executor.plan_paths import calibration_report_candidates, split_pla
 logger = logging.getLogger(__name__)
 
 MAX_RERUN_ATTEMPTS = 2
-STALE_MARKER_PREFIX = "<!-- holon-calibration-stale:"
-REFRESHED_MARKER_PREFIX = "<!-- holon-calibration-refreshed:"
 
 
 @dataclass(frozen=True)
@@ -52,12 +56,26 @@ class HeadMoveCheck:
 
 @dataclass(frozen=True)
 class RerunSeams:
-    """Optional collaborators of the staleness check and the stale signal; tests inject fakes, the flow the defaults."""
+    """Optional collaborators of the staleness check and the stale warning; tests inject fakes, the flow the defaults.
+
+    ``comments`` lists comment records (id and body) so the warning can be edited through ``editor``; the legacy
+    body-only ``lister`` still deduplicates when no records lister is given.
+    """
 
     head_resolver: Callable[[FlowContext], str] | None = None
     report_reader: Callable[[FlowContext, str], str | None] | None = None
     lister: CommentLister | None = None
     poster: CommentPoster | None = None
+    comments: CommentRecordLister | None = None
+    editor: CommentEditor | None = None
+
+
+def _warning_seams(seams: RerunSeams | None) -> WarningSeams:
+    """The comment seams of the warning lifecycle: the records lister first, else the legacy body-only lister."""
+    seams = seams or RerunSeams()
+    if seams.comments is None and seams.lister is not None:
+        return WarningSeams.from_lister(seams.lister, poster=seams.poster, editor=seams.editor)
+    return WarningSeams(comments=seams.comments, poster=seams.poster, editor=seams.editor)
 
 
 def _same_commit(first: str, second: str) -> bool:
@@ -152,53 +170,12 @@ def _safe_staleness(context: FlowContext, seams: RerunSeams | None) -> HeadMoveC
         return HeadMoveCheck(False, reason="the staleness check failed")
 
 
-def _stale_marker(check: HeadMoveCheck) -> str:
-    return f"{STALE_MARKER_PREFIX}{check.evaluated_sha}:{check.current_head} -->"
-
-
-def _refreshed_marker(head: str) -> str:
-    return f"{REFRESHED_MARKER_PREFIX}{head} -->"
-
-
-def _post_marked_comment(
-    context: FlowContext, pr_number: str | None, body: str, marker: str, seams: RerunSeams
-) -> dict[str, Any]:
-    """Post ``body`` once per ``marker`` on the PR (the approval's when none is given); never raises."""
-    try:  # approval_pr_number reads the checkpointed review payload, which may be malformed
-        pr_number = pr_number or approval_pr_number(context)
-        if context.dry_run or context.skip_push or not pr_number:
-            return {"posted": False, "reason": "dry run, push skipped or no pull request"}
-        repo_dir = context.target_worktree
-        existing = (seams.lister or gh_comment_lister(repo_dir))(pr_number)
-        if existing is None:
-            return {"posted": False, "reason": "comments could not be listed"}
-        if any(marker in comment for comment in existing):
-            return {"posted": False, "reason": "already posted for this marker"}
-        posted = (seams.poster or gh_comment_poster(repo_dir))(pr_number, f"{body}\n\n{marker}")
-        return {"posted": posted, "reason": "posted" if posted else "the comment could not be posted"}
-    except Exception as exc:
-        logger.warning("Calibration signal comment failed: %s", exc)
-        return {"posted": False, "reason": "comment posting failed"}
-
-
 def post_stale_signal(
     context: FlowContext, check: HeadMoveCheck, seams: RerunSeams | None = None, pr_number: str | None = None
 ) -> dict[str, Any]:
-    """Post the once-per-(evaluated, head) comment that the report is stale; the payload flag stays authoritative."""
-    body = (
-        "## ⚠️ Calibration report is stale\n\n"
-        f"The calibration report covers `{short_sha(check.evaluated_sha)}` but the pull request head is "
-        f"`{short_sha(check.current_head)}` ({check.reason}). Stage 5 must rerun; do not merge on this report."
-    )
-    return _post_marked_comment(context, pr_number, body, _stale_marker(check), seams or RerunSeams())
-
-
-def _post_refreshed_signal(
-    context: FlowContext, head: str, seams: RerunSeams | None, pr_number: str | None = None
-) -> dict[str, Any]:
-    """Post the comment that supersedes the stale one after a successful rerun; the stale one is never deleted."""
-    body = f"Calibration refreshed: the report now covers head `{short_sha(head)}`."
-    return _post_marked_comment(context, pr_number, body, _refreshed_marker(head), seams or RerunSeams())
+    """Post, or edit in place, the single warning that the report is stale; the payload flag stays authoritative."""
+    stale = StaleRange(check.evaluated_sha, check.current_head, check.reason)
+    return warn_stale(context, pr_number, stale, _warning_seams(seams))
 
 
 def rerun_calibration(
@@ -212,9 +189,10 @@ def rerun_calibration(
 
     An unmoved head is a no-op by construction: no stage call, hence no new ledger rows and the unchanged ``result``.
     A moved head posts the stale signal, reruns ``run_stage`` (production: ``run_calibrate_stage``, which syncs to the
-    new head, rebuilds the stale /calibrated branch, appends fresh rows, publishes and re-verifies CI) and posts the
-    superseding refreshed comment. A head that outran every attempt leaves ``calibration_stale`` set in the payload,
-    so the stage is never reported as covering a head it does not; a failed rerun propagates as the stage failure.
+    new head, rebuilds the stale /calibrated branch, appends fresh rows, publishes and re-verifies CI), supersedes the
+    stale warning and posts the refreshed comment; a current report supersedes any leftover warning. A head that
+    outran every attempt leaves ``calibration_stale`` set in the payload, so the stage is never reported as covering a
+    head it does not; a failed rerun propagates as the stage failure.
     """
     if context.dry_run or result.status is not StageStatus.SUCCESS:
         return result
@@ -239,7 +217,10 @@ def rerun_calibration(
         head = str(result.payload.get("calibrated_head") or check.evaluated_sha)
         ci_verdict = rerun_note(result.payload.get("ci_verdict") or {}, head)
         result.payload = {**result.payload, "ci_verdict": ci_verdict}
-        _post_refreshed_signal(context, head, seams, pr_number=pr_number)
+        resolve_stale(context, pr_number, check.evaluated_sha or head, _warning_seams(seams))
+        post_refreshed(context, pr_number, head, _warning_seams(seams))
+    elif check.evaluated_sha and check.current_head:  # current without a rerun: clear any leftover warning
+        resolve_stale(context, pr_number, check.evaluated_sha, _warning_seams(seams))
     return result
 
 
@@ -267,6 +248,8 @@ def review_calibration_freshness(
             return None
         check = report_staleness(context, seams)
         if not check.moved:
+            if check.evaluated_sha:  # the report is current: no stale warning stays open
+                resolve_stale(context, pr_number, check.evaluated_sha, _warning_seams(seams))
             return None
         record: dict[str, Any] = asdict(check) | {
             "signal": post_stale_signal(context, check, seams, pr_number=pr_number),

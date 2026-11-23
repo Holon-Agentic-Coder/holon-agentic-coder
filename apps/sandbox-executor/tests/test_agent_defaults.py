@@ -199,3 +199,8 @@ def test_claude_api_key_detection_uses_the_secrets_file_not_holon_agent_key(tmp_
     secrets.write_text("fake-claude-value\n", encoding="utf-8")
     secrets.chmod(0o600)
     assert agent_defaults._detect_api_key_present("claude", {}) is True
+
+
+def test_claude_api_key_detection_accepts_the_layered_oauth_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert agent_defaults._detect_api_key_present("claude", {"HOLON_AGENT_OAUTH_TOKEN": "sk-ant-oat01-fake"}) is True

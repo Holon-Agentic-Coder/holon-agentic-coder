@@ -21,9 +21,10 @@ from sandbox_executor import claude_credential
 SECRET_FILE_MAPPINGS: tuple[tuple[str, str, str], ...] = (
     ("HOLON_AGENT_OAUTH_TOKEN_FILE", "HOLON_AGENT_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
 )
-# Keys that reach the host or carry credential-bearing egress (a host directory mounted into the container, a proxy, the
-# proxy image, runner settings that can redirect the API endpoint, a host-local endpoint); like a token-file reference
-# they may not come from a repository-controlled project layer.
+# Keys that reach the host, carry credential-bearing egress or replace the operator's credentials (a host directory
+# mounted into the container, a proxy, the proxy image, runner settings that can redirect the API endpoint, a host-local
+# endpoint, the trusted CA and the files the role dispatcher reads or writes, the GitHub and agent credentials); like a
+# token-file reference they may not come from a repository-controlled project layer.
 PROJECT_REFUSED_KEYS: tuple[str, ...] = (
     "HOLON_ANTIGRAVITY_SESSION_DIR",
     "HOLON_AGENT_SETTINGS",
@@ -33,6 +34,12 @@ PROJECT_REFUSED_KEYS: tuple[str, ...] = (
     "HOLON_COHERENCE_IMAGE",
     "HOLON_LOCAL_BASE_URL",
     "HOLON_HOST_LOCAL_HOSTS",
+    "HOLON_ROOT_CA_PATH",
+    "HOLON_CA_BUNDLE_PATH",
+    "HOLON_SECRET_BUNDLE_PATH",
+    "GITHUB_TOKEN",
+    "HOLON_AGENT_OAUTH_TOKEN",
+    "HOLON_AGENT_KEY",
 )
 _GIT_TIMEOUT_SECONDS = 10.0
 
@@ -72,7 +79,8 @@ def drop_host_references(layer_values: Mapping[str, str], origin: str) -> tuple[
     """Drop the token-file references and host-reach keys of a repository-controlled layer.
 
     A token-file reference could name any file on the host, and a ``PROJECT_REFUSED_KEYS`` key could mount a host
-    directory, redirect the runner's API endpoint or route credentials through an arbitrary proxy or proxy image; only
+    directory, redirect the runner's API endpoint, route credentials through an arbitrary proxy or proxy image, trust a
+    repository CA, choose the CA or secret bundle file, or replace the operator's GitHub or agent credential; only
     the user layer and the process environment may set them, because a project ``.env`` can be committed.
 
     Args:

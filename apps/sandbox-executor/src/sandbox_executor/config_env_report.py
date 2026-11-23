@@ -16,7 +16,7 @@ from typing import Any
 from sandbox_executor.config_env import FILE_LAYERS, LAYERS, RESOLVED_MARKER, is_secret_key
 from sandbox_executor.config_env_keys import DOCUMENTED_KEYS
 from sandbox_executor.config_env_model import EffectiveConfig, ResolvedSetting
-from sandbox_executor.config_env_secrets import SECRET_FILE_MAPPINGS
+from sandbox_executor.config_env_secrets import PROJECT_REFUSED_KEYS, SECRET_FILE_MAPPINGS
 from sandbox_executor.redaction import carries_url_password, redact_command
 
 REPORT_HEADING = "Configuration (HOLON_* settings):"
@@ -102,6 +102,7 @@ def env_example_text() -> str:
         "# Format: KEY=VALUE, optional 'single' or \"double\" quotes, # comments. Nothing is expanded or executed.",
         "# KEY= (empty) means not set in this layer: the broader layer's value, or the built-in default, applies.",
         "# Only HOLON_* keys and GITHUB_TOKEN are accepted.",
+        "# A project .env may not set token-file references or: " + ", ".join(PROJECT_REFUSED_KEYS) + ".",
         "#",
         "# Recommended claude credential reference (the token file itself stays mode 0600):",
         "# HOLON_AGENT_OAUTH_TOKEN_FILE=~/.holon/secrets/claude-oauth-token",

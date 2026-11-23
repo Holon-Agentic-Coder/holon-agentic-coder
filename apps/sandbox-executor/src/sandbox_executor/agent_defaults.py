@@ -22,7 +22,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from sandbox_executor.claude_credential import read_secrets_file
+from sandbox_executor.claude_credential import resolve_claude_credential
 
 logger = logging.getLogger(__name__)
 
@@ -260,12 +260,11 @@ def _detect_api_key_present(norm: str, env: Mapping[str, str]) -> bool:
     if norm != "claude" and (os.path.isfile(bundle_path) or _is_set(env.get("HOLON_AGENT_KEY"))):
         return True
 
-    if norm == "claude" and read_secrets_file() is not None:
-        return True
+    if norm == "claude":
+        return resolve_claude_credential(env) is not None
 
     runner_env_keys: dict[str, tuple[str, ...]] = {
         "antigravity": ("AGY_USER_TOKEN", "GOOGLE_API_KEY", "GEMINI_API_KEY"),
-        "claude": ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         "pi": ("PI_API_KEY",),
         "codex": ("OPENAI_API_KEY", "CODEX_API_KEY"),
         "opencode": ("OPENCODE_API_KEY",),

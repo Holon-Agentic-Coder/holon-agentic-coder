@@ -305,9 +305,9 @@ def test_tracked_secret_bearing_project_file_warns(layers):
     assert not any("tracked by git" in w for w in layers.load().warnings)
     _git(layers.repo, "add", ".env")
     warnings = layers.load().warnings
-    assert warnings == [
+    assert warnings[0] == (
         f"Warning: {layers.project} is tracked by git and holds secret keys (HOLON_AGENT_KEY); untrack it."
-    ]
+    )
 
 
 def test_tracked_project_file_without_secret_keys_does_not_warn(layers):

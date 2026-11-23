@@ -11,11 +11,11 @@ that every defining layer leaves empty is unset (value None) and is never export
 
 Only ``HOLON_*`` keys (``^HOLON_[A-Z0-9_]+$``) and ``GITHUB_TOKEN`` are accepted; the host-owned keys in
 ``RESERVED_KEYS`` (every host-set key) are refused. The project file, which a repository can commit, may not set a
-token-file reference or a host-reach key (``config_env_secrets.PROJECT_REFUSED_KEYS``: a mounted host directory, a
-proxy or a host-local endpoint); only ``~/.holon/.env`` and the process environment may. A rejected key draws a
-warning naming the key, never the value. The format is a strict ``KEY=VALUE`` subset: comments, blank lines and
-optional single or double quotes whose content is taken literally; a shell ``export`` prefix is rejected. Nothing is
-expanded and nothing is executed.
+token-file reference, a host-reach key or a credential (``config_env_secrets.PROJECT_REFUSED_KEYS``: a mounted host
+directory, a proxy, a host-local endpoint, the CA and secret bundle paths, or the GitHub and agent credentials); only
+``~/.holon/.env`` and the process environment may. A rejected key draws a warning naming the key, never the value.
+The format is a strict ``KEY=VALUE`` subset: comments, blank lines and optional single or double quotes whose content
+is taken literally; a shell ``export`` prefix is rejected. Nothing is expanded and nothing is executed.
 
 A role container receives ``HOLON_CONFIG_RESOLVED=1``; an invocation that sees it reads no layer file and reports
 every key as inherited from the process environment.

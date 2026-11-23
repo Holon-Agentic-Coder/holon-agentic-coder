@@ -117,7 +117,7 @@ def no_ambient_credentials(monkeypatch):
         if name in _AMBIENT_CREDENTIAL_NAMES or name.startswith(_AMBIENT_PREFIX):
             monkeypatch.delenv(name, raising=False)
     # The token scope report (holon doctor, the Stage 3 pre-flight) never runs the real `gh` nor calls the GitHub API.
-    monkeypatch.setattr(token_scopes, "_run_gh", lambda argv: subprocess.CompletedProcess(argv, 1, "", "gh disabled"))
+    monkeypatch.setattr(mounts, "_run_gh", lambda argv: subprocess.CompletedProcess(argv, 1, "", "gh disabled"))
     monkeypatch.setattr(token_scopes, "_urllib_fetch", _no_github_api)
 
     def env_token() -> str | None:

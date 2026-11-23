@@ -176,6 +176,17 @@ def test_resolve_github_token_survives_a_failing_gh():
     assert resolve_github_token({}, broken) == (None, "none")
 
 
+def test_the_scope_report_checks_the_token_the_sandbox_is_handed(monkeypatch):
+    from sandbox_executor.launcher import mounts
+
+    monkeypatch.undo()  # The real find_github_token, not the conftest stand-in.
+    monkeypatch.setenv("GH_TOKEN", SENTINEL)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    assert resolve_github_token is mounts.resolve_github_token
+    assert mounts.find_github_token() == resolve_github_token()[0] == SENTINEL
+
+
 def test_report_format_line_names_type_source_and_scopes():
     line = TokenScopeReport("classic", "gh", ("repo", "workflow")).format_line()
     assert line == "github_token=classic source=gh scopes=repo,workflow"

@@ -11,13 +11,11 @@ The token value never leaves this module's functions: reports and messages carry
 
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 
+from sandbox_executor.launcher.mounts import CommandRunner, resolve_github_token
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.touch_set import TouchSetEntry, entry_matches, normalise_touch_path
 
@@ -39,8 +37,6 @@ _TOKEN_TYPES = (
 _UNVERIFIABLE_TYPES = frozenset({"fine-grained", "app", "user-to-server"})
 _SCOPED_TYPES = frozenset({"classic", "oauth"})
 
-#: Runs ``gh auth token``-style argv and returns the completed process.
-CommandRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 #: GETs a URL with headers and a timeout; returns the HTTP status and the response headers.
 ScopeFetcher = Callable[[str, Mapping[str, str], float], tuple[int, Mapping[str, str]]]
 
@@ -68,30 +64,6 @@ class TokenScopeReport:
             return "github_token=none (set GITHUB_TOKEN or run gh auth login)"
         scopes = "unverifiable" if self.scopes is None else (",".join(self.scopes) or "none")
         return f"github_token={self.token_type} source={self.source} scopes={scopes}"
-
-
-def _run_gh(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, capture_output=True, text=True, timeout=DEFAULT_TIMEOUT, check=False)
-
-
-def resolve_github_token(
-    environ: Mapping[str, str] | None = None, run: CommandRunner | None = None
-) -> tuple[str | None, str]:
-    """The token and its source: ``GITHUB_TOKEN``, then ``GH_TOKEN``, then ``gh auth token``; ``(None, "none")``."""
-    env = os.environ if environ is None else environ
-    for name in ("GITHUB_TOKEN", "GH_TOKEN"):
-        if env.get(name):
-            return env[name], name
-    if run is None:
-        if not shutil.which("gh"):
-            return None, "none"
-        run = _run_gh
-    try:
-        res = run(["gh", "auth", "token"])
-    except (OSError, subprocess.SubprocessError):
-        return None, "none"
-    token = (res.stdout or "").strip() if res.returncode == 0 and isinstance(res.stdout, str) else ""
-    return (token, "gh") if token else (None, "none")
 
 
 def token_type(token: str) -> str:

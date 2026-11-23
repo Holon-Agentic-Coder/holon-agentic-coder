@@ -78,6 +78,24 @@ def test_approved_loop_records_summary_row_status_approved(tmp_path):
             ["[SAFETY HALT]"],
             ["[REVIEW APPROVED]"],
         ),
+        (
+            "halted_for_human",
+            {"consensus": {"approved": True}},
+            ["[REVIEW APPROVED]"],
+            ["[SAFETY HALT]", "To approve manually"],
+        ),
+        (
+            "halted_for_human",
+            {"consensus": {"approved": False}, "human_approval_command": "holon review approve X"},
+            ["[SAFETY HALT]", "To approve manually, run: holon review approve X"],
+            ["[REVIEW APPROVED]"],
+        ),
+        (
+            "halted_for_human",
+            {},
+            ["[SAFETY HALT]"],
+            ["[REVIEW APPROVED]"],
+        ),
     ],
 )
 def test_report_review_outcome_renders_approved_legacy_and_safety_halt(

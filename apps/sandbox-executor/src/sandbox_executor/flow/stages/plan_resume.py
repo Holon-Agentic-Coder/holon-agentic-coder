@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 from sandbox_executor.flow.checkpoint import save_checkpoint
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
@@ -137,8 +136,8 @@ def adopt_existing_plan(context: FlowContext, intent_prefix: str) -> tuple[str, 
 def record_plan_branch(context: FlowContext, plan_branch: str) -> str | None:
     """Save the checkpoint with ``plan_branch`` and Stage 2 marked ``RUNNING`` before pushing, then restore live state.
 
-    Transient ``replan_feedback`` is removed for the save and restored in ``finally`` together with ``context.plan_branch``
-    and the ``plan`` stage result. Returns ``None`` on success, or an error message naming the checkpoint path and branch.
+    Transient ``replan_feedback`` is removed for the save and restored in ``finally`` together with
+    ``context.plan_branch`` and the ``plan`` stage result. Returns ``None`` on success, or an error text.
     """
     prev_branch = context.plan_branch
     has_plan_result = FlowStage.PLAN.value in context.stage_results
@@ -177,13 +176,10 @@ def publish_planned_branches(
     """Record a single new matching plan branch in the checkpoint before pushing every new child branch to origin."""
     repo_dir = context.target_worktree
     created = [
-        b
-        for b in new_local_child_branches(repo_dir, intent_prefix, "P", before)
-        if _matches_dispatch_suffix(b, suffix)
+        b for b in new_local_child_branches(repo_dir, intent_prefix, "P", before) if _matches_dispatch_suffix(b, suffix)
     ]
     if len(created) == 1:
         record_error = record_plan_branch(context, created[0])
         if record_error is not None:
             return record_error
     return run_remote(publish_new_child_branches, repo_dir, intent_prefix, "P", before)
-

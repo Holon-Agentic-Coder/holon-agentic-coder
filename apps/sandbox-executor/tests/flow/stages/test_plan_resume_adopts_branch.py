@@ -364,7 +364,7 @@ class TestStage2AdoptionWiring:
 
 
 class TestRecordPlanBranchBeforePush:
-    """Step 4 tests: checkpoint records plan_branch before host push, restores live context and strips replan_feedback."""
+    """Step 4 tests: checkpoint records plan_branch before host push, restores live context and strips feedback."""
 
     def test_checkpoint_records_plan_branch_before_failed_push(self, flow_repos, tmp_path):
         host, origin = flow_repos
@@ -447,6 +447,3 @@ class TestRecordPlanBranchBeforePush:
         assert ctx.plan_branch is not None
         assert ctx.stage_results["plan"].status == StageStatus.SUCCESS
         assert publish_planned_branches is not None
-
-
-

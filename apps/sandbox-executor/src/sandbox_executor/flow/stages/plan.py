@@ -88,8 +88,8 @@ class PlanStage:
         """Run the planner (or adopt an existing complete plan branch) and read back its plan."""
         if (failure := self.prepare() or self.adopt_existing()) is not None:
             return failure
-        tail = (self.read_plan,) if self.plan_branch else (self.dispatch_planner, self.adopt_plan_branch, self.read_plan)
-        for step in tail:
+        steps = () if self.plan_branch else (self.dispatch_planner, self.adopt_plan_branch)
+        for step in (*steps, self.read_plan):
             if (failure := step()) is not None:
                 return failure
         return None
@@ -108,7 +108,8 @@ class PlanStage:
                 f"Plan stage failed: could not fetch origin branches under {self.intent_prefix} before dispatching "
                 "the planner."
             )
-        self.existing_plans = existing_plans | set(new_local_child_branches(self.repo_dir, self.intent_prefix, "P", set()))
+        local = new_local_child_branches(self.repo_dir, self.intent_prefix, "P", set())
+        self.existing_plans = existing_plans | set(local)
         return None
 
     def dispatch_planner(self) -> StageResult | None:
@@ -140,11 +141,7 @@ class PlanStage:
                 f"could not be fetched to adopt its plan branch: {fetch_error}"
             )
         plan_branch, ambiguity = _discover_child_branch(
-            self.repo_dir,
-            self.intent_prefix,
-            "P",
-            before=self.existing_plans,
-            preferred_suffix=self.preferred_suffix,
+            self.repo_dir, self.intent_prefix, "P", before=self.existing_plans, preferred_suffix=self.preferred_suffix
         )
         if ambiguity:
             return self.fail(f"Plan stage failed: {ambiguity}; {AMBIGUOUS_PLAN_BRANCHES_HINT}.")

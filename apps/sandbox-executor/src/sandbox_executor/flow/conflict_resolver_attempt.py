@@ -151,6 +151,8 @@ def _save_attempt_diff(worktree: str, paths: list[str], label: str) -> str:
     target = Path(worktree) / ARTEFACT_DIR / f"{label}.diff"
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
+        # Self-ignoring, so an artefact is never swept into a commit even where ``tmp/`` is not git-ignored.
+        (target.parent / ".gitignore").write_text("*\n", encoding="utf-8")
         target.write_text(_git_out(worktree, "diff", "--", *paths), encoding="utf-8")
     except OSError:
         return ""

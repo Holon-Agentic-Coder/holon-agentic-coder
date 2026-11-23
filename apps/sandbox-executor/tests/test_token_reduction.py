@@ -28,7 +28,15 @@ from sandbox_executor.cli import (
     setup_token_reduction_proxy,
     teardown_token_reduction_proxy,
 )
-from sandbox_executor.launcher import containers, proxy_attach, proxy_paths, proxy_readiness, root_ca, sidecar
+from sandbox_executor.launcher import (
+    containers,
+    proxy_attach,
+    proxy_image,
+    proxy_paths,
+    proxy_readiness,
+    root_ca,
+    sidecar,
+)
 from sandbox_executor.launcher.root_ca import generate_root_ca
 
 from tests.fake_docker import fake_docker_runs
@@ -55,12 +63,14 @@ class FakeDocker:
 
     def __init__(self, spawn=None, port_stdout="127.0.0.1:32768\n", network_stderr=""):
         self.calls: list[list[str]] = []
+        self.envs: list[dict[str, str] | None] = []
         self.spawn = spawn if spawn is not None else _completed(stdout="containerid")
         self.port_stdout = port_stdout
         self.network_stderr = network_stderr
 
     def __call__(self, cmd, *args, **kwargs):
         self.calls.append(list(cmd))
+        self.envs.append(kwargs.get("env"))
         head = cmd[:3] if len(cmd) >= 3 else list(cmd)
         if head == ["docker", "network", "create"]:
             return _completed(returncode=1 if self.network_stderr else 0, stderr=self.network_stderr)
@@ -102,6 +112,8 @@ def host_paths(tmp_path, monkeypatch):
     # The default wire-log and cache directories sit under the repository root; use a per-test one.
     monkeypatch.setattr(proxy_paths, "_find_git_root", lambda *a, **k: str(tmp_path / "repo"))
     ca_dir = tmp_path / "certs"
+    # No local holon-coherence image: the sidecar resolves to the GHCR image and never runs `docker image inspect`.
+    monkeypatch.setattr(proxy_image, "local_coherence_image", lambda: None)
     monkeypatch.setattr(root_ca, "generate_root_ca", lambda *a, **k: generate_root_ca(cert_dir=str(ca_dir)))
     return tmp_path
 
@@ -111,20 +123,28 @@ def host_paths(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------------------
 
 
-def test_setup_proxy_addon_missing_raises_file_not_found(host_paths, monkeypatch):
-    monkeypatch.setattr(os.path, "isfile", lambda path: False)
+def test_setup_proxy_uses_the_coherence_image_and_mounts_no_addon(host_paths, monkeypatch):
+    """The sidecar runs the holon-coherence image's own `start` entrypoint; no addon or source tree is mounted."""
+    monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker()
     fake_docker_runs(monkeypatch, fake)
 
-    with pytest.raises(FileNotFoundError) as excinfo:
-        setup_token_reduction_proxy()
+    setup_token_reduction_proxy()
 
-    assert "mitm_addon.py" in str(excinfo.value)
-    assert fake.calls == []  # nothing is launched against a non-existent addon
+    run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
+    joined_run = " ".join(run_cmd)
+    assert "mitm_addon" not in joined_run
+    assert "/tmp/src" not in joined_run
+    assert "PYTHONPATH" not in joined_run
+    assert "mitmdump" not in joined_run
+    assert "mitmproxy/mitmproxy:" not in joined_run
+    assert "-e HOLON_IN_CONTAINER=1" in joined_run
+    image_index = run_cmd.index(proxy_image.GHCR_COHERENCE_IMAGE)
+    assert run_cmd[image_index + 1 :] == ["start", "--port", "8080"]
+    assert fake.envs[fake.calls.index(run_cmd)] is None  # no dashboard password: the spawn inherits the environment
 
 
 def test_setup_proxy_spawn_failure_raises_and_injects_no_dead_proxy(host_paths, monkeypatch):
-    monkeypatch.setattr(os.path, "isfile", lambda path: True)
     fake = FakeDocker(spawn=_completed(returncode=125, stderr="docker: error: image not found"))
     fake_docker_runs(monkeypatch, fake)
 
@@ -143,7 +163,6 @@ def test_setup_proxy_spawn_failure_redacts_dashboard_credentials(host_paths, mon
     pw_sample = make_probe("mitmweb")
     login_sample = make_probe("logintoken")
     monkeypatch.setenv("HOLON_MITM_WEB_PASSWORD", pw_sample)
-    monkeypatch.setattr(os.path, "isfile", lambda path: True)
     # Hermetic: the real host port 8081 may already be bound, which would fail before docker runs.
     monkeypatch.setattr(socket.socket, "connect_ex", lambda *args, **kwargs: 1)
     stderr = (
@@ -163,7 +182,6 @@ def test_setup_proxy_spawn_failure_redacts_dashboard_credentials(host_paths, mon
 
 
 def test_setup_proxy_readiness_failure_raises_without_proxy_envs(host_paths, monkeypatch):
-    monkeypatch.setattr(os.path, "isfile", lambda path: True)
     monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: False)
     fake = FakeDocker()
     fake_docker_runs(monkeypatch, fake)
@@ -178,7 +196,6 @@ def test_setup_proxy_readiness_failure_raises_without_proxy_envs(host_paths, mon
 
 
 def test_setup_proxy_missing_published_port_raises(host_paths, monkeypatch):
-    monkeypatch.setattr(os.path, "isfile", lambda path: True)
     fake = FakeDocker(port_stdout="")
     fake_docker_runs(monkeypatch, fake)
 
@@ -189,7 +206,6 @@ def test_setup_proxy_missing_published_port_raises(host_paths, monkeypatch):
 
 
 def test_setup_proxy_success_mounts_only_narrow_ro_cache(host_paths, monkeypatch):
-    monkeypatch.setattr(os.path, "isfile", lambda path: True)
     monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker()
     fake_docker_runs(monkeypatch, fake)
@@ -218,8 +234,8 @@ def test_setup_proxy_success_mounts_only_narrow_ro_cache(host_paths, monkeypatch
     assert stat.S_IMODE(os.stat(proxy_ca_dir / "mitmproxy-ca.pem").st_mode) == 0o600
     assert stat.S_IMODE(os.stat(proxy_ca_dir).st_mode) == 0o700
 
-    # I3: containment + streaming posture.
-    for flag in ["--memory=256m", "--cpus=0.5", "max-size=5m", "max-file=2", "--restart=no", "stream_large_bodies=1m"]:
+    # I3: containment posture.
+    for flag in ["--memory=256m", "--cpus=0.5", "max-size=5m", "max-file=2", "--restart=no"]:
         assert flag in joined_run
 
     # I2: per-run resource names.
@@ -236,7 +252,6 @@ def test_setup_proxy_success_mounts_only_narrow_ro_cache(host_paths, monkeypatch
 
 
 def test_setup_proxy_network_already_exists_is_not_owned(host_paths, monkeypatch):
-    monkeypatch.setattr(os.path, "isfile", lambda path: True)
     monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker(network_stderr="Error response from daemon: network with name x already exists")
     fake_docker_runs(monkeypatch, fake)
@@ -344,14 +359,16 @@ def test_invalid_proxy_url_warning_masks_userinfo_in_any_scheme(host_paths, monk
 
 
 def test_flag_opt_in_sidecar_failure_degrades_to_direct_egress(host_paths, monkeypatch, caplog):
-    monkeypatch.setattr(os.path, "isfile", lambda path: False)
+    fake = FakeDocker(spawn=_completed(returncode=125, stderr="Unable to find image 'holon-coherence:latest' locally"))
+    fake_docker_runs(monkeypatch, fake)
 
     with caplog.at_level(logging.ERROR, logger="sandbox_executor.launcher"):
         mounts, envs = get_token_reduction_mounts_and_envs(token_reduce=True)
 
     assert (mounts, envs) == ([], {})
     assert "DIRECT egress" in caplog.text
-    assert "FileNotFoundError" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "docker rm -f" in fake.joined()
 
 
 # --------------------------------------------------------------------------------------
@@ -2346,7 +2363,6 @@ def test_dump_wire_transaction_and_flush(tmp_path):
 
 
 def test_cli_mitm_web_configuration(host_paths, monkeypatch):
-    monkeypatch.setattr(os.path, "isfile", lambda path: True)
     monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
     monkeypatch.setattr(socket.socket, "connect_ex", lambda *args, **kwargs: 1)
     fake = FakeDocker()
@@ -2356,22 +2372,21 @@ def test_cli_mitm_web_configuration(host_paths, monkeypatch):
     run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
     joined_run = " ".join(run_cmd)
 
-    # Verify mitmweb is invoked instead of mitmdump
-    assert "mitmweb" in joined_run
+    # The holon-coherence image starts its own mitmweb dashboard
+    assert run_cmd[-6:] == ["start", "--port", "8080", "--web", "--web-port", "8081"]
+    assert "mitmweb" not in joined_run
     # Verify port 8081 is bound
     assert "127.0.0.1:8081:8081" in joined_run
-    # Verify web host and port arguments
-    assert "--web-host 0.0.0.0" in joined_run
-    assert "--web-port 8081" in joined_run
     # Verify WIRE_LOG_DIR is mounted and set
     assert "-e WIRE_LOG_DIR=/tmp/wire_logs" in joined_run
     assert ":/tmp/wire_logs" in joined_run
     # Verify CACHE_DIR is mounted and set
     assert "-e CACHE_DIR=/tmp/cache" in joined_run
     assert ":/tmp/cache" in joined_run
-    # Verify PYTHONPATH and src directory are mounted
-    assert "-e PYTHONPATH=/tmp/src" in joined_run
-    assert ":/tmp/src:ro" in joined_run
+    # No source tree or addon is mounted into the sidecar
+    assert "PYTHONPATH" not in joined_run
+    assert ":/tmp/src:ro" not in joined_run
+    assert "-e HOLON_IN_CONTAINER=1" in joined_run
     teardown_token_reduction_proxy()
 
 
@@ -2422,7 +2437,6 @@ def test_extract_detailed_token_counts_sse_streams():
 
 
 def test_cli_mitm_web_custom_port(host_paths, monkeypatch):
-    monkeypatch.setattr(os.path, "isfile", lambda path: True)
     monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
     monkeypatch.setattr(socket.socket, "connect_ex", lambda *args, **kwargs: 1)
     monkeypatch.setenv("HOLON_MITM_WEB_PORT", "9090")
@@ -2610,7 +2624,6 @@ def test_ab_measure_all_methods_endpoint_fallback(tmp_path):
 def test_cli_directory_permissions_0o775_and_socket_conflict(host_paths, monkeypatch):
     chmod_calls = []
     monkeypatch.setattr(os, "chmod", lambda path, mode: chmod_calls.append((path, mode)))
-    monkeypatch.setattr(os.path, "isfile", lambda path: True)
     monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker()
     fake_docker_runs(monkeypatch, fake)
@@ -2768,7 +2781,6 @@ def test_setup_token_reduction_proxy_chmod_oserror_fallback(host_paths, monkeypa
         return original_chmod(path, mode)
 
     monkeypatch.setattr(os, "chmod", fake_chmod)
-    monkeypatch.setattr(os.path, "isfile", lambda path: True)
     monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker()
     fake_docker_runs(monkeypatch, fake)
@@ -3178,7 +3190,6 @@ def test_ab_measure_local_cache_hit_token_accounting(tmp_path):
 def test_setup_token_reduction_proxy_relative_paths(host_paths, monkeypatch):
     monkeypatch.setenv("WIRE_LOG_DIR", "custom/rel_wire_logs")
     monkeypatch.setenv("CACHE_DIR", "custom/rel_cache")
-    monkeypatch.setattr(os.path, "isfile", lambda path: True)
     monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker()
     fake_docker_runs(monkeypatch, fake)
@@ -3237,7 +3248,6 @@ def test_mitm_web_password_support(host_paths, monkeypatch):
     from sandbox_executor.cli import setup_token_reduction_proxy, teardown_token_reduction_proxy
 
     monkeypatch.setenv("HOLON_MITM_WEB_PASSWORD", "secretpass123")
-    monkeypatch.setattr(os.path, "isfile", lambda path: True)
     monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
     monkeypatch.setattr(socket.socket, "connect_ex", lambda *args, **kwargs: 1)
     fake = FakeDocker()
@@ -3247,7 +3257,12 @@ def test_mitm_web_password_support(host_paths, monkeypatch):
     teardown_token_reduction_proxy()
 
     run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
-    assert "web_password=secretpass123" in run_cmd
+    # The password reaches the container through the spawn environment, never through argv.
+    assert all("secretpass123" not in arg for arg in run_cmd)
+    env_index = run_cmd.index("HOLON_COHERENCE_WEB_PASSWORD")
+    assert run_cmd[env_index - 1] == "-e"
+    spawn_env = fake.envs[fake.calls.index(run_cmd)]
+    assert spawn_env["HOLON_COHERENCE_WEB_PASSWORD"] == "secretpass123"
 
 
 def test_ab_measure_tier_token_accounting_on_cache_hit(tmp_path):
@@ -3502,3 +3517,82 @@ def test_proxy_unreachable_fallback_direct_egress(host_paths, monkeypatch, caplo
     assert mounts == []
     assert envs == {}
     assert "DIRECT egress fallback" in caplog.text
+
+
+# --------------------------------------------------------------------------------------
+# holon-coherence proxy image precedence
+# --------------------------------------------------------------------------------------
+
+
+def _inspect_finds(*present: str):
+    """A `subprocess.run` stand-in whose `docker image inspect` succeeds only for ``present`` images."""
+    calls: list[list[str]] = []
+
+    def run(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        return SimpleNamespace(returncode=0 if cmd[-1] in present else 1, stdout="", stderr="")
+
+    run.calls = calls
+    return run
+
+
+def test_coherence_proxy_image_env_override_wins(monkeypatch):
+    monkeypatch.setenv("HOLON_COHERENCE_IMAGE", "  registry.example/holon-coherence@sha256:abc  ")
+    monkeypatch.setattr(proxy_image, "local_coherence_image", lambda: pytest.fail("override must skip the probe"))
+
+    assert proxy_image.coherence_proxy_image() == "registry.example/holon-coherence@sha256:abc"
+
+
+def test_coherence_proxy_image_prefers_the_local_build(monkeypatch):
+    monkeypatch.setenv("HOLON_COHERENCE_IMAGE", "   ")
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/docker" if cmd == "docker" else None)
+    run = _inspect_finds(proxy_image.LOCAL_COHERENCE_IMAGE, proxy_image.GHCR_COHERENCE_IMAGE)
+    monkeypatch.setattr(proxy_image, "subprocess", SimpleNamespace(run=run, SubprocessError=subprocess.SubprocessError))
+
+    assert proxy_image.coherence_proxy_image() == "holon-coherence:latest"
+    assert run.calls == [["docker", "image", "inspect", "holon-coherence:latest"]]
+
+
+def test_coherence_proxy_image_uses_a_pulled_ghcr_image(monkeypatch):
+    monkeypatch.delenv("HOLON_COHERENCE_IMAGE", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/docker" if cmd == "docker" else None)
+    run = _inspect_finds(proxy_image.GHCR_COHERENCE_IMAGE)
+    monkeypatch.setattr(proxy_image, "subprocess", SimpleNamespace(run=run, SubprocessError=subprocess.SubprocessError))
+
+    assert proxy_image.local_coherence_image() == "ghcr.io/holon-agentic-coder/holon-coherence:latest"
+
+
+def test_coherence_proxy_image_falls_back_to_ghcr_without_a_local_image(monkeypatch):
+    monkeypatch.delenv("HOLON_COHERENCE_IMAGE", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/docker" if cmd == "docker" else None)
+
+    def timeout(cmd, *args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 2.0)
+
+    monkeypatch.setattr(
+        proxy_image, "subprocess", SimpleNamespace(run=timeout, SubprocessError=subprocess.SubprocessError)
+    )
+
+    assert proxy_image.coherence_proxy_image() == "ghcr.io/holon-agentic-coder/holon-coherence:latest"
+
+
+def test_coherence_proxy_image_without_docker_skips_the_probe(monkeypatch):
+    monkeypatch.delenv("HOLON_COHERENCE_IMAGE", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+    monkeypatch.setattr(proxy_image, "subprocess", SimpleNamespace(run=lambda *a, **k: pytest.fail("no docker")))
+
+    assert proxy_image.local_coherence_image() is None
+    assert proxy_image.coherence_proxy_image() == proxy_image.GHCR_COHERENCE_IMAGE
+
+
+def test_detect_holon_coherence_ignores_a_plain_mitmproxy_image(monkeypatch):
+    """A plain mitmproxy image cannot serve the sidecar, so its presence must not auto-enable token reduction."""
+    monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
+    monkeypatch.delenv("HOLON_PASSIVE_MONITORING", raising=False)
+    monkeypatch.setattr(socket, "create_connection", MagicMock(side_effect=OSError("connection refused")))
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/docker" if cmd == "docker" else None)
+    run = _inspect_finds("mitmproxy/mitmproxy:12.2.3")
+    monkeypatch.setattr(proxy_image, "subprocess", SimpleNamespace(run=run, SubprocessError=subprocess.SubprocessError))
+
+    assert cli.detect_holon_coherence(token_reduce=False) is False
+    assert [call[-1] for call in run.calls] == list(proxy_image.COHERENCE_IMAGES)

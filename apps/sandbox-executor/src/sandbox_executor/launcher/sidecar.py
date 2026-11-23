@@ -1,4 +1,4 @@
-"""The per-run mitmproxy token reduction sidecar: setup, teardown and the token-reduction mounts and env vars.
+"""The per-run holon-coherence token reduction sidecar: setup, teardown and the token-reduction mounts and env vars.
 
 ``detect_holon_coherence`` and ``get_host_proxy_envs`` live in ``launcher.coherence`` and are re-exported here, so
 ``sandbox_executor.launcher.sidecar`` is the one import path for the proxy surface the flow engine uses.
@@ -14,6 +14,7 @@ from sandbox_executor.launcher import (
     coherence,
     messages,
     proxy_attach,
+    proxy_image,
     proxy_paths,
     proxy_readiness,
     root_ca,
@@ -42,17 +43,15 @@ _sidecar_state = _SidecarState()
 
 
 def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict[str, str]]:
-    """Start this run's mitmproxy sidecar and return the sandbox mounts and env vars.
+    """Start this run's holon-coherence proxy sidecar and return the sandbox mounts and env vars.
 
     Resources are named per run (pid + uuid suffix) and recorded in ``_sidecar_state`` so teardown
-    only ever removes what this run created.
+    only ever removes what this run created. The image comes from ``proxy_image.coherence_proxy_image()``.
 
     Raises:
-        FileNotFoundError: If the mitmproxy addon script is missing.
         RuntimeError: If Docker networking, the sidecar spawn, or the readiness probe fails.
     """
     container_name, network_name = _sidecar_names()
-    addon_path = sidecar_plan._mitm_addon_path()
 
     ca_cert_path, ca_key_path = root_ca.generate_root_ca()
 
@@ -63,7 +62,7 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
     plan = sidecar_plan._SidecarPlan(
         container_name=container_name,
         network_name=network_name,
-        addon_path=addon_path,
+        image=proxy_image.coherence_proxy_image(),
         proxy_cache_dir=proxy_cache_dir,
         mitm_ca_combined=mitm_ca_combined,
         mitm_ca_cert=mitm_ca_cert,
@@ -98,11 +97,14 @@ def _spawn_sidecar(plan: sidecar_plan._SidecarPlan) -> None:
     docker_run_proxy = sidecar_plan._sidecar_command(plan)
 
     logger.info(
-        "Starting mitmproxy sidecar '%s'; the first run has to pull the 'mitmproxy/mitmproxy:12.2.3' "
-        "image, which can take a while before the container appears.",
+        "Starting holon-coherence proxy sidecar '%s' from image '%s'; a first run may have to pull the image, "
+        "which can take a while before the container appears.",
         plan.container_name,
+        plan.image,
     )
-    proxy_spawn = subprocess.run(docker_run_proxy, capture_output=True, text=True, check=False)
+    proxy_spawn = subprocess.run(
+        docker_run_proxy, capture_output=True, text=True, check=False, env=sidecar_plan._sidecar_spawn_env(plan)
+    )
     if proxy_spawn.returncode != 0:
         # The sidecar's output can echo the mitmweb `?token=` login URL or the `web_password=` setting.
         stderr = redact_env_literals(
@@ -111,7 +113,7 @@ def _spawn_sidecar(plan: sidecar_plan._SidecarPlan) -> None:
         )
         teardown_token_reduction_proxy()
         raise RuntimeError(
-            f"mitmproxy sidecar '{plan.container_name}' failed to start: {stderr or 'unknown docker error'}. "
+            f"holon-coherence sidecar '{plan.container_name}' failed to start: {stderr or 'unknown docker error'}. "
             "Re-run without --token-reduce to execute with direct egress."
         )
 
@@ -122,14 +124,15 @@ def _await_sidecar_ready(container_name: str) -> None:
     if host_port is None:
         teardown_token_reduction_proxy()
         raise RuntimeError(
-            f"mitmproxy sidecar '{container_name}' published no host loopback port, so its readiness cannot be "
+            f"holon-coherence sidecar '{container_name}' published no host loopback port, so its readiness cannot be "
             "verified. Re-run without --token-reduce to execute with direct egress."
         )
     if not proxy_readiness.wait_for_proxy("127.0.0.1", host_port):
         teardown_token_reduction_proxy()
         raise RuntimeError(
-            f"mitmproxy sidecar '{container_name}' never answered an HTTP proxy request on "
-            f"127.0.0.1:{host_port} within {PROXY_READY_TIMEOUT_SECONDS}s (the addon likely crashed on startup). "
+            f"holon-coherence sidecar '{container_name}' never answered an HTTP proxy request on "
+            f"127.0.0.1:{host_port} within {PROXY_READY_TIMEOUT_SECONDS}s (the holon-coherence image likely failed "
+            "to start its proxy; check `docker logs` and the image set by HOLON_COHERENCE_IMAGE). "
             "Re-run without --token-reduce to execute with direct egress."
         )
 

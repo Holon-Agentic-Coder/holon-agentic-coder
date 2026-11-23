@@ -4,21 +4,14 @@ import logging
 import os
 import shutil
 import socket
-import subprocess
 
-from sandbox_executor.launcher import proxy_paths, root_ca
+from sandbox_executor.launcher import proxy_image, proxy_paths, root_ca
 from sandbox_executor.launcher.proxy_paths import PROXY_LISTEN_PORT
 
 logger = logging.getLogger(__name__)
 
 _TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
 _EXPLICIT_OPT_OUT_VALUES = {"0", "false", "no", "off"}
-# Images whose local presence means the sidecar runner can serve a coherence proxy, probed in this order.
-_COHERENCE_IMAGES = (
-    "holon-coherence:latest",
-    "ghcr.io/holon-agentic-coder/holon-coherence:latest",
-    "mitmproxy/mitmproxy:12.2.3",
-)
 
 
 def detect_holon_coherence(token_reduce: bool = False) -> bool:
@@ -34,7 +27,8 @@ def detect_holon_coherence(token_reduce: bool = False) -> bool:
       connection with a 0.2-second timeout. If successful, return True.
     - Tier 4 (Docker Image Probe): If docker CLI exists on host PATH, probe if either
       'holon-coherence:latest' or 'ghcr.io/holon-agentic-coder/holon-coherence:latest' is present
-      locally via docker image inspect. If found, return True.
+      locally via docker image inspect. If found, return True. A plain mitmproxy image does not count: the
+      sidecar runs the addon the holon-coherence image ships.
     - Tier 5 (CLI Binary Probe): Check if 'holon-coherence' executable exists on PATH.
       If found, return True.
     - If all tiers evaluate negative, return False.
@@ -87,23 +81,8 @@ def _proxy_port_reachable() -> bool:
 
 
 def _coherence_image_present() -> bool:
-    """Tier 4: True when docker is on PATH and one of the coherence or mitmproxy images is present locally."""
-    if not shutil.which("docker"):
-        return False
-    for img in _COHERENCE_IMAGES:
-        try:
-            proc = subprocess.run(
-                ["docker", "image", "inspect", img],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=2.0,
-            )
-            if proc.returncode == 0:
-                return True
-        except (subprocess.SubprocessError, OSError):
-            pass
-    return False
+    """Tier 4: True when docker is on PATH and a holon-coherence proxy image is present locally."""
+    return proxy_image.local_coherence_image() is not None
 
 
 def _coherence_binary_present() -> bool:

@@ -529,7 +529,6 @@ def test_coherence_probe_order_when_nothing_answers(launch_env, monkeypatch):
         "connect 127.0.0.1:8080 0.2",
         "docker image inspect holon-coherence:latest",
         "docker image inspect ghcr.io/holon-agentic-coder/holon-coherence:latest",
-        "docker image inspect mitmproxy/mitmproxy:12.2.3",
     ]
     assert launch_env["runs"] == []
 

@@ -296,7 +296,10 @@ class TestStage5PromotedArtifactsCommit:
         ctx.stage_results["review"] = StageResult(
             stage=FlowStage.REVIEW, status=StageStatus.SUCCESS, payload=review_payload
         )
+        # The merged-head CI gate passed for the moved head; the self-check must still reject the report.
+        gate_passed = (None, {"state": "passed", "head": git("rev-parse", execution_branch).strip()})
         with (
+            patch("sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate", return_value=gate_passed),
             patch("sandbox_executor.flow.stages.calibrate.publish_calibration") as mock_publish,
             patch("sandbox_executor.flow.stages.calibrate.reconcile_records") as mock_reconcile,
             patch("sandbox_executor.flow.stages.calibrate.record_calibration_action") as mock_record,

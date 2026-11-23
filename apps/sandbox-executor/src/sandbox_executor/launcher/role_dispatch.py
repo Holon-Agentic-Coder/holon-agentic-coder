@@ -20,6 +20,7 @@ class RoleLaunchOptions(TypedDict, total=False):
     result_file: str | None
     token_reduce: bool
     mitm_web: bool
+    proxy_attach: bool
 
 
 def resolve_role_image(role: str, agent_id: str) -> str:
@@ -64,6 +65,8 @@ def dispatch_role_agent(
             result_file: Structured outcome payload path for container-to-host result transport (default None).
             token_reduce: Whether to route container traffic through the token reduction proxy (default False).
             mitm_web: Whether to start the proxy with the mitmweb interface (default False).
+            proxy_attach: Whether to attach to a proxy the user already runs, never spawning one (default False;
+                only 'holon flow' sets it).
 
     Returns:
         int: Container exit code (non-zero on failure).
@@ -86,6 +89,8 @@ def dispatch_role_agent(
         kwargs = {"agent_id": normalise_agent_id(runner or FALLBACK_AGENT), "token_reduce": token_reduce}
     if mitm_web:
         kwargs["mitm_web"] = True
+    if options.get("proxy_attach", False):
+        kwargs["proxy_attach"] = True
     if target_worktree:
         kwargs["target_worktree"] = target_worktree
     if result_file:

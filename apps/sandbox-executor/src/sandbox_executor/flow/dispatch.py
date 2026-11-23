@@ -46,6 +46,7 @@ def _dispatch_role(
 ) -> int:
     """Dispatch one role agent through the same function the per-stage commands use.
 
+    ``proxy_attach`` is forwarded only when set, so dispatchers see the same keywords as before when it is off.
     Non-None ``extra`` keywords are forwarded to the dispatcher; None values are dropped so injected
     dispatchers without those parameters keep working unchanged. The container sees
     ``HOLON_ALLOW_MODULE_BUDGET_CHANGE=1`` (forwarded with the ``HOLON_`` variables) only when the intent carries
@@ -61,6 +62,8 @@ def _dispatch_role(
     }
     if result_file is not None:
         kwargs["result_file"] = result_file
+    if getattr(context, "proxy_attach", False):
+        kwargs["proxy_attach"] = True
     kwargs.update({key: value for key, value in extra.items() if value is not None})
     with module_budget_flag(context.intent_data):
         return int(dispatcher(role, context.agent, context.model, positional_args, **kwargs))

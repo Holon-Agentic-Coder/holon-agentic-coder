@@ -162,7 +162,8 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
     merge_status = str(mergeability.get("merge_state_status", "UNKNOWN"))
     mergeable_state = str(mergeability.get("mergeable", "UNKNOWN"))
 
-    proxy_env_active = bool(context.token_reduce)
+    # A spawned sidecar or an attached user-owned proxy both route host-side review traffic.
+    proxy_env_active = bool(context.token_reduce or getattr(context, "proxy_attach", False))
 
     review_package = {
         "intent_branch": context.intent_branch,

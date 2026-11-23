@@ -186,10 +186,13 @@ class TestHolonCLI(unittest.TestCase):
             self.assertIn("docker", args)
             # The token travels in the 0600 env-file, never on the docker command line.
             self.assertFalse(any("secret_token" in arg for arg in args))
-            self.assertEqual(env_files, [{"GITHUB_TOKEN": "secret_token"}])
+            self.assertEqual(len(env_files), 1)
+            self.assertEqual(env_files[0]["GITHUB_TOKEN"], "secret_token")
             # The worktree is bind-mounted and pinned; no repository URL or SSH agent reaches the container.
+            # Every HOLON_* item travels in the env-file, never on the docker command line.
             self.assertIn(f"/work/flow-x:{SANDBOX_WORKSPACE_MOUNT}", args)
-            self.assertIn(f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}", args)
+            self.assertEqual(env_files[0]["HOLON_TARGET_WORKTREE"], SANDBOX_WORKSPACE_MOUNT)
+            self.assertFalse(any(a.startswith("HOLON_") for a in args))
             self.assertIn(f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}", args)
             self.assertFalse(any("HOLON_REPO_URL" in a or "SSH_AUTH_SOCK" in a or "GIT_CONFIG_" in a for a in args))
 
@@ -220,16 +223,20 @@ class TestHolonCLI(unittest.TestCase):
             args = mock_run.call_args[0][0]
             self.assertIn("docker", args)
             # Credentials are forwarded through the env-file, not the docker command line.
-            self.assertEqual(env_files, [{"GITHUB_TOKEN": "my-github-token", "HOLON_AGENT_KEY": "my-agent-key"}])
+            self.assertEqual(len(env_files), 1)
+            forwarded = env_files[0]
+            self.assertEqual(forwarded["GITHUB_TOKEN"], "my-github-token")
+            self.assertEqual(forwarded["HOLON_AGENT_KEY"], "my-agent-key")
             self.assertFalse(any("my-github-token" in arg or "my-agent-key" in arg for arg in args))
-            self.assertIn("HOLON_AGENT_EFFORT=high", args)
-            self.assertIn("HOLON_AGENT_PROVIDER=anthropic", args)
+            # Every HOLON_* item travels in the env-file too, never on the docker command line.
+            self.assertEqual(forwarded["HOLON_AGENT_EFFORT"], "high")
+            self.assertEqual(forwarded["HOLON_AGENT_PROVIDER"], "anthropic")
+            self.assertFalse(any(a.startswith("HOLON_") for a in args))
             # Ensure programmatic role takes strict precedence over host environment
-            self.assertIn("HOLON_ROLE=planner", args)
-            self.assertNotIn("HOLON_ROLE=host-role-should-be-overridden", args)
-            self.assertEqual([a for a in args if a.startswith("HOLON_ROLE=")], ["HOLON_ROLE=planner"])
+            self.assertEqual(forwarded["HOLON_ROLE"], "planner")
             # Ensure non-prefixed variable is NOT forwarded
             self.assertFalse(any("SOME_OTHER_VAR" in arg for arg in args))
+            self.assertNotIn("SOME_OTHER_VAR", forwarded)
 
     @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
     @patch("sandbox_executor.cli.get_agent_session_mounts", return_value=["-v", "/mock:/mock"])
@@ -241,21 +248,20 @@ class TestHolonCLI(unittest.TestCase):
         # Inside a timed host stage the container gets the remaining time; outside one nothing is added.
         from sandbox_executor.budgets import StageTimer, active_stage_timer
 
-        mock_run.return_value = MagicMock(returncode=0)
+        env_files: list[dict[str, str]] = []
+        mock_run.side_effect = lambda cmd, *a, **k: env_files.append(_read_env_file(cmd)) or MagicMock(returncode=0)
         now = [1000.0]
         timer = StageTimer("execute", 2700, clock=lambda: now[0])
         now[0] += 700
         with patch.dict(os.environ, {"HOLON_STAGE_BUDGET_SECONDS": "9999"}, clear=True):
             with active_stage_timer(timer):
                 run_docker_container("planner", "holon/agent-pi", ["branch"], agent_id="pi")
-            budget_args = [a for a in mock_run.call_args[0][0] if a.startswith("HOLON_STAGE_BUDGET_SECONDS=")]
-            self.assertEqual(budget_args, ["HOLON_STAGE_BUDGET_SECONDS=1940"])
-        mock_run.reset_mock()
+            self.assertEqual(env_files[-1]["HOLON_STAGE_BUDGET_SECONDS"], "1940")
+            self.assertFalse(any("HOLON_STAGE_BUDGET_SECONDS" in a for a in mock_run.call_args[0][0]))
         with patch.dict(os.environ, {}, clear=True):
             run_docker_container("planner", "holon/agent-pi", ["branch"], agent_id="pi")
-            self.assertFalse(
-                any(a.startswith("HOLON_STAGE_BUDGET_SECONDS=") for a in mock_run.call_args[0][0]),
-            )
+            self.assertNotIn("HOLON_STAGE_BUDGET_SECONDS", env_files[-1])
+            self.assertFalse(any("HOLON_STAGE_BUDGET_SECONDS" in a for a in mock_run.call_args[0][0]))
 
     def test_run_docker_container_requires_agent_id(self):
         with self.assertRaises(TypeError):
@@ -498,7 +504,8 @@ class TestRunDockerContainerWorktree(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertNotIn(sample, mock_stdout.getvalue())
         self.assertNotIn(sample, " ".join(mock_run.call_args[0][0]))
-        self.assertEqual(env_files, [{"GITHUB_TOKEN": sample}])
+        self.assertEqual(len(env_files), 1)
+        self.assertEqual(env_files[0]["GITHUB_TOKEN"], sample)
 
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_a_role_without_a_valid_worktree_fails_before_docker_runs(self, mock_which):
@@ -1464,10 +1471,13 @@ def test_docker_echo_and_argv_carry_no_secret_fragment(leak_env, monkeypatch, ca
     for value in leak_env["probes"].values():
         assert_no_fragment(echo, value)  # goal 4a: the printed docker run command
         assert_no_fragment(argv_text, value)  # goal 4c: the docker argv list
-    # The repository, role and branch stay readable.
-    for readable in (f"HOLON_TARGET_WORKTREE={SANDBOX_WORKSPACE_MOUNT}", "HOLON_ROLE=planner", _BRANCH):
-        assert readable in echo
-        assert readable in docker.argv
+    # The branch stays readable; the worktree pin and the role travel in the env-file with every HOLON_* item.
+    assert _BRANCH in echo
+    assert _BRANCH in docker.argv
+    assert docker.env_file_contents["HOLON_TARGET_WORKTREE"] == SANDBOX_WORKSPACE_MOUNT
+    assert docker.env_file_contents["HOLON_ROLE"] == "planner"
+    assert not any(name.startswith("HOLON_") for name in docker.argv_env)
+    assert "HOLON_" not in echo.replace(docker.env_file, "<env-file>")
     assert "--env-file" in echo
 
 
@@ -1546,7 +1556,8 @@ def test_url_userinfo_travels_only_in_the_env_file_in_every_shape(  # noqa: PLR0
 
 @pytest.mark.parametrize("value", CREDENTIAL_FREE_URLS)
 @pytest.mark.parametrize("name", _URL_ENV_NAMES)
-def test_credential_free_url_stays_readable_on_the_argv(leak_env, monkeypatch, capsys, name, value):
+def test_credential_free_url_travels_verbatim_in_the_env_file(leak_env, monkeypatch, capsys, name, value):
+    """A forwarded HOLON_* URL goes in the env-file unchanged even without a credential, never on the argv."""
     monkeypatch.setenv(name, value)
     docker = _RecordingDocker()
     monkeypatch.setattr(cli.subprocess, "run", docker)
@@ -1554,9 +1565,9 @@ def test_credential_free_url_stays_readable_on_the_argv(leak_env, monkeypatch, c
     assert _run_planner(leak_env["repo"]) == 0
 
     echo = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("Executing: docker run"))
-    assert f"{name}={value}" in echo
-    assert docker.argv_env[name] == value
-    assert name not in docker.env_file_contents
+    assert f"{name}=" not in echo
+    assert name not in docker.argv_env
+    assert docker.env_file_contents[name] == value
 
 
 @pytest.mark.parametrize("failure", ["write", "directory"])

@@ -412,9 +412,18 @@ class TestLauncherIntegration(unittest.TestCase):
             "HOLON_LOCAL_CONTEXT_WINDOW": "32768",
             **env,
         }
+        self.env_file_items: list[str] = []
+
+        def docker_run(cmd, *args, **kwargs):
+            # The env-file is removed when the run returns, so it is read while docker "runs".
+            if "--env-file" in cmd:
+                with open(cmd[cmd.index("--env-file") + 1], encoding="utf-8") as fh:
+                    self.env_file_items = fh.read().splitlines()
+            return MagicMock(returncode=0)
+
         with (
             patch("shutil.which", side_effect=lambda name: "/usr/bin/docker" if name == "docker" else None),
-            patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
+            patch("subprocess.run", side_effect=docker_run) as mock_run,
             patch.object(cli, "get_agent_session_mounts", side_effect=mounts or (lambda agent: [])),
             patch.object(cli.git_flow, "sandbox_worktree_mounts", return_value=[]),
             patch.object(
@@ -481,8 +490,8 @@ class TestLauncherIntegration(unittest.TestCase):
         }
         code, args, _ = self._run(env)
         self.assertEqual(code, 0)
-        self.assertIn("-e", args)
-        self.assertIn("HOLON_AGENT_PROVIDER=vmlx", args)
+        self.assertIn("HOLON_AGENT_PROVIDER=vmlx", self.env_file_items)
+        self.assertFalse(any(a.startswith("HOLON_") for a in args))
 
     def test_local_provider_defaults_to_local_when_unset(self):
         env = {
@@ -493,8 +502,8 @@ class TestLauncherIntegration(unittest.TestCase):
         with patch.object(local_llm, "host_models_json", return_value=None):
             code, args, _ = self._run(env)
         self.assertEqual(code, 0)
-        self.assertIn("-e", args)
-        self.assertIn("HOLON_AGENT_PROVIDER=local", args)
+        self.assertIn("HOLON_AGENT_PROVIDER=local", self.env_file_items)
+        self.assertFalse(any(a.startswith("HOLON_") for a in args))
 
     def test_host_models_json_named_provider_aligns_agent_provider(self):
         host_config = {
@@ -508,8 +517,9 @@ class TestLauncherIntegration(unittest.TestCase):
         with patch.object(local_llm, "host_models_json", return_value=host_config):
             code, args, _ = self._run({"HOLON_LOCAL_LLM": "1"})
         self.assertEqual(code, 0)
-        self.assertEqual(args.count("HOLON_AGENT_PROVIDER=vmlx"), 1)
-        self.assertNotIn("HOLON_AGENT_PROVIDER=local", args)
+        self.assertEqual(self.env_file_items.count("HOLON_AGENT_PROVIDER=vmlx"), 1)
+        self.assertNotIn("HOLON_AGENT_PROVIDER=local", self.env_file_items)
+        self.assertFalse(any(a.startswith("HOLON_") for a in args))
 
     def test_multiple_local_providers_without_local_or_env_fails(self):
         host_config = {
@@ -533,7 +543,8 @@ class TestLauncherIntegration(unittest.TestCase):
         with patch.object(local_llm, "host_models_json", return_value=host_config):
             code, args, _ = self._run({"HOLON_LOCAL_LLM": "1"})
         self.assertEqual(code, 0)
-        self.assertEqual(args.count("HOLON_AGENT_PROVIDER=local"), 1)
+        self.assertEqual(self.env_file_items.count("HOLON_AGENT_PROVIDER=local"), 1)
+        self.assertFalse(any(a.startswith("HOLON_") for a in args))
 
     def test_multiple_local_providers_with_env_provider_disambiguates(self):
         host_config = {
@@ -545,7 +556,8 @@ class TestLauncherIntegration(unittest.TestCase):
         with patch.object(local_llm, "host_models_json", return_value=host_config):
             code, args, _ = self._run({"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_PROVIDER": "ollama"})
         self.assertEqual(code, 0)
-        self.assertEqual(args.count("HOLON_AGENT_PROVIDER=ollama"), 1)
+        self.assertEqual(self.env_file_items.count("HOLON_AGENT_PROVIDER=ollama"), 1)
+        self.assertFalse(any(a.startswith("HOLON_") for a in args))
 
     def test_agent_id_normalization_accepts_agent_pi(self):
         env = {

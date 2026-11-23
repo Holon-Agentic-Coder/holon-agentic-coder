@@ -331,7 +331,9 @@ def _reference_secret_args(runner_cmd: list[str], secret_env: Mapping[str, str])
     The runner argv is composed on the host, so a flag the runner fills from a variable (for example
     ``--settings`` from ``HOLON_AGENT_SETTINGS``) would carry the credential itself. Each argument equal to a value
     in ``secret_env`` is replaced by a shell reference to that variable, and the command runs through ``sh -c``,
-    which expands the reference inside the container from the ``--env-file`` copy.
+    which expands the reference inside the container from the ``--env-file`` copy. The runner binary itself is fixed
+    by the runner, never filled from a variable, so it stays literal even when it equals a forwarded value (``claude``
+    and ``HOLON_AGENT_ID``).
 
     Args:
         runner_cmd: The runner argv from ``compose_cmd``.
@@ -341,10 +343,11 @@ def _reference_secret_args(runner_cmd: list[str], secret_env: Mapping[str, str])
         ``runner_cmd`` unchanged when no argument is a secret value, otherwise an equivalent ``sh -c`` argv.
     """
     by_value = {value: key for key, value in sorted(secret_env.items()) if value}
-    if not any(arg in by_value for arg in runner_cmd):
+    binary, *args = runner_cmd
+    if not any(arg in by_value for arg in args):
         return runner_cmd
-    script = " ".join(f'"${{{by_value[arg]}}}"' if arg in by_value else shlex.quote(arg) for arg in runner_cmd)
-    return ["sh", "-c", f"exec {script}"]
+    script = " ".join(f'"${{{by_value[arg]}}}"' if arg in by_value else shlex.quote(arg) for arg in args)
+    return ["sh", "-c", f"exec {shlex.quote(binary)} {script}"]
 
 
 def _result(  # noqa: PLR0913

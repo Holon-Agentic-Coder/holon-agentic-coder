@@ -231,10 +231,12 @@ Host-side stage ceilings in `holon flow` (below) never write an ACT-BUDGET recor
 An execution's code is never silently dropped. The executor configures its repo-local git identity straight after it
 creates the execution branch, so commits the agent makes step by step land on that branch. On every non-success status
 that reaches the commit step (a budget breach, an agent exit other than 0, an empty diff or any other failure), the
-executor stages everything except `holon-knowledge/ledger/executions.jsonl` and the run's own notes file: tracked
-modifications and deletions, and untracked files that `.gitignore` does not exclude. It commits them in
-`execute: E-... partial work (failed) for plan ...`, ahead of the failure commit for the notes and the ledger row. The
-pre-push safety and sync checks apply unchanged, and the successful path still makes one `completed` commit.
+executor stages everything except `holon-knowledge/ledger/executions.jsonl`, the run's own notes file, and proxy sidecar
+scratch files (wire logs, cache directories and cache SQLite databases, which are also excluded and logged on both
+host-side interrupted-run salvage and executor completion commits): tracked modifications and deletions, and untracked
+files that `.gitignore` does not exclude. It commits them in `execute: E-... partial work (failed) for plan ...`, ahead
+of the failure commit for the notes and the ledger row. The pre-push safety and sync checks apply unchanged, and the
+successful path still makes one `completed` commit.
 
 The failure summary row in `executions.jsonl` keeps its failure status, `status: failure` for a budget breach, an agent
 exit other than 0 or any other failure, and `status: failed` for an empty or unverified diff, and gains an optional

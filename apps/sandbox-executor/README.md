@@ -66,7 +66,10 @@ apps/sandbox-executor/
   this package vendors no addon code. `proxy_image.py` picks the image (`HOLON_COHERENCE_IMAGE` when set, else a local
   `holon-coherence:latest`, else `ghcr.io/holon-agentic-coder/holon-coherence:latest`), `root_ca.py` and
   `root_ca_openssl.py` keep the host Root CA at `~/.holon/certs` valid (same layout as holon-coherence, so either tool
-  reuses the other's CA), and `proxy_readiness.py` waits until the sidecar or an attached proxy answers HTTP.
+  reuses the other's CA), `proxy_paths.py` and `sidecar_plan.py` default the sidecar's host wire-log and cache
+  directories to `~/.holon/mitm_wire_logs` and `~/.holon/cache` under the per-user state directory outside any
+  repository worktree (overridable via `WIRE_LOG_DIR` and `CACHE_DIR`), and `proxy_readiness.py` waits until the sidecar
+  or an attached proxy answers HTTP.
 
 ---
 

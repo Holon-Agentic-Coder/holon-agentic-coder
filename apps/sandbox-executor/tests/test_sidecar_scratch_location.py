@@ -24,7 +24,7 @@ def _clean_sidecar_state():
 def test_default_sidecar_paths_live_in_user_state_dir_and_touch_nothing_in_worktree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With WIRE_LOG_DIR and CACHE_DIR unset and cwd inside a temporary git worktree, nothing is created in the worktree."""
+    """With WIRE_LOG_DIR and CACHE_DIR unset and cwd inside a git worktree, nothing is created in the worktree."""
     monkeypatch.delenv("WIRE_LOG_DIR", raising=False)
     monkeypatch.delenv("CACHE_DIR", raising=False)
     isolate_host_paths(tmp_path, monkeypatch)

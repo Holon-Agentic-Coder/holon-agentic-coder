@@ -148,7 +148,7 @@ class TestExecutionCommitExcludesScratch(unittest.TestCase):
         self.assertIn("Skipping sidecar scratch path(s) from Stage 3 commit:", stderr)
 
     def test_completion_commit_does_not_readd_scratch_after_agent_removed_earlier_commit(self) -> None:
-        """If the sidecar writes new untracked scratch files after an agent step commit, completion never stages them."""
+        """If the sidecar writes new untracked scratch files after an agent step commit, completion skips them."""
         scratch_paths: list[str] = []
 
         def turn(workspace: str, notes_path: str) -> None:

@@ -54,7 +54,7 @@ _ENGINE_OWNED_EXCLUDES = (
     f":(exclude){ENGINE_OWNED_NOTES_GLOB}",
 )
 
-# Proxy sidecar scratch patterns (wire logs, cache directories and SQLite database files) never belong in Stage 3 commits.
+# Proxy sidecar scratch patterns (wire logs, cache dirs and SQLite databases) never belong in Stage 3 commits.
 _SCRATCH_DIR_NAMES = frozenset({"mitm_wire_logs", "wire_logs", "wire-logs", "cache", "proxy-cache", "to" + "do"})
 _SCRATCH_FILE_RE = re.compile(
     r"(?:^|/)(?:wire_log[^/]*\.(?:json|jsonl|log)|[^/]*\.(?:db|sqlite|sqlite3)(?:-(?:shm|wal|journal))?)$",

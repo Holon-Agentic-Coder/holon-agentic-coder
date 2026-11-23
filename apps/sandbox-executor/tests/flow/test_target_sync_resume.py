@@ -113,3 +113,17 @@ def test_a_hand_merge_of_a_branch_already_in_the_target_is_left_untouched(work: 
     assert adoption is not None and adoption.action == "refused"
     assert "not started by the target sync" in adoption.error
     assert merge_in_progress(str(work))
+
+
+def test_markers_staged_before_the_interruption_block_the_resumed_merge(work: Path):
+    commit_on(work, "main", {"src/app.py": "x = 1\n"}, "target")
+    commit_on(work, FLOW_BRANCH, {"src/app.py": "x = 2\n"}, "flow")
+    head = _git(work, "rev-parse", "HEAD")
+    _interrupted_merge(work, "origin/main")
+    _git(work, "add", "src/app.py")  # a code resolver staged the file, markers and all, then the flow was interrupted
+
+    adoption = adopt_merge_in_progress(_request(work))
+
+    assert adoption is not None and adoption.action == "aborted"
+    assert "conflict markers remain in: src/app.py" in adoption.error
+    assert _git(work, "rev-parse", "HEAD") == head

@@ -120,11 +120,20 @@ def _commit_and_push(request: SyncRequest, probe: TargetProbe, result: SyncResul
     return result
 
 
-def _complete(request: SyncRequest, probe: TargetProbe, result: SyncResult) -> SyncResult:
+def _changed_on_both_sides(worktree: str) -> tuple[str, ...]:
+    """The paths both ``HEAD`` and ``MERGE_HEAD`` changed since their merge base (every path that could conflict)."""
+    base = _git_out(worktree, "merge-base", "HEAD", "MERGE_HEAD").strip()
+    ours, theirs = (
+        _git_out(worktree, "diff", "--name-only", "-z", base, side).split("\0") for side in ("HEAD", "MERGE_HEAD")
+    )
+    return tuple(p for p in theirs if p and p in set(ours)) if base else ()
+
+
+def _complete(request: SyncRequest, probe: TargetProbe, result: SyncResult, scan: tuple[str, ...] = ()) -> SyncResult:
     result = _resolve(request, probe, result)
     if result.status == "blocked":
         return result
-    error = merge_verification_error(request.worktree, result.conflicted_paths)
+    error = merge_verification_error(request.worktree, tuple(dict.fromkeys((*result.conflicted_paths, *scan))))
     return replace(result, status="blocked", error=error) if error else _commit_and_push(request, probe, result)
 
 
@@ -183,6 +192,8 @@ def merge_target(request: SyncRequest, probe: TargetProbe) -> SyncResult:
 def complete_merge(request: SyncRequest, probe: TargetProbe) -> SyncResult:
     """Finish a merge of ``probe.target_sha`` already in progress (a resumed flow): resolve, verify, commit, push.
 
-    A merge that cannot be finished is aborted and no row is appended; the caller redoes the sync instead.
+    A merge that cannot be finished is aborted and no row is appended; the caller redoes the sync instead. A path staged
+    before the interruption is no longer unmerged, so every path changed on both sides is scanned for markers.
     """
-    return _guarded(request, probe, _complete, record_blocked=False)
+    scan = _changed_on_both_sides(request.worktree)
+    return _guarded(request, probe, lambda req, prb, res: _complete(req, prb, res, scan), record_blocked=False)

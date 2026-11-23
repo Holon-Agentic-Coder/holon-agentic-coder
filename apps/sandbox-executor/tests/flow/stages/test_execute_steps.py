@@ -70,6 +70,7 @@ def test_steps_run_in_the_documented_order(ctx):
     stage = ExecuteStage(ctx)
     assert [step.__name__ for step in stage.steps()] == [
         "preflight",
+        "check_token_scopes",
         "admit_and_refresh_plan",
         "resume_point",
         "salvage_partial",

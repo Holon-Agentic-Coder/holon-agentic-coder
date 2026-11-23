@@ -41,6 +41,7 @@ from sandbox_executor.flow.stages.empty_diff_outcome import empty_diff_failure
 from sandbox_executor.flow.stages.execute_veto import execution_veto_error
 from sandbox_executor.flow.stages.plan_decision import _over_budget_failure, _plan_budget_decision
 from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
+from sandbox_executor.flow.stages.token_scope_guard import token_scope_failure
 from sandbox_executor.flow.stages.touch_set_guard import touch_set_violation_result
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.git import changed_paths
@@ -126,6 +127,7 @@ class ExecuteStage:
         """The guarding steps, in run order; :meth:`record_execution` follows the last."""
         return (
             self.preflight,
+            self.check_token_scopes,
             self.admit_and_refresh_plan,
             self.resume_point,
             self.salvage_partial,
@@ -199,6 +201,10 @@ class ExecuteStage:
         )
         context.stage_results["execute"] = result
         return result
+
+    def check_token_scopes(self) -> StageResult | None:
+        """Refuse a plan touching ``.github/workflows/**`` whose GitHub token lacks the ``workflow`` scope."""
+        return token_scope_failure(self.context, self.state.start_time)
 
     def admit_and_refresh_plan(self) -> StageResult | None:
         """Resolve stage conflicts, refuse a plan the budget decision rejects, then run admission and plan refresh."""

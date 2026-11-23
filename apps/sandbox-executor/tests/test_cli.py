@@ -1080,7 +1080,7 @@ class TestDoctor(unittest.TestCase):
         )
         self.assertEqual(code, 0)
         payload = json.loads(output)
-        self.assertEqual(set(payload), {"agent", "model", "preflight", "environment"})
+        self.assertEqual(set(payload), {"agent", "model", "preflight", "environment", "configuration"})
         self.assertEqual(set(payload["environment"]), {"ok", "lines", "warnings"})
         lines = payload["environment"]["lines"]
         self.assertEqual(sum(line.startswith("gateway=http://127.0.0.1:8000/") for line in lines), 1)

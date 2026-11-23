@@ -6,6 +6,7 @@ import subprocess
 from collections.abc import Iterator
 
 import pytest
+from sandbox_executor import config_env
 from sandbox_executor.agent_defaults import detected_harness_markers
 from sandbox_executor.flow.admission import AdmissionDecision
 from sandbox_executor.launcher import env_files, mounts
@@ -164,6 +165,37 @@ def _isolate_agent_defaults(no_ambient_credentials, monkeypatch: pytest.MonkeyPa
     for name in ("HOLON_AGENT", "HOLON_MODEL", "HOLON_PREFLIGHT_TIMEOUT"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("HOLON_SKIP_PREFLIGHT", "1")
+
+
+def _layered_config_env() -> dict[str, str]:
+    """The `os.environ` keys a layered configuration can fill: every `HOLON_*` variable and `GITHUB_TOKEN`."""
+    return {key: value for key, value in os.environ.items() if key.startswith(_AMBIENT_PREFIX) or key == "GITHUB_TOKEN"}
+
+
+@pytest.fixture(autouse=True)
+def isolated_layered_config(
+    _isolate_agent_defaults, tmp_path_factory, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Keep every test off the developer's `~/.holon/.env` and the checkout's `.env`, and undo what `cli.main` applies.
+
+    Both layer paths point into an empty temporary directory. `cli.main` folds the layered configuration into
+    `os.environ` directly, which no monkeypatch would undo, so the `HOLON_*` and `GITHUB_TOKEN` keys are restored
+    after the test and any key added during it is removed. The remembered resolution is reset on both sides.
+    """
+    layer_dir = tmp_path_factory.mktemp("layered-config")
+    monkeypatch.setattr(config_env, "user_env_path", lambda: layer_dir / "user.env")
+    monkeypatch.setattr(config_env, "project_env_path", lambda start: layer_dir / "project.env")
+    config_env.remember(None)
+    before = _layered_config_env()
+    yield
+    config_env.remember(None)
+    for key, value in _layered_config_env().items():
+        if key not in before:
+            del os.environ[key]
+        elif before[key] != value:
+            os.environ[key] = before[key]
+    for key, value in before.items():
+        os.environ.setdefault(key, value)
 
 
 @pytest.fixture(autouse=True)

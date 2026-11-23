@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-138b42cb",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-23T12:13:40.215959+00:00",
+  "updated_ts": "2026-11-23T12:13:40.215959+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795431463-4a4a508a-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795388456-github-adapter-pr-ci-review/P-1795397463-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 1 iteration(s): resolver failed: Resolver container exited with code 1 and produced no resolver result; not approved: reviewer 1 final verdict CHANGES_REQUESTED, reviewer 1 Engineering role CHANGES, reviewer 1 Documentation role CHANGES, reviewer 2 final verdict CHANGES_REQUESTED, reviewer 2 Engineering role CHANGES, reviewer 2 Documentation role CHANGES, reviewer 3 final verdict CHANGES_REQUESTED, reviewer 3 Engineering role CHANGES, reviewer 3 Documentation role CHANGES; final verdicts: Reviewer 1 CHANGES_REQUESTED (0/1/1); Reviewer 1 Engineering role CHANGES; Reviewer 1 Documentation role CHANGES; Reviewer 2 CHANGES_REQUESTED (0/1/1); Reviewer 2 Engineering role CHANGES; Reviewer 2 Documentation role CHANGES; Reviewer 3 CHANGES_REQUESTED (0/1/1); Reviewer 3 Engineering role CHANGES; Reviewer 3 Documentation role CHANGES",
+    "symptoms": []
+  }
+}

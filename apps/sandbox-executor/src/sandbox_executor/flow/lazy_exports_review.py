@@ -36,6 +36,7 @@ REVIEW_LAZY_EXPORTS: dict[str, str] = {
         "MergedHeadSeams format_merged_head_ci gate_merged_head_ci gate_record skipped_record"
     ),
     "sandbox_executor.flow.review.posting": "is_terminal_verdict",
+    "sandbox_executor.flow.review.proxy_env": "review_proxy_env",
     "sandbox_executor.flow.review.records": (
         "_SEVERITY_RANK POSTING_ERROR_CONTEXT_MAX_CHARS _attach_transported_detail _bounded_error_context "
         "_posting_failure_context _record_infrastructure_findings _record_reviewer_rows _refused_review_result "

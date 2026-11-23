@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import glob
 import json
 import logging
 import os
@@ -17,59 +18,56 @@ DEFAULT_KB_DIR = "holon-knowledge/kb"
 DEFAULT_WB_DIR = "holon-knowledge/wisdom"
 
 
-def _update_directory_index(subfolder_path: str, entry_meta: dict[str, Any]) -> None:
-    """Update index.json in a KB or WB subfolder with the latest entry metadata.
+_INDEX_FIELDS: dict[str, tuple[str, ...]] = {
+    "kb_id": ("kb_id", "kb_type", "status", "created_ts", "tags"),
+    "wb_id": ("wb_id", "wb_type", "status", "created_ts"),
+}
 
-    Avoids touching or rewriting index.json if the entry already exists and is substantively unchanged.
+
+def _index_entry(path: str) -> dict[str, Any] | None:
+    """Build the derived index entry of one KB or WB entry file, or None when it is unusable."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            envelope = json.load(f)
+    except (OSError, ValueError) as exc:
+        logger.warning("Skipping unreadable knowledge entry %s: %s", path, exc)
+        return None
+    id_key = next((k for k in _INDEX_FIELDS if isinstance(envelope, dict) and k in envelope), None)
+    if id_key is None:
+        logger.warning("Skipping knowledge entry without kb_id or wb_id: %s", path)
+        return None
+    entry: dict[str, Any] = {field: envelope.get(field) for field in _INDEX_FIELDS[id_key]}
+    entry["file"] = os.path.basename(path)
+    if id_key == "kb_id" and entry["tags"] is None:
+        entry["tags"] = []
+    return entry
+
+
+def load_index(subfolder: str) -> list[dict[str, Any]]:
+    """Derive the index of one KB or WB subfolder from its entry files.
+
+    Args:
+        subfolder: Directory holding ``KB-*.json`` or ``WB-*.json`` entry files (not searched recursively).
+
+    Returns:
+        One entry per entry file, sorted by ``created_ts`` then id. KB entries carry ``kb_id``, ``file``,
+        ``kb_type``, ``status``, ``created_ts`` and ``tags``; WB entries carry ``wb_id``, ``file``, ``wb_type``,
+        ``status`` and ``created_ts``. A missing directory yields ``[]``. Unreadable, non-object or id-less
+        files are logged and skipped; ``index.json`` and other non-entry files are never read.
     """
-    index_file = os.path.join(subfolder_path, "index.json")
-    index_data: dict[str, Any] = {
-        "index_version": "1.0",
-        "updated_ts": datetime.now(UTC).isoformat(),
-        "entries": [],
-    }
-
-    exists = os.path.exists(index_file)
-    if exists:
-        try:
-            with open(index_file, encoding="utf-8") as f:
-                index_data = json.load(f)
-        except Exception:
-            pass
-
-    entries: list[dict[str, Any]] = index_data.get("entries", [])
-    entry_id = entry_meta.get("kb_id") or entry_meta.get("wb_id")
-
-    found = False
-    is_dirty = not exists
-    for i, e in enumerate(entries):
-        e_id = e.get("kb_id") or e.get("wb_id")
-        if e_id == entry_id:
-            found = True
-            if e != entry_meta:
-                entries[i] = entry_meta
-                is_dirty = True
-            break
-    if not found:
-        entries.append(entry_meta)
-        is_dirty = True
-
-    if not is_dirty:
-        return
-
-    os.makedirs(subfolder_path, exist_ok=True)
-    index_data["entries"] = entries
-    index_data["updated_ts"] = datetime.now(UTC).isoformat()
-
-    with open(index_file, "w", encoding="utf-8") as f:
-        json.dump(index_data, f, indent=2)
+    if not os.path.isdir(subfolder):
+        return []
+    paths = sorted(glob.glob(os.path.join(subfolder, "KB-*.json")) + glob.glob(os.path.join(subfolder, "WB-*.json")))
+    entries = [entry for entry in map(_index_entry, paths) if entry is not None]
+    return sorted(entries, key=lambda e: (str(e.get("created_ts") or ""), str(e.get("kb_id") or e.get("wb_id"))))
 
 
 def persist_kb_fact(fact_data: dict[str, Any], kb_dir: str = DEFAULT_KB_DIR) -> str:
     """Validate and persist descriptive fact or pattern to holon-knowledge/kb/.
 
     Treats pre-existing fact files on disk as immutable append-only records and returns the
-    existing path immediately without modifying the file or index.
+    existing path immediately without modifying the file. The entry file is the only file written;
+    ``load_index`` derives the subfolder index from the entry files.
     """
     data = dict(fact_data)
     kb_type = str(data.get("kb_type") or "pattern").lower()
@@ -106,18 +104,6 @@ def persist_kb_fact(fact_data: dict[str, Any], kb_dir: str = DEFAULT_KB_DIR) -> 
     with open(out_file, "w", encoding="utf-8") as f:
         json.dump(envelope, f, indent=2)
 
-    _update_directory_index(
-        target_dir,
-        {
-            "kb_id": kb_id,
-            "file": f"{kb_id}.json",
-            "kb_type": kb_type,
-            "status": envelope["status"],
-            "created_ts": envelope["created_ts"],
-            "tags": envelope["tags"],
-        },
-    )
-
     return out_file
 
 
@@ -125,7 +111,8 @@ def persist_wb_rule(rule_data: dict[str, Any], wb_dir: str = DEFAULT_WB_DIR) -> 
     """Validate and persist prescriptive rule or invariant to holon-knowledge/wisdom/.
 
     Treats pre-existing rule files on disk as immutable append-only records and returns the
-    existing path immediately without modifying the file or index.
+    existing path immediately without modifying the file. The entry file is the only file written;
+    ``load_index`` derives the subfolder index from the entry files.
     """
     data = dict(rule_data)
     wb_type = str(data.get("wb_type") or "heuristic").lower()
@@ -157,17 +144,6 @@ def persist_wb_rule(rule_data: dict[str, Any], wb_dir: str = DEFAULT_WB_DIR) -> 
 
     with open(out_file, "w", encoding="utf-8") as f:
         json.dump(envelope, f, indent=2)
-
-    _update_directory_index(
-        target_dir,
-        {
-            "wb_id": wb_id,
-            "file": f"{wb_id}.json",
-            "wb_type": wb_type,
-            "status": envelope["status"],
-            "created_ts": envelope["created_ts"],
-        },
-    )
 
     return out_file
 

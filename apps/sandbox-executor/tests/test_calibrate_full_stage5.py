@@ -29,7 +29,6 @@ CALIBRATED = calibration_branch(EXEC)
 LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
 DB_REL = "holon-knowledge/.index/action_index.db"
 VOLATILE_KEYS = ("action_id", "created_at")
-KB_INDEX = "holon-knowledge/kb/failure_modes/index.json"
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -202,7 +201,7 @@ def test_second_run_appends_no_duplicate_rows_and_promotes_nothing(repo: SimpleN
     assert second["newly_promoted_count"] == 0
     assert len(reconciliation_rows(repo)) == 1
     assert calibrated_subjects(repo)[len(first_subjects) :] == ["chore(calibration): add calibration report for P-2-y"]
-    assert knowledge_files(repo) == ["holon-knowledge/kb/failure_modes/KB-failure-stage5fp.json", KB_INDEX]
+    assert knowledge_files(repo) == ["holon-knowledge/kb/failure_modes/KB-failure-stage5fp.json"]
 
 
 def test_no_commit_leaves_head_refs_and_ledger_unchanged(repo: SimpleNamespace, capsys) -> None:

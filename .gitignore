@@ -11,3 +11,7 @@ holon-knowledge/.index/
 tmp/
 .holon/
 .beads/embeddeddolt/
+# Derived KB/WB indexes; built on demand by knowledge.wisdom.load_index
+holon-knowledge/kb/failure_modes/index.json
+holon-knowledge/kb/patterns/index.json
+holon-knowledge/wisdom/heuristics/index.json

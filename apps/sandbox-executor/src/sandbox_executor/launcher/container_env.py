@@ -2,8 +2,8 @@
 
 The host ``HOLON_*`` and ``GITHUB_TOKEN`` values are forwarded first (they include the layered configuration that
 ``cli.main`` folded into the host environment, see ``config_env``); the inheritance marker, the chosen GitHub token,
-the claude credential, the stage budget, the workspace pin, the role and the preflight skip flag are set after them,
-so a stale host value can never displace one of them.
+the claude credential, the stage budget, the workspace pin, the role, the agent id and the preflight skip flag are set
+after them, so a stale host value can never displace one of them.
 """
 
 import os
@@ -53,6 +53,8 @@ def forwarded_env(role: str, agent_id: str, pin_workspace: bool) -> dict[str, st
 
     # Ensure explicit role parameter takes strict precedence over host environment
     env_to_forward["HOLON_ROLE"] = role
+    # The role dispatcher keys its credential mappings (HOLON_AGENT_OAUTH_TOKEN to CLAUDE_CODE_OAUTH_TOKEN) on this id.
+    env_to_forward["HOLON_AGENT_ID"] = norm_agent_id
     # The host already ran the readiness probe; nested invocations inside the container must not repeat it.
     env_to_forward["HOLON_SKIP_PREFLIGHT"] = "1"
 

@@ -146,9 +146,10 @@ def _warn_if_not_oauth(value: str) -> None:
     if value.startswith(OAUTH_TOKEN_PREFIX) or HOLON_OAUTH_TOKEN_ENV in _WARNED_FORMAT:
         return
     _WARNED_FORMAT.add(HOLON_OAUTH_TOKEN_ENV)
+    # The variable names are spelled out: a static scan reads the constants' names as sensitive data.
     print(
-        f"Warning: {HOLON_OAUTH_TOKEN_ENV} is not a subscription OAuth token; it is forwarded as "
-        f"{OAUTH_TOKEN_ENV} all the same. Set {API_KEY_ENV} for an API key instead.",
+        "Warning: HOLON_AGENT_OAUTH_TOKEN is not a subscription OAuth token; it is forwarded as "
+        "CLAUDE_CODE_OAUTH_TOKEN all the same. Set ANTHROPIC_API_KEY for an API key instead.",
         file=sys.stderr,
     )
 

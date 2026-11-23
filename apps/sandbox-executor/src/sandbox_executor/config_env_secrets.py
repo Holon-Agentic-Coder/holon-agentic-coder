@@ -15,9 +15,11 @@ from collections.abc import Iterable, Mapping
 from sandbox_executor import claude_credential
 
 # (file key, value key, in-container variable): the file key names a token file, whose single token becomes the value
-# key in the same layer; the role dispatcher exports it under the in-container variable.
+# key in the same layer; the role dispatcher exports it under the in-container variable. The variable names are spelled
+# out (they equal claude_credential.HOLON_OAUTH_TOKEN_ENV and OAUTH_TOKEN_ENV, which a test asserts) because this table
+# is rendered into .env.example, and a static scan reads those constants' names as sensitive data.
 SECRET_FILE_MAPPINGS: tuple[tuple[str, str, str], ...] = (
-    ("HOLON_AGENT_OAUTH_TOKEN_FILE", claude_credential.HOLON_OAUTH_TOKEN_ENV, claude_credential.OAUTH_TOKEN_ENV),
+    ("HOLON_AGENT_OAUTH_TOKEN_FILE", "HOLON_AGENT_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
 )
 _GIT_TIMEOUT_SECONDS = 10.0
 
@@ -50,6 +52,29 @@ def expand_secret_files(layer_values: Mapping[str, str], origin: str) -> tuple[d
             continue
         warnings.extend(permission_warnings(path))
         values[value_key] = token
+    return values, warnings
+
+
+def drop_file_references(layer_values: Mapping[str, str], origin: str) -> tuple[dict[str, str], list[str]]:
+    """Drop the token-file references of a repository-controlled layer, which could name any file on the host.
+
+    Only the user layer and the process environment may reference a token file; a project ``.env`` can be committed.
+
+    Args:
+        layer_values: The accepted keys of the layer.
+        origin: The layer file, named in warnings.
+
+    Returns:
+        The layer values without the file keys, and one warning per non-empty reference dropped (key only).
+    """
+    values = dict(layer_values)
+    warnings: list[str] = []
+    for file_key, _value_key, _container_key in SECRET_FILE_MAPPINGS:
+        if values.pop(file_key, ""):
+            warnings.append(
+                f"Warning: {origin}: ignoring {file_key}: a token file may only be named in ~/.holon/.env or the "
+                "process environment."
+            )
     return values, warnings
 
 

@@ -135,7 +135,11 @@ def with_cli_overrides(config: EffectiveConfig, cli_overrides: Mapping[str, str]
     settings = dict(config.settings)
     for key, value in cli_overrides.items():
         previous = settings.get(key)
-        shadowed = (*previous.shadowed, previous.source) if previous else ()
+        shadowed: tuple[str, ...] = ()
+        if previous:
+            # Labelled as _resolve_key labels a shadowed layer: a source that left the key empty is '<layer> (empty)'.
+            label = previous.source if previous.value is not None else f"{previous.source} (empty)"
+            shadowed = (*previous.shadowed, label)
         settings[key] = ResolvedSetting(key, value or None, "cli", shadowed, is_secret_key(key))
     return EffectiveConfig(dict(sorted(settings.items())), config.warnings, config.inherited)
 
@@ -183,7 +187,8 @@ def load_effective_config(environ: Mapping[str, str] | None = None, cwd: str | N
         # Only the keys the file itself holds: a token-file path is not a secret, the token it names is not tracked.
         secret_keys = [key for key, value in parsed.items() if value and is_secret_key(key)]
         warnings.extend(config_env_secrets.tracked_secret_warning(str(project_path), secret_keys))
-        project = _expand(parsed, str(project_path), warnings)
+        project, reference_warnings = config_env_secrets.drop_file_references(parsed, str(project_path))
+        warnings.extend(reference_warnings)
     # An exported token-file reference is a process-layer setting, read like the file layers' references.
     process = _expand({k: v for k, v in environ.items() if accept_key(k) is None}, "process environment", warnings)
     return EffectiveConfig(resolve(user, project, process).settings, warnings)

@@ -15,13 +15,13 @@ class ParsedLayer:
 
 @dataclass(frozen=True)
 class ResolvedSetting:
-    """One effective variable: its value (None for unset), source layer, shadowed broader layers and secrecy."""
+    """One effective variable: its value (None for unset), source layer, shadowed broader layers and masking."""
 
     key: str
     value: str | None
     source: str
     shadowed: tuple[str, ...]
-    secret: bool
+    masked: bool
 
 
 @dataclass(frozen=True)

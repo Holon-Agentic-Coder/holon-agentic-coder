@@ -122,6 +122,12 @@ def test_cli_override_beats_the_process_value(layers):
     assert setting(direct, "HOLON_X") == ("3", "cli", ("user", "process"))
 
 
+def test_cli_override_labels_an_all_empty_previous_source_as_empty(layers):
+    config = layers.load(user="HOLON_X=\n", project="HOLON_X=\n")
+    config = config_env.with_cli_overrides(config, {"HOLON_X": "3"})
+    assert setting(config, "HOLON_X") == ("3", "cli", ("user (empty)", "project (empty)"))
+
+
 def test_each_variable_resolves_independently(layers):
     config = layers.load(user="HOLON_A=user-a\nHOLON_B=user-b\n", project="HOLON_A=project-a\n")
     assert setting(config, "HOLON_A") == ("project-a", "project", ("user",))
@@ -312,16 +318,41 @@ def test_tracked_project_file_without_secret_keys_does_not_warn(layers):
     assert layers.load().warnings == []
 
 
-def test_tracked_project_file_naming_only_a_token_file_does_not_warn(layers, tmp_path):
+def test_project_token_file_reference_is_ignored_with_a_warning(layers, tmp_path):
     (layers.repo / ".git").rmdir()
     _git(layers.repo, "init", "-q")
-    token_file = write(tmp_path / "token", fake_token())
+    token = fake_token()
+    token_file = write(tmp_path / "token", token)
     write(layers.project, f"HOLON_AGENT_OAUTH_TOKEN_FILE={token_file}\n")
     _git(layers.repo, "add", ".env")
-    assert layers.load().warnings == []
+    config = layers.load()
+    assert "HOLON_AGENT_OAUTH_TOKEN" not in config.settings
+    assert "HOLON_AGENT_OAUTH_TOKEN_FILE" not in config.settings
+    assert len(config.warnings) == 1
+    assert "ignoring HOLON_AGENT_OAUTH_TOKEN_FILE" in config.warnings[0] and "tracked" not in config.warnings[0]
+    assert_no_fragment(config.warnings[0], token)
+
+
+def test_project_token_file_reference_does_not_displace_the_user_reference(layers, tmp_path):
+    user_token = fake_token()
+    user_file = write(tmp_path / "user-token", user_token)
+    project_file = write(tmp_path / "project-token", fake_token())
+    config = layers.load(
+        user=f"HOLON_AGENT_OAUTH_TOKEN_FILE={user_file}\n", project=f"HOLON_AGENT_OAUTH_TOKEN_FILE={project_file}\n"
+    )
+    assert setting(config, "HOLON_AGENT_OAUTH_TOKEN") == (user_token, "user", ())
+    assert setting(config, "HOLON_AGENT_OAUTH_TOKEN_FILE") == (str(user_file), "user", ())
 
 
 # --- secret files and credential pinning ----------------------------------------------------------------------------
+
+
+def test_secret_file_mapping_names_match_the_credential_constants():
+    from sandbox_executor.config_env_secrets import SECRET_FILE_MAPPINGS
+
+    assert SECRET_FILE_MAPPINGS == (
+        ("HOLON_AGENT_OAUTH_TOKEN_FILE", claude_credential.HOLON_OAUTH_TOKEN_ENV, claude_credential.OAUTH_TOKEN_ENV),
+    )
 
 
 def test_token_file_yields_a_secret_user_value(layers, tmp_path):
@@ -329,8 +360,8 @@ def test_token_file_yields_a_secret_user_value(layers, tmp_path):
     token_file = write(tmp_path / "token", f"{token}\n")
     config = layers.load(user=f"HOLON_AGENT_OAUTH_TOKEN_FILE={token_file}\n")
     found = config.settings["HOLON_AGENT_OAUTH_TOKEN"]
-    assert (found.value, found.source, found.secret) == (token, "user", True)
-    assert config.settings["HOLON_AGENT_OAUTH_TOKEN_FILE"].secret is False
+    assert (found.value, found.source, found.masked) == (token, "user", True)
+    assert config.settings["HOLON_AGENT_OAUTH_TOKEN_FILE"].masked is False
 
 
 def test_process_token_file_beats_the_user_token_file_and_is_applied(layers, tmp_path):

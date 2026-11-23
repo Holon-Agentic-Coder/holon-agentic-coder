@@ -219,3 +219,22 @@ def test_dispatcher_keeps_an_explicit_claude_credential(tmp_path):
     assert f"CLAUDE_CODE_OAUTH_TOKEN={preset}" in kept.stdout.splitlines()
     api = _dispatch(tmp_path, HOLON_AGENT_ID="claude", HOLON_AGENT_OAUTH_TOKEN=layered, ANTHROPIC_API_KEY="api-probe")
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in api.stdout
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+def test_dispatcher_maps_the_layered_token_from_a_real_planner_env_file(token_layers, tmp_path):
+    cli.resolve_layered_configuration()
+    with (
+        patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=["-v", "/work:/workspace"]),
+        patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=[]),
+        patch("subprocess.run") as mock_run,
+        patch("shutil.which", return_value="/usr/bin/docker"),
+    ):
+        docker = mock_run.side_effect = DockerEnvFileRecorder()
+        cli.run_docker_container("planner", "holon/agent-claude", [], agent_id="Claude-Agent")
+    env_file = docker.env_files[-1]
+    assert env_file["HOLON_AGENT_ID"] == "claude"
+    # Without HOLON_ROLE the dispatcher runs its argv ('env') rather than the planner, after the same mappings.
+    dispatched = _dispatch(tmp_path, **{key: value for key, value in env_file.items() if key != "HOLON_ROLE"})
+    assert f"CLAUDE_CODE_OAUTH_TOKEN={token_layers}" in dispatched.stdout.splitlines()
+    assert_no_fragment(dispatched.stderr, token_layers)

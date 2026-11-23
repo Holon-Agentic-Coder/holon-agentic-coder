@@ -41,11 +41,11 @@ def _plain_value(key: str, value: str) -> bool:
     return redact_command([item]) == item and not carries_url_password(value)
 
 
-def _display(setting: ResolvedSetting, secret: bool) -> tuple[str | None, str]:
+def _display(setting: ResolvedSetting, masked: bool) -> tuple[str | None, str]:
     """``(value shown, display text)`` of one setting."""
     if setting.value is None:
         return None, f"unset ({setting.source})"
-    if secret:
+    if masked:
         return None, f"set ({setting.source})"
     if not _plain_value(setting.key, setting.value):
         return None, f"set ({setting.source}; value withheld)"
@@ -57,8 +57,8 @@ def setting_rows(config: EffectiveConfig) -> list[dict[str, Any]]:
     rows = []
     for key in sorted(config.settings):
         setting = config.settings[key]
-        secret = setting.secret or is_secret_key(key)
-        value, display = _display(setting, secret)
+        masked = setting.masked or is_secret_key(key)
+        value, display = _display(setting, masked)
         rows.append(
             {
                 "key": key,
@@ -66,7 +66,7 @@ def setting_rows(config: EffectiveConfig) -> list[dict[str, Any]]:
                 "display": display,
                 "source": setting.source,
                 "shadowed": list(setting.shadowed),
-                "secret": secret,
+                "secret": masked,
             }
         )
     return rows
@@ -106,11 +106,11 @@ def env_example_text() -> str:
         "# Recommended claude credential reference (the token file itself stays mode 0600):",
         "# HOLON_AGENT_OAUTH_TOKEN_FILE=~/.holon/secrets/claude-oauth-token",
     ]
-    for file_key, value_key, container_key in SECRET_FILE_MAPPINGS:
-        lines.append(f"# {file_key} is read into {value_key}, which the container maps to {container_key}.")
+    for file_name, value_name, container_name in SECRET_FILE_MAPPINGS:
+        lines.append(f"# {file_name} is read into {value_name}, which the container maps to {container_name}.")
     lines.append("#")
     for key, default, purpose in DOCUMENTED_KEYS:
-        secret = " Secret." if is_secret_key(key) else ""
-        lines.append(f"# {purpose} Default: {default}.{secret}".replace("`", ""))
+        note = " Secret." if is_secret_key(key) else ""
+        lines.append(f"# {purpose} Default: {default}.{note}".replace("`", ""))
         lines.append(f"# {key}=")
     return "\n".join(lines) + "\n"

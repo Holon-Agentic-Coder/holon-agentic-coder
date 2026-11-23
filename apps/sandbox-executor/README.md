@@ -31,7 +31,7 @@ apps/sandbox-executor/
 │       │   ├── promotion.py     # Qualification heuristic & KB/WB promotion
 │       │   ├── stats.py         # Self-telemetry & operational consultation metrics
 │       │   └── wisdom.py        # Wisdom base axiom ingestion & synchronisation
-│       └── token_reduction/     # MITM proxy context compression & caching sidecar
+│       └── launcher/            # Role containers, env-files & the holon-coherence proxy sidecar
 └── tests/                       # Hermetic pytest suite
 ```
 
@@ -61,8 +61,12 @@ apps/sandbox-executor/
   Stage 4 loop, with its reviewer agent turns, inside the sandbox; exits 0 only for an `APPROVED` ensemble verdict.
 - **`knowledge/`**: Implements Knowledge and Wisdom consultation (`ConsultEngine`, `ActionIndexDatabase`), indexing
   discrete actions into SQLite FTS5 with sub-50ms query SLAs, semantic deduplication, and candidate promotion.
-- **`token_reduction/`**: Runs a locally-contained mitmproxy sidecar performing prompt cache optimisation, local body
-  caching, and wire log sanitisation.
+- **`launcher/`**: Launches role containers and, for `--token-reduce`, the per-run proxy sidecar. Token reduction itself
+  is owned by holon-coherence: the sidecar runs the holon-coherence proxy image and the mitmproxy addon it ships, and
+  this package vendors no addon code. `proxy_image.py` picks the image (`HOLON_COHERENCE_IMAGE` when set, else a local
+  `holon-coherence:latest`, else `ghcr.io/holon-agentic-coder/holon-coherence:latest`), `root_ca.py` and
+  `root_ca_openssl.py` keep the host Root CA at `~/.holon/certs` valid (same layout as holon-coherence, so either tool
+  reuses the other's CA), and `proxy_readiness.py` waits until the sidecar or an attached proxy answers HTTP.
 
 ---
 

@@ -68,18 +68,20 @@ Run from the repository root using the [`./holon`](../../holon) host wrapper:
 
 ## Optional: Token Reduction Proxy (`--token-reduce`)
 
-Pass `--token-reduce` to route the planner sandbox's HTTP(S) egress through a locally-owned mitmproxy sidecar, so
-responses can be compacted before the agent spends tokens on them.
+Pass `--token-reduce` to route the planner sandbox's HTTP(S) egress through a locally-owned holon-coherence proxy
+sidecar, so responses can be compacted before the agent spends tokens on them.
 
 ```bash
 ./holon plan "I-1782654790-bootstrap-holon-cli-intent/_" --agent pi-agent --model gemini-3.8-flash --token-reduce
 ```
 
-> [!WARNING] **`--token-reduce` is experimental and not yet functional.** The Phase 2 mitmproxy addon (`mitm_addon.py`)
-> is not shipped yet, so the preflight raises `FileNotFoundError`, the CLI logs an actionable error, and the run
-> continues with **direct egress** — no interception takes place.
+> [!WARNING] **`--token-reduce` is experimental.** The sidecar runs the holon-coherence proxy image and the mitmproxy
+> addon that image ships: `holon-coherence:latest` when built locally with `holon-coherence build`, otherwise
+> `ghcr.io/holon-agentic-coder/holon-coherence:latest`, pulled on first use (`HOLON_COHERENCE_IMAGE` pins another
+> image). If the image cannot start or its proxy never answers, the CLI logs an actionable error and the run continues
+> with **direct egress**: no interception takes place.
 
-> [!WARNING] Once functional, `--token-reduce` performs **local TLS interception**. A Holon Root CA is generated at
+> [!WARNING] `--token-reduce` performs **local TLS interception**. A Holon Root CA is generated at
 > `~/.holon/certs/holon-root-ca.crt` (with `basicConstraints=critical,CA:TRUE` and
 > `keyUsage=critical,keyCertSign,cRLSign`, and rotated automatically once it would expire within 30 days) so it can
 > decrypt and re-encrypt agent traffic.
@@ -231,10 +233,11 @@ failures:
 - **No ledger row.** An API failure writes no ledger row; the ledgers stay `intents.jsonl`, `plans.jsonl` and
   `executions.jsonl`.
 
-The token-reduction proxy (`--token-reduce`) caused that 400 by adding a plain (5m) `cache_control` block before the
-claude CLI's own `ttl='1h'` blocks. It now injects only blocks whose ttl is consistent with the existing ones in API
-prefix order (tools, then system, then messages), never exceeds the limit of 4 blocks, and never changes the client's
-own blocks (`token_reduction/cache_control.py`).
+The token-reduction proxy (`--token-reduce`) can cause that 400 by adding a plain (5m) `cache_control` block before the
+claude CLI's own `ttl='1h'` blocks. Token reduction is owned by the holon-coherence sidecar, whose payload cleaner
+injects up to 4 plain `cache_control` blocks (tools, system, last message) with no ttl-order check, so the 400 is a
+known issue for `claude-agent --token-reduce` runs until holon-coherence injects only ttl-consistent blocks. Every
+sidecar start logs a warning about it; re-run without `--token-reduce` if a planner call fails this way.
 
 ---
 

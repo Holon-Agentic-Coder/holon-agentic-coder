@@ -8,6 +8,7 @@ so the worktree is never left half-merged; a merge that cannot be completed is a
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from sandbox_executor.git import run_git
 logger = logging.getLogger(__name__)
 
 _MARKER_PREFIXES = ("<<<<<<< ", ">>>>>>> ")
+_Step = Callable[[SyncRequest, TargetProbe, SyncResult], SyncResult]
 
 
 def _git_out(worktree: str, *args: str) -> str:
@@ -106,15 +108,34 @@ def _commit_and_push(request: SyncRequest, probe: TargetProbe, result: SyncResul
     return result
 
 
-def _merge_and_resolve(request: SyncRequest, probe: TargetProbe, result: SyncResult) -> SyncResult:
-    run_git(["merge", "--no-ff", "--no-commit", probe.target_sha], cwd=request.worktree, check=False)
-    if not merge_in_progress(request.worktree):
-        return replace(result, status="blocked", error="git merge did not start (is the worktree clean?)")
+def _complete(request: SyncRequest, probe: TargetProbe, result: SyncResult) -> SyncResult:
     result = _resolve(request, probe, result)
     if result.status == "blocked":
         return result
     error = merge_verification_error(request.worktree)
     return replace(result, status="blocked", error=error) if error else _commit_and_push(request, probe, result)
+
+
+def _merge_and_resolve(request: SyncRequest, probe: TargetProbe, result: SyncResult) -> SyncResult:
+    run_git(["merge", "--no-ff", "--no-commit", probe.target_sha], cwd=request.worktree, check=False)
+    if not merge_in_progress(request.worktree):
+        return replace(result, status="blocked", error="git merge did not start (is the worktree clean?)")
+    return _complete(request, probe, result)
+
+
+def _guarded(request: SyncRequest, probe: TargetProbe, step: _Step, *, record_blocked: bool = True) -> SyncResult:
+    """Run ``step``; on an error or a blocked result abort the merge, then append the blocked row if asked to."""
+    started = SyncResult("merged", probe.head_sha, probe.head_sha, probe.target_sha, probe=probe)
+    try:
+        result = step(request, probe, started)
+    except Exception as exc:
+        logger.warning("Target sync of %s aborted: %s", request.branch, exc)
+        result = replace(started, status="blocked", error=str(exc))
+    if result.status == "blocked" and not result.ledger_row_id:
+        abort_merge(request.worktree)
+        result = replace(result, head_after=probe.head_sha)
+        return append_sync_row(request, result) if record_blocked else result
+    return result
 
 
 def merge_target(request: SyncRequest, probe: TargetProbe) -> SyncResult:
@@ -123,14 +144,12 @@ def merge_target(request: SyncRequest, probe: TargetProbe) -> SyncResult:
     A blocked merge is aborted first, then its row is appended to the clean worktree (committed with the flow's next
     commit). A push failure after the merge commit returns ``blocked`` with the push error and no second row.
     """
-    started = SyncResult("merged", probe.head_sha, probe.head_sha, probe.target_sha, probe=probe)
-    try:
-        result = _merge_and_resolve(request, probe, started)
-    except Exception as exc:
-        logger.warning("Target sync of %s aborted: %s", request.branch, exc)
-        abort_merge(request.worktree)
-        return append_sync_row(request, replace(started, status="blocked", error=str(exc)))
-    if result.status == "blocked" and not result.ledger_row_id:
-        abort_merge(request.worktree)
-        return append_sync_row(request, replace(result, head_after=probe.head_sha))
-    return result
+    return _guarded(request, probe, _merge_and_resolve)
+
+
+def complete_merge(request: SyncRequest, probe: TargetProbe) -> SyncResult:
+    """Finish a merge of ``probe.target_sha`` already in progress (a resumed flow): resolve, verify, commit, push.
+
+    A merge that cannot be finished is aborted and no row is appended; the caller redoes the sync instead.
+    """
+    return _guarded(request, probe, _complete, record_blocked=False)

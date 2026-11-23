@@ -58,9 +58,9 @@ def clean_sidecar_state() -> Iterator[None]:
 
 
 def isolate_host_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Keep every host-side write (CA dir, proxy cache, wire logs) inside tmp_path and hand out a real CA."""
+    """Keep every host-side write (CA dir, proxy cache, wire logs, cache) inside tmp_path and hand out a real CA."""
     monkeypatch.setattr(os.path, "expanduser", lambda path: str(tmp_path / "home" / path.lstrip("~/")))
-    # The default wire-log and cache directories sit under the repository root; use a per-test one.
+    # The default wire-log and cache directories sit under the per-user state directory (~/.holon/).
     monkeypatch.setattr(proxy_paths, "_find_git_root", lambda *a, **k: str(tmp_path / "repo"))
     ca_dir = tmp_path / "certs"
     # No local holon-coherence image: the sidecar resolves to the GHCR image and never runs `docker image inspect`.

@@ -16,6 +16,7 @@ from sandbox_executor.flow import (
     run_review_loop,
     run_review_stage,
 )
+from sandbox_executor.launcher.coherence import FlowProxyChoice
 from sandbox_executor.ledger import parse_commit_trailers
 
 from tests.flow.helpers import _git, _init_mergeability_repo
@@ -130,10 +131,12 @@ class TestReviewMergeabilityGuards:
             assert res["mergeable"] == "MERGEABLE"
 
     def test_flow_context_token_reduce_auto_detection(self, monkeypatch):
-        """Verify FlowContext defaults token_reduce=True when proxy is detected and preserves False when opted out."""
-        with patch("sandbox_executor.launcher.sidecar.detect_holon_coherence", return_value=True):
+        """FlowContext attaches to a detected running proxy without spawning one, and keeps False when opted out."""
+        detected = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=True)
+        with patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=detected):
             ctx = FlowContext()
-            assert ctx.token_reduce is True
+            assert ctx.token_reduce is False
+            assert ctx.proxy_attach is True
 
         monkeypatch.setenv("HOLON_TOKEN_REDUCE", "0")
         ctx_opt_out = FlowContext()

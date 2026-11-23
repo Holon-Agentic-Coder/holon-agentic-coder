@@ -131,6 +131,7 @@ EXEC_ID = "E-3-claude-agent-claude-opus-5-5"
 EXEC_BRANCH = f"I-1-x/P-2-claude-agent-claude-opus-5-5/{EXEC_ID}/_"
 FAILED_PREFIX = "Execute stage failed:"
 REMOTE_FAILURE = "host fetch of 'main' through remote 'origin' failed: origin unreachable"
+NOTHING_KEPT = "No new local execution branch was found to keep."
 SUB_INTENT = {"slug": "a", "description": "part a", "goal": "do a"}
 
 
@@ -347,7 +348,8 @@ class TestStage3ExitsAfterDispatch:
         result, mocks = run_stage3(
             stage3_context(tmp_path), publish_new_child_branches={"side_effect": host_remote_failure}
         )
-        assert result.error == f"Execute stage failed: {REMOTE_FAILURE}" and result.payload == {"exit_code": 0}
+        assert result.error == f"Execute stage failed: {REMOTE_FAILURE}. {NOTHING_KEPT}"
+        assert result.payload == {"exit_code": 0, "recovery_refs": [], "recovery_pushed": False}
         mocks["_fetch_branch_prefix_error"].assert_not_called()
 
     def test_an_unfetchable_prefix_fails(self, tmp_path):

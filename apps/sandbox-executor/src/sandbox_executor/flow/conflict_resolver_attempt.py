@@ -7,9 +7,6 @@ and new untracked files are out of set; conflict markers left in the set fail th
 reset: out-of-set edits are reverted, only the listed new files are deleted, and the conflict paths get their merge
 state back (``git checkout -m``, or the surviving side's stage blob for a modify/delete conflict, which ``checkout -m``
 cannot recreate). Paths are compared exactly as git reports them, so a rename counts as out of set.
-
-The public names are bound by assignment: the flow package re-exports every public definition, and the boundary wiring
-that first calls the resolver adds the re-exports.
 """
 
 from __future__ import annotations
@@ -36,7 +33,7 @@ def _nul_paths(worktree: str, *args: str) -> list[str]:
 
 
 @dataclass(frozen=True)
-class _MergeSnapshot:
+class MergeSnapshot:
     """The merge state an attempt must leave untouched: index stage entries, untracked files, the two heads."""
 
     index: str
@@ -45,8 +42,8 @@ class _MergeSnapshot:
     merge_head: str
 
 
-def _snapshot_merge(worktree: str) -> _MergeSnapshot:
-    return _MergeSnapshot(
+def snapshot_merge(worktree: str) -> MergeSnapshot:
+    return MergeSnapshot(
         index=_git_out(worktree, "ls-files", "-s", "-z"),
         untracked=frozenset(_nul_paths(worktree, "ls-files", "-o", "--exclude-standard", "-z")),
         head=_git_out(worktree, "rev-parse", "-q", "--verify", "HEAD").strip(),
@@ -55,7 +52,7 @@ def _snapshot_merge(worktree: str) -> _MergeSnapshot:
 
 
 @dataclass(frozen=True)
-class _AttemptCheck:
+class AttemptCheck:
     """What an attempt did wrong: a git write (``tampered``), out-of-set edits, new files or markers left."""
 
     tampered: bool = False
@@ -78,19 +75,19 @@ def _has_markers(path: Path) -> bool:
     return any(line.startswith(_MARKER_PREFIXES) for line in lines)
 
 
-def _tamper_reason(worktree: str, before: _MergeSnapshot) -> str:
+def _tamper_reason(worktree: str, before: MergeSnapshot) -> str:
     if not merge_in_progress(worktree):
         return "the merge is no longer in progress"
-    after = _snapshot_merge(worktree)
+    after = snapshot_merge(worktree)
     changed = [name for name in ("head", "merge_head", "index") if getattr(after, name) != getattr(before, name)]
     return f"the attempt changed {', '.join(changed)}" if changed else ""
 
 
-def _check_attempt(worktree: str, paths: list[str], before: _MergeSnapshot) -> _AttemptCheck:
+def check_attempt(worktree: str, paths: list[str], before: MergeSnapshot) -> AttemptCheck:
     """Check one attempt against the snapshot taken before it."""
     tampered = _tamper_reason(worktree, before)
     if tampered:
-        return _AttemptCheck(tampered=True, reason=tampered)
+        return AttemptCheck(tampered=True, reason=tampered)
     in_set = set(paths)
     out_of_set = tuple(p for p in _nul_paths(worktree, "diff", "--name-only", "-z") if p not in in_set)
     untracked = _nul_paths(worktree, "ls-files", "-o", "--exclude-standard", "-z")
@@ -101,10 +98,10 @@ def _check_attempt(worktree: str, paths: list[str], before: _MergeSnapshot) -> _
         for label, found in (("edits outside the conflict set", out_of_set), ("new files", new), ("markers", markers))
         if found
     ]
-    return _AttemptCheck(out_of_set=out_of_set, new_untracked=new, markers=markers, reason="; ".join(reasons))
+    return AttemptCheck(out_of_set=out_of_set, new_untracked=new, markers=markers, reason="; ".join(reasons))
 
 
-def _stage_resolution(worktree: str, paths: list[str]) -> str:
+def stage_resolution(worktree: str, paths: list[str]) -> str:
     """Stage the resolved paths (deletions included); return why the staged merge must not be committed, or ``""``."""
     res = run_git(["add", "-A", "--", *paths], cwd=worktree, check=False)
     if res.returncode != 0:
@@ -129,7 +126,7 @@ def _restore_conflict(worktree: str, path: str) -> bool:
     return run_git(args, cwd=worktree, check=False).returncode == 0
 
 
-def _reset_attempt(worktree: str, paths: list[str], check: _AttemptCheck) -> str:
+def reset_attempt(worktree: str, paths: list[str], check: AttemptCheck) -> str:
     """Undo a failed attempt; return why the merge could not be restored, or ``""``."""
     for path in check.out_of_set:
         if run_git(["checkout", "--", path], cwd=worktree, check=False).returncode != 0:
@@ -146,7 +143,7 @@ def _reset_attempt(worktree: str, paths: list[str], check: _AttemptCheck) -> str
     return ""
 
 
-def _save_attempt_diff(worktree: str, paths: list[str], label: str) -> str:
+def save_attempt_diff(worktree: str, paths: list[str], label: str) -> str:
     """Write the attempt's ``git diff`` of the conflict paths under ``tmp/conflict-resolver/``; return its path."""
     target = Path(worktree) / ARTEFACT_DIR / f"{label}.diff"
     try:
@@ -157,12 +154,3 @@ def _save_attempt_diff(worktree: str, paths: list[str], label: str) -> str:
     except OSError:
         return ""
     return str(target)
-
-
-MergeSnapshot = _MergeSnapshot
-AttemptCheck = _AttemptCheck
-snapshot_merge = _snapshot_merge
-check_attempt = _check_attempt
-stage_resolution = _stage_resolution
-reset_attempt = _reset_attempt
-save_attempt_diff = _save_attempt_diff

@@ -19,8 +19,9 @@ def test_unranked_runner_gets_a_one_tier_ladder_of_its_configured_model():
     assert tier_ladder("local-model", "my-local") == ("my-local",)
 
 
-def test_partly_ranked_runner_keeps_only_ranked_models():
-    assert tier_ladder("pi-agent", "codex") == ("claude-opus-5-5",)
+def test_partly_ranked_runner_ends_with_its_unranked_configured_model():
+    assert tier_ladder("pi-agent", "codex") == ("claude-opus-5-5", "gpt-5-codex")
+    assert tier_ladder("pi-agent", "claude-opus-5-5") == ("claude-opus-5-5",)
 
 
 def test_next_tier_walks_the_ladder_and_stops_at_the_top():

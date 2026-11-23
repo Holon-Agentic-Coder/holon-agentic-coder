@@ -8,9 +8,6 @@ tier. Tampering (a git write by the agent), a failed reset or a failed staging s
 returns ``resolved=False``, so ``merge_target`` aborts the merge, records the blocked ``target_sync`` row and pushes
 nothing. A conflict set holding the frozen module budget file is blocked before any dispatch unless the intent carries
 ``module_budget_change``.
-
-The public name is bound by assignment: the flow package re-exports every public definition, and the boundary wiring
-that first calls the resolver adds the re-export.
 """
 
 from __future__ import annotations
@@ -35,7 +32,7 @@ from sandbox_executor.flow.conflict_resolver_tiers import next_tier, tier_ladder
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.dispatch import _dispatch_role
 from sandbox_executor.flow.target_probe import TargetProbe
-from sandbox_executor.flow.target_sync_result import CodeResolution
+from sandbox_executor.flow.target_sync_result import CodeResolution, CodeResolver
 from sandbox_executor.module_budget_guard import MODULE_BUDGET_CONFIG, module_budget_change_authorised
 from sandbox_executor.plan_paths import plan_file_for_branch
 from sandbox_executor.redaction import redact_agent_secrets
@@ -163,4 +160,6 @@ class _ConflictCodeResolver:
         return CodeResolution(False, attempt.tier, attempt.number, _bounded(detail)), True
 
 
-conflict_code_resolver = _ConflictCodeResolver
+def conflict_code_resolver(context: FlowContext) -> CodeResolver:
+    """The ``CodeResolver`` for ``SyncRequest.code_resolver`` that resolves with the flow in ``context``."""
+    return _ConflictCodeResolver(context)

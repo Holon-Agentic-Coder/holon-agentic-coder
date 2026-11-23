@@ -88,14 +88,29 @@ def format_skipped_scratch_message(skipped: list[str]) -> str:
     return f"Skipping sidecar scratch path(s) from Stage 3 commit: {joined}"
 
 
+def find_worktree_sidecar_scratch(repo_dir: str) -> list[str]:
+    """Scan ``repo_dir`` on disk for sidecar scratch files without running a git subprocess."""
+    found: list[str] = []
+    if not repo_dir or not os.path.isdir(repo_dir):
+        return found
+    for root, dirs, files in os.walk(repo_dir):
+        dirs[:] = [d for d in dirs if d not in (".git", ".venv", "node_modules")]
+        rel_root = os.path.relpath(root, repo_dir)
+        rel_prefix = "" if rel_root == "." else f"{rel_root.replace(os.sep, '/')}/"
+        for fname in sorted(files):
+            rel_path = f"{rel_prefix}{fname}"
+            if is_sidecar_scratch_path(rel_path):
+                found.append(rel_path)
+    return sorted(found)
+
+
 def unstage_sidecar_scratch(repo: GitRepository) -> list[str]:
-    """Detect any staged sidecar scratch paths in ``repo`` and unstage them from the index."""
-    staged = repo.diff("--name-only", "-z", cached=True)
-    staged_paths = [p for p in (staged.stdout or "").split("\0") if p] if staged.returncode == 0 else []
-    _, skipped = split_sidecar_scratch_paths(staged_paths)
-    if skipped:
-        repo.reset(None, "--", *skipped)
-    return skipped
+    """Detect any sidecar scratch files in ``repo.repo_dir`` and unstage them from the index if present."""
+    candidates = find_worktree_sidecar_scratch(repo.repo_dir)
+    if not candidates:
+        return []
+    repo.reset(None, "--", *candidates)
+    return candidates
 
 
 def validate_mounted_workspace(repo: GitRepository, repo_dir: str, plan_branch: str) -> str:

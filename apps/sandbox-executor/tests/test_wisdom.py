@@ -7,9 +7,10 @@ import json
 import os
 from pathlib import Path
 
+from sandbox_executor.knowledge import wisdom as wisdom_module
 from sandbox_executor.knowledge.index import ActionIndexDatabase
 from sandbox_executor.knowledge.wisdom import (
-    _update_directory_index,
+    load_index,
     persist_kb_fact,
     persist_wb_rule,
     promote_pending_candidates,
@@ -111,48 +112,66 @@ def test_persist_wb_rule_idempotency_and_immutability(tmp_path: Path) -> None:
     assert data["payload"]["name"] == "Initial Heuristic"
 
 
-def test_update_directory_index_idempotency_and_immutability(tmp_path: Path) -> None:
-    """_update_directory_index does not touch or rewrite index.json if metadata is unchanged."""
-    subfolder = str(tmp_path / "patterns")
-    index_file = os.path.join(subfolder, "index.json")
+def test_update_directory_index_is_removed() -> None:
+    """No shared index writer remains in the wisdom module."""
+    assert not hasattr(wisdom_module, "_update_directory_index")
 
-    entry_meta = {
-        "kb_id": "KB-pattern-12345678",
-        "file": "KB-pattern-12345678.json",
-        "kb_type": "pattern",
-        "status": "active",
-        "created_ts": "2026-11-06T10:00:00Z",
-        "tags": ["pattern", "proven"],
-    }
 
-    _update_directory_index(subfolder, entry_meta)
-    assert os.path.exists(index_file)
+def test_persist_writes_only_the_entry_file(tmp_path: Path) -> None:
+    """Persisting a KB fact or WB rule creates exactly the entry file and no index.json."""
+    kb_file = persist_kb_fact({"kb_id": "KB-pattern-only", "kb_type": "pattern"}, kb_dir=str(tmp_path / "kb"))
+    wb_file = persist_wb_rule({"wb_id": "WB-heuristic-only", "wb_type": "heuristic"}, wb_dir=str(tmp_path / "wisdom"))
 
-    initial_sha, initial_mtime_ns, initial_bytes = _stat_metadata(index_file)
+    assert os.listdir(os.path.dirname(kb_file)) == ["KB-pattern-only.json"]
+    assert os.listdir(os.path.dirname(wb_file)) == ["WB-heuristic-only.json"]
 
-    # Calling with identical metadata must produce zero disk writes
-    _update_directory_index(subfolder, entry_meta)
 
-    second_sha, second_mtime_ns, second_bytes = _stat_metadata(index_file)
-    assert second_sha == initial_sha
-    assert second_mtime_ns == initial_mtime_ns
-    assert second_bytes == initial_bytes
+def test_load_index_orders_by_created_ts_then_id(tmp_path: Path) -> None:
+    """load_index sorts by created_ts then kb_id, carries the KB index fields and ignores non-entry files."""
+    kb_dir = str(tmp_path / "kb")
+    for kb_id, created_ts in (
+        ("KB-pattern-b", "2026-11-06T10:00:00+00:00"),
+        ("KB-pattern-a", "2026-11-06T10:00:00+00:00"),
+        ("KB-pattern-z", "2026-11-05T10:00:00+00:00"),
+    ):
+        persist_kb_fact({"kb_id": kb_id, "kb_type": "pattern", "created_ts": created_ts, "tags": ["t"]}, kb_dir=kb_dir)
+    subfolder = os.path.join(kb_dir, "patterns")
+    Path(subfolder, "index.json").write_text('{"entries": [{"kb_id": "KB-stale"}]}', encoding="utf-8")
+    Path(subfolder, "notes.txt").write_text("not an entry", encoding="utf-8")
 
-    # Calling with modified metadata must update index.json
-    altered_entry = dict(entry_meta)
-    altered_entry["status"] = "deprecated"
-    _update_directory_index(subfolder, altered_entry)
+    entries = load_index(subfolder)
 
-    third_sha, _third_mtime_ns, _third_bytes = _stat_metadata(index_file)
-    assert third_sha != initial_sha
+    assert [e["kb_id"] for e in entries] == ["KB-pattern-z", "KB-pattern-a", "KB-pattern-b"]
+    for entry in entries:
+        assert set(entry) == {"kb_id", "file", "kb_type", "status", "created_ts", "tags"}
+        assert entry["file"] == f"{entry['kb_id']}.json"
+        assert entry["tags"] == ["t"]
 
-    with open(index_file, encoding="utf-8") as f:
-        index_data = json.load(f)
-    assert index_data["entries"][0]["status"] == "deprecated"
+
+def test_load_index_wb_entries_and_missing_folder(tmp_path: Path) -> None:
+    """WB entries carry the WB index fields; a missing folder yields an empty index."""
+    wb_file = persist_wb_rule({"wb_id": "WB-heuristic-1", "wb_type": "heuristic"}, wb_dir=str(tmp_path / "wisdom"))
+
+    entries = load_index(os.path.dirname(wb_file))
+
+    assert len(entries) == 1
+    assert set(entries[0]) == {"wb_id", "file", "wb_type", "status", "created_ts"}
+    assert entries[0]["file"] == "WB-heuristic-1.json"
+    assert load_index(str(tmp_path / "missing")) == []
+
+
+def test_load_index_skips_unreadable_entry(tmp_path: Path) -> None:
+    """One invalid entry file is skipped without hiding the valid entries."""
+    kb_file = persist_kb_fact({"kb_id": "KB-pattern-good", "kb_type": "pattern"}, kb_dir=str(tmp_path / "kb"))
+    subfolder = os.path.dirname(kb_file)
+    Path(subfolder, "KB-pattern-bad.json").write_text("{not json", encoding="utf-8")
+    Path(subfolder, "KB-pattern-list.json").write_text("[]", encoding="utf-8")
+
+    assert [e["kb_id"] for e in load_index(subfolder)] == ["KB-pattern-good"]
 
 
 def test_promote_pending_candidates_zero_touch_immutability(tmp_path: Path) -> None:
-    """promote_pending_candidates leaves all fact files and directory indexes untouched on repeat runs."""
+    """promote_pending_candidates leaves all fact files untouched on repeat runs."""
     db_path = str(tmp_path / "test_action_index.db")
     db = ActionIndexDatabase(db_path=db_path)
     ledger_path = str(tmp_path / "executions.jsonl")

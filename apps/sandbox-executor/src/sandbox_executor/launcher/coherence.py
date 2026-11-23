@@ -5,6 +5,7 @@ import os
 import shutil
 import socket
 import subprocess
+from typing import NamedTuple
 
 from sandbox_executor import token_reduction
 from sandbox_executor.launcher import proxy_paths
@@ -33,17 +34,53 @@ def detect_holon_coherence(token_reduce: bool = False) -> bool:
     - Tier 3 (TCP Port Probe): Determine target proxy host and port from HOLON_PROXY_URL,
       or 127.0.0.1 and HOLON_PROXY_PORT (default 8080). Attempt a quick non-blocking TCP socket
       connection with a 0.2-second timeout. If successful, return True.
-    - Tier 4 (Docker Image Probe): If docker CLI exists on host PATH, probe if either
-      'holon-coherence:latest' or 'ghcr.io/holon-agentic-coder/holon-coherence:latest' is present
-      locally via docker image inspect. If found, return True.
+    - Tier 4 (Docker Image Probe): If docker CLI exists on host PATH, probe if
+      'holon-coherence:latest', 'ghcr.io/holon-agentic-coder/holon-coherence:latest' or
+      'mitmproxy/mitmproxy:12.2.3' is present locally via docker image inspect. If found, return True.
     - Tier 5 (CLI Binary Probe): Check if 'holon-coherence' executable exists on PATH.
       If found, return True.
     - If all tiers evaluate negative, return False.
+
+    The per-stage ``review-loop`` command uses this rule; ``holon flow`` uses `resolve_flow_proxy_choice`, which never
+    runs tiers 4 and 5.
     """
     explicit = _explicit_coherence_choice(token_reduce)
     if explicit is not None:
         return explicit
     return _proxy_port_reachable() or _coherence_image_present() or _coherence_binary_present()
+
+
+class FlowProxyChoice(NamedTuple):
+    """How a ``holon flow`` run routes its role containers through a token-reduction proxy."""
+
+    spawn_sidecar: bool
+    """This run starts its own mitmproxy sidecar; only an explicit ``--token-reduce`` or ``--mitm-web`` sets it."""
+    attach_running_proxy: bool
+    """Role containers attach to a proxy the user already runs; this never starts anything."""
+
+
+def resolve_flow_proxy_choice(token_reduce: bool = False) -> FlowProxyChoice:
+    """Resolve the flow's proxy routing from the explicit opt-out, the explicit flag and the TCP port probe only.
+
+    - ``HOLON_TOKEN_REDUCE`` in ("0", "false", "no", "off") returns (False, False) before any probe runs.
+    - ``token_reduce`` (the flow's ``--token-reduce`` or ``--mitm-web``) returns (True, False), as on the per-stage
+      commands.
+    - Otherwise a proxy accepting connections on the probed port is attached to: (False, True).
+
+    The Docker image and CLI binary probes never run here: a present but unused image must not change routing. An
+    env-only opt-in (``HOLON_TOKEN_REDUCE=1``, ``HOLON_PASSIVE_MONITORING=1``) needs no flow-side value, because the
+    launcher reads those variables itself, exactly as on the per-stage path.
+    """
+    if _token_reduce_opted_out():
+        return FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
+    if token_reduce:
+        return FlowProxyChoice(spawn_sidecar=True, attach_running_proxy=False)
+    return FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=_proxy_port_reachable())
+
+
+def _token_reduce_opted_out() -> bool:
+    """True when ``HOLON_TOKEN_REDUCE`` is an explicit opt-out value."""
+    return os.getenv("HOLON_TOKEN_REDUCE", "").strip().lower() in _EXPLICIT_OPT_OUT_VALUES
 
 
 def _explicit_coherence_choice(token_reduce: bool) -> bool | None:

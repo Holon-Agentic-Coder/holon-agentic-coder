@@ -12,6 +12,7 @@ def claude_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy")
     monkeypatch.delenv("HOLON_AGENT_SETTINGS", raising=False)
     monkeypatch.delenv("HOLON_AGENT_SKIP_PERMISSIONS", raising=False)
+    monkeypatch.delenv("HOLON_CLAUDE_CODE_MODE", raising=False)
     monkeypatch.setenv("HOLON_SECRET_BUNDLE_PATH", "/nonexistent/holon_auth.json")
     return monkeypatch
 
@@ -31,7 +32,7 @@ def test_unset_settings_pass_attribution_off(claude_env: pytest.MonkeyPatch) -> 
 def test_inline_settings_keys_survive(claude_env: pytest.MonkeyPatch) -> None:
     claude_env.setenv("HOLON_AGENT_SETTINGS", '{"env": {"A": "1"}, "includeCoAuthoredBy": true}')
     settings = _settings_of(get_runner("claude").build_cmd("m", None, None, "p"))
-    assert settings["env"] == {"A": "1"}
+    assert settings["env"] == {"A": "1", "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"}
     assert settings["includeCoAuthoredBy"] is False
 
 

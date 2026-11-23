@@ -50,7 +50,7 @@ class TestAgentRunner(unittest.TestCase):
                 "--model",
                 "gemini-3.5-flash",
                 "--settings",
-                json.dumps(ATTRIBUTION_OFF),
+                json.dumps({**ATTRIBUTION_OFF, "env": {"CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"}}),
                 "-p",
             ],
             "opencode": ["opencode", "run", "--model", "gemini-3.5-flash"],
@@ -78,6 +78,7 @@ class TestAgentRunner(unittest.TestCase):
                 "HOLON_AGENT_SETTINGS",
                 "HOLON_AGENT_EFFORT",
                 "HOLON_AGENT_SKIP_PERMISSIONS",
+                "HOLON_CLAUDE_CODE_MODE",
             ):
                 os.environ.pop(var, None)
             for agent_name, expected_cmd in expected_commands.items():
@@ -588,6 +589,7 @@ class TestWorkspaceDirAndCleanup(unittest.TestCase):
 
 
 CLAUDE_BYPASS = ["--allow-dangerously-skip-permissions", "--permission-mode", "bypassPermissions"]
+CLAUDE_DEFAULT_SETTINGS = json.dumps({**ATTRIBUTION_OFF, "env": {"CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"}})
 
 
 @pytest.fixture
@@ -595,7 +597,7 @@ def claude_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     """Hermetic environment for the claude runner: dummy key, no ambient bypass, settings or secret bundle."""
     monkeypatch.setenv("HOLON_AGENT_KEY", "dummy")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy")
-    for var in ("HOLON_AGENT_SKIP_PERMISSIONS", "HOLON_AGENT_SETTINGS"):
+    for var in ("HOLON_AGENT_SKIP_PERMISSIONS", "HOLON_AGENT_SETTINGS", "HOLON_CLAUDE_CODE_MODE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HOLON_SECRET_BUNDLE_PATH", "/nonexistent/holon_auth.json")
     return monkeypatch
@@ -603,14 +605,14 @@ def claude_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
 
 def test_claude_bypass_on_by_default(claude_env: pytest.MonkeyPatch) -> None:
     cmd = get_runner("claude").build_cmd("m", "/tmp/p", "/tmp/i", "p")
-    assert cmd == ["claude", *CLAUDE_BYPASS, "--model", "m", "--settings", json.dumps(ATTRIBUTION_OFF), "-p"]
+    assert cmd == ["claude", *CLAUDE_BYPASS, "--model", "m", "--settings", CLAUDE_DEFAULT_SETTINGS, "-p"]
 
 
 @pytest.mark.parametrize("value", ["false", "0", "no", "off", "FALSE"])
 def test_claude_bypass_opt_out(claude_env: pytest.MonkeyPatch, value: str) -> None:
     claude_env.setenv("HOLON_AGENT_SKIP_PERMISSIONS", value)
     cmd = get_runner("claude").build_cmd("m", "/tmp/p", "/tmp/i", "p")
-    assert cmd == ["claude", "--model", "m", "--settings", json.dumps(ATTRIBUTION_OFF), "-p"]
+    assert cmd == ["claude", "--model", "m", "--settings", CLAUDE_DEFAULT_SETTINGS, "-p"]
     assert not set(CLAUDE_BYPASS) & set(cmd)
 
 
@@ -632,7 +634,7 @@ def test_claude_bypass_coexists_with_settings(claude_env: pytest.MonkeyPatch) ->
     assert value == settings
     built = get_runner("claude").build_cmd("m", None, None, "p")
     merged = json.loads(built[built.index("--settings") + 1])
-    assert merged["env"] == {"ANTHROPIC_API_KEY": "x"}
+    assert merged["env"] == {"ANTHROPIC_API_KEY": "x", "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"}
     assert "bypassPermissions" not in value and "skip-permissions" not in value
 
 

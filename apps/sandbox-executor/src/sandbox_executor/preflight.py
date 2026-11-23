@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import enum
+import functools
 import logging
 import os
 import re
@@ -274,8 +275,9 @@ def build_probe_docker_cmd(
     The container keeps its normal entrypoint with no ``HOLON_ROLE``, so the dispatcher maps ``HOLON_AGENT_KEY`` onto
     the vendor variables and then executes the runner binary directly. The mounts, gateway host entries and network
     isolation come from the same helpers ``run_docker_container`` uses, and so does the env-file routing rule
-    (``cli.is_env_file_item``): every line-safe ``HOLON_*`` value and any other credential-bearing value are returned
-    separately for a 0600 ``--env-file``, never as ``-e`` items that ``ps`` and ``/proc/<pid>/cmdline`` can read.
+    (``cli.is_env_file_item``): every ``HOLON_*`` value and any other credential-bearing value are returned
+    separately, never as ``-e KEY=VALUE`` items that ``ps`` and ``/proc/<pid>/cmdline`` can read. A ``HOLON_*`` value
+    no env-file line can carry is named by a bare ``-e NAME`` and set in the docker client env by the caller.
 
     Args:
         agent: Runner name.
@@ -285,14 +287,16 @@ def build_probe_docker_cmd(
         session_mounts: Output of ``get_agent_session_mounts`` for this runner.
 
     Returns:
-        The docker argv, free of credential values, and the variables the caller must hand over with
-        ``cli.write_env_file`` and ``--env-file`` (empty when there are none).
+        The docker argv, free of credential values, and the variables kept off it (empty when there are none): the
+        caller hands the ``cli.is_passthrough_env_item`` ones over in the docker client env and the rest with
+        ``cli.write_env_file`` and ``--env-file``.
     """
     from sandbox_executor.agent_runner import RETIRED_ENV_VARS, runners
     from sandbox_executor.cli import (
         _gateway_host_args,
         build_network_isolation_args,
         is_env_file_item,
+        is_passthrough_env_item,
     )
 
     agent_id = normalise_agent_id(agent)
@@ -313,7 +317,10 @@ def build_probe_docker_cmd(
     env[SKIP_ENV_VAR] = "1"
     secret_env: dict[str, str] = {}
     for key, value in sorted(env.items()):
-        if is_env_file_item(key, value):
+        if is_passthrough_env_item(key, value):
+            secret_env[key] = value
+            cmd.extend(["-e", key])
+        elif is_env_file_item(key, value):
             secret_env[key] = value
         else:
             cmd.extend(["-e", f"{key}={value}"])
@@ -331,13 +338,13 @@ def _reference_secret_args(runner_cmd: list[str], secret_env: Mapping[str, str])
     The runner argv is composed on the host, so a flag the runner fills from a variable (for example
     ``--settings`` from ``HOLON_AGENT_SETTINGS``) would carry the credential itself. Each argument equal to a value
     in ``secret_env`` is replaced by a shell reference to that variable, and the command runs through ``sh -c``,
-    which expands the reference inside the container from the ``--env-file`` copy. The runner binary itself is fixed
-    by the runner, never filled from a variable, so it stays literal even when it equals a forwarded value (``claude``
-    and ``HOLON_AGENT_ID``).
+    which expands the reference inside the container from its ``--env-file`` or bare ``-e NAME`` copy. The runner
+    binary itself is fixed by the runner, never filled from a variable, so it stays literal even when it equals a
+    forwarded value (``claude`` and ``HOLON_AGENT_ID``).
 
     Args:
         runner_cmd: The runner argv from ``compose_cmd``.
-        secret_env: The variables handed over through the ``--env-file``.
+        secret_env: The variables kept off the docker argv.
 
     Returns:
         ``runner_cmd`` unchanged when no argument is a secret value, otherwise an equivalent ``sh -c`` argv.
@@ -445,13 +452,17 @@ def run_preflight_probe(  # noqa: PLR0911
     container_name = f"holon-preflight-{uuid.uuid4().hex[:12]}"
     docker_cmd, secret_env = build_probe_docker_cmd(agent, model, image, container_name, session_mounts)
 
-    from sandbox_executor.cli import env_file_dir, sweep_stale_env_files, write_env_file
+    from sandbox_executor.cli import env_file_dir, is_passthrough_env_item, sweep_stale_env_files, write_env_file
 
+    passthrough_env = {key: value for key, value in secret_env.items() if is_passthrough_env_item(key, value)}
+    file_env = {key: value for key, value in secret_env.items() if key not in passthrough_env}
+    if passthrough_env:
+        run = functools.partial(run, env={**os.environ, **passthrough_env})
     env_file: str | None = None
-    if secret_env:
+    if file_env:
         try:
             sweep_stale_env_files(env_file_dir())
-            env_file = write_env_file(secret_env)
+            env_file = write_env_file(file_env)
         except (ValueError, OSError) as exc:
             return _result(PreflightStatus.UNKNOWN, agent, model, image, output=str(exc))
         # Right after `docker run`, as in run_docker_container; docker reads the file on the client side.

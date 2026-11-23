@@ -198,6 +198,7 @@ def test_probe_drops_a_stale_retired_repo_url(probe_env, monkeypatch, isolated_e
 def _record_probe(seen):
     def runner_fn(cmd, **kwargs):
         seen["cmd"] = cmd
+        seen["env"] = kwargs.get("env")
         if "--env-file" in cmd:
             with open(_env_file_of(cmd), encoding="utf-8") as fh:
                 seen["lines"] = fh.read().splitlines()
@@ -239,14 +240,19 @@ def test_probe_passes_a_credential_free_url_verbatim_in_the_env_file(
     assert not any("HOLON_PROXY_URL" in item for item in seen["cmd"])
 
 
-def test_probe_keeps_a_credential_free_multiline_settings_json_on_the_argv(probe_env, monkeypatch):
-    """The one exception: a docker env-file cannot carry a line break, so a credential-free multi-line value stays."""
-    settings = '{\n  "model": "' + make_probe("model") + '"\n}'
+def test_probe_names_a_multiline_settings_json_bare_and_hands_its_value_to_docker(probe_env, monkeypatch):
+    """A docker env-file cannot carry a line break, so a multi-line value goes as `-e NAME` with docker's env."""
+    sample = make_probe("bare")
+    settings = '{\n  "model": "m",\n  "apiKeyHelper": "' + sample + '"\n}'
     monkeypatch.setenv("HOLON_AGENT_SETTINGS", settings)
-    runner_fn = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="OK\n", stderr=""))
-    assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=runner_fn).ok
-    cmd = runner_fn.call_args[0][0]
-    assert f"HOLON_AGENT_SETTINGS={settings}" in cmd
+    seen = {}
+
+    assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok
+
+    assert_no_leak(sample, seen["cmd"])
+    assert seen["cmd"][seen["cmd"].index("HOLON_AGENT_SETTINGS") - 1] == "-e"
+    assert seen["env"]["HOLON_AGENT_SETTINGS"] == settings
+    assert '--settings "${HOLON_AGENT_SETTINGS}"' in seen["cmd"][-1]
 
 
 def test_probe_passes_a_credential_free_single_line_settings_json_in_the_env_file(

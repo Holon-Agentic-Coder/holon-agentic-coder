@@ -24,6 +24,7 @@ from sandbox_executor.cli import (
 )
 from sandbox_executor.flow import SKIP_PUSH_DISPATCH_ERROR, FlowContext
 
+from tests.env_file_capture import DockerEnvFileRecorder, bare_env_items, read_env_file
 from tests.leak_assertions import (
     CREDENTIAL_FREE_URLS,
     assert_no_fragment,
@@ -41,13 +42,6 @@ _REAL_ENV_FILE_DIR = cli.env_file_dir
 
 # What git_flow.sandbox_worktree_mounts returns for a valid worktree, reduced to its bind mount.
 _WORKTREE_MOUNTS = ["-v", f"/work/flow-x:{SANDBOX_WORKSPACE_MOUNT}"]
-
-
-def _read_env_file(docker_argv: list[str]) -> dict[str, str]:
-    """Parse the --env-file a recorded docker argv points at (only valid while the run is in progress)."""
-    path = docker_argv[docker_argv.index("--env-file") + 1]
-    with open(path, encoding="utf-8") as fh:
-        return dict(line.rstrip("\n").split("=", 1) for line in fh)
 
 
 def _stub_host_publish(testcase: unittest.TestCase) -> dict[str, MagicMock]:
@@ -171,8 +165,7 @@ class TestHolonCLI(unittest.TestCase):
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_run_docker_container(self, mock_which, mock_run, mock_mounts, mock_worktree_mounts):
-        env_files: list[dict[str, str]] = []
-        mock_run.side_effect = lambda cmd, *a, **k: env_files.append(_read_env_file(cmd)) or MagicMock(returncode=0)
+        docker = mock_run.side_effect = DockerEnvFileRecorder()
         with patch.dict(os.environ, {"GITHUB_TOKEN": "secret_token"}, clear=True):
             code = run_docker_container(
                 "planner",
@@ -186,12 +179,12 @@ class TestHolonCLI(unittest.TestCase):
             self.assertIn("docker", args)
             # The token travels in the 0600 env-file, never on the docker command line.
             self.assertFalse(any("secret_token" in arg for arg in args))
-            self.assertEqual(len(env_files), 1)
-            self.assertEqual(env_files[0]["GITHUB_TOKEN"], "secret_token")
+            (forwarded,) = docker.env_files
+            self.assertEqual(forwarded["GITHUB_TOKEN"], "secret_token")
             # The worktree is bind-mounted and pinned; no repository URL or SSH agent reaches the container.
             # Every HOLON_* item travels in the env-file, never on the docker command line.
             self.assertIn(f"/work/flow-x:{SANDBOX_WORKSPACE_MOUNT}", args)
-            self.assertEqual(env_files[0]["HOLON_TARGET_WORKTREE"], SANDBOX_WORKSPACE_MOUNT)
+            self.assertEqual(forwarded["HOLON_TARGET_WORKTREE"], SANDBOX_WORKSPACE_MOUNT)
             self.assertFalse(any(a.startswith("HOLON_") for a in args))
             self.assertIn(f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}", args)
             self.assertFalse(any("HOLON_REPO_URL" in a or "SSH_AUTH_SOCK" in a or "GIT_CONFIG_" in a for a in args))
@@ -201,8 +194,7 @@ class TestHolonCLI(unittest.TestCase):
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_run_docker_container_forward_env_vars(self, mock_which, mock_run, mock_mounts, mock_worktree_mounts):
-        env_files: list[dict[str, str]] = []
-        mock_run.side_effect = lambda cmd, *a, **k: env_files.append(_read_env_file(cmd)) or MagicMock(returncode=0)
+        docker = mock_run.side_effect = DockerEnvFileRecorder()
         env = {
             "GITHUB_TOKEN": "my-github-token",
             "HOLON_ROLE": "host-role-should-be-overridden",
@@ -223,8 +215,7 @@ class TestHolonCLI(unittest.TestCase):
             args = mock_run.call_args[0][0]
             self.assertIn("docker", args)
             # Credentials are forwarded through the env-file, not the docker command line.
-            self.assertEqual(len(env_files), 1)
-            forwarded = env_files[0]
+            (forwarded,) = docker.env_files
             self.assertEqual(forwarded["GITHUB_TOKEN"], "my-github-token")
             self.assertEqual(forwarded["HOLON_AGENT_KEY"], "my-agent-key")
             self.assertFalse(any("my-github-token" in arg or "my-agent-key" in arg for arg in args))
@@ -248,19 +239,18 @@ class TestHolonCLI(unittest.TestCase):
         # Inside a timed host stage the container gets the remaining time; outside one nothing is added.
         from sandbox_executor.budgets import StageTimer, active_stage_timer
 
-        env_files: list[dict[str, str]] = []
-        mock_run.side_effect = lambda cmd, *a, **k: env_files.append(_read_env_file(cmd)) or MagicMock(returncode=0)
+        docker = mock_run.side_effect = DockerEnvFileRecorder()
         now = [1000.0]
         timer = StageTimer("execute", 2700, clock=lambda: now[0])
         now[0] += 700
         with patch.dict(os.environ, {"HOLON_STAGE_BUDGET_SECONDS": "9999"}, clear=True):
             with active_stage_timer(timer):
                 run_docker_container("planner", "holon/agent-pi", ["branch"], agent_id="pi")
-            self.assertEqual(env_files[-1]["HOLON_STAGE_BUDGET_SECONDS"], "1940")
+            self.assertEqual(docker.env_files[-1]["HOLON_STAGE_BUDGET_SECONDS"], "1940")
             self.assertFalse(any("HOLON_STAGE_BUDGET_SECONDS" in a for a in mock_run.call_args[0][0]))
         with patch.dict(os.environ, {}, clear=True):
             run_docker_container("planner", "holon/agent-pi", ["branch"], agent_id="pi")
-            self.assertNotIn("HOLON_STAGE_BUDGET_SECONDS", env_files[-1])
+            self.assertNotIn("HOLON_STAGE_BUDGET_SECONDS", docker.env_files[-1])
             self.assertFalse(any("HOLON_STAGE_BUDGET_SECONDS" in a for a in mock_run.call_args[0][0]))
 
     def test_run_docker_container_requires_agent_id(self):
@@ -466,10 +456,7 @@ class TestRunDockerContainerWorktree(unittest.TestCase):
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_a_stale_repo_url_is_dropped_and_changes_nothing(self, mock_which, mock_run, mock_mounts, mock_worktree):
-        runs: list[tuple[list[str], dict[str, str]]] = []
-        mock_run.side_effect = lambda cmd, *a, **k: (
-            runs.append((list(cmd), _read_env_file(cmd))) or MagicMock(returncode=0)
-        )
+        docker = mock_run.side_effect = DockerEnvFileRecorder()
         stale = f"https://x-access-token:{make_gh_probe()}@github.com/myorg/myrepo.git"
         base_env = {"GITHUB_TOKEN": "secret_token", "HOLON_AGENT_EFFORT": "high"}
 
@@ -477,9 +464,8 @@ class TestRunDockerContainerWorktree(unittest.TestCase):
             with patch.dict(os.environ, env, clear=True), patch("sys.stdout", new_callable=io.StringIO):
                 code = run_docker_container("planner", "img", ["branch"], agent_id="antigravity")
             self.assertEqual(code, 0)
-            cmd, env_file = runs[-1]
-            # The env-file path is a fresh temporary name each run.
-            return ["<env-file>" if a == cmd[cmd.index("--env-file") + 1] else a for a in cmd], env_file
+            # The recorder replaces the env-file path, a fresh temporary name each run.
+            return docker.argvs[-1], docker.env_files[-1]
 
         baseline = run_with(base_env)
         with_stale = run_with({**base_env, "HOLON_REPO_URL": stale})
@@ -493,8 +479,7 @@ class TestRunDockerContainerWorktree(unittest.TestCase):
     @patch("subprocess.run")
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_github_token_stays_in_the_env_file_and_out_of_the_echo(self, mock_which, mock_run, mock_mounts, mock_wt):
-        env_files: list[dict[str, str]] = []
-        mock_run.side_effect = lambda cmd, *a, **k: env_files.append(_read_env_file(cmd)) or MagicMock(returncode=0)
+        docker = mock_run.side_effect = DockerEnvFileRecorder()
         sample = make_gh_probe()
         with (
             patch.dict(os.environ, {"GITHUB_TOKEN": sample}, clear=True),
@@ -504,8 +489,7 @@ class TestRunDockerContainerWorktree(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertNotIn(sample, mock_stdout.getvalue())
         self.assertNotIn(sample, " ".join(mock_run.call_args[0][0]))
-        self.assertEqual(len(env_files), 1)
-        self.assertEqual(env_files[0]["GITHUB_TOKEN"], sample)
+        self.assertEqual([forwarded["GITHUB_TOKEN"] for forwarded in docker.env_files], [sample])
 
     @patch("shutil.which", return_value="/usr/bin/docker")
     def test_a_role_without_a_valid_worktree_fails_before_docker_runs(self, mock_which):
@@ -1402,6 +1386,7 @@ class _RecordingDocker:
         self.env_file_mode: int | None = None
         self.env_dir_mode: int | None = None
         self.env_file_contents: dict[str, str] = {}
+        self.passthrough_env: dict[str, str] = {}
         self._real_run = subprocess.run
 
     @property
@@ -1419,11 +1404,12 @@ class _RecordingDocker:
         if cmd[0] != "docker":
             return self._real_run(cmd, *args, **kwargs)
         self.argv = list(cmd)
+        self.passthrough_env = bare_env_items(cmd, kwargs.get("env"))
         if "--env-file" in cmd:
             self.env_file = cmd[cmd.index("--env-file") + 1]
             self.env_file_mode = stat.S_IMODE(os.stat(self.env_file).st_mode)
             self.env_dir_mode = stat.S_IMODE(os.stat(os.path.dirname(self.env_file)).st_mode)
-            self.env_file_contents = _read_env_file(cmd)
+            self.env_file_contents = read_env_file(cmd)
         if isinstance(self.outcome, BaseException):
             raise self.outcome
         return self.outcome
@@ -1692,17 +1678,19 @@ def test_oauth_settings_json_travels_in_the_env_file(leak_env, monkeypatch, caps
     assert docker.env_file_contents["HOLON_AGENT_SETTINGS"] == settings
 
 
-def test_multiline_non_secret_settings_stay_on_the_command_line(leak_env, monkeypatch):
-    """Settings are secret by pattern, not by name: a credential-free multi-line JSON is not rejected."""
-    settings = '{\n  "model": "opus",\n  "permissions": {"allow": ["Bash"]}\n}'
+def test_multiline_settings_are_named_bare_on_the_command_line(leak_env, monkeypatch, capsys):
+    """A multi-line HOLON_* value no env-file line can carry goes as a bare `-e NAME`, its value in docker's env."""
+    sample = make_probe("bare")
+    settings = '{\n  "model": "opus",\n  "apiKeyHelper": "' + sample + '"\n}'
     monkeypatch.setenv("HOLON_AGENT_SETTINGS", settings)
     docker = _RecordingDocker()
     monkeypatch.setattr(cli.subprocess, "run", docker)
 
     assert _run_planner(leak_env["repo"]) == 0
 
-    assert docker.argv_env["HOLON_AGENT_SETTINGS"] == settings
-    assert "HOLON_AGENT_SETTINGS" not in docker.env_file_contents
+    assert docker.passthrough_env["HOLON_AGENT_SETTINGS"] == settings
+    assert "HOLON_AGENT_SETTINGS" not in {**docker.argv_env, **docker.env_file_contents}
+    assert_no_leak(sample, capsys.readouterr().out, docker.argv)
 
 
 def test_mitm_web_password_is_neither_in_argv_nor_echoed(leak_env, monkeypatch, capsys):

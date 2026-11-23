@@ -1,7 +1,7 @@
 """Container plumbing for role agents: role dispatch, container launch, credential env-files and the proxy sidecar.
 
 Layering rule: ``sandbox_executor.launcher`` may import the domain modules (``git_flow``, ``budgets``,
-``agent_defaults``, ``agent_runner``, ``claude_credential``, ``local_llm``, ``redaction``, ``token_reduction``,
+``agent_defaults``, ``agent_runner``, ``claude_credential``, ``local_llm``, ``redaction``,
 ``preflight``, ``naming``) but never ``sandbox_executor.cli`` or ``sandbox_executor.flow``; both of those import the
 launcher instead (``tests/test_import_cycle.py`` enforces it).
 

@@ -36,9 +36,8 @@ from unittest.mock import patch
 from urllib.parse import urlsplit
 
 import pytest
-from sandbox_executor import cli, local_llm, token_reduction
-from sandbox_executor.launcher import env_files
-from sandbox_executor.token_reduction import proxy_readiness
+from sandbox_executor import cli, local_llm
+from sandbox_executor.launcher import env_files, proxy_readiness, root_ca
 
 FRAGMENT_LEN = 4
 _LETTERS = "FGJQVZ"
@@ -296,7 +295,7 @@ def test_no_credential_fragment_in_any_message(entry_point, prefix, monkeypatch)
     """
     monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(socket, "create_connection", _refuse)
-    monkeypatch.setattr(token_reduction, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
+    monkeypatch.setattr(root_ca, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
     # `_captured` swaps in an exact environment per case; starting from an empty one keeps each swap cheap.
     for name in list(os.environ):
         monkeypatch.delenv(name)

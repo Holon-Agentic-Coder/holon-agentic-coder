@@ -19,11 +19,11 @@ import pytest
 from sandbox_executor.cli.commands.flow import _build_flow_context
 from sandbox_executor.flow import FlowContext
 from sandbox_executor.flow.dispatch import _dispatch_role
-from sandbox_executor.launcher import coherence, proxy_attach, proxy_paths, role_dispatch, sidecar
+from sandbox_executor.launcher import coherence, proxy_attach, proxy_image, proxy_paths, role_dispatch, sidecar
 from sandbox_executor.launcher.coherence import FlowProxyChoice, resolve_flow_proxy_choice
 
 _INTENT = {"slug": "proxy-opt-in", "goal": "Route only on an explicit opt-in"}
-_COHERENCE_IMAGES = ("holon-coherence:latest", "mitmproxy/mitmproxy:12.2.3")
+_COHERENCE_IMAGES = ("holon-coherence:latest", "ghcr.io/holon-agentic-coder/holon-coherence:latest")
 _OPT_OUT_VALUES = ("0", "false", "no", "off")
 _IMAGE_ONLY = [(image, None) for image in _COHERENCE_IMAGES]
 _NO_CHOICE = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
@@ -77,7 +77,7 @@ def _clean_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def recorder(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Recorder]:
     """Stub ``subprocess.run`` and ``Popen`` (seen by `coherence` and `sidecar`) and `proxy_paths._run_docker`."""
     rec = _Recorder()
-    monkeypatch.setattr(coherence.subprocess, "run", rec)
+    monkeypatch.setattr(proxy_image.subprocess, "run", rec)
     monkeypatch.setattr(sidecar.subprocess, "run", rec)
     monkeypatch.setattr(subprocess, "Popen", rec)
     monkeypatch.setattr(proxy_paths, "_run_docker", lambda *argv: rec(["docker", *argv]))

@@ -66,6 +66,19 @@ def test_setup_proxy_uses_the_coherence_image_and_mounts_no_addon(host_paths, mo
     assert fake.envs[fake.calls.index(run_cmd)] is None  # no dashboard password: the spawn inherits the environment
 
 
+def test_setup_proxy_warns_about_the_cache_control_ttl_order_issue(host_paths, monkeypatch, caplog):
+    """holon-coherence injects 5m cache_control blocks with no ttl-order check; every sidecar start says so."""
+    monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
+    fake_docker_runs(monkeypatch, FakeDocker())
+
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.launcher"):
+        setup_token_reduction_proxy()
+
+    assert "ttl='1h'" in caplog.text
+    assert "HTTP 400" in caplog.text
+    assert "Re-run without --token-reduce" in caplog.text
+
+
 def test_setup_proxy_spawn_failure_raises_and_injects_no_dead_proxy(host_paths, monkeypatch):
     fake = FakeDocker(spawn=_completed(returncode=125, stderr="docker: error: image not found"))
     fake_docker_runs(monkeypatch, fake)

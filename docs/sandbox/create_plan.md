@@ -233,10 +233,11 @@ failures:
 - **No ledger row.** An API failure writes no ledger row; the ledgers stay `intents.jsonl`, `plans.jsonl` and
   `executions.jsonl`.
 
-The token-reduction proxy (`--token-reduce`) caused that 400 by adding a plain (5m) `cache_control` block before the
-claude CLI's own `ttl='1h'` blocks. It now injects only blocks whose ttl is consistent with the existing ones in API
-prefix order (tools, then system, then messages), never exceeds the limit of 4 blocks, and never changes the client's
-own blocks. That logic lives in the proxy addon holon-coherence ships, which owns token reduction.
+The token-reduction proxy (`--token-reduce`) can cause that 400 by adding a plain (5m) `cache_control` block before the
+claude CLI's own `ttl='1h'` blocks. Token reduction is owned by the holon-coherence sidecar, whose payload cleaner
+injects up to 4 plain `cache_control` blocks (tools, system, last message) with no ttl-order check, so the 400 is a
+known issue for `claude-agent --token-reduce` runs until holon-coherence injects only ttl-consistent blocks. Every
+sidecar start logs a warning about it; re-run without `--token-reduce` if a planner call fails this way.
 
 ---
 

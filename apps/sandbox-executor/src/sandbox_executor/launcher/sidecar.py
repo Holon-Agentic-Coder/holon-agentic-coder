@@ -96,6 +96,11 @@ def _spawn_sidecar(plan: sidecar_plan._SidecarPlan) -> None:
 
     docker_run_proxy = sidecar_plan._sidecar_command(plan)
 
+    logger.warning(
+        "Known issue: the holon-coherence proxy injects plain (5m) cache_control blocks without checking ttl order, "
+        "so claude-agent requests that carry ttl='1h' blocks can fail with an HTTP 400. Re-run without "
+        "--token-reduce if the agent's API calls fail with a cache_control ttl error."
+    )
     logger.info(
         "Starting holon-coherence proxy sidecar '%s' from image '%s'; a first run may have to pull the image, "
         "which can take a while before the container appears.",

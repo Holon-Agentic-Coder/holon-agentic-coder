@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
-from sandbox_executor.flow.github import ci_reverify
-from sandbox_executor.flow.github.ci_reverify import (
+from sandbox_executor.flow.github.ci_reverify import approved_head_of, blocked_error, reverify_final_head
+from sandbox_executor.flow.review import approval_coverage
+from sandbox_executor.flow.review.approval_coverage import (
     CHANGED,
     SAME_FINGERPRINT,
     SAME_HEAD,
     UNKNOWN_CHANGE,
     approval_covers,
     approved_fingerprint_of,
-    approved_head_of,
-    blocked_error,
-    reverify_final_head,
 )
+from sandbox_executor.flow.review.approval_fingerprint import approval_record
 
 APPROVED = "a" * 40
 FINAL = "b" * 40
@@ -132,14 +131,14 @@ def _approved_context(**consensus: object) -> FlowContext:
 
 
 def test_approval_covers_the_same_head_without_computing_a_fingerprint(monkeypatch) -> None:
-    monkeypatch.setattr(ci_reverify, "approval_fingerprint_of", _refuse)
+    monkeypatch.setattr(approval_coverage, "approval_fingerprint_of", _refuse)
     coverage = approval_covers(_approved_context(approval_fingerprint="pf1:x"), "/repo", APPROVED[:10])
     assert (coverage.covers, coverage.how) == (True, SAME_HEAD)
 
 
 def test_approval_covers_the_same_fingerprint_and_flags_a_changed_one(monkeypatch) -> None:
     fingerprints = {FINAL: "pf1:same", "c" * 40: "pf1:other"}
-    monkeypatch.setattr(ci_reverify, "approval_fingerprint_of", lambda _r, head, _b: fingerprints.get(head))
+    monkeypatch.setattr(approval_coverage, "approval_fingerprint_of", lambda _r, head, _b: fingerprints.get(head))
     context = _approved_context(approval_fingerprint="pf1:same", base_branch="main")
 
     assert approval_covers(context, "/repo", FINAL) == (True, SAME_FINGERPRINT, "pf1:same", "pf1:same")
@@ -148,10 +147,22 @@ def test_approval_covers_the_same_fingerprint_and_flags_a_changed_one(monkeypatc
 
 
 def test_a_legacy_approval_is_unknown_and_computes_nothing(monkeypatch) -> None:
-    monkeypatch.setattr(ci_reverify, "approval_fingerprint_of", _refuse)
+    monkeypatch.setattr(approval_coverage, "approval_fingerprint_of", _refuse)
     context = _approved_context()
     assert approved_fingerprint_of(context) is None
     assert approval_covers(context, "/repo", FINAL) == (False, UNKNOWN_CHANGE, None, None)
+
+
+def test_the_recorded_base_reaches_the_coverage_check_through_the_payload(monkeypatch) -> None:
+    bases: list[str | None] = []
+    fingerprint_of = lambda _r, _h, base: bases.append(base) or "pf1:x"  # noqa: E731
+    monkeypatch.setattr(approval_coverage, "approval_fingerprint_of", fingerprint_of)
+    consensus_data = {"target_commit": APPROVED, "approval_fingerprint": "pf1:x", "base_branch": "release/1.2"}
+    context = _approved_context(**approval_record(consensus_data))
+    context.intent_data["target_branch"] = "main"
+
+    assert approval_covers(context, "/repo", FINAL).how == SAME_FINGERPRINT
+    assert bases == ["release/1.2"]
 
 
 def _refuse(*_args: object) -> None:

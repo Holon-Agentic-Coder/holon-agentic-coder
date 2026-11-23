@@ -38,7 +38,7 @@ FINGERPRINT_EXCLUDED_PATHSPECS = (
     f":(exclude,glob)plans/**/*{CALIBRATION_REPORT_SUFFIX}",
 )
 # What an approval is bound to, carried from the loop's consensus data into the Stage 4 payload for Stage 5.
-APPROVAL_RECORD_KEYS = ("target_commit", "approval_fingerprint", "carried_from", "carried_to")
+APPROVAL_RECORD_KEYS = ("target_commit", "approval_fingerprint", "base_branch", "carried_from", "carried_to")
 _GIT_TIMEOUT_SECONDS = 60
 
 

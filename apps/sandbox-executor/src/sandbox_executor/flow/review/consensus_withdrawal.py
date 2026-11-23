@@ -30,7 +30,8 @@ from sandbox_executor.flow.github.ci_head_checks import (
     PASSING_CONCLUSIONS,
     PENDING_STATUSES,
 )
-from sandbox_executor.flow.github.ci_reverify import approved_fingerprint_of, approved_head_of
+from sandbox_executor.flow.github.ci_reverify import approved_head_of
+from sandbox_executor.flow.review.approval_coverage import approved_fingerprint_of
 from sandbox_executor.knowledge import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.redaction import redact_agent_secrets

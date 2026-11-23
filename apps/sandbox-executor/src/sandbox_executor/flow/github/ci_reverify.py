@@ -1,20 +1,18 @@
 """Stage 5's verdict on the head it published: green, red or unverified, and which head the approval covered.
 
 Only ``green`` (or nothing pushed) lets Stage 5 end as a success; ``red`` blocks it and ``unverified`` is reported as
-not verified, never as ready to merge. Merging stays with the human maintainer. :func:`approval_covers` says whether
-the approval still covers a head: the same head, or the same PR-own change fingerprint. It only annotates reports and
-records; it never stands in for CI on the head.
+not verified, never as ready to merge. Merging stays with the human maintainer. Whether the approval still covers a
+head is :mod:`sandbox_executor.flow.review.approval_coverage`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, NamedTuple
+from typing import Any
 
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.github.approval_invalidation import invalidate_approval
 from sandbox_executor.flow.github.ci_failure_detail import bare_detail, describe_failure, short_sha
-from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of, fingerprints_match
 from sandbox_executor.git import run_git
 
 GREEN = "green"
@@ -22,20 +20,6 @@ RED = "red"
 UNVERIFIED = "unverified"
 SKIPPED = "skipped"
 _VERDICT_BY_STATE = {"success": GREEN, "failed": RED, "skipped": SKIPPED}
-SAME_HEAD = "same_head"
-SAME_FINGERPRINT = "same_fingerprint"
-CHANGED = "changed"
-UNKNOWN_CHANGE = "unknown"
-
-
-class ApprovalCoverage(NamedTuple):
-    """Whether the approval covers a head, how (``SAME_HEAD``, ``SAME_FINGERPRINT``, ``CHANGED`` or
-    ``UNKNOWN_CHANGE``), and the recorded and current fingerprints when they were compared."""
-
-    covers: bool
-    how: str
-    recorded: str | None = None
-    current: str | None = None
 
 
 def _same_commit(first: str | None, second: str | None) -> bool:
@@ -54,31 +38,6 @@ def approved_head_of(context: FlowContext) -> str | None:
     consensus = _consensus_of(context)
     commit = str(consensus.get("target_commit") or "").strip()
     return commit if consensus.get("approved") and commit and commit != "HEAD" else None
-
-
-def approved_fingerprint_of(context: FlowContext) -> str | None:
-    """The PR-own change fingerprint recorded with the Stage 4 approval, or None (no approval, a legacy one)."""
-    consensus = _consensus_of(context)
-    fingerprint = str(consensus.get("approval_fingerprint") or "").strip()
-    return fingerprint if consensus.get("approved") and fingerprint else None
-
-
-def approval_covers(context: FlowContext, repo_dir: str, head: str | None) -> ApprovalCoverage:
-    """Whether the Stage 4 approval covers ``head``: the approved head itself, or the same PR-own change.
-
-    Both fingerprints must be known to call a change ``CHANGED``; otherwise (a legacy approval, unreadable git) it is
-    ``UNKNOWN_CHANGE``, which keeps today's behaviour.
-    """
-    if _same_commit(approved_head_of(context), head):
-        return ApprovalCoverage(True, SAME_HEAD)
-    recorded = approved_fingerprint_of(context)
-    consensus = _consensus_of(context)
-    base = str(consensus.get("base_branch") or context.intent_data.get("target_branch") or "main")
-    current = approval_fingerprint_of(repo_dir, head, base) if recorded else None
-    if not current:
-        return ApprovalCoverage(False, UNKNOWN_CHANGE, recorded)
-    how = SAME_FINGERPRINT if fingerprints_match(recorded, current) else CHANGED
-    return ApprovalCoverage(how == SAME_FINGERPRINT, how, recorded, current)
 
 
 def published_head_of(repo_dir: str) -> str | None:

@@ -22,9 +22,10 @@ from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.ci_failure_detail import parse_run_id
 from sandbox_executor.flow.github.ci_final_head import _bookkeeping_only, _git_changed_paths
 from sandbox_executor.flow.github.ci_head_checks import FAILED, PASSED
-from sandbox_executor.flow.github.ci_reverify import CHANGED, _same_commit, approved_head_of
+from sandbox_executor.flow.github.ci_reverify import _same_commit, approved_head_of
 from sandbox_executor.flow.github.pr_head import pr_head_sha
 from sandbox_executor.flow.review.approval_carry_over import merged_head_coverage
+from sandbox_executor.flow.review.approval_coverage import CHANGED
 from sandbox_executor.flow.review.consensus_withdrawal import withdraw_consensus, withdrawn_consensus_of
 from sandbox_executor.flow.review.merged_head_gate import (
     MergedHeadSeams,

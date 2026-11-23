@@ -180,7 +180,7 @@ class Flow:
             patch("sandbox_executor.flow.pipeline._resume_context_error", return_value=None),
             patch("sandbox_executor.flow.pipeline.validate_stage_ledger"),
             patch(
-                "sandbox_executor.flow.github.ci_reverify.approval_fingerprint_of",
+                "sandbox_executor.flow.review.approval_coverage.approval_fingerprint_of",
                 side_effect=lambda _repo, head, _base: self.fingerprints.get(str(head)),
             ),
         ):

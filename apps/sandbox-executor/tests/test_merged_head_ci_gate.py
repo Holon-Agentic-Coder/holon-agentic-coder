@@ -410,7 +410,7 @@ def _fingerprinted_ctx(
 
     The merged head's fingerprint is ``merged_fingerprint``.
     """
-    from sandbox_executor.flow.github import ci_reverify
+    from sandbox_executor.flow.review import approval_coverage
 
     ctx = _approved_ctx(tmp_path)
     consensus = ctx.stage_results["review"].payload["consensus"]
@@ -421,7 +421,7 @@ def _fingerprinted_ctx(
         computed.append((head, base))
         return merged_fingerprint
 
-    monkeypatch.setattr(ci_reverify, "approval_fingerprint_of", fingerprint_of)
+    monkeypatch.setattr(approval_coverage, "approval_fingerprint_of", fingerprint_of)
     return ctx, computed
 
 

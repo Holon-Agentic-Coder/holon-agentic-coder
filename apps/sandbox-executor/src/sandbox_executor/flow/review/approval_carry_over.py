@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from sandbox_executor.flow.git_refs import _fetch_refspecs_error
 from sandbox_executor.flow.github.ci_head_checks import FAILED
-from sandbox_executor.flow.github.ci_reverify import CHANGED, SAME_FINGERPRINT, ApprovalCoverage, approval_covers
+from sandbox_executor.flow.review.approval_coverage import CHANGED, SAME_FINGERPRINT, ApprovalCoverage, approval_covers
 from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of, fingerprints_match
 from sandbox_executor.flow.review.merged_head_gate import gate_record
 from sandbox_executor.ledger import generate_action_id

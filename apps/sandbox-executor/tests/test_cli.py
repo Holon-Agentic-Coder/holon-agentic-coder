@@ -619,7 +619,7 @@ class TestHolonFlowCLI(unittest.TestCase):
             with open(intent_file, "w", encoding="utf-8") as f:
                 json.dump({"slug": "test-skip-push", "goal": "g"}, f)
             checkpoint_file = os.path.join(tmp_dir, "checkpoint.json")
-            ckpt_ctx = FlowContext(target_worktree=tmp_dir, intent_data={"slug": "cp"}, skip_push=True)
+            ckpt_ctx = FlowContext(target_worktree=tmp_dir, intent_data={"slug": "cp"}, dry_run=True, skip_push=True)
             with open(checkpoint_file, "w", encoding="utf-8") as f:
                 json.dump({"context": ckpt_ctx.to_dict(), "current_stage": "calibrate"}, f)
 
@@ -627,8 +627,8 @@ class TestHolonFlowCLI(unittest.TestCase):
                 ["holon", "flow", intent_file, "--skip-push"],
                 ["holon", "flow", intent_file, "--skip-push", "--from-stage", "review"],
                 ["holon", "flow", intent_file, "--skip-push", "--from-stage", "calibrate"],
-                # A checkpoint that recorded --skip-push is rejected on a non-dry resume too.
-                ["holon", "flow", "--checkpoint", checkpoint_file],
+                # A --skip-push resume is rejected without --dry-run, even when the checkpoint recorded a dry run.
+                ["holon", "flow", "--checkpoint", checkpoint_file, "--skip-push"],
             ]
             for argv in argvs:
                 with (

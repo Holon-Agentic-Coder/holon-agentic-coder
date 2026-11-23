@@ -72,16 +72,18 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "--agent",
         default=None,
         help=(
-            f"{_AGENT_HELP} On a resume it applies to the Stage 4 reviewers and resolver and is recorded in the "
-            "checkpoint; without it the checkpoint's runner is kept."
+            f"{_AGENT_HELP} On a resume it applies to every remaining stage and role (the Stage 4 "
+            "reviewers and resolver and the Stage 5 evaluating agent) and is recorded in the checkpoint; "
+            "without it the checkpoint's runner is kept."
         ),
     )
     parser.add_argument(
         "--model",
         default=None,
         help=(
-            f"{_MODEL_HELP} On a resume it applies to the Stage 4 reviewers and resolver and is recorded in the "
-            "checkpoint; without it the checkpoint's model is kept unless --agent switches the runner."
+            f"{_MODEL_HELP} On a resume it applies to every remaining stage and role (the Stage 4 "
+            "reviewers and resolver and the Stage 5 evaluating agent) and is recorded in the checkpoint; "
+            "without it the checkpoint's model is kept unless --agent switches the runner."
         ),
     )
     parser.add_argument("--skip-preflight", action="store_true", help=_SKIP_PREFLIGHT_HELP)

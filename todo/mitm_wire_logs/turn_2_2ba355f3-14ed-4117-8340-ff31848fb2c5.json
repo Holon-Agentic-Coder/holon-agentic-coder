@@ -1,0 +1,62 @@
+{
+  "turn_id": 2,
+  "flow_id": "2ba355f3-14ed-4117-8340-ff31848fb2c5",
+  "agent_id": "agy",
+  "agent_role": "executor",
+  "timestamp": "2026-11-23T06:04:23.247740Z",
+  "provider": "anthropic",
+  "endpoint": "https://api.anthropic.com/api/claude_code/settings",
+  "headers": {
+    "accept": "application/json, text/plain, */*",
+    "authorization": "[REDACTED]",
+    "anthropic-beta": "oauth-2025-04-20",
+    "user-agent": "claude-code/2.1.302",
+    "cache-control": "no-cache",
+    "pragma": "no-cache",
+    "accept-encoding": "gzip, compress, deflate, br",
+    "host": "api.anthropic.com",
+    "connection": "close"
+  },
+  "raw_request": {},
+  "cleaned_request": {},
+  "delta": {
+    "raw_chars": 0,
+    "cleaned_chars": 0,
+    "chars_saved": 0,
+    "tool_outputs_omitted": 0,
+    "turns_summarized": 0,
+    "cache_control_injected": 0
+  },
+  "mode": "optimized",
+  "cache_action": "MISS",
+  "response": {
+    "status": 404,
+    "usage": {
+      "input_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 10,
+      "reasoning_tokens": 0
+    },
+    "content": {
+      "type": "error",
+      "error": {
+        "type": "not_found_error",
+        "message": "Not found.",
+        "details": {
+          "error_visibility": "user_facing"
+        }
+      },
+      "request_id": "req_011ChKMYH9vUWZTddpo1ZFqc"
+    }
+  },
+  "timing": {
+    "ttft_ms": null,
+    "total_ms": 264.85,
+    "streaming": false,
+    "generation_ms": null,
+    "prefill_tps": null,
+    "tail_prefill_tps": null,
+    "decode_tps": null
+  }
+}

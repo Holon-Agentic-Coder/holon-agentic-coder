@@ -17,7 +17,8 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help=(
             "Check that the selected agent runner is ready (one minimal real model call in its "
             "container), and show the effective budgets ('unlimited' for a budget variable set to "
-            "'unlimited'), the local-LLM model envelope and the local gateway state."
+            "'unlimited'), the GitHub token type and scopes (never its value), the local-LLM model envelope and the "
+            "local gateway state."
         ),
     )
     add_runner_options(parser)

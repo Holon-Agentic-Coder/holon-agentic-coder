@@ -276,17 +276,9 @@ def build_network_isolation_args(
 
 def find_github_token() -> str | None:
     """Auto-detect GitHub token from environment variables or gh CLI."""
-    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
-    if token:
-        return token
-    if shutil.which("gh"):
-        try:
-            res = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True)
-            if res.returncode == 0 and res.stdout.strip():
-                return res.stdout.strip()
-        except Exception as e:
-            logger.debug("Failed to retrieve token via gh CLI: %s", e)
-    return None
+    from sandbox_executor.flow.github.token_scopes import resolve_github_token
+
+    return resolve_github_token()[0]
 
 
 def get_agent_session_mounts(agent_id: str) -> list[str]:
@@ -1398,6 +1390,10 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
     except Exception as exc:  # The doctor reports; it never crashes.
         print(_doctor_section_failed("budgets", exc), file=out)
         code = 1
+    try:
+        _report_github_token(out)
+    except Exception as exc:
+        print(_doctor_section_failed("github token", exc), file=out)
 
     if env.get(local_llm.ENV_LOCAL_MODE, "").strip().lower() not in ("1", "true", "yes", "on"):
         print(f"local_llm=disabled (set {local_llm.ENV_LOCAL_MODE}=1 to inspect the model envelope)", file=out)
@@ -1434,6 +1430,31 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
         print(_doctor_section_failed("gateway probe", exc), file=out)
         code = 1
     return code
+
+
+def _report_github_token(out: TextIO) -> None:
+    """The GitHub token's type, source and scopes (never its value), warning when it cannot push workflow files.
+
+    Warnings leave the doctor's result alone: a missing ``workflow`` scope only matters to plans touching workflows.
+    """
+    from sandbox_executor.flow.github import token_scopes
+
+    report = token_scopes.scope_report()
+    print(report.format_line(), file=out)
+    if report.token_type == "none":
+        return
+    if report.verifiable and not report.has_workflow:
+        print(
+            "WARNING: the GitHub token lacks the workflow scope; plans that touch .github/workflows/** will fail "
+            f"before Stage 3 (run: {token_scopes.REFRESH_COMMAND})",
+            file=out,
+        )
+    elif not report.verifiable:
+        print(
+            f"WARNING: the GitHub token's workflow scope cannot be verified ({report.detail}); a fine-grained "
+            "token needs Workflows read/write to push workflow files",
+            file=out,
+        )
 
 
 def _report_budgets(env: Mapping[str, str], out: TextIO) -> None:

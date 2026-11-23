@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+from typing import Any
+
+import pytest
 from sandbox_executor.approval_stamp import approval_stamp, ci_result_at_commit
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.github.approval_invalidation import (
+    UPDATE_COMMENT_MUTATION,
+    CommentRecord,
+    gh_comment_editor,
+    gh_comment_records,
     invalidate_approval,
     invalidation_marker,
     render_invalidation,
@@ -147,3 +156,54 @@ def test_official_review_alone_counts_as_a_posted_approval() -> None:
     context.stage_results["review"].payload["posting"] = {"dual_posted": False, "official_review": {"success": True}}
     fakes = Fakes([])
     assert invalidate_approval(context, _verdict(), fakes.lister, fakes.poster)["posted"] is True
+
+
+# --- the gh adapters, with subprocess.run monkeypatched: no network ---------------------------------------------------
+
+
+def fake_gh(monkeypatch: pytest.MonkeyPatch, returncode: int = 0, stdout: str = "") -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return calls
+
+
+def test_gh_comment_editor_sends_the_graphql_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = fake_gh(monkeypatch)
+    assert gh_comment_editor("/repo")("IC_kw1", "new body") is True
+    assert calls == [
+        ["gh", "api", "graphql", "-f", f"query={UPDATE_COMMENT_MUTATION}", "-f", "id=IC_kw1", "-f", "body=new body"]
+    ]
+
+
+def test_gh_comment_editor_refuses_an_empty_id_and_reports_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = fake_gh(monkeypatch, returncode=1)
+    assert gh_comment_editor("/repo")("", "body") is False
+    assert calls == []
+    assert gh_comment_editor("/repo")("IC_1", "body") is False
+
+
+def test_gh_comment_editor_redacts_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = fake_gh(monkeypatch)
+    secret = "ghp_" + "A" * 36
+    gh_comment_editor("/repo")("IC_1", f"token {secret}")
+    assert secret not in " ".join(calls[0])
+
+
+def test_gh_comment_records_parses_ids_and_bodies(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {"comments": [{"id": "IC_1", "body": "one"}, {"body": "no id"}]}
+    calls = fake_gh(monkeypatch, stdout=json.dumps(payload))
+    assert gh_comment_records("/repo")("7") == [CommentRecord("IC_1", "one"), CommentRecord("", "no id")]
+    assert calls == [["gh", "pr", "view", "7", "--json", "comments"]]
+
+
+@pytest.mark.parametrize(("returncode", "stdout"), [(1, ""), (0, "not json")])
+def test_gh_comment_records_is_none_when_unreadable(
+    monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: str
+) -> None:
+    fake_gh(monkeypatch, returncode=returncode, stdout=stdout)
+    assert gh_comment_records("/repo")("7") is None

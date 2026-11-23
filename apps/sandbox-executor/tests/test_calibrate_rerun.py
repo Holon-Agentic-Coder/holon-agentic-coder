@@ -16,6 +16,7 @@ from sandbox_executor.flow.calibrate_rerun import (
     HeadMoveCheck,
     RerunSeams,
     head_move_since_calibration,
+    post_stale_signal,
     report_staleness,
     rerun_calibration,
     review_calibration_freshness,
@@ -24,7 +25,10 @@ from sandbox_executor.flow.calibrate_stale_warning import (
     STALE_MARKER,
     STALE_MARKER_FAMILY,
     SUPERSEDED_MARKER_PREFIX,
+    StaleRange,
+    WarningSeams,
     resolve_stale,
+    stale_body,
 )
 from sandbox_executor.flow.github.approval_invalidation import CommentRecord
 from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
@@ -338,26 +342,23 @@ def pr_context(tmp_path: Path) -> FlowContext:
 def test_a_stale_warning_followed_by_a_fresh_calibration_is_superseded_naming_the_evaluated_sha(
     tmp_path: Path,
 ) -> None:
-    from sandbox_executor.flow.calibrate_rerun import _warning_seams, post_stale_signal
-
     ctx, thread = pr_context(tmp_path), FakeThread()
     post_stale_signal(ctx, stale_check("a" * 40, "b" * 40), thread.seams(), pr_number="7")
     fresh = "c" * 40
 
-    resolved = resolve_stale(ctx, "7", fresh, _warning_seams(thread.seams()))
+    seams = WarningSeams(comments=thread.comments, poster=thread.poster, editor=thread.editor)
+    resolved = resolve_stale(ctx, "7", fresh, seams)
 
     assert resolved == {"posted": False, "edited": 1, "reason": "superseded"}
     (warning,) = thread.stale_bodies()
     assert "superseded by the fresh calibration report" in warning and f"`{fresh[:7]}`" in warning
     assert STALE_MARKER in warning and f"{SUPERSEDED_MARKER_PREFIX}{fresh} -->" in warning
     assert "do not merge" not in warning
-    assert resolve_stale(ctx, "7", fresh, _warning_seams(thread.seams()))["edited"] == 0  # idempotent
+    assert resolve_stale(ctx, "7", fresh, seams)["edited"] == 0  # idempotent
     assert (len(thread.posted), len(thread.edits)) == (1, 1)
 
 
 def test_a_stale_warning_followed_by_more_commits_leaves_exactly_one_updated_warning(tmp_path: Path) -> None:
-    from sandbox_executor.flow.calibrate_rerun import post_stale_signal
-
     ctx, thread = pr_context(tmp_path), FakeThread()
     first = post_stale_signal(ctx, stale_check("a" * 40, "b" * 40), thread.seams(), pr_number="7")
     second = post_stale_signal(ctx, stale_check("a" * 40, "d" * 40), thread.seams(), pr_number="7")
@@ -371,8 +372,6 @@ def test_a_stale_warning_followed_by_more_commits_leaves_exactly_one_updated_war
 
 
 def test_a_legacy_per_pair_warning_is_edited_in_place_not_duplicated(tmp_path: Path) -> None:
-    from sandbox_executor.flow.calibrate_rerun import post_stale_signal
-
     legacy = f"## ⚠️ Calibration report is stale\n\nold\n\n<!-- holon-calibration-stale:{'a' * 40}:{'b' * 40} -->"
     ctx, thread = pr_context(tmp_path), FakeThread("unrelated review comment", legacy)
 
@@ -394,8 +393,6 @@ def test_a_current_report_posts_no_warning(repos: SimpleNamespace) -> None:
 
 
 def test_a_current_report_supersedes_a_leftover_warning(repos: SimpleNamespace) -> None:
-    from sandbox_executor.flow.calibrate_stale_warning import StaleRange, stale_body
-
     ctx, _, _, run = calibrated_flow(repos)
     thread = FakeThread(stale_body(StaleRange("a" * 40, "b" * 40, "an earlier flow")))
     evaluated = report_staleness(ctx).evaluated_sha
@@ -542,8 +539,6 @@ def test_the_pipeline_passes_the_stage5_result_through_the_rerun_trigger(tmp_pat
 
 
 def test_marked_comment_never_raises_on_a_malformed_review_payload(tmp_path: Path) -> None:
-    from sandbox_executor.flow.calibrate_rerun import post_stale_signal
-
     ctx = FlowContext(target_worktree=str(tmp_path), execution_branch=EXEC, agent="a", model="m")
     # A non-dict consensus makes approval_pr_number raise AttributeError ('str' has no attribute 'get').
     ctx.stage_results["review"] = StageResult(
@@ -553,7 +548,7 @@ def test_marked_comment_never_raises_on_a_malformed_review_payload(tmp_path: Pat
 
     signal = post_stale_signal(ctx, HeadMoveCheck(True, "a" * 40, "b" * 40, "moved"), seams, pr_number=None)
 
-    assert signal == {"posted": False, "reason": "comment posting failed"}
+    assert signal == {"posted": False, "edited": 0, "reason": "comment posting failed"}
     assert posted == []
 
 

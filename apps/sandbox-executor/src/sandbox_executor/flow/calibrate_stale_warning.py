@@ -157,7 +157,7 @@ def warn_stale(
         return {"posted": False, "edited": edited + collapsed, "reason": reason}
     except Exception as exc:
         logger.warning("Stale-calibration warning failed: %s", exc)
-        return {"posted": False, "reason": "comment posting failed"}
+        return {"posted": False, "edited": 0, "reason": "comment posting failed"}
 
 
 def resolve_stale(
@@ -194,4 +194,4 @@ def post_refreshed(
         return {"posted": posted, "reason": "posted" if posted else "the comment could not be posted"}
     except Exception as exc:
         logger.warning("Calibration refreshed comment failed: %s", exc)
-        return {"posted": False, "reason": "comment posting failed"}
+        return {"posted": False, "edited": 0, "reason": "comment posting failed"}

@@ -1,0 +1,151 @@
+"""The mechanical conflict classes and their self-verifying resolvers, on real conflicting merges."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+from sandbox_executor.flow.conflict_classes import ConflictClass, classify_merge_conflicts
+from sandbox_executor.flow.conflict_classes_lists import appended_list_union
+from sandbox_executor.flow.conflict_classes_resolve import resolve_mechanical
+
+from tests.flow.helpers import _git
+from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
+
+LEDGER = "holon-knowledge/ledger/executions.jsonl"
+KB = "holon-knowledge/kb/entry.json"
+INIT = "pkg/__init__.py"
+
+
+def _conflicted(tmp_path: Path, base: dict[str, str], flow: dict, target: dict) -> tuple[Path, list[str]]:
+    """A flow worktree midway through a conflicting merge of ``origin/main``, and its unmerged paths."""
+    _, work = build_flow_repos(tmp_path, base)
+    commit_on(work, "main", target, "target")
+    commit_on(work, FLOW_BRANCH, flow, "flow")
+    merge = subprocess.run(["git", "merge", "--no-ff", "--no-edit", "origin/main"], cwd=work, capture_output=True)
+    assert merge.returncode == 1
+    unmerged = _git(work, "diff", "--name-only", "--diff-filter=U").splitlines()
+    return work, unmerged
+
+
+def _classify_and_resolve(work: Path, paths: list[str]):
+    classified = classify_merge_conflicts(str(work), paths)
+    return classified, resolve_mechanical(str(work), classified)
+
+
+def _row(execution_id: str, created_at: str) -> str:
+    return json.dumps({"execution_id": execution_id, "created_at": created_at}) + "\n"
+
+
+def test_ledger_rows_of_both_sides_are_kept_after_the_target_prefix(tmp_path: Path):
+    base = _row("E-base", "2026-11-01T00:00:00Z")
+    target = base + _row("E-main", "2026-11-04T00:00:00Z")
+    flow = base + _row("E-flow", "2026-11-03T00:00:00Z")
+    work, paths = _conflicted(tmp_path, {LEDGER: base}, {LEDGER: flow}, {LEDGER: target})
+
+    classified, outcome = _classify_and_resolve(work, paths)
+
+    assert classified == [(LEDGER, ConflictClass.LEDGER)]
+    assert outcome.resolved == [(LEDGER, ConflictClass.LEDGER)] and outcome.code_paths == []
+    assert (work / LEDGER).read_text(encoding="utf-8") == target + _row("E-flow", "2026-11-03T00:00:00Z")
+    assert _git(work, "diff", "--name-only", "--diff-filter=U") == ""
+
+
+def _kb(title: str, updated_at: str) -> str:
+    return json.dumps({"title": title, "meta": {"updated_at": updated_at}, "created_at": "2026-01-01"}, indent=2)
+
+
+def test_a_timestamp_only_kb_entry_keeps_the_target_copy(tmp_path: Path):
+    work, paths = _conflicted(tmp_path, {KB: _kb("t", "1")}, {KB: _kb("t", "2")}, {KB: _kb("t", "3")})
+
+    classified, outcome = _classify_and_resolve(work, paths)
+
+    assert classified == [(KB, ConflictClass.KB_TIMESTAMP_ONLY)]
+    assert outcome.code_paths == []
+    assert (work / KB).read_text(encoding="utf-8") == _kb("t", "3")
+
+
+def test_a_kb_entry_with_a_different_title_is_code(tmp_path: Path):
+    work, paths = _conflicted(tmp_path, {KB: _kb("t", "1")}, {KB: _kb("flow", "2")}, {KB: _kb("main", "3")})
+
+    classified, outcome = _classify_and_resolve(work, paths)
+
+    assert classified == [(KB, ConflictClass.CODE)]
+    assert outcome.code_paths == [KB]
+
+
+def test_a_target_deletion_beats_a_whitespace_only_branch_edit(tmp_path: Path):
+    source = "import os\nimport json\n\nx = 1\n"
+    edited = "import json\nimport os\n\n\nx  =  1\n"
+    work, paths = _conflicted(tmp_path, {"old.py": source}, {"old.py": edited}, {"old.py": None})
+
+    classified, outcome = _classify_and_resolve(work, paths)
+
+    assert classified == [("old.py", ConflictClass.DELETE_VS_TOUCH)]
+    assert outcome.code_paths == []
+    assert not (work / "old.py").exists()
+
+
+def test_a_target_deletion_against_a_real_branch_edit_is_code(tmp_path: Path):
+    work, paths = _conflicted(tmp_path, {"old.py": "x = 1\n"}, {"old.py": "x = 2\n"}, {"old.py": None})
+
+    classified, outcome = _classify_and_resolve(work, paths)
+
+    assert classified == [("old.py", ConflictClass.CODE)]
+    assert outcome.code_paths == ["old.py"]
+    assert (work / "old.py").exists()
+
+
+ALL_BASE = '"""Pkg."""\n\nVALUE = 1\n\n__all__ = [\n    "a",\n]\n'
+
+
+def test_both_sides_appending_to_all_give_an_ordered_union_that_imports(tmp_path: Path):
+    flow = ALL_BASE.replace('    "a",\n', '    "a",\n    "flow_one",\n    "shared",\n')
+    target = ALL_BASE.replace('    "a",\n', '    "a",\n    "main_one",\n    "shared",\n')
+    work, paths = _conflicted(tmp_path, {INIT: ALL_BASE}, {INIT: flow}, {INIT: target})
+
+    classified, outcome = _classify_and_resolve(work, paths)
+
+    assert classified == [(INIT, ConflictClass.APPENDED_LIST)]
+    assert outcome.code_paths == []
+    probe = "import pkg; print(pkg.__all__)"
+    printed = subprocess.run([sys.executable, "-c", probe], cwd=work, capture_output=True, text=True, check=True)
+    assert printed.stdout.strip() == "['a', 'main_one', 'shared', 'flow_one']"
+
+
+def test_an_appended_list_plus_a_body_change_is_code(tmp_path: Path):
+    flow = ALL_BASE.replace('    "a",\n', '    "a",\n    "flow_one",\n').replace("VALUE = 1", "VALUE = 2")
+    target = ALL_BASE.replace('    "a",\n', '    "a",\n    "main_one",\n')
+    work, paths = _conflicted(tmp_path, {INIT: ALL_BASE}, {INIT: flow}, {INIT: target})
+
+    classified, outcome = _classify_and_resolve(work, paths)
+
+    assert classified == [(INIT, ConflictClass.CODE)]
+    assert outcome.code_paths == [INIT]
+    assert "<<<<<<<" in (work / INIT).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("base", "ours", "theirs", "expected"),
+    [
+        ("X = ['a']\n", "X = ['a', 'b']\n", "X = ['a', 'c']\n", "X = ['a', 'c', 'b']\n"),
+        (
+            'M = {\n    "a": "1",\n    **R,\n}\n',
+            'M = {\n    "a": "1",\n    **R,\n    "b": "2",\n}\n',
+            'M = {\n    "a": "1",\n    **R,\n    "c": "3"\n}\n',
+            'M = {\n    "a": "1",\n    **R,\n    "c": "3",\n    "b": "2",\n}\n',
+        ),
+        ("X: list[str] = ['a']\n", "X: list[str] = ['a', 'b']\n", "X: list[str] = ['a', 'b']\n", None),
+    ],
+)
+def test_list_union_layouts(base, ours, theirs, expected):
+    result = appended_list_union(base, ours, theirs)
+
+    assert result == (theirs if expected is None else expected)
+
+
+def test_list_union_refuses_a_removed_entry():
+    assert appended_list_union("X = ['a', 'b']\n", "X = ['a']\n", "X = ['a', 'b', 'c']\n") is None

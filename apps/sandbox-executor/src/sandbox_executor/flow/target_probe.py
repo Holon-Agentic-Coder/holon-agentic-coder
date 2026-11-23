@@ -65,9 +65,7 @@ def merge_tree_conflicts(worktree: str, head_ref: str, target_ref: str) -> tuple
     Raises:
         TargetProbeError: When ``merge-tree`` exits with anything other than 0 (clean) or 1 (conflicts).
     """
-    res = run_git(
-        ["merge-tree", "--write-tree", "--name-only", "-z", head_ref, target_ref], cwd=worktree, check=False
-    )
+    res = run_git(["merge-tree", "--write-tree", "--name-only", "-z", head_ref, target_ref], cwd=worktree, check=False)
     if res.returncode == 0:
         return ()
     if res.returncode != 1:

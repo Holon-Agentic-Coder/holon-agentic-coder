@@ -81,7 +81,7 @@ def build_flow_repos(tmp_path: Path, base_files: dict[str, str] | None = None) -
 
 
 def commit_on(work: Path, branch: str, files: dict[str, str | None], message: str) -> str:
-    """Commit ``files`` (``None`` deletes the path) on ``branch``, push it to ``origin`` and return to the flow branch."""
+    """Commit ``files`` (``None`` deletes a path) on ``branch``, push it and return to the checked-out branch."""
     current = _git(work, "rev-parse", "--abbrev-ref", "HEAD")
     if branch != current:
         _git(work, "checkout", "-q", "-B", branch, f"origin/{branch}")

@@ -11,6 +11,7 @@ import pytest
 from sandbox_executor import preflight
 from sandbox_executor.cli import PACKAGE_LOGGER_NAME, _CurrentStderrHandler, configure_cli_logging, main
 from sandbox_executor.flow import get_default_checkpoint_path
+from sandbox_executor.launcher.coherence import FlowProxyChoice
 from sandbox_executor.preflight import (
     PROBE_PROMPT,
     PreflightResult,
@@ -22,6 +23,8 @@ from sandbox_executor.preflight import (
 
 from tests.flow.lookup_patch import patch_lookup_sites
 from tests.leak_assertions import CREDENTIAL_FREE_URLS, assert_no_leak, make_probe, make_url_probe, url_userinfo_cases
+
+_NO_PROXY = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
 
 
 @pytest.fixture
@@ -728,7 +731,7 @@ def test_quota_exhausted_probe_aborts_flow_before_stage_one(flow_repo, monkeypat
         ) as probe,
         patch("sandbox_executor.flow.pipeline.run_intent_stage") as intent_stage,
         patch("sandbox_executor.cli.run_flow_pipeline") as pipeline,
-        patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
+        patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY),
         patch_lookup_sites(
             "sandbox_executor.flow.git_refs.run_git",
             "sandbox_executor.flow.github.pr.run_git",
@@ -760,7 +763,7 @@ def test_dry_run_flow_skips_probe(flow_repo, monkeypatch):
     with (
         patch("sandbox_executor.cli.run_preflight_probe") as probe,
         patch("sandbox_executor.cli.run_flow_pipeline", return_value={}) as pipeline,
-        patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
+        patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY),
     ):
         assert _run_main(["holon", "flow", str(intent_file), "--target-worktree", str(repo), "--dry-run"]) == 0
     probe.assert_not_called()
@@ -773,7 +776,7 @@ def test_flow_explicit_runner_provenance_is_unchanged(flow_repo):
     with (
         patch("sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.OK)) as probe,
         patch("sandbox_executor.cli.run_flow_pipeline", return_value={}) as pipeline,
-        patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
+        patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY),
     ):
         argv = ["holon", "flow", str(intent_file), "--target-worktree", str(repo)]
         assert _run_main([*argv, "--agent", "antigravity-agent", "--model", "gemini-3.8-flash-medium"]) == 0
@@ -833,7 +836,7 @@ def test_resume_with_new_runner_resolves_its_default_model(  # noqa: PLR0913
     with (
         patch("sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.OK)) as probe,
         patch("sandbox_executor.cli.run_flow_pipeline", return_value={}) as pipeline,
-        patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
+        patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY),
     ):
         assert _run_main(["holon", "flow", "--checkpoint", checkpoint, "--target-worktree", str(repo), *extra]) == 0
     assert probe.call_args[0][:2] == expected
@@ -860,7 +863,7 @@ def test_resume_probes_only_when_an_agent_stage_remains(flow_repo, stage, probed
             "sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.QUOTA_EXHAUSTED)
         ) as probe,
         patch("sandbox_executor.cli.run_flow_pipeline", return_value={}) as pipeline,
-        patch("sandbox_executor.cli.detect_holon_coherence", return_value=False),
+        patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY),
     ):
         code = _run_main(["holon", "flow", "--checkpoint", checkpoint, "--target-worktree", str(repo)])
     assert probe.called is probed

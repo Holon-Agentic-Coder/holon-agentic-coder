@@ -1,6 +1,6 @@
 """Head test evidence selection for the review loop test gate.
 
-Pure module with no subprocess calls: decides which test evidence to use for the current git head commit.
+Selects the test evidence for the current git head commit and folds it into the CI probe, without subprocess calls.
 1. Resolver evidence (passing run confirmed locally on this head)
 2. Green CI on this PR head SHA
 3. Stage 3 on an unchanged head

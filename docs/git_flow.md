@@ -442,22 +442,19 @@ The guarantee has five deliberate limits:
   them; when the row records no rate, it is `null` ("not measured"). A measured rate below `1.0`, or a non-zero test
   exit code, is a failed test result that Stage 3 and Stage 4 treat as failed. Stage 4 reports `test_results` with its
   `source` and counts (`pass_rate: null`, `measured: false`, `passed: null` when unmeasured). The Stage 4 test gate
-  judges the current `HEAD` commit (after waiting for pending GitHub CI checks to settle) rather than blindly reusing
-  stale Stage 3 results across commits or failures: it follows the head-specific precedence (`resolver_evidence`,
-  `ci_head`, `stage_3` on an unchanged head, then `review_local` cached per commit; see
-  [Test evidence and its source](review_consensus.md#test-evidence-and-its-source)). Only when `review_local` cannot
-  execute does the fallback report `NOT_MEASURED` and withhold consensus instead of passing. Before a clean gate's CI
-  probe, the loop waits for CI checks to register on the PR when the current head lacks confirmed resolver or Stage 3
-  evidence (when `gh` is available; up to `HOLON_CI_REGISTRATION_TIMEOUT` seconds, default 180, `0` disables the wait),
-  without consuming review iterations or writing ledger rows. If none register, the loop stops after that single
-  iteration with consensus status `not_measured` (one iteration's review rows and one summary row, not rows for every
-  iteration), Stage 4 fails with `test results not measured: no recorded Stage 3 test result and no CI checks`, and the
-  pipeline halts before Stage 5 calibration runs. Checks that registered but are still pending are waited out on their
-  own CI wait budget (see [CI wait budget and outcomes](#ci-wait-budget-and-outcomes)), never the iteration's
-  `review_iteration` budget. `--dry-run` does not wait, and its simulated consensus reports `not_measured`. Stacked
-  sub-intent pull requests, whose base is the plan branch that listed them, receive the same checks as pull requests
-  into `main`, because every CI workflow runs for pull requests into any base branch (see
-  `.github/workflows/README.md`).
+  judges the current `HEAD` commit, never reusing stale Stage 3 results across commits, by the precedence in
+  [Test evidence and its source](review_consensus.md#test-evidence-and-its-source); only when `review_local` cannot
+  execute does it report `NOT_MEASURED` and withhold consensus. Before a clean gate's CI probe, when the head lacks
+  confirmed resolver or Stage 3 evidence, the loop waits for CI checks to register on the PR (when `gh` is available; up
+  to `HOLON_CI_REGISTRATION_TIMEOUT` seconds, default 180, `0` disables the wait), without consuming review iterations
+  or writing ledger rows. If none register and `review_local` cannot run, the loop stops after that single iteration
+  with consensus status `not_measured` (one iteration's review rows and one summary row), Stage 4 fails with
+  `test results not measured: no recorded Stage 3 test result and no CI checks`, and the pipeline halts before Stage 5
+  calibration runs. Checks that registered but are still pending are waited out on their own CI wait budget (see
+  [CI wait budget and outcomes](#ci-wait-budget-and-outcomes)), never the iteration's `review_iteration` budget.
+  `--dry-run` does not wait, and its simulated consensus reports `not_measured`. Stacked sub-intent pull requests, whose
+  base is the plan branch that listed them, receive the same checks as pull requests into `main`, because every CI
+  workflow runs for pull requests into any base branch (see `.github/workflows/README.md`).
 - **Token reduction is auto-detected.** `holon flow` (like `holon review-loop`) resolves token reduction with
   `detect_holon_coherence`: unless `HOLON_TOKEN_REDUCE` opts out (`0`, `false`, `no`, `off`), it is enabled by
   `--token-reduce`, `--mitm-web`, a truthy `HOLON_TOKEN_REDUCE` or `HOLON_PASSIVE_MONITORING`, a reachable proxy port, a
@@ -577,11 +574,10 @@ human maintainer.
 
 #### Approval & Merge Boundary
 
-Merging to `main` is strictly reserved for the human maintainer. Upon consensus approval in Stage 4
-(`StageStatus.APPROVED`, `halted_for_human=False`, `[REVIEW APPROVED]`) and calibration report inclusion in Stage 5, the
-automated flow completes and leaves the PR ready for human review and merge. Autonomous merging to `main` is strictly
-forbidden. `StageStatus.HALTED_FOR_HUMAN` (`[SAFETY HALT]`) is reserved for dry-run halts and manual-intervention
-boundaries; no earlier stage waits for a human, and merging the PR is the only human step.
+Merging to `main` is reserved for the human maintainer. On Stage 4 consensus approval (`StageStatus.APPROVED`,
+`[REVIEW APPROVED]`) and Stage 5 calibration, the flow completes and leaves the PR ready for human merge; it never
+merges itself. `StageStatus.HALTED_FOR_HUMAN` (`[SAFETY HALT]`) is reserved for dry-run and manual-intervention halts;
+no earlier stage waits for a human, and merging the PR is the only human step.
 
 ---
 

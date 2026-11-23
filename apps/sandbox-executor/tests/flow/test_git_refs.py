@@ -110,7 +110,7 @@ class TestStageTargetsIgnoreOperatorHead:
     def test_review_stage_checks_out_execution_branch_and_probes_it(self, flow_repos, tmp_path):
         host, origin = flow_repos
         ctx = self._run_stages_1_to_3(host, origin, tmp_path)
-        loop_res = {"consensus": {"approved": True}, "mergeability": {}, "halted_for_human": True}
+        loop_res = {"consensus": {"approved": True}, "mergeability": {}, "halted_for_human": False, "approved": True}
 
         with (
             patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts") as mock_probe,
@@ -118,7 +118,7 @@ class TestStageTargetsIgnoreOperatorHead:
         ):
             res = run_review_stage(ctx)
 
-        assert res.status == StageStatus.HALTED_FOR_HUMAN
+        assert res.status == StageStatus.APPROVED
         # Stage 4 ledger rows and Stage 5 calibration run in the execution branch's working tree.
         assert _git(host, "rev-parse", "--abbrev-ref", "HEAD") == ctx.execution_branch
         assert mock_probe.call_args.kwargs["branch"] == ctx.execution_branch

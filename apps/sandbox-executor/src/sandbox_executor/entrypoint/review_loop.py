@@ -8,7 +8,7 @@ Coordinates the multi-pass review loop within an isolated container:
   status probing and mergeability inspection; the exit code is 0 only for an APPROVED ensemble verdict.
 - Automated PR creation or update via GitHub API / gh CLI.
 - RFC 2822 commit trailer formatting and discrete ledger recording.
-- Enforces the human-only PR merge rule by halting unconditionally upon consensus approval.
+- Enforces the human-only PR merge rule by completing with approved consensus without merging to main.
 
 Preparation fails closed. The target is resolved before any git operation (a PR number or URL becomes its
 head branch and head SHA through gh). The workspace is the host worktree, bind-mounted by the host and used
@@ -910,10 +910,11 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             print(f"  Reason         : {_bounded_error_context(str(loop_res['error']))}")
         print("===============================================================\n")
         if approved:
-            print("[SAFETY HALT] Review Loop reached consensus approval.")
-            print("Pipeline halted for human review (autonomous merge prohibited).")
-            cmd = loop_res.get("human_approval_command", f"holon review approve {args.target}")
-            print(f"To approve manually, run: {cmd}\n")
+            print(
+                "[REVIEW APPROVED] Review Loop reached consensus approval; "
+                "the PR is ready for the maintainer to merge (the flow never merges to main)."
+            )
+            print()
 
     sys.exit(0 if approved else 1)
 

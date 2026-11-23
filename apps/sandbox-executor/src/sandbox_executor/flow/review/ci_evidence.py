@@ -29,3 +29,21 @@ def apply_local_test_evidence(
         ci_status["checks"] = [{"name": "local_tests", "bucket": "skipping", "state": "NOT_MEASURED"}]
         return True
     return False
+
+
+def _apply_guarded_test_evidence(
+    test_gate: Any,
+    ci_status: dict[str, Any],
+    dry_run: bool,
+    blocked: bool,
+    unmeasured_blocks: bool,
+) -> tuple[bool, bool]:
+    """Run ``test_gate.evidence`` and fold it into ``ci_status`` unless ``blocked`` (infra error or missing ref).
+
+    Returns ``(tests_failed, not_measured)``.
+    """
+    if not dry_run and blocked:
+        return False, False
+    gate_rate, tests_failed = test_gate.evidence(ci_status, dry_run=dry_run)
+    not_measured = apply_local_test_evidence(ci_status, tests_failed, gate_rate, dry_run, unmeasured_blocks)
+    return tests_failed, not_measured

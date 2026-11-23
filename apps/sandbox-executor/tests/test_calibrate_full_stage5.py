@@ -241,7 +241,9 @@ def test_missing_summary_row_skips_reconciliation_without_guessing(repo: SimpleN
         stage5 = json.loads(run_cli(repo, "--json", capsys=capsys))["stage5"]
 
     assert stage5["reconciliation"]["status"] == "skipped_no_verdict"
+    assert stage5["newly_promoted_count"] == 0
     assert reconciliation_rows(repo) == []
+    assert knowledge_files(repo) == []
 
 
 @pytest.mark.parametrize(

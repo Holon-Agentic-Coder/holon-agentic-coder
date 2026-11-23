@@ -91,7 +91,7 @@ def _reconcile_execution(
     if not os.path.exists(executions_file):
         return _reconciliation("skipped_no_ledger", verdict)
     if verdict is None:
-        context.log("Stage 5 reconciliation skipped: no execution verdict was found in the ledger.")
+        context.log("Stage 5 reconciliation and promotion skipped: no execution verdict was found in the ledger.")
         return _reconciliation("skipped_no_verdict", verdict)
     if _already_reconciled(executions_file, str(context.execution_branch)):
         context.log(f"Stage 5 reconciliation already recorded for '{context.execution_branch}': nothing appended.")
@@ -149,7 +149,8 @@ def run_stage5(
 
     ``LedgerRewriteError`` and ``CalibrationFormatError`` always propagate. Any other calibration exception goes to
     ``steps.on_calibrate_error`` when set (its fallback report is used and nothing is committed), else re-raises.
-    ``report_only`` stops after the calibration report.
+    ``report_only`` stops after the calibration report; a None ``verdict`` (CLI only) skips reconciliation and
+    promotion.
     """
     outcome = Stage5Outcome(report_only=report_only)
     try:
@@ -175,7 +176,9 @@ def run_stage5(
     outcome.reconciliation = _reconciliation("failed", verdict)
     try:
         outcome.reconciliation = _reconcile_execution(context, steps, verdict, outcome.calibration_succeeded)
-        outcome.promoted_candidates = _promote_candidates(context, steps, outcome.calibration_succeeded)
+        # An execution with no verdict is unknown to the ledger: it contributes no lessons, so nothing is promoted.
+        if verdict is not None:
+            outcome.promoted_candidates = _promote_candidates(context, steps, outcome.calibration_succeeded)
     except LedgerRewriteError:
         raise
     except Exception as e:

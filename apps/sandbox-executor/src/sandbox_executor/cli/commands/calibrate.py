@@ -7,8 +7,10 @@ import contextlib
 import dataclasses
 import json
 import sys
+from typing import Any
 
 from sandbox_executor import cli
+from sandbox_executor.calibration import CalibrationReport
 from sandbox_executor.cli.commands._worktree_guard import DEFAULT_BRANCH_GUARD_HELP, default_branch_worktree_allowed
 from sandbox_executor.cli.options import add_target_worktree_option
 from sandbox_executor.flow.stage5 import Stage5Outcome, run_stage5, standalone_context
@@ -65,9 +67,17 @@ def _run_stage5(args: argparse.Namespace) -> Stage5Outcome:
     context = standalone_context(args.execution_branch, args.target_worktree, no_commit=args.skip_commit)
     report_only = bool(getattr(args, "report_only", False))
     verdict = None if report_only else resolve_execution_verdict(args.target_worktree, args.execution_branch)
-    # cli.run_calibrate is read at call time so the calibration step stays patchable at the CLI.
-    steps = dataclasses.replace(stage5_steps(), calibrate=cli.run_calibrate)
-    return run_stage5(context, steps, verdict, report_only=report_only)
+
+    def calibrate(**kwargs: Any) -> CalibrationReport:
+        # The command's own run_calibrate call, unchanged: cli.run_calibrate read at call time, no flow log_fn.
+        return cli.run_calibrate(
+            execution_branch=kwargs["execution_branch"],
+            target_worktree=kwargs["target_worktree"],
+            json_output=args.json,
+            skip_commit=kwargs["skip_commit"],
+        )
+
+    return run_stage5(context, dataclasses.replace(stage5_steps(), calibrate=calibrate), verdict, report_only)
 
 
 def _print_outcome(outcome: Stage5Outcome) -> None:
@@ -88,7 +98,7 @@ def run(args: argparse.Namespace) -> int:
         if not args.json:
             _print_outcome(_run_stage5(args))
             return 0
-        # Human lines from run_calibrate go to stderr, so stdout carries exactly one JSON document.
+        # Everything run_calibrate prints goes to stderr, so stdout carries exactly one JSON document.
         with contextlib.redirect_stdout(sys.stderr):
             outcome = _run_stage5(args)
         print(json.dumps({**outcome.report_dict, "stage5": outcome.to_json_dict()}, indent=2))

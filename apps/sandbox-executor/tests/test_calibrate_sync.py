@@ -112,6 +112,12 @@ def test_calibrated_report_tree_contains_origin_only_files(repos: SimpleNamespac
     _, result = run_stage(repos)
     tree = result.payload["calibration_report"]["tree"]
     assert {"from-main.txt", "ledger-interleave.txt", "exec.txt"} <= set(tree)
+    # No executions ledger in these repos: the shared Stage 5 core reports it skipped the reconciliation.
+    assert result.payload["stage5_reconciliation"] == {
+        "status": "skipped_no_ledger",
+        "verdict": "failure",
+        "rows_appended": 0,
+    }
 
 
 def test_divergent_local_ref_fails_loudly_and_changes_nothing(repos: SimpleNamespace) -> None:

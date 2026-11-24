@@ -320,6 +320,105 @@ def test_breach_that_no_test_and_no_suite_wide_scale_explains_keeps_its_verdict(
     )
 
 
+# A value above the ceiling is held to the relative check too, so a slower runner never lifts a regression over it
+
+REGRESSED = 500.0
+
+
+def not_accounted(judged: float, factor: float, limit: float) -> str:
+    """Word that a slowdown of ``factor`` on every test leaves ``judged`` seconds above the relative ``limit``."""
+    return (
+        f"Runner variance does not account for the breach: divided by the suite-wide scale of {factor:.2f} the judged "
+        f"value is {judged / factor:.1f} s, still above its limit of {limit:.1f} s."
+    )
+
+
+def ceiling_only(judged: float, factor: float) -> str:
+    """Word that the same slowdown accounts for the breach of the 600 s ceiling by ``judged`` seconds of test time."""
+    return (
+        f"It accounts only for the ceiling breach, which is forgiven: suite test time was {judged:.0f} s, above the "
+        f"600 s ceiling, and divided by the suite-wide scale of {factor:.2f} the judged value is {judged / factor:.1f} "
+        "s, inside its limit of 600.0 s."
+    )
+
+
+@pytest.mark.parametrize("factor", [1.15, 1.21, 1.25])
+def test_spread_regression_fails_on_every_runner_whichever_side_of_the_ceiling_it_lands(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], factor: float
+) -> None:
+    """A change takes the suite from 220 s to 500 s with no test to blame; runners make that 575 s, 605 s or 625 s."""
+    seconds = REGRESSED * factor
+    junit = tmp_path / "unit-report.xml"
+    write_junit(junit, slowed(UNIT_SUITE, factor), suite_time=seconds)
+    code, line = compared(capsys, junit, seconds + 9, [measured(229.0, 220.0, UNIT_SUITE)] * 5)
+    assert code == 1
+    limits = f"suite test time was {seconds:.0f} s against a baseline median of 220 s over 5 main runs {THRESHOLDS}"
+    reason = not_accounted(seconds, factor, 340.0)
+    if seconds > 600:
+        reason += f" {ceiling_only(seconds, factor)}"
+    assert line.startswith(f"::error::Timing regression: {limits}. {ADVICE} {reason} {spread_evidence(factor)}")
+    assert "::warning::" not in line
+
+
+def test_label_accepts_the_relative_breach_beneath_a_forgiven_ceiling_breach(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    junit = tmp_path / "unit-report.xml"
+    write_junit(junit, slowed(UNIT_SUITE, 1.25), suite_time=625.0)
+    baselines = [measured(229.0, 220.0, UNIT_SUITE)] * 5
+    code, line = compared(capsys, junit, 634.0, baselines, "--override-label-present", "true")
+    assert code == 0
+    limits = f"suite test time was 625 s against a baseline median of 220 s over 5 main runs {THRESHOLDS}"
+    assert line.startswith(
+        f"::warning::Timing regression accepted by the '{OVERRIDE}' label: {limits}. "
+        f"{not_accounted(625.0, 1.25, 340.0)} {ceiling_only(625.0, 1.25)} {spread_evidence(1.25)}"
+    )
+
+
+def test_label_never_lifts_a_ceiling_breach_that_runner_variance_does_not_account_for(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    junit = tmp_path / "unit-report.xml"
+    write_junit(junit, slowed(UNIT_SUITE, 1.01), suite_time=625.0)
+    baselines = [measured(229.0, 220.0, UNIT_SUITE)] * 5
+    code, line = compared(capsys, junit, 634.0, baselines, "--override-label-present", "true")
+    assert code == 1
+    assert line.startswith(
+        f"::error::Suite test time was 625 s, above the 600 s ceiling. {LABEL_SENTENCE} "
+        f"{not_accounted(625.0, 1.01, 600.0)} {spread_evidence(1.01)}"
+    )
+
+
+def test_ceiling_and_relative_breach_are_both_forgiven_when_the_scale_accounts_for_both(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    junit = tmp_path / "unit-report.xml"
+    write_junit(junit, slowed(UNIT_SUITE, 1.6), suite_time=640.0)
+    code, line = compared(capsys, junit, 649.0, [measured(389.0, 380.0, UNIT_SUITE)] * 5)
+    assert code == 0
+    assert line.startswith(
+        f"::warning::Runner variance: suite test time was 640 s, above the 600 s ceiling. {spread(640.0, 1.6, 600.0)} "
+        "The relative breach is forgiven with it: suite test time was 640 s against a baseline median of 380 s over 5 "
+        f"main runs {THRESHOLDS}, and divided by the suite-wide scale of 1.60 the judged value is 400.0 s, inside its "
+        f"limit of 570.0 s. {spread_evidence(1.6)}"
+    )
+
+
+def test_relative_breach_beneath_a_forgiven_ceiling_breach_is_judged_on_wall_clock_for_old_baseline_records(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The ceiling is held on the 625 s of test time and the relative check on the 634 s of wall clock."""
+    junit = tmp_path / "unit-report.xml"
+    write_junit(junit, slowed(UNIT_SUITE, 1.25), suite_time=625.0)
+    code, line = compared(capsys, junit, 634.0, [record(229.0, UNIT_SUITE)] * 5)
+    assert code == 1
+    assert line.startswith(
+        f"::error::Timing regression: job took 634 s against a baseline median of 229 s over 5 main runs {THRESHOLDS}; "
+        f"{NO_SUITE_TIME}. {ADVICE} {not_accounted(634.0, 1.25, 349.0)} {ceiling_only(625.0, 1.25)} "
+        f"{spread_evidence(1.25)}"
+    )
+
+
 def test_wall_clock_above_the_ceiling_passes_when_the_summed_test_time_is_under_it(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -474,3 +573,19 @@ def test_evaluate_records_the_judged_value_and_the_limit_it_breached() -> None:
     slow = evaluate(700.0, [400.0] * 5, Thresholds(ceiling=900.0), override=False).breach
     assert slow is not None
     assert (slow.seconds, slow.limit) == (700.0, 600.0)
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_evaluate_keeps_a_breached_relative_verdict_beneath_a_ceiling_breach(override: bool) -> None:
+    verdict = evaluate(625.0, [220.0] * 5, DEFAULTS, override=override)
+    assert not verdict.passed
+    assert verdict.lines == (f"::error::Job took 625 s, above the 600 s ceiling. {LABEL_SENTENCE}",)
+    assert verdict.breach == Breach("job took 625 s, above the 600 s ceiling", 625.0, 600.0)
+    limits = f"job took 625 s against a baseline median of 220 s over 5 main runs {THRESHOLDS}"
+    assert verdict.beneath is not None
+    assert verdict.beneath.passed is override
+    assert verdict.beneath.breach == Breach(limits, 625.0, 340.0)
+    assert verdict.beneath.lines == evaluate(625.0, [220.0] * 5, Thresholds(ceiling=900.0), override=override).lines
+    # Inside the relative limits, or without enough baseline records to hold it to them, nothing lies beneath.
+    assert evaluate(625.0, [547.0] * 5, DEFAULTS, override=override).beneath is None
+    assert evaluate(625.0, [220.0] * 4, DEFAULTS, override=override).beneath is None

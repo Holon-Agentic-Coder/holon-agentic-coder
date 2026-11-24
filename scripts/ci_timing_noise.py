@@ -9,8 +9,9 @@ does two things with them:
   baseline across the comparable tests, never below 1. A test's attributed seconds are its growth beyond that scale,
   so a slowdown that hits every test alike attributes nothing. The offenders are all the tests whose attributed
   seconds pass the report thresholds; only the ten largest are named. New tests are attributed together: their time
-  less the scaled baseline time of the tests that vanished, so a renamed test attributes nothing. With fewer than
-  twenty comparable tests, no baseline per-test times or no excess there is no evidence.
+  less the scaled baseline time of the tests that vanished, so a renamed test attributes nothing. That net time is
+  shared out among the new tests, largest first, and a new test is an offender only for a part above the report
+  minimum. With fewer than twenty comparable tests, no baseline per-test times or no excess there is no evidence.
 
 A breached limit is forgiven as runner variance only on positive evidence, and both parts are required:
 
@@ -18,7 +19,9 @@ A breached limit is forgiven as runner variance only on positive evidence, and b
 - The suite-wide scale accounts for the breach: the judged value divided by the scale is back inside the limit. A
   slowdown that leaves the median test where it was is therefore never forgiven, however it is spread.
 
-In every other case the breach stands and the verdict line says which part failed.
+In every other case the breach stands and the verdict line says which part failed. A ceiling breach can hide a relative
+one. Forgiving the ceiling then leaves the relative breach to be judged the same way, so a slower runner never lifts a
+regression over the relative check: when the scale does not account for it, the relative verdict is the outcome.
 
 The module also holds the gate's ``Verdict`` and ``Breach``, ``rejudge`` (which applies the evidence to a verdict with
 a breached limit) and the wording of every verdict line: one line each, stating the measure judged, the baseline, the
@@ -170,21 +173,33 @@ def per_test_excess(current: dict[str, float], medians: dict[str, float]) -> flo
 
 
 def attributed_offenders(
-    current: dict[str, float], medians: dict[str, float], scale: float
+    current: dict[str, float], medians: dict[str, float], scale: float, new_seconds: float
 ) -> list[tuple[float, Offender]]:
-    """Return ``(attributed seconds, offender)`` for the tests slowed beyond the suite-wide ``scale``, largest first.
+    """Return ``(attributed seconds, offender)`` for the tests that explain a slowdown, largest first.
 
-    A shared test's attributed seconds are ``current - baseline * scale``; a new test's are its whole time. An offender
-    passes both report thresholds against its scaled baseline. Every offender is returned: capping the rows here would
-    let a slowdown of many tests fall under the concentrated share.
+    A shared test's attributed seconds are ``current - baseline * scale``, and it is an offender when it passes both
+    report thresholds against its scaled baseline. The new tests share ``new_seconds``, their net time: the largest
+    takes up to its whole time, then the next largest, and a new test is an offender while its part is above
+    ``REPORT_MIN_SECONDS``. A rename whose net time is a few seconds therefore names none of the renamed tests. Every
+    offender is returned: capping the rows here would let a slowdown of many tests fall under the concentrated share.
     """
     rows: list[tuple[float, Offender]] = []
+    added: list[tuple[str, float]] = []
     for test_id, seconds in current.items():
-        is_new = test_id not in medians
-        median = medians.get(test_id, 0.0)
+        if test_id not in medians:
+            added.append((test_id, seconds))
+            continue
+        median = medians[test_id]
         attributed = seconds - median * scale
-        if attributed > REPORT_MIN_SECONDS and (is_new or seconds > median * scale * (1 + REPORT_GROWTH)):
-            rows.append((attributed, Offender(test_id, median, seconds, is_new)))
+        if attributed > REPORT_MIN_SECONDS and seconds > median * scale * (1 + REPORT_GROWTH):
+            rows.append((attributed, Offender(test_id, median, seconds)))
+    remaining = new_seconds
+    for test_id, seconds in sorted(added, key=lambda item: (-item[1], item[0])):
+        part = min(seconds, remaining)
+        if part <= REPORT_MIN_SECONDS:
+            break
+        rows.append((part, Offender(test_id, 0.0, seconds, is_new=True)))
+        remaining -= part
     rows.sort(key=lambda row: (-row[0], row[1].test_id))
     return rows
 
@@ -196,7 +211,7 @@ def gather_evidence(current: dict[str, float], baselines: Sequence[dict[str, flo
     per-test times) or no positive per-test excess; ``insufficient_reason`` words the cause.
 
     The new tests are attributed as one net amount, whatever their size and number, so many small new tests count in
-    full and a rename counts for nothing. A new test is named as an offender only while that net amount is positive.
+    full and a rename counts for nothing. A new test is named as an offender only for its part of that net amount.
     """
     medians = baseline_medians(baselines)
     ratios = comparable_ratios(current, medians)
@@ -206,7 +221,7 @@ def gather_evidence(current: dict[str, float], baselines: Sequence[dict[str, flo
     median_ratio = float(statistics.median(ratios))
     scale = max(1.0, median_ratio)
     new_seconds = net_new_seconds(current, medians, scale)
-    rows = [row for row in attributed_offenders(current, medians, scale) if new_seconds > 0 or not row[1].is_new]
+    rows = attributed_offenders(current, medians, scale, new_seconds)
     attributed = sum(seconds for seconds, offender in rows if not offender.is_new) + new_seconds
     offenders = tuple(offender for _, offender in rows)
     return NoiseEvidence(len(ratios), median_ratio, excess, attributed, offenders, new_seconds)
@@ -338,16 +353,18 @@ class Verdict:
     """The gate's decision and the message lines that explain it.
 
     ``breach`` is the limit that was breached. It is ``None`` when no limit was breached and stays set when the
-    override label accepted a relative breach.
+    override label accepted a relative breach. ``beneath`` is set only on a ceiling breach that hides a relative one:
+    it is the verdict of the relative check, which is the outcome once runner variance forgives the ceiling alone.
     """
 
     passed: bool
     lines: tuple[str, ...]
     breach: Breach | None = None
+    beneath: Verdict | None = None
 
     def with_reason(self, reason: str) -> Verdict:
         """Return the same decision with ``reason`` appended to its line."""
-        return Verdict(self.passed, (f"{self.lines[0]} {reason}",), self.breach)
+        return Verdict(self.passed, (f"{self.lines[0]} {reason}",), self.breach, self.beneath)
 
 
 def describe_scale(evidence: NoiseEvidence, breach: Breach) -> str:
@@ -360,6 +377,31 @@ def describe_scale(evidence: NoiseEvidence, breach: Breach) -> str:
     )
 
 
+def forgive(verdict: Verdict, breach: Breach, evidence: NoiseEvidence, basis: str, offenders: str) -> Verdict:
+    """Forgive ``breach``, a spread slowdown that the suite-wide scale accounts for, as runner variance.
+
+    The relative breach beneath a ceiling breach is forgiven with it when the scale accounts for it as well. When it
+    does not, the relative verdict is returned and its line says which of the two breaches is forgiven.
+    """
+    forgiven = (
+        f"::warning::Runner variance: {breach.words}. The breach is forgiven and the gate passes, because the "
+        "slowdown is spread across the suite and not concentrated in specific tests: "
+        f"{describe_scale(evidence, breach)}."
+    )
+    hidden = verdict.beneath
+    if hidden is None or hidden.breach is None:
+        return Verdict(True, (f"{forgiven} {basis}",), breach)
+    relative = describe_scale(evidence, hidden.breach)
+    if hidden.breach.seconds / evidence.scale > hidden.breach.limit:
+        unexplained = (
+            f"Runner variance does not account for the breach: {relative}. It accounts only for the ceiling breach, "
+            f"which is forgiven: {breach.words}, and {describe_scale(evidence, breach)}."
+        )
+        return hidden.with_reason(f"{unexplained} {basis}{offenders}")
+    both = f"{forgiven} The relative breach is forgiven with it: {hidden.breach.words}, and {relative}. {basis}"
+    return Verdict(True, (both,), breach)
+
+
 def rejudge(verdict: Verdict, current: dict[str, float], baselines: Sequence[dict[str, float]]) -> Verdict:
     """Judge a breached limit again with the per-test times; a verdict without a breach is returned unchanged.
 
@@ -368,6 +410,10 @@ def rejudge(verdict: Verdict, current: dict[str, float], baselines: Sequence[dic
     - Spread slowdown that the suite-wide scale does not account for: the verdict stands, and its line says so.
     - Spread slowdown that the suite-wide scale accounts for: runner variance. The verdict passes with one warning that
       states the breach and the evidence.
+
+    A ceiling verdict with a relative breach beneath it is forgiven only when the scale accounts for both. When it
+    accounts for the ceiling alone, the relative verdict is returned, failed or accepted by the label as it was, and
+    its line says that the ceiling breach is forgiven and the relative one is not.
     """
     breach = verdict.breach
     if breach is None:
@@ -385,9 +431,4 @@ def rejudge(verdict: Verdict, current: dict[str, float], baselines: Sequence[dic
     if breach.seconds / evidence.scale > breach.limit:
         unexplained = f"Runner variance does not account for the breach: {describe_scale(evidence, breach)}."
         return verdict.with_reason(f"{unexplained} {basis}{offenders}")
-    forgiven = (
-        f"::warning::Runner variance: {breach.words}. The breach is forgiven and the gate passes, because the "
-        "slowdown is spread across the suite and not concentrated in specific tests: "
-        f"{describe_scale(evidence, breach)}. {basis}"
-    )
-    return Verdict(True, (forgiven,), breach)
+    return forgive(verdict, breach, evidence, basis, offenders)

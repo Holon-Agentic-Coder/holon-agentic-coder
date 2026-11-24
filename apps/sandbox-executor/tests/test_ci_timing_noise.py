@@ -275,6 +275,61 @@ def test_renamed_tests_attribute_nothing_and_are_not_named() -> None:
     assert "new test time" not in describe_evidence(evidence)
 
 
+def test_rename_with_a_net_of_a_few_seconds_names_no_renamed_test() -> None:
+    """Thirty renamed tests of 5.6 to 30 s net to 3.8 s, under the report minimum: none of them is an offender."""
+    current = renamed(slowed(suite(), 1.4))
+    current["tests.moved::test_0"] += 3.8
+    evidence = gather_evidence(current, [suite()] * 5)
+    assert evidence is not None
+    assert evidence.new_seconds == pytest.approx(3.8)
+    assert evidence.attributed == pytest.approx(3.8)
+    assert evidence.offenders == ()
+    assert not evidence.concentrated
+    assert "0 offenders, 3.8 s of new test time net of removed tests, " in describe_evidence(evidence)
+
+
+def test_rename_with_jitter_names_the_slowed_tests_and_not_the_renamed_ones() -> None:
+    """Six tests 12 s slower hold 72 s of the 73 s excess; the renamed module's 1 s of jitter names nobody."""
+    current = renamed(suite())
+    current["tests.moved::test_29"] += 1.0
+    grown = [f"tests.quick::test_{index}" for index in range(6)]
+    for test_id in grown:
+        current[test_id] += 12.0
+    evidence = gather_evidence(current, [suite()] * 5)
+    assert evidence is not None
+    assert evidence.new_seconds == pytest.approx(1.0)
+    assert evidence.excess == pytest.approx(73.0)
+    assert evidence.attributed == pytest.approx(73.0)
+    assert sorted(row.test_id for row in evidence.offenders) == grown
+    assert not any(row.is_new for row in evidence.offenders)
+    assert evidence.concentrated
+
+
+def test_new_tests_are_named_only_to_the_extent_of_the_net_new_time() -> None:
+    """A renamed module whose thirty tests each grew by 1 s nets to 30 s: the two largest tests take all of it."""
+    current = {test_id: seconds + 1.0 for test_id, seconds in renamed(suite()).items() if "moved" in test_id}
+    current.update({test_id: seconds for test_id, seconds in suite().items() if "slow" not in test_id})
+    evidence = gather_evidence(current, [suite()] * 5)
+    assert evidence is not None
+    assert evidence.new_seconds == pytest.approx(30.0)
+    assert evidence.attributed == pytest.approx(30.0)
+    assert evidence.offenders == (
+        Offender("tests.moved::test_29", 0.0, pytest.approx(22.4), is_new=True),
+        Offender("tests.moved::test_28", 0.0, pytest.approx(21.8), is_new=True),
+    )
+
+
+def test_new_test_ranks_by_its_part_of_the_net_new_time_beside_slowed_tests() -> None:
+    """A new test of 60 s that replaces one of 21.4 s explains 38.6 s, less than a test slowed by 45 s."""
+    current = {test_id: seconds for test_id, seconds in suite().items() if test_id != "tests.slow::test_29"}
+    current["tests.added::test_slow"] = 60.0
+    current["tests.quick::test_0"] = 45.1
+    evidence = gather_evidence(current, [suite()] * 5)
+    assert evidence is not None
+    assert [row.test_id for row in evidence.offenders] == ["tests.quick::test_0", "tests.added::test_slow"]
+    assert evidence.attributed == pytest.approx(45.0 + 38.6)
+
+
 def test_net_new_seconds_subtracts_the_scaled_vanished_tests_and_never_goes_negative() -> None:
     medians = {"tests.m::kept": 5.0, "tests.m::gone": 20.0}
     assert net_new_seconds({"tests.m::kept": 9.0, "tests.m::added": 50.0}, medians) == 30.0
@@ -518,6 +573,57 @@ def test_rejudge_forgives_only_when_the_rescaled_value_is_back_inside_the_limit(
     verdict = rejudge(Verdict(False, (PLAIN,), breach), slowed(suite(), 1.6), [suite()] * 5)
     assert verdict.passed is forgiven
     assert verdict.lines[0].startswith("::warning::Runner variance: " if forgiven else f"{PLAIN} Runner variance does")
+
+
+CEILING = Breach("suite test time was 625 s, above the 600 s ceiling", 625.0, 600.0)
+CEILING_LINE = "::error::Suite test time was 625 s, above the 600 s ceiling."
+HIDDEN_WORDS = "suite test time was 625 s against a baseline median of 220 s over 5 main runs"
+
+
+def test_rejudge_forgives_a_ceiling_breach_with_a_relative_breach_beneath_only_when_the_scale_explains_both() -> None:
+    """625 s at a scale of 1.25 is 500 s: inside the 600 s ceiling and inside a relative limit of 500 s."""
+    inside = Verdict(False, (f"::error::Timing regression: {HIDDEN_WORDS}.",), Breach(HIDDEN_WORDS, 625.0, 500.0))
+    verdict = rejudge(Verdict(False, (CEILING_LINE,), CEILING, inside), slowed(suite(), 1.25), [suite()] * 5)
+    assert verdict.passed
+    assert verdict.breach == CEILING
+    assert verdict.lines[0].startswith(f"::warning::Runner variance: {CEILING.words}. The breach is forgiven ")
+    assert (
+        "inside its limit of 600.0 s. The relative breach is forgiven with it: "
+        f"{HIDDEN_WORDS}, and divided by the suite-wide scale of 1.25 the judged value is 500.0 s, inside its limit of "
+        f"500.0 s. {BASIS}median per-test ratio 1.25 over 55 comparable tests, " in verdict.lines[0]
+    )
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+def test_rejudge_returns_the_relative_verdict_beneath_a_ceiling_breach_that_alone_is_forgiven(accepted: bool) -> None:
+    """The label decides the relative verdict and the scale does not change it: 500 s is above the limit of 340 s."""
+    relative = Breach(HIDDEN_WORDS, 625.0, 340.0)
+    beneath = Verdict(accepted, (PLAIN,), relative)
+    verdict = rejudge(Verdict(False, (CEILING_LINE,), CEILING, beneath), slowed(suite(), 1.25), [suite()] * 5)
+    assert verdict == Verdict(
+        accepted,
+        (
+            f"{PLAIN} Runner variance does not account for the breach: divided by the suite-wide scale of 1.25 the "
+            "judged value is 500.0 s, still above its limit of 340.0 s. It accounts only for the ceiling breach, which "
+            f"is forgiven: {CEILING.words}, and divided by the suite-wide scale of 1.25 the judged value is 500.0 s, "
+            f"inside its limit of 600.0 s. {BASIS}median per-test ratio 1.25 over 55 comparable tests, 0 offenders, "
+            "offender share 0.0% of the 103.4 s per-test excess (concentrated from 50%).",
+        ),
+        relative,
+    )
+
+
+def test_rejudge_keeps_a_ceiling_breach_that_the_scale_does_not_account_for_whatever_lies_beneath() -> None:
+    beneath = Verdict(True, (PLAIN,), Breach(HIDDEN_WORDS, 625.0, 340.0))
+    failed = Verdict(False, (CEILING_LINE,), CEILING, beneath)
+    verdict = rejudge(failed, slowed(suite(), 1.02), [suite()] * 5)
+    assert not verdict.passed
+    assert verdict.breach == CEILING
+    assert verdict.lines[0].startswith(
+        f"{CEILING_LINE} Runner variance does not account for the breach: divided by the suite-wide scale of 1.02 the "
+        f"judged value is 612.7 s, still above its limit of 600.0 s. {BASIS}"
+    )
+    assert "ceiling breach, which is forgiven" not in verdict.lines[0]
 
 
 def test_rejudge_never_scales_a_faster_suite_up() -> None:

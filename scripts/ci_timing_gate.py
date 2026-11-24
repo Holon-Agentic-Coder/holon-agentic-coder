@@ -28,7 +28,9 @@ In ``compare`` mode a breached limit of a test job is judged again with the per-
 the median per-test ratio accounts for it, that is the judged value divided by that ratio is back inside the limit:
 the job then passes with a warning that prints the evidence, also above the ceiling. A slowdown concentrated in
 specific tests fails and names them with their times before and after. A slowdown the ratio does not account for, or
-one without enough per-test data, leaves the breach standing and the line says why.
+one without enough per-test data, leaves the breach standing and the line says why. A value above the ceiling is held
+to the relative check as well: when the ratio accounts for the ceiling breach only, the relative verdict is the outcome,
+a failure that the label can accept.
 
 Defaults (N = 5, tolerance 50 %, minimum delta 120 s, ceiling 600 s) were calibrated against real ``main`` runs; the
 workflows spell every threshold out as a flag, so any change is a committed edit to a workflow file.
@@ -208,24 +210,28 @@ def evaluate(
     ``duration`` and ``baselines`` are job wall clock, and so is the ceiling value, unless ``judged`` says otherwise.
     The ceiling is held against no baseline record, so its line never carries the wall-clock fallback note. A relative
     breach records the value above which the check fails: the larger of its two thresholds over the median.
+
+    A ceiling breach decides the verdict whatever the relative check says. When the relative check is breached too,
+    its verdict is kept beneath the ceiling one, so that forgiving the ceiling as runner variance leaves it standing.
     """
     judged = judged or Judged(duration)
     ceiling = check_ceiling(judged.ceiling_seconds, thresholds, judged.ceiling_kind)
-    if ceiling is not None:
-        return ceiling
     if len(baselines) < thresholds.runs:
         took = noise.took(judged.ceiling_seconds, judged.ceiling_kind)
-        return Verdict(True, (noise.cold_start_notice(len(baselines), thresholds.runs, thresholds.ceiling, took),))
+        notice = noise.cold_start_notice(len(baselines), thresholds.runs, thresholds.ceiling, took)
+        return ceiling or Verdict(True, (notice,))
     median = float(statistics.median(baselines[: thresholds.runs]))
     took = noise.took(duration, judged.relative_kind)
     limits = noise.against_baseline(took, median, thresholds.runs, thresholds.tolerance, thresholds.min_delta)
     limits += judged.note
     if not exceeds_relative(duration, median, thresholds):
-        return Verdict(True, (f"Timing gate passed: {limits}.",))
+        return ceiling or Verdict(True, (f"Timing gate passed: {limits}.",))
     breach = Breach(limits, duration, max(median * (1 + thresholds.tolerance), median + thresholds.min_delta))
-    if override:
-        return Verdict(True, (noise.accepted_warning(limits, OVERRIDE_LABEL),), breach)
-    return Verdict(False, (noise.regression_error(limits, OVERRIDE_LABEL),), breach)
+    words = noise.accepted_warning if override else noise.regression_error
+    relative = Verdict(override, (words(limits, OVERRIDE_LABEL),), breach)
+    if ceiling is None:
+        return relative
+    return Verdict(False, ceiling.lines, ceiling.breach, relative)
 
 
 def build_request(url: str, token: str) -> urllib.request.Request:

@@ -397,7 +397,12 @@ def test_review_loop_template_states_each_operating_rule(rule: str) -> None:
 
 def test_conflict_resolver_template_carries_the_shared_rules_and_forbids_git_writes() -> None:
     text = normalised(CONFLICT_RESOLVER_PROMPT)
-    phrases = (*TEST_RUN_RULE_PHRASES, *CODE_PLACEMENT_RULE_PHRASES, "edit only the files listed above")
+    phrases = (
+        *TEST_RUN_RULE_PHRASES,
+        *CODE_PLACEMENT_RULE_PHRASES,
+        "edit the conflicted files listed above",
+        "edit existing test files outside the list",
+    )
     assert [phrase for phrase in phrases if phrase not in text] == []
     for command in ("git add", "git commit", "git merge", "git checkout", "git reset", "git stash"):
         assert f"`{command}`" in text

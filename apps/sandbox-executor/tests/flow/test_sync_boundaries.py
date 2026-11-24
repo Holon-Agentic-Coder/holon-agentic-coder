@@ -329,6 +329,49 @@ def test_make_turn_boundary_hook_merges_conflict_and_returns_notice(tmp_path: Pa
     assert hook(2) is None
 
 
+def test_make_turn_boundary_hook_raises_on_blocked_sync_and_skips_in_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sandbox_executor.flow.target_sync_hooks import TurnBoundarySyncError, make_turn_boundary_hook
+
+    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
+    commit_on(work, "main", {APP: "y = 2\n"}, "target code")
+    commit_on(work, FLOW_BRANCH, {APP: "x = 1\n"}, "flow code")
+    dispatcher = FakeResolverDispatcher([(None, "cannot_decide"), (None, "cannot_decide"), (None, "cannot_decide")])
+    ctx = _context_for(work, FlowStage.PLAN, dispatcher=dispatcher)
+    hook = make_turn_boundary_hook(str(work), FLOW_BRANCH, "main", FlowStage.PLAN, context=ctx)
+
+    monkeypatch.setattr("sandbox_executor.flow.target_sync_hooks.workspace_mounted", lambda: True)
+    assert hook(1) is None
+    assert dispatcher.calls == []
+
+    monkeypatch.setattr("sandbox_executor.flow.target_sync_hooks.workspace_mounted", lambda: False)
+    with pytest.raises(TurnBoundarySyncError) as exc_info:
+        hook(1)
+    assert exc_info.value.failure.status == StageStatus.FAILED
+    assert exc_info.value.failure.payload["conflicted_paths"] == [APP]
+
+
+def test_checkout_active_branch_preserves_unpushed_local_commits(tmp_path: Path) -> None:
+    from sandbox_executor.flow.target_sync_hooks import _checkout_active_branch
+
+    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n"})
+    _git(work, "checkout", "-q", FLOW_BRANCH)
+    (work / "local_only.txt").write_text("unpushed\n", encoding="utf-8")
+    _git(work, "add", "local_only.txt")
+    _git(work, "commit", "-q", "-m", "local blocked row commit")
+    local_sha = _git(work, "rev-parse", f"refs/heads/{FLOW_BRANCH}")
+    _git(work, "checkout", "-q", "main")
+
+    ctx = _context_for(work, FlowStage.PLAN)
+    prev, detached, err = _checkout_active_branch(ctx, FLOW_BRANCH)
+
+    assert err is None and prev == "main" and not detached
+    assert _git(work, "rev-parse", "HEAD") == local_sha
+    assert _git(work, "rev-parse", f"refs/heads/{FLOW_BRANCH}") == local_sha
+    assert (work / "local_only.txt").exists()
+
+
 def test_child_turn_boundary_syncs_plan_branch_and_propagates_notice(tmp_path: Path) -> None:
     from sandbox_executor.flow.stages.children import _child_context, _sync_sub_intent_plan_branch
 

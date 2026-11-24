@@ -24,8 +24,6 @@ from sandbox_executor.budgets import (
 from sandbox_executor.decomposition_rule import should_decompose
 from sandbox_executor.entrypoint.execution_workspace import start_branch_from_host_fetch
 from sandbox_executor.entrypoint.taken_ids import taken_plan_ids
-from sandbox_executor.flow.context import FlowStage
-from sandbox_executor.flow.target_sync_hooks import make_turn_boundary_hook
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
@@ -506,9 +504,6 @@ Include metrics in this format:
                 cwd=repo_dir,
                 stdin_file=prompt_file if getattr(runner, "uses_stdin", False) else None,
                 prompt_file=prompt_file,
-                on_turn_boundary=make_turn_boundary_hook(
-                    repo_dir, plan_branch, str(intent_data.get("target_branch") or "main"), FlowStage.PLAN
-                ),
             )
         except Exception as e:
             agent_error = f"Exception running agent: {e}"

@@ -69,6 +69,55 @@ def test_a_timestamp_only_kb_entry_keeps_the_target_copy(tmp_path: Path):
     assert (work / KB).read_text(encoding="utf-8") == _kb("t", "3")
 
 
+@pytest.mark.parametrize(
+    ("rel", "payload"),
+    [
+        (
+            "holon-knowledge/kb/patterns/KB-pattern-1234.json",
+            lambda ts: json.dumps(
+                {
+                    "kb_id": "KB-pattern-1234",
+                    "kb_type": "pattern",
+                    "version": "1.0",
+                    "created_ts": ts,
+                    "updated_ts": ts,
+                    "status": "active",
+                    "payload": {"name": "Proven approach"},
+                },
+                indent=2,
+            ),
+        ),
+        (
+            "holon-knowledge/wisdom/heuristics/WB-heuristic-1234.json",
+            lambda ts: json.dumps(
+                {
+                    "wb_id": "WB-heuristic-1234",
+                    "wb_type": "heuristic",
+                    "version": "1.0",
+                    "created_ts": ts,
+                    "scope": "global",
+                    "status": "active",
+                    "payload": {"name": "Universal heuristic"},
+                },
+                indent=2,
+            ),
+        ),
+    ],
+    ids=["kb_pattern_created_updated_ts", "wisdom_heuristic_created_ts"],
+)
+def test_real_kb_and_wisdom_ts_only_conflicts_keep_the_target_copy(tmp_path: Path, rel, payload):
+    base = payload("2026-11-06T08:50:16+00:00")
+    ours = payload("2026-11-07T09:00:00+00:00")
+    theirs = payload("2026-11-08T10:00:00+00:00")
+    work, paths = _conflicted(tmp_path, {rel: base}, {rel: ours}, {rel: theirs})
+
+    classified, outcome = _classify_and_resolve(work, paths)
+
+    assert classified == [(rel, ConflictClass.KB_TIMESTAMP_ONLY)]
+    assert outcome.code_paths == []
+    assert (work / rel).read_text(encoding="utf-8") == theirs
+
+
 def test_a_kb_entry_with_a_different_title_is_code(tmp_path: Path):
     work, paths = _conflicted(tmp_path, {KB: _kb("t", "1")}, {KB: _kb("flow", "2")}, {KB: _kb("main", "3")})
 

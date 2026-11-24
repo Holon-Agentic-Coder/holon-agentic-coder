@@ -149,13 +149,13 @@ class _ConflictCodeResolver:
             detail = "; ".join(part for part in (f"tampered: {check.reason}", restore_error) if part)
             return CodeResolution(False, attempt.tier, attempt.number, _bounded(detail)), False
         if verdict["verdict"] == "resolved" and check.ok:
-            error = stage_resolution(attempt.worktree, attempt.paths)
+            error = stage_resolution(attempt.worktree, attempt.paths, check.test_edits)
             if error:
                 return CodeResolution(False, attempt.tier, attempt.number, _bounded(f"staging failed: {error}")), False
             return CodeResolution(True, attempt.tier, attempt.number, "passed"), False
         detail = _describe(verdict, f"rejected edits: {check.reason}" if not check.ok else "")
         label = f"{attempt.probe.target_sha[:12]}-attempt-{attempt.number}-{attempt.tier}"
-        save_attempt_diff(attempt.worktree, attempt.paths, label)
+        save_attempt_diff(attempt.worktree, [*attempt.paths, *check.test_edits], label)
         reset_error = reset_attempt(attempt.worktree, attempt.paths, check)
         self.context.log(f"Conflict resolver tier {attempt.tier} failed: {_bounded(detail)}")
         if reset_error:

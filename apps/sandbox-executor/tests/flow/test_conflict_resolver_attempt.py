@@ -51,16 +51,35 @@ def test_in_set_resolution_passes_and_stages(work):
     assert unmerged_paths(str(work)) == []
 
 
-@pytest.mark.parametrize("rel", ["other.py", "tests/test_other.py"])
-def test_edit_outside_the_set_is_out_of_set_and_reverted(work, rel):
+def test_edit_outside_the_set_is_out_of_set_and_reverted(work):
     before = snapshot_merge(str(work))
     _resolve(work)
-    (work / rel).write_text("changed\n", encoding="utf-8")
+    (work / "other.py").write_text("changed\n", encoding="utf-8")
     check = check_attempt(str(work), ["app.py"], before)
-    assert not check.ok and not check.tampered and check.out_of_set == (rel,)
+    assert not check.ok and not check.tampered and check.out_of_set == ("other.py",)
     assert reset_attempt(str(work), ["app.py"], check) == ""
-    assert (work / rel).read_text(encoding="utf-8") == BASE[rel]
+    assert (work / "other.py").read_text(encoding="utf-8") == BASE["other.py"]
     assert "<<<<<<< " in (work / "app.py").read_text(encoding="utf-8")
+
+
+def test_existing_test_edit_outside_the_set_is_allowed_staged_and_reverted_on_reset(work):
+    before = snapshot_merge(str(work))
+    _resolve(work)
+    (work / "tests/test_other.py").write_text("x = 1\n", encoding="utf-8")
+    check = check_attempt(str(work), ["app.py"], before)
+    assert check.ok and check.out_of_set == () and check.test_edits == ("tests/test_other.py",)
+    assert reset_attempt(str(work), ["app.py"], check) == ""
+    assert (work / "tests/test_other.py").read_text(encoding="utf-8") == BASE["tests/test_other.py"]
+    assert "<<<<<<< " in (work / "app.py").read_text(encoding="utf-8")
+
+    # On a passing attempt, both the conflict path and the edited test file are staged cleanly.
+    _resolve(work)
+    (work / "tests/test_other.py").write_text("x = 2\n", encoding="utf-8")
+    check2 = check_attempt(str(work), ["app.py"], before)
+    assert check2.ok and check2.test_edits == ("tests/test_other.py",)
+    assert stage_resolution(str(work), ["app.py"], check2.test_edits) == ""
+    assert unmerged_paths(str(work)) == []
+    assert "tests/test_other.py" in _git(work, "diff", "--cached", "--name-only").splitlines()
 
 
 def test_new_untracked_file_is_removed_and_older_ones_are_kept(work):

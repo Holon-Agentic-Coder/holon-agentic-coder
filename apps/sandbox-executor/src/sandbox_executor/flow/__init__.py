@@ -135,6 +135,7 @@ __all__ = [
     "TargetProbe",
     "TargetProbeError",
     "TokenScopeReport",
+    "TurnBoundarySyncError",
     "WarningSeams",
     "WithdrawalSeams",
     "WorktreeCheckpoint",

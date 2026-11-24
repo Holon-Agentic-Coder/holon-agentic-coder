@@ -102,21 +102,20 @@ def sync_review_head(
         return SyncResult("blocked", "", "", "", error=checkout_err)
     try:
         probe = probe_target(worktree, target_branch, getattr(context, _hooks._PROBE_ATTR, None))
-        will_merge = probe.moved and (boundary is not SyncBoundary.TURN or bool(probe.conflicted_paths))
-        if will_merge and _commit_pending_ledger_rows(context, context.review_iterations_done, "before target sync"):
-            probe = None
-        request = SyncRequest(
-            worktree=worktree,
-            branch=branch,
-            target_branch=target_branch,
-            stage=stage.value,
-            boundary=boundary,
-            ledger_path=os.path.join(worktree, _hooks._LEDGER_REL),
-            execution_id=_hooks._execution_id_of(branch, stage, boundary),
-            last_probe=probe,
-            code_resolver=conflict_code_resolver(context),
-        )
-        result = sync_with_target(request)
+        if not probe.moved:
+            result = SyncResult("unchanged", probe.head_sha, probe.head_sha, probe.target_sha, probe=probe)
+        elif boundary is SyncBoundary.TURN and not probe.conflicted_paths:
+            result = SyncResult("deferred", probe.head_sha, probe.head_sha, probe.target_sha, probe=probe)
+        else:
+            if _commit_pending_ledger_rows(context, context.review_iterations_done, "before target sync"):
+                probe = None
+            ledger, exec_id = (
+                os.path.join(worktree, _hooks._LEDGER_REL),
+                _hooks._execution_id_of(branch, stage, boundary),
+            )
+            resolver = conflict_code_resolver(context)
+            req = SyncRequest(worktree, branch, target_branch, stage.value, boundary, ledger, exec_id, probe, resolver)
+            result = sync_with_target(req, probe=probe)
     except TargetProbeError as exc:
         return SyncResult("blocked", "", "", "", error=str(exc))
     finally:

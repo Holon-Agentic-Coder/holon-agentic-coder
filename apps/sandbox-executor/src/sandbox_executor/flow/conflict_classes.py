@@ -17,7 +17,7 @@ from sandbox_executor.flow.conflict_classes_lists import appended_list_union
 from sandbox_executor.flow.conflict_classes_tokens import python_lines
 from sandbox_executor.git import run_git
 
-TIMESTAMP_KEYS = frozenset({"created_at", "updated_at", "last_seen", "timestamp"})
+TIMESTAMP_KEYS = frozenset({"created_at", "updated_at", "created_ts", "updated_ts", "last_seen", "timestamp"})
 KNOWLEDGE_JSON_ROOTS = ("holon-knowledge/kb/", "holon-knowledge/wisdom/")
 _IMPORT_LINE = re.compile(r"^(?:import|from)\s")
 

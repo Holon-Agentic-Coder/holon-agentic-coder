@@ -6,19 +6,33 @@ import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from sandbox_executor.entrypoint.execution_workspace import workspace_mounted
 from sandbox_executor.flow.base_files import base_branch_name
 from sandbox_executor.flow.conflict_resolver_role import conflict_code_resolver
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
-from sandbox_executor.flow.git_refs import _resolve_branch_ref, _track_local_branch
+from sandbox_executor.flow.git_refs import _track_local_branch
 from sandbox_executor.flow.target_probe import TargetProbeError
 from sandbox_executor.flow.target_sync import _preflight_sync, sync_with_target
+from sandbox_executor.flow.target_sync_branch import (
+    _best_branch_ref,
+    _can_sync_worktree,
+    _checkout_active_branch,
+    _restore_checked_out_branch,
+)
 from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest, SyncResult
-from sandbox_executor.git import run_git
 
 _PROBE_ATTR = "_last_target_probe"
 _NOTICE_ATTR = "_pending_target_merge_notice"
 _LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
+
+
+class TurnBoundarySyncError(RuntimeError):
+    """Raised by :func:`make_turn_boundary_hook` when a host-side turn-boundary sync is blocked."""
+
+    def __init__(self, failure: StageResult) -> None:
+        self.failure = failure
+        super().__init__(failure.error or "turn-boundary target sync blocked")
 
 
 def format_target_merge_notice(target_sha: str, changed_paths: tuple[str, ...] | list[str]) -> str:
@@ -35,11 +49,6 @@ def consume_target_merge_notice(context: FlowContext | None = None) -> str:
     if context is not None:
         setattr(context, _NOTICE_ATTR, "")
     return notice
-
-
-def _checked_out_branch(worktree: str) -> str:
-    res = run_git(["symbolic-ref", "-q", "--short", "HEAD"], cwd=worktree, check=False)
-    return (res.stdout or "").strip() if res.returncode == 0 and isinstance(res.stdout, str) else ""
 
 
 def active_flow_branch(context: FlowContext, stage: FlowStage) -> str:
@@ -60,38 +69,6 @@ def _execution_id_of(branch: str, stage: FlowStage, boundary: SyncBoundary) -> s
         if found := next((part for part in reversed(segments) if part.startswith(prefix)), ""):
             return found
     return segments[-1] if segments else f"SYNC-{stage.value}-{boundary.value}"
-
-
-def _can_sync_worktree(worktree: str, target_branch: str) -> bool:
-    """True when ``worktree`` is a git repository with a resolvable ``origin/<target_branch>`` ref."""
-    cmd = ["rev-parse", "--verify", "--quiet", f"origin/{target_branch}^{{commit}}"]
-    res = run_git(cmd, cwd=worktree, check=False) if worktree and os.path.isdir(worktree) else None
-    return bool(res and res.returncode == 0 and isinstance(res.stdout, str) and res.stdout.strip())
-
-
-def _checkout_active_branch(context: FlowContext, branch: str, ref: str | None = None) -> tuple[str, bool, str | None]:
-    """Check out ``branch`` at its latest ref in ``context.target_worktree``; return ``(prev, detached, error)``."""
-    worktree = context.target_worktree
-    ref = ref or _resolve_branch_ref(worktree, branch, prefer_remote=True)
-    if ref is None:
-        return "", False, None
-    current = _checked_out_branch(worktree)
-    if current == branch and ref == f"refs/heads/{branch}":
-        return current, False, None
-    detached = not current
-    prev = current or (run_git(["rev-parse", "HEAD"], cwd=worktree, check=False).stdout or "").strip()
-    res = run_git(["checkout", "-q", "-B", branch, ref], cwd=worktree, check=False)
-    if res.returncode != 0:
-        detail = (res.stderr or "").strip() if isinstance(res.stderr, str) else ""
-        return prev, detached, detail or f"could not check out '{branch}' from '{ref}'"
-    return prev, detached, None
-
-
-def _restore_checked_out_branch(worktree: str, prev: str, detached: bool, active_branch: str) -> None:
-    """Return ``worktree`` to ``prev`` if the sync checked out ``active_branch`` from another ref."""
-    if prev and prev != active_branch:
-        args = ["checkout", "-q", "--detach", prev] if detached else ["checkout", "-q", prev]
-        run_git(args, cwd=worktree, check=False)
 
 
 def _blocked_stage_failure(
@@ -134,7 +111,7 @@ def _run_boundary_sync(
     branch = active_flow_branch(context, stage)
     if context.dry_run or not branch or not _can_sync_worktree(worktree, target_branch):
         return SyncResult("unchanged", "", "", ""), None
-    if (branch_ref := _resolve_branch_ref(worktree, branch, prefer_remote=True)) is None:
+    if (branch_ref := _best_branch_ref(worktree, branch)) is None:
         return SyncResult("unchanged", "", "", ""), None
     last = getattr(context, _PROBE_ATTR, None)
     try:
@@ -180,10 +157,10 @@ def at_turn_boundary(context: FlowContext, stage: FlowStage, turn_index: int = 0
 
 
 def make_turn_boundary_hook(
-    worktree: str, branch: str, target_branch: str, stage: FlowStage
+    worktree: str, branch: str, target_branch: str, stage: FlowStage, *, context: FlowContext | None = None
 ) -> Callable[[int], str | None]:
-    """Build the ``on_turn_boundary`` callback for :func:`supervise_authoring_turn` in ``stage``."""
-    ctx = FlowContext(
+    """Build a host-side ``on_turn_boundary`` callback; no-ops inside a mounted container and raises if blocked."""
+    ctx = context or FlowContext(
         target_worktree=worktree,
         intent_data={"target_branch": target_branch},
         plan_branch=branch if stage == FlowStage.PLAN else None,
@@ -192,7 +169,10 @@ def make_turn_boundary_hook(
     )
 
     def _on_turn(turn_index: int) -> str | None:
-        at_turn_boundary(ctx, stage, turn_index)
+        if workspace_mounted():
+            return None
+        if failure := at_turn_boundary(ctx, stage, turn_index):
+            raise TurnBoundarySyncError(failure)
         return consume_target_merge_notice(ctx) or None
 
     return _on_turn

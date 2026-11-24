@@ -11,6 +11,9 @@ one block of a case and replays its text and exit code for the second one. The s
 without that replay and compares everything the three real reports of each block do (the direct one and those of the
 two doctor runs): the text, the exit code, the log lines, the gateway probes and any other output. If production
 makes the report depend on how often it ran or on who called it, it fails, and that replay must be removed.
+
+A worker that ran ``cli.main`` earlier still has the CLI's log handler, which repeats every log line on stderr. The
+tests of the environment report therefore run in both states (``cli_log_handler``), whatever ran before them.
 """
 
 import argparse
@@ -45,6 +48,17 @@ def empty_environment(monkeypatch):
     monkeypatch.setattr(socket, "create_connection", _refuse)
     for name in list(os.environ):
         monkeypatch.delenv(name)
+
+
+@pytest.fixture(params=[False, True], ids=["no-cli-log-handler", "cli-log-handler"])
+def cli_log_handler(request, monkeypatch) -> bool:
+    """Both states ``cli.configure_cli_logging`` of an earlier test can leave: without and with its stderr handler."""
+    package_logger = logging.getLogger(cli.PACKAGE_LOGGER_NAME)
+    handlers = [handler for handler in package_logger.handlers if not isinstance(handler, cli._CurrentStderrHandler)]
+    if request.param:
+        handlers.append(cli._CurrentStderrHandler())
+    monkeypatch.setattr(package_logger, "handlers", handlers)
+    return request.param
 
 
 def _sampled_values() -> list[tuple[str, str]]:
@@ -244,10 +258,12 @@ def _recorded_environment_reports(monkeypatch) -> list[tuple[tuple, tuple]]:
     return reports
 
 
-def test_environment_report_is_identical_in_the_three_calls_of_every_doctor_block(monkeypatch, empty_environment):
+def test_environment_report_is_identical_in_the_three_calls_of_every_doctor_block(
+    monkeypatch, empty_environment, cli_log_handler
+):
     reports = _recorded_environment_reports(monkeypatch)
     differing: list[str] = []
-    probing_blocks = logging_blocks = 0
+    probing_blocks = logging_blocks = stderr_blocks = 0
     for case_id, value in _sampled_values():
         reports.clear()
         redaction_matrix._doctor(value)
@@ -266,25 +282,44 @@ def test_environment_report_is_identical_in_the_three_calls_of_every_doctor_bloc
                 differing.append(f"{case_id} host_absent={host_absent} fetcher={fetcher}")
             probing_blocks += bool(first[4])
             logging_blocks += bool(first[3])
+            stderr_blocks += bool(first[2][1])
 
     assert not differing, (
         f"the environment report differs between the three calls of one doctor block, so it must not be replayed: "
         f"{differing} {seeded_secrets.seed_note()}"
     )
     assert probing_blocks and logging_blocks, "the sample must reach the gateway probe and a logged line"
+    assert bool(stderr_blocks) == cli_log_handler, "log lines reach stderr exactly when the CLI's handler is there"
 
 
-def test_environment_replay_changes_only_how_often_the_matrix_sees_a_text(monkeypatch, empty_environment):
+def _differs_in_more_than_repetition(replayed: list[str], every_report_real: list[str]) -> bool:
+    """Whether the two runs of one case show different texts, or the replayed one does not show fewer of them.
+
+    A text that only one run shows is allowed if each of its lines is a text both runs show: that is stderr under the
+    CLI's log handler, which holds every logged line once per report that ran.
+    """
+    in_both = set(replayed) & set(every_report_real)
+    in_one_only = set(replayed) ^ set(every_report_real)
+    same_lines = all(line in in_both for text in in_one_only for line in text.splitlines())
+    return not same_lines or len(replayed) >= len(every_report_real)
+
+
+def test_environment_replay_changes_only_how_often_the_matrix_sees_a_text(
+    monkeypatch, empty_environment, cli_log_handler
+):
     differing: list[str] = []
+    stderr_repetitions = 0
     for case_id, value in _sampled_values():
         with monkeypatch.context() as without_replay:
             without_replay.setattr(redaction_matrix, "replayed_environment_report", contextlib.nullcontext)
             every_report_real = redaction_matrix._doctor(value)
         replayed = redaction_matrix._doctor(value)
-        if set(replayed) != set(every_report_real) or len(replayed) >= len(every_report_real):
+        if _differs_in_more_than_repetition(replayed, every_report_real):
             differing.append(case_id)
+        stderr_repetitions += set(replayed) != set(every_report_real)
 
     assert not differing, f"{differing} {seeded_secrets.seed_note()}"
+    assert bool(stderr_repetitions) == cli_log_handler, "without the CLI's handler both runs show the same set of texts"
 
 
 def test_matrix_doctor_runs_the_environment_report_twice_per_block(monkeypatch, empty_environment):

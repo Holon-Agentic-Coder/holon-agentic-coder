@@ -135,7 +135,7 @@ def isolated_claude_secrets_file(tmp_path_factory, monkeypatch):
     Points HOME at an empty temporary directory and makes the secrets path follow the test's own HOME when it sets one
     (and this directory when it clears the environment, where `~` would otherwise fall back to the passwd home).
     """
-    from sandbox_executor import claude_credential
+    from sandbox_executor import claude_credential, claude_token_migration
 
     fake_home = str(tmp_path_factory.mktemp("claude-home"))
     monkeypatch.setenv("HOME", fake_home)
@@ -144,6 +144,7 @@ def isolated_claude_secrets_file(tmp_path_factory, monkeypatch):
         return os.path.join(os.environ.get("HOME") or fake_home, ".holon", "secrets", "claude-oauth-token")
 
     monkeypatch.setattr(claude_credential, "secrets_file_path", secrets_file_path)
+    monkeypatch.setattr(claude_token_migration, "legacy_token_file_path", secrets_file_path)
 
 
 @pytest.fixture(autouse=True)

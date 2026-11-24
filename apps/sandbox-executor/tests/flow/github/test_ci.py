@@ -14,13 +14,14 @@ from sandbox_executor.flow import (
     FlowStage,
     StageResult,
     StageStatus,
+    probe_ci_checks,
     resolve_ci_registration_timeout,
     run_review_loop,
     run_review_stage,
 )
 
+from tests.flow.github.fake_github import FakeGitHub, checks_for, merge_view, spawn_failure
 from tests.flow.helpers import _verified_diff
-from tests.flow.lookup_patch import patch_lookup_sites
 from tests.flow.sleep_patch import scoped_sleep_patch
 
 
@@ -72,46 +73,47 @@ class TestUnmeasuredTestsStopEarly:
     def _loop(
         self,
         ctx: FlowContext,
-        probe_side_effect: Any,
+        statuses: list[dict[str, Any]] | dict[str, Any],
         *,
         gh: str | None = "/usr/bin/gh",
         **kwargs: Any,
-    ) -> tuple[dict[str, Any], MagicMock, MagicMock]:
-        probe = MagicMock(side_effect=probe_side_effect)
+    ) -> tuple[dict[str, Any], FakeGitHub, MagicMock]:
+        """Run the loop over a ``FakeGitHub`` answering each CI probe with the next of ``statuses``.
+
+        ``statuses`` is a list of CI status dicts (the last one repeating) or one dict for every probe; ``gh=None`` is
+        a fake without ``gh`` or PR head (``gh_available=True`` keeps the fake's ``gh``). ``shutil.which`` keeps
+        fencing the ``gh`` callers outside the adapter.
+        """
+        sequence = statuses if isinstance(statuses, list) else [statuses]
+        github = FakeGitHub(
+            available=kwargs.pop("gh_available", gh is not None),
+            standing_view=merge_view(),
+            checks_sequence=[checks_for(s) for s in sequence],
+            head_sha="stage3-head" if gh else None,
+        )
         sleep = MagicMock()
         with (
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value=gh),
-            patch_lookup_sites(
-                "sandbox_executor.flow.github.ci.probe_ci_checks",
-                "sandbox_executor.flow.review.loop.probe_ci_checks",
-                probe,
-            ),
-            patch("sandbox_executor.flow.review.loop.check_pr_mergeability", return_value={"is_dirty": False}),
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+            patch("shutil.which", return_value=gh),
             patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"),
             scoped_sleep_patch("sandbox_executor.flow.github.ci", sleep),
             scoped_sleep_patch("sandbox_executor.flow.review.loop", sleep),
             # No real ``git rev-parse``: keep the test hermetic and fast.
             patch("sandbox_executor.flow.review.local_tests._ReviewLocalTests._head", lambda _self: "stage3-head"),
-            patch(
-                "sandbox_executor.flow.review.local_tests._default_pr_head",
-                return_value="stage3-head" if gh else None,
-            ),
             _verified_diff(),
         ):
-            res = run_review_loop(ctx, auto_pr=False, max_iterations=25, **kwargs)
-        return res, probe, sleep
+            res = run_review_loop(ctx, auto_pr=False, max_iterations=25, github=github, **kwargs)
+        return res, github, sleep
 
     def test_checks_registering_after_a_delay_burn_no_review_iterations(self, tmp_path):
         ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": None})
         probes = [dict(self.LOCAL), dict(self.LOCAL), dict(self.GITHUB_PASS), dict(self.GITHUB_PASS)]
 
-        res, probe, sleep = self._loop(ctx, probes, ci_registration_timeout=600.0, ci_poll_interval=5.0)
+        res, github, sleep = self._loop(ctx, probes, ci_registration_timeout=600.0, ci_poll_interval=5.0)
 
         assert res["consensus"]["approved"] is True
         assert res["total_iterations"] == 1
         assert res["ci_checks"]["source"] == "github_cli"
-        assert probe.call_count == 4
+        assert github.methods().count("ci_checks") == 4
         assert [c.args[0] for c in sleep.call_args_list] == [5.0, 5.0]
         rows = self._ledger_rows(tmp_path)
         assert not [r for r in rows if str(r.get("action_id", "")).startswith("ACT-RES")]
@@ -125,9 +127,7 @@ class TestUnmeasuredTestsStopEarly:
         clock = iter(float(t) for t in range(0, 1000, 5))
 
         with patch("sandbox_executor.flow.github.ci.time.monotonic", side_effect=lambda: next(clock)):
-            res, _probe, sleep = self._loop(
-                ctx, lambda *a, **k: dict(self.LOCAL), ci_registration_timeout=20.0, ci_poll_interval=5.0
-            )
+            res, _github, sleep = self._loop(ctx, dict(self.LOCAL), ci_registration_timeout=20.0, ci_poll_interval=5.0)
 
         assert res["consensus"]["approved"] is False
         assert res["consensus"]["status"] == "not_measured"
@@ -147,16 +147,16 @@ class TestUnmeasuredTestsStopEarly:
     def test_recorded_result_skips_the_registration_wait(self, tmp_path):
         ctx = self._ctx(tmp_path, {"head_sha": "stage3-head", "exit_code": 0, "test_pass_rate": 1.0})
 
-        res, probe, sleep = self._loop(ctx, lambda *a, **k: dict(self.LOCAL), ci_registration_timeout=600.0)
+        res, github, sleep = self._loop(ctx, dict(self.LOCAL), ci_registration_timeout=600.0)
 
         assert res["consensus"]["approved"] is True
-        assert probe.call_count == 1
+        assert github.methods().count("ci_checks") == 1
         sleep.assert_not_called()
 
     def test_without_gh_unmeasured_tests_stop_after_one_iteration_without_waiting(self, tmp_path):
         ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": None})
 
-        res, _probe, sleep = self._loop(ctx, lambda *a, **k: dict(self.LOCAL), gh=None)
+        res, _github, sleep = self._loop(ctx, dict(self.LOCAL), gh=None)
 
         assert res["consensus"]["status"] == "not_measured"
         assert res["total_iterations"] == 1
@@ -165,7 +165,7 @@ class TestUnmeasuredTestsStopEarly:
     def test_dry_run_keeps_its_simulated_consensus_without_waiting(self, tmp_path):
         ctx = self._ctx(tmp_path, {"exit_code": 0}, dry_run=True)
 
-        res, _probe, sleep = self._loop(ctx, lambda *a, **k: dict(self.LOCAL), ci_registration_timeout=600.0)
+        res, _github, sleep = self._loop(ctx, dict(self.LOCAL), ci_registration_timeout=600.0)
 
         # A simulated approval is never an approval: the dry run reports not_measured.
         assert res["consensus"]["approved"] is False
@@ -179,16 +179,16 @@ class TestUnmeasuredTestsStopEarly:
 
         ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": None})
 
-        res, probe, sleep = self._loop(
+        res, github, sleep = self._loop(
             ctx,
-            lambda *a, **k: dict(self.LOCAL),
+            dict(self.LOCAL),
             ci_registration_timeout=600.0,
             run_ensemble_fn=FakeEnsemble([objecting_reviewer(1)]),
         )
 
         assert res["consensus"]["approved"] is False
         sleep.assert_not_called()
-        assert probe.call_count == 1
+        assert github.methods().count("ci_checks") == 1
         assert not any("FIND-CI" in fid for fid in res["findings"])
 
     @pytest.mark.parametrize(
@@ -214,7 +214,7 @@ class TestUnmeasuredTestsStopEarly:
         }
         with (
             patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
-            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
             patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
         ):
             res = run_review_stage(ctx)
@@ -233,7 +233,7 @@ class TestUnmeasuredTestsStopEarly:
         }
         with (
             patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
-            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
             patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
         ):
             res = run_review_stage(ctx)
@@ -254,33 +254,23 @@ class TestUnmeasuredTestsStopEarly:
         from sandbox_executor import flow as flow_module
 
         ctx = self._ctx(tmp_path, {"exit_code": 0, "test_pass_rate": None})
-        probe = MagicMock(return_value=dict(self.LOCAL))
+        github = FakeGitHub(standing_view=merge_view())
         sleep = MagicMock()
         wait = MagicMock(wraps=flow_module._wait_for_ci_registration)
         with (
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value="/usr/bin/gh"),
+            patch("shutil.which", return_value="/usr/bin/gh"),
             patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
-            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(has_diff, detail)),
-            patch("sandbox_executor.flow.review.loop.create_or_update_pr") as mock_pr,
-            patch_lookup_sites(
-                "sandbox_executor.flow.github.ci.probe_ci_checks",
-                "sandbox_executor.flow.review.loop.probe_ci_checks",
-                probe,
-            ),
-            patch_lookup_sites(
-                "sandbox_executor.flow.review.loop.check_pr_mergeability",
-                "sandbox_executor.flow.stage_conflicts.check_pr_mergeability",
-                return_value={"is_dirty": False},
-            ),
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", return_value={"dual_posted": True}),
+            patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github),
+            patch("sandbox_executor.flow.stage_conflicts.check_pr_mergeability", return_value={"is_dirty": False}),
             patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"),
             scoped_sleep_patch("sandbox_executor.flow.review.loop", sleep),
             patch("sandbox_executor.flow.review.loop._wait_for_ci_registration", wait),
         ):
             res = run_review_stage(ctx)
 
-        mock_pr.assert_not_called()
+        assert "open_or_update" not in github.methods()
         sleep.assert_not_called()
         wait.assert_not_called()
         assert res.status == StageStatus.FAILED
@@ -292,11 +282,11 @@ class TestUnmeasuredTestsStopEarly:
         summaries = [r for r in self._ledger_rows(tmp_path) if r.get("entry_type") == "summary"]
         if reason == "empty_diff":
             # The guard returns before any review iteration, so it writes no review rows.
-            probe.assert_not_called()
+            assert "ci_checks" not in github.methods()
             assert summaries == []
         else:
             # Fail closed, the refused PR is never reviewed, so only the halted summary row is written.
-            probe.assert_not_called()
+            assert "ci_checks" not in github.methods()
             assert len(summaries) == 1
             assert summaries[0]["status"] == "failed"
             assert "could not verify the execution diff" in summaries[0]["summary"]
@@ -314,32 +304,22 @@ class TestUnmeasuredTestsStopEarly:
 
     def _refused_with_green_evidence(self, tmp_path, payload, ci, call):
         ctx = self._ctx(tmp_path, payload)
-        probe = MagicMock(return_value=dict(ci or self.LOCAL))
-        post = MagicMock(return_value={"dual_posted": True})
+        github = FakeGitHub(standing_view=merge_view(), checks=checks_for(ci or self.LOCAL))
         with (
-            patch("sandbox_executor.flow.review.loop.shutil.which", return_value="/usr/bin/gh"),
+            patch("shutil.which", return_value="/usr/bin/gh"),
             patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
-            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(None, "fetch failed")),
-            patch("sandbox_executor.flow.review.loop.create_or_update_pr") as mock_pr,
-            patch_lookup_sites(
-                "sandbox_executor.flow.github.ci.probe_ci_checks",
-                "sandbox_executor.flow.review.loop.probe_ci_checks",
-                probe,
-            ),
-            patch_lookup_sites(
-                "sandbox_executor.flow.review.loop.check_pr_mergeability",
-                "sandbox_executor.flow.stage_conflicts.check_pr_mergeability",
-                return_value={"is_dirty": False},
-            ),
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", post),
+            patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github),
+            patch("sandbox_executor.flow.review.loop.GitHubAdapter", return_value=github),
+            patch("sandbox_executor.flow.stage_conflicts.check_pr_mergeability", return_value={"is_dirty": False}),
             patch("sandbox_executor.flow.review.loop._resolve_review_commit", return_value="abc123"),
             scoped_sleep_patch("sandbox_executor.flow.review.loop"),
             patch("sandbox_executor.flow.review.loop._wait_for_ci_registration"),
         ):
             res = call(ctx)
-        mock_pr.assert_not_called()
-        post.assert_not_called()
+        assert "open_or_update" not in github.methods()
+        assert "post_review" not in github.methods()
         rows = self._ledger_rows(tmp_path)
         assert not [r for r in rows if str(r.get("action_id", "")).startswith(("ACT-REV", "ACT-POST"))]
         summaries = [r for r in rows if r.get("entry_type") == "summary"]
@@ -369,3 +349,44 @@ class TestUnmeasuredTestsStopEarly:
         assert res.payload["halted_for_human"] is False
         assert res.error.startswith("Autonomous review halted: Refusing to create or update a PR for ")
         assert "could not verify the execution diff (fetch failed)" in res.error
+
+
+class TestProbeCiChecks:
+    """``probe_ci_checks`` reads ``gh pr checks`` through the injected adapter and falls back to local tests."""
+
+    def test_checks_are_summarised_from_github(self):
+        checks = [
+            {"name": "unit", "bucket": "pass", "state": "SUCCESS"},
+            {"name": "lint", "bucket": "fail", "state": "FAILURE"},
+        ]
+        github = FakeGitHub(checks=checks)
+        res = probe_ci_checks("/repo", " 42 ", timeout=12.5, github=github)
+        assert github.calls == [("ci_checks", ("42", 12.5))]
+        assert (res["source"], res["total"], res["passed"], res["failed"], res["all_passed"]) == (
+            "github_cli",
+            2,
+            1,
+            1,
+            False,
+        )
+
+    def test_default_timeout_is_thirty_seconds(self):
+        github = FakeGitHub(checks=[{"name": "unit", "bucket": "pass", "state": "SUCCESS"}])
+        probe_ci_checks("/repo", "feature/x", github=github)
+        assert github.calls == [("ci_checks", ("feature/x", 30.0))]
+
+    @pytest.mark.parametrize(
+        "checks",
+        [None, (0, "", ""), (0, "not json", ""), (0, json.dumps({"not": "a list"}), ""), spawn_failure()],
+        ids=["no-checks", "empty", "invalid-json", "not-a-list", "could-not-run"],
+    )
+    def test_unusable_github_answers_fall_back_to_local_tests(self, checks):
+        github = FakeGitHub(checks=checks)
+        assert probe_ci_checks("/repo", "42", github=github)["source"] == "local_tests"
+        assert github.methods() == ["ci_checks"]
+
+    @pytest.mark.parametrize(("available", "target"), [(False, "42"), (True, "  ")])
+    def test_missing_gh_or_target_never_asks_github(self, available, target):
+        github = FakeGitHub(available=available, checks=[{"name": "unit", "bucket": "pass"}])
+        assert probe_ci_checks("/repo", target, github=github)["source"] == "local_tests"
+        assert github.calls == []

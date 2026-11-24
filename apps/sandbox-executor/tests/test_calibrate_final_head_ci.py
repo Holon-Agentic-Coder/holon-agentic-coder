@@ -22,6 +22,8 @@ from sandbox_executor.flow.review.merged_head_gate import MergedHeadSeams
 from sandbox_executor.flow.review_restart import stage5_merged_head_gate
 from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
 
+from tests.flow.github.fake_github import FakeGitHub
+
 BRANCH = "I-1-x/P-2-y/E-3-z/_"
 GATE = "CI Timing Gate (Check <= 5 min)"
 
@@ -181,7 +183,7 @@ def _run_stage(tmp_path: Path, record: dict) -> object:
     ok = SimpleNamespace(returncode=0, stdout="", stderr="")
     with (
         patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=report),
         patch("sandbox_executor.flow.stages.calibrate.run_git", return_value=ok),
         patch("sandbox_executor.flow.calibrate_sync.run_git", return_value=ok),
@@ -305,7 +307,7 @@ def _run_gated_stage(tmp_path: Path, head: str, conclusion: str) -> tuple[FlowCo
             functools.partial(stage5_merged_head_gate, seams=seams),
         ),
         patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=report),
         patch("sandbox_executor.flow.stages.calibrate.run_git", return_value=ok),
         patch("sandbox_executor.flow.calibrate_sync.run_git", return_value=ok),
@@ -366,7 +368,7 @@ def _carried_timing_check(tmp_path: Path, changed: list[str]) -> ci_final_head._
         stage=FlowStage.REVIEW, status=StageStatus.APPROVED, payload={"consensus": consensus}
     )
     seams = ci_final_head.FinalHeadSeams(pr_head=lambda: merged, changed_paths=lambda _a, _h: list(changed))
-    return ci_final_head._FinalHeadCheck(context, str(tmp_path), BRANCH, seams)
+    return ci_final_head._FinalHeadCheck(context, str(tmp_path), BRANCH, seams, FakeGitHub())
 
 
 def test_a_fingerprint_carried_merged_head_is_not_eligible_for_the_automatic_timing_rerun(tmp_path: Path) -> None:

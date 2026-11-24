@@ -19,6 +19,7 @@ from sandbox_executor.flow import (
     run_review_stage,
 )
 
+from tests.flow.github.fake_github import FakeGitHub, ci_checks_payload
 from tests.flow.helpers import (
     _REAL_RESOLVE_REVIEWED_TARGET,
     FakeRoleAgents,
@@ -55,18 +56,26 @@ class TestStageTargetsIgnoreOperatorHead:
     def _run_loop_capturing_consensus(ctx: FlowContext, target: str) -> dict[str, Any]:
         captured: dict[str, Any] = {}
 
-        def _capture(**kwargs: Any) -> dict[str, Any]:
+        def _capture(**kwargs: Any) -> str:
             captured.update(kwargs["consensus_data"])
-            return {"dual_posted": True}
+            return "report"
 
+        # No PR view, so mergeability stays on local git; the post lands on the fake. The CI summary stays the
+        # source-less green status this test always used (the adapter cannot produce it, so the probe's summary is
+        # scripted, not the loop's probe): the test is about the reviewed commit, not CI evidence.
+        github = FakeGitHub(checks=ci_checks_payload(passed=1))
         # Resolve the reviewed target with real git, so the reported commit is the one the reviewers' diff names.
         with (
             patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", _REAL_RESOLVE_REVIEWED_TARGET),
-            patch("sandbox_executor.flow.review.loop.post_pr_review_consensus", side_effect=_capture),
-            patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value={"all_passed": True}),
+            patch("sandbox_executor.flow.github.review_post.build_pr_review_consensus_report", side_effect=_capture),
+            patch("sandbox_executor.flow.github.ci.summarise_ci_checks", return_value={"all_passed": True}),
             _verified_diff(),
         ):
-            run_review_loop(ctx, target=target, max_iterations=1, auto_pr=False)
+            # No CI registration wait (as when gh was absent): the scripted summary never registers as GitHub CI.
+            run_review_loop(
+                ctx, target=target, max_iterations=1, auto_pr=False, ci_registration_timeout=0, github=github
+            )
+        assert github.methods().count("post_review") == 1
         return captured
 
     def test_review_target_commit_is_execution_tip_not_operator_head(self, flow_repos, tmp_path):
@@ -112,8 +121,11 @@ class TestStageTargetsIgnoreOperatorHead:
         ctx = self._run_stages_1_to_3(host, origin, tmp_path)
         loop_res = {"consensus": {"approved": True}, "mergeability": {}, "halted_for_human": False, "approved": True}
 
+        from sandbox_executor.flow.context import FlowStage
+        from sandbox_executor.flow.target_sync_result import SyncBoundary
+
         with (
-            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts") as mock_probe,
+            patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None) as mock_probe,
             patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res) as mock_loop,
         ):
             res = run_review_stage(ctx)
@@ -121,7 +133,7 @@ class TestStageTargetsIgnoreOperatorHead:
         assert res.status == StageStatus.APPROVED
         # Stage 4 ledger rows and Stage 5 calibration run in the execution branch's working tree.
         assert _git(host, "rev-parse", "--abbrev-ref", "HEAD") == ctx.execution_branch
-        assert mock_probe.call_args.kwargs["branch"] == ctx.execution_branch
+        mock_probe.assert_called_once_with(ctx, FlowStage.REVIEW, SyncBoundary.STAGE_START)
         assert mock_loop.call_args.kwargs["target"] == ctx.execution_branch
 
     def test_review_stage_fails_when_execution_branch_cannot_be_checked_out(self, flow_repos, tmp_path):
@@ -143,8 +155,8 @@ class TestStageTargetsIgnoreOperatorHead:
         ctx.skip_push = True
         main_tip = _git(host, "rev-parse", "main")
 
-        # A resume entering at Stage 5: the operator is still on 'main' and calibration throws,
-        # so the fallback report must still be written into the execution branch's tree, never 'main'.
+        # A resume entering at Stage 5: the operator is still on 'main' and calibration throws. Calibration must
+        # still run on the execution branch, never 'main', and the failed stage writes no report.
         heads: list[str] = []
 
         def _boom(**_kwargs: Any) -> None:
@@ -154,10 +166,10 @@ class TestStageTargetsIgnoreOperatorHead:
         with patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=_boom):
             res = run_calibrate_stage(ctx)
 
-        assert res.status == StageStatus.SUCCESS
+        assert res.status == StageStatus.FAILED
         assert heads == [ctx.execution_branch]
         assert _git(host, "rev-parse", "--abbrev-ref", "HEAD") == ctx.execution_branch
-        assert list((host / "plans").rglob("P-*_calibration.md")), "fallback report missing from the execution tree"
+        assert not list((host / "plans").rglob("P-*_calibration.md")), "a failed calibration must write no report"
         assert _git(host, "log", "-1", "--format=%H", "main") == main_tip
 
     def test_calibrate_stage_fails_cleanly_when_execution_branch_cannot_be_checked_out(self, flow_repos, tmp_path):
@@ -187,18 +199,27 @@ class TestStageTargetsIgnoreOperatorHead:
         assert _git(repo, "status", "--porcelain") == ""
 
     def test_stage_conflict_probes_name_each_stage_branch(self, flow_repos, tmp_path):
+        from sandbox_executor.flow.target_sync_hooks import active_flow_branch, at_stage_boundary
+        from sandbox_executor.flow.target_sync_result import SyncBoundary
+
         host, origin = flow_repos
         ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin))
+        branches: dict[str, str] = {}
+
+        def _record_boundary(context, stage, boundary):
+            if boundary is SyncBoundary.STAGE_START:
+                branches[stage.value] = active_flow_branch(context, stage)
+            return at_stage_boundary(context, stage, boundary)
+
         with patch_lookup_sites(
-            "sandbox_executor.flow.stages.execute.check_and_resolve_stage_conflicts",
-            "sandbox_executor.flow.stages.intent.check_and_resolve_stage_conflicts",
-            "sandbox_executor.flow.stages.plan.check_and_resolve_stage_conflicts",
-            wraps=check_and_resolve_stage_conflicts,
-        ) as probe:
+            "sandbox_executor.flow.stages.execute.at_stage_boundary",
+            "sandbox_executor.flow.stages.intent.at_stage_boundary",
+            "sandbox_executor.flow.stages.plan.at_stage_boundary",
+            side_effect=_record_boundary,
+        ):
             results = PipelineEngine(ctx).run()
         assert results["execute"].status == StageStatus.SUCCESS
-        branches = {c.kwargs["stage_name"]: c.kwargs.get("branch", "HEAD") for c in probe.call_args_list}
-        assert branches == {"intent": None, "plan": ctx.intent_branch, "execute": ctx.plan_branch}
+        assert branches == {"intent": ctx.intent_branch, "plan": ctx.intent_branch, "execute": ctx.plan_branch}
 
     def test_intent_temp_file_is_world_readable_for_the_container_user(self, flow_repos, tmp_path):
         host, origin = flow_repos

@@ -22,7 +22,12 @@ from sandbox_executor.artefacts import EXECUTION_SPEC, ArtefactReport, execution
 from sandbox_executor.budgets import BudgetBreach, StageTimer, load_budgets
 from sandbox_executor.decomposition_rule import DECISION_OVER_BUDGET, DecompositionDecision
 from sandbox_executor.entrypoint.execution_args import ExecutionArgs, _read_intent_row, _read_plan_row
-from sandbox_executor.entrypoint.execution_workspace import continuation_note, resolve_partial_head
+from sandbox_executor.entrypoint.execution_workspace import (
+    continuation_note,
+    format_skipped_scratch_message,
+    resolve_partial_head,
+    unstage_sidecar_scratch,
+)
 from sandbox_executor.entrypoint.executor.agent_output import AgentOutputSteps
 from sandbox_executor.entrypoint.executor.commands import _get_repo
 from sandbox_executor.entrypoint.executor.outcome import CheckWorkSteps, OutcomeSteps
@@ -31,6 +36,8 @@ from sandbox_executor.entrypoint.executor.repair import _configure_executor_iden
 from sandbox_executor.entrypoint.executor.sub_intents import SubIntentSteps
 from sandbox_executor.entrypoint.partial_resume import merge_plan_tip, start_execution_branch
 from sandbox_executor.entrypoint.taken_ids import taken_child_ids
+from sandbox_executor.flow.context import FlowStage
+from sandbox_executor.flow.target_sync_hooks import make_turn_boundary_hook
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import LedgerRewriteError, build_execution_id
 from sandbox_executor.plan_paths import recorded_plan_file
@@ -273,6 +280,9 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
         )
         if self.args.partial_branch and self.partial_head:
             base_prompt = f"{base_prompt}\n\n{continuation_note(self.args.partial_branch, self.partial_head)}"
+        merged_notice = os.environ.pop("HOLON_REPLAN_FEEDBACK", "").strip()
+        if merged_notice and "## Target branch merged" in merged_notice:
+            base_prompt = f"{base_prompt}\n\n{merged_notice}"
         full_prompt = f"{base_prompt}\n\n{execution_write_protocol(self.notes_rel)}"
 
         budgets = load_budgets(os.environ)
@@ -310,6 +320,12 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
                 cwd=self.repo_dir,
                 stdin_file=prompt_file if getattr(runner, "uses_stdin", False) else None,
                 prompt_file=prompt_file,
+                on_turn_boundary=make_turn_boundary_hook(
+                    self.repo_dir,
+                    self.exec_branch,
+                    os.getenv("HOLON_TARGET_BRANCH") or str(self.intent_data.get("target_branch") or "main"),
+                    FlowStage.EXECUTE,
+                ),
             )
             self.exec_status, self.summary, self.budget_breach, self.budget_reason = (
                 executor_facade.classify_execution_outcome(outcome)
@@ -361,6 +377,8 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
             repo.run(["add", *add_targets], check=False)
         if self.exec_status == "success":
             repo.add(all_files=True)
+            if skipped := unstage_sidecar_scratch(repo):
+                print(format_skipped_scratch_message(skipped), file=sys.stderr)
         # Log staged changes to provide visibility
         status_output = repo.run(["status", "--short"], check=False)
         print("Current git repository status:")

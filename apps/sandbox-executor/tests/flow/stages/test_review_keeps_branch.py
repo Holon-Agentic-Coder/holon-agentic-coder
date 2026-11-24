@@ -54,7 +54,7 @@ def _detach_and_append_a_row(repo_dir: str) -> None:
         ledger.write('{"action_id": "ACT-REV-1"}\n')
 
 
-def _approved_loop(context: FlowContext) -> dict[str, Any]:
+def _approved_loop(context: FlowContext, *, github: Any = None) -> dict[str, Any]:
     _detach_and_append_a_row(context.target_worktree)
     return {
         "consensus": {"approved": True, "status": "approved", "iterations": 1},
@@ -64,7 +64,7 @@ def _approved_loop(context: FlowContext) -> dict[str, Any]:
     }
 
 
-def _crashing_loop(context: FlowContext) -> dict[str, Any]:
+def _crashing_loop(context: FlowContext, *, github: Any = None) -> dict[str, Any]:
     _detach_and_append_a_row(context.target_worktree)
     raise RuntimeError("container dispatch crashed")
 
@@ -80,7 +80,7 @@ def _run_stage(worktree: Path, loop) -> tuple[FlowContext, Any, list[list[str]]]
 
     with (
         patch(f"{STAGE}.run_git", side_effect=recording_git),
-        patch(f"{STAGE}.check_and_resolve_stage_conflicts"),
+        patch(f"{STAGE}.at_stage_boundary", return_value=None),
         patch(f"{STAGE}._run_engine_review_loop", side_effect=loop),
     ):
         try:
@@ -122,7 +122,7 @@ def test_a_head_detached_at_the_tip_before_the_stage_is_reattached_not_checked_o
     _git(flow_worktree, "checkout", "-q", "--detach", "HEAD")
     loop = {"consensus": {"approved": True}, "ensemble_verdict": "APPROVED", "reviewers": [clean_reviewer(1)]}
 
-    ctx, result, calls = _run_stage(flow_worktree, lambda _ctx: loop)
+    ctx, result, calls = _run_stage(flow_worktree, lambda _ctx, **_kw: loop)
 
     assert result.status is StageStatus.APPROVED
     assert _git(flow_worktree, "symbolic-ref", "--short", "HEAD") == EXEC

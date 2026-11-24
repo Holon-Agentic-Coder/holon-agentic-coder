@@ -18,15 +18,21 @@ from sandbox_executor.flow.git_refs import (
     _snapshot_child_branches,
     _track_local_branch,
 )
-from sandbox_executor.flow.host_remote import publish_new_child_branches, remote_error
-from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
+from sandbox_executor.flow.host_remote import new_local_child_branches, remote_error
+from sandbox_executor.flow.stages.plan_resume import (
+    AMBIGUOUS_PLAN_BRANCHES_HINT,
+    adopt_existing_plan,
+    publish_planned_branches,
+)
 from sandbox_executor.flow.stages.plan_support import (
     dry_run_plan_result,
-    plan_id_of,
     plan_metrics,
+    plan_stage_payload,
     replan_feedback_env,
 )
 from sandbox_executor.flow.stages.stage_support import consult_knowledge, stage_success
+from sandbox_executor.flow.target_sync_hooks import at_stage_boundary, consume_target_merge_notice
+from sandbox_executor.flow.target_sync_result import SyncBoundary
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.ledger import build_plan_id
 from sandbox_executor.naming import MissingTickerError, model_code, ticker_for
@@ -71,41 +77,50 @@ class PlanStage:
             return self.fail(f"Plan stage failed: {exc}")
         return None
 
+    def adopt_existing(self) -> StageResult | None:
+        """Adopt the newest complete plan branch under this intent if one already exists."""
+        branch, error = adopt_existing_plan(self.context, self.intent_prefix)
+        if error is not None:
+            return self.fail(f"Plan stage failed: {error}")
+        self.plan_branch = branch
+        return None
+
     def produce(self) -> StageResult | None:
-        """Run the planner and read back its plan: the first failing step's result, or None."""
-        for step in (self.prepare, self.dispatch_planner, self.adopt_plan_branch, self.read_plan):
-            failure = step()
-            if failure is not None:
+        """Run the planner (or adopt an existing complete plan branch) and read back its plan."""
+        if (failure := self.prepare() or self.adopt_existing()) is not None:
+            return failure
+        steps = () if self.plan_branch else (self.dispatch_planner, self.adopt_plan_branch)
+        for step in (*steps, self.read_plan):
+            if (failure := step()) is not None:
                 return failure
         return None
 
     def prepare(self) -> StageResult | None:
-        """Refuse a skip-push run, resolve stage conflicts and snapshot the plan branches already on origin."""
+        """Refuse a skip-push run, sync with the target branch and snapshot the plan branches on origin and locally."""
         if self.context.skip_push:
             return self.fail(SKIP_PUSH_DISPATCH_ERROR)
-        target_branch = self.context.intent_data.get("target_branch", "main")
-        check_and_resolve_stage_conflicts(
-            self.repo_dir, target_branch=target_branch, stage_name="plan", branch=self.context.intent_branch
-        )
+        if (failure := at_stage_boundary(self.context, FlowStage.PLAN, SyncBoundary.STAGE_START)) is not None:
+            return failure
         existing_plans = _snapshot_child_branches(self.repo_dir, self.intent_prefix, "P")
         if existing_plans is None:
             return self.fail(
                 f"Plan stage failed: could not fetch origin branches under {self.intent_prefix} before dispatching "
                 "the planner."
             )
-        self.existing_plans = existing_plans
+        local = new_local_child_branches(self.repo_dir, self.intent_prefix, "P", set())
+        self.existing_plans = existing_plans | set(local)
         return None
 
     def dispatch_planner(self) -> StageResult | None:
         """Dispatch the planner container and publish every plan branch it committed."""
         context = self.context
         replan_feedback = str(context.intent_data.get("replan_feedback") or "").strip()
-        with replan_feedback_env(replan_feedback):
+        with replan_feedback_env(replan_feedback, consume_target_merge_notice(context)):
             attempt_before = snapshot_plan_attempt(self.repo_dir, context.intent_branch)
             exit_code = _dispatch_role(context, "planner", [context.intent_branch, context.agent, context.model])
         # The host pushes every plan branch the container committed, a failed planner's salvage commit included.
-        push_error = remote_error(
-            publish_new_child_branches, self.repo_dir, self.intent_prefix, "P", self.existing_plans
+        push_error = publish_planned_branches(
+            context, self.intent_prefix, self.existing_plans, self.preferred_suffix, remote_error
         )
         if exit_code != 0:
             # A failed attempt leaves no untracked plan file, and its own failure detail (an API error) names the cause.
@@ -125,14 +140,10 @@ class PlanStage:
                 f"could not be fetched to adopt its plan branch: {fetch_error}"
             )
         plan_branch, ambiguity = _discover_child_branch(
-            self.repo_dir,
-            self.intent_prefix,
-            "P",
-            before=self.existing_plans,
-            preferred_suffix=self.preferred_suffix,
+            self.repo_dir, self.intent_prefix, "P", before=self.existing_plans, preferred_suffix=self.preferred_suffix
         )
         if ambiguity:
-            return self.fail(f"Plan stage failed: {ambiguity}.")
+            return self.fail(f"Plan stage failed: {ambiguity}; {AMBIGUOUS_PLAN_BRANCHES_HINT}.")
         if not plan_branch:
             return self.fail(self.no_plan_error)
         self.plan_branch = plan_branch
@@ -154,13 +165,7 @@ class PlanStage:
 
 
 def run_plan_stage(context: FlowContext) -> StageResult:
-    """Execute Stage 2: dispatch the planner agent and adopt the plan branch it committed.
-
-    The host fetches the intent branch; the planner container (the same one 'holon plan' launches) authors
-    plans/P-*.md and appends plans.jsonl on a plan branch in the mounted worktree; the host pushes that branch. The
-    flow never writes a plan itself: if no planner produced a plan file,
-    the stage fails. Downstream stages operate unattended and never stall on interactive questions.
-    """
+    """Execute Stage 2: dispatch the planner agent and adopt the plan branch it committed."""
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 2: Plan Generation")
 
@@ -187,17 +192,9 @@ def run_plan_stage(context: FlowContext) -> StageResult:
     metrics = plan_metrics(stage.repo_dir, stage.plan_content, stage.plan_row)
     context.plan_branch = stage.plan_branch
     _track_local_branch(context, stage.plan_branch)
-    ev_text = f"{metrics['ev']:.2f}" if isinstance(metrics.get("ev"), int | float) else "n/a"
-    context.log(
-        f"Stage 2 completed: planner agent produced '{stage.plan_file}' on '{stage.plan_branch}' (EV={ev_text})."
-    )
-    payload = {
-        "plan_id": plan_id_of(stage.plan_branch),
-        "plan_branch": stage.plan_branch,
-        "plan_file": stage.plan_file,
-        "metrics": metrics,
-        "consulted_knowledge_ids": consulted_ids,
-    }
+    if (end_failure := at_stage_boundary(context, FlowStage.PLAN, SyncBoundary.STAGE_END)) is not None:
+        return end_failure
+    payload = plan_stage_payload(context, stage.plan_branch, stage.plan_file, metrics, consulted_ids)
     return stage_success(context, FlowStage.PLAN, "plan", start_time, payload)
 
 

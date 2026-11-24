@@ -26,6 +26,25 @@ def plan_id_of(plan_branch: str) -> str:
     return plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
 
 
+def plan_stage_payload(
+    context: FlowContext,
+    plan_branch: str,
+    plan_file: str,
+    metrics: dict[str, Any],
+    consulted_ids: list[str],
+) -> dict[str, Any]:
+    """Log Stage 2 completion and build the Stage 2 success payload dictionary for ``plan_branch``."""
+    ev_text = f"{metrics['ev']:.2f}" if isinstance(metrics.get("ev"), int | float) else "n/a"
+    context.log(f"Stage 2 completed: planner agent produced '{plan_file}' on '{plan_branch}' (EV={ev_text}).")
+    return {
+        "plan_id": plan_id_of(plan_branch),
+        "plan_branch": plan_branch,
+        "plan_file": plan_file,
+        "metrics": metrics,
+        "consulted_knowledge_ids": consulted_ids,
+    }
+
+
 def dry_run_plan_result(
     context: FlowContext, start_time: str, plan_branch: str, consulted_ids: list[str]
 ) -> StageResult:
@@ -67,18 +86,19 @@ def plan_metrics(repo_dir: str, plan_content: str, plan_row: dict[str, Any]) -> 
 
 
 @contextlib.contextmanager
-def replan_feedback_env(feedback: str) -> Iterator[None]:
-    """Set the replan feedback for the planner dispatch when non-empty, and restore the previous value afterwards.
+def replan_feedback_env(feedback: str, target_merged_notice: str = "") -> Iterator[None]:
+    """Set the replan feedback (and optional target-merge notice) for dispatch when non-empty, then restore.
 
-    Forwarded into the planner container like every HOLON_* variable; never written to a ledger.
+    Forwarded into the container through ``HOLON_REPLAN_FEEDBACK``; never written to a ledger.
     """
+    combined = "\n\n".join(part for part in (feedback, target_merged_notice) if part)
     previous = os.environ.get(ENV_REPLAN_FEEDBACK)
-    if feedback:
-        os.environ[ENV_REPLAN_FEEDBACK] = feedback
+    if combined:
+        os.environ[ENV_REPLAN_FEEDBACK] = combined
     try:
         yield
     finally:
-        if feedback:
+        if combined:
             if previous is None:
                 os.environ.pop(ENV_REPLAN_FEEDBACK, None)
             else:

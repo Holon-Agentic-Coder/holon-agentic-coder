@@ -36,14 +36,16 @@ from sandbox_executor.flow.host_remote import fetch_base, publish_new_child_bran
 from sandbox_executor.flow.partial_head import failed_partial_head
 from sandbox_executor.flow.partial_salvage import salvage_for_resume
 from sandbox_executor.flow.plan_refresh import plan_refresh_stage_failure, refresh_payload
-from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.decomposition import _run_decomposed_plan, _sub_intent_depth_error
 from sandbox_executor.flow.stages.empty_diff_outcome import empty_diff_failure
 from sandbox_executor.flow.stages.execute_veto import execution_veto_error
 from sandbox_executor.flow.stages.plan_decision import _over_budget_failure, _plan_budget_decision
+from sandbox_executor.flow.stages.plan_support import replan_feedback_env
 from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
 from sandbox_executor.flow.stages.token_scope_guard import token_scope_failure
 from sandbox_executor.flow.stages.touch_set_guard import touch_set_violation_result
+from sandbox_executor.flow.target_sync_hooks import at_stage_boundary, consume_target_merge_notice
+from sandbox_executor.flow.target_sync_result import SyncBoundary
 from sandbox_executor.flow_guard import SKIP_PUSH_DISPATCH_ERROR
 from sandbox_executor.git import changed_paths, run_git
 from sandbox_executor.ledger import build_execution_id
@@ -99,24 +101,10 @@ class ExecuteState:
 class ExecuteStage:
     """Stage 3: dispatch the executor agent, adopt its execution branch and apply the empty-diff guard.
 
-    The executor container (the same one 'holon execute' launches) implements the plan, appends
-    executions.jsonl and pushes. An execution whose diff against the plan branch is empty outside
-    holon-knowledge/ledger/, plans/ and executions/ fails: a superseding 'failed' row is recorded if the container
-    claimed success, and the stage fails so no PR is created or updated.
-
-    With ``resume_partial`` (a Stage 3 resume), the newest failed execution branch under the plan whose latest summary
-    row carries a ``partial_head`` is passed to the executor as a fourth argument, so it continues that partial work.
-
-    The stage never halts for a human. It executes only the decision the plan row records (``stages.plan_decision``):
-
-    - *execute*: the executor implements the plan as described above;
-    - *decomposed*: each item of the plan row's sub-intent list (never the executor's row, which only refers to it, and
-      a disagreement is an error) runs through the full pipeline as a child intent; all children must succeed;
-    - *over budget* (above the budget, no list): fails with ``payload["over_budget"]``; the engine re-plans (bounded).
-
-    :meth:`run` runs :meth:`steps` in order over one :class:`ExecuteState`. Each step returns the stage's result to
-    stop there, or None to go on; :meth:`record_execution` then records the outcome. Collaborators are looked up on
-    this module at call time, so tests patch them here.
+    The executor container implements the plan, appends executions.jsonl and commits; the host pushes and guards
+    against an empty diff outside metadata paths. With ``resume_partial``, the newest failed execution branch under the
+    plan carrying a ``partial_head`` is passed to the executor to continue partial work. The stage never halts for a
+    human and executes only the plan row's decision (*execute*, *decomposed* or *over budget*).
     """
 
     def __init__(self, context: FlowContext, resume_partial: bool = False) -> None:
@@ -208,12 +196,11 @@ class ExecuteStage:
         return token_scope_failure(self.context, self.state.start_time)
 
     def admit_and_refresh_plan(self) -> StageResult | None:
-        """Resolve stage conflicts, refuse a plan the budget decision rejects, then run admission and plan refresh."""
+        """Sync with the target branch, refuse a plan the budget decision rejects, then run admission and refresh."""
         context, state = self.context, self.state
         state.target_branch = context.intent_data.get("target_branch", "main")
-        check_and_resolve_stage_conflicts(
-            state.repo_dir, target_branch=state.target_branch, stage_name="execute", branch=context.plan_branch
-        )
+        if (failure := at_stage_boundary(context, FlowStage.EXECUTE, SyncBoundary.STAGE_START)) is not None:
+            return failure
         try:
             state.precheck = precheck = _plan_budget_decision(context)
         except InvalidPlanDecisionError as exc:
@@ -271,7 +258,8 @@ class ExecuteStage:
     def dispatch_executor(self) -> StageResult | None:
         """Run the executor container, then push each new execution branch that carries its ledger row."""
         context, state = self.context, self.state
-        state.exit_code = exit_code = _dispatch_role(context, "executor", state.executor_args)
+        with replan_feedback_env("", consume_target_merge_notice(context)):
+            state.exit_code = exit_code = _dispatch_role(context, "executor", state.executor_args)
         # The container only commits; the host pushes each committed branch with its ledger row, failed ones included.
         left_alone = hold_unrecorded_executions(context, state.plan_prefix, state.existing_executions)
         state.push_error = remote_error(publish_new_child_branches, state.repo_dir, state.plan_prefix, "E", left_alone)
@@ -350,7 +338,9 @@ class ExecuteStage:
             )
         if summary_row is not None and container_status == DECISION_DECOMPOSED:
             return self._decomposed_outcome()
-        return sync_conflict_result(self.context, state.start_time, summary_row, state.base_payload)
+        conflict_outcome = sync_conflict_result(self.context, state.start_time, summary_row, state.base_payload)
+        state.container_status = str(summary_row.get("status")) if summary_row else None
+        return conflict_outcome
 
     def _decomposed_outcome(self) -> StageResult:
         """Run the plan row's sub-intent list, or fail when the plan row does not record 'decomposed'."""
@@ -404,6 +394,11 @@ class ExecuteStage:
         )
         if violation is not None:
             return violation
+        if (
+            not state.base_payload.get("sync_conflict_resolved")
+            and (end_err := at_stage_boundary(context, FlowStage.EXECUTE, SyncBoundary.STAGE_END)) is not None
+        ):
+            return end_err
         end_time = _utc_now()
         context.log(f"Stage 3 completed: Execution branch '{state.exec_branch}' changes {len(state.changed)} path(s).")
         # The commit Stage 3 tested, so Stage 4 applies its test evidence only to an unchanged head.

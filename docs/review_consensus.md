@@ -202,6 +202,16 @@ the ledger row and the PR comment, and Stage 4 reviews the change again, within 
 automatic timing-gate rerun of the final-head CI check stays limited to bookkeeping-only moves; a merged target branch
 is not one.
 
+## Calibration report staleness
+
+A calibration report is stale only when the pull request's own change moved after the commit the report evaluated.
+Merges of the target that leave that change unchanged, ledger-only commits and calibration commits do not count. The
+flow posts the one "Calibration report is stale" comment only when no Stage 5 in the same run replaces the report (a
+standalone review loop, `--skip-calibrate`), when Stage 5 failed without publishing a report that covers the head, or
+when the head outran the Stage 5 rerun; a run that is about to rerun Stage 5 posts nothing for the report it replaces.
+Stage 5 edits an open warning to "superseded", naming the commit the fresh report evaluated, as soon as that report is
+pushed and before the final-head CI wait.
+
 ## Resolver pre-push verification
 
 Before the resolver commits a fix it runs, in order: `uv run task lint`, a Prettier check of the Markdown files it

@@ -4,12 +4,12 @@ This is the only place the flow engine merges a pull request. :func:`merge_refus
 run twice per merge (before the plan branch is brought into the child and immediately before the merge): it refuses
 ``main``, ``master``, the default branch, any base other than the expected plan branch, and a failed default-branch
 lookup. Only ``gh pr merge <n> --merge|--squash --match-head-commit <sha>`` is run (:mod:`.merge_method` picks the
-flag); never ``--rebase``, ``--auto``, ``--admin`` or ``--delete-branch``. ``gh`` is reached only through a runner.
+flag, :func:`.adapter.merge_argv` refuses any other); never ``--rebase``, ``--auto``, ``--admin`` or
+``--delete-branch``. ``gh`` is reached only through a runner.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
@@ -20,7 +20,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from sandbox_executor.flow.git_refs import EXECUTOR_GIT_ENV, _fetch_refspecs_error
+from sandbox_executor.flow.github.adapter import GitHubAdapter, merge_argv, parse_gh_json
 from sandbox_executor.flow.github.merge_method import lookup_merge_flag
+from sandbox_executor.flow.github.mergeability_policy import PROTECTED_BRANCHES as PROTECTED_BRANCHES
+from sandbox_executor.flow.github.mergeability_policy import _bare_branch as _bare_branch
+from sandbox_executor.flow.github.mergeability_policy import merge_refusal_reason as merge_refusal_reason
 from sandbox_executor.flow.ledger_interleave import resolve_ledger_only_conflicts
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
@@ -28,7 +32,6 @@ from sandbox_executor.redaction import redact_agent_secrets
 #: Runs ``gh <args>`` in a directory and returns the completed process; tests pass a fake.
 GhRunner = Callable[[list[str], str], subprocess.CompletedProcess[str]]
 
-PROTECTED_BRANCHES = frozenset({"main", "master"})
 PR_VIEW_FIELDS = "number,state,baseRefName,headRefName,headRefOid,mergeable,mergeCommit,url"
 # How long a merge waits for GitHub to recompute mergeability and for CI to settle after the head moved.
 MERGE_SETTLE_SECONDS = 900.0
@@ -37,16 +40,13 @@ MERGE_POLL_SECONDS = 15.0
 
 def run_gh(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
     """Run ``gh`` with ``args`` in ``cwd``; a missing binary or a timeout becomes a failed process, never a raise."""
-    env = {**os.environ, "DOCKER_CLI_HINTS": "false"}
-    try:
-        return subprocess.run(["gh", *args], cwd=cwd, capture_output=True, text=True, check=False, timeout=120, env=env)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return subprocess.CompletedProcess(["gh", *args], 127, "", redact_agent_secrets(str(exc)))
+    return GitHubAdapter(cwd).gh(args)
 
 
-def gh_runner(runner: GhRunner | None) -> GhRunner:
-    """Return ``runner``, or this module's :func:`run_gh` looked up at call time (the seam tests patch)."""
-    return runner or run_gh
+def gh_runner(runner: GhRunner | None, github: GitHubAdapter | None = None) -> GhRunner:
+    """Return ``runner``, else ``github.gh``, else this module's :func:`run_gh` looked up at call time (the seam
+    tests patch)."""
+    return runner or (github.gh if github is not None else run_gh)
 
 
 @dataclass
@@ -59,55 +59,26 @@ class MergeResult:
     already_merged: bool = False
 
 
-def _bare_branch(name: str | None) -> str:
-    """Strip ``refs/heads/``, ``refs/remotes/`` and ``origin/`` prefixes and surrounding blanks from a branch name."""
-    clean = str(name or "").strip()
-    for prefix in ("refs/heads/", "refs/remotes/", "origin/"):
-        clean = clean.removeprefix(prefix)
-    return clean
-
-
-def merge_refusal_reason(base_branch: str | None, expected_base: str | None, default_branch: str | None) -> str | None:
-    """Return why a PR with base ``base_branch`` must not be merged into ``expected_base``, or None when it may.
-
-    Fail closed: a failed default-branch lookup (``default_branch`` None or blank), an empty base or expected base,
-    ``main``, ``master`` or the default branch on either side, and any base other than the expected plan branch are
-    all refused.
-    """
-    default = _bare_branch(default_branch)
-    if not default:
-        return "the repository default branch could not be determined, so the merge is refused (fail closed)"
-    base, expected = _bare_branch(base_branch), _bare_branch(expected_base)
-    if not base or not expected:
-        return "the PR base or the expected plan branch is empty"
-    for name, label in ((expected, "expected base"), (base, "PR base")):
-        if name in PROTECTED_BRANCHES or name == default:
-            return f"the {label} '{name}' is main, master or the repository default branch '{default}'"
-    if base != expected:
-        return f"the PR base '{base}' is not the expected plan branch '{expected}'"
-    return None
-
-
 def _gh_json(repo_dir: str, args: list[str], runner: GhRunner) -> Any:
     """Run a ``gh ... --json`` command and return its parsed output, or None when it failed or printed no JSON."""
-    proc = runner(args, repo_dir)
-    try:
-        return json.loads(proc.stdout) if proc.stdout and proc.stdout.strip() else None
-    except (json.JSONDecodeError, TypeError):
-        return None
+    return parse_gh_json(runner(args, repo_dir).stdout)
 
 
-def lookup_default_branch(repo_dir: str, runner: GhRunner | None = None) -> str | None:
+def lookup_default_branch(
+    repo_dir: str, runner: GhRunner | None = None, *, github: GitHubAdapter | None = None
+) -> str | None:
     """Return the repository default branch from ``gh repo view``, or None on any failure (never a ``main`` guess)."""
-    data = _gh_json(repo_dir, ["repo", "view", "--json", "defaultBranchRef"], gh_runner(runner))
+    data = _gh_json(repo_dir, ["repo", "view", "--json", "defaultBranchRef"], gh_runner(runner, github))
     ref = data.get("defaultBranchRef") if isinstance(data, dict) else None
     name = ref.get("name") if isinstance(ref, dict) else None
     return name.strip() if isinstance(name, str) and name.strip() else None
 
 
-def view_pr(repo_dir: str, pr: str, runner: GhRunner | None = None) -> dict[str, Any] | None:
+def view_pr(
+    repo_dir: str, pr: str, runner: GhRunner | None = None, *, github: GitHubAdapter | None = None
+) -> dict[str, Any] | None:
     """Return the ``gh pr view`` facts of a PR (number, URL or head branch), or None when they cannot be read."""
-    data = _gh_json(repo_dir, ["pr", "view", str(pr), "--json", PR_VIEW_FIELDS], gh_runner(runner))
+    data = _gh_json(repo_dir, ["pr", "view", str(pr), "--json", PR_VIEW_FIELDS], gh_runner(runner, github))
     return data if isinstance(data, dict) else None
 
 
@@ -307,6 +278,16 @@ def _verified_head(
     return (None, reason) if reason else (head_sha, "")
 
 
+def _merge_argv(pr_number: int | str, flag: str, head_sha: str | None, reason: str) -> tuple[list[str] | None, str]:
+    """Return ``(argv, "")`` for the guarded ``gh pr merge`` at a verified head, else ``(None, reason)``."""
+    if head_sha is None:
+        return None, reason
+    try:
+        return merge_argv(pr_number, flag, head_sha), ""
+    except ValueError as exc:
+        return None, str(exc)
+
+
 def merge_child_pr(
     repo_dir: str,
     pr_number: int | str,
@@ -333,9 +314,10 @@ def merge_child_pr(
     if flag is None:
         return MergeResult(False, reason=f"no usable merge method for PR #{pr_number}: {reason}")
     head_sha, reason = _verified_head(repo_dir, pr, plan_branch, expected_head, gh)
-    if head_sha is None:
+    argv, reason = _merge_argv(pr_number, flag, head_sha, reason)
+    if argv is None:
         return MergeResult(False, reason=reason)
-    merge = gh(["pr", "merge", str(pr_number), flag, "--match-head-commit", head_sha], repo_dir)
+    merge = gh(argv, repo_dir)
     after = view_pr(repo_dir, str(pr_number), gh) or {}
     if str(after.get("state") or "").upper() != "MERGED":
         detail = redact_agent_secrets(f"{merge.stdout or ''} {merge.stderr or ''}".strip()) or "no output"

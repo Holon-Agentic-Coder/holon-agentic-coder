@@ -163,7 +163,7 @@ def stage_args(work: Path) -> list[str]:
         return 1
 
     with (
-        patch("sandbox_executor.flow.stages.execute.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.execute.at_stage_boundary", return_value=None),
         patch("sandbox_executor.flow.stages.execute.fetch_base"),
         patch("sandbox_executor.flow.stages.execute.publish_new_child_branches", return_value=[]),
         patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None),
@@ -194,3 +194,21 @@ def test_a_never_pushed_branch_reaches_origin_only_with_its_row(work: Path, monk
     assert subprocess.run(
         ["git", "rev-parse", "--verify", "-q", f"refs/remotes/origin/{EXEC_BRANCH}"], cwd=work
     ).returncode
+
+
+def test_sidecar_scratch_files_are_excluded_from_salvage_and_logged(work: Path) -> None:
+    (work / "tests" / "conftest.py").write_text("# real interrupted edit\n", encoding="utf-8")
+    (work / "mitm_wire_logs").mkdir()
+    (work / "mitm_wire_logs" / "wire_log_1.json").write_text('{"prompt": "secret"}\n', encoding="utf-8")
+    (work / "cache").mkdir()
+    (work / "cache" / "llm_cache.db").write_bytes(b"SQLite format 3\x00")
+    ctx = context(work)
+    result = salvage_leftovers(ctx, prefix())
+    assert result.files == ["tests/conftest.py"]
+    assert git(work, "show", "--name-only", "--format=", result.sha) == "tests/conftest.py"
+    tree = set(git(work, "ls-tree", "-r", "--name-only", result.sha).splitlines())
+    assert "mitm_wire_logs/wire_log_1.json" not in tree
+    assert "cache/llm_cache.db" not in tree
+    joined_logs = "\n".join(ctx.logs)
+    assert "mitm_wire_logs/wire_log_1.json" in joined_logs
+    assert "cache/llm_cache.db" in joined_logs

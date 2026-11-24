@@ -13,13 +13,16 @@ from sandbox_executor.calibration import is_metadata_path
 from sandbox_executor.flow.calibrate_sync import record_starting_branch
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure, _test_evidence
+from sandbox_executor.flow.github.adapter import GitHubAdapter
 from sandbox_executor.flow.review.ci_outcome import describe_ci_outcome
 from sandbox_executor.flow.review.ledger_commit import _close_review_stage
 from sandbox_executor.flow.review.loop import _reviewers_objected, _run_engine_review_loop
+from sandbox_executor.flow.review.proxy_env import review_proxy_env
 from sandbox_executor.flow.review.records import render_reviewer_summary_line
 from sandbox_executor.flow.review.verdict import not_approved_verdicts, render_final_verdicts
-from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.review_outcome import ReviewOutcomeContext, build_review_stage_outcome
+from sandbox_executor.flow.target_sync_hooks import at_stage_boundary
+from sandbox_executor.flow.target_sync_result import SyncBoundary
 from sandbox_executor.flow.test_evidence import _test_results_package
 from sandbox_executor.git import run_git
 from sandbox_executor.git_revisions import qualify_branch_revision, revision_args
@@ -97,10 +100,8 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
                 f"before the review loop: {checkout_err}",
             )
         on_branch.append(context.execution_branch)
-        target_branch = context.intent_data.get("target_branch", "main")
-        check_and_resolve_stage_conflicts(
-            repo_dir, target_branch=target_branch, stage_name="review", branch=context.execution_branch
-        )
+        if sync_failure := at_stage_boundary(context, FlowStage.REVIEW, SyncBoundary.STAGE_START):
+            return sync_failure
 
     exec_result = context.stage_results.get("execute")
 
@@ -152,7 +153,9 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
                 "deletions": deletions,
             }
 
-    loop_res = _run_engine_review_loop(context)
+    # One adapter for the whole stage: every PR, CI, mergeability and posting call of the loop goes through it.
+    github = GitHubAdapter(context.target_worktree, review_proxy_env(context))
+    loop_res = _run_engine_review_loop(context, github=github)
     # The payload reports the engine's configured budget, not the remaining passes of this run.
     consensus_info = {**loop_res.get("consensus", {}), "max_review_iterations": context.max_review_iterations}
 

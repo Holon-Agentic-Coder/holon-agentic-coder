@@ -99,16 +99,23 @@ def _run_two_iterations(tmp_path: Path, monkeypatch, first: ReviewerResult, seco
             run_ensemble_fn=fake,
             run_resolver_fn=_rejecting_resolver(calls),
         )
-    return res, stubs.post, calls, ctx
+    return res, stubs.posts(), calls, ctx
 
 
-def _assert_no_false_consensus(res: dict[str, Any], post, calls: list[dict[str, Any]], severity: str) -> None:
+def _posted_verdict(body: str) -> str:
+    """The ensemble verdict a posted consensus report states."""
+    return body.split("**Ensemble Consensus Verdict**: `", 1)[1].split("`", 1)[0]
+
+
+def _assert_no_false_consensus(
+    res: dict[str, Any], posts: list[tuple], calls: list[dict[str, Any]], severity: str
+) -> None:
     assert res["consensus"]["approved"] is False
     assert res["halted_for_human"] is False
     assert res["ensemble_verdict"] != "APPROVED"
-    for call in post.call_args_list:
-        assert call.kwargs["consensus_data"]["ensemble_verdict"] != "APPROVED"
-        assert call.kwargs["consensus_data"]["approved"] is False
+    for _target, flag, body in posts:
+        assert _posted_verdict(body) != "APPROVED"
+        assert flag != "--approve"
     assert [call["iteration"] for call in calls] == [1, 2]
     assert [row.severity for row in calls[1]["findings"]] == [severity]
     third = res["reviewers"][2]
@@ -121,9 +128,9 @@ def test_scenario_a_positional_id_collision_never_hides_a_critical(tmp_path, mon
     first = _reviewer("important", "Mount options are logged verbosely.", ("src/sandbox/log.py", 7))
     second = _reviewer("critical", "Bind mount exposes the host Docker socket.", security="CHANGES")
 
-    res, post, calls, _ = _run_two_iterations(tmp_path, monkeypatch, first, second)
+    res, posts, calls, _ = _run_two_iterations(tmp_path, monkeypatch, first, second)
 
-    _assert_no_false_consensus(res, post, calls, "critical")
+    _assert_no_false_consensus(res, posts, calls, "critical")
 
 
 @pytest.mark.parametrize("first_severity", ["critical", "important"])
@@ -133,9 +140,9 @@ def test_scenario_b_signature_match_never_hides_a_critical(tmp_path, monkeypatch
     first = _reviewer(first_severity, summary)
     second = _reviewer("critical", summary, security="CHANGES")
 
-    res, post, calls, _ = _run_two_iterations(tmp_path, monkeypatch, first, second)
+    res, posts, calls, _ = _run_two_iterations(tmp_path, monkeypatch, first, second)
 
-    _assert_no_false_consensus(res, post, calls, "critical")
+    _assert_no_false_consensus(res, posts, calls, "critical")
 
 
 # --- Step 2: adjudication suppression is for nits only and never touches a verdict ----------------------------------
@@ -232,7 +239,7 @@ def test_a_role_at_changes_blocks_consensus_when_every_reviewer_approved_cleanly
     assert res["consensus"]["approved"] is False
     assert res["ensemble_verdict"] == "CHANGES_REQUESTED"
     assert res["consensus_blockers"] == ["reviewer 3 Security role CHANGES"]
-    assert stubs.post.call_args.kwargs["consensus_data"]["ensemble_verdict"] == "CHANGES_REQUESTED"
+    assert _posted_verdict(stubs.posts()[-1][2]) == "CHANGES_REQUESTED"
     assert any(
         "reviewer 3 Security role CHANGES" in line and "no resolver pass applicable" in line for line in ctx.logs
     )

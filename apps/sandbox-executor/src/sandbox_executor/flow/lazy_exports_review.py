@@ -36,6 +36,7 @@ REVIEW_LAZY_EXPORTS: dict[str, str] = {
         "MergedHeadSeams format_merged_head_ci gate_merged_head_ci gate_record skipped_record"
     ),
     "sandbox_executor.flow.review.posting": "is_terminal_verdict",
+    "sandbox_executor.flow.review.proxy_env": "review_proxy_env",
     "sandbox_executor.flow.review.records": (
         "_SEVERITY_RANK POSTING_ERROR_CONTEXT_MAX_CHARS _attach_transported_detail _bounded_error_context "
         "_posting_failure_context _record_infrastructure_findings _record_reviewer_rows _refused_review_result "
@@ -45,6 +46,11 @@ REVIEW_LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.review.resolver": (
         "DispositionRecorder ResolverInput ResolverOutcome _dispatch_review_resolver _invoke_resolver_pass "
         "_lookup_introducing_action_id"
+    ),
+    "sandbox_executor.flow.review.sync_points": (
+        "compute_rereview_scope finalize_resolver_turn format_conflict_block_reason is_ledger_only_sync "
+        "is_mechanical_only sync_after_resolver_turn sync_before_review_iteration sync_iteration_mergeability "
+        "sync_review_head"
     ),
     "sandbox_executor.flow.review.verdict": "review_loop_approved review_summary_lines",
     "sandbox_executor.flow.review.workspace": "HOST_REVIEW_REFUSAL reviewers_sandboxed",

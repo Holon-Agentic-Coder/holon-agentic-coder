@@ -1,22 +1,24 @@
 """The conflict gate: no approved consensus is posted, and Stage 5 never starts, on a CONFLICTING or DIRTY head.
 
-The mergeability probe is scripted, the post is a mock, and the merge either is a recorded fake or runs real git
-against a local bare ``origin``; no test reaches GitHub.
+The mergeability reads and the post are answered by an injected ``FakeGitHub``, and the merge either is a recorded
+fake or runs real git against a local bare ``origin``; no test reaches GitHub.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from sandbox_executor.flow import FlowContext, StageResult, StageStatus, run_review_loop
-from sandbox_executor.flow.review import conflict_gate
+from sandbox_executor.flow.review import conflict_gate, sync_points
 from sandbox_executor.flow.review.posting import PostRequest, post_review_consensus
 from sandbox_executor.flow.stages import calibrate
+from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncResult
 from sandbox_executor.review_report import _mergeability_word
 
+from tests.flow.github.fake_github import view_for
 from tests.flow.helpers import _git
 from tests.ledger_conflict_repos import BRANCH, LEDGER, build_conflicting_repos, refuse_test_runs
 from tests.review_fakes import FakeEnsemble, clean_reviewer
@@ -24,23 +26,39 @@ from tests.review_loop_stubs import _CLEAN_MERGE, EXEC_TARGET, _ensemble_ctx, _L
 
 CONFLICTING = {"mergeable": "CONFLICTING", "merge_state_status": "DIRTY", "is_dirty": True}
 DIRTY = {"mergeable": "UNKNOWN", "merge_state_status": "DIRTY", "is_dirty": True}
-CODE_CONFLICT = conflict_gate._MergeOutcome(merged=False, conflicting_paths=("src/app.py",))
+CODE_CONFLICT = SyncResult(
+    "blocked",
+    "a" * 40,
+    "a" * 40,
+    "b" * 40,
+    code_paths=("src/app.py",),
+    conflicted_paths=("src/app.py",),
+    error="code conflicts unresolved: src/app.py",
+)
+LEDGER_MERGED = SyncResult(
+    "merged",
+    "a" * 40,
+    "b" * 40,
+    "c" * 40,
+    resolutions=((LEDGER, "ledger", "mechanical"),),
+)
 
 
-class _RecordingMerge:
-    """Stands in for the temporary-worktree merge; records each call and returns a fixed outcome."""
+class _RecordingSync:
+    """Stands in for ``sync_points.sync_review_head``; records each call and returns a fixed ``SyncResult``."""
 
-    def __init__(self, outcome: conflict_gate._MergeOutcome) -> None:
-        self.outcome = outcome
+    def __init__(self, result: SyncResult) -> None:
+        self.result = result
         self.calls: list[tuple[str, str, str]] = []
-        self.trailers = ""
 
     def __call__(
-        self, repo_dir: str, branch: str, target_branch: str, trailers: str = ""
-    ) -> conflict_gate._MergeOutcome:
-        self.calls.append((repo_dir, branch, target_branch))
-        self.trailers = trailers
-        return self.outcome
+        self, context: FlowContext, branch: str, target_branch: str, boundary: SyncBoundary, **kwargs
+    ) -> SyncResult:
+        del kwargs
+        if boundary is SyncBoundary.TURN:
+            return SyncResult("unchanged", "", "", "")
+        self.calls.append((context.target_worktree, branch, target_branch))
+        return self.result
 
 
 @pytest.mark.parametrize(
@@ -59,18 +77,14 @@ def test_only_an_explicit_conflict_or_dirty_state_counts(probe, expected):
 
 
 def test_loop_never_posts_an_approval_when_the_head_turns_conflicting_before_the_post(tmp_path, monkeypatch):
-    merge = _RecordingMerge(CODE_CONFLICT)
-    monkeypatch.setattr(conflict_gate, "_merge_and_push", merge)
-    probes = [dict(_CLEAN_MERGE), dict(CONFLICTING)]
+    merge = _RecordingSync(CODE_CONFLICT)
+    monkeypatch.setattr(sync_points, "sync_review_head", merge)
     stubs = _LoopStubs()
+    # The iteration reads a clean head; every later read (the pre-post conflict gate) sees it conflicting.
+    stubs.github.views = [view_for(_CLEAN_MERGE)]
+    stubs.github.standing_view = view_for(CONFLICTING)
     ctx = _ensemble_ctx(tmp_path)
-    with (
-        stubs,
-        patch(
-            "sandbox_executor.flow.review.loop.check_pr_mergeability",
-            side_effect=lambda *a, **k: dict(probes.pop(0) if len(probes) > 1 else probes[0]),
-        ),
-    ):
+    with stubs:
         res = run_review_loop(
             ctx,
             target=EXEC_TARGET,
@@ -79,7 +93,7 @@ def test_loop_never_posts_an_approval_when_the_head_turns_conflicting_before_the
             run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
         )
 
-    stubs.post.assert_not_called()
+    assert stubs.posts() == []
     assert merge.calls == [(str(tmp_path), EXEC_TARGET, "main")]
     assert res["consensus"]["approved"] is False
     assert res["consensus"]["status"] == "conflict_gate"
@@ -89,8 +103,8 @@ def test_loop_never_posts_an_approval_when_the_head_turns_conflicting_before_the
 
 
 def test_a_clean_head_posts_the_approval_unchanged(tmp_path, monkeypatch):
-    merge = _RecordingMerge(CODE_CONFLICT)
-    monkeypatch.setattr(conflict_gate, "_merge_and_push", merge)
+    merge = _RecordingSync(CODE_CONFLICT)
+    monkeypatch.setattr(sync_points, "sync_review_head", merge)
     ctx = _ensemble_ctx(tmp_path)
     with _LoopStubs() as stubs:
         res = run_review_loop(
@@ -102,7 +116,7 @@ def test_a_clean_head_posts_the_approval_unchanged(tmp_path, monkeypatch):
         )
 
     assert res["consensus"]["approved"] is True
-    assert stubs.post.call_count == 1
+    assert len(stubs.posts()) == 1
     assert merge.calls == []
     assert not _rows(tmp_path, "ACT-GATE")
 
@@ -113,9 +127,9 @@ def _stage5_context(tmp_path: Path, **kwargs) -> FlowContext:
 
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_stage5_refuses_a_dirty_head_without_calibrating(tmp_path, monkeypatch, dry_run):
-    merge = _RecordingMerge(CODE_CONFLICT)
+    merge = _RecordingSync(CODE_CONFLICT)
     calibrate_branch = MagicMock()
-    monkeypatch.setattr(conflict_gate, "_merge_and_push", merge)
+    monkeypatch.setattr(sync_points, "sync_review_head", merge)
     monkeypatch.setattr(conflict_gate.stage_conflicts, "check_pr_mergeability", lambda *a, **k: dict(DIRTY))
     monkeypatch.setattr(calibrate, "_calibrate_execution_branch", calibrate_branch)
 
@@ -129,11 +143,11 @@ def test_stage5_refuses_a_dirty_head_without_calibrating(tmp_path, monkeypatch, 
 
 @pytest.mark.parametrize(
     ("probe", "outcome"),
-    [(_CLEAN_MERGE, CODE_CONFLICT), (CONFLICTING, conflict_gate._MergeOutcome(merged=True, ledger_only=True))],
+    [(_CLEAN_MERGE, CODE_CONFLICT), (CONFLICTING, LEDGER_MERGED)],
 )
 def test_stage5_proceeds_on_a_clean_or_freshly_merged_head(tmp_path, monkeypatch, probe, outcome):
     expected = StageResult(stage=calibrate.FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
-    monkeypatch.setattr(conflict_gate, "_merge_and_push", _RecordingMerge(outcome))
+    monkeypatch.setattr(sync_points, "sync_review_head", _RecordingSync(outcome))
     monkeypatch.setattr(conflict_gate.stage_conflicts, "check_pr_mergeability", lambda *a, **k: dict(probe))
     monkeypatch.setattr(calibrate, "_calibrate_execution_branch", MagicMock(return_value=expected))
 
@@ -165,40 +179,40 @@ def test_ledger_only_conflict_is_merged_and_pushed_but_the_approval_is_not_poste
     assert posting_res["posted"] is False
     assert posting_res["conflict_gate"]["ledger_only"] is True
     assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") != before
-    ids = [
-        json.loads(line)["execution_id"] for line in _git(origin, "show", f"refs/heads/{BRANCH}:{LEDGER}").splitlines()
-    ]
-    assert ids == ["E-base", "E-main", "E-early", "E-late"]
+    merged_rows = [json.loads(line) for line in _git(origin, "show", f"refs/heads/{BRANCH}:{LEDGER}").splitlines()]
+    assert [r["execution_id"] for r in merged_rows[:4]] == ["E-base", "E-main", "E-early", "E-late"]
+    assert merged_rows[-1]["action"] == "target_sync"
     message = _git(origin, "log", "-1", "--format=%B", f"refs/heads/{BRANCH}")
-    assert "Action-Origin: pr_review" in message and "Review-Iteration: 1" in message
+    assert "sync: merge target" in message
     rows = [json.loads(line) for line in exec_file.read_text(encoding="utf-8").splitlines()]
     assert [row["action_id"].split("-")[1] for row in rows] == ["GATE"]
 
 
 def test_the_gate_refuses_to_merge_into_a_protected_branch_or_after_a_failed_fetch(tmp_path):
-    protected = conflict_gate._merge_and_push(str(tmp_path), "main", "feature")
-    assert (protected.merged, protected.error) == (False, "refusing to push to protected branch 'main'")
+    ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="main", token_reduce=False)
+    protected = sync_points.sync_review_head(ctx, "main", "feature", SyncBoundary.PUSH)
+    assert (protected.status, protected.error) == ("blocked", "refusing to push to protected branch 'main'")
 
-    unfetched = conflict_gate._merge_and_push(str(tmp_path), "feature", "main")
-    assert unfetched.merged is False
-    assert unfetched.error.startswith("fetching 'main' and 'feature' failed: ")
+    unfetched = sync_points.sync_review_head(ctx, "feature", "main", SyncBoundary.PUSH)
+    assert unfetched.status == "blocked"
+    assert unfetched.error.startswith("fetching 'main' and 'feature' failed")
 
 
-class _SpyMerge:
-    """Records, when the merge starts, the flow worktree's status and the ledger origin's branch holds; then merges."""
+class _SpySync:
+    """Records, when the sync starts, the flow worktree's status and the ledger origin's branch holds; then syncs."""
 
     def __init__(self, origin: Path, work: Path) -> None:
         self.origin, self.work = origin, work
         self.seen: list[tuple[str, str]] = []
 
-    def __call__(self, repo_dir: str, branch: str, target_branch: str, trailers: str = ""):
+    def __call__(self, context: FlowContext, branch: str, target_branch: str, boundary: SyncBoundary, **kwargs):
         self.seen.append(
             (_git(self.work, "status", "--porcelain"), _git(self.origin, "show", f"refs/heads/{branch}:{LEDGER}"))
         )
-        return _REAL_MERGE(repo_dir, branch, target_branch, trailers)
+        return _REAL_SYNC(context, branch, target_branch, boundary, **kwargs)
 
 
-_REAL_MERGE = conflict_gate._merge_and_push
+_REAL_SYNC = sync_points.sync_review_head
 
 
 def _pending_rows_repos(tmp_path: Path) -> tuple[Path, Path]:
@@ -237,8 +251,8 @@ def test_a_conflict_merge_starts_from_a_clean_tree_with_pending_rows_committed_a
     refuse_test_runs(monkeypatch)
     origin, work = _pending_rows_repos(tmp_path)
     monkeypatch.setattr(conflict_gate.stage_conflicts, "check_pr_mergeability", lambda *a, **k: dict(CONFLICTING))
-    spy = _SpyMerge(origin, work)
-    monkeypatch.setattr(conflict_gate, "_merge_and_push", spy)
+    spy = _SpySync(origin, work)
+    monkeypatch.setattr(sync_points, "sync_review_head", spy)
 
     gate(work, tmp_path / "gate-ledger.jsonl")
 
@@ -249,7 +263,7 @@ def test_a_conflict_merge_starts_from_a_clean_tree_with_pending_rows_committed_a
     assert _git(work, "rev-parse", "HEAD") == merged  # The local branch followed the pushed merge.
     assert _git(work, "status", "--porcelain") == ""
     ids = [json.loads(line)["execution_id"] for line in _git(origin, "show", f"{merged}:{LEDGER}").splitlines()]
-    assert ids == ["E-base", "E-main", "E-early", "E-late", "E-pending"]
+    assert ids[:5] == ["E-base", "E-main", "E-early", "E-late", "E-pending"]
 
 
 def _unpushable_rows_repos(tmp_path: Path) -> tuple[Path, Path]:
@@ -264,8 +278,8 @@ def _unpushable_rows_repos(tmp_path: Path) -> tuple[Path, Path]:
 def test_pending_rows_that_cannot_be_pushed_block_the_gate_without_merging(tmp_path, monkeypatch):
     origin, work = _unpushable_rows_repos(tmp_path)
     before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
-    merge = _RecordingMerge(CODE_CONFLICT)
-    monkeypatch.setattr(conflict_gate, "_merge_and_push", merge)
+    merge = _RecordingSync(CODE_CONFLICT)
+    monkeypatch.setattr(sync_points, "sync_review_head", merge)
     ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
 
     gate = conflict_gate._gate_conflicting_head(
@@ -281,8 +295,8 @@ def test_pending_rows_that_cannot_be_pushed_block_the_gate_without_merging(tmp_p
 def test_stage5_rows_whose_push_was_rejected_block_the_merge(tmp_path, monkeypatch):
     origin, work = _unpushable_rows_repos(tmp_path)
     before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
-    merge = _RecordingMerge(CODE_CONFLICT)
-    monkeypatch.setattr(conflict_gate, "_merge_and_push", merge)
+    merge = _RecordingSync(CODE_CONFLICT)
+    monkeypatch.setattr(sync_points, "sync_review_head", merge)
     monkeypatch.setattr(conflict_gate.stage_conflicts, "check_pr_mergeability", lambda *a, **k: dict(CONFLICTING))
     ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False, review_iterations_done=2)
 
@@ -306,8 +320,8 @@ def _committed_rows_repos(tmp_path: Path, *, diverged: bool) -> tuple[Path, Path
 def test_an_earlier_unpushed_ledger_commit_is_pushed_before_the_merge(tmp_path, monkeypatch):
     refuse_test_runs(monkeypatch)
     origin, work = _committed_rows_repos(tmp_path, diverged=False)
-    spy = _SpyMerge(origin, work)
-    monkeypatch.setattr(conflict_gate, "_merge_and_push", spy)
+    spy = _SpySync(origin, work)
+    monkeypatch.setattr(sync_points, "sync_review_head", spy)
     ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
 
     gate = conflict_gate._gate_conflicting_head(
@@ -323,8 +337,8 @@ def test_an_earlier_unpushed_ledger_commit_is_pushed_before_the_merge(tmp_path, 
 def test_an_earlier_ledger_commit_that_cannot_be_pushed_blocks_the_merge(tmp_path, monkeypatch):
     origin, work = _committed_rows_repos(tmp_path, diverged=True)
     before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
-    merge = _RecordingMerge(CODE_CONFLICT)
-    monkeypatch.setattr(conflict_gate, "_merge_and_push", merge)
+    merge = _RecordingSync(CODE_CONFLICT)
+    monkeypatch.setattr(sync_points, "sync_review_head", merge)
     ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
 
     gate = conflict_gate._gate_conflicting_head(
@@ -344,8 +358,8 @@ def test_an_unpushed_code_commit_blocks_the_merge_and_is_never_pushed(tmp_path, 
     _git(work, "commit", "-q", "-m", "resolver commit the host refused to push")
     _git(work, "stash", "pop", "-q")
     before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
-    merge = _RecordingMerge(CODE_CONFLICT)
-    monkeypatch.setattr(conflict_gate, "_merge_and_push", merge)
+    merge = _RecordingSync(CODE_CONFLICT)
+    monkeypatch.setattr(sync_points, "sync_review_head", merge)
     ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
 
     gate = conflict_gate._gate_conflicting_head(
@@ -508,26 +522,23 @@ def test_a_legacy_approval_without_a_fingerprint_is_blocked_as_before(tmp_path, 
 
 def test_a_carried_approval_ends_the_loop_approved_without_another_reviewer_dispatch(tmp_path, monkeypatch):
     merged_head = "b" * 40
-    merge = _RecordingMerge(conflict_gate._MergeOutcome(merged=True, ledger_only=True, head_sha=merged_head))
-    monkeypatch.setattr(conflict_gate, "_merge_and_push", merge)
+    merge = _RecordingSync(
+        SyncResult("merged", "a" * 40, merged_head, "c" * 40, resolutions=((LEDGER, "ledger", "mechanical"),))
+    )
+    monkeypatch.setattr(sync_points, "sync_review_head", merge)
     same_change = MagicMock(return_value="pf1:" + "c" * 40)
     monkeypatch.setattr("sandbox_executor.flow.review.loop.approval_fingerprint_of", same_change)
     monkeypatch.setattr("sandbox_executor.flow.review.approval_carry_over.approval_fingerprint_of", same_change)
-    probes = [dict(_CLEAN_MERGE), dict(CONFLICTING)]
     ensemble = FakeEnsemble([clean_reviewer(1)])
     stubs = _LoopStubs()
+    stubs.github.views = [view_for(_CLEAN_MERGE)]
+    stubs.github.standing_view = view_for(CONFLICTING)
     ctx = _ensemble_ctx(tmp_path)
-    with (
-        stubs,
-        patch(
-            "sandbox_executor.flow.review.loop.check_pr_mergeability",
-            side_effect=lambda *a, **k: dict(probes.pop(0) if len(probes) > 1 else probes[0]),
-        ),
-    ):
+    with stubs:
         res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=3, ensemble_size=1, run_ensemble_fn=ensemble)
 
     assert len(ensemble.calls) == 1  # The single approving pass; no reviewer is dispatched again.
-    assert stubs.post.call_count == 1
+    assert len(stubs.posts()) == 1
     assert res["consensus"]["approved"] is True and res["consensus"]["status"] == "approved"
     approved = res["consensus"]["target_commit"]  # The SHA the reviewers saw, never the merged head.
     assert approved and approved != merged_head

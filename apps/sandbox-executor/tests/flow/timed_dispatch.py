@@ -34,7 +34,7 @@ def dispatch_timed_execute(tmp_path, env, exit_code=7):
     exec_branch = "I-1-x/P-2-y/E-3-claude-agent-claude-opus-5-5/_"
     with (
         patch.dict(os.environ, env),
-        patch("sandbox_executor.flow.stages.execute.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.execute.at_stage_boundary", return_value=None),
         patch("sandbox_executor.flow.stages.execute.fetch_base"),
         patch("sandbox_executor.flow.stages.execute.publish_new_child_branches", return_value=[]),
         patch("sandbox_executor.flow.stages.execute._snapshot_child_branches", return_value=set()),

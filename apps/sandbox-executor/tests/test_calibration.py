@@ -1399,7 +1399,7 @@ def test_run_calibrate_ledger_failure_reaches_operator_log_fn(calibration_repo):
     assert committed == ["plans/I-1-cal/P-2_calibration.md"]
 
 
-def test_record_calibration_action_accepts_fallback_dict(tmp_path, guard_real_ledger):
+def test_record_calibration_action_accepts_failure_dict(tmp_path, guard_real_ledger):
     logs: list[str] = []
     row = record_calibration_action(
         {"plan_id": "P-9", "calibrated_branch": "I-1/P-9/E-1/calibrated", "execution_branch": "I-1/P-9/E-1/_"},
@@ -1412,7 +1412,7 @@ def test_record_calibration_action_accepts_fallback_dict(tmp_path, guard_real_le
     assert row is not None
     assert row["action_id"].startswith("ACT-CAL-")
     assert row["outcome"] == "failure"
-    assert row["action"] == "Calibration failed for plan P-9; fallback report written"
+    assert row["action"] == "Calibration failed for plan P-9; nothing committed, row left uncommitted"
     assert row["predicted_metrics"] is None
     written = (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").read_text(encoding="utf-8")
     assert json.loads(written) == row
@@ -1463,8 +1463,8 @@ def test_stage5_dry_run_leaves_executions_ledger_unchanged(calibration_repo):
 
 
 def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
-    """A rejected report commit leaves every Stage 5 row uncommitted and skips push / ff."""
-    from sandbox_executor.flow import run_calibrate_stage
+    """A rejected report commit fails Stage 5 closed: its rows stay uncommitted, no push / ff / reconciliation."""
+    from sandbox_executor.flow import StageStatus, run_calibrate_stage
     from sandbox_executor.git import run_git as real_run_git
 
     repo, git = calibration_repo
@@ -1482,32 +1482,32 @@ def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
 
     with (
         patch("sandbox_executor.calibration.format_calibration_report"),
-        patch("sandbox_executor.flow.stages.calibrate.format_calibration_report"),
-        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.review.run_git", side_effect=recording_run_git),
     ):
-        run_calibrate_stage(ctx)
+        res = run_calibrate_stage(ctx)
 
-    # No push, no fast-forward, no reconciliation commit.
+    assert res.status == StageStatus.FAILED
+    assert "nothing was committed or pushed" in (res.error or "")
     assert not [c for c in git_calls if c[:1] in (["push"], ["merge"]) or c[:1] == ["commit"]]
     assert git("rev-parse", _EXEC_BRANCH).strip() == exec_head_before
-    assert git("rev-parse", calibrated).strip() == exec_head_before
-    for ref in (calibrated, _EXEC_BRANCH):
-        assert _cal_rows(git("show", f"{ref}:{ledger_rel}")) == []
+    assert git("branch", "--list", calibrated).strip() == ""
+    assert git("rev-parse", "--abbrev-ref", "HEAD").strip() == _EXEC_BRANCH
+    assert _cal_rows(git("show", f"{_EXEC_BRANCH}:{ledger_rel}")) == []
     # The ACT-CAL rows stay in the working tree: the rejected success row, then the failure row.
     working = (repo / ledger_rel).read_text(encoding="utf-8")
     assert [r["outcome"] for r in _cal_rows(working)] == ["success", "failure"]
     failure = _cal_rows(working)[-1]
     assert "Git commit of calibration report plans/I-1-cal/P-2_calibration.md failed" in failure["error_context"]
-    assert failure["action"] == "Calibration failed for plan P-2; existing report and ledger rows left uncommitted"
+    assert failure["action"] == "Calibration failed for plan P-2; nothing committed, row left uncommitted"
     assert _HOOK_SECRET not in working
     recon = [json.loads(line) for line in working.splitlines() if line.strip()]
-    assert [r for r in recon if r.get("event_type") == "reconciliation"]
+    assert not [r for r in recon if r.get("event_type") == "reconciliation"]
     assert ledger_rel in git("status", "--porcelain")
     joined = "\n".join(ctx.logs)
     assert _HOOK_SECRET not in joined
-    assert "left uncommitted" in joined
-    assert "Stage 5 completed with a calibration failure" in joined
+    assert _HOOK_SECRET not in (res.error or "")
+    assert "Calibration attempt 1/3 failed (permanent)" in joined
 
 
 def test_stage5_commits_reconciliation_row_on_calibrated_branch(calibration_repo):
@@ -1519,7 +1519,7 @@ def test_stage5_commits_reconciliation_row_on_calibrated_branch(calibration_repo
     ctx = _stage5_context(repo, dry_run=False)
     with (
         patch("sandbox_executor.calibration.format_calibration_report"),
-        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
     ):
         res = run_calibrate_stage(ctx)
     assert res.status == StageStatus.SUCCESS

@@ -118,6 +118,9 @@ case "$ROLE" in
     review-loop)
         exec python3 -m sandbox_executor.entrypoint.review_loop "$@"
         ;;
+    conflict-resolver)
+        exec python3 -m sandbox_executor.entrypoint.conflict_resolver "$@"
+        ;;
     *)
         # If no role, allow running arbitrary commands (like ls or bash)
         exec "$@"

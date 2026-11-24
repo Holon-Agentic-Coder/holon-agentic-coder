@@ -399,7 +399,12 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
 The guarantee has five deliberate limits:
 
 - **No fabricated plans.** If no planner agent produced `plans/I-.../P-*.md` on a plan branch under the intent branch,
-  Stage 2 fails; the flow never writes a plan from a template.
+  Stage 2 fails; the flow never writes a plan from a template. On entry to Stage 2, the stage adopts the newest complete
+  plan branch of the intent when one already exists (complete: its `plans.jsonl` row and the plan file that row records
+  both exist at the branch ref), pushes it first when it exists only locally, and logs the adopted branch and every
+  candidate it ignored. The checkpoint names the plan branch before the host pushes it. An engine re-plan (over budget
+  or a touch-set violation) always plans afresh; to plan afresh by hand, delete the plan branch locally and on `origin`,
+  then resume with `--from-stage plan`.
 - **Empty executions fail.** An execution branch with no changes outside `holon-knowledge/ledger/`, `plans/` and
   `executions/` relative to its plan branch (content merged in from the target branch does not count) is recorded as
   `status: "failed"` (`failure_reason: "empty_diff"`, no `test_pass_rate`), Stage 3 fails and no PR is created or
@@ -983,10 +988,10 @@ def auto_resolve_conflict(sub_intent, deciding_branch):
 
 ### 9.2 Reactive Intent (If Auto-Resolution Fails)
 
-The reactive intent is decided during the sub-intent's execution, so it nests under that execution (section 2.2): its
-`deciding_branch` and `target_branch` are both that execution branch, which it is cut from and merges back into
-automatically. Like Example 3 in [Examples](examples.md), this illustrates the general rule only; the plan-decided split
-stays the practice.
+Target-sync code conflicts first go to the [conflict-resolver role](conflict_resolver_role.md). The reactive intent is
+decided during the sub-intent's execution, so it nests under that execution (section 2.2): its `deciding_branch` and
+`target_branch` are both that execution branch, which it is cut from and merges back into automatically. Like Example 3
+in [Examples](examples.md), this illustrates the general rule only; the plan-decided split stays the practice.
 
 ```python
 import time

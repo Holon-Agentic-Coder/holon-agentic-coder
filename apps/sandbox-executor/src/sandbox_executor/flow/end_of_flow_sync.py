@@ -12,8 +12,10 @@ from sandbox_executor.flow import target_sync_hooks as _hooks
 from sandbox_executor.flow.base_files import base_branch_name
 from sandbox_executor.flow.conflict_resolver_role import conflict_code_resolver
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
-from sandbox_executor.flow.git_refs import _track_local_branch
+from sandbox_executor.flow.git_refs import _resolve_branch_ref, _track_local_branch
+from sandbox_executor.flow.github.merge import PROTECTED_BRANCHES, _bare_branch
 from sandbox_executor.flow.github.pr import check_pr_mergeability
+from sandbox_executor.flow.review.proxy_env import review_proxy_env
 from sandbox_executor.flow.review.sync_points import compute_rereview_scope, format_conflict_block_reason
 from sandbox_executor.flow.review_restart import approval_stands, calibrate_with_review_restart
 from sandbox_executor.flow.target_probe import TargetProbeError
@@ -22,6 +24,8 @@ from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest, 
 
 MAX_END_OF_FLOW_REENTRIES = 3
 MAX_UNKNOWN_MERGEABILITY_PROBES = 3
+_RunStage = Callable[[FlowStage], StageResult]
+_RecordStage = Callable[[FlowStage, StageResult], None]
 
 
 @dataclass(frozen=True)
@@ -56,12 +60,6 @@ class EndOfFlowSeams:
     sleep: Callable[[float], None] = time.sleep
 
 
-def _skip_reason(context: FlowContext) -> str | None:
-    if context.dry_run or context.skip_push or not context.execution_branch:
-        return "dry run" if context.dry_run else "push skipped" if context.skip_push else "no execution branch"
-    return None
-
-
 def _verdict_fields(verdict: dict[str, Any]) -> tuple[str, str, bool]:
     mergeable = str(verdict.get("mergeable") or "UNKNOWN").upper()
     state = str(verdict.get("merge_state_status") or "UNKNOWN").upper()
@@ -79,7 +77,9 @@ def _is_not_a_repo(verdict: dict[str, Any]) -> bool:
 
 def _probe_mergeability(context: FlowContext, branch: str, target_branch: str, seams: EndOfFlowSeams) -> dict[str, Any]:
     """Probe PR mergeability, re-probing transient ``UNKNOWN`` states with bounded backoff."""
-    probe_fn = seams.mergeability_probe or (lambda worktree, br, tgt: check_pr_mergeability(worktree, br, tgt))
+    probe_fn = seams.mergeability_probe or (
+        lambda worktree, br, tgt: check_pr_mergeability(worktree, br, tgt, proxy_env=review_proxy_env(context))
+    )
     verdict: dict[str, Any] = {}
     for attempt in range(1, MAX_UNKNOWN_MERGEABILITY_PROBES + 1):
         verdict = probe_fn(context.target_worktree, branch, target_branch)
@@ -98,8 +98,8 @@ def _non_conflicting_outcome(rounds: int, verdict: dict[str, Any]) -> EndOfFlowS
         return EndOfFlowSyncResult(clean=True, rounds=rounds, skipped=True, reason="not a git repository")
     mergeable, state, is_dirty = _verdict_fields(verdict)
     if mergeable == "UNKNOWN" or state == "MISSING_REF":
-        reason = f"PR mergeability unresolved ({mergeable}/{state}) after {MAX_UNKNOWN_MERGEABILITY_PROBES} probes"
-        return _blocked_result(rounds, mergeable, state, reason)
+        suffix = "" if state == "MISSING_REF" else f" after {MAX_UNKNOWN_MERGEABILITY_PROBES} probes"
+        return _blocked_result(rounds, mergeable, state, f"PR mergeability unresolved ({mergeable}/{state}){suffix}")
     if is_dirty:
         return None
     if mergeable == "MERGEABLE":
@@ -107,16 +107,27 @@ def _non_conflicting_outcome(rounds: int, verdict: dict[str, Any]) -> EndOfFlowS
     return _blocked_result(rounds, mergeable, state, f"PR is not mergeable ({mergeable}/{state})")
 
 
+def _precheck_sync(worktree: str, branch: str, target_branch: str) -> str | None:
+    if _bare_branch(branch) in PROTECTED_BRANCHES:
+        return f"refusing to push to protected branch '{branch}'"
+    if not _hooks._can_sync_worktree(worktree, target_branch):
+        return f"fetching '{target_branch}' and '{branch}' failed"
+    if _resolve_branch_ref(worktree, branch, prefer_remote=True) is None:
+        return f"branch '{branch}' could not be resolved"
+    return None
+
+
 def _run_flow_end_sync(
     context: FlowContext, branch: str, target_branch: str, round_num: int, seams: EndOfFlowSeams
 ) -> SyncResult:
     """Execute ``sync_with_target`` at ``SyncBoundary.FLOW_END`` for ``round_num``."""
-    worktree = context.target_worktree
-    prev, detached = "", False
+    worktree, prev, detached = context.target_worktree, "", False
     if seams.sync_runner is None:
-        prev, detached, checkout_err = _hooks._checkout_active_branch(context, branch)
-        if checkout_err is not None:
-            return SyncResult("blocked", "", "", "", error=checkout_err)
+        err = _precheck_sync(worktree, branch, target_branch)
+        if err is None:
+            prev, detached, err = _hooks._checkout_active_branch(context, branch)
+        if err is not None:
+            return SyncResult("blocked", "", "", "", error=err)
     request = SyncRequest(
         worktree=worktree,
         branch=branch,
@@ -142,17 +153,13 @@ def _run_flow_end_sync(
     if result.status == "merged":
         _track_local_branch(context, branch)
         if scope := compute_rereview_scope(result):
-            existing = getattr(context, "review_scope_paths", None) or []
-            context.review_scope_paths = sorted(set(existing) | set(scope))
+            context.review_scope_paths = sorted(set(getattr(context, "review_scope_paths", None) or []) | set(scope))
     return result
 
 
-def _reenter_review_and_calibrate(
-    context: FlowContext,
-    run_stage: Callable[[FlowStage], StageResult],
-    record: Callable[[FlowStage, StageResult], None],
-) -> str | None:
+def _reenter_review_and_calibrate(context: FlowContext, run_stage: _RunStage, record: _RecordStage) -> str | None:
     """Re-enter Stage 4 and (when enabled) Stage 5 on the merged head; return an error reason if not clean."""
+    context.review_iterations_done, context.carried_review_findings = 0, []
     review = run_stage(FlowStage.REVIEW)
     record(FlowStage.REVIEW, review)
     if review.status != StageStatus.APPROVED:
@@ -167,15 +174,12 @@ def _reenter_review_and_calibrate(
 
 
 def finish_flow(
-    context: FlowContext,
-    run_stage: Callable[[FlowStage], StageResult],
-    record: Callable[[FlowStage, StageResult], None],
-    *,
-    seams: EndOfFlowSeams | None = None,
+    context: FlowContext, run_stage: _RunStage, record: _RecordStage, *, seams: EndOfFlowSeams | None = None
 ) -> EndOfFlowSyncResult:
     """Verify the PR is mergeable and clean at flow end, syncing and re-entering Stages 4-5 up to three times."""
-    if skip := _skip_reason(context):
-        return EndOfFlowSyncResult(clean=True, skipped=True, reason=skip)
+    if context.dry_run or context.skip_push or not context.execution_branch:
+        why = "dry run" if context.dry_run else "push skipped" if context.skip_push else "no execution branch"
+        return EndOfFlowSyncResult(clean=True, skipped=True, reason=why)
     active_seams = seams or EndOfFlowSeams()
     branch, target_branch = str(context.execution_branch), base_branch_name(context)
     rounds = 0
@@ -192,7 +196,5 @@ def finish_flow(
         sync_result = _run_flow_end_sync(context, branch, target_branch, rounds, active_seams)
         if sync_result.status == "blocked":
             return _blocked_result(rounds, mergeable, state, format_conflict_block_reason(sync_result, target_branch))
-        if sync_result.status == "merged" and (
-            reentry_err := _reenter_review_and_calibrate(context, run_stage, record)
-        ):
-            return _blocked_result(rounds, mergeable, state, reentry_err)
+        if sync_result.status == "merged" and (err := _reenter_review_and_calibrate(context, run_stage, record)):
+            return _blocked_result(rounds, mergeable, state, err)

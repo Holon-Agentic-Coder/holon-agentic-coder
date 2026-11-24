@@ -80,6 +80,7 @@ def test_conflicting_pr_syncs_reenters_stages_4_and_5_and_completes(tmp_path):
         patch(
             "sandbox_executor.flow.end_of_flow_sync.check_pr_mergeability", side_effect=lambda *a, **k: next(verdicts)
         ),
+        patch("sandbox_executor.flow.end_of_flow_sync._precheck_sync", return_value=None),
         patch("sandbox_executor.flow.end_of_flow_sync.sync_with_target", side_effect=fake_sync),
     ):
         engine = PipelineEngine(ctx, from_stage="review", checkpoint_path=cp_path)
@@ -115,6 +116,7 @@ def test_conflicting_sync_blocked_never_logs_completed_successfully_and_saves_ch
             return_value=StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS),
         ),
         patch("sandbox_executor.flow.end_of_flow_sync.check_pr_mergeability", return_value=_DIRTY),
+        patch("sandbox_executor.flow.end_of_flow_sync._precheck_sync", return_value=None),
         patch("sandbox_executor.flow.end_of_flow_sync.sync_with_target", return_value=blocked_sync),
     ):
         engine = PipelineEngine(ctx, from_stage="review", checkpoint_path=cp_path)
@@ -148,6 +150,7 @@ def test_reentered_review_not_approved_blocks_without_completed_successfully(tmp
             return_value=StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS),
         ),
         patch("sandbox_executor.flow.end_of_flow_sync.check_pr_mergeability", return_value=_DIRTY),
+        patch("sandbox_executor.flow.end_of_flow_sync._precheck_sync", return_value=None),
         patch("sandbox_executor.flow.end_of_flow_sync.sync_with_target", return_value=merged),
     ):
         engine = PipelineEngine(ctx, from_stage="review", checkpoint_path=cp_path)
@@ -174,6 +177,7 @@ def test_reentry_cap_exhausted_blocks_after_three_rounds(tmp_path):
             return_value=StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS),
         ),
         patch("sandbox_executor.flow.end_of_flow_sync.check_pr_mergeability", return_value=_DIRTY),
+        patch("sandbox_executor.flow.end_of_flow_sync._precheck_sync", return_value=None),
         patch("sandbox_executor.flow.end_of_flow_sync.sync_with_target", side_effect=fake_sync),
     ):
         engine = PipelineEngine(ctx, from_stage="review", checkpoint_path=cp_path)
@@ -239,6 +243,7 @@ def test_persistent_unknown_mergeability_fails_closed(tmp_path):
     assert res.clean is False
     assert res.blocked is True
     assert "UNKNOWN" in res.reason
+    assert f"after {MAX_UNKNOWN_MERGEABILITY_PROBES} probes" in res.reason
 
 
 def test_missing_ref_fails_closed_immediately_without_reprobe(tmp_path):
@@ -259,6 +264,7 @@ def test_missing_ref_fails_closed_immediately_without_reprobe(tmp_path):
     assert res.clean is False
     assert res.blocked is True
     assert res.merge_state_status == "MISSING_REF"
+    assert "probes" not in res.reason
 
 
 def test_sync_row_records_reentry_round_for_flow_end_only(tmp_path):
@@ -302,6 +308,7 @@ def test_resumed_calibrate_stage_also_runs_finish_flow(tmp_path):
             return_value=StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS),
         ),
         patch("sandbox_executor.flow.end_of_flow_sync.check_pr_mergeability", return_value=_DIRTY),
+        patch("sandbox_executor.flow.end_of_flow_sync._precheck_sync", return_value=None),
         patch("sandbox_executor.flow.end_of_flow_sync.sync_with_target", return_value=blocked_sync),
     ):
         engine = PipelineEngine(ctx, from_stage="calibrate", checkpoint_path=cp_path)
@@ -318,3 +325,62 @@ def test_cli_report_review_outcome_suppresses_approved_banner_on_failure(capsys)
 
     _report_review_outcome(approved, has_failure=False)
     assert "[REVIEW APPROVED]" in capsys.readouterr().out
+
+
+def test_reentry_resets_exhausted_review_budget_and_carried_findings(tmp_path):
+    ctx = _make_context(tmp_path)
+    ctx.review_iterations_done = ctx.max_review_iterations
+    ctx.carried_review_findings = [{"id": "F-1", "summary": "stale finding"}]
+    verdicts = iter([_DIRTY, _CLEAN])
+    observed: list[tuple[int, list]] = []
+
+    def fake_run_stage(stage: FlowStage) -> StageResult:
+        if stage is FlowStage.REVIEW:
+            observed.append((ctx.review_iterations_done, list(ctx.carried_review_findings)))
+            return _approved_review()
+        return StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
+
+    seams = EndOfFlowSeams(
+        mergeability_probe=lambda *_: next(verdicts),
+        sync_runner=lambda _: SyncResult(status="merged", head_before="a", head_after="b", target_sha="t"),
+    )
+    res = finish_flow(ctx, fake_run_stage, lambda *_: None, seams=seams)
+
+    assert res.clean is True
+    assert observed == [(0, [])]
+
+
+def test_flow_end_sync_fails_closed_for_protected_or_unresolvable_branch(tmp_path):
+    for branch, can_sync, resolved, expected_err in [
+        ("main", True, "refs/heads/main", "protected branch"),
+        ("I-1/P-1/E-1/_", False, "refs/heads/I-1/P-1/E-1/_", "fetching 'main'"),
+        ("I-1/P-1/E-1/_", True, None, "could not be resolved"),
+    ]:
+        ctx = _make_context(tmp_path)
+        ctx.execution_branch = branch
+        with (
+            patch("sandbox_executor.flow.end_of_flow_sync._hooks._can_sync_worktree", return_value=can_sync),
+            patch("sandbox_executor.flow.end_of_flow_sync._resolve_branch_ref", return_value=resolved),
+            patch("sandbox_executor.flow.end_of_flow_sync._hooks._checkout_active_branch") as mock_checkout,
+            patch("sandbox_executor.flow.end_of_flow_sync.sync_with_target") as mock_sync,
+        ):
+            seams = EndOfFlowSeams(mergeability_probe=lambda *_: _DIRTY)
+            res = finish_flow(ctx, lambda _: _approved_review(), lambda *_: None, seams=seams)
+
+        assert res.blocked is True
+        assert expected_err in res.reason
+        mock_checkout.assert_not_called()
+        mock_sync.assert_not_called()
+
+
+def test_probe_mergeability_forwards_review_proxy_env(tmp_path):
+    ctx = _make_context(tmp_path)
+    expected_proxy = {"HTTP_PROXY": "http://127.0.0.1:8888"}
+    with (
+        patch("sandbox_executor.flow.end_of_flow_sync.review_proxy_env", return_value=expected_proxy),
+        patch("sandbox_executor.flow.end_of_flow_sync.check_pr_mergeability", return_value=_CLEAN) as mock_probe,
+    ):
+        res = finish_flow(ctx, lambda _: _approved_review(), lambda *_: None)
+
+    assert res.clean is True
+    mock_probe.assert_called_once_with(ctx.target_worktree, str(ctx.execution_branch), "main", proxy_env=expected_proxy)

@@ -5,6 +5,7 @@ started in), and the flow's ``subprocess.run`` guard answers the mergeability pr
 (``tests/gh_probe_stub.py``). Both replace work that proved nothing; these tests prove the replacements.
 """
 
+import contextlib
 import json
 import logging
 import shutil
@@ -80,7 +81,7 @@ def test_consult_indexes_the_test_hosts_rows_and_none_of_the_checkouts(flow_repo
     seeded = {"E-host-1", "I-host-1/_", "P-host-1"}
     assert set(consulted) == seeded
     assert "Consulted 3 knowledge records for plan:" in context.logs[-1]
-    with sqlite3.connect(host / INDEX_DB) as conn:
+    with contextlib.closing(sqlite3.connect(host / INDEX_DB)) as conn:
         indexed = {record_id for (record_id,) in conn.execute("SELECT record_id FROM action_records")}
         synced = {path for (path,) in conn.execute("SELECT ledger_path FROM ledger_sync_state")}
     assert indexed == seeded, "the index holds rows that the test host's ledgers do not"

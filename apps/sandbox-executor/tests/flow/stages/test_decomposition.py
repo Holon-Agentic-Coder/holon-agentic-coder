@@ -901,7 +901,7 @@ class TestEntropyBudgetHandoffInFlow:
             return 1
 
         with (
-            patch("sandbox_executor.flow.stages.plan.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.plan.at_stage_boundary", return_value=None),
             patch("sandbox_executor.flow.stages.plan._snapshot_child_branches", return_value=set()),
             patch("sandbox_executor.flow.stages.plan._dispatch_role", side_effect=dispatch),
         ):

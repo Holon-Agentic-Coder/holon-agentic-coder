@@ -160,7 +160,13 @@ LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.stages.plan_decision": (
         "PlanBudget _backfill_plan_row _over_budget_failure _plan_budget_decision"
     ),
-    "sandbox_executor.flow.stages.plan_support": "dry_run_plan_result plan_id_of plan_metrics replan_feedback_env",
+    "sandbox_executor.flow.stages.plan_resume": (
+        "AMBIGUOUS_PLAN_BRANCHES_HINT PlanCandidate adopt_existing_plan plan_candidates "
+        "publish_planned_branches record_plan_branch"
+    ),
+    "sandbox_executor.flow.stages.plan_support": (
+        "dry_run_plan_result plan_id_of plan_metrics plan_stage_payload replan_feedback_env"
+    ),
     "sandbox_executor.flow.stages.review": "TESTS_NOT_MEASURED_ERROR _checkout_execution_branch run_review_stage",
     "sandbox_executor.flow.stages.review_outcome": "ReviewOutcomeContext build_review_stage_outcome",
     "sandbox_executor.flow.stages.stage_support": "consult_knowledge intent_payload_file stage_success",

@@ -31,6 +31,8 @@ from sandbox_executor.entrypoint.executor.repair import _configure_executor_iden
 from sandbox_executor.entrypoint.executor.sub_intents import SubIntentSteps
 from sandbox_executor.entrypoint.partial_resume import merge_plan_tip, start_execution_branch
 from sandbox_executor.entrypoint.taken_ids import taken_child_ids
+from sandbox_executor.flow.context import FlowStage
+from sandbox_executor.flow.target_sync_hooks import make_turn_boundary_hook
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import LedgerRewriteError, build_execution_id
 from sandbox_executor.plan_paths import recorded_plan_file
@@ -273,6 +275,9 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
         )
         if self.args.partial_branch and self.partial_head:
             base_prompt = f"{base_prompt}\n\n{continuation_note(self.args.partial_branch, self.partial_head)}"
+        merged_notice = os.environ.pop("HOLON_REPLAN_FEEDBACK", "").strip()
+        if merged_notice and "## Target branch merged" in merged_notice:
+            base_prompt = f"{base_prompt}\n\n{merged_notice}"
         full_prompt = f"{base_prompt}\n\n{execution_write_protocol(self.notes_rel)}"
 
         budgets = load_budgets(os.environ)
@@ -310,6 +315,12 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
                 cwd=self.repo_dir,
                 stdin_file=prompt_file if getattr(runner, "uses_stdin", False) else None,
                 prompt_file=prompt_file,
+                on_turn_boundary=make_turn_boundary_hook(
+                    self.repo_dir,
+                    self.exec_branch,
+                    os.getenv("HOLON_TARGET_BRANCH") or str(self.intent_data.get("target_branch") or "main"),
+                    FlowStage.EXECUTE,
+                ),
             )
             self.exec_status, self.summary, self.budget_breach, self.budget_reason = (
                 executor_facade.classify_execution_outcome(outcome)

@@ -16,11 +16,17 @@ A job with a JUnit report is judged on its test time, not on wall clock, so runn
 install do not count: the report's suite time ("suite test time"), or the sum of its test case times when it has none
 ("summed test time"). The record stores it in the optional keys ``test_seconds`` and ``test_seconds_source`` (``suite``
 or ``sum``) next to the seven original keys; a record without them still loads. The two kinds differ by a factor of 2
-to 4 under ``pytest -n auto`` and are never compared with each other.
+to 4 under ``pytest -n auto`` and are never compared with each other: when a baseline record lacks the run's kind of
+test time, the relative check falls back to wall clock for that run and the verdict line says so.
 
 Both modes fail above an absolute ceiling, which no label can override. While fewer than N baseline records exist (cold
 start) the relative check is skipped with a notice. The ``timing-regression-accepted`` pull-request label turns a
 relative failure into a visible warning.
+
+In ``compare`` mode a breached limit of a test job is judged again with the per-test times (``rejudge`` in
+``scripts/ci_timing_noise.py``). A slowdown spread across the suite is runner variance: the job passes with a warning
+that prints the evidence, also above the ceiling. A slowdown concentrated in a few tests fails and names them with
+their times before and after. Without enough per-test data the breach stands and the line says why.
 
 Defaults (N = 5, tolerance 50 %, minimum delta 120 s, ceiling 600 s) were calibrated against real ``main`` runs; the
 workflows spell every threshold out as a flag, so any change is a committed edit to a workflow file.
@@ -47,9 +53,11 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 try:
-    from scripts.ci_timing_noise import per_test_report, took
+    from scripts import ci_timing_noise as noise
+    from scripts.ci_timing_noise import Verdict
 except ImportError:  # run as a script file: only scripts/ itself is on sys.path
-    from ci_timing_noise import per_test_report, took
+    import ci_timing_noise as noise
+    from ci_timing_noise import Verdict
 
 OVERRIDE_LABEL = "timing-regression-accepted"
 API_ROOT = "https://api.github.com"
@@ -124,11 +132,13 @@ class Thresholds:
 
 
 @dataclass(frozen=True)
-class Verdict:
-    """The gate's decision and the message lines that explain it."""
+class Judged:
+    """What a compare run is judged on; a kind is ``suite`` or ``sum`` for test time and empty for job wall clock."""
 
-    passed: bool
-    lines: tuple[str, ...]
+    ceiling_seconds: float
+    ceiling_kind: str = ""
+    relative_kind: str = ""
+    note: str = ""  # a clause for the verdict line when the relative check fell back to wall clock
 
 
 def artefact_name(workflow: str, job: str, os_name: str) -> str:
@@ -176,51 +186,41 @@ def exceeds_relative(duration: float, median: float, thresholds: Thresholds) -> 
     return over_tolerance and over_delta
 
 
-def check_ceiling(duration: float, thresholds: Thresholds, kind: str = "") -> Verdict | None:
+def check_ceiling(duration: float, thresholds: Thresholds, kind: str = "", note: str = "") -> Verdict | None:
     """Return a failing verdict when ``duration``, a value of measure ``kind``, is above the ceiling, else ``None``."""
     if duration <= thresholds.ceiling:
         return None
-    judged = took(duration, kind)
-    return Verdict(
-        False,
-        (
-            f"::error::{judged[0].upper()}{judged[1:]}, above the {thresholds.ceiling:.0f} s ceiling. The ceiling "
-            f"cannot be overridden by the '{OVERRIDE_LABEL}' label; it changes only through a committed edit to the "
-            "--ceiling flag in the workflow file.",
-        ),
-    )
+    breach = noise.over_ceiling(noise.took(duration, kind), thresholds.ceiling) + note
+    return Verdict(False, (noise.ceiling_error(breach, OVERRIDE_LABEL),), breach)
 
 
-def evaluate(duration: float, baselines: Sequence[float], thresholds: Thresholds, override: bool) -> Verdict:
-    """Apply the decision rules in order: ceiling, cold start, relative check, label override."""
-    ceiling = check_ceiling(duration, thresholds)
+def evaluate(
+    duration: float,
+    baselines: Sequence[float],
+    thresholds: Thresholds,
+    override: bool,
+    judged: Judged | None = None,
+) -> Verdict:
+    """Apply the decision rules in order: ceiling, cold start, relative check, label override.
+
+    ``duration`` and ``baselines`` are job wall clock, and so is the ceiling value, unless ``judged`` says otherwise.
+    """
+    judged = judged or Judged(duration)
+    ceiling = check_ceiling(judged.ceiling_seconds, thresholds, judged.ceiling_kind, judged.note)
     if ceiling is not None:
         return ceiling
     if len(baselines) < thresholds.runs:
-        return Verdict(
-            True,
-            (
-                f"::notice::Cold start: {len(baselines)} of {thresholds.runs} main baseline records found, so the "
-                f"relative check is skipped; only the {thresholds.ceiling:.0f} s ceiling applies "
-                f"(job took {duration:.0f} s).",
-            ),
-        )
+        took = noise.took(judged.ceiling_seconds, judged.ceiling_kind)
+        return Verdict(True, (noise.cold_start_notice(len(baselines), thresholds.runs, thresholds.ceiling, took),))
     median = float(statistics.median(baselines[: thresholds.runs]))
-    limits = (
-        f"job took {duration:.0f} s against a baseline median of {median:.0f} s over {thresholds.runs} main runs "
-        f"(tolerance {thresholds.tolerance:.0%}, minimum delta {thresholds.min_delta:.0f} s)"
-    )
+    took = noise.took(duration, judged.relative_kind)
+    limits = noise.against_baseline(took, median, thresholds.runs, thresholds.tolerance, thresholds.min_delta)
+    limits += judged.note
     if not exceeds_relative(duration, median, thresholds):
         return Verdict(True, (f"Timing gate passed: {limits}.",))
     if override:
-        return Verdict(True, (f"::warning::Timing regression accepted by the '{OVERRIDE_LABEL}' label: {limits}.",))
-    return Verdict(
-        False,
-        (
-            f"::error::Timing regression: {limits}. Speed the job up, or add the '{OVERRIDE_LABEL}' label to accept "
-            "a deliberate slow-down.",
-        ),
-    )
+        return Verdict(True, (noise.accepted_warning(limits, OVERRIDE_LABEL),), limits)
+    return Verdict(False, (noise.regression_error(limits, OVERRIDE_LABEL),), limits)
 
 
 def build_request(url: str, token: str) -> urllib.request.Request:
@@ -365,9 +365,24 @@ def run_record(args: argparse.Namespace, clock: Callable[[], float]) -> Verdict:
     )
     seconds, kind = record.judged()
     if kind:
-        summary += f" The {took(seconds, kind)}."
+        summary += f" The {noise.took(seconds, kind)}."
     verdict = check_ceiling(seconds, thresholds_from(args), kind) or Verdict(True, ())
     return Verdict(verdict.passed, (*warnings, summary, *verdict.lines))
+
+
+def judged_values(record: TimingRecord, window: Sequence[TimingRecord]) -> tuple[float, list[float], Judged]:
+    """Choose what a compare run is judged on: the relative value, its baseline values and the ``Judged`` words.
+
+    The ceiling takes the run's test time when it has one. The relative check takes test time only when every record of
+    the baseline ``window`` carries the same kind of it; otherwise it falls back to wall clock, with a note in the
+    verdict line when the run has test time.
+    """
+    seconds, kind = record.judged()
+    lacking = sum(1 for baseline in window if baseline.judged()[1] != kind)
+    if not lacking:
+        return seconds, [baseline.judged()[0] for baseline in window], Judged(seconds, kind, kind)
+    note = noise.fallback_note(lacking, len(window), kind) if kind else ""
+    return record.duration, [baseline.duration for baseline in window], Judged(seconds, kind, note=note)
 
 
 def write_step_summary(lines: Sequence[str]) -> None:
@@ -384,7 +399,7 @@ def run_compare(
     clock: Callable[[], float],
     fetcher: Callable[[str, str, int], list[TimingRecord]],
 ) -> Verdict:
-    """Compare this job with its ``main`` baseline and return the verdict, with the per-test report after its lines."""
+    """Compare this job with ``main``; a test job has a breach judged again and gets the per-test report."""
     record, warnings = measure(args, clock)
     thresholds = thresholds_from(args)
     name = artefact_name(record.workflow, record.job, record.os)
@@ -392,14 +407,13 @@ def run_compare(
         baselines, fetch_warnings = safe_fetch(lambda: fetcher(args.repo, name, thresholds.runs))
     else:
         baselines, fetch_warnings = [], ["::warning::No --repo given, so no baseline was fetched."]
-    verdict = evaluate(
-        record.duration,
-        [b.duration for b in baselines],
-        thresholds,
-        args.override_label_present == "true",
-    )
-    report = per_test_report(record.tests, [b.tests for b in baselines]) if args.junit else []
-    write_step_summary([f"### Timing gate: {name}", "", *(line.split("::")[-1] for line in verdict.lines), "", *report])
+    duration, values, judged = judged_values(record, baselines[: thresholds.runs])
+    verdict = evaluate(duration, values, thresholds, args.override_label_present == "true", judged)
+    report: list[str] = []
+    if args.junit:
+        history = [baseline.tests for baseline in baselines]
+        verdict, report = noise.rejudge(verdict, record.tests, history), noise.per_test_report(record.tests, history)
+    write_step_summary([f"### Timing gate: {name}", "", *map(noise.without_command, verdict.lines), "", *report])
     return Verdict(verdict.passed, (*warnings, *fetch_warnings, *verdict.lines, *report))
 
 

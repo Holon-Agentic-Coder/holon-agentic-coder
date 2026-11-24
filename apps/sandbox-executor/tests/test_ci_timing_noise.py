@@ -13,14 +13,19 @@ import pytest
 
 from scripts.ci_timing_noise import (
     Offender,
+    Verdict,
     baseline_medians,
     describe_evidence,
     describe_offenders,
+    fallback_note,
     format_report,
     gather_evidence,
     insufficient_reason,
     per_test_report,
+    rejudge,
+    took,
     top_offenders,
+    without_command,
 )
 
 SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
@@ -91,7 +96,7 @@ def test_gate_runs_as_a_script_file_from_another_directory(tmp_path: Path) -> No
 
 def test_script_mode_imports_the_noise_module_by_its_bare_name(tmp_path: Path) -> None:
     """Without the repository root on ``sys.path`` the package form fails and the gate falls back to the sibling."""
-    code = "import ci_timing_gate; print(ci_timing_gate.per_test_report.__module__)"
+    code = "import ci_timing_gate; print(ci_timing_gate.noise.__name__, ci_timing_gate.Verdict.__module__)"
     result = subprocess.run(
         [sys.executable, "-c", f"import sys; sys.path.insert(0, {str(SCRIPTS)!r}); {code}"],
         cwd=tmp_path,
@@ -102,7 +107,7 @@ def test_script_mode_imports_the_noise_module_by_its_bare_name(tmp_path: Path) -
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "ci_timing_noise"
+    assert result.stdout.split() == ["ci_timing_noise", "ci_timing_noise"]
 
 
 def test_both_scripts_keep_python_39_syntax() -> None:
@@ -336,3 +341,91 @@ def test_wording_fragments_stay_on_one_line() -> None:
         assert "\n" not in text
         assert "\t" not in text
     assert offenders.count("`") == 4
+
+
+# Verdict wording and the second judgement of a breached limit
+
+BREACH = "suite test time was 351 s against a baseline median of 220 s over 5 main runs"
+BASIS = "Evidence against each test's median over the main baseline records (5 with per-test times): "
+
+
+def test_took_names_the_measure_judged() -> None:
+    assert took(682.4) == "job took 682 s"
+    assert took(645.2, "suite") == "suite test time was 645 s"
+    assert took(640.0, "sum") == "summed test time was 640 s"
+
+
+def test_fallback_note_counts_the_records_without_the_test_time() -> None:
+    assert fallback_note(2, 5, "suite") == (
+        "; 2 of 5 baseline records carry no suite test time, so only the job's wall clock can be compared with them"
+    )
+    assert "carry no summed test time" in fallback_note(5, 5, "sum")
+
+
+def test_without_command_strips_only_a_leading_workflow_command() -> None:
+    assert without_command("::error::Timing regression: `tests.m::slow` 0.1 s -> 9.0 s.") == (
+        "Timing regression: `tests.m::slow` 0.1 s -> 9.0 s."
+    )
+    assert without_command("::notice::Cold start") == "Cold start"
+    assert without_command("Timing gate passed: job took 10 s.") == "Timing gate passed: job took 10 s."
+    assert without_command("| `tests.m::slow` | 5.0 | 60.0 | +55.0 |") == "| `tests.m::slow` | 5.0 | 60.0 | +55.0 |"
+    assert without_command("::unfinished") == "::unfinished"
+
+
+def test_rejudge_returns_a_verdict_without_a_breach_unchanged() -> None:
+    verdict = Verdict(True, ("Timing gate passed: job took 10 s.",))
+    assert rejudge(verdict, slowed(suite(), 3.0), [suite()] * 5) is verdict
+
+
+def test_rejudge_forgives_a_spread_slowdown_with_one_runner_variance_warning() -> None:
+    failed = Verdict(False, (f"::error::Timing regression: {BREACH}. Speed the job up.",), BREACH)
+    verdict = rejudge(failed, slowed(suite(), 1.6), [suite()] * 5)
+    assert verdict == Verdict(
+        True,
+        (
+            f"::warning::Runner variance: {BREACH}. The breach is forgiven and the gate passes, because the slowdown "
+            f"is spread across the suite and not concentrated in a few tests. {BASIS}median per-test ratio 1.60 over "
+            "55 comparable tests, 0 offenders, offender share 0.0% of the 248.2 s per-test excess (concentrated from "
+            "50%).",
+        ),
+        BREACH,
+    )
+
+
+@pytest.mark.parametrize("passed", [False, True])
+def test_rejudge_keeps_the_outcome_of_a_concentrated_slowdown_and_names_the_offenders(passed: bool) -> None:
+    current = {**suite(), "tests.quick::test_0": 33.3, "tests.quick::test_1": 44.4}
+    plain = Verdict(passed, (f"::error::Timing regression: {BREACH}. Speed the job up.",), BREACH)
+    verdict = rejudge(plain, current, [suite()] * 5)
+    assert verdict.passed is passed
+    assert verdict.breach == BREACH
+    assert verdict.lines == (
+        f"::error::Timing regression: {BREACH}. Speed the job up. The slowdown is concentrated in a few tests. {BASIS}"
+        "median per-test ratio 1.00 over 55 comparable tests, 2 offenders, offender share 100.0% of the 77.4 s "
+        "per-test excess (concentrated from 50%). Offenders: `tests.quick::test_1` 0.2 s -> 44.4 s, "
+        "`tests.quick::test_0` 0.1 s -> 33.3 s.",
+    )
+
+
+@pytest.mark.parametrize("passed", [False, True])
+def test_rejudge_without_evidence_keeps_the_verdict_and_says_why(passed: bool) -> None:
+    plain = Verdict(passed, (f"::error::Timing regression: {BREACH}. Speed the job up.",), BREACH)
+    verdict = rejudge(plain, slowed(suite(), 1.6), [{}] * 5)
+    assert verdict == Verdict(
+        passed,
+        (
+            f"::error::Timing regression: {BREACH}. Speed the job up. Runner variance could not be assessed: no "
+            "baseline per-test times.",
+        ),
+        BREACH,
+    )
+    few = rejudge(plain, {"tests.m::slow": 160.0}, [{"tests.m::slow": 5.0}] * 5)
+    assert few.passed is passed
+    assert few.lines[0].endswith(" Runner variance could not be assessed: only 1 comparable tests, fewer than 20.")
+
+
+def test_rejudge_counts_only_the_baseline_records_with_per_test_times() -> None:
+    failed = Verdict(False, ("::error::Suite test time was 645 s, above the 600 s ceiling.",), "breach")
+    verdict = rejudge(failed, slowed(suite(), 1.2), [suite(), {}, suite(), {}, suite()])
+    assert verdict.passed
+    assert "over the main baseline records (3 with per-test times): median per-test ratio 1.20" in verdict.lines[0]

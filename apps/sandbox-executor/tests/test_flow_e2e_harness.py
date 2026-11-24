@@ -335,6 +335,29 @@ class TestZeroPRGuardAndNoSkipReview:
 
         assert fake_gh.closed_pr_numbers == [77]
 
+    def test_enforce_zero_pr_guard_fails_closed_when_gh_pr_list_exits_nonzero(self, tmp_path: Path) -> None:
+        def _failing_gh(args: list[str], cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(["gh", *args], 1, "", "HTTP 401: Bad credentials")
+
+        with pytest.raises(E2EMachineryError, match="gh pr list failed"):
+            enforce_zero_pr_guard(str(tmp_path), "I-123456-e2e-run", gh_runner=_failing_gh)
+
+    def test_enforce_zero_pr_guard_surfaces_close_failures_in_violation_error(self, tmp_path: Path) -> None:
+        prefix = "I-123456-e2e-run"
+        fake_gh = FakeE2EGhRunner(
+            prs=[
+                {
+                    "number": 77,
+                    "headRefName": f"{prefix}/P-10-PI-M/E-20-PI-M/_",
+                    "baseRefName": "main",
+                    "state": "OPEN",
+                }
+            ],
+            close_returncode=1,
+        )
+        with pytest.raises(ZeroPRGuardViolationError, match="close failure"):
+            enforce_zero_pr_guard(str(tmp_path), prefix, gh_runner=fake_gh)
+
 
 class TestRetryClassificationAndUnconditionalTeardown:
     """Retry classification and unconditional per-attempt teardown guarantees."""
@@ -361,6 +384,19 @@ class TestRetryClassificationAndUnconditionalTeardown:
                         status=StageStatus.FAILED,
                         payload={"empty_diff": True},
                         error="Execution produced no changes outside holon-knowledge/ledger/",
+                    )
+                }
+            )
+            == FailureCategory.MODEL_OUTPUT
+        )
+        assert (
+            classify_attempt_failure(
+                stage_results={
+                    "execute": StageResult(
+                        stage=FlowStage.EXECUTE,
+                        status=StageStatus.FAILED,
+                        payload={"status": "failed", "failure_reason": "empty_diff"},
+                        error="Execute stage failed: branch carries no diff against plan",
                     )
                 }
             )
@@ -601,3 +637,24 @@ class TestPrePRPipelineExecutionAndLocalLLMEnv:
         assert envelopes[0].model_id == "qwen2.5-coder:14b"
         assert envelopes[0].reasoning == "off"
         assert "model=qwen2.5-coder:14b" in summary
+
+        # Scheme and path stripping in HOLON_HOST_LOCAL_HOSTS plus HOLON_AGENT_PROVIDER fallback.
+        lan_env = {
+            "HOLON_LOCAL_LLM": "1",
+            "HOLON_LOCAL_BASE_URL": "http://192.168.1.50:11434/v1",
+            "HOLON_HOST_LOCAL_HOSTS": "http://192.168.1.50:11434/v1",
+            "HOLON_LOCAL_MODELS": "qwen2.5-coder:14b",
+            "HOLON_AGENT_PROVIDER": "custom-lan",
+            "HOLON_LOCAL_CONTEXT_WINDOW": "32768",
+        }
+        ready_lan, _summary_lan, lan_envelopes = validate_e2e_local_llm_env(env=lan_env)
+        assert ready_lan is True
+        assert lan_envelopes[0].provider == "custom-lan"
+
+        # Missing base URL or models in explicit env raises LocalLLMConfigError without falling back to os.environ.
+        with pytest.raises(LocalLLMConfigError, match="HOLON_LOCAL_BASE_URL"):
+            validate_e2e_local_llm_env(env={"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_MODELS": "m1"})
+        with pytest.raises(LocalLLMConfigError, match="HOLON_LOCAL_MODELS"):
+            validate_e2e_local_llm_env(
+                env={"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_BASE_URL": "http://localhost:11434/v1"}
+            )

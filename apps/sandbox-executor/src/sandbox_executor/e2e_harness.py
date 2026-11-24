@@ -1,12 +1,4 @@
-"""End-to-end test harness and unconditional teardown utility for ``holon flow``.
-
-Exercises ``holon flow`` Stages 1 (``INTENT``), 2 (``PLAN``), and 3 (``EXECUTE``) against a disposable intent
-using a host-local OpenAI-compatible model endpoint (:mod:`sandbox_executor.local_llm`), halts cleanly at the
-Stage 4 (``REVIEW``) pre-PR boundary without using the removed ``--skip-review`` flag, enforces a strict
-zero-PR guard that closes any stray pull request and fails the run, retries only model-output failures up to a
-bounded attempt cap while failing immediately on flow-machinery errors, and unconditionally tears down the
-disposable worktree plus all local and remote branches strictly scoped to the test intent prefix.
-"""
+"""End-to-end test harness and unconditional teardown utility for ``holon flow``."""
 
 from __future__ import annotations
 
@@ -31,14 +23,12 @@ from sandbox_executor.git import GitRunnerCallable, run_git
 from sandbox_executor.git_flow import checked_out_branch
 from sandbox_executor.ledger import LedgerRewriteError
 from sandbox_executor.local_llm import (
-    ENV_CONTEXT_RESERVE_TOKENS,
+    ENV_AGENT_PROVIDER,
     ENV_HOST_LOCAL_HOSTS,
     ENV_LOCAL_BASE_URL,
-    ENV_LOCAL_CONTEXT_WINDOW,
     ENV_LOCAL_MODE,
     ENV_LOCAL_MODELS,
     ENV_LOCAL_PROVIDER,
-    ENV_REASONING_MODE,
     LocalLLMConfigError,
     ModelEnvelope,
 )
@@ -108,6 +98,7 @@ _MODEL_OUTPUT_ERROR_SNIPPETS: tuple[str, ...] = (
     "outside the plan's touch set",
     "empty_diff",
     "changed 0 path(s)",
+    "carries no diff against",
     "produced no changes outside",
     "carries no executions.jsonl summary row",
     "executor agent recorded status 'failure'",
@@ -154,7 +145,6 @@ class TeardownReport:
     removed_worktrees: tuple[str, ...] = ()
     deleted_local_branches: tuple[str, ...] = ()
     deleted_remote_branches: tuple[str, ...] = ()
-    refused_refs: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
 
     def summary_line(self) -> str:
@@ -216,14 +206,7 @@ class _TeardownScope:
 
 
 def validate_e2e_intent_prefix(intent_prefix: str) -> str:
-    """Validate and return a bare root intent prefix ``I-<timestamp>-<slug>``.
-
-    Rejects empty strings, wildcards, path separators, protected branch names (``main``, ``master``, ``HEAD``),
-    or prefixes lacking a numeric timestamp and lowercase alphanumeric slug.
-
-    Raises:
-        PrefixScopingError: If ``intent_prefix`` does not strictly match ``^I-\\d+-[a-z0-9][a-z0-9-]*$``.
-    """
+    """Validate and return a bare root intent prefix ``I-<timestamp>-<slug>``."""
     if not isinstance(intent_prefix, str):
         raise PrefixScopingError(f"Intent prefix must be a string, got {type(intent_prefix).__name__}.")
     cleaned = intent_prefix.strip()
@@ -277,11 +260,7 @@ def is_ref_within_intent_prefix(
     intent_prefix: str,
     worktree_branch: str | None = None,
 ) -> bool:
-    """Return True only when ``ref_name`` belongs strictly to ``intent_prefix`` (or its disposable worktree branch).
-
-    Enforces an exact ``/`` hierarchy boundary so ``I-123-e2e`` matches ``I-123-e2e/_`` and
-    ``I-123-e2e/P-1-PI-M/_`` but never matches a sibling prefix ``I-123-e2e-other/_`` or ``main``.
-    """
+    """Return True only when ``ref_name`` belongs strictly to ``intent_prefix`` (or its disposable worktree branch)."""
     validated_prefix = validate_e2e_intent_prefix(intent_prefix)
     if not isinstance(ref_name, str) or not ref_name.strip():
         return False
@@ -316,11 +295,7 @@ def assert_refs_within_intent_prefix(
     return tuple(checked)
 
 
-def _invoke_git(
-    git_runner: GitRunnerCallable,
-    args: list[str],
-    cwd: str,
-) -> subprocess.CompletedProcess[str]:
+def _invoke_git(git_runner: GitRunnerCallable, args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
     return git_runner(args, cwd=cwd, check=False)
 
 
@@ -337,8 +312,7 @@ def _candidate_worktree_paths(repo_dir: str, disposable_worktree: str | None) ->
     parent = Path(abs_wt).parent
     base_name = Path(abs_wt).name
     if parent.is_dir():
-        for sibling in sorted(parent.glob(f"{base_name}-rev*")):
-            paths.append(str(sibling.resolve()))
+        paths.extend(str(sibling.resolve()) for sibling in sorted(parent.glob(f"{base_name}-rev*")))
     return paths
 
 
@@ -393,8 +367,7 @@ def _delete_scoped_local_branches(scope: _TeardownScope, errors: list[str]) -> l
 
 
 def _discover_scoped_remote_branches(scope: _TeardownScope) -> list[str]:
-    remote_check = _invoke_git(scope.git_runner, ["remote", "get-url", "origin"], scope.repo_dir)
-    if remote_check.returncode != 0:
+    if _invoke_git(scope.git_runner, ["remote", "get-url", "origin"], scope.repo_dir).returncode != 0:
         return []
     discovered: set[str] = set()
     ls_res = _invoke_git(scope.git_runner, ["ls-remote", "--heads", "origin"], scope.repo_dir)
@@ -411,32 +384,27 @@ def _discover_scoped_remote_branches(scope: _TeardownScope) -> list[str]:
     if tracking_res.returncode == 0:
         for line in tracking_res.stdout.splitlines():
             raw = line.strip()
-            if not raw or raw == "refs/remotes/origin/HEAD":
-                continue
-            short = normalise_ref_name(raw)
-            if is_ref_within_intent_prefix(short, scope.intent_prefix, worktree_branch=scope.worktree_branch):
-                discovered.add(short)
+            if raw and raw != "refs/remotes/origin/HEAD":
+                short = normalise_ref_name(raw)
+                if is_ref_within_intent_prefix(short, scope.intent_prefix, worktree_branch=scope.worktree_branch):
+                    discovered.add(short)
     return sorted(discovered)
 
 
 def _delete_scoped_remote_branches(scope: _TeardownScope, errors: list[str]) -> list[str]:
-    branches = _discover_scoped_remote_branches(scope)
     deleted: list[str] = []
-    for branch in branches:
+    for branch in _discover_scoped_remote_branches(scope):
         push_res = _invoke_git(scope.git_runner, ["push", "origin", "--delete", branch], scope.repo_dir)
         _invoke_git(scope.git_runner, ["update-ref", "-d", f"refs/remotes/origin/{branch}"], scope.repo_dir)
-        if push_res.returncode == 0:
+        if push_res.returncode == 0 or (
+            _invoke_git(
+                scope.git_runner, ["rev-parse", "--verify", f"refs/remotes/origin/{branch}"], scope.repo_dir
+            ).returncode
+            != 0
+        ):
             deleted.append(branch)
         else:
-            check_tracking = _invoke_git(
-                scope.git_runner, ["rev-parse", "--verify", f"refs/remotes/origin/{branch}"], scope.repo_dir
-            )
-            if check_tracking.returncode != 0:
-                deleted.append(branch)
-            else:
-                errors.append(
-                    f"git push origin --delete {branch} failed: {(push_res.stderr or push_res.stdout).strip()}"
-                )
+            errors.append(f"git push origin --delete {branch} failed: {(push_res.stderr or push_res.stdout).strip()}")
     return deleted
 
 
@@ -448,18 +416,11 @@ def teardown_e2e_intent(
     worktree_branch: str | None = None,
     **kwargs: Any,
 ) -> TeardownReport:
-    """Unconditionally remove the disposable worktree and all local/remote branches under ``intent_prefix``.
-
-    Optional keyword arguments ``candidate_refs`` (an iterable of refs to pre-validate before any git mutation)
-    and ``git_runner`` (defaulting to :func:`sandbox_executor.git.run_git`) are supported. Strictly validates
-    ``intent_prefix`` before running a single git mutation, refusing to touch anything outside ``intent_prefix``.
-    Enumerates every deleted worktree, local branch, and remote branch in the returned :class:`TeardownReport`.
-    """
+    """Unconditionally remove the disposable worktree and all local/remote branches under ``intent_prefix``."""
     candidate_refs: Iterable[str] | None = kwargs.pop("candidate_refs", None)
     git_runner: GitRunnerCallable = kwargs.pop("git_runner", run_git)
     if kwargs:
-        unexpected = ", ".join(sorted(kwargs))
-        raise TypeError(f"teardown_e2e_intent() got unexpected keyword argument(s): {unexpected}")
+        raise TypeError(f"teardown_e2e_intent() got unexpected keyword argument(s): {', '.join(sorted(kwargs))}")
 
     validated_prefix = validate_e2e_intent_prefix(intent_prefix)
     if candidate_refs is not None:
@@ -471,13 +432,7 @@ def teardown_e2e_intent(
             f"Worktree branch {worktree_branch!r} does not match disposable intent prefix {validated_prefix!r}."
         )
 
-    scope = _TeardownScope(
-        repo_dir=repo_dir,
-        intent_prefix=validated_prefix,
-        disposable_worktree=disposable_worktree,
-        worktree_branch=worktree_branch,
-        git_runner=git_runner,
-    )
+    scope = _TeardownScope(repo_dir, validated_prefix, disposable_worktree, worktree_branch, git_runner)
     errors: list[str] = []
     removed_worktrees = _remove_disposable_worktrees(scope, errors)
     deleted_local = _delete_scoped_local_branches(scope, errors)
@@ -495,11 +450,7 @@ def assert_no_skip_review_flag(
     cli_args: Sequence[str] = (),
     options: Mapping[str, Any] | None = None,
 ) -> None:
-    """Raise :class:`ZeroPRGuardViolationError` if ``--skip-review`` or ``skip_review`` is present.
-
-    Reconciles the E2E harness with the removal of ``--skip-review`` from ``holon flow``: the harness stops cleanly
-    before PR creation via :class:`E2EPipelineEngine` rather than passing a removed CLI flag.
-    """
+    """Raise :class:`ZeroPRGuardViolationError` if ``--skip-review`` or ``skip_review`` is present."""
     for arg in cli_args:
         token = str(arg).strip()
         if token == "--skip-review" or token.startswith("--skip-review="):
@@ -515,9 +466,7 @@ def assert_no_skip_review_flag(
 
 def _default_gh_runner(repo_dir: str) -> GhRunnerCallable | None:
     adapter = GitHubAdapter(repo_dir)
-    if not adapter.available:
-        return None
-    return adapter.gh
+    return adapter.gh if adapter.available else None
 
 
 def _parse_pr_list_items(stdout: str) -> list[dict[str, Any]]:
@@ -533,6 +482,26 @@ def _parse_pr_list_items(stdout: str) -> list[dict[str, Any]]:
     return [item for item in parsed if isinstance(item, dict)]
 
 
+def _close_stray_pr(
+    runner: GhRunnerCallable,
+    repo_dir: str,
+    pr_number: int,
+    validated_prefix: str,
+) -> tuple[bool, str]:
+    close_args = [
+        "pr",
+        "close",
+        str(pr_number),
+        "--comment",
+        f"Closed stray E2E pull request for disposable intent {validated_prefix}.",
+    ]
+    close_proc = runner(close_args, cwd=repo_dir)
+    if close_proc.returncode == 0:
+        return True, ""
+    detail = (close_proc.stderr or close_proc.stdout or "").strip() or f"exit {close_proc.returncode}"
+    return False, f"#{pr_number} ({detail})"
+
+
 def enforce_zero_pr_guard(
     repo_dir: str,
     intent_prefix: str,
@@ -540,12 +509,7 @@ def enforce_zero_pr_guard(
     worktree_branch: str | None = None,
     gh_runner: GhRunnerCallable | None = None,
 ) -> ZeroPRCheckResult:
-    """Assert that zero pull requests reference branches under ``intent_prefix``.
-
-    If any open PR references ``intent_prefix`` as ``headRefName`` or ``baseRefName``, closes it immediately via
-    ``gh pr close`` and raises :class:`ZeroPRGuardViolationError`. If even a closed PR exists for the disposable
-    intent prefix, raises :class:`ZeroPRGuardViolationError` because E2E runs must never open pull requests.
-    """
+    """Assert that zero pull requests reference branches under ``intent_prefix``."""
     validated_prefix = validate_e2e_intent_prefix(intent_prefix)
     runner = gh_runner if gh_runner is not None else _default_gh_runner(repo_dir)
     if runner is None:
@@ -554,53 +518,45 @@ def enforce_zero_pr_guard(
     list_args = ["pr", "list", "--state", "all", "--json", "number,headRefName,baseRefName,state"]
     list_proc = runner(list_args, cwd=repo_dir)
     if list_proc.returncode != 0:
-        return ZeroPRCheckResult(intent_prefix=validated_prefix, passed=True)
+        detail = (list_proc.stderr or list_proc.stdout or "").strip() or f"exit code {list_proc.returncode}"
+        raise E2EMachineryError(
+            f"Zero-PR guard could not inspect pull requests for {validated_prefix!r}: gh pr list failed ({detail})."
+        )
 
-    items = _parse_pr_list_items(list_proc.stdout)
     matching_numbers: list[int] = []
     closed_numbers: list[int] = []
+    close_failures: list[str] = []
     matching_details: list[str] = []
 
-    for item in items:
+    for item in _parse_pr_list_items(list_proc.stdout):
         head_ref = str(item.get("headRefName") or "")
         base_ref = str(item.get("baseRefName") or "")
         head_matches = is_ref_within_intent_prefix(head_ref, validated_prefix, worktree_branch=worktree_branch)
         base_matches = is_ref_within_intent_prefix(base_ref, validated_prefix, worktree_branch=worktree_branch)
-        if not (head_matches or base_matches):
-            continue
         raw_num = item.get("number")
-        if not isinstance(raw_num, int) or isinstance(raw_num, bool):
+        if not (head_matches or base_matches) or not isinstance(raw_num, int) or isinstance(raw_num, bool):
             continue
         matching_numbers.append(raw_num)
         state = str(item.get("state") or "OPEN").upper()
         matching_details.append(f"#{raw_num} (head={head_ref!r}, base={base_ref!r}, state={state})")
         if state == "OPEN":
-            close_args = [
-                "pr",
-                "close",
-                str(raw_num),
-                "--comment",
-                f"Closed stray E2E pull request for disposable intent {validated_prefix}.",
-            ]
-            close_proc = runner(close_args, cwd=repo_dir)
-            if close_proc.returncode == 0:
+            closed, err_detail = _close_stray_pr(runner, repo_dir, raw_num, validated_prefix)
+            if closed:
                 closed_numbers.append(raw_num)
+            else:
+                close_failures.append(err_detail)
 
     if matching_numbers:
+        failure_suffix = f"; close failure(s): {', '.join(close_failures)}" if close_failures else ""
         raise ZeroPRGuardViolationError(
             f"Zero-PR guard violated for E2E intent prefix {validated_prefix!r}: found stray PR(s) "
-            f"{', '.join(matching_details)}; closed PR(s): {closed_numbers}."
+            f"{', '.join(matching_details)}; closed PR(s): {closed_numbers}{failure_suffix}."
         )
     return ZeroPRCheckResult(intent_prefix=validated_prefix, passed=True)
 
 
 class E2EPipelineEngine(PipelineEngine):
-    """PipelineEngine subclass that halts cleanly at the Stage 4 pre-PR boundary without ``--skip-review``.
-
-    Exercises full Stage 1 (``INTENT``), Stage 2 (``PLAN``), and Stage 3 (``EXECUTE``) machinery, then intercepts
-    Stage 4 (``REVIEW``) before any pull request can be opened or updated via ``GitHubAdapter``, recording
-    ``stopped_before_pr=True`` and skipping Stage 5 (``CALIBRATE``).
-    """
+    """PipelineEngine subclass that halts cleanly at the Stage 4 pre-PR boundary without ``--skip-review``."""
 
     def __init__(
         self,
@@ -627,13 +583,7 @@ class E2EPipelineEngine(PipelineEngine):
             if not self.context.execution_branch:
                 err = "Cannot enter Review pre-PR boundary without an active execution_branch in FlowContext."
                 self.context.log(err)
-                return StageResult(
-                    stage=FlowStage.REVIEW,
-                    status=StageStatus.FAILED,
-                    start_time=now,
-                    end_time=now,
-                    error=err,
-                )
+                return StageResult(FlowStage.REVIEW, StageStatus.FAILED, start_time=now, end_time=now, error=err)
             self.context.log("Stage 4 (REVIEW): E2E harness halting at pre-PR boundary before GitHub PR creation.")
             result = StageResult(
                 stage=FlowStage.REVIEW,
@@ -657,12 +607,19 @@ def _matches_any(text: str, snippets: Sequence[str]) -> bool:
     return any(snippet in lowered for snippet in snippets)
 
 
+def _is_model_output_payload(payload: Mapping[str, Any]) -> bool:
+    return bool(
+        payload.get("over_budget")
+        or payload.get("touch_set_violation")
+        or payload.get("empty_diff")
+        or payload.get("failure_reason") in ("empty_diff", "touch_set_violation", "over_budget")
+    )
+
+
 def _classify_stage_results(stage_results: Mapping[str, StageResult | dict[str, Any]]) -> FailureCategory | None:
     for raw in stage_results.values():
         if isinstance(raw, StageResult):
-            status = raw.status.value
-            error_text = raw.error or ""
-            payload = raw.payload or {}
+            status, error_text, payload = raw.status.value, raw.error or "", raw.payload or {}
         elif isinstance(raw, Mapping):
             status = str(raw.get("status") or "")
             error_text = str(raw.get("error") or "")
@@ -671,7 +628,7 @@ def _classify_stage_results(stage_results: Mapping[str, StageResult | dict[str, 
             continue
         if status != StageStatus.FAILED.value and not error_text:
             continue
-        if payload.get("over_budget") or payload.get("touch_set_violation") or payload.get("empty_diff"):
+        if _is_model_output_payload(payload):
             return FailureCategory.MODEL_OUTPUT
         if _matches_any(error_text, _MACHINERY_ERROR_SNIPPETS):
             return FailureCategory.MACHINERY
@@ -685,27 +642,12 @@ def classify_attempt_failure(
     error: BaseException | None = None,
     stage_results: Mapping[str, StageResult | dict[str, Any]] | None = None,
 ) -> FailureCategory:
-    """Classify an attempt failure into :attr:`FailureCategory.MODEL_OUTPUT` or :attr:`FailureCategory.MACHINERY`.
-
-    Model-output assertion failures (missing plan metrics, empty diff, touch-set violation, over-budget plan,
-    non-zero agent turn exit, or explicit :class:`E2EModelOutputError`) return ``MODEL_OUTPUT`` so the harness
-    can retry up to the bounded cap. Flow-machinery failures (:class:`E2EMachineryError`, :class:`LocalLLMConfigError`,
-    :class:`LedgerRewriteError`, git fetch/push/worktree errors, or unexpected Python exceptions) return
-    ``MACHINERY`` and fail immediately without retry. Defaults fail-closed to ``MACHINERY``.
-    """
+    """Classify an attempt failure into :attr:`FailureCategory.MODEL_OUTPUT` or :attr:`FailureCategory.MACHINERY`."""
     if isinstance(error, E2EModelOutputError):
         return FailureCategory.MODEL_OUTPUT
     if isinstance(
         error,
-        (
-            E2EMachineryError,
-            LocalLLMConfigError,
-            LedgerRewriteError,
-            TypeError,
-            AttributeError,
-            KeyError,
-            ValueError,
-        ),
+        (E2EMachineryError, LocalLLMConfigError, LedgerRewriteError, TypeError, AttributeError, KeyError, ValueError),
     ):
         return FailureCategory.MACHINERY
     if stage_results:
@@ -745,8 +687,6 @@ def _extract_attempt_worktree_info(
 
 
 def _check_stage_results_succeeded(stage_results: Mapping[str, Any]) -> None:
-    if not stage_results:
-        return
     for stage_name in (FlowStage.INTENT.value, FlowStage.PLAN.value, FlowStage.EXECUTE.value):
         if stage_name not in stage_results:
             continue
@@ -787,21 +727,14 @@ def _execute_guarded_attempt(
         finally:
             try:
                 zero_pr_res = enforce_zero_pr_guard(
-                    repo_dir,
-                    intent_prefix,
-                    worktree_branch=wt_branch,
-                    gh_runner=gh_runner,
+                    repo_dir, intent_prefix, worktree_branch=wt_branch, gh_runner=gh_runner
                 )
             except BaseException as guard_exc:
                 if attempt_exc is None:
                     attempt_exc = guard_exc
     finally:
         td_report = teardown_e2e_intent(
-            repo_dir,
-            intent_prefix,
-            disposable_worktree=wt_path,
-            worktree_branch=wt_branch,
-            git_runner=git_runner,
+            repo_dir, intent_prefix, disposable_worktree=wt_path, worktree_branch=wt_branch, git_runner=git_runner
         )
 
     if attempt_exc is None:
@@ -840,25 +773,9 @@ def run_e2e_with_retry(
     max_attempts: int = DEFAULT_E2E_MAX_ATTEMPTS,
     **kwargs: Any,
 ) -> E2ERunOutcome:
-    """Execute ``attempt_fn`` with unconditional per-attempt teardown, zero-PR guard, and retry classification.
-
-    Supported optional keyword arguments: ``disposable_worktree``, ``worktree_branch``, ``gh_runner``,
-    ``git_runner``, and ``epoch_fn``.
-
-    On each attempt:
-    1. Generates a unique ``intent_prefix`` (``I-<epoch>-<slug>``).
-    2. Runs ``attempt_fn(attempt_number, intent_prefix)``.
-    3. In an outer ``finally``, runs :func:`enforce_zero_pr_guard` to verify zero PRs were created (closing any
-       stray PR before raising :class:`ZeroPRGuardViolationError`).
-    4. In an innermost ``finally``, unconditionally runs :func:`teardown_e2e_intent` so the disposable worktree
-       and all local/remote branches under ``intent_prefix`` are removed even when the attempt or the zero-PR
-       guard raises.
-    5. Retries only :attr:`FailureCategory.MODEL_OUTPUT` failures up to ``max_attempts``, and fails immediately
-       on :attr:`FailureCategory.MACHINERY`.
-    """
+    """Execute ``attempt_fn`` with unconditional per-attempt teardown, zero-PR guard, and retry classification."""
     epoch_fn: Callable[[], int] | None = kwargs.pop("epoch_fn", None)
-    allowed_keys = {"disposable_worktree", "worktree_branch", "gh_runner", "git_runner"}
-    extra_keys = set(kwargs) - allowed_keys
+    extra_keys = set(kwargs) - {"disposable_worktree", "worktree_branch", "gh_runner", "git_runner"}
     if extra_keys:
         raise TypeError(f"run_e2e_with_retry() got unexpected keyword argument(s): {', '.join(sorted(extra_keys))}")
 
@@ -905,15 +822,18 @@ def run_e2e_with_retry(
     raise E2EModelOutputError(msg)
 
 
-def _synthesised_host_config_from_env(env: Mapping[str, str]) -> dict[str, Any] | None:
-    """Build a minimal host config dictionary from explicit ``env`` mapping when ``env`` is injected."""
+def _synthesised_host_config_from_env(env: Mapping[str, str]) -> dict[str, Any]:
+    """Build a minimal host config dictionary from an explicit ``env`` mapping without ``os.environ`` fallback."""
+    local_llm.check_text_settings(env)
     base_url = env.get(ENV_LOCAL_BASE_URL, "").strip()
     if not base_url:
-        return None
+        raise LocalLLMConfigError(
+            f"{ENV_LOCAL_MODE} is enabled but {ENV_LOCAL_BASE_URL} is not set in the provided environment."
+        )
     model_ids = [item.strip() for item in env.get(ENV_LOCAL_MODELS, "").split(",") if item.strip()]
     if not model_ids:
-        return None
-    provider = env.get(ENV_LOCAL_PROVIDER, "").strip() or "local"
+        raise LocalLLMConfigError(f"{ENV_LOCAL_BASE_URL} is set but no model ids were declared in {ENV_LOCAL_MODELS}.")
+    provider = env.get(ENV_LOCAL_PROVIDER, "").strip() or env.get(ENV_AGENT_PROVIDER, "").strip() or "local"
     return {
         "providers": {
             provider: {
@@ -927,21 +847,24 @@ def _synthesised_host_config_from_env(env: Mapping[str, str]) -> dict[str, Any] 
 
 
 def _allow_list_from_env(env: Mapping[str, str]) -> set[str]:
+    """Normalise ``HOLON_HOST_LOCAL_HOSTS`` from ``env`` using the same scheme/path stripping as ``local_llm``."""
     raw = env.get(ENV_HOST_LOCAL_HOSTS, "")
-    return {entry.strip().lower() for entry in raw.split(",") if entry.strip()}
+    if not local_llm.is_utf8_text(raw):
+        raise LocalLLMConfigError(
+            f"{ENV_HOST_LOCAL_HOSTS} is not valid UTF-8 text (a lone surrogate or a non-UTF-8 byte); value withheld."
+        )
+    allow: set[str] = set()
+    for entry in raw.split(","):
+        cleaned = re.sub(r"^https?://", "", entry.strip().lower()).split("/")[0].strip()
+        if cleaned:
+            allow.add(cleaned)
+    return allow
 
 
 def validate_e2e_local_llm_env(
     env: Mapping[str, str] | None = None,
 ) -> tuple[bool, str, list[ModelEnvelope]]:
-    """Verify whether host-local LLM mode is requested and validly configured for an opt-in E2E run.
-
-    Returns ``(ready, message, envelopes)``:
-    - When ``HOLON_LOCAL_LLM`` is not truthy, returns ``(False, actionable_skip_message, [])``.
-    - When ``HOLON_LOCAL_LLM=1`` is set, validates the host or synthesised configuration via
-      :func:`sandbox_executor.local_llm.build_envelope_config` (raising :class:`LocalLLMConfigError` if
-      misconfigured) and returns ``(True, summary_line, envelopes)``.
-    """
+    """Verify whether host-local LLM mode is requested and validly configured for an opt-in E2E run."""
     effective_env = os.environ if env is None else env
     raw_mode = effective_env.get(ENV_LOCAL_MODE, "").strip().lower()
     if raw_mode not in ("1", "true", "yes", "on"):
@@ -974,16 +897,7 @@ def run_e2e_flow_test(
     dispatcher: Callable[..., int] | None = None,
     **kwargs: Any,
 ) -> E2ERunOutcome:
-    """Run a full disposable ``holon flow`` E2E test through Stages 1-3, halting at Stage 4 pre-PR boundary.
-
-    Optional keyword arguments: ``agent``, ``model``, ``assertion_fn``, ``cli_args``, ``options``,
-    ``gh_runner``, and ``git_runner``.
-
-    Enforces :func:`assert_no_skip_review_flag`, provisions a disposable ``flow-<slug>`` worktree per attempt,
-    runs :class:`E2EPipelineEngine`, executes optional ``assertion_fn`` on the resulting context/stages, enforces
-    :func:`enforce_zero_pr_guard`, and unconditionally tears down the disposable worktree and all local/remote
-    branches under the attempt's intent prefix.
-    """
+    """Run a full disposable ``holon flow`` E2E test through Stages 1-3, halting at Stage 4 pre-PR boundary."""
     cli_args: Sequence[str] = kwargs.pop("cli_args", ())
     options: Mapping[str, Any] | None = kwargs.pop("options", None)
     agent: str | None = kwargs.pop("agent", None)
@@ -997,14 +911,6 @@ def run_e2e_flow_test(
     assert_no_skip_review_flag(cli_args=cli_args, options=options)
     resolved_agent = agent or os.getenv("HOLON_AGENT", "").strip() or "pi-agent"
     resolved_model = model or os.getenv("HOLON_MODEL", "").strip() or "local-model"
-    # Keep referenced local_llm constants imported and active for environment parity.
-    _ = (
-        ENV_LOCAL_PROVIDER,
-        ENV_LOCAL_CONTEXT_WINDOW,
-        ENV_CONTEXT_RESERVE_TOKENS,
-        ENV_REASONING_MODE,
-        ENV_HOST_LOCAL_HOSTS,
-    )
 
     def _run_single_attempt(_attempt: int, intent_prefix: str) -> Mapping[str, Any]:
         slug = _intent_slug_from_prefix(intent_prefix)

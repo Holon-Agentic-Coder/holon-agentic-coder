@@ -1,14 +1,3 @@
-"""Resume policy for ``holon flow``: checkpoint discovery, per-run switches and the resumed runner.
-
-A ``--from-stage`` resume without ``--checkpoint`` loads the intent's default checkpoint
-(``.holon/flow/checkpoint-<slug>.json``) when one exists, so the resumed stage gets the recorded branches and earlier
-stage results instead of an empty flow context. The target worktree is probed first, then the dedicated
-``flow-<slug>`` worktree a default-branch target is redirected to.
-
-On resume, the per-run switches come only from the current flags (a stored skip is dropped and logged), and
-``--agent`` / ``--model`` override the checkpoint's runner and model for every remaining stage and role.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -26,11 +15,14 @@ from sandbox_executor.git_flow import flow_worktree_layout
 logger = logging.getLogger(__name__)
 
 RUN_SWITCHES = ("dry_run", "skip_push", "skip_calibrate")
-"""Per-run switches a resume takes only from the current flags, never from the checkpoint."""
+_PROXY_SWITCHES = ("token_reduce", "mitm_web")
+
+
+def _cli_flag_for_switch(name: str) -> str:
+    return "--" + name.replace("_", "-")
 
 
 def _candidate_worktrees(args: argparse.Namespace, intent_data: dict[str, Any]) -> list[str]:
-    """The target worktree, then its ``flow-<slug>`` sibling; only existing directories."""
     target = getattr(args, "target_worktree", None) or "."
     if not os.path.isdir(target):
         return []
@@ -39,7 +31,6 @@ def _candidate_worktrees(args: argparse.Namespace, intent_data: dict[str, Any]) 
 
 
 def discover_resume_checkpoint(args: argparse.Namespace) -> str | None:
-    """The intent's existing checkpoint for a ``--from-stage`` run without ``--checkpoint``, or ``None``."""
     if not args.from_stage or args.checkpoint or not args.intent_file or not os.path.isfile(args.intent_file):
         return None
     with open(args.intent_file, encoding="utf-8") as f:
@@ -50,11 +41,10 @@ def discover_resume_checkpoint(args: argparse.Namespace) -> str | None:
 
 
 def apply_run_switches(context: Any, args: argparse.Namespace) -> None:
-    """Set the per-run switches on a resumed ``context`` from this run's flags, logging each dropped stored skip."""
     for name in RUN_SWITCHES:
         given = bool(getattr(args, name, False))
         if getattr(context, name) and not given:
-            flag = "--" + name.replace("_", "-")
+            flag = _cli_flag_for_switch(name)
             message = f"Resume dropped the stored {name} from the checkpoint: this run did not pass {flag}."
             logger.warning(message)
             context.log(message)
@@ -69,16 +59,9 @@ def apply_proxy_switches(
     mitm_web: bool,
     requested: tuple[bool, bool] = (False, False),
 ) -> None:
-    """Set the proxy routing on a resumed ``context`` from this run, logging each dropped stored sidecar opt-in.
-
-    ``spawn_sidecar`` and ``attach_running_proxy`` come from this run's resolved proxy choice, and ``mitm_web`` is
-    kept only when this run passes ``--mitm-web`` and the choice spawns a sidecar, so a checkpoint never spawns one.
-    ``requested`` is whether this run asked for ``(token_reduce, mitm_web)``: a dropped opt-in this run asked for was
-    overridden by the ``HOLON_TOKEN_REDUCE`` opt-out, and is logged as such rather than as a missing flag.
-    """
-    for name, given, asked in zip(("token_reduce", "mitm_web"), (spawn_sidecar, mitm_web), requested, strict=True):
+    for name, given, asked in zip(_PROXY_SWITCHES, (spawn_sidecar, mitm_web), requested, strict=True):
         if getattr(context, name) and not given:
-            flag = "--" + name.replace("_", "-")
+            flag = _cli_flag_for_switch(name)
             if asked:
                 message = f"The HOLON_TOKEN_REDUCE opt-out overrides the stored {name} from the checkpoint and {flag}."
             else:
@@ -90,7 +73,6 @@ def apply_proxy_switches(
 
 
 def resolve_resumed_runner(args: argparse.Namespace, context: Any, checkpoint_path: str) -> tuple[str, str]:
-    """The runner and model for a checkpoint resume: ``--agent`` / ``--model`` when given, else the checkpoint's."""
     recorded = f"recorded in {checkpoint_path}"
     runner_switched = False
     if args.agent is None:

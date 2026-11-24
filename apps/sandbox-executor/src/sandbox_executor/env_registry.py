@@ -159,7 +159,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         ),
         value_type="string (credential)",
         default="unset",
-        when_unset="claude uses `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` or its secrets file",
+        when_unset="claude uses `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` or the OS keychain",
         when_invalid="a value not shaped like a subscription token warns once and is forwarded all the same",
         read_side="both",
         since=_CREDENTIALS_DOC,

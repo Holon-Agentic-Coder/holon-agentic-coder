@@ -1,6 +1,7 @@
 """The OS secret store seam for the claude credential: lookup, verified store, and that the value stays on stdin."""
 
 import subprocess
+from pathlib import Path
 
 import pytest
 from sandbox_executor import claude_keychain
@@ -9,6 +10,7 @@ from sandbox_executor.claude_keychain import KeychainLookup, LookupStatus
 from tests.fake_keychain import REAL_CURRENT_PLATFORM, REAL_RUN_KEYCHAIN_TOOL
 from tests.leak_assertions import assert_no_leak, make_probe
 
+REPO = Path(__file__).resolve().parents[3]
 OAUTH_PREFIX = "sk-ant-" + "oat"
 PLATFORMS = ("darwin", "linux")
 LOOKUP_ARGV = {
@@ -265,3 +267,11 @@ def test_the_operator_one_liners_prompt_for_the_value(fake_keychain):
     assert (claude_keychain.store_command(), claude_keychain.store_name()) == (linux, "the Secret Service keyring")
     fake_keychain.platform = "unsupported"
     assert (claude_keychain.store_command(), claude_keychain.store_name()) == ("", "the OS secret store")
+
+
+@pytest.mark.parametrize("role", ["executor", "planner"])
+def test_the_agent_credentials_documents_show_the_store_one_liners_of_the_code(role):
+    document = (REPO / "docs" / role / "agent_credentials_requirements.md").read_text(encoding="utf-8")
+    lines = [line.strip() for line in document.splitlines()]
+    for one_liner in claude_keychain.STORE_COMMANDS.values():
+        assert one_liner in lines, f"docs/{role}/agent_credentials_requirements.md lacks a store one-liner"

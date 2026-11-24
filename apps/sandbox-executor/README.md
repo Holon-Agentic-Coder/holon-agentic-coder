@@ -150,11 +150,15 @@ stderr on every invocation and appear under `holon doctor`.
 | `HOLON_AGENT_OAUTH_TOKEN_FILE` | `HOLON_AGENT_OAUTH_TOKEN` | `CLAUDE_CODE_OAUTH_TOKEN` |
 
 Only `~/.holon/.env` and the process environment may name a token file: the project `.env` is repository-controlled, so
-a file key there is ignored with `Warning: <file>: ignoring <KEY>: ...` and nothing is read. The token file (for example
-`~/.holon/secrets/claude-oauth-token`, mode `0600`) is read on the host. Its value travels only in the `0600` docker
-`--env-file`, and the image's `role_dispatcher.sh` exports it as `CLAUDE_CODE_OAUTH_TOKEN` for the claude runner. An
-explicit `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` wins over it, and it wins over the default secrets file. It is
-no longer carried inside `HOLON_AGENT_SETTINGS`. The mapping lives in the image, so rebuild the images
+a file key there is ignored with `Warning: <file>: ignoring <KEY>: ...` and nothing is read. The token file (mode
+`0600`) is read on the host. Its value travels only in the `0600` docker `--env-file`, and the image's
+`role_dispatcher.sh` exports it as `CLAUDE_CODE_OAUTH_TOKEN` for the claude runner. An explicit
+`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` wins over it, and it wins over the OS keychain entry. It is no longer
+carried inside `HOLON_AGENT_SETTINGS`. Without any of these, the claude credential is read on the host from the OS
+keychain (service `holon`, account `claude-oauth-token`; macOS keychain or Linux Secret Service), and it travels in the
+same `0600` env-file. An older plaintext file `~/.holon/secrets/claude-oauth-token` is imported into the keychain once
+by pre-flight and deleted after a verified read-back; the store commands and the migration are described in
+`docs/executor/agent_credentials_requirements.md`. The mapping lives in the image, so rebuild the images
 (`build_all_images.sh`) after upgrading; an old image fails visibly in `holon doctor` as "not logged in".
 
 **Inheritance.** Every role container (intent creator, planner, executor, review loop, and the runs calibration drives)

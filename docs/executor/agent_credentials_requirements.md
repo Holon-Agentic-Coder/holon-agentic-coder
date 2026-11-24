@@ -65,7 +65,7 @@ overwriting `/etc/shadow` or `/usr/bin/`).
   - `HOLON_AGENT_KEY`: The primary API key or bearer token used by the agent runner. The `claude` runner does not use it
     (see [`claude`](#2-claude)).
   - `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`: The `claude` runner's credential variables. An explicit value
-    wins over the secrets file.
+    wins over the OS keychain entry.
   - `HOLON_AGENT_OSS_MODE`: Set to `true` or `1` to run agents in offline or open-source modes without requiring
     external API keys.
   - `HOLON_AGENT_PROVIDER`: Specifies the target model provider (e.g., `openai`, `anthropic`, `google`).
@@ -199,13 +199,42 @@ Each agent has specific command-line structures and validation routines:
   inside a sandboxed role container.
 - **Credential discovery**: The runner never consults `HOLON_AGENT_KEY`; `HOLON_AGENT_KEY` stays the channel for the
   other runners. The host resolves the credential in this order: an explicit `CLAUDE_CODE_OAUTH_TOKEN`, then an explicit
-  `ANTHROPIC_API_KEY`, then the secrets file `~/.holon/secrets/claude-oauth-token` (trimmed; `0600` expected, and a
-  warning naming the path and mode, never the value, is printed when group or other bits are set). The file is left in
-  place and never modified. The value's format decides the in-container variable: an `sk-ant-oat` value (a subscription
-  token from `claude setup-token`) is exported as `CLAUDE_CODE_OAUTH_TOKEN`, and any other value, such as an
-  `sk-ant-api` key, as `ANTHROPIC_API_KEY`. The pair travels in the `0600` env-file, never on an echoed command line.
+  `ANTHROPIC_API_KEY`, then the layered `HOLON_AGENT_OAUTH_TOKEN` (see `docs/environment_variables.md`), then the OS
+  keychain entry with service `holon` and account `claude-oauth-token`. The keychain is asked only when no variable
+  holds a value: on macOS with `security find-generic-password -s holon -a claude-oauth-token -w`, on Linux with
+  `secret-tool lookup service holon account claude-oauth-token` (the Secret Service keyring). Any other platform has no
+  store. There is no file fallback: when the entry is missing, or no store answers (tool missing, keychain locked, no
+  secret service running), pre-flight fails closed with the store command of the platform. The value's format decides
+  the in-container variable: an `sk-ant-oat` value (a subscription token from `claude setup-token`) is exported as
+  `CLAUDE_CODE_OAUTH_TOKEN`, and any other value, such as an `sk-ant-api` key, as `ANTHROPIC_API_KEY`. The pair travels
+  in the `0600` env-file, never on an echoed command line.
 - **Validation**: Requires `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` to be set, or active session configuration
-  mounted to `/home/holon/.config/claude`. The error names the secrets file and `claude setup-token`.
+  mounted to `/home/holon/.config/claude`. The error names the keychain store commands and `claude setup-token`.
+- **Storing the claude credential**: Run `claude setup-token`, then store the token with the command of the platform:
+
+  ```bash
+  # macOS
+  security add-generic-password -U -s holon -a claude-oauth-token -w
+  # Linux (Secret Service; secret-tool is part of libsecret)
+  secret-tool store --label="Holon claude credential" service holon account claude-oauth-token
+  ```
+
+  Both commands prompt for the token, so it is neither a command-line argument nor part of the shell history. Running
+  the command again replaces the entry.
+
+- **Migration from the plaintext file**: Earlier versions kept the credential in `~/.holon/secrets/claude-oauth-token`.
+  Discovery no longer reads that file. When it exists, pre-flight (`holon doctor`, and the pre-flight of `plan`,
+  `execute` and `flow`) imports it once: the token is written to the keychain on the tool's standard input, read back,
+  and the file is deleted only when the read-back returned the identical token. Pre-flight then prints one line on
+  standard error, starting with `Imported the claude credential from ~/.holon/secrets/claude-oauth-token into`, that
+  names the store and the delete. When the keychain already holds the identical token, nothing is written and the file
+  is deleted all the same. In every other case (no usable store, a failed or unverified write, an entry that already
+  holds a different credential, an unreadable file) the file is left untouched, the line says that it was not imported
+  and is no longer read, and an existing keychain entry is never overwritten. `--skip-preflight` and
+  `HOLON_SKIP_PREFLIGHT` skip the migration together with the probe. After the import, remove any
+  `HOLON_AGENT_OAUTH_TOKEN_FILE` line that named the file from `~/.holon/.env`. Deleting the file does not scrub backups
+  or snapshots that still hold it; run `claude setup-token` again and store the new token when that matters.
+
 - **Echo redaction**: The command echo replaces the entire `--settings` value with `<redacted>`, in the
   separate-argument, `=`-joined and `sh -c` forms, so no secret-bearing JSON reaches a log. The `HOLON_AGENT_SETTINGS`
   tunnel still carries other configuration but is not needed for authentication.
@@ -282,13 +311,13 @@ makes the exit code `1`, and `--json` still prints one valid document. The text 
 character the terminal cannot encode (a lone surrogate, or a non-UTF-8 byte from the environment) is printed
 backslash-escaped instead of raising `UnicodeEncodeError`; encodable text is printed unchanged.
 
-| Status            | Meaning                                                                                          | Remediation                                                                                                                                                                                                                       |
-| ----------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ok`              | Exit 0 with an answer; an `OK` reply wins over any logged noise.                                 | None.                                                                                                                                                                                                                             |
-| `quota_exhausted` | `429`, `RESOURCE_EXHAUSTED`, quota or rate-limit messages.                                       | Wait for the quota to reset, or choose another runner (`--agent`, `HOLON_AGENT`).                                                                                                                                                 |
-| `not_logged_in`   | No credential (for `claude`, no claude token or key) and no session to mount, or a login prompt. | Set `HOLON_AGENT_KEY` or initialise and mount the session (Tier 3 above). For `claude`, write `~/.holon/secrets/claude-oauth-token`, or set `CLAUDE_CODE_OAUTH_TOKEN` (`sk-ant-oat...`) or `ANTHROPIC_API_KEY` (`sk-ant-api...`). |
-| `expired_key`     | Expired or invalid key, `401`, `UNAUTHENTICATED`.                                                | Renew `HOLON_AGENT_KEY` or re-authorise the mounted session.                                                                                                                                                                      |
-| `unknown`         | Anything else, including a timeout or a rejected model name.                                     | Read the redacted output; check `--model` / `HOLON_MODEL` and the image.                                                                                                                                                          |
+| Status            | Meaning                                                                                          | Remediation                                                                                                                                                                                                                                               |
+| ----------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ok`              | Exit 0 with an answer; an `OK` reply wins over any logged noise.                                 | None.                                                                                                                                                                                                                                                     |
+| `quota_exhausted` | `429`, `RESOURCE_EXHAUSTED`, quota or rate-limit messages.                                       | Wait for the quota to reset, or choose another runner (`--agent`, `HOLON_AGENT`).                                                                                                                                                                         |
+| `not_logged_in`   | No credential (for `claude`, no claude token or key) and no session to mount, or a login prompt. | Set `HOLON_AGENT_KEY` or initialise and mount the session (Tier 3 above). For `claude`, store the credential in the OS keychain (see [`claude`](#2-claude)), or set `CLAUDE_CODE_OAUTH_TOKEN` (`sk-ant-oat...`) or `ANTHROPIC_API_KEY` (`sk-ant-api...`). |
+| `expired_key`     | Expired or invalid key, `401`, `UNAUTHENTICATED`.                                                | Renew `HOLON_AGENT_KEY` or re-authorise the mounted session.                                                                                                                                                                                              |
+| `unknown`         | Anything else, including a timeout or a rejected model name.                                     | Read the redacted output; check `--model` / `HOLON_MODEL` and the image.                                                                                                                                                                                  |
 
 Probe output is redacted before it is printed. A timeout usually means the runner is waiting for an interactive login.
 

@@ -36,8 +36,20 @@ docker run --rm \
 ### Claude Agent (`claude-agent`)
 
 Claude Code authenticates with an Anthropic API key (`ANTHROPIC_API_KEY`, `sk-ant-api...`) or a subscription token from
-`claude setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`, `sk-ant-oat...`). Holon also discovers either from
-`~/.holon/secrets/claude-oauth-token` and never uses `HOLON_AGENT_KEY` for claude:
+`claude setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`, `sk-ant-oat...`). Holon also discovers either from the OS keychain
+(service `holon`, account `claude-oauth-token`) and never uses `HOLON_AGENT_KEY` for claude. Store the credential once
+on the host; both commands prompt for it:
+
+```bash
+# macOS
+security add-generic-password -U -s holon -a claude-oauth-token -w
+# Linux (Secret Service)
+secret-tool store --label="Holon claude credential" service holon account claude-oauth-token
+```
+
+An older plaintext file `~/.holon/secrets/claude-oauth-token` is imported into the keychain once by pre-flight and then
+deleted; see [Migration from the plaintext file](../executor/agent_credentials_requirements.md#2-claude). A container
+started by hand takes the variable directly:
 
 ```bash
 docker run --rm \

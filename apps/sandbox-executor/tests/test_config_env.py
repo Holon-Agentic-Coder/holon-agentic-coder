@@ -10,7 +10,7 @@ import re
 import subprocess
 
 import pytest
-from sandbox_executor import claude_credential, config_env, config_env_report, config_env_secrets
+from sandbox_executor import claude_credential, claude_keychain, config_env, config_env_report, config_env_secrets
 from sandbox_executor.config_env import project_env_path, user_env_path
 from sandbox_executor.config_env_keys import HOST_SET_KEYS
 from sandbox_executor.scaffold import init_project
@@ -479,7 +479,9 @@ def test_init_scaffolds_a_commented_example_and_ignores_env_once(tmp_path):
     assert init_project(str(target)) == 0
     example = (target / ".env.example").read_text(encoding="utf-8").splitlines()
     assert example and all(line.startswith("#") for line in example)
-    assert "# HOLON_AGENT_OAUTH_TOKEN_FILE=~/.holon/secrets/claude-oauth-token" in example
+    for one_liner in claude_keychain.STORE_COMMANDS.values():
+        assert any(line.endswith(one_liner) for line in example)
+    assert not any(".holon/secrets/claude-oauth-token" in line for line in example)
     ignored = [line.strip() for line in (target / ".gitignore").read_text(encoding="utf-8").splitlines()]
     assert ignored.count(".env") == 1 and ".env.example" not in ignored
     assert not (target / ".env").exists()

@@ -371,28 +371,35 @@ def _delete_scoped_local_branches(scope: _TeardownScope, errors: list[str]) -> l
     return deleted
 
 
+def _collect_scoped_refs(lines: Iterable[str], scope: _TeardownScope, discovered: set[str]) -> None:
+    for line in lines:
+        raw = line.strip()
+        if not raw or raw == "refs/remotes/origin/HEAD":
+            continue
+        short = normalise_ref_name(raw)
+        if is_ref_within_intent_prefix(short, scope.intent_prefix, worktree_branch=scope.worktree_branch):
+            discovered.add(short)
+
+
 def _discover_scoped_remote_branches(scope: _TeardownScope) -> list[str]:
     if _invoke_git(scope.git_runner, ["remote", "get-url", "origin"], scope.repo_dir).returncode != 0:
         return []
     discovered: set[str] = set()
-    ls_res = _invoke_git(scope.git_runner, ["ls-remote", "--heads", "origin"], scope.repo_dir)
-    if ls_res.returncode == 0:
-        for line in ls_res.stdout.splitlines():
-            parts = line.strip().split()
-            if len(parts) >= 2 and parts[1].startswith("refs/heads/"):
-                short = normalise_ref_name(parts[1])
-                if is_ref_within_intent_prefix(short, scope.intent_prefix, worktree_branch=scope.worktree_branch):
-                    discovered.add(short)
     tracking_res = _invoke_git(
         scope.git_runner, ["for-each-ref", "--format=%(refname)", "refs/remotes/origin/"], scope.repo_dir
     )
     if tracking_res.returncode == 0:
-        for line in tracking_res.stdout.splitlines():
-            raw = line.strip()
-            if raw and raw != "refs/remotes/origin/HEAD":
-                short = normalise_ref_name(raw)
-                if is_ref_within_intent_prefix(short, scope.intent_prefix, worktree_branch=scope.worktree_branch):
-                    discovered.add(short)
+        _collect_scoped_refs(tracking_res.stdout.splitlines(), scope, discovered)
+    if discovered:
+        return sorted(discovered)
+    ls_res = _invoke_git(
+        scope.git_runner,
+        ["ls-remote", "--heads", "origin", f"refs/heads/{scope.intent_prefix}", f"refs/heads/{scope.intent_prefix}/*"],
+        scope.repo_dir,
+    )
+    if ls_res.returncode == 0:
+        ref_cols = [parts[1] for line in ls_res.stdout.splitlines() if len(parts := line.strip().split()) >= 2]
+        _collect_scoped_refs(ref_cols, scope, discovered)
     return sorted(discovered)
 
 
@@ -402,8 +409,6 @@ def _delete_scoped_remote_branches(scope: _TeardownScope, errors: list[str]) -> 
         return []
     batch_push = _invoke_git(scope.git_runner, ["push", "origin", "--delete", *branches], scope.repo_dir)
     if batch_push.returncode == 0:
-        for branch in branches:
-            _invoke_git(scope.git_runner, ["update-ref", "-d", f"refs/remotes/origin/{branch}"], scope.repo_dir)
         return branches
     deleted: list[str] = []
     for branch in branches:

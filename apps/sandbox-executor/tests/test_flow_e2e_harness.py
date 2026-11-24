@@ -39,7 +39,7 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, S
 from sandbox_executor.ledger import LedgerRewriteError
 from sandbox_executor.local_llm import LocalLLMConfigError
 
-from tests.flow.helpers import FakeRoleAgents, _configure_identity, _git
+from tests.flow.helpers import FakeRoleAgents, _git
 
 
 def _create_bare_origin_and_clone(tmp_path: Path) -> tuple[Path, Path]:
@@ -49,7 +49,13 @@ def _create_bare_origin_and_clone(tmp_path: Path) -> tuple[Path, Path]:
 
     repo = tmp_path / "repo"
     subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, capture_output=True)
-    _configure_identity(repo)
+    (repo / ".git" / "config").write_text(
+        "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n"
+        "[user]\n\temail = test@holon.invalid\n\tname = Holon Test\n"
+        "[commit]\n\tgpgsign = false\n"
+        f'[remote "origin"]\n\turl = {origin}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n',
+        encoding="utf-8",
+    )
     ledger_dir = repo / "holon-knowledge" / "ledger"
     ledger_dir.mkdir(parents=True, exist_ok=True)
     for name in ("intents.jsonl", "plans.jsonl", "executions.jsonl"):
@@ -59,7 +65,6 @@ def _create_bare_origin_and_clone(tmp_path: Path) -> tuple[Path, Path]:
     (repo / "src" / "app.py").write_text("print('seed')\n", encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "seed main")
-    _git(repo, "remote", "add", "origin", str(origin))
     _git(repo, "push", "-q", "-u", "origin", "main")
     return repo, origin
 

@@ -47,18 +47,30 @@ jobs:
         with:
           submodules: true
 
+      # A push that changes only plans/, executions/ and holon-knowledge/ skips the steps below; see
+      # "Bookkeeping-Only Push Gate" in .github/workflows/README.md.
+      - name: Bookkeeping gate
+        id: bookkeeping
+        uses: ./.github/actions/bookkeeping-gate
+        with:
+          job-name: unit
+          os: ${{ matrix.os }}
+
       - name: Install uv
+        if: steps.bookkeeping.outputs.skip != 'true'
         uses: astral-sh/setup-uv@v8.3.0
         with:
           python-version: "3.13"
           enable-cache: true
 
       - name: Run unit tests
+        if: steps.bookkeeping.outputs.skip != 'true'
         run: |
           uv sync --locked
           uv run pytest -n auto --dist worksteal -v -l --tb=short -m "not integration_test and not stress" --junitxml=unit-report.xml
 
       - name: CI Timing Gate (compare with main)
+        if: steps.bookkeeping.outputs.skip != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           TIMING_MODE: ${{ github.event_name == 'pull_request' && 'compare' || 'record' }}
@@ -78,3 +90,7 @@ jobs:
           path: ci-timing/record.json
           retention-days: 30
           if-no-files-found: error
+
+      - name: Full run completed
+        if: steps.bookkeeping.outputs.skip != 'true'
+        run: echo "Every step of the full run passed."

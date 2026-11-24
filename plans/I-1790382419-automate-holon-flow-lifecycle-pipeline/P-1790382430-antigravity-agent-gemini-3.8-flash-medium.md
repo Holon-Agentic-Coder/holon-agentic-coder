@@ -209,7 +209,6 @@ $$EV = 0.95 \times 75.0 + 0.5 \times 2.0 - 0.3 \times 1.6 - 3.5 = 71.25 + 1.0 - 
 
 ### Implementation Details (No code blocks, only logic/steps)
 
-<!-- prettier-ignore -->
 - Implement `run_intent_stage(context: FlowContext) -> StageResult`:
   - Validate intent payload: ensure required fields (`slug`, `goal`, `description`, `target_branch`) are present and
     conform to `docs/intent/intent_markdown_spec.md`.

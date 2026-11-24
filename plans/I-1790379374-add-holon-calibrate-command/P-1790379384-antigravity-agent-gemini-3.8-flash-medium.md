@@ -136,7 +136,6 @@ pass rate with `uv run pytest`.
 
 ### Implementation Details (No code blocks, only logic/steps)
 
-<!-- prettier-ignore -->
 - Define strongly-typed dataclasses for PredictedMetrics, ActualMetrics, CalibrationDeltas, EntropyFactors, and
   CalibrationReport.
 - Implement predicted metrics parsing:

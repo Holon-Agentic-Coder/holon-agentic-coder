@@ -52,7 +52,6 @@
 
 ## 4. Calibration Assessment
 
-<!-- prettier-ignore -->
 Plan `P-1794136106-claude-agent-claude-fable-5` executed with minimal error ($p\_success\_error = 0.18$, $cost\_error =
 2.33$). The calibration step successfully completed the execution lifecycle and delivered verified post-execution
 analysis.

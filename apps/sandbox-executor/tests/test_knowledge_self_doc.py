@@ -110,9 +110,7 @@ def test_find_disallowed_comments_allows_pragmas_shebang_and_encoding() -> None:
 
 def test_find_disallowed_comments_rejects_explanatory_comments() -> None:
     source = (
-        "x = 1  # explanatory comment\n"
-        "y = 2  # mentions noqa in prose\n"
-        "z = 3  # mentions pragma: no cover in prose\n"
+        "x = 1  # explanatory comment\ny = 2  # mentions noqa in prose\nz = 3  # mentions pragma: no cover in prose\n"
     )
     disallowed = _find_disallowed_comments(source)
     assert [line_no for line_no, _ in disallowed] == [1, 2, 3]

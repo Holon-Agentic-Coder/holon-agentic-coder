@@ -21,9 +21,7 @@ _ANTHROPIC_API_KEY_PATTERN = re.compile(r"\b(sk-ant-[a-zA-Z0-9_\-]{20,})\b")
 _GOOGLE_AI_API_KEY_PATTERN = re.compile(r"\b(AIza[0-9A-Za-z\-_]{30,40})\b")
 _GITHUB_PAT_PATTERN = re.compile(r"\b(ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82})\b")
 _BEARER_TOKEN_PATTERN = re.compile(r"(?i)\b(Bearer\s+)[a-zA-Z0-9_\-\.]{15,}")
-_PRIVATE_KEY_BLOCK_PATTERN = re.compile(
-    r"-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----"
-)
+_PRIVATE_KEY_BLOCK_PATTERN = re.compile(r"-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----")
 _SENSITIVE_URL_PARAM_PATTERN = re.compile(
     r"([?&](?:token|api_key|access_token|secret|password|auth|bearer)[^=]*=)[^\s&]+",
     re.IGNORECASE,
@@ -161,83 +159,7 @@ def append_action_event(
     return redacted_rec
 
 
-def _load_ledger_records(ledger_path: str) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    with open(ledger_path, encoding="utf-8") as f:
-        for line in f:
-            line_str = line.strip()
-            if not line_str:
-                continue
-            try:
-                records.append(json.loads(line_str))
-            except Exception:
-                continue
-    return records
-
-
-def _build_target_reconciliation_event(
-    scanned_records: list[dict[str, Any]],
-    target_action_id: str,
-    verdict: str,
-    reason: str | None,
-    now: datetime,
-) -> dict[str, Any]:
-    target_verdict = Verdict.from_str(verdict)
-    matched_target = next((r for r in scanned_records if r.get("action_id") == target_action_id), None)
-    if matched_target:
-        curr_verdict = Verdict.from_str(matched_target.get("verdict", Verdict.UNKNOWN.value))
-        validate_verdict_transition(curr_verdict, target_verdict)
-
-    return {
-        "action_id": generate_action_id(),
-        "parent_action_id": target_action_id,
-        "event_type": "reconciliation",
-        "verdict": target_verdict.value,
-        "outcome": target_verdict.value,
-        "reason": reason or f"Reconciled verdict to {target_verdict.value}",
-        "created_at": now.isoformat(),
-    }
-
-
-def _parse_utc_timestamp(raw_timestamp: str) -> datetime | None:
-    try:
-        parsed = datetime.fromisoformat(raw_timestamp)
-    except Exception:
-        return None
-    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
-
-
-def _build_stale_unknown_expiration_events(
-    scanned_records: list[dict[str, Any]],
-    max_age_days: int,
-    now: datetime,
-) -> list[dict[str, Any]]:
-    cutoff = now - timedelta(days=max_age_days)
-    expiration_events: list[dict[str, Any]] = []
-    for r in scanned_records:
-        if str(r.get("verdict") or "").lower() != Verdict.UNKNOWN.value:
-            continue
-        r_id = r.get("action_id")
-        created_at_str = r.get("created_at")
-        if not r_id or not created_at_str:
-            continue
-        created_dt = _parse_utc_timestamp(created_at_str)
-        if created_dt is not None and created_dt < cutoff:
-            expiration_events.append(
-                {
-                    "action_id": generate_action_id(),
-                    "parent_action_id": r_id,
-                    "event_type": "ttl_expiration",
-                    "verdict": Verdict.UNRESOLVED.value,
-                    "outcome": Verdict.UNRESOLVED.value,
-                    "reason": f"TTL expired ({max_age_days} days)",
-                    "created_at": now.isoformat(),
-                }
-            )
-    return expiration_events
-
-
-def reconcile_records(  # noqa: PLR0913
+def reconcile_records(  # noqa: C901, PLR0912, PLR0913
     ledger_path: str = DEFAULT_ACTIONS_LEDGER,
     max_age_days: int = 14,
     target_action_id: str | None = None,
@@ -248,19 +170,75 @@ def reconcile_records(  # noqa: PLR0913
     if not os.path.exists(ledger_path):
         return {"reconciled": 0, "expired": 0, "total_scanned": 0}
 
-    scanned_records = _load_ledger_records(ledger_path)
+    scanned_records: list[dict[str, Any]] = []
+    with open(ledger_path, encoding="utf-8") as f:
+        for line in f:
+            line_str = line.strip()
+            if not line_str:
+                continue
+            try:
+                scanned_records.append(json.loads(line_str))
+            except Exception:
+                continue
+
     reconciled_count = 0
     expired_count = 0
     now = datetime.now(UTC)
+    cutoff = now - timedelta(days=max_age_days)
 
     if target_action_id and verdict:
-        event = _build_target_reconciliation_event(scanned_records, target_action_id, verdict, reason, now)
-        append_action_event(event, ledger_path=ledger_path, db_path=db_path)
+        target_verdict = Verdict.from_str(verdict)
+        matched_target = None
+        for r in scanned_records:
+            if r.get("action_id") == target_action_id:
+                matched_target = r
+                break
+
+        if matched_target:
+            curr_verdict = Verdict.from_str(matched_target.get("verdict", Verdict.UNKNOWN.value))
+            validate_verdict_transition(curr_verdict, target_verdict)
+
+        reconciliation_event = {
+            "action_id": generate_action_id(),
+            "parent_action_id": target_action_id,
+            "event_type": "reconciliation",
+            "verdict": target_verdict.value,
+            "outcome": target_verdict.value,
+            "reason": reason or f"Reconciled verdict to {target_verdict.value}",
+            "created_at": now.isoformat(),
+        }
+        append_action_event(reconciliation_event, ledger_path=ledger_path, db_path=db_path)
         reconciled_count += 1
 
-    for expire_event in _build_stale_unknown_expiration_events(scanned_records, max_age_days, now):
-        append_action_event(expire_event, ledger_path=ledger_path, db_path=db_path)
-        expired_count += 1
+    for r in scanned_records:
+        record_verdict = str(r.get("verdict") or "").lower()
+        if record_verdict != Verdict.UNKNOWN.value:
+            continue
+
+        record_action_id = r.get("action_id")
+        created_at_str = r.get("created_at")
+        if not record_action_id or not created_at_str:
+            continue
+
+        try:
+            created_dt = datetime.fromisoformat(created_at_str)
+            if created_dt.tzinfo is None:
+                created_dt = created_dt.replace(tzinfo=UTC)
+        except Exception:
+            continue
+
+        if created_dt < cutoff:
+            expire_event = {
+                "action_id": generate_action_id(),
+                "parent_action_id": record_action_id,
+                "event_type": "ttl_expiration",
+                "verdict": Verdict.UNRESOLVED.value,
+                "outcome": Verdict.UNRESOLVED.value,
+                "reason": f"TTL expired ({max_age_days} days)",
+                "created_at": now.isoformat(),
+            }
+            append_action_event(expire_event, ledger_path=ledger_path, db_path=db_path)
+            expired_count += 1
 
     return {
         "reconciled": reconciled_count,

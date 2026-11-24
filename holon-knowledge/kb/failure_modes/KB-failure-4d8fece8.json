@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-4d8fece8",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-24T11:14:34.136876+00:00",
+  "updated_ts": "2026-11-24T11:14:34.136876+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795515246-b7b6eee3",
+      "ACT-FIND-1795515244-e39e73ca"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795496321-flow-e2e-test-teardown/P-1795496340-ANA-G4A/E-1795497446-ANA-G4A/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 9 finding detected: FIND-R2-009-03",
+    "symptoms": [
+      "_execute_guarded_attempt swallows ZeroPRGuardViolationError from enforce_zero_pr_guard when attempt_fn already raised a retryable E2EModelOutputError, allowing retries and false success after a stray PR."
+    ]
+  }
+}

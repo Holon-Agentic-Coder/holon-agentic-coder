@@ -33,6 +33,7 @@ from sandbox_executor.flow.github.approval_invalidation import CommentRecord
 from sandbox_executor.flow.review.conflict_merge import _merge_target_ledger_only
 from sandbox_executor.flow.stages.calibrate import _supersede_stale_warning, run_calibrate_stage
 
+from tests.repo_templates import copy_template, finish_template
 from tests.test_calibrate_sync import CALIBRATED, EXEC, commit_file, git, make_repos
 
 PLAN_ID = "P-2-y"
@@ -58,9 +59,20 @@ LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
 TARGET_REF = "refs/remotes/origin/main"
 
 
+@pytest.fixture(scope="session")
+def rerun_repos_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> SimpleNamespace:
+    """The repositories of ``make_repos``, built once and read-only; ``repos`` hands every test its own copy."""
+    root = tmp_path_factory.mktemp("calibrate-rerun-template")
+    built = make_repos(root)
+    return SimpleNamespace(root=finish_template(root), repos=built)
+
+
 @pytest.fixture
-def repos(tmp_path: Path) -> SimpleNamespace:
-    return make_repos(tmp_path)
+def repos(rerun_repos_template: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
+    template = rerun_repos_template.root
+    copy_template(template, tmp_path)
+    built = vars(rerun_repos_template.repos)
+    return SimpleNamespace(**{name: tmp_path / path.relative_to(template) for name, path in built.items()})
 
 
 def ledger_row(repo: Path, label: str, subject: str = "chore(review): record review rows") -> str:

@@ -229,30 +229,51 @@ class ReviewRequest:
 
 
 def build_review_request(  # noqa: PLR0913
-    target: ReviewTarget, base_ref: str, iteration: int, pr_title: str, pr_body: str, repo_dir: str
+    target: ReviewTarget,
+    base_ref: str,
+    iteration: int,
+    pr_title: str,
+    pr_body: str,
+    repo_dir: str,
+    *,
+    review_paths: Sequence[str] | None = None,
 ) -> ReviewRequest:
     """Build the request every reviewer judges: the real diff between ``base_ref`` and the resolved head SHA.
 
-    The diff excludes the ledgers, plans and execution notes, as the empty-diff guard does. PR title and body come
-    from the resolved target when it carries them, else from the caller.
+    The diff excludes the ledgers, plans and execution notes, as the empty-diff guard does. When ``review_paths`` is
+    non-empty, the diff is restricted to those paths (falling back to the full PR diff if empty) and the PR body notes
+    the conflict-resolution scope. PR title and body come from the resolved target when it carries them, else from the
+    caller.
 
     Raises:
         RuntimeError: If the head SHA is missing or ``git diff`` fails or times out (the iteration then fails closed).
     """
     if not target.head_sha:
         raise RuntimeError(f"'{target.head_branch}' has no resolved head commit to review")
-    pathspec = ["--", ".", *(f":(exclude){prefix}" for prefix in EMPTY_DIFF_EXCLUDES)]
+    excludes = [f":(exclude){prefix}" for prefix in EMPTY_DIFF_EXCLUDES]
+    scoped = [str(p).strip() for p in (review_paths or ()) if str(p).strip()]
+    pathspec = ["--", *scoped, *excludes] if scoped else ["--", ".", *excludes]
     try:
         proc = run_git(["diff", f"{base_ref}...{target.head_sha}", *pathspec], cwd=repo_dir, check=True, timeout=120)
+        diff_text = proc.stdout or ""
+        if scoped and not diff_text.strip():
+            fallback = run_git(
+                ["diff", f"{base_ref}...{target.head_sha}", "--", ".", *excludes], cwd=repo_dir, check=True, timeout=120
+            )
+            diff_text, scoped = fallback.stdout or "", []
     except TimeoutError as exc:
         raise RuntimeError(f"git diff timed out: {redact_agent_secrets(str(exc))}") from exc
+    body = target.body or pr_body
+    if scoped:
+        bullets = "\n".join(f"- `{p}`" for p in scoped)
+        body = f"{body}\n\n## Scoped Conflict-Resolution Re-Review\n\nReviewing resolved paths:\n{bullets}".strip()
     return ReviewRequest(
         repo_dir=repo_dir,
         head_sha=target.head_sha,
         base_ref=base_ref,
         pr_title=target.title or pr_title,
-        pr_body=target.body or pr_body,
-        diff_text=proc.stdout or "",
+        pr_body=body,
+        diff_text=diff_text,
         iteration=iteration,
     )
 

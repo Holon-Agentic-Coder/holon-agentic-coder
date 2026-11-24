@@ -186,6 +186,8 @@ def finalize_resolver_turn(context: FlowContext, target: ReviewTarget, iteration
     """Run post-turn target sync on a successful resolver outcome and update ``head_sha``/``pushed``."""
     if outcome.error or context.dry_run:
         return outcome
+    if outcome.pushed and hasattr(context, "review_scope_paths"):
+        context.review_scope_paths = []
     updated = dataclasses.replace(target, head_sha=outcome.head_sha) if outcome.head_sha else target
     synced, sync_err = sync_after_resolver_turn(
         context, updated, str(context.intent_data.get("target_branch") or "main"), iteration

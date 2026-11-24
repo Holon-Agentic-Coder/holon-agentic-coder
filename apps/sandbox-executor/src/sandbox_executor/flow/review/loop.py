@@ -522,7 +522,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             context.log(f"[Review Loop] Consensus blocked at iteration {iteration}: {carried_block}.")
             break
         if ensemble_verdict is ConsensusVerdict.APPROVED:
-            consensus_reached = True
+            consensus_reached, context.review_scope_paths = True, []
             context.log(f"[Review Loop] Consensus approval reached at iteration {iteration}.")
             break
         if iteration_breached:

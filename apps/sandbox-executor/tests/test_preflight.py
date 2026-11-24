@@ -883,16 +883,13 @@ def test_module_constants():
     assert preflight.TIMEOUT_ENV_VAR == "HOLON_PREFLIGHT_TIMEOUT"
 
 
-def test_probe_discovers_the_secrets_file_and_drops_a_stale_holon_agent_key(
-    probe_env, monkeypatch, isolated_env_file_dir
+def test_probe_discovers_the_keychain_and_drops_a_stale_holon_agent_key(
+    probe_env, monkeypatch, isolated_env_file_dir, fake_keychain
 ):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("HOLON_AGENT_KEY", make_probe("stale"))
-    value = "sk-ant-" + "oat" + make_probe("file")
-    secrets = probe_env / ".holon" / "secrets" / "claude-oauth-token"
-    secrets.parent.mkdir(parents=True)
-    secrets.write_text(value + "\n", encoding="utf-8")
-    secrets.chmod(0o600)
+    value = "sk-ant-" + "oat" + make_probe("k")
+    fake_keychain.entry = value
     seen = {}
 
     assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok

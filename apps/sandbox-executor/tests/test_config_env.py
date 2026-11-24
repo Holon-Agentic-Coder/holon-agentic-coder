@@ -444,10 +444,9 @@ def test_layered_token_without_the_oauth_prefix_warns_by_name(monkeypatch, capsy
     assert_no_fragment(err, probe)
 
 
-def test_layered_token_ranks_between_the_explicit_variables_and_the_secrets_file(monkeypatch):
-    file_token = fake_token()
-    write(pathlib.Path(claude_credential.secrets_file_path()), file_token)
-    assert claude_credential.resolve_claude_credential_source()[0] == "file"
+def test_layered_token_ranks_between_the_explicit_variables_and_the_keychain(monkeypatch, fake_keychain):
+    fake_keychain.entry = fake_token()
+    assert claude_credential.resolve_claude_credential_source()[0] == "keychain"
     layered = fake_token()
     monkeypatch.setenv("HOLON_AGENT_OAUTH_TOKEN", layered)
     assert claude_credential.resolve_claude_credential_source() == (

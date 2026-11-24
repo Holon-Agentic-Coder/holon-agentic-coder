@@ -2,8 +2,10 @@
 
 The claude runner never consults ``HOLON_AGENT_KEY``. An explicit ``CLAUDE_CODE_OAUTH_TOKEN`` or
 ``ANTHROPIC_API_KEY`` wins; then ``HOLON_AGENT_OAUTH_TOKEN`` (filled from the layered configuration, see
-``config_env``); otherwise the value is read from the secrets file, and the value's format decides which in-container
-variable carries it. The value is never logged: warnings name the path, the mode or the variable only.
+``config_env``); otherwise the value is looked up in the OS keychain (``claude_keychain``), and the value's format
+decides which in-container variable carries it. No stored credential is read from a plaintext file: the retired
+token file is only ever opened by its one-time import (``claude_token_migration``). The value is never logged: warnings
+name the path, the mode or the variable only.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import stat
 import sys
 from collections.abc import Mapping, MutableMapping
 
-from sandbox_executor import local_llm
+from sandbox_executor import claude_keychain, local_llm
 
 OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 API_KEY_ENV = "ANTHROPIC_API_KEY"
@@ -25,17 +27,11 @@ OAUTH_TOKEN_PREFIX = "sk-ant-oat"
 SECRETS_FILE_DISPLAY = "~/.holon/secrets/claude-oauth-token"
 
 
-def secrets_file_path() -> str:
-    """Return the target-native path of the claude credential file under the current home."""
-    return os.path.join(os.path.expanduser("~"), ".holon", "secrets", "claude-oauth-token")
-
-
 def classify_credential(value: str) -> str:
     """Name the in-container variable that must carry ``value``, decided by its format."""
     return OAUTH_TOKEN_ENV if value.startswith(OAUTH_TOKEN_PREFIX) else API_KEY_ENV
 
 
-_WARNED_PATHS: set[str] = set()
 _WARNED_FORMAT: set[str] = set()
 
 
@@ -48,15 +44,6 @@ def loose_mode_warning(path: str) -> str | None:
     if mode & 0o077:
         return f"Warning: {path} has mode {mode:04o}; expected 0600. The file is left unchanged."
     return None
-
-
-def _warn_if_loose(path: str) -> None:
-    if path in _WARNED_PATHS:
-        return
-    warning = loose_mode_warning(path)
-    if warning:
-        _WARNED_PATHS.add(path)
-        print(warning, file=sys.stderr)
 
 
 def read_token_file(path: str) -> tuple[str | None, str | None]:
@@ -83,25 +70,10 @@ def read_token_file(path: str) -> tuple[str | None, str | None]:
     return value, None
 
 
-def read_secrets_file() -> str | None:
-    """Read the trimmed credential from the secrets file, or None when it is missing, unreadable or empty.
-
-    The file is never modified. A mode with group or other bits set draws a warning naming the path and mode.
-    """
-    path = secrets_file_path()
-    value, warning = read_token_file(path)
-    if warning:
-        print(warning, file=sys.stderr)
-    if value is None:
-        return None
-    _warn_if_loose(path)
-    return value
-
-
 def resolve_claude_credential(env: Mapping[str, str] | None = None) -> tuple[str, str] | None:
     """Resolve the claude credential as a ``(variable name, value)`` pair.
 
-    An explicit environment value wins (the subscription token first), else the secrets file is read. Wherever the
+    An explicit environment value wins (the subscription token first), else the OS keychain is asked. Wherever the
     value came from, its format decides the variable that carries it, so callers must drop both claude variable names
     from the forwarded env before setting the pair.
     ``HOLON_AGENT_KEY`` is never consulted.
@@ -120,7 +92,8 @@ def resolve_claude_credential_source(env: Mapping[str, str] | None = None) -> tu
     """Resolve the claude credential as ``(source, variable name, value)``.
 
     The source is the environment variable the value came from (``CLAUDE_CODE_OAUTH_TOKEN``, ``ANTHROPIC_API_KEY``
-    or ``HOLON_AGENT_OAUTH_TOKEN``) or ``"file"`` for the default secrets file, in that order of precedence.
+    or ``HOLON_AGENT_OAUTH_TOKEN``) or ``"keychain"`` for the OS keychain entry, in that order of precedence. The
+    keychain is asked only when no variable holds a value; an empty store and an unusable one both give None.
 
     Args:
         env: The environment to inspect; defaults to ``os.environ``.
@@ -137,8 +110,10 @@ def resolve_claude_credential_source(env: Mapping[str, str] | None = None) -> tu
     if layered:
         _warn_if_not_oauth(layered)
         return HOLON_OAUTH_TOKEN_ENV, OAUTH_TOKEN_ENV, layered
-    from_file = read_secrets_file()
-    return ("file", classify_credential(from_file), from_file) if from_file else None
+    stored = claude_keychain.lookup_token()
+    if stored.status is not claude_keychain.LookupStatus.FOUND:
+        return None
+    return "keychain", classify_credential(stored.token), stored.token
 
 
 def _warn_if_not_oauth(value: str) -> None:

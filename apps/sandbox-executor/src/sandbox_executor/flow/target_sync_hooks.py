@@ -11,7 +11,7 @@ from sandbox_executor.flow.conflict_resolver_role import conflict_code_resolver
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.git_refs import _resolve_branch_ref, _track_local_branch
-from sandbox_executor.flow.target_probe import TargetProbe, TargetProbeError
+from sandbox_executor.flow.target_probe import TargetProbeError
 from sandbox_executor.flow.target_sync import sync_with_target
 from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest, SyncResult
 from sandbox_executor.git import run_git
@@ -44,14 +44,14 @@ def _checked_out_branch(worktree: str) -> str:
 
 def active_flow_branch(context: FlowContext, stage: FlowStage) -> str:
     """Select the active flow branch for ``stage`` from ``context``."""
-    candidates_by_stage: dict[FlowStage, tuple[str | None, ...]] = {
+    candidates: dict[FlowStage, tuple[str | None, ...]] = {
         FlowStage.INTENT: (context.intent_branch,),
         FlowStage.PLAN: (context.plan_branch, context.intent_branch),
         FlowStage.EXECUTE: (context.execution_branch, context.plan_branch, context.intent_branch),
         FlowStage.REVIEW: (context.execution_branch, context.plan_branch),
         FlowStage.CALIBRATE: (context.calibrated_branch, context.execution_branch),
     }
-    return next((branch for branch in candidates_by_stage.get(stage, ()) if branch), "")
+    return next((branch for branch in candidates.get(stage, ()) if branch), "")
 
 
 def _execution_id_of(branch: str, stage: FlowStage, boundary: SyncBoundary) -> str:
@@ -64,10 +64,9 @@ def _execution_id_of(branch: str, stage: FlowStage, boundary: SyncBoundary) -> s
 
 def _can_sync_worktree(worktree: str, target_branch: str) -> bool:
     """True when ``worktree`` is a git repository with a resolvable ``origin/<target_branch>`` ref."""
-    if not worktree or not os.path.isdir(worktree):
-        return False
-    res = run_git(["rev-parse", "--verify", "--quiet", f"origin/{target_branch}^{{commit}}"], cwd=worktree, check=False)
-    return res.returncode == 0 and isinstance(res.stdout, str) and bool(res.stdout.strip())
+    cmd = ["rev-parse", "--verify", "--quiet", f"origin/{target_branch}^{{commit}}"]
+    res = run_git(cmd, cwd=worktree, check=False) if worktree and os.path.isdir(worktree) else None
+    return bool(res and res.returncode == 0 and isinstance(res.stdout, str) and res.stdout.strip())
 
 
 def _checkout_active_branch(context: FlowContext, branch: str) -> tuple[str, bool, str | None]:
@@ -90,10 +89,9 @@ def _checkout_active_branch(context: FlowContext, branch: str) -> tuple[str, boo
 
 def _restore_checked_out_branch(worktree: str, prev: str, detached: bool, active_branch: str) -> None:
     """Return ``worktree`` to ``prev`` if the sync checked out ``active_branch`` from another ref."""
-    if not prev or prev == active_branch:
-        return
-    args = ["checkout", "-q", "--detach", prev] if detached else ["checkout", "-q", prev]
-    run_git(args, cwd=worktree, check=False)
+    if prev and prev != active_branch:
+        args = ["checkout", "-q", "--detach", prev] if detached else ["checkout", "-q", prev]
+        run_git(args, cwd=worktree, check=False)
 
 
 def _blocked_stage_failure(
@@ -101,8 +99,8 @@ def _blocked_stage_failure(
 ) -> StageResult:
     paths = ", ".join(result.conflicted_paths or result.code_paths)
     where = f" in {paths}" if paths else ""
-    base_err = result.error or "target sync blocked"
-    detail = f"{base_err} ({result.test_result})" if result.test_result else base_err
+    base = result.error or "target sync blocked"
+    detail = f"{base} ({result.test_result})" if result.test_result else base
     msg = (
         f"{stage.value.capitalize()} stage failed at {boundary.value}: target sync of '{branch}' with "
         f"'origin/{base_branch_name(context)}' was blocked{where}: {detail}"
@@ -118,22 +116,29 @@ def _blocked_stage_failure(
     )
 
 
+def _after_boundary_merge(context: FlowContext, stage: FlowStage, branch: str, result: SyncResult) -> None:
+    _track_local_branch(context, branch)
+    setattr(context, _NOTICE_ATTR, format_target_merge_notice(result.target_sha, result.changed_paths))
+    if stage is FlowStage.REVIEW and getattr(context, "review_scope_paths", None):
+        from sandbox_executor.flow.review.sync_points import compute_rereview_scope
+
+        context.review_scope_paths = sorted(set(context.review_scope_paths) | set(compute_rereview_scope(result)))
+
+
 def _run_boundary_sync(
     context: FlowContext, stage: FlowStage, boundary: SyncBoundary
 ) -> tuple[SyncResult, StageResult | None]:
     """Run ``sync_with_target`` at ``(stage, boundary)``; return ``(sync_result, failure_stage_result_or_None)``."""
-    noop = SyncResult("unchanged", "", "", "")
     worktree, target_branch = context.target_worktree, base_branch_name(context)
     branch = active_flow_branch(context, stage)
     if context.dry_run or not branch or not _can_sync_worktree(worktree, target_branch):
-        return noop, None
+        return SyncResult("unchanged", "", "", ""), None
     if _resolve_branch_ref(worktree, branch, prefer_remote=True) is None:
-        return noop, None
+        return SyncResult("unchanged", "", "", ""), None
     prev, detached, checkout_err = _checkout_active_branch(context, branch)
     if checkout_err is not None:
         blocked = SyncResult("blocked", "", "", "", error=checkout_err)
         return blocked, _blocked_stage_failure(context, stage, boundary, branch, blocked)
-    last_probe: TargetProbe | None = getattr(context, _PROBE_ATTR, None)
     request = SyncRequest(
         worktree=worktree,
         branch=branch,
@@ -142,7 +147,7 @@ def _run_boundary_sync(
         boundary=boundary,
         ledger_path=os.path.join(worktree, _LEDGER_REL),
         execution_id=_execution_id_of(branch, stage, boundary),
-        last_probe=last_probe,
+        last_probe=getattr(context, _PROBE_ATTR, None),
         code_resolver=conflict_code_resolver(context),
     )
     try:
@@ -155,11 +160,9 @@ def _run_boundary_sync(
     if result.probe is not None:
         setattr(context, _PROBE_ATTR, result.probe)
     if result.status == "merged":
-        _track_local_branch(context, branch)
-        setattr(context, _NOTICE_ATTR, format_target_merge_notice(result.target_sha, result.changed_paths))
-    if result.status == "blocked":
-        return result, _blocked_stage_failure(context, stage, boundary, branch, result)
-    return result, None
+        _after_boundary_merge(context, stage, branch, result)
+    failure = _blocked_stage_failure(context, stage, boundary, branch, result) if result.status == "blocked" else None
+    return result, failure
 
 
 def at_flow_start(context: FlowContext, first_stage: FlowStage = FlowStage.INTENT) -> StageResult | None:

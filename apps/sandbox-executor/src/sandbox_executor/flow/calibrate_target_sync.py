@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from collections.abc import Callable
 
@@ -13,6 +14,7 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.git_refs import _resolve_branch_ref, _track_local_branch
 from sandbox_executor.flow.review.approval_carry_over import record_stage5_carry_over
+from sandbox_executor.flow.review.ledger_commit import _commit_pending_ledger_rows
 from sandbox_executor.flow.review.sync_points import (
     compute_rereview_scope,
     format_conflict_block_reason,
@@ -69,6 +71,22 @@ def _retry_safe(context: FlowContext, report_rel: str, expected_tip: list[str]) 
     return safe
 
 
+def _finalize_calibrate_merge(context: FlowContext, branch: str, target_branch: str, result: SyncResult) -> SyncResult:
+    _track_local_branch(context, branch)
+    notice = _hooks.format_target_merge_notice(result.target_sha, result.changed_paths)
+    setattr(context, _hooks._NOTICE_ATTR, notice)
+    mech = is_mechanical_only(result)
+    scope = compute_rereview_scope(result)
+    carry = record_stage5_carry_over(
+        context, target_branch, result.head_after, mechanical_only=mech, rereview_scope=scope
+    )
+    if carry is not None:
+        commit = _commit_pending_ledger_rows(context, context.review_iterations_done, "stage 5 carry-over")
+        if commit is not None:
+            return dataclasses.replace(result, head_after=commit.sha)
+    return result
+
+
 def _run_calibrate_sync(context: FlowContext) -> tuple[SyncResult, str]:
     """Run ``sync_with_target`` at ``SyncBoundary.CALIBRATE`` on ``context.execution_branch``."""
     target_branch = base_branch_name(context)
@@ -81,32 +99,30 @@ def _run_calibrate_sync(context: FlowContext) -> tuple[SyncResult, str]:
     prev, detached, checkout_err = _hooks._checkout_active_branch(context, branch)
     if checkout_err is not None:
         return SyncResult("blocked", "", "", "", error=checkout_err), target_branch
-    request = SyncRequest(
-        worktree=worktree,
-        branch=branch,
-        target_branch=target_branch,
-        stage=FlowStage.CALIBRATE.value,
-        boundary=SyncBoundary.CALIBRATE,
-        ledger_path=os.path.join(worktree, _hooks._LEDGER_REL),
-        execution_id=_hooks._execution_id_of(branch, FlowStage.CALIBRATE, SyncBoundary.CALIBRATE),
-        last_probe=getattr(context, _hooks._PROBE_ATTR, None),
-        code_resolver=conflict_code_resolver(context),
-    )
     try:
+        last_probe = getattr(context, _hooks._PROBE_ATTR, None)
+        if _commit_pending_ledger_rows(context, context.review_iterations_done, "before calibration target sync"):
+            last_probe = None
+        request = SyncRequest(
+            worktree=worktree,
+            branch=branch,
+            target_branch=target_branch,
+            stage=FlowStage.CALIBRATE.value,
+            boundary=SyncBoundary.CALIBRATE,
+            ledger_path=os.path.join(worktree, _hooks._LEDGER_REL),
+            execution_id=_hooks._execution_id_of(branch, FlowStage.CALIBRATE, SyncBoundary.CALIBRATE),
+            last_probe=last_probe,
+            code_resolver=conflict_code_resolver(context),
+        )
         result = sync_with_target(request)
+        if result.status == "merged":
+            result = _finalize_calibrate_merge(context, branch, target_branch, result)
     except TargetProbeError as exc:
         return SyncResult("blocked", "", "", "", error=str(exc)), target_branch
     finally:
         _hooks._restore_checked_out_branch(worktree, prev, detached, branch)
     if result.probe is not None:
         setattr(context, _hooks._PROBE_ATTR, result.probe)
-    if result.status == "merged":
-        _track_local_branch(context, branch)
-        notice = _hooks.format_target_merge_notice(result.target_sha, result.changed_paths)
-        setattr(context, _hooks._NOTICE_ATTR, notice)
-        mech = is_mechanical_only(result)
-        scope = compute_rereview_scope(result)
-        record_stage5_carry_over(context, target_branch, result.head_after, mechanical_only=mech, rereview_scope=scope)
     return result, target_branch
 
 
@@ -124,7 +140,7 @@ def sync_before_calibration(context: FlowContext, start_time: str) -> StageResul
             conflicted_paths=list(result.conflicted_paths or result.code_paths),
             sync_error=result.error,
         )
-    if result.status == "merged" and not is_mechanical_only(result):
+    if result.status == "merged":
         from sandbox_executor.flow.review_restart import stage5_merged_head_gate
 
         stopped, _ = stage5_merged_head_gate(context)
@@ -139,21 +155,19 @@ def make_calibrate_retry_sync(
     """Build a ``before_retry(attempt)`` callback that syncs ``context.execution_branch`` before each retry."""
 
     def _before_retry(attempt: int) -> None:
+        _leave_calibrated_branch(context)
         result, target_branch = _run_calibrate_sync(context)
         if result.status == "blocked":
             detail = format_conflict_block_reason(result, target_branch)
             raise CalibrationSyncError(f"target sync before calibration retry {attempt} blocked: {detail}")
         if result.status != "merged":
             return
-        if not is_mechanical_only(result):
-            from sandbox_executor.flow.review_restart import stage5_merged_head_gate
+        from sandbox_executor.flow.review_restart import stage5_merged_head_gate
 
-            stopped, _ = stage5_merged_head_gate(context)
-            if stopped is not None:
-                _leave_calibrated_branch(context)
-                raise _CalibrateRestartRequired(stopped)
+        stopped, _ = stage5_merged_head_gate(context)
+        if stopped is not None:
+            raise _CalibrateRestartRequired(stopped)
         if result.head_after:
-            _leave_calibrated_branch(context)
             prepare_calibrated_branch(context, result.head_after)
             if on_head_updated is not None:
                 on_head_updated(result.head_after)

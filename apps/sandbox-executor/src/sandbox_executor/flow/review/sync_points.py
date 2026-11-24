@@ -7,6 +7,7 @@ import os
 from typing import Any
 
 from sandbox_executor.calibration import is_metadata_path
+from sandbox_executor.entrypoint.execution_workspace import workspace_mounted
 from sandbox_executor.flow import target_sync_hooks as _hooks
 from sandbox_executor.flow.conflict_classes import ConflictClass
 from sandbox_executor.flow.conflict_resolver_role import conflict_code_resolver
@@ -67,7 +68,7 @@ def _precheck_review_sync(
     context: FlowContext, branch: str, target_branch: str, boundary: SyncBoundary
 ) -> SyncResult | None:
     strict = boundary in _STRICT_BOUNDARIES
-    if context.dry_run:
+    if context.dry_run or workspace_mounted():
         return SyncResult("unchanged", "", "", "")
     if not branch or branch == "HEAD":
         err = "cannot sync detached HEAD or empty branch" if strict else ""

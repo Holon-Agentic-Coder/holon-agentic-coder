@@ -8,6 +8,8 @@ Three rules of use:
   template (a remote URL, ``core.hooksPath``) name the copy, without a git process.
 - A session fixture asks ``shared_template`` for its template. The template is then built once per test run: under
   xdist the worker that asks first builds it in the directory all workers share, and the others use that tree.
+- A build that runs production code is asked for by a function-scoped fixture instead: a session fixture is set up
+  before the autouse guards of the first test, and the build would run without them.
 """
 
 import contextlib
@@ -15,6 +17,7 @@ import fcntl
 import os
 import pickle
 import shutil
+import stat
 import subprocess
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
@@ -22,7 +25,15 @@ from typing import Any
 
 import pytest
 
-from tests.flow.helpers import _set_user_write
+
+def set_user_write(root: Path, enabled: bool) -> None:
+    """Add or strip the owner's write bit on every directory and file under ``root``."""
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for path in [dirpath, *(os.path.join(dirpath, name) for name in filenames)]:
+            if os.path.islink(path):
+                continue
+            mode = os.stat(path).st_mode
+            os.chmod(path, mode | stat.S_IWUSR if enabled else mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
 
 
 def remove_sample_hooks(root: Path) -> None:
@@ -45,7 +56,7 @@ def finish_template(root: Path) -> Path:
     """Drop the sample hooks of a built template, pack its objects and make its tree read-only; returns ``root``."""
     remove_sample_hooks(root)
     pack_objects(root)
-    _set_user_write(root, enabled=False)
+    set_user_write(root, enabled=False)
     return root
 
 
@@ -86,7 +97,7 @@ def shared_template(
                 value = pickle.dumps(build(root))
                 finish_template(root)
             except BaseException:
-                _set_user_write(root, enabled=True)
+                set_user_write(root, enabled=True)
                 shutil.rmtree(root)
                 raise
             # The marker appears complete or not at all, and only after the template is finished.
@@ -139,7 +150,7 @@ def copy_template(template: Path, target: Path, names: Iterable[str] = ()) -> Pa
     for name in names or sorted(os.listdir(template)):
         copied = target / name
         shutil.copytree(template / name, copied, symlinks=True)
-        _set_user_write(copied, enabled=True)
+        set_user_write(copied, enabled=True)
         for git_dir in _git_dirs(copied):
             _reroot_git_dir(git_dir, template, target)
     return target

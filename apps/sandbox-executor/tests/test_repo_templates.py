@@ -13,8 +13,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.flow.helpers import _git, _set_user_write
-from tests.repo_templates import copy_template, finish_template, remove_sample_hooks, shared_template
+from tests.flow.helpers import _git
+from tests.repo_templates import (
+    copy_template,
+    finish_template,
+    remove_sample_hooks,
+    set_user_write,
+    shared_template,
+)
 
 
 def _build(root: Path) -> Path:
@@ -133,7 +139,7 @@ def test_template_with_a_linked_worktree_is_refused(tmp_path):
         with pytest.raises(ValueError, match="linked worktree"):
             copy_template(root, tmp_path / "copy")
     finally:
-        _set_user_write(root, enabled=True)  # so that pytest can remove tmp_path
+        set_user_write(root, enabled=True)  # so that pytest can remove tmp_path
 
 
 def test_no_sample_hook_is_left_after_the_removal(tmp_path):
@@ -175,7 +181,7 @@ def _counted_build(builds: list[Path]):
 def writable_again(tmp_path):
     """Make every template built under ``tmp_path`` writable after the test, so that pytest can remove it."""
     yield
-    _set_user_write(tmp_path, enabled=True)
+    set_user_write(tmp_path, enabled=True)
 
 
 def test_shared_template_is_built_by_the_first_caller_and_finished(monkeypatch, builds, tmp_path, writable_again):

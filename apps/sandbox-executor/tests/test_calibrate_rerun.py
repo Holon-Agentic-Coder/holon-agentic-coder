@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import json
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -79,24 +80,40 @@ def repos(rerun_repos_template: SimpleNamespace, tmp_path: Path) -> SimpleNamesp
     return own_copy(rerun_repos_template, tmp_path)
 
 
-@pytest.fixture(scope="session")
+def calibrate_a_copy(template: SimpleNamespace, root: Path, blocked: Sequence[list[str]]) -> SimpleNamespace:
+    """One real Stage 5 run in a copy of ``template`` at ``root``, with the context and the result of that run.
+
+    ``blocked`` holds the lists of the gh write and network guards of the test the run happens in. The run fails when
+    one of them has an entry, so no template is built from a run a guard refused a call of.
+    """
+    built = own_copy(template, root)
+    ctx = FlowContext(target_worktree=str(built.host), execution_branch=EXEC, agent="a", model="m")
+    result = stage_runner([])(ctx)
+    assert result.status == StageStatus.SUCCESS
+    assert not any(blocked), f"the Stage 5 run of the calibrated template made calls a guard blocked: {blocked}"
+    return SimpleNamespace(repos=built, first_run=(ctx, result))
+
+
+@pytest.fixture
 def calibrated_repos_template(
-    rerun_repos_template: SimpleNamespace, tmp_path_factory: pytest.TempPathFactory
+    rerun_repos_template: SimpleNamespace,
+    tmp_path_factory: pytest.TempPathFactory,
+    gh_write_guard: list[str],
+    network_guard_fixture: list[str],
 ) -> SimpleNamespace:
     """``rerun_repos_template`` after one real Stage 5 run, read-only, with the context and the result of that run.
 
-    Every test of a head that moves after calibration starts from this state. The run is real and is checked here;
-    ``calibrated`` hands a test its own copy, so the test pays for what happens after the first calibration only.
+    Every test of a head that moves after calibration starts from this state. ``shared_template`` still builds it
+    once per test run, but the fixture is function-scoped: the one real run then happens inside the first test that
+    asks, under that test's autouse guards (gh writes, network, credentials, layered configuration), and not before
+    them as a session fixture would run it. ``calibrated`` hands a test its own copy, so the test pays for what
+    happens after the first calibration only.
     """
 
-    def calibrate_a_copy(root: Path) -> SimpleNamespace:
-        built = own_copy(rerun_repos_template, root)
-        ctx = FlowContext(target_worktree=str(built.host), execution_branch=EXEC, agent="a", model="m")
-        result = stage_runner([])(ctx)
-        assert result.status == StageStatus.SUCCESS
-        return SimpleNamespace(repos=built, first_run=(ctx, result))
+    def build(root: Path) -> SimpleNamespace:
+        return calibrate_a_copy(rerun_repos_template, root, (gh_write_guard, network_guard_fixture))
 
-    root, calibrated = shared_template(tmp_path_factory, "calibrated-template", calibrate_a_copy)
+    root, calibrated = shared_template(tmp_path_factory, "calibrated-template", build)
     return SimpleNamespace(root=root, repos=calibrated.repos, first_run=calibrated.first_run)
 
 
@@ -321,6 +338,21 @@ def test_a_head_move_after_calibration_reruns_stage5_and_the_report_names_the_ne
     assert ledger_after.startswith(ledger_before)  # rows appended, never rewritten
     act_cal = [line for line in ledger_after.splitlines() if '"ACT-CAL-' in line]
     assert len(act_cal) == 2  # exactly one ACT-CAL row per run
+
+
+def test_no_calibrated_template_is_built_from_a_run_a_guard_blocked(
+    rerun_repos_template: SimpleNamespace, tmp_path: Path, gh_write_guard: list[str]
+) -> None:
+    def stage5_with_a_swallowed_gh_write(ctx: FlowContext) -> StageResult:
+        gh_write_guard.append("gh pr comment 7")
+        return StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
+
+    with (
+        patch(f"{__name__}.stage_runner", return_value=stage5_with_a_swallowed_gh_write),
+        pytest.raises(AssertionError, match="made calls a guard blocked"),
+    ):
+        calibrate_a_copy(rerun_repos_template, tmp_path, (gh_write_guard, []))
+    gh_write_guard.clear()  # the block was this test's own
 
 
 def test_an_unmoved_head_is_a_no_op_with_no_new_ledger_rows(calibrated: SimpleNamespace) -> None:

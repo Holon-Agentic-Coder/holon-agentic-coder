@@ -48,6 +48,12 @@ FORBIDDEN_TEXT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+_FORBIDDEN_TEXT_ANY_RE = re.compile(
+    "|".join(f"(?:{pattern.pattern})" for pattern, _ in FORBIDDEN_TEXT_PATTERNS),
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
 def is_historical(path: str) -> bool:
     """Whether ``path`` is an append-only ledger, a plan or execution record, or a generated KB entry."""
     return path.startswith(HISTORICAL_PREFIXES)
@@ -68,7 +74,7 @@ def find_path_violation(path: str) -> str | None:
 
 def find_hygiene_violations(path: str, text: str) -> list[str]:
     """``path:line: reason`` for every forbidden prefix or identifier in ``text``."""
-    if is_historical(path):
+    if is_historical(path) or _FORBIDDEN_TEXT_ANY_RE.search(text) is None:
         return []
     violations = []
     for line_no, line in enumerate(text.splitlines(), start=1):

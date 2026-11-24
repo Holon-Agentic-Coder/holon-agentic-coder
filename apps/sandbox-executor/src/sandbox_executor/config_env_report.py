@@ -78,21 +78,21 @@ def _provenance(row: dict[str, Any], inherited: bool) -> str:
     return f"{source}; shadows {', '.join(row['shadowed'])}" if row["shadowed"] else source
 
 
-def format_config_report(config: EffectiveConfig) -> list[str]:
+def format_config_report(config: EffectiveConfig, *, rows: list[dict[str, Any]] | None = None) -> list[str]:
     """The text report: a heading, one ``KEY = value   [source; shadows ...]`` line per row, then the warnings."""
+    resolved_rows = setting_rows(config) if rows is None else rows
     lines = [REPORT_HEADING]
-    lines.extend(
-        f"  {row['key']} = {row['display']}   [{_provenance(row, config.inherited)}]" for row in setting_rows(config)
-    )
+    lines.extend(f"  {row['key']} = {row['display']}   [{_provenance(row, config.inherited)}]" for row in resolved_rows)
     if config.inherited:
         lines.append(f"  (inherited: {RESOLVED_MARKER}=1, so no layer file was read)")
     lines.extend(f"WARNING: {warning.removeprefix('Warning: ')}" for warning in config.warnings)
     return lines
 
 
-def configuration_payload(config: EffectiveConfig) -> dict[str, Any]:
+def configuration_payload(config: EffectiveConfig, *, rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """The ``--json`` form: ``settings`` rows, ``warnings`` and whether the resolution was inherited."""
-    return {"settings": setting_rows(config), "warnings": list(config.warnings), "inherited": config.inherited}
+    resolved_rows = setting_rows(config) if rows is None else rows
+    return {"settings": resolved_rows, "warnings": list(config.warnings), "inherited": config.inherited}
 
 
 def env_example_text() -> str:

@@ -608,20 +608,33 @@ _LOCAL_ENV = {
 }
 
 
-def _invalid_value_cases(rng: random.Random) -> Iterator[tuple[str, dict[str, str], dict | None, str]]:
-    """Yield `(case_id, env, host_config, credential)`: every credential shape in every invalid-value slot."""
+INVALID_VALUE_SLOTS: tuple[tuple[str, str], ...] = (
+    *(("env", name) for name in INVALID_VALUE_ENV),
+    *(("host", field) for field in INVALID_VALUE_HOST_FIELDS),
+)
+
+
+def _invalid_value_cases(
+    rng: random.Random, kind: str, slot: str
+) -> Iterator[tuple[str, dict[str, str], dict | None, str]]:
+    """Yield `(case_id, env, host_config, credential)`: every credential shape in one invalid-value slot."""
     for case_id, value, credential in matrix(rng):
         if not case_id.endswith("/ipv4/path"):
             continue
-        for name in INVALID_VALUE_ENV:
-            yield f"env:{name}/{case_id}", {**_LOCAL_ENV, name: value}, None, credential
-        for field in INVALID_VALUE_HOST_FIELDS:
-            entry = {"id": "m", "contextWindow": 65536, field: value}
+        if kind == "env":
+            yield f"env:{slot}/{case_id}", {**_LOCAL_ENV, slot: value}, None, credential
+        else:
+            entry = {"id": "m", "contextWindow": 65536, slot: value}
             host_config = {"providers": {"vmlx": {"baseUrl": "http://localhost:8081/v1", "models": [entry]}}}
-            yield f"host:{field}/{case_id}", dict(_LOCAL_ENV), host_config, credential
+            yield f"host:{slot}/{case_id}", dict(_LOCAL_ENV), host_config, credential
 
 
-def test_credential_in_invalid_envelope_value_never_echoed(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("kind", "slot"),
+    INVALID_VALUE_SLOTS,
+    ids=[f"{kind}-{slot}" for kind, slot in INVALID_VALUE_SLOTS],
+)
+def test_credential_in_invalid_envelope_value_never_echoed(kind, slot, monkeypatch, tmp_path):
     """Doctor (environment section, text and `--json`) and the run path withhold an invalid value.
 
     The isolated `HOME` is `tmp_path`, and the pi-agent session dir is created under it; its parent `pytest-<N>` and the
@@ -643,11 +656,13 @@ def test_credential_in_invalid_envelope_value_never_echoed(monkeypatch, tmp_path
         monkeypatch.delenv(name)
     failures: list[str] = []
     collided: list[str] = []
-    cases = list(_invalid_value_cases(seeded_secrets.generator("url-redaction:invalid-envelope")))
+    # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variable to the
+    # container unchanged: through the env-file, so neither the argv nor the echo may hold a fragment of it.
+    rejected = "TIMEOUT" not in slot and "BUDGET" not in slot
+    cases = list(
+        _invalid_value_cases(seeded_secrets.generator(f"url-redaction:invalid-envelope:{kind}:{slot}"), kind, slot)
+    )
     for case_id, env, host_config, credential in cases:
-        # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variable to the
-        # container unchanged: through the env-file, so neither the argv nor the echo may hold a fragment of it.
-        rejected = "TIMEOUT" not in case_id and "BUDGET" not in case_id
         docker = _DockerRecorder()
         # Each temp name is first drawn sharing a run with the credential, so the masking under the isolated HOME is
         # what keeps a forwarded run from reading as a leak, not the luck of a random name.
@@ -682,13 +697,12 @@ def test_credential_in_invalid_envelope_value_never_echoed(monkeypatch, tmp_path
             failures.extend(f"{case_id}:{where}" for where in forwarded)
             if _leaks(out, credential) and _leaks([" ".join(docker.argv)], credential):
                 collided.append(case_id)
-    assert len(cases) == (len(INVALID_VALUE_ENV) + len(INVALID_VALUE_HOST_FIELDS)) * MATRIX_SIZE // (
-        len(HOSTS) * len(SUFFIXES)
-    )
+    assert len(cases) == MATRIX_SIZE // (len(HOSTS) * len(SUFFIXES))
     assert not failures, (
         f"{len(failures)}/{len(cases)} invalid-value cases failed, e.g. {failures[:5]} {seeded_secrets.seed_note()}"
     )
-    assert collided, "no forwarded run drew a temp name sharing a run with its credential"
+    if not rejected:
+        assert collided, "no forwarded run drew a temp name sharing a run with its credential"
 
 
 def _colliding_temp_names(credential: str, rng: random.Random) -> Callable[[], Iterator[str]]:

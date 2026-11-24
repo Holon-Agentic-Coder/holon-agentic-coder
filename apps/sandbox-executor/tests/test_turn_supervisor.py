@@ -353,7 +353,6 @@ class TestRunTurn(unittest.TestCase):
         # A runner that streamed before starting the tool is silent while the tool runs; that silence is not a stall.
         stream = TickStream()
         h = Harness(exit_at=300, stdout=stream)
-        self.addCleanup(stream.close)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
 
@@ -363,11 +362,15 @@ class TestRunTurn(unittest.TestCase):
             elif now <= 210:
                 h.tool_cpu[5001] = h.tool_cpu.get(5001, 0.0) + 1.0
             elif now >= 300:
+                # The runner exits now and its pipe closes with it. Left open, the pipe would make this a lingering
+                # pipe holder case, which has its own tests below and costs a real READER_JOIN_TIMEOUT_SECONDS.
                 stream.close()
 
         h.on_tick = tick
         result = h.run(turn=300, stall=90, watch_path=os.path.join(tmp.name, "notes.md"))
         self.assertIsNone(result.breach)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(h.signals, [])
 
     def test_idle_runner_with_idle_descendants_still_breaches_the_turn_budget(self):
         # A long-lived helper that only wakes up occasionally (below the CPU threshold) is not tool progress.

@@ -40,30 +40,25 @@ def _proxy_host_dirs(ca_cert_path: str, ca_key_path: str) -> tuple[str, str, str
     """
     # Share ONLY a narrow proxy cache dir, read-only. Never mount ~/.holon: that subtree holds the
     # Root CA private key (~/.holon/certs) and the agent auth session stores (~/.holon/sessions).
-    proxy_cache_dir = os.path.join(os.path.expanduser(os.path.join("~", ".holon")), "proxy-cache")
+    proxy_cache_dir = os.path.join(proxy_paths._user_state_dir(), "proxy-cache")
     os.makedirs(proxy_cache_dir, exist_ok=True)
 
     # mitmproxy needs the CA private key to sign leaves (see _mitm_proxy_ca_paths); hand it exactly
     # the two files it expects, read-only, instead of the whole certificate directory.
     mitm_ca_combined, mitm_ca_cert = proxy_paths._mitm_proxy_ca_paths(ca_cert_path, ca_key_path)
 
-    repo_root = proxy_paths._find_git_root()
     wire_dir_env = os.getenv("WIRE_LOG_DIR")
     if wire_dir_env:
-        host_wire_log_dir = (
-            wire_dir_env if os.path.isabs(wire_dir_env) else os.path.abspath(os.path.join(repo_root, wire_dir_env))
-        )
+        host_wire_log_dir = wire_dir_env if os.path.isabs(wire_dir_env) else os.path.abspath(wire_dir_env)
     else:
-        host_wire_log_dir = os.path.abspath(os.path.join(repo_root, "todo", "mitm_wire_logs"))
+        host_wire_log_dir = proxy_paths._default_wire_log_dir()
     os.makedirs(host_wire_log_dir, exist_ok=True)
 
     cache_dir_env = os.getenv("CACHE_DIR")
     if cache_dir_env:
-        host_cache_dir = (
-            cache_dir_env if os.path.isabs(cache_dir_env) else os.path.abspath(os.path.join(repo_root, cache_dir_env))
-        )
+        host_cache_dir = cache_dir_env if os.path.isabs(cache_dir_env) else os.path.abspath(cache_dir_env)
     else:
-        host_cache_dir = os.path.abspath(os.path.join(repo_root, "todo", "cache"))
+        host_cache_dir = proxy_paths._default_cache_dir()
     os.makedirs(host_cache_dir, exist_ok=True)
 
     # Ensure non-root container UID 1000 can write without permission errors on Linux hosts.

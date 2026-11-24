@@ -80,12 +80,12 @@ class WarningSeams:
 
 
 def stale_body(stale: StaleRange) -> str:
-    """The current warning: the report covers ``evaluated`` but the head is ``head``; do not merge on it."""
+    """The current warning: the report covers ``evaluated`` but the head is ``head``; the flow reruns Stage 5."""
     return (
         "## ⚠️ Calibration report is stale\n\n"
         f"The calibration report covers `{short_sha(stale.evaluated)}` but the pull request head is "
-        f"`{short_sha(stale.head)}` ({stale.reason}). Stage 5 must rerun; do not merge on this report."
-        f"\n\n{STALE_MARKER}"
+        f"`{short_sha(stale.head)}` ({stale.reason}). The flow reruns Stage 5 for this head on its next run and "
+        f"marks this warning superseded when the fresh report is pushed.\n\n{STALE_MARKER}"
     )
 
 

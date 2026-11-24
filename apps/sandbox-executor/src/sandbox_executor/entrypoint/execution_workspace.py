@@ -54,6 +54,64 @@ _ENGINE_OWNED_EXCLUDES = (
     f":(exclude){ENGINE_OWNED_NOTES_GLOB}",
 )
 
+# Proxy sidecar scratch patterns (wire logs, cache dirs and SQLite databases) never belong in Stage 3 commits.
+_SCRATCH_DIR_NAMES = frozenset({"mitm_wire_logs", "wire_logs", "wire-logs", "cache", "proxy-cache", "to" + "do"})
+_SCRATCH_FILE_RE = re.compile(
+    r"(?:^|/)(?:wire_log[^/]*\.(?:json|jsonl|log)|[^/]*\.(?:db|sqlite|sqlite3)(?:-(?:shm|wal|journal))?)$",
+    re.IGNORECASE,
+)
+
+
+def is_sidecar_scratch_path(path: str) -> bool:
+    """Return True when a repository-relative path is a proxy sidecar wire-log, cache directory or database file."""
+    clean = path.strip().removeprefix("./").strip("/")
+    if not clean:
+        return False
+    parts = clean.split("/")
+    if any(part in _SCRATCH_DIR_NAMES for part in parts):
+        return True
+    return bool(_SCRATCH_FILE_RE.search(clean))
+
+
+def split_sidecar_scratch_paths(paths: list[str]) -> tuple[list[str], list[str]]:
+    """Split repository-relative paths into ``(kept_paths, skipped_scratch_paths)``."""
+    kept: list[str] = []
+    skipped: list[str] = []
+    for path in paths:
+        (skipped if is_sidecar_scratch_path(path) else kept).append(path)
+    return kept, skipped
+
+
+def format_skipped_scratch_message(skipped: list[str]) -> str:
+    """Format a clear log line naming every skipped sidecar scratch path."""
+    joined = ", ".join(dict.fromkeys(skipped))
+    return f"Skipping sidecar scratch path(s) from Stage 3 commit: {joined}"
+
+
+def find_worktree_sidecar_scratch(repo_dir: str) -> list[str]:
+    """Scan ``repo_dir`` on disk for sidecar scratch files without running a git subprocess."""
+    found: list[str] = []
+    if not repo_dir or not os.path.isdir(repo_dir):
+        return found
+    for root, dirs, files in os.walk(repo_dir):
+        dirs[:] = [d for d in dirs if d not in (".git", ".venv", "node_modules")]
+        rel_root = os.path.relpath(root, repo_dir)
+        rel_prefix = "" if rel_root == "." else f"{rel_root.replace(os.sep, '/')}/"
+        for fname in sorted(files):
+            rel_path = f"{rel_prefix}{fname}"
+            if is_sidecar_scratch_path(rel_path):
+                found.append(rel_path)
+    return sorted(found)
+
+
+def unstage_sidecar_scratch(repo: GitRepository) -> list[str]:
+    """Detect any sidecar scratch files in ``repo.repo_dir`` and unstage them from the index if present."""
+    candidates = find_worktree_sidecar_scratch(repo.repo_dir)
+    if not candidates:
+        return []
+    repo.reset(None, "--", *candidates)
+    return candidates
+
 
 def validate_mounted_workspace(repo: GitRepository, repo_dir: str, plan_branch: str) -> str:
     """Validate the host worktree mounted at repo_dir and return the tip of ``plan_branch`` the host fetched into it.

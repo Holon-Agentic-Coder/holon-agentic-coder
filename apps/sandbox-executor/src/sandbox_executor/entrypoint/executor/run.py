@@ -22,7 +22,12 @@ from sandbox_executor.artefacts import EXECUTION_SPEC, ArtefactReport, execution
 from sandbox_executor.budgets import BudgetBreach, StageTimer, load_budgets
 from sandbox_executor.decomposition_rule import DECISION_OVER_BUDGET, DecompositionDecision
 from sandbox_executor.entrypoint.execution_args import ExecutionArgs, _read_intent_row, _read_plan_row
-from sandbox_executor.entrypoint.execution_workspace import continuation_note, resolve_partial_head
+from sandbox_executor.entrypoint.execution_workspace import (
+    continuation_note,
+    format_skipped_scratch_message,
+    resolve_partial_head,
+    unstage_sidecar_scratch,
+)
 from sandbox_executor.entrypoint.executor.agent_output import AgentOutputSteps
 from sandbox_executor.entrypoint.executor.commands import _get_repo
 from sandbox_executor.entrypoint.executor.outcome import CheckWorkSteps, OutcomeSteps
@@ -372,6 +377,8 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
             repo.run(["add", *add_targets], check=False)
         if self.exec_status == "success":
             repo.add(all_files=True)
+            if skipped := unstage_sidecar_scratch(repo):
+                print(format_skipped_scratch_message(skipped), file=sys.stderr)
         # Log staged changes to provide visibility
         status_output = repo.run(["status", "--short"], check=False)
         print("Current git repository status:")

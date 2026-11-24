@@ -1,31 +1,37 @@
 """Stage 5 rerun on a moved pull-request head: detection, bounded rerun and the stale signal.
 
-A calibration report covers exactly one execution head. When the pull request head moves after Stage 5 (a conflict
-merge with main, a resolver push, a review-loop re-run), the report no longer names the head that merges, so the two
-re-entrant trigger sites (the pipeline's Stage 5 block and the review loop's report-back gate) call into this module:
-it detects the move, keeps one stale comment on the pull request through ``calibrate_stale_warning`` (superseded
-once the report is fresh) and reruns Stage 5, bounded by ``MAX_RERUN_ATTEMPTS``. Invariant: a calibration commit is
-never, by itself, a head move — Stage 5's own report, reconciliation and promotion commits are discounted, so a rerun
-can never trigger another rerun (the no-loop guarantee). Merging stays with the human maintainer; this module only
-refreshes the report a human reads.
+A calibration report covers exactly one execution head. When the pull request's own change moves after Stage 5 (a
+resolver push, a review-loop re-run, a conflict merge that touches the PR's files), the report no longer covers the
+head that merges, so the two re-entrant trigger sites (the pipeline's Stage 5 block and the review loop's report-back
+gate) call into this module: it detects the move (``calibrate_staleness``), reruns Stage 5, bounded by
+``MAX_RERUN_ATTEMPTS``, and keeps one stale comment on the pull request through ``calibrate_stale_warning`` only when
+the stale report stays. Invariant: a calibration commit, a ledger-only commit and a merge of the target that leaves
+the PR-own change unchanged are never, by themselves, a head move, so a rerun can never trigger another rerun (the
+no-loop guarantee). Merging stays with the human maintainer; this module only refreshes the report a human reads.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from sandbox_executor.calibration import parse_evaluated_commit_sha, read_git_file
-from sandbox_executor.flow.calibrate_rebuild import is_ancestor, is_calibration_commit
+from sandbox_executor.calibration import parse_evaluated_commit_sha
+from sandbox_executor.flow.base_files import base_branch_name
 from sandbox_executor.flow.calibrate_stale_warning import (
     StaleRange,
     WarningSeams,
     post_refreshed,
     resolve_stale,
     warn_stale,
+)
+from sandbox_executor.flow.calibrate_staleness import (
+    HeadMoveCheck,
+    _fetch_tolerantly,
+    _origin_head,
+    _report_content,
+    head_move_since_calibration,
 )
 from sandbox_executor.flow.context import FlowContext, StageResult, StageStatus
 from sandbox_executor.flow.github.approval_invalidation import (
@@ -35,23 +41,12 @@ from sandbox_executor.flow.github.approval_invalidation import (
     CommentRecordLister,
 )
 from sandbox_executor.flow.github.ci_reverify import rerun_note
-from sandbox_executor.flow.host_remote import DEFAULT_REMOTE, HostRemoteError, fetch_base
-from sandbox_executor.git import run_git
 from sandbox_executor.plan_paths import calibration_report_candidates, split_plan_branch
 
 logger = logging.getLogger(__name__)
 
 MAX_RERUN_ATTEMPTS = 2
-
-
-@dataclass(frozen=True)
-class HeadMoveCheck:
-    """Whether the pull-request head moved past the head the calibration report evaluated, and why."""
-
-    moved: bool
-    evaluated_sha: str = ""
-    current_head: str = ""
-    reason: str = ""
+NOT_POSTED = {"posted": False, "edited": 0}
 
 
 @dataclass(frozen=True)
@@ -78,62 +73,6 @@ def _warning_seams(seams: RerunSeams | None) -> WarningSeams:
     return WarningSeams(comments=seams.comments, poster=seams.poster, editor=seams.editor)
 
 
-def _same_commit(first: str, second: str) -> bool:
-    """Whether two SHAs (either may be abbreviated) name the same commit."""
-    return bool(first and second) and (first.startswith(second) or second.startswith(first))
-
-
-def head_move_since_calibration(repo_dir: str, evaluated_sha: str, current_head: str) -> HeadMoveCheck:
-    """Whether ``current_head`` moved past ``evaluated_sha``, discounting trailing calibration-only commits.
-
-    An evaluated SHA that is not an ancestor of the head (a force push or rewritten history) is always a move, and
-    so is any merge commit or non-calibration commit between the two. A range git cannot walk counts as a move
-    (conservative), with the reason naming the gap.
-    """
-    if not evaluated_sha or not current_head:
-        return HeadMoveCheck(False, evaluated_sha, current_head, "the evaluated SHA or the current head is unknown")
-    if _same_commit(evaluated_sha, current_head):
-        return HeadMoveCheck(False, evaluated_sha, current_head, "the head is the evaluated commit")
-    if not is_ancestor(repo_dir, evaluated_sha, current_head):
-        return HeadMoveCheck(True, evaluated_sha, current_head, "the evaluated commit is not an ancestor of the head")
-    listed = run_git(["rev-list", f"{evaluated_sha}..{current_head}", "--"], cwd=repo_dir, check=False)
-    if listed.returncode != 0 or not isinstance(listed.stdout, str):
-        return HeadMoveCheck(True, evaluated_sha, current_head, "the commits past the evaluated commit are unreadable")
-    foreign = [sha for sha in listed.stdout.split() if not is_calibration_commit(repo_dir, sha)]
-    if foreign:
-        reason = f"{len(foreign)} non-calibration commit(s) landed after the evaluated commit"
-        return HeadMoveCheck(True, evaluated_sha, current_head, reason)
-    return HeadMoveCheck(False, evaluated_sha, current_head, "only calibration commits follow the evaluated commit")
-
-
-def _origin_head(context: FlowContext) -> str:
-    """The origin head of the execution branch after a tolerant fetch; the local ref, then '', when origin lacks it."""
-    branch, repo_dir = context.execution_branch or "", context.target_worktree
-    try:
-        fetch_base(repo_dir, branch, DEFAULT_REMOTE)
-    except HostRemoteError as exc:
-        logger.debug("Could not fetch origin/%s before the staleness check: %s", branch, exc)
-    for ref in (f"refs/remotes/{DEFAULT_REMOTE}/{branch}", f"refs/heads/{branch}"):
-        res = run_git(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=repo_dir, check=False)
-        if res.returncode == 0 and isinstance(res.stdout, str) and res.stdout.strip():
-            return res.stdout.strip()
-    return ""
-
-
-def _report_content(context: FlowContext, report_rel: str) -> str | None:
-    """The calibration report at the branch tip (origin first, worktree file as a last resort); None when absent."""
-    branch = context.execution_branch or ""
-    for ref in (f"refs/remotes/{DEFAULT_REMOTE}/{branch}", f"refs/heads/{branch}"):
-        content = read_git_file(ref, report_rel, target_worktree=context.target_worktree)
-        if content:
-            return content
-    path = os.path.join(context.target_worktree, report_rel)
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as handle:
-            return handle.read()
-    return None
-
-
 def report_staleness(context: FlowContext, seams: RerunSeams | None = None) -> HeadMoveCheck:
     """Compare the current pull-request head with the head the plan's calibration report evaluated.
 
@@ -158,7 +97,9 @@ def report_staleness(context: FlowContext, seams: RerunSeams | None = None) -> H
     evaluated = parse_evaluated_commit_sha(content)
     if not evaluated:
         return HeadMoveCheck(False, current_head=current, reason=f"no evaluated commit SHA in {report_rel}")
-    return head_move_since_calibration(context.target_worktree, evaluated, current)
+    target = base_branch_name(context)
+    _fetch_tolerantly(context.target_worktree, target)  # a target ref that is behind reads as stale, never as fresh
+    return head_move_since_calibration(context.target_worktree, evaluated, current, target)
 
 
 def _safe_staleness(context: FlowContext, seams: RerunSeams | None) -> HeadMoveCheck:
@@ -178,6 +119,70 @@ def post_stale_signal(
     return warn_stale(context, pr_number, stale, _warning_seams(seams))
 
 
+@dataclass(frozen=True)
+class _Thread:
+    """The comment seams and the pull request number one trigger-site call comments with."""
+
+    seams: RerunSeams | None = None
+    pr_number: str | None = None
+
+
+def _warn_if_stale(context: FlowContext, thread: _Thread, check: HeadMoveCheck | None = None) -> dict[str, Any] | None:
+    """Post, or edit in place, the stale warning when the report (rechecked unless ``check`` is given) is still stale.
+
+    The one posting rule of the rerun trigger: a warning only for a stale report that stays. None when it covers the
+    head, for example a rerun that published a fresh report and then failed on a red final-head CI.
+    """
+    check = check or _safe_staleness(context, thread.seams)
+    return post_stale_signal(context, check, thread.seams, pr_number=thread.pr_number) if check.moved else None
+
+
+def _settle_rerun(
+    context: FlowContext, result: StageResult, check: HeadMoveCheck, reran: int, thread: _Thread
+) -> tuple[StageResult, dict[str, Any] | None]:
+    """After the rerun loop: flag and warn about a report that is still stale, else clear the warning it replaced."""
+    warning = _warning_seams(thread.seams)
+    if check.moved:
+        stale_reason = f"the pull request head is {check.current_head[:12]} ({check.reason})"
+        result.payload = {**result.payload, "calibration_stale": True, "stale_reason": stale_reason}
+        context.log(f"Stage 5 rerun: the report is still stale after {reran} attempt(s): {stale_reason}.")
+        return result, _warn_if_stale(context, thread, check)
+    if reran:
+        head = str(result.payload.get("calibrated_head") or check.evaluated_sha)
+        ci_verdict = rerun_note(result.payload.get("ci_verdict") or {}, head)
+        result.payload = {**result.payload, "ci_verdict": ci_verdict}
+        resolved = resolve_stale(context, thread.pr_number, check.evaluated_sha or head, warning)
+        superseded = (result.payload.get("stale_warning") or {}).get("edited") or resolved.get("edited")
+        if not superseded:  # a superseded warning already names the fresh report: one comment, not two
+            post_refreshed(context, thread.pr_number, head, warning)
+    elif check.evaluated_sha and check.current_head:  # current without a rerun: clear any leftover warning
+        resolve_stale(context, thread.pr_number, check.evaluated_sha, warning)
+    return result, None
+
+
+def _rerun_while_stale(
+    context: FlowContext, result: StageResult, run_stage: Callable[[FlowContext], StageResult], thread: _Thread
+) -> tuple[StageResult, dict[str, Any] | None]:
+    """``rerun_calibration``, plus the record of the stale warning it posted (None when it posted none)."""
+    if context.dry_run or result.status is not StageStatus.SUCCESS:
+        failed = result.status is StageStatus.FAILED and not context.dry_run
+        return result, _warn_if_stale(context, thread) if failed else None  # a skipped Stage 5 is rerun by its caller
+    reran = 0
+    check = _safe_staleness(context, thread.seams)
+    while check.moved and reran < MAX_RERUN_ATTEMPTS:
+        context.log(
+            f"Stage 5 rerun: the head moved after calibration (evaluated {check.evaluated_sha[:12]}, head "
+            f"{check.current_head[:12]}; {check.reason}); rerunning (attempt {reran + 1}/{MAX_RERUN_ATTEMPTS})."
+        )
+        result = run_stage(context)
+        reran += 1
+        if result.status is not StageStatus.SUCCESS:
+            failed = result.status is StageStatus.FAILED and not context.dry_run
+            return result, _warn_if_stale(context, thread) if failed else None
+        check = _safe_staleness(context, thread.seams)
+    return _settle_rerun(context, result, check, reran, thread)
+
+
 def rerun_calibration(
     context: FlowContext,
     result: StageResult,
@@ -188,40 +193,16 @@ def rerun_calibration(
     """Rerun Stage 5 (at most ``MAX_RERUN_ATTEMPTS`` times) while the pull-request head has moved past the report.
 
     An unmoved head is a no-op by construction: no stage call, hence no new ledger rows and the unchanged ``result``.
-    A moved head posts the stale signal, reruns ``run_stage`` (production: ``run_calibrate_stage``, which syncs to the
-    new head, rebuilds the stale /calibrated branch, appends fresh rows, publishes and re-verifies CI), supersedes the
-    stale warning and posts the refreshed comment; a current report supersedes any leftover warning. A head that
-    outran every attempt leaves ``calibration_stale`` set in the payload, so the stage is never reported as covering a
-    head it does not; a failed rerun propagates as the stage failure.
+    A moved head reruns ``run_stage`` (production: ``run_calibrate_stage``, which syncs to the new head, rebuilds the
+    stale /calibrated branch, appends fresh rows, publishes and re-verifies CI) without warning about the report it is
+    replacing, then supersedes any open warning, or posts the refreshed comment when none was open (Stage 5 itself
+    supersedes it right after the push); a current report supersedes any leftover warning. The stale warning is
+    posted only for a stale report that stays: a head that outran every attempt (which also leaves
+    ``calibration_stale`` set in the payload, so the stage is never reported as covering a head it does not), a rerun
+    that failed without publishing a covering report (the failure propagates as the stage failure), and a failed
+    Stage 5 ``result`` whose old report is stale. A skipped ``result`` returns unchanged, unchecked.
     """
-    if context.dry_run or result.status is not StageStatus.SUCCESS:
-        return result
-    reran = 0
-    check = _safe_staleness(context, seams)
-    while check.moved and reran < MAX_RERUN_ATTEMPTS:
-        context.log(
-            f"Stage 5 rerun: the head moved after calibration (evaluated {check.evaluated_sha[:12]}, head "
-            f"{check.current_head[:12]}; {check.reason}); rerunning (attempt {reran + 1}/{MAX_RERUN_ATTEMPTS})."
-        )
-        post_stale_signal(context, check, seams, pr_number=pr_number)
-        result = run_stage(context)
-        reran += 1
-        if result.status is not StageStatus.SUCCESS:
-            return result
-        check = _safe_staleness(context, seams)
-    if check.moved:
-        stale_reason = f"the pull request head is {check.current_head[:12]} ({check.reason})"
-        result.payload = {**result.payload, "calibration_stale": True, "stale_reason": stale_reason}
-        context.log(f"Stage 5 rerun: the report is still stale after {reran} attempt(s): {stale_reason}.")
-    elif reran:
-        head = str(result.payload.get("calibrated_head") or check.evaluated_sha)
-        ci_verdict = rerun_note(result.payload.get("ci_verdict") or {}, head)
-        result.payload = {**result.payload, "ci_verdict": ci_verdict}
-        resolve_stale(context, pr_number, check.evaluated_sha or head, _warning_seams(seams))
-        post_refreshed(context, pr_number, head, _warning_seams(seams))
-    elif check.evaluated_sha and check.current_head:  # current without a rerun: clear any leftover warning
-        resolve_stale(context, pr_number, check.evaluated_sha, _warning_seams(seams))
-    return result
+    return _rerun_while_stale(context, result, run_stage, _Thread(seams, pr_number))[0]
 
 
 def _flow_run_stage() -> Callable[[FlowContext], StageResult]:
@@ -231,17 +212,40 @@ def _flow_run_stage() -> Callable[[FlowContext], StageResult]:
     return run_calibrate_stage
 
 
+def _stale_gate_record(
+    context: FlowContext, check: HeadMoveCheck, run_stage: Callable[[FlowContext], StageResult] | None, thread: _Thread
+) -> dict[str, Any]:
+    """What the review gate does about a stale report: rerun Stage 5, defer to the Stage 5 ahead, or warn."""
+    prior = context.stage_results.get("calibrate")
+    calibrated = prior is not None and prior.status is StageStatus.SUCCESS
+    if not context.auto_calibrate or prior is None or (context.skip_calibrate and not calibrated):
+        return {"signal": post_stale_signal(context, check, thread.seams, pr_number=thread.pr_number), "rerun": False}
+    if not calibrated:  # Stage 5 is still ahead in this run: it replaces the report, or warns when it fails
+        return {"signal": {**NOT_POSTED, "reason": "deferred to Stage 5 of this run"}, "rerun": False}
+    refreshed, signal = _rerun_while_stale(context, prior, run_stage or _flow_run_stage(), thread)
+    record = {"signal": signal or {**NOT_POSTED, "reason": "the Stage 5 rerun replaced the stale report"}}
+    record["rerun"] = refreshed is not prior
+    if refreshed is not prior:  # a rerun ran: record its outcome, so a failed refresh is never mistaken for one
+        context.stage_results["calibrate"] = refreshed  # the checkpoint and later readers name the final head
+        extras = {"rerun_error": refreshed.error, "rerun_stale": refreshed.payload.get("calibration_stale")}
+        record.update({"rerun_status": refreshed.status.value}, **{k: v for k, v in extras.items() if v})
+    return record
+
+
 def review_calibration_freshness(
     context: FlowContext,
     pr_number: str | None,
     run_stage: Callable[[FlowContext], StageResult] | None = None,
     seams: RerunSeams | None = None,
 ) -> dict[str, Any] | None:
-    """The review loop's report-back gate, after the consensus post: post the stale signal and, in-flow, rerun Stage 5.
+    """The review loop's report-back gate, after the consensus post: what happens to a stale calibration report.
 
-    The rerun fires only when this flow already calibrated (``auto_calibrate`` with a successful Stage 5 result); a
-    standalone review loop posts the signal alone, which still marks the pull request. Never raises, and returns
-    None when there is no pull request, no report, or no move.
+    Three cases. A flow that already calibrated (``auto_calibrate`` with a successful Stage 5 result) reruns Stage 5
+    without warning first; ``signal`` then names a warning only when one was posted after the attempt. A flow whose
+    Stage 5 is still ahead (``auto_calibrate``, no ``skip_calibrate``, a Stage 5 result that is not a success, such as
+    a review restart) posts nothing and records the deferral. Everything else (a standalone review loop,
+    ``--skip-calibrate``, no Stage 5 result) posts the warning once, which still marks the pull request. Never
+    raises, and returns None when there is no pull request, no report, or no move.
     """
     try:
         if not pr_number or not context.execution_branch:
@@ -251,20 +255,7 @@ def review_calibration_freshness(
             if check.evaluated_sha:  # the report is current: no stale warning stays open
                 resolve_stale(context, pr_number, check.evaluated_sha, _warning_seams(seams))
             return None
-        record: dict[str, Any] = asdict(check) | {
-            "signal": post_stale_signal(context, check, seams, pr_number=pr_number),
-            "rerun": False,
-        }
-        prior = context.stage_results.get("calibrate")
-        if context.auto_calibrate and prior is not None and prior.status is StageStatus.SUCCESS:
-            stage = run_stage or _flow_run_stage()
-            refreshed = rerun_calibration(context, prior, stage, seams=seams, pr_number=pr_number)
-            if refreshed is not prior:  # a rerun ran: record its outcome, so a failed refresh is never mistaken for one
-                context.stage_results["calibrate"] = refreshed  # the checkpoint and later readers name the final head
-                record["rerun"], record["rerun_status"] = True, refreshed.status.value
-                extras = {"rerun_error": refreshed.error, "rerun_stale": refreshed.payload.get("calibration_stale")}
-                record.update({key: value for key, value in extras.items() if value})
+        return asdict(check) | _stale_gate_record(context, check, run_stage, _Thread(seams, pr_number))
     except Exception as exc:  # the gate informs; it never fails the review loop
         logger.warning("Calibration freshness gate failed: %s", exc)
         return None
-    return record

@@ -12,6 +12,7 @@ from sandbox_executor.flow.admission import AdmissionDecision
 from sandbox_executor.flow.github import token_scopes
 from sandbox_executor.launcher import env_files, mounts
 
+from tests import fake_keychain as fake_keychain_helper
 from tests import network_guard
 from tests.credential_env import CREDENTIAL_ENV_NAMES
 from tests.gh_write_guard import guarded_popen
@@ -143,6 +144,15 @@ def isolated_claude_secrets_file(tmp_path_factory, monkeypatch):
         return os.path.join(os.environ.get("HOME") or fake_home, ".holon", "secrets", "claude-oauth-token")
 
     monkeypatch.setattr(claude_credential, "secrets_file_path", secrets_file_path)
+
+
+@pytest.fixture(autouse=True)
+def fake_keychain(monkeypatch) -> fake_keychain_helper.FakeKeychain:
+    """Replace the OS secret store with an empty in-memory fake, so no test starts `security` or `secret-tool`.
+
+    Returns the fake; a test seeds `entry` or flips a failure switch on it.
+    """
+    return fake_keychain_helper.install(monkeypatch)
 
 
 @pytest.fixture(autouse=True)

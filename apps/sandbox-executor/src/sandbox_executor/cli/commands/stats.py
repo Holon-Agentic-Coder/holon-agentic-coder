@@ -1,5 +1,3 @@
-"""Stats command module for displaying operational telemetry and self-metrics."""
-
 from __future__ import annotations
 
 import argparse
@@ -10,10 +8,10 @@ from sandbox_executor import cli
 from sandbox_executor.cli.options import add_target_worktree_option
 
 ORDER = 150
+_ACTION_INDEX_DB_RELATIVE_PATH = "holon-knowledge/.index/action_index.db"
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register the stats subcommand parser."""
     parser = subparsers.add_parser(
         "stats",
         help="Display operational self-metrics and consult telemetry.",
@@ -28,8 +26,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
 
 def run(args: argparse.Namespace) -> int:
-    """Execute the stats command."""
-    db_path = os.path.join(args.target_worktree, "holon-knowledge/.index/action_index.db")
+    db_path = os.path.join(args.target_worktree, _ACTION_INDEX_DB_RELATIVE_PATH)
     db = cli.ActionIndexDatabase(db_path=db_path)
     telemetry_stats = cli.TelemetryCollector.get_telemetry_stats(db)
     if args.json:

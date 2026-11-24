@@ -5,12 +5,13 @@
 - **Execution Branch:** `I-1795444112-fable-model-registry-entry/P-1795444541-ANA-G4A/E-1795444771-ANA-G4A/_`
 - **Intent Branch:** `I-1795444112-fable-model-registry-entry/_`
 - **Evaluating Agent:** `antigravity-agent/gemini-4-argon`
-- **Evaluation Timestamp:** `2026-11-23T15:02:13.000Z`
-- **Evaluated Commit SHA:** `d09f746729f787ed29b2affc98acd19d54a4008c`
-- **Base SHA:** `8b0efd076f2a182d311950f8c407830482e7c9df`
-- **Merge-Base SHA:** `8b0efd076f2a182d311950f8c407830482e7c9df`
-- **Merged Commits:** `0`
-- **Patch Size Base:** `plan`
+- **Evaluation Timestamp:** `2026-11-24T05:23:33.000Z`
+- **Evaluated Commit SHA:** `14ac29ecda82e5397e6d48526e4a7528075646dc`
+- **Base SHA:** `e563254efc25fb9f611e4cddd60906f826d00e16`
+- **Merge-Base SHA:** `e563254efc25fb9f611e4cddd60906f826d00e16`
+- **Merged Commits:** `2`
+- **Patch Size Base:** `target_merge_base` (merge-base `e563254efc25fb9f611e4cddd60906f826d00e16` with the target
+  branch)
 
 ---
 

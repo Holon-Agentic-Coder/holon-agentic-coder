@@ -16,6 +16,7 @@ from sandbox_executor.agent_defaults import (
     detect_harness_agent,
     image_for_agent,
     normalise_agent_id,
+    normalise_model_and_effort,
     resolve_agent_runner,
     resolve_model,
 )
@@ -204,3 +205,49 @@ def test_claude_api_key_detection_uses_the_secrets_file_not_holon_agent_key(tmp_
 def test_claude_api_key_detection_accepts_the_layered_oauth_token(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     assert agent_defaults._detect_api_key_present("claude", {"HOLON_AGENT_OAUTH_TOKEN": "sk-ant-oat01-fake"}) is True
+
+
+@pytest.mark.parametrize(
+    ("alias", "expected_canonical"),
+    [
+        ("fable", "claude-fable-5-2"),
+        ("claude-fable", "claude-fable-5-2"),
+        ("claude-fable-5-2", "claude-fable-5-2"),
+        ("opus", "claude-opus-5-5"),
+        ("claude-opus", "claude-opus-5-5"),
+        ("claude-opus-5-5", "claude-opus-5-5"),
+    ],
+)
+def test_claude_fable_and_opus_normalisation(alias, expected_canonical):
+    assert normalise_model_and_effort("claude-agent", alias) == (expected_canonical, None)
+
+
+def test_resolve_model_canonicalises_alias_and_logs_both_alias_and_canonical_id(caplog):
+    with caplog.at_level(logging.INFO, logger=agent_defaults.__name__):
+        res_flag = resolve_model("claude-agent", "fable", {})
+    assert res_flag.value == "claude-fable-5-2"
+    assert res_flag.source == "flag"
+    assert "fable" in res_flag.reason
+    assert "claude-fable-5-2" in res_flag.describe("Model")
+    assert "fable" in res_flag.describe("Model")
+    assert any("claude-fable-5-2" in r.getMessage() and "fable" in r.getMessage() for r in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=agent_defaults.__name__):
+        res_env = resolve_model("claude-agent", None, {"HOLON_MODEL": "claude-fable"})
+    assert res_env.value == "claude-fable-5-2"
+    assert res_env.source == "env"
+    assert "claude-fable" in res_env.reason
+    assert "claude-fable-5-2" in res_env.describe("Model")
+    assert "claude-fable" in res_env.describe("Model")
+    assert any("claude-fable-5-2" in r.getMessage() and "claude-fable" in r.getMessage() for r in caplog.records)
+
+
+def test_default_models_per_runner_unchanged():
+    assert DEFAULT_MODELS == {
+        "antigravity": "gemini-3.8-flash-medium",
+        "claude": "claude-opus-5-5",
+        "pi": "claude-opus-5-5",
+        "codex": "gpt-5-codex",
+        "opencode": "anthropic/claude-opus-5-5",
+    }

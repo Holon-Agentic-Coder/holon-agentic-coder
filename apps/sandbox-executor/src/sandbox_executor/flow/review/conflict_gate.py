@@ -14,7 +14,7 @@ from sandbox_executor.flow.github.pr import format_review_git_trailers
 from sandbox_executor.flow.host_remote import push_commit, remote_error
 from sandbox_executor.flow.review import sync_points as _sp
 from sandbox_executor.flow.review.approval_carry_over import carry_approval_over, record_stage5_carry_over
-from sandbox_executor.flow.review.conflict_merge import _MergeOutcome
+from sandbox_executor.flow.review.conflict_merge import _is_ledger_path, _MergeOutcome
 from sandbox_executor.flow.review.ledger_commit import (
     _commit_pending_ledger_rows,
     _LedgerCommit,
@@ -60,11 +60,8 @@ def _blocked_reason(outcome: _MergeOutcome, target_branch: str) -> str:
     if outcome.merged:
         return MERGED_REASON
     if outcome.conflicting_paths:
-        is_ledger = all(
-            p.startswith("holon-knowledge/ledger/") and p.endswith(".jsonl") for p in outcome.conflicting_paths
-        )
-        kind = "merge conflicts" if is_ledger else "code conflicts"
-        return f"{kind} with {target_branch} in: {', '.join(outcome.conflicting_paths)}"
+        kind = "merge" if all(_is_ledger_path(p) for p in outcome.conflicting_paths) else "code"
+        return f"{kind} conflicts with {target_branch} in: {', '.join(outcome.conflicting_paths)}"
     return f"merging {target_branch} failed: {outcome.error or 'unknown error'}"
 
 

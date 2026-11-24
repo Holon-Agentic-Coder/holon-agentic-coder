@@ -121,8 +121,11 @@ class TestStageTargetsIgnoreOperatorHead:
         ctx = self._run_stages_1_to_3(host, origin, tmp_path)
         loop_res = {"consensus": {"approved": True}, "mergeability": {}, "halted_for_human": False, "approved": True}
 
+        from sandbox_executor.flow.context import FlowStage
+        from sandbox_executor.flow.target_sync_result import SyncBoundary
+
         with (
-            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts") as mock_probe,
+            patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None) as mock_probe,
             patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res) as mock_loop,
         ):
             res = run_review_stage(ctx)
@@ -130,7 +133,7 @@ class TestStageTargetsIgnoreOperatorHead:
         assert res.status == StageStatus.APPROVED
         # Stage 4 ledger rows and Stage 5 calibration run in the execution branch's working tree.
         assert _git(host, "rev-parse", "--abbrev-ref", "HEAD") == ctx.execution_branch
-        assert mock_probe.call_args.kwargs["branch"] == ctx.execution_branch
+        mock_probe.assert_called_once_with(ctx, FlowStage.REVIEW, SyncBoundary.STAGE_START)
         assert mock_loop.call_args.kwargs["target"] == ctx.execution_branch
 
     def test_review_stage_fails_when_execution_branch_cannot_be_checked_out(self, flow_repos, tmp_path):

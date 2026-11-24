@@ -48,8 +48,9 @@ REVIEW_LAZY_EXPORTS: dict[str, str] = {
         "_lookup_introducing_action_id"
     ),
     "sandbox_executor.flow.review.sync_points": (
-        "compute_rereview_scope format_conflict_block_reason is_ledger_only_sync is_mechanical_only "
-        "sync_after_resolver_turn sync_before_review_iteration sync_iteration_mergeability sync_review_head"
+        "compute_rereview_scope finalize_resolver_turn format_conflict_block_reason is_ledger_only_sync "
+        "is_mechanical_only sync_after_resolver_turn sync_before_review_iteration sync_iteration_mergeability "
+        "sync_review_head"
     ),
     "sandbox_executor.flow.review.verdict": "review_loop_approved review_summary_lines",
     "sandbox_executor.flow.review.workspace": "HOST_REVIEW_REFUSAL reviewers_sandboxed",

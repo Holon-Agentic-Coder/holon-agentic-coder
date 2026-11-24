@@ -289,6 +289,7 @@ __all__ = [
     "fast_forward_local_branch",
     "fetch_base",
     "fetch_scopes",
+    "finalize_resolver_turn",
     "fingerprints_match",
     "format_conflict_block_reason",
     "format_decomposition_summary",

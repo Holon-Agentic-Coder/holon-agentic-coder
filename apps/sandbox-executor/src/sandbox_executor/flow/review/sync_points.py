@@ -75,7 +75,7 @@ def format_conflict_block_reason(result: SyncResult, target_branch: str) -> str:
 def _precheck_review_sync(
     context: FlowContext, branch: str, target_branch: str, boundary: SyncBoundary
 ) -> SyncResult | None:
-    if context.dry_run or not branch:
+    if context.dry_run or not branch or branch == "HEAD":
         return SyncResult("unchanged", "", "", "")
     if _bare_branch(branch) in PROTECTED_BRANCHES:
         return SyncResult("blocked", "", "", "", error=f"refusing to push to protected branch '{branch}'")

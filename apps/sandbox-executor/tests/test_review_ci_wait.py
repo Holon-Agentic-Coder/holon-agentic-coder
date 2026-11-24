@@ -253,7 +253,7 @@ def test_stage_error_reports_pending_after_the_wait_budget(tmp_path):
     with (
         patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
         patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
         patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
     ):
         result = run_review_stage(ctx)

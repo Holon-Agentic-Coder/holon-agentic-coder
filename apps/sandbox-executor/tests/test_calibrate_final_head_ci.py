@@ -183,7 +183,7 @@ def _run_stage(tmp_path: Path, record: dict) -> object:
     ok = SimpleNamespace(returncode=0, stdout="", stderr="")
     with (
         patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=report),
         patch("sandbox_executor.flow.stages.calibrate.run_git", return_value=ok),
         patch("sandbox_executor.flow.calibrate_sync.run_git", return_value=ok),
@@ -307,7 +307,7 @@ def _run_gated_stage(tmp_path: Path, head: str, conclusion: str) -> tuple[FlowCo
             functools.partial(stage5_merged_head_gate, seams=seams),
         ),
         patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=report),
         patch("sandbox_executor.flow.stages.calibrate.run_git", return_value=ok),
         patch("sandbox_executor.flow.calibrate_sync.run_git", return_value=ok),

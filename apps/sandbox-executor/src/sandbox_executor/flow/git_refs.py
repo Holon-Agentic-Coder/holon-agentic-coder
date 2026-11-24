@@ -8,13 +8,12 @@ import json
 import logging
 import os
 import re
-import shutil
-import tempfile
 from typing import Any
 
 from sandbox_executor.entrypoint.execution_workspace import workspace_mounted
 from sandbox_executor.flow.combined_base import _combined_diff_verdict, _integrated_plan_recorded
 from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.flow.ledger_worktree import _ledger_worktree
 from sandbox_executor.git import changed_paths, empty_diff_summary, run_git
 from sandbox_executor.ledger import LedgerRewriteError, atomic_ledger_append, validate_ledger_file_unique_ids
 from sandbox_executor.plan_paths import is_row_of_execution
@@ -286,29 +285,23 @@ def _append_ledger_row(context: FlowContext, branch: str, ledger: str, row: dict
     are then fast-forwarded. Returns None on success, otherwise a secret-redacted description of what failed.
     """
     repo_dir, ledger_rel = context.target_worktree, f"holon-knowledge/ledger/{ledger}"
-    tmp_root = tempfile.mkdtemp(prefix="holon-flow-ledger-")
-    worktree = os.path.join(tmp_root, "worktree")
     try:
-        run_git(["worktree", "add", "--detach", worktree, f"refs/remotes/origin/{branch}"], cwd=repo_dir)
-        ledger_path = os.path.join(worktree, ledger_rel)
-        os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
-        with atomic_ledger_append(ledger_path) as f:
-            f.write(json.dumps(row) + "\n")
-        ids = ("plan_id", "intent_branch") if ledger == "plans.jsonl" else ("execution_id", "plan_branch")
-        validate_ledger_file_unique_ids(ledger_path, id_key=ids[0], parent_key=ids[1])
-        run_git(["add", ledger_rel], cwd=worktree)
-        commit_env = {**EXECUTOR_GIT_ENV, **os.environ, "DOCKER_CLI_HINTS": "false"}
-        run_git(["commit", "-m", msg], cwd=worktree, env=commit_env)
-        pushed_sha = run_git(["rev-parse", "HEAD"], cwd=worktree).stdout.strip()
-        run_git(["push", "origin", f"HEAD:refs/heads/{branch}"], cwd=worktree, timeout=300)
+        with _ledger_worktree(repo_dir, f"refs/remotes/origin/{branch}", run_git) as worktree:
+            ledger_path = os.path.join(worktree, ledger_rel)
+            os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
+            with atomic_ledger_append(ledger_path) as f:
+                f.write(json.dumps(row) + "\n")
+            ids = ("plan_id", "intent_branch") if ledger == "plans.jsonl" else ("execution_id", "plan_branch")
+            validate_ledger_file_unique_ids(ledger_path, id_key=ids[0], parent_key=ids[1])
+            run_git(["add", ledger_rel], cwd=worktree)
+            commit_env = {**EXECUTOR_GIT_ENV, **os.environ, "DOCKER_CLI_HINTS": "false"}
+            run_git(["commit", "-m", msg], cwd=worktree, env=commit_env)
+            pushed_sha = run_git(["rev-parse", "HEAD"], cwd=worktree).stdout.strip()
+            run_git(["push", "origin", f"HEAD:refs/heads/{branch}"], cwd=worktree, timeout=300)
     except LedgerRewriteError:
         raise
     except (RuntimeError, TimeoutError, OSError, ValueError) as exc:
         return redact_agent_secrets(str(exc))
-    finally:
-        run_git(["worktree", "remove", "--force", worktree], cwd=repo_dir, check=False)
-        run_git(["worktree", "prune"], cwd=repo_dir, check=False)
-        shutil.rmtree(tmp_root, ignore_errors=True)
     # The row is on origin now: aligning local refs is best-effort and never reported as a failed write.
     _sync_local_execution_refs(context, branch, pushed_sha)
     return None

@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-df7b0491",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-24T11:14:34.137997+00:00",
+  "updated_ts": "2026-11-24T11:14:34.137997+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795515246-ff95658d",
+      "ACT-FIND-1795515244-c777c066"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795496321-flow-e2e-test-teardown/P-1795496340-ANA-G4A/E-1795497446-ANA-G4A/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 9 finding detected: FIND-R3-009-03",
+    "symptoms": [
+      "States teardown_e2e_intent is in the innermost try...finally block, whereas _execute_guarded_attempt places it in the outermost finally block; update wording."
+    ]
+  }
+}

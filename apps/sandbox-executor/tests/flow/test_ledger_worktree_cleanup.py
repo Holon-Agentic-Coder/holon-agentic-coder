@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
@@ -114,6 +115,29 @@ def _lock_as_an_unfinished_add(repo: Path, worktree: str) -> None:
     _git(repo, "worktree", "lock", "--reason", "initializing", worktree)
 
 
+def _german_git_environment(directory: Path) -> dict[str, str]:
+    """The environment of a process whose git writes the lock reason of an unfinished ``git worktree add`` in German.
+
+    Hermetic where glibc's ``C.utf8`` locale is installed: that locale is offered under a German name, and git is
+    pointed at a catalogue of the one message. Anywhere else these variables only name a locale that may be missing.
+    """
+    catalogue = directory / "messages" / "de" / "LC_MESSAGES" / "git.mo"
+    catalogue.parent.mkdir(parents=True)
+    # A GNU message catalogue: the header, one (length, offset) pair for the message and one for its translation.
+    header = struct.pack("<11I", 0x950412DE, 0, 1, 28, 36, 0, 0, 12, 44, 15, 57)
+    catalogue.write_bytes(header + b"initializing\0Initialisierung\0")
+    locales = directory / "locales"
+    locales.mkdir()
+    if os.path.isdir("/usr/lib/locale/C.utf8"):
+        shutil.copytree("/usr/lib/locale/C.utf8", locales / "de_DE.UTF-8")
+    return {
+        "LANGUAGE": "de",
+        "LC_ALL": "de_DE.UTF-8",
+        "LOCPATH": str(locales),
+        "GIT_TEXTDOMAINDIR": str(catalogue.parents[2]),
+    }
+
+
 def _plant_leftover(
     repos: LedgerRepos, name: str, owner_lock: bool = False, keep_directory: bool = True, unfinished_add: bool = False
 ) -> Path:
@@ -184,7 +208,8 @@ def test_a_successful_ledger_step_runs_the_same_git_commands_in_its_worktree(led
     add_args, add_options = adds[0]
     worktree = add_args[3]
     assert add_args == ["worktree", "add", "--detach", worktree, f"refs/remotes/origin/{BRANCH}"]
-    assert add_options == {"cwd": str(ledger_repos.host)}
+    # In the C message locale: the sweep recognises an unfinished add by the lock reason git writes untranslated.
+    assert add_options == {"cwd": str(ledger_repos.host), "env": {**os.environ, "LC_ALL": "C"}}
     tmp_root = os.path.dirname(worktree)
     assert os.path.basename(worktree) == "worktree"
     assert os.path.basename(tmp_root).startswith("holon-flow-ledger-")
@@ -326,7 +351,9 @@ def test_the_next_step_removes_the_locked_worktree_a_killed_worktree_add_left(le
     assert _ledger_temp_entries(ledger_repos.temp_dir) == []
 
 
-def test_the_next_step_removes_the_worktree_of_a_step_whose_processes_were_killed_during_worktree_add(ledger_repos):
+def test_the_next_step_removes_the_worktree_of_a_step_whose_processes_were_killed_during_worktree_add(
+    ledger_repos, tmp_path
+):
     host = ledger_repos.host
     # A checkout filter that kills its whole process group: the step, its ``git worktree add`` and the checkout die
     # together while git still holds the worktree locked.
@@ -334,6 +361,8 @@ def test_the_next_step_removes_the_worktree_of_a_step_whose_processes_were_kille
     (host / ".git" / "info" / "attributes").write_text("* filter=kill-the-step\n", encoding="utf-8")
     _git(host, "config", "filter.kill-the-step.smudge", "kill -KILL 0")
     environment = {**os.environ, "TMPDIR": str(ledger_repos.temp_dir), "PYTHONPATH": str(SOURCE_ROOT)}
+    # The step runs in German, and git translates the reason of this lock: the add's own C locale keeps it recognisable.
+    environment.update(_german_git_environment(tmp_path / "german"))
     killed = subprocess.run(
         [sys.executable, "-c", KILLED_STEP, str(host), f"refs/remotes/origin/{BRANCH}"],
         env=environment,

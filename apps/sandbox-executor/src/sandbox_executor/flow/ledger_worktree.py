@@ -12,10 +12,11 @@ that has none, as the earlier code wrote none) is removed.
 
 A ``git worktree add`` that is killed or times out leaves its registration ``locked`` with the reason ``initializing``,
 which a plain ``remove --force`` refuses and ``prune`` skips. Every removal here therefore passes ``--force`` twice,
-and the sweep treats that one lock reason as no lock at all, with or without the directory. A worktree whose owner
-lock a live step holds, that git marks ``locked`` for any other reason, that is not detached, or that is outside a
-``holon-flow-ledger-*`` directory is never touched. Neither the sweep nor the cleanup raises. The git runner is always
-a parameter, so the caller's patched binding is the one used.
+and the sweep treats that one lock reason as no lock at all, with or without the directory. Git translates the reason
+it writes, so the step's own ``git worktree add`` runs in the ``C`` message locale and the reason is the same under
+any locale. A worktree whose owner lock a live step holds, that git marks ``locked`` for any other reason, that is not
+detached, or that is outside a ``holon-flow-ledger-*`` directory is never touched. Neither the sweep nor the cleanup
+raises. The git runner is always a parameter, so the caller's patched binding is the one used.
 """
 
 from __future__ import annotations
@@ -42,7 +43,8 @@ LEDGER_WORKTREE_LEAF = "worktree"
 OWNER_LOCK_NAME = "owner.lock"
 #: What a git call or a filesystem call may raise during the sweep or the cleanup; logged, never propagated.
 TOLERATED_CLEANUP_ERRORS = (RuntimeError, TimeoutError, OSError)
-#: How ``git worktree list --porcelain`` reports the lock git itself holds while ``git worktree add`` checks out.
+#: How ``git worktree list --porcelain`` reports the lock git itself holds while ``git worktree add`` checks out. Git
+#: writes that reason in its message locale, so this is what an add run in the ``C`` locale leaves, and only that.
 GIT_INITIALIZING_LOCK = "locked initializing"
 
 
@@ -167,7 +169,8 @@ def _ledger_worktree(repo_dir: str, ref: str, git: GitRunnerCallable) -> Iterato
         owner_lock = _claim_owner_lock(tmp_root, create=True)
         if owner_lock is None:
             logger.warning("Ledger worktree: could not take the owner lock in %s; continuing without it.", tmp_root)
-        git(["worktree", "add", "--detach", worktree, ref], cwd=repo_dir)
+        # In the C message locale, so an add killed midway leaves the lock reason the next step's sweep recognises.
+        git(["worktree", "add", "--detach", worktree, ref], cwd=repo_dir, env={**os.environ, "LC_ALL": "C"})
         yield worktree
     finally:
         _discard_worktree(repo_dir, worktree, git)

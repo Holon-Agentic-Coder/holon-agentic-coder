@@ -39,14 +39,11 @@ class EndOfFlowSyncResult:
     def failure_result(self, context: FlowContext) -> StageResult:
         """Build the failed Stage 5 result with end-of-flow sync diagnostics while preserving existing payload."""
         prev = context.stage_results.get(FlowStage.CALIBRATE.value)
-        diag = {
-            "rounds": self.rounds,
-            "mergeable": self.mergeable,
-            "merge_state_status": self.merge_state_status,
-            "blocked": True,
-            "reason": self.reason,
+        diag = {"rounds": self.rounds, "mergeable": self.mergeable, "merge_state_status": self.merge_state_status}
+        payload = {
+            **(prev.payload if prev else {}),
+            "end_of_flow_sync": {**diag, "blocked": True, "reason": self.reason},
         }
-        payload = {**(prev.payload if prev else {}), "end_of_flow_sync": diag}
         return StageResult(FlowStage.CALIBRATE, StageStatus.FAILED, payload=payload, error=self.reason)
 
 
@@ -60,11 +57,9 @@ class EndOfFlowSeams:
 
 
 def _skip_reason(context: FlowContext) -> str | None:
-    if context.dry_run:
-        return "dry run"
-    if context.skip_push:
-        return "push skipped"
-    return "no execution branch" if not context.execution_branch else None
+    if context.dry_run or context.skip_push or not context.execution_branch:
+        return "dry run" if context.dry_run else "push skipped" if context.skip_push else "no execution branch"
+    return None
 
 
 def _verdict_fields(verdict: dict[str, Any]) -> tuple[str, str, bool]:
@@ -77,6 +72,11 @@ def _blocked_result(rounds: int, mergeable: str, state: str, reason: str) -> End
     return EndOfFlowSyncResult(False, rounds, mergeable, state, reason, blocked=True)
 
 
+def _is_not_a_repo(verdict: dict[str, Any]) -> bool:
+    diag = verdict.get("diagnostics")
+    return isinstance(diag, dict) and str(diag.get("error") or "").startswith("not a git repository:")
+
+
 def _probe_mergeability(context: FlowContext, branch: str, target_branch: str, seams: EndOfFlowSeams) -> dict[str, Any]:
     """Probe PR mergeability, re-probing transient ``UNKNOWN`` states with bounded backoff."""
     probe_fn = seams.mergeability_probe or (lambda worktree, br, tgt: check_pr_mergeability(worktree, br, tgt))
@@ -84,7 +84,7 @@ def _probe_mergeability(context: FlowContext, branch: str, target_branch: str, s
     for attempt in range(1, MAX_UNKNOWN_MERGEABILITY_PROBES + 1):
         verdict = probe_fn(context.target_worktree, branch, target_branch)
         mergeable, state, _ = _verdict_fields(verdict)
-        if mergeable != "UNKNOWN" or state == "MISSING_REF":
+        if mergeable != "UNKNOWN" or state == "MISSING_REF" or _is_not_a_repo(verdict):
             return verdict
         if attempt < MAX_UNKNOWN_MERGEABILITY_PROBES:
             context.log(f"End-of-flow sync: mergeability UNKNOWN ({attempt}/{MAX_UNKNOWN_MERGEABILITY_PROBES}).")
@@ -92,8 +92,11 @@ def _probe_mergeability(context: FlowContext, branch: str, target_branch: str, s
     return verdict
 
 
-def _non_conflicting_outcome(rounds: int, mergeable: str, state: str, is_dirty: bool) -> EndOfFlowSyncResult | None:
+def _non_conflicting_outcome(rounds: int, verdict: dict[str, Any]) -> EndOfFlowSyncResult | None:
     """Return a terminal result when the PR is not conflicting; return ``None`` when a sync round is needed."""
+    if _is_not_a_repo(verdict):
+        return EndOfFlowSyncResult(clean=True, rounds=rounds, skipped=True, reason="not a git repository")
+    mergeable, state, is_dirty = _verdict_fields(verdict)
     if mergeable == "UNKNOWN" or state == "MISSING_REF":
         reason = f"PR mergeability unresolved ({mergeable}/{state}) after {MAX_UNKNOWN_MERGEABILITY_PROBES} probes"
         return _blocked_result(rounds, mergeable, state, reason)
@@ -178,9 +181,9 @@ def finish_flow(
     rounds = 0
     while True:
         verdict = _probe_mergeability(context, branch, target_branch, active_seams)
-        mergeable, state, is_dirty = _verdict_fields(verdict)
-        if (outcome := _non_conflicting_outcome(rounds, mergeable, state, is_dirty)) is not None:
+        if (outcome := _non_conflicting_outcome(rounds, verdict)) is not None:
             return outcome
+        mergeable, state, _ = _verdict_fields(verdict)
         if rounds >= MAX_END_OF_FLOW_REENTRIES:
             reason = f"PR still conflicting ({mergeable}/{state}) after {MAX_END_OF_FLOW_REENTRIES} end-of-flow rounds"
             return _blocked_result(rounds, mergeable, state, reason)

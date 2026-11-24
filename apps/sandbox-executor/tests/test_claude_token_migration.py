@@ -12,6 +12,7 @@ from tests.leak_assertions import assert_no_leak, make_probe
 OAUTH_PREFIX = "sk-ant-" + "oat"
 PLATFORMS = ("darwin", "linux")
 FILE_DISPLAY = "~/.holon/secrets/claude-oauth-token"
+DELETE_BY_HAND = "then delete the plaintext file by hand."
 REAL_LEGACY_TOKEN_FILE_PATH = claude_token_migration.legacy_token_file_path
 
 
@@ -57,6 +58,24 @@ def test_the_legacy_path_is_under_the_current_home(home):
     assert claude_token_migration.LEGACY_TOKEN_FILE_DISPLAY == FILE_DISPLAY
 
 
+def test_only_the_retired_path_is_the_legacy_token_file_also_through_a_symbolic_link(home, tmp_path_factory):
+    legacy = _write_legacy_file(home, _sample())
+    elsewhere = tmp_path_factory.mktemp("elsewhere")
+    link = elsewhere / "link-to-legacy"
+    link.symlink_to(legacy)
+    other = elsewhere / "token"
+    other.write_text(_sample("o"), encoding="utf-8")
+
+    assert claude_token_migration.is_legacy_token_file(str(legacy))
+    assert claude_token_migration.is_legacy_token_file(os.path.join(str(legacy.parent), ".", "claude-oauth-token"))
+    assert claude_token_migration.is_legacy_token_file(str(link))
+    assert not claude_token_migration.is_legacy_token_file(str(other))
+    assert not claude_token_migration.is_legacy_token_file(str(legacy.parent / "another-token"))
+
+    legacy.unlink()
+    assert claude_token_migration.is_legacy_token_file(str(legacy))
+
+
 @pytest.mark.parametrize("platform", PLATFORMS)
 def test_the_file_is_imported_then_deleted_and_the_output_says_so(home, fake_keychain, nothing_shows, platform):
     sample = _sample()
@@ -93,7 +112,7 @@ def test_an_unverified_write_keeps_the_file_untouched(home, fake_keychain, nothi
     assert err.count("\n") == 1
     assert FILE_DISPLAY in err and "could not be verified" in err
     assert "left untouched" in err and "no longer read" in err
-    assert claude_keychain.store_command() in err
+    assert err.endswith(claude_keychain.store_command() + "\n") and DELETE_BY_HAND not in err
 
 
 @pytest.mark.parametrize("platform", [*PLATFORMS, "unsupported"])
@@ -112,7 +131,7 @@ def test_without_a_usable_store_the_file_is_kept_and_no_write_is_attempted(
     assert _state(path) == before
     assert fake_keychain.store_calls == []
     err = nothing_shows(sample, outcome)
-    assert "no usable secret store" in err and "left untouched" in err
+    assert "no usable secret store" in err and "left untouched" in err and DELETE_BY_HAND not in err
     if platform == "unsupported":
         assert fake_keychain.calls == [] and claude_keychain.store_commands_text() in err
     else:
@@ -174,6 +193,9 @@ def test_a_different_stored_entry_is_never_overwritten(home, fake_keychain, noth
     err = nothing_shows(sample, outcome)
     assert_no_leak(stored, err, outcome.message)
     assert "already holds a different claude credential" in err and "left untouched" in err
+    # Storing again is not the remedy here: the line names the action that stops it repeating on every pre-flight.
+    assert err.endswith(DELETE_BY_HAND + "\n") and claude_keychain.store_command() in err
+    assert f"if {claude_keychain.store_name()} does not hold it" in err
 
 
 @pytest.mark.parametrize("content", ["", "  \n", "two words\n", "first\nsecond\n"])
@@ -187,10 +209,11 @@ def test_a_file_without_a_single_token_is_kept_and_no_tool_is_started(home, fake
     assert _state(path) == before and fake_keychain.calls == []
     err = capsys.readouterr().err
     assert "does not hold a single token" in err and "left untouched" in err
+    assert err.endswith(DELETE_BY_HAND + "\n") and claude_keychain.store_command() in err
 
 
 @pytest.mark.parametrize("damage", ["'", '"', "\\", ";", "$(x)"])
-def test_a_token_outside_the_allow_list_is_kept_with_no_write(home, fake_keychain, nothing_shows, damage):
+def test_a_token_outside_the_allow_list_is_kept_and_no_tool_is_started(home, fake_keychain, nothing_shows, damage):
     sample = _sample() + damage + make_probe("z")
     path = _write_legacy_file(home, sample)
     before = _state(path)
@@ -199,9 +222,11 @@ def test_a_token_outside_the_allow_list_is_kept_with_no_write(home, fake_keychai
 
     assert outcome.status is MigrationStatus.KEPT
     assert _state(path) == before
-    assert fake_keychain.store_calls == [] and fake_keychain.entry is None
+    assert fake_keychain.calls == [] and fake_keychain.entry is None
     err = nothing_shows(sample, outcome)
-    assert "could not be verified" in err
+    # No write was attempted, so the line reports the file's content, not a write that could not be verified.
+    assert "holds a character that cannot be imported" in err and "could not be verified" not in err
+    assert err.endswith(DELETE_BY_HAND + "\n")
 
 
 def test_an_unreadable_file_is_kept(home, fake_keychain, capsys):
@@ -226,6 +251,7 @@ def test_a_symbolic_link_or_a_directory_is_kept_and_not_followed(home, fake_keyc
     outcome = migrate_legacy_token_file()
 
     assert outcome.status is MigrationStatus.KEPT and "not a regular file" in outcome.message
+    assert outcome.message.endswith(DELETE_BY_HAND)
     assert link.is_symlink() and target.read_text(encoding="utf-8") == sample
     assert fake_keychain.calls == []
 
@@ -281,6 +307,23 @@ def test_the_missing_credential_message_tells_no_entry_from_no_store(home, fake_
         assert message.endswith(claude_keychain.store_command())
         assert ".holon/secrets" not in message and "HOLON_AGENT_KEY" not in message
         assert len(message) < 700  # pre-flight keeps the last 800 characters of its output
+
+
+@pytest.mark.parametrize(
+    ("status", "cause"),
+    [
+        (claude_keychain.LookupStatus.MISSING, "has no entry for service 'holon', account 'claude-oauth-token'"),
+        (claude_keychain.LookupStatus.UNAVAILABLE, "no usable OS secret store was found"),
+    ],
+)
+def test_the_missing_credential_message_reuses_a_lookup_the_caller_already_made(home, fake_keychain, status, cause):
+    # The store would answer the opposite, so the wording can only come from the lookup that was handed in.
+    fake_keychain.available = status is claude_keychain.LookupStatus.UNAVAILABLE
+
+    message = claude_token_migration.claude_missing_credential_message(claude_keychain.KeychainLookup(status))
+
+    assert cause in message
+    assert fake_keychain.calls == []
 
 
 def test_the_missing_credential_message_shows_both_commands_on_an_unsupported_platform(home, fake_keychain):

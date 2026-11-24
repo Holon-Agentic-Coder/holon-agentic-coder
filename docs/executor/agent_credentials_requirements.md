@@ -229,11 +229,18 @@ Each agent has specific command-line structures and validation routines:
   standard error, starting with `Imported the claude credential from ~/.holon/secrets/claude-oauth-token into`, that
   names the store and the delete. When the keychain already holds the identical token, nothing is written and the file
   is deleted all the same. In every other case (no usable store, a failed or unverified write, an entry that already
-  holds a different credential, an unreadable file) the file is left untouched, the line says that it was not imported
-  and is no longer read, and an existing keychain entry is never overwritten. `--skip-preflight` and
-  `HOLON_SKIP_PREFLIGHT` skip the migration together with the probe. After the import, remove any
-  `HOLON_AGENT_OAUTH_TOKEN_FILE` line that named the file from `~/.holon/.env`. Deleting the file does not scrub backups
-  or snapshots that still hold it; run `claude setup-token` again and store the new token when that matters.
+  holds a different credential, an unreadable file, a token with a character outside ASCII letters, digits and
+  `._~+/=-`) the file is left untouched, the line says that it was not imported and is no longer read, and an existing
+  keychain entry is never overwritten. After a failed write or with no usable store, store the token by hand and the
+  next pre-flight deletes the file; when the file cannot be imported or the keychain holds a different credential, the
+  line ends by asking for a manual delete once the keychain holds the wanted credential, because it is otherwise printed
+  on every pre-flight. `--skip-preflight` and `HOLON_SKIP_PREFLIGHT` skip the migration together with the probe. The
+  file is not read through the layered configuration either: a `HOLON_AGENT_OAUTH_TOKEN_FILE` reference that resolves to
+  it (the line `.env.example` used to recommend), in `~/.holon/.env` or the process environment, is ignored on every run
+  with `Warning: <origin>: ignoring HOLON_AGENT_OAUTH_TOKEN_FILE: ...`, whether the file was imported, kept or is
+  already gone; remove that line. A reference to any other token file is still read and still takes precedence over the
+  keychain entry. Deleting the file does not scrub backups or snapshots that still hold it; run `claude setup-token`
+  again and store the new token when that matters.
 
 - **Echo redaction**: The command echo replaces the entire `--settings` value with `<redacted>`, in the
   separate-argument, `=`-joined and `sh -c` forms, so no secret-bearing JSON reaches a log. The `HOLON_AGENT_SETTINGS`

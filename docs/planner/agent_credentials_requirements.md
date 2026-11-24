@@ -48,8 +48,9 @@ secret-tool store --label="Holon claude credential" service holon account claude
 ```
 
 An older plaintext file `~/.holon/secrets/claude-oauth-token` is imported into the keychain once by pre-flight and then
-deleted; see [Migration from the plaintext file](../executor/agent_credentials_requirements.md#2-claude). A container
-started by hand takes the variable directly:
+deleted, and a `HOLON_AGENT_OAUTH_TOKEN_FILE` line that names it is ignored; see
+[Migration from the plaintext file](../executor/agent_credentials_requirements.md#2-claude). A container started by hand
+takes the variable directly:
 
 ```bash
 docker run --rm \

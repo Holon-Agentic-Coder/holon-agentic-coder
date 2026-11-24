@@ -2,8 +2,9 @@
 
 Holon used to keep the claude credential in ``~/.holon/secrets/claude-oauth-token``. This is the only code that reads
 that file, and only to import it: the token is stored through ``claude_keychain`` and the file is deleted once a
-read-back from the store returned the identical token. Every doubt keeps the file. No message holds the token, a part
-of it or any tool output.
+read-back from the store returned the identical token. Every doubt keeps the file. A token-file reference that names
+the file is ignored by the configuration layer (``config_env_secrets``, through ``is_legacy_token_file``), so a kept
+file is never read as the credential. No message holds the token, a part of it or any tool output.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from dataclasses import dataclass
 
 from sandbox_executor import claude_keychain
 from sandbox_executor.claude_credential import read_token_file
-from sandbox_executor.claude_keychain import LookupStatus
+from sandbox_executor.claude_keychain import KeychainLookup, LookupStatus
 
 LEGACY_TOKEN_FILE_DISPLAY = "~/.holon/secrets/claude-oauth-token"
 _ENTRY = f"service '{claude_keychain.SERVICE}', account '{claude_keychain.ACCOUNT}'"
@@ -25,6 +26,11 @@ _STALE_REFERENCE_NOTE = "Remove any HOLON_AGENT_OAUTH_TOKEN_FILE line that named
 def legacy_token_file_path() -> str:
     """Return the target-native path of the retired plaintext token file under the current home."""
     return os.path.join(os.path.expanduser("~"), ".holon", "secrets", "claude-oauth-token")
+
+
+def is_legacy_token_file(path: str) -> bool:
+    """Return True when ``path`` names the retired plaintext token file, directly or through symbolic links."""
+    return os.path.realpath(path) == os.path.realpath(legacy_token_file_path())
 
 
 class MigrationStatus(enum.Enum):
@@ -48,11 +54,24 @@ def _store_command_text() -> str:
     return claude_keychain.store_command() or claude_keychain.store_commands_text()
 
 
-def _kept(reason: str) -> MigrationOutcome:
+def _kept(reason: str, delete_by_hand: bool = False) -> MigrationOutcome:
+    """The outcome for a file that was not imported.
+
+    Args:
+        reason: Why the file was not imported; it never holds the token.
+        delete_by_hand: True when no later import can remove the file (it cannot be imported, or the store holds
+            another credential), so the line ends with the manual delete that stops it repeating on every pre-flight.
+    """
+    remedy = f"To store a credential by hand: {_store_command_text()}"
+    if delete_by_hand:
+        remedy = (
+            f"Store the credential you want by hand if {claude_keychain.store_name()} does not hold it "
+            f"({_store_command_text()}), then delete the plaintext file by hand."
+        )
     return MigrationOutcome(
         MigrationStatus.KEPT,
         f"The claude credential in {LEGACY_TOKEN_FILE_DISPLAY} was not imported: {reason}. The plaintext file was "
-        f"left untouched and is no longer read. To store a credential by hand: {_store_command_text()}",
+        f"left untouched and is no longer read. {remedy}",
     )
 
 
@@ -83,6 +102,8 @@ def _importable_token(path: str) -> tuple[str | None, str]:
     token, _warning = read_token_file(path)
     if token is None:
         return None, "the file is empty, unreadable or does not hold a single token"
+    if not claude_keychain.is_storable_token(token):
+        return None, "the file holds a character that cannot be imported (only ASCII letters, digits and ._~+/=- can)"
     return token, ""
 
 
@@ -107,10 +128,11 @@ def _migrate(path: str) -> MigrationOutcome:
         return MigrationOutcome(MigrationStatus.NOT_NEEDED)
     token, reason = _importable_token(path)
     if token is None:
-        return _kept(reason)
+        return _kept(reason, delete_by_hand=True)
     reason, already_stored = _ensure_stored(token)
     if reason:
-        return _kept(reason)
+        # A refusal with an entry in the store means the store holds another credential, which no import replaces.
+        return _kept(reason, delete_by_hand=already_stored)
     return _delete_imported_file(path, already_stored)
 
 
@@ -119,9 +141,9 @@ def migrate_legacy_token_file() -> MigrationOutcome:
 
     Returns:
         ``NOT_NEEDED`` when there is no file (no platform tool is started), ``MIGRATED`` when the store holds the
-        file's token and the file is deleted, ``KEPT`` in every other case: the file is unreadable, there is no usable
-        store, the store holds a different credential (never overwritten), the write could not be verified by a
-        read-back, or the delete failed.
+        file's token and the file is deleted, ``KEPT`` in every other case: the file is unreadable or holds a
+        character the store command cannot carry, there is no usable store, the store holds a different credential
+        (never overwritten), the write could not be verified by a read-back, or the delete failed.
 
     Side effects:
         May write one entry to the OS secret store and delete the plaintext file. Prints the outcome's message, when
@@ -133,9 +155,15 @@ def migrate_legacy_token_file() -> MigrationOutcome:
     return outcome
 
 
-def claude_missing_credential_message() -> str:
-    """The pre-flight output for "no claude credential": the cause, the legacy file's state and the remedy."""
-    if claude_keychain.lookup_token().status is LookupStatus.UNAVAILABLE:
+def claude_missing_credential_message(lookup: KeychainLookup | None = None) -> str:
+    """The pre-flight output for "no claude credential": the cause, the legacy file's state and the remedy.
+
+    Args:
+        lookup: The keychain answer the caller's credential resolution already got; without it the store is asked.
+    """
+    if lookup is None:
+        lookup = claude_keychain.lookup_token()
+    if lookup.status is LookupStatus.UNAVAILABLE:
         cause = "no usable OS secret store was found (tool missing, keychain locked or no secret service running)"
     else:
         cause = f"{claude_keychain.store_name()} has no entry for {_ENTRY}"

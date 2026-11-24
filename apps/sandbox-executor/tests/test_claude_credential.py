@@ -100,6 +100,32 @@ def test_an_empty_or_unavailable_keychain_yields_no_credential(home, fake_keycha
     assert claude_credential.resolve_claude_credential_source() is None
 
 
+def test_the_resolution_hands_back_the_one_lookup_it_made(home, fake_keychain, monkeypatch):
+    resolve = claude_credential.resolve_claude_credential_with_lookup
+
+    resolved, lookup = resolve()
+    assert resolved is None and lookup == claude_keychain.KeychainLookup(claude_keychain.LookupStatus.MISSING)
+    assert len(fake_keychain.calls) == 1
+
+    fake_keychain.available = False
+    resolved, lookup = resolve()
+    assert resolved is None and lookup.status is claude_keychain.LookupStatus.UNAVAILABLE
+
+    value = OAUTH_PREFIX + make_probe("k")
+    fake_keychain.available = True
+    fake_keychain.entry = value
+    resolved, lookup = resolve()
+    assert resolved == ("keychain", "CLAUDE_CODE_OAUTH_TOKEN", value)
+    assert lookup.status is claude_keychain.LookupStatus.FOUND and value not in repr(lookup)
+    assert len(fake_keychain.calls) == 3
+
+    # A variable that holds a value answers alone: the keychain is not asked, so there is no lookup to hand back.
+    explicit = API_PREFIX + make_probe("env")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", explicit)
+    assert resolve() == (("ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY", explicit), None)
+    assert len(fake_keychain.calls) == 3
+
+
 def test_discovery_never_opens_the_plaintext_file(home, fake_keychain, monkeypatch):
     value = OAUTH_PREFIX + make_probe("f")
     path = _write_legacy_file(home, value + "\n")

@@ -143,7 +143,8 @@ repository-controlled, so it may not set a token-file reference or a host-reach 
 is tracked by git draws `Warning: <path> is tracked by git and holds secret keys (<KEYS>); untrack it.` Warnings go to
 stderr on every invocation and appear under `holon doctor`.
 
-**Secrets by file.** A credential is referenced by the path of its token file, never pasted in:
+**Secrets by file.** The claude credential is best kept in the OS keychain (see below). When a layer does supply it, the
+credential is referenced by the path of its token file, never pasted in:
 
 | file key                       | value key                 | in-container variable     |
 | ------------------------------ | ------------------------- | ------------------------- |
@@ -157,9 +158,10 @@ a file key there is ignored with `Warning: <file>: ignoring <KEY>: ...` and noth
 carried inside `HOLON_AGENT_SETTINGS`. Without any of these, the claude credential is read on the host from the OS
 keychain (service `holon`, account `claude-oauth-token`; macOS keychain or Linux Secret Service), and it travels in the
 same `0600` env-file. An older plaintext file `~/.holon/secrets/claude-oauth-token` is imported into the keychain once
-by pre-flight and deleted after a verified read-back; the store commands and the migration are described in
-`docs/executor/agent_credentials_requirements.md`. The mapping lives in the image, so rebuild the images
-(`build_all_images.sh`) after upgrading; an old image fails visibly in `holon doctor` as "not logged in".
+by pre-flight and deleted after a verified read-back; a file key that names it is ignored with
+`Warning: <origin>: ignoring <KEY>: ...`, so that file is never read as the credential. The store commands and the
+migration are described in `docs/executor/agent_credentials_requirements.md`. The mapping lives in the image, so rebuild
+the images (`build_all_images.sh`) after upgrading; an old image fails visibly in `holon doctor` as "not logged in".
 
 **Inheritance.** Every role container (intent creator, planner, executor, review loop, and the runs calibration drives)
 and the pre-flight probe receive the effective values through the `0600` env-file, never as `-e KEY=value` on the argv,
@@ -182,7 +184,7 @@ Supported keys (secret keys are also every key ending in `_TOKEN`, `_KEY`, `_PAS
 | `HOLON_AGENT_EFFORT`                          | `medium`                                                       | no     | Reasoning effort passed to the claude runner.                                                          |
 | `HOLON_CLAUDE_CODE_MODE`                      | `1`                                                            | no     | Enable Claude Code experimental code mode in the claude runner's `--settings` `env` block.             |
 | `HOLON_AGENT_OAUTH_TOKEN_FILE`                | unset                                                          | no     | Path of a file holding the claude subscription token; read on the host into `HOLON_AGENT_OAUTH_TOKEN`. |
-| `HOLON_AGENT_OAUTH_TOKEN`                     | unset                                                          | yes    | Claude subscription token; prefer `HOLON_AGENT_OAUTH_TOKEN_FILE`.                                      |
+| `HOLON_AGENT_OAUTH_TOKEN`                     | unset                                                          | yes    | Claude subscription token; prefer the OS keychain, or `HOLON_AGENT_OAUTH_TOKEN_FILE`.                  |
 | `HOLON_AGENT_KEY`                             | unset                                                          | yes    | API key of a runner other than claude.                                                                 |
 | `HOLON_AGENT_SETTINGS`                        | unset                                                          | yes    | Extra claude `--settings` JSON (attribution); no longer needed for the token.                          |
 | `HOLON_AGENT_PROVIDER`                        | unset; in host-local mode `HOLON_LOCAL_PROVIDER`, else `local` | no     | Provider of the pi runner.                                                                             |

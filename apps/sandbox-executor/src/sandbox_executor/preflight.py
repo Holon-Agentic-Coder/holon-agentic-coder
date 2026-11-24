@@ -26,7 +26,7 @@ from typing import Any
 
 from sandbox_executor import claude_token_migration, local_llm
 from sandbox_executor.agent_defaults import AGENT_IMAGE_MAPPING, normalise_agent_id
-from sandbox_executor.claude_credential import pin_claude_credential, resolve_claude_credential
+from sandbox_executor.claude_credential import pin_claude_credential, resolve_claude_credential_with_lookup
 
 logger = logging.getLogger(__name__)
 
@@ -237,26 +237,28 @@ def redact_output(text: str) -> str:
     return redact_agent_secrets(redacted)
 
 
-def _missing_credential_message(agent: str, agent_id: str) -> str:
-    if agent_id == "claude":
-        return claude_token_migration.claude_missing_credential_message()
-    return f"No HOLON_AGENT_KEY is set and no session credentials for '{agent}' were found to mount."
-
-
-def _has_host_credential(agent_id: str, session_mounts: list[str]) -> bool:
-    """Return True when some credential could reach the container, mirroring the in-container validators.
-
-    For claude, a legacy plaintext token file is first imported into the OS keychain and deleted (one-time migration).
-    """
+def _import_legacy_claude_token(agent_id: str) -> None:
+    """Run the one-time import of the plaintext claude token file into the OS keychain; other runners have none."""
     if agent_id == "claude":
         claude_token_migration.migrate_legacy_token_file()
+
+
+def _missing_credential_output(agent: str, agent_id: str, session_mounts: list[str]) -> str | None:
+    """Return the output for "no credential could reach the container", or None when one could.
+
+    Mirrors the in-container validators and changes nothing on the host. For claude the OS keychain is asked at most
+    once: the answer that found no credential also words the output.
+    """
     if session_mounts:
-        return True
+        return None
     if agent_id == "claude":
-        return resolve_claude_credential() is not None
+        resolved, lookup = resolve_claude_credential_with_lookup()
+        return None if resolved else claude_token_migration.claude_missing_credential_message(lookup)
     if os.getenv("HOLON_AGENT_KEY"):
-        return True
-    return agent_id == "codex" and os.getenv("HOLON_AGENT_OSS_MODE", "").lower() in ("true", "1")
+        return None
+    if agent_id == "codex" and os.getenv("HOLON_AGENT_OSS_MODE", "").lower() in ("true", "1"):
+        return None
+    return f"No HOLON_AGENT_KEY is set and no session credentials for '{agent}' were found to mount."
 
 
 def build_probe_docker_cmd(
@@ -423,13 +425,16 @@ def run_preflight_probe(  # noqa: PLR0911
             image,
             output="The runner's session directory is missing (see the message above).",
         )
-    if not _has_host_credential(agent_id, session_mounts):
+    # The import runs here, with or without a mounted session, so the credential check below stays read-only.
+    _import_legacy_claude_token(agent_id)
+    missing_credential = _missing_credential_output(agent, agent_id, session_mounts)
+    if missing_credential is not None:
         return _result(
             PreflightStatus.NOT_LOGGED_IN,
             agent,
             model,
             image,
-            output=_missing_credential_message(agent, agent_id),
+            output=missing_credential,
             hint=claude_token_migration.claude_not_logged_in_hint() if agent_id == "claude" else None,
         )
 

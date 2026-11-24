@@ -4,11 +4,13 @@ Every probe passes a `runner_fn`, so no test starts Docker; the keychain is the 
 """
 
 import json
+import os
 import subprocess
 from unittest.mock import MagicMock
 
 import pytest
-from sandbox_executor import claude_keychain, preflight
+from sandbox_executor import claude_keychain, config_env, preflight
+from sandbox_executor.launcher import mounts
 from sandbox_executor.preflight import PreflightStatus, run_preflight_probe
 
 from tests.leak_assertions import assert_no_leak, make_probe
@@ -78,6 +80,8 @@ def test_probe_fails_closed_with_the_platform_remedy(home, fake_keychain, platfo
     other = NO_STORE if cause == NO_ENTRY else NO_ENTRY
     assert cause in res.output_excerpt and other not in res.output_excerpt
     assert fake_keychain.store_calls == []
+    # The lookup that found no credential also words the output: the platform tool is started once, not per message.
+    assert len(fake_keychain.calls) == 1
 
 
 def test_probe_on_an_unsupported_platform_shows_both_remedies_and_starts_no_tool(home, fake_keychain):
@@ -173,27 +177,109 @@ def test_an_already_migrated_host_probes_without_a_store_command_or_a_migration_
     assert "claude-oauth-token" not in captured.err and "claude-oauth-token" not in captured.out
 
 
-def test_a_mounted_session_still_imports_the_legacy_file(home, fake_keychain, capsys):
+def test_a_probe_with_a_mounted_session_still_imports_the_legacy_file(
+    home, fake_keychain, isolated_env_file_dir, monkeypatch, capsys
+):
     sample = OAUTH_PREFIX + make_probe("s")
     path = _write_legacy_file(home, sample + "\n")
+    session = ["-v", "/host/session:/home/holon/.config/claude"]
+    monkeypatch.setattr(mounts, "get_agent_session_mounts", lambda _agent: list(session))
+    runner_fn, seen = _answering_runner()
 
-    assert preflight._has_host_credential("claude", ["-v", "/host/session:/home/agent/.claude"]) is True
+    res = run_preflight_probe("claude-agent", MODEL, runner_fn=runner_fn)
 
+    assert res.status is PreflightStatus.OK
+    assert session[1] in seen["cmd"]
     assert not path.exists()
     assert fake_keychain.entry == sample
     assert "the plaintext file was deleted" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("agent_id", ["codex", "antigravity", "pi"])
-def test_another_runner_leaves_the_legacy_file_and_the_keychain_alone(home, fake_keychain, capsys, agent_id):
-    path = _write_legacy_file(home, OAUTH_PREFIX + make_probe("o") + "\n")
+@pytest.mark.parametrize("session_mounts", [[], ["-v", "/host/session:/home/holon/.config/claude"]])
+def test_the_credential_check_is_read_only(home, fake_keychain, capsys, session_mounts):
+    path = _write_legacy_file(home, OAUTH_PREFIX + make_probe("r") + "\n")
     before = path.read_bytes()
 
-    preflight._has_host_credential(agent_id, [])
+    missing = preflight._missing_credential_output("claude-agent", "claude", session_mounts)
+
+    assert (missing is None) == bool(session_mounts)
+    assert path.read_bytes() == before
+    assert fake_keychain.store_calls == [] and fake_keychain.entry is None
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("agent", ["codex-agent", "antigravity-agent", "pi-agent"])
+def test_another_runner_leaves_the_legacy_file_and_the_keychain_alone(home, fake_keychain, capsys, agent):
+    path = _write_legacy_file(home, OAUTH_PREFIX + make_probe("o") + "\n")
+    before = path.read_bytes()
+    # Whether the runner has a credential of its own does not matter here: a probe that starts is answered an error.
+    answer = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="401 unauthorized")
+
+    run_preflight_probe(agent, "some-model", runner_fn=MagicMock(return_value=answer))
 
     assert path.read_bytes() == before
     assert fake_keychain.calls == []
-    assert capsys.readouterr().err == ""
+    assert "claude-oauth-token" not in capsys.readouterr().err
+
+
+def _apply_layered_reference(monkeypatch, reference):
+    """Resolve the layered configuration as `cli.main` does, with a token-file reference in the process layer."""
+    monkeypatch.setenv("HOLON_AGENT_OAUTH_TOKEN_FILE", reference)
+    config = config_env.load_effective_config()
+    applied = dict(os.environ)
+    for key in config_env.apply_to_environ(config, applied):
+        monkeypatch.setenv(key, applied[key])
+    return config
+
+
+@pytest.mark.parametrize("failure", ["write_fails", "no_store", "different_entry"])
+def test_a_kept_legacy_file_is_not_read_through_a_token_file_reference(
+    home, fake_keychain, monkeypatch, capsys, failure
+):
+    # The line `.env.example` used to recommend: it must not turn the kept plaintext file back into the credential.
+    unique, kept_entry = make_probe("u"), OAUTH_PREFIX + make_probe("d")
+    fake_keychain.write_fails = failure == "write_fails"
+    fake_keychain.available = failure != "no_store"
+    fake_keychain.entry = kept_entry if failure == "different_entry" else None
+    path = _write_legacy_file(home, OAUTH_PREFIX + unique + "\n")
+    before = path.read_bytes()
+    runner_fn, seen = _answering_runner()
+
+    config = _apply_layered_reference(monkeypatch, "~/.holon/secrets/claude-oauth-token")
+    res = run_preflight_probe("claude-agent", MODEL, runner_fn=runner_fn)
+
+    assert "HOLON_AGENT_OAUTH_TOKEN" not in config.settings and "HOLON_AGENT_OAUTH_TOKEN" not in os.environ
+    assert len(config.warnings) == 1 and "ignoring HOLON_AGENT_OAUTH_TOKEN_FILE" in config.warnings[0]
+    assert path.read_bytes() == before
+    err = capsys.readouterr().err
+    assert "is no longer read" in err
+    if failure == "different_entry":
+        assert res.status is PreflightStatus.OK
+        assert f"CLAUDE_CODE_OAUTH_TOKEN={kept_entry}" in seen["lines"]
+    else:
+        assert res.status is PreflightStatus.NOT_LOGGED_IN
+        assert "is no longer read" in res.output_excerpt
+        runner_fn.assert_not_called()
+    assert_no_leak(unique, err, res.output_excerpt, *config.warnings, *seen.get("lines", []))
+
+
+def test_a_migrated_legacy_file_is_forwarded_from_the_keychain_despite_a_stale_reference(
+    home, fake_keychain, monkeypatch, capsys
+):
+    sample = OAUTH_PREFIX + make_probe("m")
+    path = _write_legacy_file(home, sample + "\n")
+    runner_fn, seen = _answering_runner()
+
+    config = _apply_layered_reference(monkeypatch, str(path))
+    res = run_preflight_probe("claude-agent", MODEL, runner_fn=runner_fn)
+
+    assert "HOLON_AGENT_OAUTH_TOKEN" not in config.settings
+    assert res.status is PreflightStatus.OK
+    assert not path.exists() and fake_keychain.entry == sample
+    # The keychain value travels under the vendor name; the layered name would mean the file had been read.
+    assert f"CLAUDE_CODE_OAUTH_TOKEN={sample}" in seen["lines"]
+    assert not any(line.startswith("HOLON_AGENT_OAUTH_TOKEN=") for line in seen["lines"])
+    assert "HOLON_AGENT_OAUTH_TOKEN_FILE" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("outcome", ["imported", "write_fails", "different_entry", "no_store"])

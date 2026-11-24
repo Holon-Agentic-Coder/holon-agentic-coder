@@ -111,6 +111,7 @@ def env_example_text() -> str:
     ]
     for file_name, value_name, container_name in SECRET_FILE_MAPPINGS:
         lines.append(f"# {file_name} is read into {value_name}, which the container maps to {container_name}.")
+    lines.append("# A token file is an explicit override of the keychain entry; prefer it only to an inline token.")
     lines.append("#")
     for key, default, purpose in DOCUMENTED_KEYS:
         note = " Secret." if is_secret_key(key) else ""

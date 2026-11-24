@@ -4,8 +4,9 @@ The claude runner never consults ``HOLON_AGENT_KEY``. An explicit ``CLAUDE_CODE_
 ``ANTHROPIC_API_KEY`` wins; then ``HOLON_AGENT_OAUTH_TOKEN`` (filled from the layered configuration, see
 ``config_env``); otherwise the value is looked up in the OS keychain (``claude_keychain``), and the value's format
 decides which in-container variable carries it. No stored credential is read from a plaintext file: the retired
-token file is only ever opened by its one-time import (``claude_token_migration``). The value is never logged: warnings
-name the path, the mode or the variable only.
+token file is only ever opened by its one-time import (``claude_token_migration``), and a token-file reference that
+names it is ignored (``config_env_secrets``). The value is never logged: warnings name the path, the mode or the
+variable only.
 """
 
 from __future__ import annotations
@@ -100,19 +101,36 @@ def resolve_claude_credential_source(env: Mapping[str, str] | None = None) -> tu
     Returns:
         The triple, or None when no credential is available.
     """
+    return resolve_claude_credential_with_lookup(env)[0]
+
+
+def resolve_claude_credential_with_lookup(
+    env: Mapping[str, str] | None = None,
+) -> tuple[tuple[str, str, str] | None, claude_keychain.KeychainLookup | None]:
+    """Resolve the claude credential as ``resolve_claude_credential_source`` does, and return the lookup it made.
+
+    A caller that must explain a missing credential reuses the lookup, so the platform tool is started once.
+
+    Args:
+        env: The environment to inspect; defaults to ``os.environ``.
+
+    Returns:
+        ``(triple, lookup)``: the triple, or None when no credential is available; the keychain's answer, or None
+        when a variable held a value and the keychain was therefore not asked.
+    """
     source = os.environ if env is None else env
     for name in CLAUDE_CREDENTIAL_ENV_NAMES:
         value = (source.get(name) or "").strip()
         if value:
-            return name, classify_credential(value), value
+            return (name, classify_credential(value), value), None
     layered = (source.get(HOLON_OAUTH_TOKEN_ENV) or "").strip()
     if layered:
         _warn_if_not_oauth(layered)
-        return HOLON_OAUTH_TOKEN_ENV, OAUTH_TOKEN_ENV, layered
+        return (HOLON_OAUTH_TOKEN_ENV, OAUTH_TOKEN_ENV, layered), None
     stored = claude_keychain.lookup_token()
     if stored.status is not claude_keychain.LookupStatus.FOUND:
-        return None
-    return "keychain", classify_credential(stored.token), stored.token
+        return None, stored
+    return ("keychain", classify_credential(stored.token), stored.token), stored
 
 
 def _warn_if_not_oauth(value: str) -> None:

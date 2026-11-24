@@ -396,9 +396,64 @@ def test_process_token_file_beats_the_user_token_file_and_is_applied(layers, tmp
 
 def test_token_file_path_expands_the_home_only(layers):
     token = fake_token()
-    write(layers.home / ".holon" / "secrets" / "claude-oauth-token", token)
-    config = layers.load(user="HOLON_AGENT_OAUTH_TOKEN_FILE=~/.holon/secrets/claude-oauth-token\n")
+    write(layers.home / ".holon" / "secrets" / "operator-token", token)
+    config = layers.load(user="HOLON_AGENT_OAUTH_TOKEN_FILE=~/.holon/secrets/operator-token\n")
     assert config.settings["HOLON_AGENT_OAUTH_TOKEN"].value == token
+
+
+def _refuse_any_token_file_read(monkeypatch):
+    def refuse(path):
+        raise AssertionError(f"the retired token file must not be read as a credential: {path}")
+
+    monkeypatch.setattr(claude_credential, "read_token_file", refuse)
+
+
+RETIRED_FILE_REFERENCES = ["~/.holon/secrets/claude-oauth-token", "{home}/.holon/secrets/claude-oauth-token"]
+
+
+@pytest.mark.parametrize("layer", ["user", "process"])
+@pytest.mark.parametrize("reference", RETIRED_FILE_REFERENCES)
+def test_a_reference_to_the_retired_token_file_is_ignored_and_never_read(layers, monkeypatch, layer, reference):
+    token = fake_token()
+    retired = write(layers.home / ".holon" / "secrets" / "claude-oauth-token", token)
+    reference = reference.format(home=layers.home)
+    _refuse_any_token_file_read(monkeypatch)
+
+    if layer == "user":
+        config = layers.load(user=f"HOLON_AGENT_OAUTH_TOKEN_FILE={reference}\n")
+        origin = str(layers.user)
+    else:
+        config = layers.load(environ={"HOLON_AGENT_OAUTH_TOKEN_FILE": reference})
+        origin = "process environment"
+
+    assert "HOLON_AGENT_OAUTH_TOKEN" not in config.settings
+    assert setting(config, "HOLON_AGENT_OAUTH_TOKEN_FILE")[:2] == (reference, layer)
+    assert config.warnings == [
+        f"Warning: {origin}: ignoring HOLON_AGENT_OAUTH_TOKEN_FILE: {retired} is the retired plaintext claude token "
+        "file, which is no longer read. Remove the reference; the claude credential is kept in the OS keychain."
+    ]
+    assert_no_fragment("\n".join(config.warnings), token)
+    assert "HOLON_AGENT_OAUTH_TOKEN" not in config_env.apply_to_environ(config, {})
+    assert retired.read_text(encoding="utf-8") == token
+
+
+def test_a_symbolic_link_to_the_retired_token_file_is_ignored_too(layers, tmp_path, monkeypatch):
+    retired = write(layers.home / ".holon" / "secrets" / "claude-oauth-token", fake_token())
+    link = tmp_path / "link-to-the-retired-file"
+    link.symlink_to(retired)
+    _refuse_any_token_file_read(monkeypatch)
+
+    config = layers.load(user=f"HOLON_AGENT_OAUTH_TOKEN_FILE={link}\n")
+
+    assert "HOLON_AGENT_OAUTH_TOKEN" not in config.settings
+    assert len(config.warnings) == 1 and "retired plaintext claude token file" in config.warnings[0]
+
+
+def test_a_reference_to_the_retired_path_is_ignored_once_the_file_is_gone(layers):
+    config = layers.load(user="HOLON_AGENT_OAUTH_TOKEN_FILE=~/.holon/secrets/claude-oauth-token\n")
+
+    assert "HOLON_AGENT_OAUTH_TOKEN" not in config.settings
+    assert len(config.warnings) == 1 and "Remove the reference" in config.warnings[0]
 
 
 def test_missing_or_multi_token_file_warns_by_path(layers, tmp_path):

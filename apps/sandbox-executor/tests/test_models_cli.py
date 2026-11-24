@@ -197,6 +197,18 @@ def test_leak_free_auth_status_detection(capsys: pytest.CaptureFixture[str], mon
         assert entry["auth_status"] == "Detected (API key)"
 
 
+@pytest.mark.parametrize("extra", [[], ["--json"], ["--agent", "claude"]])
+def test_models_asks_the_keychain_once_however_many_claude_models_are_listed(fake_keychain, extra: list[str]) -> None:
+    """Each claude auth detection may start a keychain tool, so the listing detects once per runner, not per row."""
+    assert len(get_model_capabilities("claude")) > 1
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["models", *extra])
+    assert exc_info.value.code == 0
+
+    assert len(fake_keychain.calls) == 1
+
+
 def test_unknown_agent_error_handling(capsys: pytest.CaptureFixture[str]) -> None:
     """Verify that invalid runner in --agent returns non-zero exit code and error message."""
     with pytest.raises(SystemExit) as exc_info:

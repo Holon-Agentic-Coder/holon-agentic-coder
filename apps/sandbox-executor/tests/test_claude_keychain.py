@@ -143,8 +143,16 @@ def test_store_refuses_a_value_outside_the_allow_list_without_starting_a_tool(fa
 
 def test_store_accepts_every_character_of_the_allow_list(fake_keychain):
     value = "sk-ant-" + "Az09._~+/=-" + make_probe()
+    assert claude_keychain.is_storable_token(value) is True
     assert claude_keychain.store_token(value) is True
     assert fake_keychain.entry == value
+
+
+@pytest.mark.parametrize("value", ["", " ", "two words", "quote'd", "semi;colon", "new\nline", "é"])
+def test_the_storability_check_refuses_what_the_store_refuses_and_starts_no_tool(fake_keychain, value):
+    assert claude_keychain.is_storable_token(value) is False
+    assert claude_keychain.store_token(value) is False
+    assert fake_keychain.calls == []
 
 
 class _Recorder:

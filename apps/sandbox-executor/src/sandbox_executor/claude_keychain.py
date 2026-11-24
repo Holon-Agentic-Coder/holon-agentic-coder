@@ -124,18 +124,22 @@ def _run_store(platform: str, token: str) -> subprocess.CompletedProcess[str] | 
     return None
 
 
+def is_storable_token(token: str) -> bool:
+    """Return True when ``token`` is not empty and holds only ASCII letters, digits and ``._~+/=-``."""
+    return _STORABLE_TOKEN_RE.fullmatch(token) is not None
+
+
 def store_token(token: str) -> bool:
     """Store ``token`` as the claude credential and prove it by reading it back.
 
     Args:
-        token: The credential. A value that is empty or holds a character outside ASCII letters, digits and
-            ``._~+/=-`` is refused before any tool starts.
+        token: The credential. A value ``is_storable_token`` refuses is never handed to a tool.
 
     Returns:
         True only when a lookup after the write returns the identical token; the store command's exit code alone is
         never trusted.
     """
-    if not _STORABLE_TOKEN_RE.fullmatch(token):
+    if not is_storable_token(token):
         return False
     proc = _run_store(current_platform(), token)
     if proc is None or proc.returncode != 0:

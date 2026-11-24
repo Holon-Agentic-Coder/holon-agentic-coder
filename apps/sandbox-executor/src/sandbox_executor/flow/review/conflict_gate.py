@@ -60,7 +60,11 @@ def _blocked_reason(outcome: _MergeOutcome, target_branch: str) -> str:
     if outcome.merged:
         return MERGED_REASON
     if outcome.conflicting_paths:
-        return f"code conflicts with {target_branch} in: {', '.join(outcome.conflicting_paths)}"
+        is_ledger = all(
+            p.startswith("holon-knowledge/ledger/") and p.endswith(".jsonl") for p in outcome.conflicting_paths
+        )
+        kind = "merge conflicts" if is_ledger else "code conflicts"
+        return f"{kind} with {target_branch} in: {', '.join(outcome.conflicting_paths)}"
     return f"merging {target_branch} failed: {outcome.error or 'unknown error'}"
 
 

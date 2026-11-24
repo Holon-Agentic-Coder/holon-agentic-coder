@@ -1,5 +1,3 @@
-"""Ledger command module for querying and inspecting Holon ledgers."""
-
 from __future__ import annotations
 
 import argparse
@@ -11,10 +9,16 @@ from sandbox_executor import cli
 from sandbox_executor.cli.options import add_target_worktree_option
 
 ORDER = 90
+_DEFAULT_LEDGER_RELATIVE_PATH = "holon-knowledge/ledger/executions.jsonl"
+
+
+def _resolve_worktree_path(path: str, target_worktree: str) -> str:
+    if os.path.isabs(path):
+        return path
+    return os.path.join(target_worktree, path)
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register the ledger subcommand parser."""
     ledger_parser = subparsers.add_parser(
         "ledger",
         help="Query and inspect Holon ledgers.",
@@ -29,7 +33,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     query_parser.add_argument(
         "--ledger-file",
-        default="holon-knowledge/ledger/executions.jsonl",
+        default=_DEFAULT_LEDGER_RELATIVE_PATH,
         help="Path to execution ledger JSONL file (default: holon-knowledge/ledger/executions.jsonl).",
     )
     query_parser.add_argument(
@@ -101,11 +105,8 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
 
 def run(args: argparse.Namespace) -> int:
-    """Execute the ledger command."""
     if getattr(args, "ledger_command", None) == "query":
-        ledger_file = args.ledger_file
-        if not os.path.isabs(ledger_file):
-            ledger_file = os.path.join(args.target_worktree, ledger_file)
+        ledger_file = _resolve_worktree_path(args.ledger_file, args.target_worktree)
 
         if not os.path.exists(ledger_file):
             print(f"Error: Ledger file '{ledger_file}' does not exist.", file=sys.stderr)

@@ -1,20 +1,45 @@
-"""Veto command module for inspecting and managing failure vetoes."""
-
 from __future__ import annotations
 
 import argparse
 import json
 import os
 import sys
+from typing import Any
 
 from sandbox_executor import cli
 from sandbox_executor.cli.options import add_target_worktree_option
 
 ORDER = 140
+_ACTION_INDEX_DB_RELATIVE_PATH = "holon-knowledge/.index/action_index.db"
+
+
+def _run_veto_list(db: Any, json_output: bool) -> int:
+    vetoes = cli.list_vetoes(db)
+    if json_output:
+        print(json.dumps(vetoes, indent=2))
+        return 0
+    if not vetoes:
+        print("No active or shadowed failure vetoes recorded.")
+        return 0
+    for veto in vetoes:
+        shadow_str = "SHADOW" if veto.get("is_shadow") else "ENFORCED"
+        print(
+            f" - [{veto.get('state')}/{shadow_str}] Fingerprint: {veto.get('context_fingerprint')} "
+            f"(reproductions: {veto.get('reproduction_count')}, decay: {veto.get('decay_weight'):.2f})"
+        )
+    return 0
+
+
+def _run_veto_lift(db: Any, context_fingerprint: str, reason: str) -> int:
+    lifted = cli.lift_veto(db, context_fingerprint=context_fingerprint, reason=reason)
+    if lifted:
+        print(f"Successfully lifted veto for fingerprint: {context_fingerprint}")
+    else:
+        print(f"No active veto found for fingerprint: {context_fingerprint}", file=sys.stderr)
+    return 0
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register the veto subcommand parser."""
     veto_parser = subparsers.add_parser(
         "veto",
         help="Inspect and manage deterministic failure vetoes.",
@@ -52,29 +77,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
 
 def run(args: argparse.Namespace) -> int:
-    """Execute the veto command."""
-    db_path = os.path.join(args.target_worktree, "holon-knowledge/.index/action_index.db")
+    db_path = os.path.join(args.target_worktree, _ACTION_INDEX_DB_RELATIVE_PATH)
     db = cli.ActionIndexDatabase(db_path=db_path)
-    if getattr(args, "veto_command", None) == "list":
-        vetoes = cli.list_vetoes(db)
-        if args.json:
-            print(json.dumps(vetoes, indent=2))
-        else:
-            if not vetoes:
-                print("No active or shadowed failure vetoes recorded.")
-            else:
-                for v in vetoes:
-                    shadow_str = "SHADOW" if v.get("is_shadow") else "ENFORCED"
-                    print(
-                        f" - [{v.get('state')}/{shadow_str}] Fingerprint: {v.get('context_fingerprint')} "
-                        f"(reproductions: {v.get('reproduction_count')}, decay: {v.get('decay_weight'):.2f})"
-                    )
-        return 0
-    elif getattr(args, "veto_command", None) == "lift":
-        lifted = cli.lift_veto(db, context_fingerprint=args.context, reason=args.reason)
-        if lifted:
-            print(f"Successfully lifted veto for fingerprint: {args.context}")
-        else:
-            print(f"No active veto found for fingerprint: {args.context}", file=sys.stderr)
-        return 0
+    veto_command = getattr(args, "veto_command", None)
+    if veto_command == "list":
+        return _run_veto_list(db, bool(args.json))
+    if veto_command == "lift":
+        return _run_veto_lift(db, args.context, args.reason)
     return 0

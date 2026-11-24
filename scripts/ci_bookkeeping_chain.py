@@ -8,8 +8,8 @@ the gate existed) or not successful (everything else).
 
 ``find_real_success`` starts at the newest earlier run of the same workflow on the same branch, which must be on the
 commit the caller names, and follows gate-skipped jobs to older runs until it meets a real success. Anything else on
-the way ends the walk without one, under a rule name the gate prints. No exception is caught here: the gate turns every
-exception into a full run. Standard library only and Python 3.9 syntax.
+the way ends the walk without one, under a rule name the gate prints as its ``Decision`` for a full run. No exception
+is caught here: the gate turns every exception into a full run. Standard library only and Python 3.9 syntax.
 """
 
 from __future__ import annotations
@@ -56,12 +56,31 @@ class JobQuery:
 
 
 @dataclass(frozen=True)
+class Decision:
+    """The gate's answer: skip or run, the rule that decided and a short detail."""
+
+    skip: bool
+    rule: str
+    detail: str = ""
+
+    def line(self) -> str:
+        """Render the one output line; characters that are not printable never reach the log."""
+        text = f"bookkeeping-gate: decision={'SKIP' if self.skip else 'RUN'} rule={self.rule}"
+        detail = "".join(char if char.isprintable() else "?" for char in self.detail)
+        return f"{text} detail={detail}" if detail else text
+
+
+@dataclass(frozen=True)
 class ChainResult:
     """The walk's result: the commit of the real success (``None`` when there is none), the rule and a detail."""
 
     real_sha: str | None
     rule: str
     detail: str = ""
+
+    def run_decision(self) -> Decision:
+        """Return the "run" decision for a walk that found no real success."""
+        return Decision(False, self.rule, self.detail)
 
 
 def _is_match(name: str, job_name: str, os_name: str) -> bool:

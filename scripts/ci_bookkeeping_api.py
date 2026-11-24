@@ -1,10 +1,12 @@
-"""GitHub REST reads for the bookkeeping-only push gate.
+"""Everything the bookkeeping-only push gate reads from GitHub: the event of this run and three REST answers.
 
-Three reads, one request each: ``compare`` (the paths changed between two commits and whether the head is strictly
-ahead of the base), ``list_earlier_runs`` (the earlier pull-request runs of one workflow on one branch, newest first)
-and ``list_jobs`` (the jobs of one run with their steps, latest attempt). All network access goes through
-``GateClient.opener``, which tests replace with a fake. The token is sent only through
-``scripts.ci_timing_gate.build_request`` (an unredirected header) and is never part of a URL or of the client's repr.
+``context_from`` fills a ``GateContext`` from the ``GITHUB_*`` environment and the event payload; a missing value is
+empty text or 0, which the gate's rules turn into a full run. The three reads are one request each: ``compare`` (the
+paths changed between two commits and whether the head is strictly ahead of the base), ``list_earlier_runs`` (the
+earlier pull-request runs of one workflow on one branch, newest first) and ``list_jobs`` (the jobs of one run with their
+steps, latest attempt). All network access goes through ``GateClient.opener``, which tests replace with a fake. The
+token is sent only through ``scripts.ci_timing_gate.build_request`` (an unredirected header) and is never part of a URL
+or of the client's repr.
 
 An answer of an unexpected shape raises (``ValueError``, ``KeyError`` or ``TypeError``) and nothing here catches a
 network error: the gate turns every exception into a full run. Standard library only and Python 3.9 syntax, so the gate
@@ -16,7 +18,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from scripts.ci_timing_gate import API_ROOT, build_request, default_opener
@@ -123,3 +125,63 @@ def list_jobs(client: GateClient, run_id: int) -> list[dict[str, object]]:
     if not isinstance(jobs, list) or not all(isinstance(job, dict) for job in jobs):
         raise ValueError("the jobs answer has no job list")
     return jobs
+
+
+@dataclass(frozen=True)
+class GateContext:
+    """What the event and the environment say about this run; a missing value is empty text or 0."""
+
+    event_name: str
+    action: str
+    label: str
+    before: str
+    head_sha: str
+    branch: str
+    run_number: int
+    run_attempt: int
+    workflow_file: str
+    job_name: str
+    os_name: str
+
+
+def _text(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _number(value: object) -> int:
+    text = _text(value)
+    return int(text) if text.isascii() and text.isdigit() else 0
+
+
+def _child(mapping: Mapping[str, object], key: str) -> Mapping[str, object]:
+    value = mapping.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def load_event(path: str) -> dict[str, object]:
+    """Read the event payload; a missing or broken file is an empty payload."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def context_from(environ: Mapping[str, str], payload: Mapping[str, object], job_name: str, os_name: str) -> GateContext:
+    """Fill the context from the ``GITHUB_*`` environment, the event payload and the job's own names."""
+    workflow_file = _text(environ.get("GITHUB_WORKFLOW_REF")).partition("@")[0].rpartition("/")[2]
+    head = _child(_child(payload, "pull_request"), "head")
+    return GateContext(
+        event_name=_text(environ.get("GITHUB_EVENT_NAME")),
+        action=_text(payload.get("action")),
+        label=_text(_child(payload, "label").get("name")),
+        before=_text(payload.get("before")),
+        head_sha=_text(head.get("sha")),
+        branch=_text(head.get("ref")),
+        run_number=_number(environ.get("GITHUB_RUN_NUMBER")),
+        run_attempt=_number(environ.get("GITHUB_RUN_ATTEMPT")),
+        workflow_file=workflow_file if workflow_file.endswith((".yml", ".yaml")) else "",
+        job_name=job_name,
+        os_name=os_name,
+    )

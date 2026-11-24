@@ -417,6 +417,45 @@ class TestZeroPRGuardAndNoSkipReview:
         with pytest.raises(ZeroPRGuardViolationError, match="close failure"):
             enforce_zero_pr_guard(str(tmp_path), prefix, gh_runner=fake_gh)
 
+    def test_enforce_zero_pr_guard_skips_default_gh_for_local_bare_origin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, _origin = _create_bare_origin_and_clone(tmp_path)
+        gh_invoked = False
+
+        class _BoomGitHubAdapter:
+            def __init__(self, _repo_dir: str) -> None:
+                self.available = True
+
+            def gh(self, _args: list[str], cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+                nonlocal gh_invoked
+                gh_invoked = True
+                return subprocess.CompletedProcess(["gh"], 1, "", "should not be invoked for local bare origin")
+
+        monkeypatch.setattr("sandbox_executor.e2e_guards.GitHubAdapter", _BoomGitHubAdapter)
+
+        res = enforce_zero_pr_guard(str(repo), "I-123456-e2e-run", gh_runner=None)
+        assert res.passed is True
+        assert gh_invoked is False
+
+    def test_enforce_zero_pr_guard_fails_closed_for_github_origin_with_default_runner(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, _origin = _create_bare_origin_and_clone(tmp_path)
+        _git(repo, "remote", "set-url", "origin", "https://github.com/holon-test/example.git")
+
+        class _FailingGitHubAdapter:
+            def __init__(self, _repo_dir: str) -> None:
+                self.available = True
+
+            def gh(self, args: list[str], cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+                return subprocess.CompletedProcess(["gh", *args], 1, "", "HTTP 401: Bad credentials")
+
+        monkeypatch.setattr("sandbox_executor.e2e_guards.GitHubAdapter", _FailingGitHubAdapter)
+
+        with pytest.raises(E2EMachineryError, match="gh pr list failed"):
+            enforce_zero_pr_guard(str(repo), "I-123456-e2e-run", gh_runner=None)
+
 
 class TestRetryClassificationAndUnconditionalTeardown:
     """Retry classification and unconditional per-attempt teardown guarantees."""
@@ -655,6 +694,35 @@ class TestRetryClassificationAndUnconditionalTeardown:
         assert fake_gh.closed_pr_numbers == [105]
         assert f"{stray_prefix}/_" not in _local_branches(repo)
         assert f"{stray_prefix}/_" not in _remote_branches(origin)
+
+    @pytest.mark.parametrize("exc_factory", [KeyboardInterrupt, lambda: SystemExit(2)])
+    def test_run_e2e_with_retry_reraises_base_exceptions_directly_after_teardown(
+        self, tmp_path: Path, exc_factory: Any
+    ) -> None:
+        repo, origin = _create_bare_origin_and_clone(tmp_path)
+        fake_gh = FakeE2EGhRunner(prs=[])
+        created_prefixes: list[str] = []
+
+        def _interrupted_attempt(_attempt: int, intent_prefix: str) -> dict[str, Any]:
+            created_prefixes.append(intent_prefix)
+            _git(repo, "branch", f"{intent_prefix}/_", "main")
+            _git(repo, "push", "-q", "origin", f"{intent_prefix}/_")
+            raise exc_factory()
+
+        expected_exc_type = type(exc_factory())
+        with pytest.raises(expected_exc_type):
+            run_e2e_with_retry(
+                _interrupted_attempt,
+                repo_dir=str(repo),
+                base_slug="base-exc",
+                max_attempts=3,
+                gh_runner=fake_gh,
+                epoch_fn=lambda: 2200000,
+            )
+
+        assert len(created_prefixes) == 1
+        assert f"{created_prefixes[0]}/_" not in _local_branches(repo)
+        assert f"{created_prefixes[0]}/_" not in _remote_branches(origin)
 
 
 class TestPrePRPipelineExecutionAndLocalLLMEnv:

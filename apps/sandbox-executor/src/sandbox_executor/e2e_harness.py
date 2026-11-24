@@ -384,6 +384,8 @@ def run_e2e_with_retry(
             )
 
         last_error = attempt_exc
+        if attempt_exc is not None and not isinstance(attempt_exc, Exception):
+            raise attempt_exc
         if outcome.failure_category == FailureCategory.MACHINERY:
             if isinstance(attempt_exc, E2EMachineryError):
                 raise attempt_exc

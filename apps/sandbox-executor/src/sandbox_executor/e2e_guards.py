@@ -7,6 +7,7 @@ import os
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
+from urllib.parse import urlsplit
 
 from sandbox_executor import local_llm
 from sandbox_executor.e2e_teardown import is_ref_within_intent_prefix, validate_e2e_intent_prefix
@@ -17,6 +18,7 @@ from sandbox_executor.e2e_types import (
     ZeroPRGuardViolationError,
 )
 from sandbox_executor.flow.github.adapter import GitHubAdapter
+from sandbox_executor.git import run_git
 from sandbox_executor.local_llm import (
     ENV_AGENT_PROVIDER,
     ENV_HOST_LOCAL_HOSTS,
@@ -47,7 +49,37 @@ def assert_no_skip_review_flag(
         )
 
 
+_GITHUB_SCP_REMOTE_RE = re.compile(r"^(?:[^/@:\s]+@)?github\.com:[^\s]+$", re.IGNORECASE)
+
+
+def _is_github_remote_url(url: str) -> bool:
+    """Return True when ``url`` points at ``github.com`` over HTTP(S), SSH, or Git protocol."""
+    cleaned = url.strip()
+    if not cleaned:
+        return False
+    if "://" in cleaned:
+        parsed = urlsplit(cleaned)
+        if parsed.scheme.lower() not in ("https", "http", "ssh", "git"):
+            return False
+        return (parsed.hostname or "").lower() == "github.com"
+    return bool(_GITHUB_SCP_REMOTE_RE.match(cleaned))
+
+
+def _origin_remote_url(repo_dir: str) -> str | None:
+    try:
+        proc = run_git(["remote", "get-url", "origin"], cwd=repo_dir, check=False)
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    url = (proc.stdout or "").strip()
+    return url or None
+
+
 def _default_gh_runner(repo_dir: str) -> GhRunnerCallable | None:
+    origin_url = _origin_remote_url(repo_dir)
+    if origin_url is None or not _is_github_remote_url(origin_url):
+        return None
     adapter = GitHubAdapter(repo_dir)
     return adapter.gh if adapter.available else None
 

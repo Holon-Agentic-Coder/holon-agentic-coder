@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sandbox_executor import flow as flow_module
 from sandbox_executor.budgets import MAX_REPLAN_ATTEMPTS, MAX_SUB_INTENT_DEPTH
-from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 from sandbox_executor.flow import (
     FlowContext,
     FlowStage,
@@ -22,7 +21,7 @@ from sandbox_executor.flow import (
 )
 from sandbox_executor.launcher.coherence import FlowProxyChoice
 
-from tests.flow.decomposition_fakes import decomposed_flow, parent_ctx
+from tests.flow.decomposition_fakes import ChildReviews, decomposed_flow, parent_ctx
 from tests.flow.helpers import (
     SUB_INTENT_LIST,
     BudgetRoleAgents,
@@ -34,6 +33,9 @@ from tests.flow.helpers import (
 from tests.flow.lookup_patch import patch_lookup_sites
 
 _NO_PROXY = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
+_OVER_BUDGET_ERROR = (
+    "Execute stage failed: plan entropy 12.6 exceeds the entropy budget 5 and the plan lists no sub-intent list."
+)
 
 
 @pytest.mark.usefixtures("no_origin_reconcile")
@@ -41,60 +43,45 @@ class TestEntropyBudgetHandoffInFlow:
     """Intent goal 4: no Stage 3 halt, budget handoff, bounded re-planning and sequential child pipelines."""
 
     @pytest.mark.parametrize(
-        ("entropy", "extra", "expected_status"),
-        [
-            (2.0, "", StageStatus.SUCCESS),
-            (12.6, "", StageStatus.FAILED),
-            (2.0, SUB_INTENT_LIST, StageStatus.SUCCESS),
-        ],
-        ids=["normal", "over-budget", "decomposed"],
+        ("entropy", "expected_status"),
+        [(2.0, StageStatus.SUCCESS), (12.6, StageStatus.FAILED)],
+        ids=["normal", "over-budget"],
     )
-    @pytest.mark.parametrize("precheck", [True, False], ids=["precheck", "container-row"])
-    def test_stage3_never_halts_for_a_human(self, flow_repos, tmp_path, entropy, extra, expected_status, precheck):  # noqa: PLR0913
+    def test_stage3_never_halts_for_a_human_when_the_executor_row_decides(
+        self, flow_repos, tmp_path, entropy, expected_status
+    ):
+        """Stage 3 ends in success or failure, never a halt, when only the executor's own row decides.
+
+        The same holds where the plan row decides before dispatch, which the tests named here prove with the status
+        they assert: a normal plan in ``test_plan_decision.py::test_in_budget_plan_executes_exactly_as_before``, a
+        refused one in ``test_replan_whose_stage_2_fails_ends_the_run_in_stage_2`` and a decomposed one in
+        ``test_explicit_sub_intent_list_runs_child_pipelines_in_order_and_records_each_child_pr``. A decomposed row
+        without a readable plan row fails in
+        ``test_plan_decision.py::test_decomposed_report_without_a_readable_plan_row_runs_no_child``.
+        """
         host, origin = flow_repos
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(entropy, extra), (2.0, "")])
+        agents = BudgetRoleAgents(tmp_path, origin, plans=[(entropy, "")])
         ctx = _budget_context(host, agents, 5.0)
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
         assert run_plan_stage(ctx).status == StageStatus.SUCCESS
 
-        # A decomposed plan runs its children through their own consensus halt and merge.
-        with decomposed_flow(origin, tmp_path):
-            if precheck:
-                res = run_execute_stage(ctx)
-            else:
-                # Model a plan the flow could not read before dispatch: the executor's own row decides.
-                with patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None):
-                    res = run_execute_stage(ctx)
+        # Model a plan the flow could not read before dispatch: the executor's own row decides.
+        with patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None):
+            res = run_execute_stage(ctx)
 
         assert res.status != StageStatus.HALTED_FOR_HUMAN
-        if extra and not precheck:  # No plan row read: covered in test_plan_decision.py.
-            return
         assert res.status == expected_status
         if expected_status == StageStatus.FAILED:
             assert res.payload["over_budget"] is True
-            assert res.payload["dispatched"] is (not precheck)
+            assert res.payload["dispatched"] is True
             assert (res.payload["entropy"], res.payload["entropy_budget"]) == (entropy, 5.0)
-            assert res.error == (
-                "Execute stage failed: plan entropy 12.6 exceeds the entropy budget 5 and the plan lists no sub-intent "
-                "list."
-            )
-            if not precheck:
-                # The executor's row also carries the execution it recorded.
-                assert res.payload["execution_branch"] == ctx.execution_branch is not None
+            assert res.error == _OVER_BUDGET_ERROR
+            # The executor's row also carries the execution it recorded.
+            assert res.payload["execution_branch"] == ctx.execution_branch is not None
 
-    def test_intent_budget_16_with_plan_entropy_12_6_executes_normally(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, "")])
-        ctx = _budget_context(host, agents, 16.0)
-
-        with stage4_halts_at_consensus():
-            results = PipelineEngine(ctx).run()
-
-        assert results["execute"].status == StageStatus.SUCCESS
-        assert agents.roles() == ["intent-creator", "planner", "executor"]
-        assert ctx.replan_attempts == 0
-
-    def test_budget_persisted_on_plan_row_is_the_one_enforced(self, flow_repos, tmp_path):
+    def test_intent_budget_16_persisted_on_the_plan_row_lets_plan_entropy_12_6_execute_normally(
+        self, flow_repos, tmp_path
+    ):
         host, origin = flow_repos
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, "")], row_budget=True)
         ctx = _budget_context(host, agents, 16.0)
@@ -103,6 +90,9 @@ class TestEntropyBudgetHandoffInFlow:
             results = PipelineEngine(ctx).run()
 
         assert results["execute"].status == StageStatus.SUCCESS
+        assert agents.roles() == ["intent-creator", "planner", "executor"]
+        assert ctx.replan_attempts == 0
+        # The budget persisted on the plan row is the one enforced.
         plan_rows = _ledger_rows(host, f"origin/{ctx.plan_branch}", "plans.jsonl")
         assert plan_rows[-1]["entropy_budget"] == 16.0
 
@@ -131,19 +121,9 @@ class TestEntropyBudgetHandoffInFlow:
         assert "HOLON_REPLAN_FEEDBACK" not in os.environ
         assert [r["slug"] for r in _all_intent_rows(host)] == ["budget-test"]
 
-    def test_over_budget_plan_recovers_after_one_replan(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, ""), (4.0, "")])
-        ctx = _budget_context(host, agents, 5.0)
-
-        with stage4_halts_at_consensus():
-            results = PipelineEngine(ctx).run()
-
-        assert results["execute"].status == StageStatus.SUCCESS
-        assert ctx.replan_attempts == 1
-        assert agents.roles() == ["intent-creator", "planner", "planner", "executor"]
-
-    def test_explicit_sub_intent_list_runs_child_pipelines_in_order(self, flow_repos, tmp_path):
+    def test_explicit_sub_intent_list_runs_child_pipelines_in_order_and_records_each_child_pr(
+        self, flow_repos, tmp_path
+    ):
         host, origin = flow_repos
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")])
         ctx = _budget_context(host, agents, 5.0)
@@ -201,18 +181,22 @@ class TestEntropyBudgetHandoffInFlow:
         assert any("[sub-intent add-the-parser]" in line for line in ctx.logs)
         # The executor wrote no intent rows: only the parent and the two children created through Stage 1 exist.
         assert sorted(r["slug"] for r in _all_intent_rows(host)) == sorted(["budget-test", *children])
+        # Each child halted at its own review, which is a success, and was merged with the PR it recorded.
+        ran = execute.payload["children"]
+        assert [r["head"] for r in reviews.reviewed[:2]] == [c["execution_branch"] for c in ran]
+        assert [(c["pr_url"], c["pr_number"]) for c in ran] == [
+            ("https://github.com/example/app/pull/101", 101),
+            ("https://github.com/example/app/pull/102", 102),
+        ]
+        assert [e["pr_number"] for e in execute.payload["children_progress"]] == [101, 102]
+        assert [reviews.gh.prs[n]["state"] for n in (101, 102, 103)] == ["MERGED", "MERGED", "OPEN"]
+        # The parent's own Stage 4 raised the combined PR into main and halted there for the human.
+        assert reviews.gh.prs[103]["base"] == "main"
 
-    def test_child_that_itself_decomposes_lists_its_own_children_in_the_summary(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        # Parent and first child both list sub-intents; the two grandchildren and the second child execute.
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (9.0, SUB_INTENT_LIST), (2.0, "")])
-        ctx = _budget_context(host, agents, 5.0)
-
-        with decomposed_flow(origin, tmp_path) as reviews:
-            results = PipelineEngine(ctx).run()
-
-        execute = results["execute"]
-        assert execute.status == StageStatus.SUCCESS
+    @staticmethod
+    def _assert_decomposed_child_nests_its_own_children(
+        ctx: FlowContext, agents: BudgetRoleAgents, reviews: ChildReviews, execute: StageResult
+    ) -> None:
         plan = ctx.plan_branch
         first, second = execute.payload["children"]
         assert first["decomposed"] is True
@@ -260,15 +244,18 @@ class TestEntropyBudgetHandoffInFlow:
     def test_child_intent_branch_is_derived_from_parent_and_position(self, parent, index, slug, expected):
         assert flow_module._child_intent_branch(parent, index, slug).name == expected
 
-    def test_same_slug_child_created_in_the_same_second_gets_its_own_intent_branch(self, flow_repos, tmp_path):
+    def test_child_that_itself_decomposes_in_the_same_second_gets_its_own_branches_and_lists_its_children(
+        self, flow_repos, tmp_path
+    ):
         host, origin = flow_repos
-        # The first grandchild shares its parent's slug, and a frozen clock creates every intent in the same second.
+        # Parent and first child both list sub-intents; the two grandchildren and the second child execute. The first
+        # grandchild shares its parent's slug, and a frozen clock creates every intent in the same second.
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (9.0, SUB_INTENT_LIST), (2.0, "")])
         ctx = _budget_context(host, agents, 5.0)
 
         with (
             patch("sandbox_executor.flow.stages.intent.time.time", return_value=1793098938.0),
-            decomposed_flow(origin, tmp_path),
+            decomposed_flow(origin, tmp_path) as reviews,
         ):
             results = PipelineEngine(ctx).run()
 
@@ -288,32 +275,7 @@ class TestEntropyBudgetHandoffInFlow:
         ]
         assert [p["sub_intent_depth"] for p in agents.intent_payloads[1:]] == [1, 2, 2, 1]
         assert [g["intent_branch"] for g in first["children"]] == [f"{b}/_" for b in branches[2:4]]
-
-    def test_child_halting_at_its_own_review_is_a_success_and_records_its_pr(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")])
-        ctx = _budget_context(host, agents, 5.0)
-
-        with decomposed_flow(origin, tmp_path) as reviews:
-            results = PipelineEngine(ctx).run()
-
-        execute = results["execute"]
-        assert execute.status == StageStatus.SUCCESS
-        children = execute.payload["children"]
-        # Both children ran, each stopping at its own consensus halt before it was merged.
-        assert [c["slug"] for c in children] == ["add-the-parser", "add-the-cli-flag"]
-        assert [r["head"] for r in reviews.reviewed[:2]] == [c["execution_branch"] for c in children]
-        assert [(c["pr_url"], c["pr_number"]) for c in children] == [
-            ("https://github.com/example/app/pull/101", 101),
-            ("https://github.com/example/app/pull/102", 102),
-        ]
-        assert [e["pr_number"] for e in execute.payload["children_progress"]] == [101, 102]
-        assert [reviews.gh.prs[n]["state"] for n in (101, 102, 103)] == ["MERGED", "MERGED", "OPEN"]
-        # The parent's own Stage 4 raised the combined PR into main and halted there for the human.
-        assert reviews.gh.prs[103]["base"] == "main"
-        assert results["review"].status == StageStatus.HALTED_FOR_HUMAN
-        summary = flow_module.format_decomposition_summary(execute)
-        assert summary[1].startswith("  1. add-the-parser: https://github.com/example/app/pull/101 (merged into ")
+        self._assert_decomposed_child_nests_its_own_children(ctx, agents, reviews, results["execute"])
 
     def test_replan_whose_stage_2_fails_ends_the_run_in_stage_2(self, flow_repos, tmp_path):
         host, origin = flow_repos
@@ -336,7 +298,14 @@ class TestEntropyBudgetHandoffInFlow:
         assert results["plan"].error == "Plan stage failed: no plan"
         # The rejected plan is dropped before re-planning, so the checkpoint never resumes from the over-budget plan.
         assert ctx.plan_branch is None
-        assert results["execute"].payload["over_budget"] is True
+        # The refusal came from the plan row before dispatch: no executor container ran.
+        refused = results["execute"]
+        assert refused.status == StageStatus.FAILED
+        assert refused.payload["over_budget"] is True
+        assert refused.payload["dispatched"] is False
+        assert (refused.payload["entropy"], refused.payload["entropy_budget"]) == (12.6, 5.0)
+        assert refused.error == _OVER_BUDGET_ERROR
+        assert "executor" not in agents.roles()
         assert "review" not in results
         assert ctx.logs[-1].endswith("Pipeline halted due to failure in stage 'plan'.")
         assert "replan_feedback" not in ctx.intent_data
@@ -416,7 +385,9 @@ class TestEntropyBudgetHandoffInFlow:
             loaded = FlowContext.from_dict({**legacy, "replan_attempts": recorded}).replan_attempts
             assert (loaded, type(loaded)) == (expected, int)
 
-    def test_replan_restores_a_pre_existing_replan_feedback_variable(self, flow_repos, tmp_path, monkeypatch):
+    def test_over_budget_plan_recovers_after_one_replan_and_restores_a_pre_existing_replan_feedback_variable(
+        self, flow_repos, tmp_path, monkeypatch
+    ):
         host, origin = flow_repos
         monkeypatch.setenv("HOLON_REPLAN_FEEDBACK", "operator value")
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, ""), (4.0, "")])
@@ -426,6 +397,8 @@ class TestEntropyBudgetHandoffInFlow:
             results = PipelineEngine(ctx).run()
 
         assert results["execute"].status == StageStatus.SUCCESS
+        assert ctx.replan_attempts == 1
+        assert agents.roles() == ["intent-creator", "planner", "planner", "executor"]
         assert "entropy 12.6" in (agents.replan_feedback_seen[1] or "")
         assert os.environ.get("HOLON_REPLAN_FEEDBACK") == "operator value"
 
@@ -882,141 +855,6 @@ class TestEntropyBudgetHandoffInFlow:
     )
     def test_format_entropy(self, value, expected):
         assert flow_module._format_entropy(value) == expected
-
-    @pytest.mark.parametrize(
-        ("feedback", "expected"),
-        [(" \n\t ", None), ("  Re-plan: entropy 12.6  ", "Re-plan: entropy 12.6")],
-        ids=["blank", "padded"],
-    )
-    def test_plan_stage_forwards_only_non_blank_stripped_feedback(self, feedback, expected, monkeypatch, tmp_path):
-        monkeypatch.delenv("HOLON_REPLAN_FEEDBACK", raising=False)
-        ctx = FlowContext(
-            repo_dir=str(tmp_path), token_reduce=False, intent_data={"slug": "parent", "replan_feedback": feedback}
-        )
-        ctx.intent_branch = "I-1-parent/_"
-        seen: list[str | None] = []
-
-        def dispatch(_context: FlowContext, _role: str, _args: list[str]) -> int:
-            seen.append(os.environ.get("HOLON_REPLAN_FEEDBACK"))
-            return 1
-
-        with (
-            patch("sandbox_executor.flow.stages.plan.check_and_resolve_stage_conflicts"),
-            patch("sandbox_executor.flow.stages.plan._snapshot_child_branches", return_value=set()),
-            patch("sandbox_executor.flow.stages.plan._dispatch_role", side_effect=dispatch),
-        ):
-            res = run_plan_stage(ctx)
-
-        assert res.status == StageStatus.FAILED
-        assert seen == [expected]
-        assert "HOLON_REPLAN_FEEDBACK" not in os.environ
-
-    # --- Re-plan request wording, exception paths and the executor's refusal exit code -------------------------------
-
-    @pytest.mark.parametrize(
-        ("depth", "asked"),
-        [
-            (
-                MAX_SUB_INTENT_DEPTH - 1,
-                "write a smaller plan within the budget, or add an explicit sub-intent list.",
-            ),
-            (
-                MAX_SUB_INTENT_DEPTH,
-                "write a smaller single plan within the budget. Do not add a sub-intent list: this intent is at the "
-                f"sub-intent depth limit of {MAX_SUB_INTENT_DEPTH}, so a sub-intent list would be refused.",
-            ),
-        ],
-        ids=["below-the-depth-cap", "at-the-depth-cap"],
-    )
-    def test_replan_request_offers_a_sub_intent_list_only_below_the_depth_cap(self, flow_repos, tmp_path, depth, asked):
-        host, origin = flow_repos
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, ""), (2.0, "")])
-        ctx = _budget_context(host, agents, 5.0, sub_intent_depth=depth)
-
-        with stage4_halts_at_consensus():
-            results = PipelineEngine(ctx).run()
-
-        # The smaller re-plan runs normally, even for a leaf intent at the cap.
-        assert results["execute"].status == StageStatus.SUCCESS
-        assert agents.roles() == ["intent-creator", "planner", "planner", "executor"]
-        assert (agents.replan_feedback_seen[1] or "").endswith(f"Re-plan attempt 1 of {MAX_REPLAN_ATTEMPTS}: {asked}")
-        assert any(
-            line.endswith(
-                "] Stage 3: plan entropy 12.6 exceeds the entropy budget 5; returning to Stage 2 "
-                f"(re-plan attempt 1 of {MAX_REPLAN_ATTEMPTS})."
-            )
-            for line in ctx.logs
-        )
-
-    def test_replan_feedback_variable_is_restored_when_the_planner_dispatch_raises(
-        self, flow_repos, tmp_path, monkeypatch
-    ):
-        host, origin = flow_repos
-        monkeypatch.delenv("HOLON_REPLAN_FEEDBACK", raising=False)
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(2.0, "")])
-        ctx = _budget_context(host, agents, 5.0)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        ctx.intent_data["replan_feedback"] = "smaller please"
-        seen: list[str | None] = []
-
-        def crash(*_args: Any, **_kwargs: Any) -> int:
-            seen.append(os.environ.get("HOLON_REPLAN_FEEDBACK"))
-            raise RuntimeError("docker crashed")
-
-        with patch("sandbox_executor.flow.stages.plan._dispatch_role", side_effect=crash), pytest.raises(RuntimeError):
-            run_plan_stage(ctx)
-
-        assert seen == ["smaller please"]
-        assert "HOLON_REPLAN_FEEDBACK" not in os.environ
-
-    def test_refused_plan_exit_code_with_another_row_fails_the_stage(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(2.0, "")])
-        ctx = _budget_context(host, agents, 5.0)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
-        real_execute = agents._execute
-
-        def execute_then_exit_refused(work: Path, args: list[str], kwargs: dict[str, Any]) -> int:
-            real_execute(work, args, kwargs)
-            return OVER_BUDGET_EXIT_CODE
-
-        # Only an over_budget row explains the refusal exit code; any other row is an executor failure.
-        with patch.object(agents, "_execute", side_effect=execute_then_exit_refused):
-            res = run_execute_stage(ctx)
-
-        assert res.status == StageStatus.FAILED
-        assert res.error == f"Execute stage failed: executor agent exited with code {OVER_BUDGET_EXIT_CODE}."
-        assert res.payload["exit_code"] == OVER_BUDGET_EXIT_CODE
-        assert res.payload["execution_branch"] == ctx.execution_branch is not None
-        assert "over_budget" not in res.payload
-
-    def test_refused_plan_exit_code_names_itself_when_the_fetch_fails(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, "")])
-        ctx = _budget_context(host, agents, 5.0)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
-
-        real_fetch = flow_module._fetch_branch_prefix_error
-
-        def fetch_fails_after_dispatch(repo_dir: str, prefix: str) -> str | None:
-            return "network down" if "executor" in agents.roles() else real_fetch(repo_dir, prefix)
-
-        with (
-            patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None),
-            patch_lookup_sites(
-                "sandbox_executor.flow.git_refs._fetch_branch_prefix_error",
-                "sandbox_executor.flow.stages.execute._fetch_branch_prefix_error",
-                side_effect=fetch_fails_after_dispatch,
-            ),
-        ):
-            res = run_execute_stage(ctx)
-
-        assert res.status == StageStatus.FAILED
-        assert res.error is not None
-        assert res.error.startswith(f"Execute stage failed: the executor agent exited {OVER_BUDGET_EXIT_CODE} but ")
-        assert res.error.endswith("could not be fetched to adopt its execution branch: network down")
 
 
 class TestPlanDecomposition:

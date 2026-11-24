@@ -3,7 +3,8 @@
 Every case works in real temporary git repositories (a bare ``origin`` and a clone); nothing touches the network or
 the repository's own worktree. The starting repositories are built once per session and copied
 (``tests/repo_templates.py``). The Hypothesis properties are derandomized and bounded, because each example copies the
-template and then commits, pushes and merges in its copy.
+template and then commits, pushes and merges in its copy. Their boundary cases are explicit examples, so they do not
+depend on what is generated.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from sandbox_executor.flow.review.approval_fingerprint import (
     FINGERPRINT_VERSION,
@@ -32,7 +33,7 @@ TARGET = "refs/remotes/origin/main"
 PR_PATHS = ("src/pr_a.py", "src/pr_b.py", "src/pkg/pr_c.py", "docs/pr_d.md")
 MAIN_PATHS = ("src/main_a.py", "src/main_b.py", "lib/main_c.py")
 CONTENT = st.text(alphabet="abcxyz =+\n", min_size=1, max_size=40)
-PROPERTY_SETTINGS = settings(max_examples=25, deadline=None, derandomize=True, database=None)
+PROPERTY_SETTINGS = settings(max_examples=12, deadline=None, derandomize=True, database=None)
 
 
 def _write(work: Path, rel: str, text: str) -> None:
@@ -214,7 +215,34 @@ def _merged_repos(
     return work, before
 
 
+class _ChosenDraws:
+    """Stands in for ``st.data()`` in an explicit example: ``draw`` returns the value chosen for its label."""
+
+    def __init__(self, path: str, content: str) -> None:
+        self._chosen = {"edited PR path": path, "new content": content}
+
+    def draw(self, _strategy: st.SearchStrategy[str], label: str) -> str:
+        return self._chosen[label]
+
+    def __repr__(self) -> str:
+        return f"_ChosenDraws({self._chosen})"
+
+
+# The boundaries of the two properties, as explicit examples: (PR change, main moves, edited PR path, new content).
+ONE_PR_FILE = {"src/pr_a.py": "x = 1\n"}
+NO_MAIN_MOVE = (ONE_PR_FILE, [], "src/pr_a.py", "x = 2\n")
+THREE_MAIN_MOVES = (ONE_PR_FILE, [{path: "y = 1\n"} for path in MAIN_PATHS], "docs/pr_d.md", "new file\n")
+ALL_PR_PATHS = ({path: f"{path}\n" for path in PR_PATHS}, [{"src/main_a.py": "y = 1\n"}], "src/pkg/pr_c.py", "c\n")
+EMPTY_MAIN_MOVE = (ONE_PR_FILE, [{}], "src/pr_b.py", "z = 1\n")
+SINGLE_NEWLINE = ({"src/pr_a.py": "\n"}, [{"src/main_a.py": "\n"}], "src/pr_a.py", "\n\n")
+
+
 @PROPERTY_SETTINGS
+@example(pr_files=NO_MAIN_MOVE[0], main_moves=NO_MAIN_MOVE[1])
+@example(pr_files=THREE_MAIN_MOVES[0], main_moves=THREE_MAIN_MOVES[1])
+@example(pr_files=ALL_PR_PATHS[0], main_moves=ALL_PR_PATHS[1])
+@example(pr_files=EMPTY_MAIN_MOVE[0], main_moves=EMPTY_MAIN_MOVE[1])
+@example(pr_files=SINGLE_NEWLINE[0], main_moves=SINGLE_NEWLINE[1])
 @given(pr_files=PR_CHANGES, main_moves=MAIN_MOVES)
 def test_property_fingerprint_survives_merges_of_a_disjoint_moving_main(
     repos_template: Path, pr_files: dict[str, str], main_moves: list[dict[str, str]]
@@ -226,6 +254,11 @@ def test_property_fingerprint_survives_merges_of_a_disjoint_moving_main(
 
 
 @PROPERTY_SETTINGS
+@example(pr_files=NO_MAIN_MOVE[0], main_moves=NO_MAIN_MOVE[1], data=_ChosenDraws(*NO_MAIN_MOVE[2:]))
+@example(pr_files=THREE_MAIN_MOVES[0], main_moves=THREE_MAIN_MOVES[1], data=_ChosenDraws(*THREE_MAIN_MOVES[2:]))
+@example(pr_files=ALL_PR_PATHS[0], main_moves=ALL_PR_PATHS[1], data=_ChosenDraws(*ALL_PR_PATHS[2:]))
+@example(pr_files=EMPTY_MAIN_MOVE[0], main_moves=EMPTY_MAIN_MOVE[1], data=_ChosenDraws(*EMPTY_MAIN_MOVE[2:]))
+@example(pr_files=SINGLE_NEWLINE[0], main_moves=SINGLE_NEWLINE[1], data=_ChosenDraws(*SINGLE_NEWLINE[2:]))
 @given(pr_files=PR_CHANGES, main_moves=MAIN_MOVES, data=st.data())
 def test_property_fingerprint_changes_when_a_pr_file_changes(
     repos_template: Path, pr_files: dict[str, str], main_moves: list[dict[str, str]], data: st.DataObject

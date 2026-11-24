@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import tempfile
+from collections.abc import Mapping
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -21,13 +22,19 @@ ATTRIBUTION_OFF: dict[str, Any] = {
 }
 
 
-def attribution_off_settings(existing: str | None = None) -> str:
+def attribution_off_settings(
+    existing: str | None = None,
+    *,
+    default_env: Mapping[str, str] | None = None,
+) -> str:
     """Return the ``--settings`` value: ``existing`` (inline JSON or a readable file path) with attribution disabled.
 
-    An unset value yields the attribution-off payload alone as inline JSON. An unparsable or unreadable value falls
-    back to the payload alone after one warning that never includes the value, as it may carry a credential. A file
-    is read, never written; its merged contents go to a private (0600) temp file removed at exit and the temp path is
-    returned, so file-based contents never reach the process list.
+    An unset value yields the attribution-off payload (plus any ``default_env`` entries) as inline JSON. An unparsable
+    or unreadable value falls back to the payload alone after one warning that never includes the value, as it may carry
+    a credential. When ``default_env`` is supplied, each key not already present in the settings' ``env`` dictionary is
+    added without dropping or overwriting operator-supplied keys. A file is read, never written; its merged contents go
+    to a private (0600) temp file removed at exit and the temp path is returned, so file-based contents never reach the
+    process list.
     """
     merged = dict(ATTRIBUTION_OFF)
     from_file = False
@@ -38,6 +45,12 @@ def attribution_off_settings(existing: str | None = None) -> str:
         else:
             merged = {**base, **ATTRIBUTION_OFF}
             from_file = not existing.lstrip().startswith("{")
+    if default_env:
+        existing_env = merged.get("env")
+        env_dict: dict[str, Any] = dict(existing_env) if isinstance(existing_env, dict) else {}
+        for key, val in default_env.items():
+            env_dict.setdefault(key, val)
+        merged["env"] = env_dict
     text = json.dumps(merged)
     return _private_temp_file(text) if from_file else text
 

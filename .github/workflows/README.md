@@ -129,7 +129,8 @@ Rules that run the full job:
 - `previous-run-not-finished`: an earlier run on the way is still queued or in progress.
 - `previous-run-not-successful`: the job failed or was cancelled in an earlier run; the detail names the conclusion.
 - `previous-run-unverified`: the job succeeded in an earlier run that has no marker step.
-- `chain-too-long`: more than 20 skipped runs in a row lie between this run and the last real success.
+- `chain-too-long`: the newest 20 earlier runs were all skipped and older runs exist; the gate does not look further
+  back.
 - `api-error`: a GitHub API call failed or answered in an unexpected shape, or the gate itself failed; the detail names
   the error class and never its text.
 

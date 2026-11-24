@@ -173,5 +173,5 @@ def find_real_success(client: GateClient, query: JobQuery) -> ChainResult:
         if result is not None:
             return result
     if len(runs) > MAX_CHAIN_HOPS:
-        return ChainResult(None, RULE_CHAIN_TOO_LONG, f"more than {MAX_CHAIN_HOPS} runs without a real one")
+        return ChainResult(None, RULE_CHAIN_TOO_LONG, f"the newest {MAX_CHAIN_HOPS} runs were all skipped")
     return ChainResult(None, RULE_PREVIOUS_RUN_MISSING, "only gate-skipped runs on the branch")

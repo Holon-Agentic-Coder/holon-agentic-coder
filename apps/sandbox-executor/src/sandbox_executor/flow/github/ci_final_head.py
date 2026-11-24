@@ -257,7 +257,7 @@ def _resolve_final_head(check: _FinalHeadCheck) -> str | None:
 
 def _eligible_run_ids(check: _FinalHeadCheck, record: dict[str, Any], ci_status: dict[str, Any]) -> list[str] | None:
     """Run ids eligible for the one automatic rerun, or None; every undecidable input is ineligible (fail-closed)."""
-    if not _timing_gate_only(record["failed_details"]):
+    if ci_status.get("pending", 0) > 0 or not _timing_gate_only(record["failed_details"]):
         return None
     approved = (check.seams.approved_head or (lambda: approved_head_of(check.context)))()
     if not approved:

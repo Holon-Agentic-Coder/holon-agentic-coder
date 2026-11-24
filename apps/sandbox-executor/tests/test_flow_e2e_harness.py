@@ -456,6 +456,16 @@ class TestZeroPRGuardAndNoSkipReview:
         with pytest.raises(E2EMachineryError, match="gh pr list failed"):
             enforce_zero_pr_guard(str(repo), "I-123456-e2e-run", gh_runner=None)
 
+    def test_enforce_zero_pr_guard_fails_closed_when_gh_missing_for_github_origin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, _origin = _create_bare_origin_and_clone(tmp_path)
+        _git(repo, "remote", "set-url", "origin", "https://github.com/holon-test/example.git")
+        monkeypatch.setattr("sandbox_executor.flow.github.adapter.shutil.which", lambda _cmd: None)
+
+        with pytest.raises(E2EMachineryError, match="not found on PATH"):
+            enforce_zero_pr_guard(str(repo), "I-123456-e2e-run", gh_runner=None)
+
 
 class TestRetryClassificationAndUnconditionalTeardown:
     """Retry classification and unconditional per-attempt teardown guarantees."""

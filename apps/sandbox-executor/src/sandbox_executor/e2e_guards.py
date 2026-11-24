@@ -81,7 +81,11 @@ def _default_gh_runner(repo_dir: str) -> GhRunnerCallable | None:
     if origin_url is None or not _is_github_remote_url(origin_url):
         return None
     adapter = GitHubAdapter(repo_dir)
-    return adapter.gh if adapter.available else None
+    if not adapter.available:
+        raise E2EMachineryError(
+            "Zero-PR guard requires the 'gh' CLI for a GitHub origin, but 'gh' was not found on PATH."
+        )
+    return adapter.gh
 
 
 def _parse_pr_list_items(stdout: str) -> list[dict[str, Any]]:

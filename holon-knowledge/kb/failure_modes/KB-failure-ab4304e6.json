@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-ab4304e6",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-24T11:14:34.114931+00:00",
+  "updated_ts": "2026-11-24T11:14:34.114931+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795498763-b3be021c",
+      "ACT-FIND-1795498759-d867f0b8"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795496321-flow-e2e-test-teardown/P-1795496340-ANA-G4A/E-1795497446-ANA-G4A/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R2-001-05",
+    "symptoms": [
+      "TeardownReport.refused_refs is never populated and run_e2e_flow_test carries a no-op tuple to silence unused local_llm constant imports."
+    ]
+  }
+}

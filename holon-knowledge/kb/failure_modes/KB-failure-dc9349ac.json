@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-dc9349ac",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-24T11:14:34.110479+00:00",
+  "updated_ts": "2026-11-24T11:14:34.110479+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-WITHDRAW-1795444313-61b589b1"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795432203-stale-calibration-warning-fix/P-1795432220-CLA-CF5.2/E-1795433754-CLA-CF5.2/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Consensus approval withdrawn for I-1795432203-stale-calibration-warning-fix/P-1795432220-CLA-CF5.2/E-1795433754-CLA-CF5.2/_: PR-own change changed since approval (fingerprint pf1:464e2800c5d8d66f17b2c78b9215349dfbfca118 -> pf1:aa774a476083f7f9b2072715b5511bb0c63320b5)",
+    "symptoms": [
+      "PR-own change changed since approval (fingerprint pf1:464e2800c5d8d66f17b2c78b9215349dfbfca118 -> pf1:aa774a476083f7f9b2072715b5511bb0c63320b5) on head ceac48bfc90edf588bba9f7d3bf8406368205235 after the approval of 0ef1299f0da087f2cab501509620445d63e40686. The review restarts at iteration 1 for the new head."
+    ]
+  }
+}

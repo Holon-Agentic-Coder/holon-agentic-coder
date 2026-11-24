@@ -1,21 +1,20 @@
-"""Unit tests for scripts/ci_timing_gate.py, using fake clocks, fetchers and openers only (never the network)."""
+"""Unit tests for scripts/ci_timing_gate.py, using fake clocks, fetchers and openers only (never the network).
+
+The record format has its own module (``test_ci_timing_record.py``) and so has compare mode on test time
+(``test_ci_timing_compare.py``); the fakes they share are in ``ci_timing_fixtures.py``.
+"""
 
 from __future__ import annotations
 
 import http.client
-import io
 import json
 import re
 import time
-import urllib.error
 import urllib.request
-import zipfile
 import zlib
 from pathlib import Path
-from typing import NamedTuple
 
 import pytest
-from sandbox_executor.flow.github.ci_slowest_tests import durations_from_records
 
 from scripts.check_ci_runtime_budget import main as budget_main
 from scripts.ci_timing_gate import (
@@ -33,61 +32,25 @@ from scripts.ci_timing_gate import (
     rolling_median,
     safe_fetch,
 )
+from tests.ci_timing_fixtures import (
+    artefact,
+    clear_github_environment,
+    failing_fetcher,
+    fake_fetcher,
+    fixed_clock,
+    gate_args,
+    record,
+    write_junit,
+    zipped,
+)
 
 DEFAULTS = Thresholds()
-START = 1_000_000.0
-
-
-def record(duration: float, tests: dict[str, float] | None = None) -> TimingRecord:
-    """Build a baseline record for the unit job."""
-    return TimingRecord(job="unit", os="ubuntu-latest", workflow="test-unit", duration=duration, tests=tests or {})
-
-
-def fixed_clock(duration: float):
-    """Return a clock that reads ``duration`` seconds after ``START``."""
-    return lambda: START + duration
-
-
-def fake_fetcher(records: list[TimingRecord]):
-    """Return a fetcher that serves ``records`` and remembers what it was asked for."""
-    calls: list[tuple[str, str, int]] = []
-
-    def fetch(repo: str, name: str, runs: int) -> list[TimingRecord]:
-        calls.append((repo, name, runs))
-        return records[:runs]
-
-    fetch.calls = calls  # type: ignore[attr-defined]
-    return fetch
-
-
-def failing_fetcher(repo: str, name: str, runs: int) -> list[TimingRecord]:
-    """A fetcher whose request always fails."""
-    raise urllib.error.URLError("network unreachable")
-
-
-def gate_args(mode: str, *extra: str) -> list[str]:
-    """Return the command line the unit workflow uses, plus ``extra`` flags."""
-    return [
-        mode,
-        "--workflow",
-        "test-unit",
-        "--job",
-        "unit",
-        "--os",
-        "ubuntu-latest",
-        "--start",
-        str(START),
-        "--repo",
-        "owner/repo",
-        *extra,
-    ]
 
 
 @pytest.fixture(autouse=True)
 def no_step_summary(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the job summary and run metadata out of every test unless a test sets them."""
-    for name in ("GITHUB_STEP_SUMMARY", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_TOKEN"):
-        monkeypatch.delenv(name, raising=False)
+    clear_github_environment(monkeypatch)
 
 
 # Rolling median and the relative check
@@ -176,16 +139,6 @@ def test_main_override_flag_passes_relative_regression(capsys: pytest.CaptureFix
 
 
 # Per-test top-offender report
-
-
-def write_junit(path: Path, cases: dict[str, float], suite_time: float | None = None) -> None:
-    """Write a minimal JUnit report with ``classname::name`` cases, and the suite's ``time`` when one is given."""
-    body = "".join(
-        f'<testcase classname="{test_id.split("::")[0]}" name="{test_id.split("::")[1]}" time="{t}"/>'
-        for test_id, t in cases.items()
-    )
-    time_attribute = "" if suite_time is None else f' time="{suite_time}"'
-    path.write_text(f'<testsuites><testsuite name="pytest"{time_attribute}>{body}</testsuite></testsuites>')
 
 
 def test_report_does_not_fail_on_its_own(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -292,25 +245,6 @@ def test_read_junit_without_test_cases_or_suite_time_has_no_test_time(tmp_path: 
 
 
 # Baseline fetch through a fake opener
-
-
-def zipped(rec: TimingRecord) -> bytes:
-    """Return an in-memory artefact archive holding ``rec`` as record.json."""
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr("record.json", json.dumps(rec.to_json()))
-    return buffer.getvalue()
-
-
-def artefact(index: int, branch: str = "main", expired: bool = False, head_repo: int = 1) -> dict[str, object]:
-    """Return one artefact listing entry; ``head_repo`` other than 1 marks a run from a fork."""
-    return {
-        "id": index,
-        "expired": expired,
-        "created_at": f"2026-10-{index:02d}T00:00:00Z",
-        "archive_download_url": f"https://api.github.com/download/{index}",
-        "workflow_run": {"head_branch": branch, "repository_id": 1, "head_repository_id": head_repo},
-    }
 
 
 def test_fetch_baseline_filters_limits_and_keeps_token_unredirected() -> None:
@@ -421,186 +355,6 @@ def test_main_record_enforces_ceiling() -> None:
     assert main(gate_args("record"), clock=fixed_clock(682.0), fetcher=failing_fetcher) == 1
 
 
-# The record format: two optional keys for the test time next to the seven original keys
-
-ORIGINAL_KEYS = ("job", "os", "workflow", "duration_seconds", "commit", "run_id", "tests")
-
-
-def written_record(tmp_path: Path, duration: float, *extra: str) -> tuple[int, dict[str, object]]:
-    """Run ``record`` mode at ``duration`` seconds of wall clock and return the exit code and the written record."""
-    output = tmp_path / "ci-timing" / "record.json"
-    code = main(
-        gate_args("record", "--output", str(output), *extra), clock=fixed_clock(duration), fetcher=failing_fetcher
-    )
-    return code, json.loads(output.read_text())
-
-
-def original_reader(data: dict[str, object]) -> TimingRecord:
-    """Read a record as the gate did before the test time keys existed: the seven original keys and nothing else."""
-    tests = data.get("tests") or {}
-    assert isinstance(tests, dict)
-    return TimingRecord(
-        job=str(data["job"]),
-        os=str(data["os"]),
-        workflow=str(data["workflow"]),
-        duration=float(data["duration_seconds"]),  # type: ignore[arg-type]
-        commit=str(data.get("commit", "")),
-        run_id=str(data.get("run_id", "")),
-        tests={str(k): float(v) for k, v in tests.items()},
-    )
-
-
-def test_record_with_a_suite_time_adds_the_two_keys_and_keeps_the_original_seven(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setenv("GITHUB_SHA", "cc4bf1b")
-    monkeypatch.setenv("GITHUB_RUN_ID", "40812897144")
-    junit = tmp_path / "unit-report.xml"
-    write_junit(junit, {"tests.m::fast": 0.5, "tests.m::slow": 140.0}, suite_time=118.26)
-    code, data = written_record(tmp_path, 132.0, "--junit", str(junit))
-    assert code == 0
-    assert data == {
-        "job": "unit",
-        "os": "ubuntu-latest",
-        "workflow": "test-unit",
-        "duration_seconds": 132.0,
-        "commit": "cc4bf1b",
-        "run_id": "40812897144",
-        "tests": {"tests.m::fast": 0.5, "tests.m::slow": 140.0},
-        "test_seconds": 118.3,
-        "test_seconds_source": "suite",
-    }
-    out = capsys.readouterr().out
-    assert out == "Recorded ci-timing-test-unit-unit-ubuntu-latest: 132 s, 2 tests. The suite test time was 118 s.\n"
-
-
-def test_record_without_a_suite_time_stores_the_sum_of_the_test_cases(tmp_path: Path) -> None:
-    junit = tmp_path / "unit-report.xml"
-    write_junit(junit, {"tests.m::fast": 0.5, "tests.m::slow": 140.0})
-    code, data = written_record(tmp_path, 132.0, "--junit", str(junit))
-    assert code == 0
-    assert (data["test_seconds"], data["test_seconds_source"]) == (140.5, "sum")
-    assert data["duration_seconds"] == 132.0
-
-
-def test_record_without_a_junit_report_writes_exactly_the_original_keys(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    code, data = written_record(tmp_path, 41.0)
-    assert code == 0
-    assert sorted(data) == sorted(ORIGINAL_KEYS)
-    assert data["tests"] == {}
-    assert capsys.readouterr().out == "Recorded ci-timing-test-unit-unit-ubuntu-latest: 41 s, 0 tests.\n"
-
-
-def test_record_with_an_unreadable_junit_report_has_no_test_time(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    code, data = written_record(tmp_path, 41.0, "--junit", str(tmp_path / "missing.xml"))
-    assert code == 0
-    assert sorted(data) == sorted(ORIGINAL_KEYS)
-    assert "::warning::Could not read the JUnit report" in capsys.readouterr().out
-
-
-def test_record_in_the_original_shape_still_loads_and_fetches() -> None:
-    old = record(229.0, {"tests.m::slow": 5.0})
-    data = old.to_json()
-    assert sorted(data) == sorted(ORIGINAL_KEYS)
-    loaded = TimingRecord.from_json(data)
-    assert loaded == old
-    assert loaded.test_seconds is None
-    assert loaded.test_seconds_source == ""
-    assert TimingRecord.from_json({**data, "test_seconds": None}).test_seconds is None
-
-    def opener(request: urllib.request.Request) -> bytes:
-        if "artifacts?name=" in request.full_url:
-            return json.dumps({"artifacts": [artefact(1)]}).encode()
-        return zipped(old)
-
-    assert fetch_baseline("owner/repo", "ci-timing-test-unit-unit-ubuntu-latest", 5, "", opener) == [old]
-
-
-def test_record_with_test_time_round_trips_and_fetches() -> None:
-    new = TimingRecord(
-        job="unit",
-        os="macos-latest",
-        workflow="test-unit",
-        duration=565.0,
-        commit="27dd49af",
-        run_id="41",
-        tests={"tests.m::slow": 5.0},
-        test_seconds=547.3,
-        test_seconds_source="suite",
-    )
-    assert TimingRecord.from_json(json.loads(json.dumps(new.to_json()))) == new
-
-    def opener(request: urllib.request.Request) -> bytes:
-        if "artifacts?name=" in request.full_url:
-            return json.dumps({"artifacts": [artefact(1)]}).encode()
-        return zipped(new)
-
-    assert fetch_baseline("owner/repo", "ci-timing-test-unit-unit-macos-latest", 5, "", opener) == [new]
-
-
-def test_malformed_test_time_degrades_to_cold_start() -> None:
-    data = {**record(229.0).to_json(), "test_seconds": "fast", "test_seconds_source": "suite"}
-    with pytest.raises(ValueError, match="could not convert"):
-        TimingRecord.from_json(data)
-
-    def opener(request: urllib.request.Request) -> bytes:
-        if "artifacts?name=" in request.full_url:
-            return json.dumps({"artifacts": [artefact(1)]}).encode()
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w") as archive:
-            archive.writestr("record.json", json.dumps(data))
-        return buffer.getvalue()
-
-    records, warnings = safe_fetch(lambda: fetch_baseline("o/r", "n", 5, "", opener))
-    assert records == []
-    assert "ValueError" in warnings[0]
-    assert "treating as cold start" in warnings[0]
-
-
-def test_existing_readers_accept_a_record_with_test_time(tmp_path: Path) -> None:
-    junit = tmp_path / "unit-report.xml"
-    tests = {"tests.m::fast": 0.5, "tests.m::slow": 140.0}
-    write_junit(junit, tests, suite_time=118.0)
-    code, data = written_record(tmp_path, 132.0, "--junit", str(junit))
-    assert code == 0
-    assert set(data) == {*ORIGINAL_KEYS, "test_seconds", "test_seconds_source"}
-    # The gate on a branch without this change reads the seven keys it knows and ignores the rest.
-    assert original_reader(data) == record(132.0, tests)
-    # The flow's slowest-tests lookup reads the per-test times from the downloaded artefact directory.
-    assert durations_from_records(tmp_path, "unit (ubuntu-latest)") == tests
-
-
-def test_record_ceiling_applies_to_test_time_not_to_wall_clock(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    junit = tmp_path / "unit-report.xml"
-    write_junit(junit, {"tests.m::slow": 140.0}, suite_time=400.0)
-    assert main(gate_args("record", "--junit", str(junit)), clock=fixed_clock(700.0), fetcher=failing_fetcher) == 0
-    out = capsys.readouterr().out
-    assert out == "Recorded ci-timing-test-unit-unit-ubuntu-latest: 700 s, 1 tests. The suite test time was 400 s.\n"
-
-    write_junit(junit, {"tests.m::slow": 140.0}, suite_time=640.0)
-    assert main(gate_args("record", "--junit", str(junit)), clock=fixed_clock(700.0), fetcher=failing_fetcher) == 1
-    lines = capsys.readouterr().out.splitlines()
-    assert len(lines) == 2
-    assert lines[1].startswith("::error::Suite test time was 640 s, above the 600 s ceiling. ")
-    assert "ceiling cannot be overridden" in lines[1]
-    assert "--ceiling" in lines[1]
-
-
-def test_record_ceiling_message_on_wall_clock_is_unchanged(capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(gate_args("record"), clock=fixed_clock(682.0), fetcher=failing_fetcher) == 1
-    assert capsys.readouterr().out.splitlines()[1] == (
-        "::error::Job took 682 s, above the 600 s ceiling. The ceiling cannot be overridden by the "
-        "'timing-regression-accepted' label; it changes only through a committed edit to the --ceiling flag in the "
-        "workflow file."
-    )
-
-
 def test_main_missing_or_bad_start_exits_two() -> None:
     args = ["record", "--workflow", "w", "--job", "j", "--os", "o"]
     assert main(args, clock=fixed_clock(1.0), fetcher=failing_fetcher) == 2
@@ -614,361 +368,6 @@ def test_compare_without_repo_is_cold_start(capsys: pytest.CaptureFixture[str]) 
     assert main(args, clock=fixed_clock(300.0), fetcher=fetch) == 0
     assert fetch.calls == []  # type: ignore[attr-defined]
     assert "::notice::Cold start" in capsys.readouterr().out
-
-
-# Compare mode judges test time, and tells runner noise from a regression with the per-test times
-
-LABEL_SENTENCE = (
-    "The ceiling cannot be overridden by the 'timing-regression-accepted' label; it changes only through a committed "
-    "edit to the --ceiling flag in the workflow file."
-)
-ADVICE = "Speed the job up, or add the 'timing-regression-accepted' label to accept a deliberate slow-down."
-THRESHOLDS = "(tolerance 50%, minimum delta 120 s)"
-BASIS = "Evidence against each test's median over the main baseline records (5 with per-test times): "
-SPREAD = (
-    "The breach is forgiven and the gate passes, because the slowdown is spread across the suite and not concentrated "
-    "in a few tests."
-)
-NO_SUITE_TIME = (
-    "5 of 5 baseline records carry no suite test time, so only the job's wall clock can be compared with them"
-)
-
-# A deterministic suite of 60 tests from 0.2 s to 6.1 s (189 s summed), and one of 40 tests of 10 s each (400 s).
-UNIT_SUITE = {f"tests.unit.test_mod_{i:02d}::test_case": round(0.2 + 0.1 * i, 1) for i in range(60)}
-EVEN_SUITE = {f"tests.even.test_mod_{i:02d}::test_case": 10.0 for i in range(40)}
-
-
-def slowed(tests: dict[str, float], factor: float) -> dict[str, float]:
-    """Return ``tests`` with every time multiplied by ``factor``, as a contended runner produces them."""
-    return {test_id: seconds * factor for test_id, seconds in tests.items()}
-
-
-def measured(wall: float, test_seconds: float, tests: dict[str, float], kind: str = "suite") -> TimingRecord:
-    """Build a baseline record in the new shape: wall clock, test time of ``kind`` and per-test times."""
-    return TimingRecord(
-        job="unit",
-        os="ubuntu-latest",
-        workflow="test-unit",
-        duration=wall,
-        tests=tests,
-        test_seconds=test_seconds,
-        test_seconds_source=kind,
-    )
-
-
-def compared(
-    capsys: pytest.CaptureFixture[str], junit: Path, wall: float, baselines: list[TimingRecord], *extra: str
-) -> tuple[int, str]:
-    """Run compare mode as the unit workflow does, ``wall`` seconds into the job; return the exit code and the verdict.
-
-    Asserts the one-line contract on the way: the verdict is the first line, and only the per-test report follows it.
-    """
-    args = gate_args("compare", "--runs", "5", "--tolerance", "0.5", "--ceiling", "600", "--junit", str(junit), *extra)
-    code = main(args, clock=fixed_clock(wall), fetcher=fake_fetcher(baselines))
-    lines = capsys.readouterr().out.splitlines()
-    assert lines[1].startswith("Per-test report:")
-    assert not [line for line in lines[1:] if line.startswith("::") or "Timing" in line or "Runner variance" in line]
-    return code, lines[0]
-
-
-def named_tests(line: str) -> list[str]:
-    """Return the test ids a verdict line names, in order."""
-    return re.findall(r"`([^`]+)`", line)
-
-
-class NoisyRun(NamedTuple):
-    """One failure of 2026-11-24 on a head whose code had not changed since a passing run.
-
-    Test time is the job's wall clock less the overhead seen in the real runs (18 s on macOS, 9 s on Ubuntu); the macOS
-    baseline is the 565 s of ``main``. ``breach`` words the limit the run breached on test time, ``old_breach`` the one
-    it breaches while the baseline records still carry no test time.
-    """
-
-    os_name: str
-    min_delta: str
-    wall: float
-    test_seconds: float
-    baseline_wall: float
-    baseline_test_seconds: float
-    factor: float
-    breach: str
-    old_breach: str
-
-
-def macos_run(wall: float, factor: float) -> NoisyRun:
-    """A macOS unit job above the 600 s ceiling."""
-    breach = f"suite test time was {wall - 18:.0f} s, above the 600 s ceiling"
-    return NoisyRun(
-        "macos-latest", "150", wall, wall - 18.0, 565.0, 547.0, factor, breach, f"{breach}; {NO_SUITE_TIME}"
-    )
-
-
-NOISY_RUNS = [
-    macos_run(663.0, 1.18),
-    macos_run(648.0, 1.15),
-    macos_run(632.0, 1.12),
-    macos_run(744.0, 1.33),
-    NoisyRun(
-        "ubuntu-latest",
-        "120",
-        360.0,
-        351.0,
-        229.0,
-        220.0,
-        1.60,
-        f"suite test time was 351 s against a baseline median of 220 s over 5 main runs {THRESHOLDS}",
-        f"job took 360 s against a baseline median of 229 s over 5 main runs {THRESHOLDS}; {NO_SUITE_TIME}",
-    ),
-]
-NOISY_RUN_IDS = [f"{run.os_name}-{run.wall:.0f}s" for run in NOISY_RUNS]
-
-
-def spread_evidence(factor: float) -> str:
-    """Word the start of the evidence of a uniform slowdown of ``UNIT_SUITE`` by ``factor``."""
-    return (
-        f"{BASIS}median per-test ratio {factor:.2f} over 60 comparable tests, 0 offenders, offender share 0.0% of the "
-    )
-
-
-@pytest.mark.parametrize("run", NOISY_RUNS, ids=NOISY_RUN_IDS)
-def test_replayed_failure_passes_with_a_runner_variance_warning(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], run: NoisyRun
-) -> None:
-    junit = tmp_path / "unit-report.xml"
-    write_junit(junit, slowed(UNIT_SUITE, run.factor), suite_time=run.test_seconds)
-    baselines = [measured(run.baseline_wall, run.baseline_test_seconds, UNIT_SUITE)] * 5
-    code, line = compared(capsys, junit, run.wall, baselines, "--os", run.os_name, "--min-delta", run.min_delta)
-    assert code == 0
-    assert line.startswith(f"::warning::Runner variance: {run.breach}. {SPREAD} {spread_evidence(run.factor)}")
-    assert line.endswith(" s per-test excess (concentrated from 50%).")
-    assert "::error::" not in line
-
-
-def test_replayed_ubuntu_failure_prints_the_whole_evidence(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    junit = tmp_path / "unit-report.xml"
-    write_junit(junit, slowed(UNIT_SUITE, 1.6), suite_time=351.0)
-    code, line = compared(capsys, junit, 360.0, [measured(229.0, 220.0, UNIT_SUITE)] * 5, "--min-delta", "120")
-    assert code == 0
-    assert line == (
-        "::warning::Runner variance: suite test time was 351 s against a baseline median of 220 s over 5 main runs "
-        "(tolerance 50%, minimum delta 120 s). The breach is forgiven and the gate passes, because the slowdown is "
-        "spread across the suite and not concentrated in a few tests. Evidence against each test's median over the "
-        "main baseline records (5 with per-test times): median per-test ratio 1.60 over 60 comparable tests, "
-        "0 offenders, offender share 0.0% of the 113.4 s per-test excess (concentrated from 50%)."
-    )
-
-
-@pytest.mark.parametrize("run", NOISY_RUNS, ids=NOISY_RUN_IDS)
-def test_replayed_failure_passes_while_the_baseline_records_carry_no_test_time(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], run: NoisyRun
-) -> None:
-    junit = tmp_path / "unit-report.xml"
-    write_junit(junit, slowed(UNIT_SUITE, run.factor), suite_time=run.test_seconds)
-    baselines = [record(run.baseline_wall, UNIT_SUITE)] * 5
-    code, line = compared(capsys, junit, run.wall, baselines, "--os", run.os_name, "--min-delta", run.min_delta)
-    assert code == 0
-    assert line.startswith(f"::warning::Runner variance: {run.old_breach}. {SPREAD} {spread_evidence(run.factor)}")
-    assert "::error::" not in line
-
-
-SLOWED_FOUR = dict.fromkeys(list(UNIT_SUITE)[:4], 45.0)
-CONCENTRATED = (
-    f"suite test time was 398 s against a baseline median of 220 s over 5 main runs {THRESHOLDS}",
-    f"The slowdown is concentrated in a few tests. {BASIS}median per-test ratio 1.00 over 60 comparable tests, "
-    "4 offenders, offender share 100.0% of the 178.6 s per-test excess (concentrated from 50%). Offenders: "
-    "`tests.unit.test_mod_00::test_case` 0.2 s -> 45.0 s, `tests.unit.test_mod_01::test_case` 0.3 s -> 45.0 s, "
-    "`tests.unit.test_mod_02::test_case` 0.4 s -> 45.0 s, `tests.unit.test_mod_03::test_case` 0.5 s -> 45.0 s.",
-)
-
-
-def test_concentrated_slowdown_fails_and_names_exactly_the_slowed_tests(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    summary = tmp_path / "summary.md"
-    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-    junit = tmp_path / "unit-report.xml"
-    write_junit(junit, {**UNIT_SUITE, **SLOWED_FOUR}, suite_time=398.0)
-    code, line = compared(capsys, junit, 407.0, [measured(229.0, 220.0, UNIT_SUITE)] * 5, "--min-delta", "120")
-    assert code == 1
-    limits, reason = CONCENTRATED
-    assert line == f"::error::Timing regression: {limits}. {ADVICE} {reason}"
-    assert named_tests(line) == list(SLOWED_FOUR)
-    # The job summary shows the same line without the workflow command, test ids intact.
-    assert f"\n\nTiming regression: {limits}. {ADVICE} {reason}\n\nPer-test report:" in summary.read_text()
-
-
-def test_label_accepts_a_concentrated_relative_slowdown_and_still_names_the_tests(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    junit = tmp_path / "unit-report.xml"
-    write_junit(junit, {**UNIT_SUITE, **SLOWED_FOUR}, suite_time=398.0)
-    baselines = [measured(229.0, 220.0, UNIT_SUITE)] * 5
-    code, line = compared(capsys, junit, 407.0, baselines, "--min-delta", "120", "--override-label-present", "true")
-    assert code == 0
-    limits, reason = CONCENTRATED
-    assert (
-        line == f"::warning::Timing regression accepted by the 'timing-regression-accepted' label: {limits}. {reason}"
-    )
-    assert named_tests(line) == list(SLOWED_FOUR)
-
-
-@pytest.mark.parametrize("label", ["false", "true"])
-def test_summed_test_time_above_the_ceiling_fails_a_concentrated_slowdown_whatever_the_label(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], label: str
-) -> None:
-    grown = dict.fromkeys(list(EVEN_SUITE)[:3], 90.0)
-    junit = tmp_path / "unit-report.xml"
-    write_junit(junit, {**EVEN_SUITE, **grown})
-    baselines = [measured(420.0, 400.0, EVEN_SUITE, "sum")] * 5
-    code, line = compared(capsys, junit, 660.0, baselines, "--override-label-present", label)
-    assert code == 1
-    assert line == (
-        f"::error::Summed test time was 640 s, above the 600 s ceiling. {LABEL_SENTENCE} The slowdown is concentrated "
-        f"in a few tests. {BASIS}median per-test ratio 1.00 over 40 comparable tests, 3 offenders, offender share "
-        "100.0% of the 240.0 s per-test excess (concentrated from 50%). Offenders: "
-        "`tests.even.test_mod_00::test_case` 10.0 s -> 90.0 s, `tests.even.test_mod_01::test_case` 10.0 s -> 90.0 s, "
-        "`tests.even.test_mod_02::test_case` 10.0 s -> 90.0 s."
-    )
-    assert named_tests(line) == list(grown)
-
-
-def test_wall_clock_above_the_ceiling_passes_when_the_summed_test_time_is_under_it(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    junit = tmp_path / "unit-report.xml"
-    write_junit(junit, EVEN_SUITE)
-    code, line = compared(capsys, junit, 700.0, [measured(420.0, 400.0, EVEN_SUITE, "sum")] * 5)
-    assert code == 0
-    assert line == (
-        "Timing gate passed: summed test time was 400 s against a baseline median of 400 s over 5 main runs "
-        "(tolerance 50%, minimum delta 120 s)."
-    )
-
-
-def mixed_baselines(tests: dict[str, float]) -> list[TimingRecord]:
-    """Five baseline records, newest first, of which the second and the fourth are in the shape without test time."""
-    walls = (229.0, 200.0, 250.0, 210.0, 260.0)
-    return [
-        record(wall, tests) if index in (1, 3) else measured(wall, wall - 9, tests) for index, wall in enumerate(walls)
-    ]
-
-
-def test_old_baseline_records_are_read_and_wall_clock_is_compared_inside_tolerance(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    junit = tmp_path / "unit-report.xml"
-    write_junit(junit, UNIT_SUITE, suite_time=231.0)
-    code, line = compared(capsys, junit, 240.0, mixed_baselines(UNIT_SUITE))
-    assert code == 0
-    # The median of all five wall clocks is 229 s; the three records with test time alone would give 250 s.
-    assert line == (
-        f"Timing gate passed: job took 240 s against a baseline median of 229 s over 5 main runs {THRESHOLDS}; 2 of 5 "
-        "baseline records carry no suite test time, so only the job's wall clock can be compared with them."
-    )
-
-
-def test_old_baseline_records_outside_tolerance_fail_when_too_few_tests_are_comparable(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    junit = tmp_path / "unit-report.xml"
-    write_junit(junit, slowed(UNIT_SUITE, 1.7), suite_time=391.0)
-    three_tests = dict(list(UNIT_SUITE.items())[:3])
-    code, line = compared(capsys, junit, 400.0, mixed_baselines(three_tests))
-    assert code == 1
-    assert line == (
-        f"::error::Timing regression: job took 400 s against a baseline median of 229 s over 5 main runs {THRESHOLDS}; "
-        "2 of 5 baseline records carry no suite test time, so only the job's wall clock can be compared with them. "
-        f"{ADVICE} Runner variance could not be assessed: only 3 comparable tests, fewer than 20."
-    )
-
-
-def test_suite_time_and_summed_time_are_never_compared_with_each_other(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    junit = tmp_path / "unit-report.xml"
-    write_junit(junit, UNIT_SUITE)
-    # The baseline suite time of 20 s would fail the run's 189 s of summed test time; the wall clocks are close.
-    code, line = compared(capsys, junit, 240.0, [measured(229.0, 20.0, UNIT_SUITE)] * 5)
-    assert code == 0
-    assert line == (
-        f"Timing gate passed: job took 240 s against a baseline median of 229 s over 5 main runs {THRESHOLDS}; 5 of 5 "
-        "baseline records carry no summed test time, so only the job's wall clock can be compared with them."
-    )
-
-
-@pytest.mark.parametrize(
-    ("wall", "test_seconds", "plain"),
-    [
-        (360.0, 351.0, f"::error::Timing regression: {NOISY_RUNS[4].breach}. {ADVICE}"),
-        (663.0, 645.0, f"::error::Suite test time was 645 s, above the 600 s ceiling. {LABEL_SENTENCE}"),
-    ],
-)
-def test_breach_without_baseline_per_test_times_fails_closed(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], wall: float, test_seconds: float, plain: str
-) -> None:
-    junit = tmp_path / "unit-report.xml"
-    write_junit(junit, slowed(UNIT_SUITE, 1.6), suite_time=test_seconds)
-    code, line = compared(capsys, junit, wall, [measured(229.0, 220.0, {})] * 5)
-    assert code == 1
-    assert line == f"{plain} Runner variance could not be assessed: no baseline per-test times."
-
-
-def test_cold_start_with_test_time_under_the_ceiling_passes_whatever_the_wall_clock(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    junit = tmp_path / "unit-report.xml"
-    write_junit(junit, slowed(UNIT_SUITE, 1.6), suite_time=351.0)
-    code, line = compared(capsys, junit, 650.0, [measured(229.0, 220.0, UNIT_SUITE)] * 4)
-    assert code == 0
-    assert line == (
-        "::notice::Cold start: 4 of 5 main baseline records found, so the relative check is skipped; only the 600 s "
-        "ceiling applies (suite test time was 351 s)."
-    )
-
-
-@pytest.mark.parametrize("baselines", [[], [measured(565.0, 547.0, {})] * 3, [record(565.0)] * 3])
-def test_cold_start_with_test_time_above_the_ceiling_and_no_per_test_baseline_fails(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], baselines: list[TimingRecord]
-) -> None:
-    junit = tmp_path / "unit-report.xml"
-    write_junit(junit, slowed(UNIT_SUITE, 1.18), suite_time=645.0)
-    code, line = compared(capsys, junit, 663.0, baselines)
-    assert code == 1
-    assert line.startswith("::error::Suite test time was 645 s, above the 600 s ceiling")
-    assert line.endswith(f". {LABEL_SENTENCE} Runner variance could not be assessed: no baseline per-test times.")
-
-
-def test_compare_without_a_junit_report_keeps_the_wall_clock_wording(capsys: pytest.CaptureFixture[str]) -> None:
-    fetch = fake_fetcher([measured(229.0, 220.0, UNIT_SUITE)] * 5)
-    assert main(gate_args("compare"), clock=fixed_clock(240.0), fetcher=fetch) == 0
-    assert capsys.readouterr().out == (
-        f"Timing gate passed: job took 240 s against a baseline median of 229 s over 5 main runs {THRESHOLDS}.\n"
-    )
-    assert main(gate_args("compare"), clock=fixed_clock(400.0), fetcher=fetch) == 1
-    assert capsys.readouterr().out == (
-        f"::error::Timing regression: job took 400 s against a baseline median of 229 s over 5 main runs {THRESHOLDS}. "
-        f"{ADVICE}\n"
-    )
-
-
-def test_four_parameter_evaluate_keeps_the_wall_clock_wording() -> None:
-    assert evaluate(601.0, [], DEFAULTS, override=True).lines == (
-        f"::error::Job took 601 s, above the 600 s ceiling. {LABEL_SENTENCE}",
-    )
-    assert evaluate(599.0, [10.0], DEFAULTS, override=False).lines == (
-        "::notice::Cold start: 1 of 5 main baseline records found, so the relative check is skipped; only the 600 s "
-        "ceiling applies (job took 599 s).",
-    )
-    limits = f"job took 260 s against a baseline median of 100 s over 5 main runs {THRESHOLDS}"
-    assert evaluate(140.0, [100.0] * 5, DEFAULTS, override=False).lines == (
-        f"Timing gate passed: job took 140 s against a baseline median of 100 s over 5 main runs {THRESHOLDS}.",
-    )
-    assert evaluate(260.0, [100.0] * 5, DEFAULTS, override=False).lines == (
-        f"::error::Timing regression: {limits}. {ADVICE}",
-    )
-    assert evaluate(260.0, [100.0] * 5, DEFAULTS, override=True).lines == (
-        f"::warning::Timing regression accepted by the 'timing-regression-accepted' label: {limits}.",
-    )
 
 
 def test_parser_accepts_the_unit_workflow_command_with_every_flag_unchanged() -> None:

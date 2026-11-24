@@ -7,15 +7,22 @@ does two things with them:
 - It gathers the evidence that tells runner noise from a regression once a limit is breached. Every test has a
   baseline, the median of its times in the baseline records. The suite-wide scale is the median of current over
   baseline across the comparable tests, never below 1. A test's attributed seconds are its growth beyond that scale,
-  so a slowdown that hits every test alike attributes nothing. The offenders are the at most ten tests with the most
-  attributed seconds, each above the report thresholds. When the offenders explain at least half of the per-test
-  excess the slowdown is concentrated (a regression); otherwise it is spread across the suite (runner variance). With
-  fewer than twenty comparable tests, no baseline per-test times or no excess there is no evidence, and the gate keeps
-  its plain verdict.
+  so a slowdown that hits every test alike attributes nothing. The offenders are all the tests whose attributed
+  seconds pass the report thresholds; only the ten largest are named. New tests are attributed together: their time
+  less the scaled baseline time of the tests that vanished, so a renamed test attributes nothing. With fewer than
+  twenty comparable tests, no baseline per-test times or no excess there is no evidence.
 
-The module also holds the gate's ``Verdict``, ``rejudge`` (which applies the evidence to a verdict with a breached
-limit) and the wording of every verdict line: one line each, stating the measure judged, the baseline, the threshold
-and the reason.
+A breached limit is forgiven as runner variance only on positive evidence, and both parts are required:
+
+- The offenders and the new tests explain less than half of the per-test excess, so the slowdown is not concentrated.
+- The suite-wide scale accounts for the breach: the judged value divided by the scale is back inside the limit. A
+  slowdown that leaves the median test where it was is therefore never forgiven, however it is spread.
+
+In every other case the breach stands and the verdict line says which part failed.
+
+The module also holds the gate's ``Verdict`` and ``Breach``, ``rejudge`` (which applies the evidence to a verdict with
+a breached limit) and the wording of every verdict line: one line each, stating the measure judged, the baseline, the
+threshold and the reason.
 
 The module uses the standard library only and keeps Python 3.9 syntax, because the workflows run the gate with the
 runner's own ``python3``. It never imports from ``scripts/ci_timing_gate.py``; the gate imports it.
@@ -98,17 +105,27 @@ def per_test_report(current: dict[str, float], baselines: Sequence[dict[str, flo
 
 @dataclass(frozen=True)
 class NoiseEvidence:
-    """What the per-test times say about a slowdown: how far the whole suite moved and what a few tests explain."""
+    """What the per-test times say about a slowdown: how far the whole suite moved and what specific tests explain.
+
+    ``offenders`` holds every offender, largest first. ``attributed`` sums the slowed offenders and ``new_seconds``,
+    the time of the new tests net of the tests that vanished.
+    """
 
     comparable: int
     median_ratio: float
     excess: float
     attributed: float
     offenders: tuple[Offender, ...]
+    new_seconds: float = 0.0
+
+    @property
+    def scale(self) -> float:
+        """Return the suite-wide scale: the median per-test ratio, never below 1."""
+        return max(1.0, self.median_ratio)
 
     @property
     def share(self) -> float:
-        """Return the part of the excess that the offenders explain, between 0 and 1."""
+        """Return the part of the excess that the offenders and the new tests explain, between 0 and 1."""
         return self.attributed / self.excess if self.excess > 0 else 0.0
 
     @property
@@ -135,9 +152,21 @@ def comparable_ratios(current: dict[str, float], medians: dict[str, float]) -> l
     ]
 
 
+def net_new_seconds(current: dict[str, float], medians: dict[str, float], scale: float = 1.0) -> float:
+    """Return the time of the new tests less the baseline time of the vanished tests times ``scale``, never below 0.
+
+    A new test is in no baseline record and a vanished test is in no current report, so a renamed test is both and
+    nets to nothing.
+    """
+    new = sum(seconds for test_id, seconds in current.items() if test_id not in medians)
+    vanished = sum(median for test_id, median in medians.items() if test_id not in current)
+    return max(0.0, new - vanished * scale)
+
+
 def per_test_excess(current: dict[str, float], medians: dict[str, float]) -> float:
-    """Sum every shared test's growth over its baseline, plus the whole time of the new tests."""
-    return sum(max(0.0, seconds - medians.get(test_id, 0.0)) for test_id, seconds in current.items())
+    """Sum every shared test's growth over its baseline, plus the time of the new tests net of the vanished ones."""
+    shared = sum(max(0.0, seconds - medians[test_id]) for test_id, seconds in current.items() if test_id in medians)
+    return shared + net_new_seconds(current, medians)
 
 
 def attributed_offenders(
@@ -146,7 +175,8 @@ def attributed_offenders(
     """Return ``(attributed seconds, offender)`` for the tests slowed beyond the suite-wide ``scale``, largest first.
 
     A shared test's attributed seconds are ``current - baseline * scale``; a new test's are its whole time. An offender
-    passes both report thresholds against its scaled baseline. At most ``REPORT_LIMIT`` rows are returned.
+    passes both report thresholds against its scaled baseline. Every offender is returned: capping the rows here would
+    let a slowdown of many tests fall under the concentrated share.
     """
     rows: list[tuple[float, Offender]] = []
     for test_id, seconds in current.items():
@@ -156,7 +186,7 @@ def attributed_offenders(
         if attributed > REPORT_MIN_SECONDS and (is_new or seconds > median * scale * (1 + REPORT_GROWTH)):
             rows.append((attributed, Offender(test_id, median, seconds, is_new)))
     rows.sort(key=lambda row: (-row[0], row[1].test_id))
-    return rows[:REPORT_LIMIT]
+    return rows
 
 
 def gather_evidence(current: dict[str, float], baselines: Sequence[dict[str, float]]) -> NoiseEvidence | None:
@@ -164,6 +194,9 @@ def gather_evidence(current: dict[str, float], baselines: Sequence[dict[str, flo
 
     Insufficient means fewer than ``MIN_COMPARABLE_TESTS`` comparable tests (which covers baseline records without
     per-test times) or no positive per-test excess; ``insufficient_reason`` words the cause.
+
+    The new tests are attributed as one net amount, whatever their size and number, so many small new tests count in
+    full and a rename counts for nothing. A new test is named as an offender only while that net amount is positive.
     """
     medians = baseline_medians(baselines)
     ratios = comparable_ratios(current, medians)
@@ -171,9 +204,12 @@ def gather_evidence(current: dict[str, float], baselines: Sequence[dict[str, flo
     if len(ratios) < MIN_COMPARABLE_TESTS or excess <= 0:
         return None
     median_ratio = float(statistics.median(ratios))
-    rows = attributed_offenders(current, medians, max(1.0, median_ratio))
-    attributed = sum(seconds for seconds, _ in rows)
-    return NoiseEvidence(len(ratios), median_ratio, excess, attributed, tuple(offender for _, offender in rows))
+    scale = max(1.0, median_ratio)
+    new_seconds = net_new_seconds(current, medians, scale)
+    rows = [row for row in attributed_offenders(current, medians, scale) if new_seconds > 0 or not row[1].is_new]
+    attributed = sum(seconds for seconds, offender in rows if not offender.is_new) + new_seconds
+    offenders = tuple(offender for _, offender in rows)
+    return NoiseEvidence(len(ratios), median_ratio, excess, attributed, offenders, new_seconds)
 
 
 def insufficient_reason(current: dict[str, float], baselines: Sequence[dict[str, float]]) -> str:
@@ -187,10 +223,17 @@ def insufficient_reason(current: dict[str, float], baselines: Sequence[dict[str,
 
 
 def describe_evidence(evidence: NoiseEvidence) -> str:
-    """Word the evidence as a one-line fragment: suite-wide ratio, tests compared, offenders and their share."""
+    """Word the evidence as a one-line fragment: suite-wide ratio, tests compared, offenders and their share.
+
+    The net time of the new tests is worded only when there is some, and the share then says that it counts them.
+    """
+    new, share = "", "offender share"
+    if evidence.new_seconds > 0:
+        new = f"{evidence.new_seconds:.1f} s of new test time net of removed tests, "
+        share = "offender and new-test share"
     return (
         f"median per-test ratio {evidence.median_ratio:.2f} over {evidence.comparable} comparable tests, "
-        f"{len(evidence.offenders)} offenders, offender share {evidence.share:.1%} of the {evidence.excess:.1f} s "
+        f"{len(evidence.offenders)} offenders, {new}{share} {evidence.share:.1%} of the {evidence.excess:.1f} s "
         f"per-test excess (concentrated from {CONCENTRATED_SHARE:.0%})"
     )
 
@@ -207,6 +250,14 @@ def describe_offenders(offenders: Sequence[Offender]) -> str:
         before = "new" if offender.is_new else f"{offender.baseline:.1f} s"
         parts.append(f"`{printable_test_id(offender.test_id)}` {before} -> {offender.current:.1f} s")
     return ", ".join(parts)
+
+
+def name_offenders(offenders: Sequence[Offender]) -> str:
+    """Word the sentence that names at most ``REPORT_LIMIT`` offenders, with a leading space; empty without any."""
+    if not offenders:
+        return ""
+    shown = f" (top {REPORT_LIMIT} of {len(offenders)})" if len(offenders) > REPORT_LIMIT else ""
+    return f" Offenders{shown}: {describe_offenders(offenders[:REPORT_LIMIT])}."
 
 
 def took(seconds: float, kind: str = "") -> str:
@@ -270,16 +321,43 @@ def without_command(line: str) -> str:
 
 
 @dataclass(frozen=True)
+class Breach:
+    """A breached limit: its wording, the judged value in seconds and the value above which the limit is breached.
+
+    ``words`` states the measure, its value, the baseline and the threshold. ``limit`` is the ceiling, or for the
+    relative check the larger of the baseline median plus the tolerance and plus the minimum delta.
+    """
+
+    words: str
+    seconds: float
+    limit: float
+
+
+@dataclass(frozen=True)
 class Verdict:
     """The gate's decision and the message lines that explain it.
 
-    ``breach`` words the limit that was breached (the measure, its value, the baseline and the threshold). It is empty
-    when no limit was breached and stays set when the override label accepted a relative breach.
+    ``breach`` is the limit that was breached. It is ``None`` when no limit was breached and stays set when the
+    override label accepted a relative breach.
     """
 
     passed: bool
     lines: tuple[str, ...]
-    breach: str = ""
+    breach: Breach | None = None
+
+    def with_reason(self, reason: str) -> Verdict:
+        """Return the same decision with ``reason`` appended to its line."""
+        return Verdict(self.passed, (f"{self.lines[0]} {reason}",), self.breach)
+
+
+def describe_scale(evidence: NoiseEvidence, breach: Breach) -> str:
+    """Word the judged value with the suite-wide slowdown taken out, and the side of the limit it then falls on."""
+    rescaled = breach.seconds / evidence.scale
+    side = "inside" if rescaled <= breach.limit else "still above"
+    return (
+        f"divided by the suite-wide scale of {evidence.scale:.2f} the judged value is {rescaled:.1f} s, {side} its "
+        f"limit of {breach.limit:.1f} s"
+    )
 
 
 def rejudge(verdict: Verdict, current: dict[str, float], baselines: Sequence[dict[str, float]]) -> Verdict:
@@ -287,25 +365,29 @@ def rejudge(verdict: Verdict, current: dict[str, float], baselines: Sequence[dic
 
     - No evidence: the verdict stands, and its line says why runner variance could not be assessed.
     - Concentrated slowdown: the verdict stands, and its line names the offenders with their times before and after.
-    - Spread slowdown: runner variance. The verdict passes with one warning that states the breach and the evidence.
+    - Spread slowdown that the suite-wide scale does not account for: the verdict stands, and its line says so.
+    - Spread slowdown that the suite-wide scale accounts for: runner variance. The verdict passes with one warning that
+      states the breach and the evidence.
     """
-    if not verdict.breach:
+    breach = verdict.breach
+    if breach is None:
         return verdict
     evidence = gather_evidence(current, baselines)
     if evidence is None:
-        reason = f"Runner variance could not be assessed: {insufficient_reason(current, baselines)}."
-        return Verdict(verdict.passed, (f"{verdict.lines[0]} {reason}",), verdict.breach)
+        return verdict.with_reason(f"Runner variance could not be assessed: {insufficient_reason(current, baselines)}.")
     basis = (
         f"Evidence against each test's median over the main baseline records ({sum(1 for b in baselines if b)} with "
         f"per-test times): {describe_evidence(evidence)}."
     )
+    offenders = name_offenders(evidence.offenders)
     if evidence.concentrated:
-        reason = (
-            f"The slowdown is concentrated in a few tests. {basis} Offenders: {describe_offenders(evidence.offenders)}."
-        )
-        return Verdict(verdict.passed, (f"{verdict.lines[0]} {reason}",), verdict.breach)
+        return verdict.with_reason(f"The slowdown is concentrated in specific tests. {basis}{offenders}")
+    if breach.seconds / evidence.scale > breach.limit:
+        unexplained = f"Runner variance does not account for the breach: {describe_scale(evidence, breach)}."
+        return verdict.with_reason(f"{unexplained} {basis}{offenders}")
     forgiven = (
-        f"::warning::Runner variance: {verdict.breach}. The breach is forgiven and the gate passes, because the "
-        f"slowdown is spread across the suite and not concentrated in a few tests. {basis}"
+        f"::warning::Runner variance: {breach.words}. The breach is forgiven and the gate passes, because the "
+        "slowdown is spread across the suite and not concentrated in specific tests: "
+        f"{describe_scale(evidence, breach)}. {basis}"
     )
-    return Verdict(True, (forgiven,), verdict.breach)
+    return Verdict(True, (forgiven,), breach)

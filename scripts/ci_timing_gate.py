@@ -24,9 +24,11 @@ start) the relative check is skipped with a notice. The ``timing-regression-acce
 relative failure into a visible warning.
 
 In ``compare`` mode a breached limit of a test job is judged again with the per-test times (``rejudge`` in
-``scripts/ci_timing_noise.py``). A slowdown spread across the suite is runner variance: the job passes with a warning
-that prints the evidence, also above the ceiling. A slowdown concentrated in a few tests fails and names them with
-their times before and after. Without enough per-test data the breach stands and the line says why.
+``scripts/ci_timing_noise.py``). The breach is runner variance only when the slowdown is spread across the suite and
+the median per-test ratio accounts for it, that is the judged value divided by that ratio is back inside the limit:
+the job then passes with a warning that prints the evidence, also above the ceiling. A slowdown concentrated in
+specific tests fails and names them with their times before and after. A slowdown the ratio does not account for, or
+one without enough per-test data, leaves the breach standing and the line says why.
 
 Defaults (N = 5, tolerance 50 %, minimum delta 120 s, ceiling 600 s) were calibrated against real ``main`` runs; the
 workflows spell every threshold out as a flag, so any change is a committed edit to a workflow file.
@@ -54,10 +56,10 @@ from dataclasses import dataclass, field
 
 try:
     from scripts import ci_timing_noise as noise
-    from scripts.ci_timing_noise import Verdict
+    from scripts.ci_timing_noise import Breach, Verdict
 except ImportError:  # run as a script file: only scripts/ itself is on sys.path
     import ci_timing_noise as noise
-    from ci_timing_noise import Verdict
+    from ci_timing_noise import Breach, Verdict
 
 OVERRIDE_LABEL = "timing-regression-accepted"
 API_ROOT = "https://api.github.com"
@@ -186,12 +188,12 @@ def exceeds_relative(duration: float, median: float, thresholds: Thresholds) -> 
     return over_tolerance and over_delta
 
 
-def check_ceiling(duration: float, thresholds: Thresholds, kind: str = "", note: str = "") -> Verdict | None:
+def check_ceiling(duration: float, thresholds: Thresholds, kind: str = "") -> Verdict | None:
     """Return a failing verdict when ``duration``, a value of measure ``kind``, is above the ceiling, else ``None``."""
     if duration <= thresholds.ceiling:
         return None
-    breach = noise.over_ceiling(noise.took(duration, kind), thresholds.ceiling) + note
-    return Verdict(False, (noise.ceiling_error(breach, OVERRIDE_LABEL),), breach)
+    words = noise.over_ceiling(noise.took(duration, kind), thresholds.ceiling)
+    return Verdict(False, (noise.ceiling_error(words, OVERRIDE_LABEL),), Breach(words, duration, thresholds.ceiling))
 
 
 def evaluate(
@@ -204,9 +206,11 @@ def evaluate(
     """Apply the decision rules in order: ceiling, cold start, relative check, label override.
 
     ``duration`` and ``baselines`` are job wall clock, and so is the ceiling value, unless ``judged`` says otherwise.
+    The ceiling is held against no baseline record, so its line never carries the wall-clock fallback note. A relative
+    breach records the value above which the check fails: the larger of its two thresholds over the median.
     """
     judged = judged or Judged(duration)
-    ceiling = check_ceiling(judged.ceiling_seconds, thresholds, judged.ceiling_kind, judged.note)
+    ceiling = check_ceiling(judged.ceiling_seconds, thresholds, judged.ceiling_kind)
     if ceiling is not None:
         return ceiling
     if len(baselines) < thresholds.runs:
@@ -218,9 +222,10 @@ def evaluate(
     limits += judged.note
     if not exceeds_relative(duration, median, thresholds):
         return Verdict(True, (f"Timing gate passed: {limits}.",))
+    breach = Breach(limits, duration, max(median * (1 + thresholds.tolerance), median + thresholds.min_delta))
     if override:
-        return Verdict(True, (noise.accepted_warning(limits, OVERRIDE_LABEL),), limits)
-    return Verdict(False, (noise.regression_error(limits, OVERRIDE_LABEL),), limits)
+        return Verdict(True, (noise.accepted_warning(limits, OVERRIDE_LABEL),), breach)
+    return Verdict(False, (noise.regression_error(limits, OVERRIDE_LABEL),), breach)
 
 
 def build_request(url: str, token: str) -> urllib.request.Request:

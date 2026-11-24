@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from scripts.ci_timing_noise import (
+    Breach,
     Offender,
     Verdict,
     baseline_medians,
@@ -21,6 +22,8 @@ from scripts.ci_timing_noise import (
     format_report,
     gather_evidence,
     insufficient_reason,
+    name_offenders,
+    net_new_seconds,
     per_test_report,
     rejudge,
     took,
@@ -251,26 +254,101 @@ def test_new_slow_test_is_concentrated_and_worded_as_new() -> None:
     assert describe_offenders(evidence.offenders) == "`tests.added::test_slow` new -> 60.0 s"
 
 
-def test_new_fast_tests_are_not_offenders() -> None:
-    """A renamed module: forty quick tests look new, none passes the 5 s bar, so nothing is attributed to them."""
-    current = slowed(suite(), 1.4)
-    current.update({f"tests.renamed::test_{i}": 2.0 for i in range(40)})
+def renamed(times: dict[str, float]) -> dict[str, float]:
+    """Return ``times`` with the slow tests under the ids a renamed module gives them."""
+    return {test_id.replace("tests.slow::", "tests.moved::"): seconds for test_id, seconds in times.items()}
+
+
+def test_renamed_tests_attribute_nothing_and_are_not_named() -> None:
+    """A renamed module on a slower runner: its thirty tests of up to 21.4 s look new, and as many vanished."""
+    current = renamed(slowed(suite(), 1.4))
     evidence = gather_evidence(current, [suite()] * 5)
     assert evidence is not None
+    assert evidence.comparable == 25
+    assert evidence.median_ratio == pytest.approx(1.4)
+    assert evidence.new_seconds == 0.0
     assert evidence.offenders == ()
-    assert evidence.excess == pytest.approx(413.6 * 0.4 + 80.0)
+    assert evidence.attributed == 0.0
+    # The renamed tests weigh 381 s: their 40 % of growth is in the excess, their 381 s of baseline time is not.
+    assert evidence.excess == pytest.approx(413.6 * 0.4)
     assert not evidence.concentrated
+    assert "new test time" not in describe_evidence(evidence)
 
 
-def test_at_most_ten_offenders_largest_first() -> None:
+def test_net_new_seconds_subtracts_the_scaled_vanished_tests_and_never_goes_negative() -> None:
+    medians = {"tests.m::kept": 5.0, "tests.m::gone": 20.0}
+    assert net_new_seconds({"tests.m::kept": 9.0, "tests.m::added": 50.0}, medians) == 30.0
+    assert net_new_seconds({"tests.m::kept": 9.0, "tests.m::added": 50.0}, medians, scale=1.5) == 20.0
+    assert net_new_seconds({"tests.m::kept": 9.0, "tests.m::added": 8.0}, medians) == 0.0
+    assert net_new_seconds({"tests.m::kept": 9.0, "tests.m::gone": 90.0}, medians) == 0.0
+
+
+@pytest.mark.parametrize(("count", "seconds", "named"), [(200, 4.0, 0), (25, 20.0, 25)])
+def test_new_tests_are_attributed_together_whatever_their_size_and_number(
+    count: int, seconds: float, named: int
+) -> None:
+    """Two hundred new tests of 4 s pass no 5 s bar and twenty-five of 20 s outnumber the ten named: both count."""
+    current = suite()
+    current.update({f"tests.added::test_{i}": seconds for i in range(count)})
+    evidence = gather_evidence(current, [suite()] * 5)
+    assert evidence is not None
+    assert evidence.median_ratio == 1.0
+    assert evidence.new_seconds == pytest.approx(count * seconds)
+    assert evidence.attributed == pytest.approx(count * seconds)
+    assert evidence.share == pytest.approx(1.0)
+    assert evidence.concentrated
+    assert len(evidence.offenders) == named
+    assert all(row.is_new for row in evidence.offenders)
+
+
+def test_new_tests_beyond_the_vanished_ones_count_for_their_net_time_only() -> None:
+    current = {test_id: seconds for test_id, seconds in suite().items() if test_id != "tests.slow::test_29"}
+    current["tests.added::test_slow"] = 60.0
+    evidence = gather_evidence(current, [suite()] * 5)
+    assert evidence is not None
+    assert evidence.new_seconds == pytest.approx(60.0 - 21.4)
+    assert evidence.excess == pytest.approx(60.0 - 21.4)
+    assert evidence.offenders == (Offender("tests.added::test_slow", 0.0, 60.0, is_new=True),)
+    assert describe_evidence(evidence) == (
+        "median per-test ratio 1.00 over 54 comparable tests, 1 offenders, 38.6 s of new test time net of removed "
+        "tests, offender and new-test share 100.0% of the 38.6 s per-test excess (concentrated from 50%)"
+    )
+
+
+def test_every_offender_is_attributed_and_only_the_ten_largest_are_named() -> None:
     current = suite()
     for index in range(12):
         current[f"tests.quick::test_{index}"] += 20.0 + index
     evidence = gather_evidence(current, [suite()] * 5)
     assert evidence is not None
-    assert [row.test_id for row in evidence.offenders] == [f"tests.quick::test_{index}" for index in range(11, 1, -1)]
-    assert evidence.attributed == pytest.approx(sum(20.0 + index for index in range(2, 12)))
-    assert evidence.share == pytest.approx(evidence.attributed / (evidence.attributed + 41.0))
+    assert [row.test_id for row in evidence.offenders] == [f"tests.quick::test_{index}" for index in range(11, -1, -1)]
+    assert evidence.attributed == pytest.approx(sum(20.0 + index for index in range(12)))
+    assert evidence.share == pytest.approx(1.0)
+    assert evidence.concentrated
+    named = name_offenders(evidence.offenders)
+    assert named.startswith(" Offenders (top 10 of 12): `tests.quick::test_11` 1.2 s -> 32.2 s, ")
+    assert named.endswith(", `tests.quick::test_2` 0.3 s -> 22.3 s.")
+    assert named.count("`") == 20
+    assert name_offenders(evidence.offenders[:10]).startswith(" Offenders: `tests.quick::test_11` ")
+    assert name_offenders(()) == ""
+
+
+def big_suite() -> dict[str, float]:
+    """Return a deterministic suite of 300 tests of 8 s each, 2400 s in all."""
+    return {f"tests.big::test_{i:03d}": 8.0 for i in range(300)}
+
+
+def test_slowdown_of_thirty_tests_in_a_large_suite_is_concentrated() -> None:
+    """Thirty tests each 6 s slower at an unchanged median: the ten largest are a third of the excess, all are 100 %."""
+    current = big_suite()
+    for index in range(30):
+        current[f"tests.big::test_{index:03d}"] = 14.0
+    evidence = gather_evidence(current, [big_suite()] * 5)
+    assert evidence is not None
+    assert evidence.median_ratio == 1.0
+    assert len(evidence.offenders) == 30
+    assert evidence.attributed == pytest.approx(180.0)
+    assert evidence.share == pytest.approx(1.0)
     assert evidence.concentrated
 
 
@@ -332,8 +410,8 @@ def test_wording_fragments_stay_on_one_line() -> None:
     assert evidence is not None
     fragment = describe_evidence(evidence)
     assert fragment == (
-        "median per-test ratio 1.00 over 55 comparable tests, 2 offenders, offender share 100.0% of the 103.2 s "
-        "per-test excess (concentrated from 50%)"
+        "median per-test ratio 1.00 over 55 comparable tests, 2 offenders, 70.0 s of new test time net of removed "
+        "tests, offender and new-test share 100.0% of the 103.2 s per-test excess (concentrated from 50%)"
     )
     offenders = describe_offenders(evidence.offenders)
     assert offenders == "`tests.odd::test_a b c'd` new -> 70.0 s, `tests.quick::test_0` 0.1 s -> 33.3 s"
@@ -345,7 +423,9 @@ def test_wording_fragments_stay_on_one_line() -> None:
 
 # Verdict wording and the second judgement of a breached limit
 
-BREACH = "suite test time was 351 s against a baseline median of 220 s over 5 main runs"
+WORDS = "suite test time was 351 s against a baseline median of 220 s over 5 main runs"
+BREACH = Breach(WORDS, 351.0, 340.0)
+PLAIN = f"::error::Timing regression: {WORDS}. Speed the job up."
 BASIS = "Evidence against each test's median over the main baseline records (5 with per-test times): "
 
 
@@ -378,13 +458,13 @@ def test_rejudge_returns_a_verdict_without_a_breach_unchanged() -> None:
 
 
 def test_rejudge_forgives_a_spread_slowdown_with_one_runner_variance_warning() -> None:
-    failed = Verdict(False, (f"::error::Timing regression: {BREACH}. Speed the job up.",), BREACH)
-    verdict = rejudge(failed, slowed(suite(), 1.6), [suite()] * 5)
+    verdict = rejudge(Verdict(False, (PLAIN,), BREACH), slowed(suite(), 1.6), [suite()] * 5)
     assert verdict == Verdict(
         True,
         (
-            f"::warning::Runner variance: {BREACH}. The breach is forgiven and the gate passes, because the slowdown "
-            f"is spread across the suite and not concentrated in a few tests. {BASIS}median per-test ratio 1.60 over "
+            f"::warning::Runner variance: {WORDS}. The breach is forgiven and the gate passes, because the slowdown "
+            "is spread across the suite and not concentrated in specific tests: divided by the suite-wide scale of "
+            f"1.60 the judged value is 219.4 s, inside its limit of 340.0 s. {BASIS}median per-test ratio 1.60 over "
             "55 comparable tests, 0 offenders, offender share 0.0% of the 248.2 s per-test excess (concentrated from "
             "50%).",
         ),
@@ -395,28 +475,92 @@ def test_rejudge_forgives_a_spread_slowdown_with_one_runner_variance_warning() -
 @pytest.mark.parametrize("passed", [False, True])
 def test_rejudge_keeps_the_outcome_of_a_concentrated_slowdown_and_names_the_offenders(passed: bool) -> None:
     current = {**suite(), "tests.quick::test_0": 33.3, "tests.quick::test_1": 44.4}
-    plain = Verdict(passed, (f"::error::Timing regression: {BREACH}. Speed the job up.",), BREACH)
-    verdict = rejudge(plain, current, [suite()] * 5)
+    verdict = rejudge(Verdict(passed, (PLAIN,), BREACH), current, [suite()] * 5)
     assert verdict.passed is passed
     assert verdict.breach == BREACH
     assert verdict.lines == (
-        f"::error::Timing regression: {BREACH}. Speed the job up. The slowdown is concentrated in a few tests. {BASIS}"
+        f"{PLAIN} The slowdown is concentrated in specific tests. {BASIS}"
         "median per-test ratio 1.00 over 55 comparable tests, 2 offenders, offender share 100.0% of the 77.4 s "
         "per-test excess (concentrated from 50%). Offenders: `tests.quick::test_1` 0.2 s -> 44.4 s, "
         "`tests.quick::test_0` 0.1 s -> 33.3 s.",
     )
 
 
+def test_rejudge_keeps_a_concentrated_slowdown_that_the_scale_would_account_for() -> None:
+    """Both parts are required: a runner 1.6 times slower does not forgive two tests that explain most of the excess."""
+    current = {**slowed(suite(), 1.6), "tests.quick::test_0": 200.0, "tests.quick::test_1": 300.0}
+    verdict = rejudge(Verdict(False, (PLAIN,), BREACH), current, [suite()] * 5)
+    assert not verdict.passed
+    assert (
+        f"{PLAIN} The slowdown is concentrated in specific tests. {BASIS}median per-test ratio 1.60" in verdict.lines[0]
+    )
+
+
 @pytest.mark.parametrize("passed", [False, True])
-def test_rejudge_without_evidence_keeps_the_verdict_and_says_why(passed: bool) -> None:
-    plain = Verdict(passed, (f"::error::Timing regression: {BREACH}. Speed the job up.",), BREACH)
-    verdict = rejudge(plain, slowed(suite(), 1.6), [{}] * 5)
+def test_rejudge_keeps_a_spread_slowdown_that_the_scale_does_not_account_for(passed: bool) -> None:
+    """Every test is 1.02 times slower, which explains 7 s of a 131 s breach: the gain is not the runner's."""
+    verdict = rejudge(Verdict(passed, (PLAIN,), BREACH), slowed(suite(), 1.02), [suite()] * 5)
     assert verdict == Verdict(
         passed,
         (
-            f"::error::Timing regression: {BREACH}. Speed the job up. Runner variance could not be assessed: no "
-            "baseline per-test times.",
+            f"{PLAIN} Runner variance does not account for the breach: divided by the suite-wide scale of 1.02 the "
+            f"judged value is 344.1 s, still above its limit of 340.0 s. {BASIS}median per-test ratio 1.02 over 55 "
+            "comparable tests, 0 offenders, offender share 0.0% of the 8.3 s per-test excess (concentrated from 50%).",
         ),
+        BREACH,
+    )
+
+
+@pytest.mark.parametrize(("limit", "forgiven"), [(219.3, False), (219.375, True), (219.4, True)])
+def test_rejudge_forgives_only_when_the_rescaled_value_is_back_inside_the_limit(limit: float, forgiven: bool) -> None:
+    """351 s at a scale of 1.6 is 219.375 s: forgiven at a limit of exactly that, kept at any limit under it."""
+    breach = Breach(WORDS, 351.0, limit)
+    verdict = rejudge(Verdict(False, (PLAIN,), breach), slowed(suite(), 1.6), [suite()] * 5)
+    assert verdict.passed is forgiven
+    assert verdict.lines[0].startswith("::warning::Runner variance: " if forgiven else f"{PLAIN} Runner variance does")
+
+
+def test_rejudge_never_scales_a_faster_suite_up() -> None:
+    """Most tests ran faster and ten ran 3 s slower: the scale stays 1, so the judged value is held as it is."""
+    current = slowed(suite(), 0.9)
+    for index in range(10):
+        current[f"tests.slow::test_{index}"] = suite()[f"tests.slow::test_{index}"] + 3.0
+    verdict = rejudge(Verdict(False, (PLAIN,), BREACH), current, [suite()] * 5)
+    assert not verdict.passed
+    assert verdict.lines[0].startswith(
+        f"{PLAIN} Runner variance does not account for the breach: divided by the suite-wide scale of 1.00 the judged "
+        f"value is 351.0 s, still above its limit of 340.0 s. {BASIS}median per-test ratio 0.90 over 55 comparable "
+    )
+
+
+def test_rejudge_keeps_one_slow_test_that_a_floor_of_small_growth_dilutes() -> None:
+    """One test 150 s slower is under half of the excess beside 140 tests each 1.2 s slower; the median is unchanged."""
+    current = big_suite()
+    for index in range(140):
+        current[f"tests.big::test_{index:03d}"] = 9.2
+    current["tests.big::test_299"] = 158.0
+    breach = Breach("suite test time was 918 s, above the 600 s ceiling", 918.0, 600.0)
+    plain = "::error::Suite test time was 918 s, above the 600 s ceiling."
+    verdict = rejudge(Verdict(False, (plain,), breach), current, [big_suite()] * 5)
+    assert verdict == Verdict(
+        False,
+        (
+            f"{plain} Runner variance does not account for the breach: divided by the suite-wide scale of 1.00 the "
+            f"judged value is 918.0 s, still above its limit of 600.0 s. {BASIS}median per-test ratio 1.00 over 300 "
+            "comparable tests, 1 offenders, offender share 47.2% of the 318.0 s per-test excess (concentrated from "
+            "50%). Offenders: `tests.big::test_299` 8.0 s -> 158.0 s.",
+        ),
+        breach,
+    )
+
+
+@pytest.mark.parametrize("passed", [False, True])
+def test_rejudge_without_evidence_keeps_the_verdict_and_says_why(passed: bool) -> None:
+    plain = Verdict(passed, (PLAIN,), BREACH)
+    verdict = rejudge(plain, slowed(suite(), 1.6), [{}] * 5)
+    assert verdict == Verdict(
+        passed,
+        (f"{PLAIN} Runner variance could not be assessed: no baseline per-test times.",),
         BREACH,
     )
     few = rejudge(plain, {"tests.m::slow": 160.0}, [{"tests.m::slow": 5.0}] * 5)
@@ -425,7 +569,8 @@ def test_rejudge_without_evidence_keeps_the_verdict_and_says_why(passed: bool) -
 
 
 def test_rejudge_counts_only_the_baseline_records_with_per_test_times() -> None:
-    failed = Verdict(False, ("::error::Suite test time was 645 s, above the 600 s ceiling.",), "breach")
+    breach = Breach("suite test time was 645 s, above the 600 s ceiling", 645.0, 600.0)
+    failed = Verdict(False, ("::error::Suite test time was 645 s, above the 600 s ceiling.",), breach)
     verdict = rejudge(failed, slowed(suite(), 1.2), [suite(), {}, suite(), {}, suite()])
     assert verdict.passed
     assert "over the main baseline records (3 with per-test times): median per-test ratio 1.20" in verdict.lines[0]

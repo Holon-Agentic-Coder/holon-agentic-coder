@@ -29,6 +29,7 @@ REPORT_MIN_SECONDS = 5.0
 COMPARABLE_FLOOR_SECONDS = 0.05
 MIN_COMPARABLE_TESTS = 20
 CONCENTRATED_SHARE = 0.5
+TEST_TIME_NAMES = {"suite": "suite test time", "sum": "summed test time"}
 
 
 @dataclass(frozen=True)
@@ -202,3 +203,8 @@ def describe_offenders(offenders: Sequence[Offender]) -> str:
         before = "new" if offender.is_new else f"{offender.baseline:.1f} s"
         parts.append(f"`{printable_test_id(offender.test_id)}` {before} -> {offender.current:.1f} s")
     return ", ".join(parts)
+
+
+def took(seconds: float, kind: str = "") -> str:
+    """Word a judged value with its measure: job wall clock, or test time of ``kind`` (``suite`` or ``sum``)."""
+    return f"{TEST_TIME_NAMES[kind]} was {seconds:.0f} s" if kind else f"job took {seconds:.0f} s"

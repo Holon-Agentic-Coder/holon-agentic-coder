@@ -4,12 +4,19 @@
 Every CI job takes a timestamp in its first step and calls this script in its last steps.
 
 - ``record`` mode (pushes to ``main`` and manual dispatches) writes the job's wall-clock duration, job name, runner OS
-  and, for test jobs, pytest's per-test durations from a JUnit XML report to a JSON record. The workflow uploads that
-  record as an artefact named ``ci-timing-<workflow>-<job>-<os>`` once the job has succeeded on ``main``.
+  and, for test jobs, the test time and pytest's per-test durations from a JUnit XML report to a JSON record. The
+  workflow uploads that record as an artefact named ``ci-timing-<workflow>-<job>-<os>`` once the job has succeeded on
+  ``main``.
 - ``compare`` mode (pull requests) fetches the last N records for the same artefact name from successful ``main`` runs
   and fails the job only when its duration exceeds the baseline median by more than the relative tolerance AND by more
   than the minimum absolute delta. Test jobs also print the tests whose time grew the most (the per-test report of
   ``scripts/ci_timing_noise.py``); that report never fails a job on its own.
+
+A job with a JUnit report is judged on its test time, not on wall clock, so runner start-up, checkout and dependency
+install do not count: the report's suite time ("suite test time"), or the sum of its test case times when it has none
+("summed test time"). The record stores it in the optional keys ``test_seconds`` and ``test_seconds_source`` (``suite``
+or ``sum``) next to the seven original keys; a record without them still loads. The two kinds differ by a factor of 2
+to 4 under ``pytest -n auto`` and are never compared with each other.
 
 Both modes fail above an absolute ceiling, which no label can override. While fewer than N baseline records exist (cold
 start) the relative check is skipped with a notice. The ``timing-regression-accepted`` pull-request label turns a
@@ -40,9 +47,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 try:
-    from scripts.ci_timing_noise import per_test_report
+    from scripts.ci_timing_noise import per_test_report, took
 except ImportError:  # run as a script file: only scripts/ itself is on sys.path
-    from ci_timing_noise import per_test_report
+    from ci_timing_noise import per_test_report, took
 
 OVERRIDE_LABEL = "timing-regression-accepted"
 API_ROOT = "https://api.github.com"
@@ -53,7 +60,7 @@ BASELINE_BRANCH = "main"
 
 @dataclass(frozen=True)
 class TimingRecord:
-    """One job's measured duration, plus per-test durations for test jobs."""
+    """One job's measured duration, plus per-test durations and the test time (with its kind) for test jobs."""
 
     job: str
     os: str
@@ -62,10 +69,12 @@ class TimingRecord:
     commit: str = ""
     run_id: str = ""
     tests: dict[str, float] = field(default_factory=dict)
+    test_seconds: float | None = None
+    test_seconds_source: str = ""
 
     def to_json(self) -> dict[str, object]:
-        """Return the record as a JSON-serialisable mapping."""
-        return {
+        """Return the record as a JSON-serialisable mapping; the test time keys appear only when it was measured."""
+        data: dict[str, object] = {
             "job": self.job,
             "os": self.os,
             "workflow": self.workflow,
@@ -74,6 +83,9 @@ class TimingRecord:
             "run_id": self.run_id,
             "tests": dict(self.tests),
         }
+        if self.test_seconds is not None:
+            data.update(test_seconds=self.test_seconds, test_seconds_source=self.test_seconds_source)
+        return data
 
     @classmethod
     def from_json(cls, data: dict[str, object]) -> TimingRecord:
@@ -81,6 +93,7 @@ class TimingRecord:
         tests = data.get("tests") or {}
         if not isinstance(tests, dict):
             raise ValueError("record 'tests' is not a mapping")
+        test_seconds = data.get("test_seconds")
         return cls(
             job=str(data["job"]),
             os=str(data["os"]),
@@ -89,7 +102,15 @@ class TimingRecord:
             commit=str(data.get("commit", "")),
             run_id=str(data.get("run_id", "")),
             tests={str(k): float(v) for k, v in tests.items()},
+            test_seconds=None if test_seconds is None else float(test_seconds),
+            test_seconds_source=str(data.get("test_seconds_source") or ""),
         )
+
+    def judged(self) -> tuple[float, str]:
+        """Return the value the ceiling applies to and its kind: test time when measured, otherwise wall clock."""
+        if self.test_seconds is None:
+            return self.duration, ""
+        return self.test_seconds, self.test_seconds_source
 
 
 @dataclass(frozen=True)
@@ -115,17 +136,30 @@ def artefact_name(workflow: str, job: str, os_name: str) -> str:
     return f"ci-timing-{workflow}-{job}-{os_name}"
 
 
-def parse_junit(path: str) -> dict[str, float]:
-    """Map ``classname::name`` to seconds for every ``testcase`` in a JUnit XML report.
+def read_junit(path: str) -> tuple[dict[str, float], float | None, str]:
+    """Return the per-test times, the test time and its kind from one parse of a JUnit XML report.
 
-    A missing or empty ``time`` attribute counts as zero; repeated ids keep the largest time.
+    Per-test times map ``classname::name`` to seconds for every ``testcase``: a missing or empty ``time`` attribute
+    counts as zero and repeated ids keep the largest time. Test time is the summed ``time`` of the top-level suites
+    (kind ``suite``; nested suites are ignored) when each has a plain decimal one above zero, otherwise the sum of the
+    per-test times (kind ``sum``); a report with neither has no test time.
     """
+    root = ET.parse(path).getroot()
     times: dict[str, float] = {}
-    for case in ET.parse(path).getroot().iter("testcase"):
+    for case in root.iter("testcase"):
         test_id = f"{case.get('classname', '')}::{case.get('name', '')}"
         seconds = float(case.get("time") or 0)
         times[test_id] = max(seconds, times.get(test_id, 0.0))
-    return times
+    top_level = [root] if root.tag == "testsuite" else root.findall("testsuite")
+    suites = [suite.get("time") or "" for suite in top_level]
+    if suites and all(text.replace(".", "", 1).isdecimal() and float(text) > 0 for text in suites):
+        return times, sum(float(text) for text in suites), "suite"
+    return (times, sum(times.values()), "sum") if times else (times, None, "")
+
+
+def parse_junit(path: str) -> dict[str, float]:
+    """Map ``classname::name`` to seconds for every ``testcase`` in a JUnit XML report (see ``read_junit``)."""
+    return read_junit(path)[0]
 
 
 def rolling_median(values: Sequence[float]) -> float | None:
@@ -142,16 +176,17 @@ def exceeds_relative(duration: float, median: float, thresholds: Thresholds) -> 
     return over_tolerance and over_delta
 
 
-def check_ceiling(duration: float, thresholds: Thresholds) -> Verdict | None:
-    """Return a failing verdict when ``duration`` is above the ceiling, otherwise ``None``."""
+def check_ceiling(duration: float, thresholds: Thresholds, kind: str = "") -> Verdict | None:
+    """Return a failing verdict when ``duration``, a value of measure ``kind``, is above the ceiling, else ``None``."""
     if duration <= thresholds.ceiling:
         return None
+    judged = took(duration, kind)
     return Verdict(
         False,
         (
-            f"::error::Job took {duration:.0f} s, above the {thresholds.ceiling:.0f} s ceiling. The ceiling cannot be "
-            f"overridden by the '{OVERRIDE_LABEL}' label; it changes only through a committed edit to the --ceiling "
-            "flag in the workflow file.",
+            f"::error::{judged[0].upper()}{judged[1:]}, above the {thresholds.ceiling:.0f} s ceiling. The ceiling "
+            f"cannot be overridden by the '{OVERRIDE_LABEL}' label; it changes only through a committed edit to the "
+            "--ceiling flag in the workflow file.",
         ),
     )
 
@@ -284,19 +319,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def load_tests(path: str) -> tuple[dict[str, float], list[str]]:
-    """Parse the JUnit report at ``path``; a missing or broken report yields no tests and a warning."""
+def load_tests(path: str) -> tuple[tuple[dict[str, float], float | None, str], list[str]]:
+    """Read the JUnit report at ``path``; a missing or broken report yields no tests, no test time and a warning."""
     if not path:
-        return {}, []
+        return ({}, None, ""), []
     try:
-        return parse_junit(path), []
+        return read_junit(path), []
     except (OSError, ET.ParseError, ValueError) as exc:
-        return {}, [f"::warning::Could not read the JUnit report {path} ({exc}); per-test data is skipped."]
+        warning = f"::warning::Could not read the JUnit report {path} ({exc}); per-test data is skipped."
+        return ({}, None, ""), [warning]
 
 
 def measure(args: argparse.Namespace, clock: Callable[[], float]) -> tuple[TimingRecord, list[str]]:
     """Build the current job's record and any warnings raised while reading its JUnit report."""
-    tests, warnings = load_tests(args.junit)
+    (tests, test_seconds, source), warnings = load_tests(args.junit)
     record = TimingRecord(
         job=args.job,
         os=args.os_name,
@@ -305,6 +341,8 @@ def measure(args: argparse.Namespace, clock: Callable[[], float]) -> tuple[Timin
         commit=os.environ.get("GITHUB_SHA", ""),
         run_id=os.environ.get("GITHUB_RUN_ID", ""),
         tests=tests,
+        test_seconds=None if test_seconds is None else round(test_seconds, 1),
+        test_seconds_source=source,
     )
     if args.output:
         os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
@@ -319,13 +357,16 @@ def thresholds_from(args: argparse.Namespace) -> Thresholds:
 
 
 def run_record(args: argparse.Namespace, clock: Callable[[], float]) -> Verdict:
-    """Write the record for this job and enforce the ceiling."""
+    """Write the record for this job and enforce the ceiling on its test time, or on wall clock without one."""
     record, warnings = measure(args, clock)
     summary = (
         f"Recorded {artefact_name(record.workflow, record.job, record.os)}: {record.duration:.0f} s, "
         f"{len(record.tests)} tests."
     )
-    verdict = check_ceiling(record.duration, thresholds_from(args)) or Verdict(True, ())
+    seconds, kind = record.judged()
+    if kind:
+        summary += f" The {took(seconds, kind)}."
+    verdict = check_ceiling(seconds, thresholds_from(args), kind) or Verdict(True, ())
     return Verdict(verdict.passed, (*warnings, summary, *verdict.lines))
 
 

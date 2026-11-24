@@ -33,18 +33,21 @@ format-code = "ruff check --fix . && ruff format ."
 format-docs = 'npx prettier --write "**/*.md"'
 format = "task format-code && task format-docs"
 test = 'pytest -n auto --dist worksteal -m "not integration_test and not stress"'
+test-e2e = "pytest -o norecursedirs= -m e2e apps/sandbox-executor/tests/e2e/test_flow_e2e.py"
 test-integration = 'pytest -m "integration_test"'
 test-stress = 'pytest -m "stress"'
 
 [tool.pytest.ini_options]
 testpaths = ["apps/sandbox-executor/tests"]
 pythonpath = [".", "apps/sandbox-executor/src"]
+norecursedirs = ["e2e"]
 # Unknown markers are only a warning by default, which is how a typo'd or unregistered marker can
 # sit silently outside every -m selection. Fail the run instead.
 addopts = ["--strict-markers"]
 markers = [
     "integration_test: marks tests as integration tests",
     "stress: marks long-running checks that re-run the unit suite in a child process (workspace survival, hermetic canary)",
+    "e2e: marks opt-in end-to-end flow tests against a host-local model endpoint",
 ]
 
 [tool.ruff]

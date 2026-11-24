@@ -457,6 +457,12 @@ The result is normalised to the canonical `{id}-agent` form (for example `antigr
 which is what ledger rows and plan ids record. A runner without a container image fails straight away with the list of
 supported runners and the name of the flag or variable that supplied the bad value.
 
+Recognised model aliases (for example `fable` or `claude-fable` -> `claude-fable-5-2`, `opus` or `claude-opus` ->
+`claude-opus-5-5`, `sonnet` or `claude-sonnet` -> `claude-sonnet-4-6`, `haiku` or `claude-haiku` -> `claude-haiku-4-5`,
+and `flash` -> `gemini-3.8-flash`) are normalised to their canonical model ID. When an alias is supplied via `--model`
+or `HOLON_MODEL`, both the resolved-model log line and `holon doctor` display the canonical model ID and name the alias
+it resolved from (for example `Model resolved to claude-fable-5-2 (source: flag, --model (alias 'fable'))`).
+
 `holon plan`, `holon execute`, `holon review-loop` and `holon flow` log every decision to stderr with its source (the
 CLI routes Holon's own INFO log messages there, leaving stdout untouched), for example
 `Agent runner resolved to claude-agent (source: harness, harness detection, marker CLAUDECODE)`. A flow resumed from
@@ -487,13 +493,13 @@ resolved.
 
 ### Default models
 
-| Runner              | Default model               | Notes                                                                                   |
-| ------------------- | --------------------------- | --------------------------------------------------------------------------------------- |
-| `antigravity-agent` | `gemini-3.8-flash-medium`   | Accepted by agy together with `--effort`; the label on every successful agy ledger row. |
-| `claude-agent`      | `claude-opus-5-5`           |                                                                                         |
-| `pi-agent`          | `claude-opus-5-5`           | Depends on the configured pi provider; override with `--model` or `HOLON_MODEL`.        |
-| `codex-agent`       | `gpt-5-codex`               | Not verified against the live CLI; `holon doctor` reports a rejected model.             |
-| `opencode-agent`    | `anthropic/claude-opus-5-5` | opencode expects `provider/model`; not verified against the live CLI.                   |
+| Runner              | Default model               | Notes                                                                                                                                                                                                                               |
+| ------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `antigravity-agent` | `gemini-3.8-flash-medium`   | Accepted by agy together with `--effort`; the label on every successful agy ledger row.                                                                                                                                             |
+| `claude-agent`      | `claude-opus-5-5`           | Supports `claude-fable-5-2` (`fable`, `claude-fable`), `claude-opus-5-5` (`opus`, `claude-opus`), `claude-sonnet-4-6` (`sonnet`, `claude-sonnet`), `claude-haiku-4-5` (`haiku`, `claude-haiku`); see `holon models --agent claude`. |
+| `pi-agent`          | `claude-opus-5-5`           | Depends on the configured pi provider; override with `--model` or `HOLON_MODEL`.                                                                                                                                                    |
+| `codex-agent`       | `gpt-5-codex`               | Not verified against the live CLI; `holon doctor` reports a rejected model.                                                                                                                                                         |
+| `opencode-agent`    | `anthropic/claude-opus-5-5` | opencode expects `provider/model`; not verified against the live CLI.                                                                                                                                                               |
 
 The previous `gemini-3.5-flash` default has been removed: current agy no longer lists it and rejects it together with
 `--effort`.

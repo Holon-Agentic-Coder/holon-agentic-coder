@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import pytest
 from sandbox_executor import cli
@@ -13,6 +14,7 @@ from sandbox_executor.agent_defaults import (
     get_model_capabilities,
     normalise_model_and_effort,
 )
+from sandbox_executor.preflight import PreflightResult, PreflightStatus
 
 
 def test_models_command_table_display(capsys: pytest.CaptureFixture[str]) -> None:
@@ -34,7 +36,9 @@ def test_models_command_table_display(capsys: pytest.CaptureFixture[str]) -> Non
     assert "antigravity-agent" in out
     assert "gemini-3.8-flash" in out
     assert "claude-agent" in out
+    assert "claude-fable-5-2" in out
     assert "claude-opus-5-5" in out
+    assert out.index("claude-fable-5-2") < out.index("claude-opus-5-5")
     assert "pi-agent" in out
     assert "codex-agent" in out
     assert "gemini-agent" not in out
@@ -84,13 +88,15 @@ def test_models_agent_filtering_claude(capsys: pytest.CaptureFixture[str]) -> No
     captured = capsys.readouterr()
     out = captured.out
 
+    assert "claude-fable-5-2" in out
     assert "claude-opus-5-5" in out
     assert "claude-sonnet-4-6" in out
     assert "claude-haiku-4-5" in out
-    assert "opus" in out
+    assert out.index("claude-fable-5-2") < out.index("claude-opus-5-5")
+    assert "fable, claude-fable" in out
+    assert "opus, claude-opus" in out
     assert "sonnet" in out
     assert "haiku" in out
-    assert "fable" in out
 
     assert "antigravity-agent" not in out
     assert "gemini-3.8-flash" not in out
@@ -144,6 +150,14 @@ def test_models_json_schema(capsys: pytest.CaptureFixture[str]) -> None:
         assert isinstance(entry["effort_levels"], list)
         assert isinstance(entry["fallback_tier"], str)
         assert isinstance(entry["auth_status"], str)
+
+    claude_entries = [entry for entry in data if entry["runner"] == "claude-agent"]
+    assert [entry["canonical_model"] for entry in claude_entries[:2]] == [
+        "claude-fable-5-2",
+        "claude-opus-5-5",
+    ]
+    assert claude_entries[0]["aliases"] == ["fable", "claude-fable"]
+    assert claude_entries[1]["aliases"] == ["opus", "claude-opus"]
 
 
 def test_models_json_filtered_agent(capsys: pytest.CaptureFixture[str]) -> None:
@@ -217,7 +231,10 @@ def test_doctor_invalid_model_suggests_holon_models(capsys: pytest.CaptureFixtur
 
     captured = capsys.readouterr()
     assert "Unrecognised model 'unsupported-model-xyz' for claude-agent" in captured.err
-    assert "Supported models for claude-agent: claude-opus-5-5, claude-sonnet-4-6, claude-haiku-4-5." in captured.err
+    assert (
+        "Supported models for claude-agent: claude-fable-5-2, claude-opus-5-5, claude-sonnet-4-6, claude-haiku-4-5."
+        in captured.err
+    )
     assert "Run 'holon models --agent claude' to inspect supported models and effort levels." in captured.err
 
 
@@ -255,9 +272,47 @@ def test_normalise_model_and_effort_coordination() -> None:
     assert model == "claude-opus-5-5"
     assert effort is None
 
-    model, effort = normalise_model_and_effort("claude", "fable", None)
+    model, effort = normalise_model_and_effort("claude", "claude-opus", None)
     assert model == "claude-opus-5-5"
     assert effort is None
+
+    model, effort = normalise_model_and_effort("claude", "fable", None)
+    assert model == "claude-fable-5-2"
+    assert effort is None
+
+    model, effort = normalise_model_and_effort("claude", "claude-fable", None)
+    assert model == "claude-fable-5-2"
+    assert effort is None
+
+
+def test_doctor_shows_canonical_model_and_alias_in_text_and_json(capsys: pytest.CaptureFixture[str]) -> None:
+    """Verify holon doctor shows canonical model id and alias when an alias is supplied."""
+    ok_probe = PreflightResult(
+        status=PreflightStatus.OK,
+        agent="claude-agent",
+        model="claude-fable-5-2",
+        image="holon/agent-claude",
+        exit_code=0,
+        output_excerpt="OK",
+        hint="",
+    )
+    with patch("sandbox_executor.cli.run_preflight_probe", return_value=ok_probe) as probe:
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main(["doctor", "--agent", "claude", "--model", "fable"])
+        assert exc_info.value.code == 0
+    assert probe.call_args[0][:2] == ("claude-agent", "claude-fable-5-2")
+    text_out = capsys.readouterr().out
+    assert "Model resolved to claude-fable-5-2" in text_out
+    assert "fable" in text_out
+
+    with patch("sandbox_executor.cli.run_preflight_probe", return_value=ok_probe) as probe:
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main(["doctor", "--agent", "claude", "--model", "fable", "--json"])
+        assert exc_info.value.code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["model"]["value"] == "claude-fable-5-2"
+    assert payload["model"]["source"] == "flag"
+    assert "fable" in payload["model"]["reason"]
 
 
 def test_detect_runner_auth_status_safe_and_opaque() -> None:

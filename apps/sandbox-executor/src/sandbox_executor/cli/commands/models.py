@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
 import json
 import sys
+from collections.abc import Sequence
 from typing import Any
 
 from sandbox_executor.agent_defaults import (

@@ -1,5 +1,3 @@
-"""End-to-end test harness and unconditional teardown utility for ``holon flow``."""
-
 from __future__ import annotations
 
 import os
@@ -112,10 +110,31 @@ _MODEL_OUTPUT_ERROR_SNIPPETS: tuple[str, ...] = (
     "model output",
 )
 
+_MODEL_OUTPUT_FAILURE_REASONS = frozenset({"empty_diff", "touch_set_violation", "over_budget"})
+_NON_RETRYABLE_MACHINERY_ERRORS = (
+    E2EMachineryError,
+    LocalLLMConfigError,
+    LedgerRewriteError,
+    TypeError,
+    AttributeError,
+    KeyError,
+    ValueError,
+)
+_REQUIRED_SUCCESS_STAGES = (FlowStage.INTENT.value, FlowStage.PLAN.value, FlowStage.EXECUTE.value)
+_RETRY_ALLOWED_OPTION_KEYS = frozenset(
+    {
+        "disposable_worktree",
+        "worktree_branch",
+        "worktree_resolver",
+        "gh_runner",
+        "git_runner",
+    }
+)
+_DEFAULT_E2E_AGENT = "pi-agent"
+_DEFAULT_E2E_MODEL = "local-model"
+
 
 class E2EPipelineEngine(PipelineEngine):
-    """PipelineEngine subclass that halts cleanly at the Stage 4 pre-PR boundary without ``--skip-review``."""
-
     def __init__(
         self,
         context: FlowContext,
@@ -135,13 +154,14 @@ class E2EPipelineEngine(PipelineEngine):
         )
 
     def execute_stage(self, stage: FlowStage) -> StageResult:
-        """Run Stages 1-3 normally and halt at the Stage 4 pre-PR boundary before any GitHub PR operation."""
         if stage == FlowStage.REVIEW:
             now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             if not self.context.execution_branch:
-                err = "Cannot enter Review pre-PR boundary without an active execution_branch in FlowContext."
-                self.context.log(err)
-                return StageResult(FlowStage.REVIEW, StageStatus.FAILED, start_time=now, end_time=now, error=err)
+                error_message = "Cannot enter Review pre-PR boundary without an active execution_branch in FlowContext."
+                self.context.log(error_message)
+                return StageResult(
+                    FlowStage.REVIEW, StageStatus.FAILED, start_time=now, end_time=now, error=error_message
+                )
             self.context.log("Stage 4 (REVIEW): E2E harness halting at pre-PR boundary before GitHub PR creation.")
             result = StageResult(
                 stage=FlowStage.REVIEW,
@@ -170,7 +190,7 @@ def _is_model_output_payload(payload: Mapping[str, Any]) -> bool:
         payload.get("over_budget")
         or payload.get("touch_set_violation")
         or payload.get("empty_diff")
-        or payload.get("failure_reason") in ("empty_diff", "touch_set_violation", "over_budget")
+        or payload.get("failure_reason") in _MODEL_OUTPUT_FAILURE_REASONS
     )
 
 
@@ -200,13 +220,9 @@ def classify_attempt_failure(
     error: BaseException | None = None,
     stage_results: Mapping[str, StageResult | dict[str, Any]] | None = None,
 ) -> FailureCategory:
-    """Classify an attempt failure into :attr:`FailureCategory.MODEL_OUTPUT` or :attr:`FailureCategory.MACHINERY`."""
     if isinstance(error, E2EModelOutputError):
         return FailureCategory.MODEL_OUTPUT
-    if isinstance(
-        error,
-        (E2EMachineryError, LocalLLMConfigError, LedgerRewriteError, TypeError, AttributeError, KeyError, ValueError),
-    ):
+    if isinstance(error, _NON_RETRYABLE_MACHINERY_ERRORS):
         return FailureCategory.MACHINERY
     if stage_results:
         from_stages = _classify_stage_results(stage_results)
@@ -237,15 +253,15 @@ def _extract_attempt_worktree_info(
 ) -> tuple[str | None, str | None, dict[str, Any]]:
     if not isinstance(attempt_result, Mapping):
         return default_worktree, default_worktree_branch, {}
-    wt = attempt_result.get("disposable_worktree") or default_worktree
-    wt_branch = attempt_result.get("worktree_branch") or default_worktree_branch
+    disposable_worktree = attempt_result.get("disposable_worktree") or default_worktree
+    worktree_branch = attempt_result.get("worktree_branch") or default_worktree_branch
     stages = attempt_result.get("stage_results")
     stage_dict = dict(stages) if isinstance(stages, Mapping) else dict(attempt_result)
-    return wt, wt_branch, stage_dict
+    return disposable_worktree, worktree_branch, stage_dict
 
 
 def _check_stage_results_succeeded(stage_results: Mapping[str, Any]) -> None:
-    for stage_name in (FlowStage.INTENT.value, FlowStage.PLAN.value, FlowStage.EXECUTE.value):
+    for stage_name in _REQUIRED_SUCCESS_STAGES:
         if stage_name not in stage_results:
             continue
         raw = stage_results[stage_name]
@@ -253,10 +269,10 @@ def _check_stage_results_succeeded(stage_results: Mapping[str, Any]) -> None:
         error = raw.error if isinstance(raw, StageResult) else str((raw or {}).get("error") or "")
         if status != StageStatus.SUCCESS.value:
             category = _classify_stage_results({stage_name: raw}) or FailureCategory.MACHINERY
-            msg = error or f"Stage '{stage_name}' did not succeed (status={status!r})."
+            error_message = error or f"Stage '{stage_name}' did not succeed (status={status!r})."
             if category == FailureCategory.MODEL_OUTPUT:
-                raise E2EModelOutputError(msg)
-            raise E2EMachineryError(msg)
+                raise E2EModelOutputError(error_message)
+            raise E2EMachineryError(error_message)
 
 
 def _should_override_attempt_error(attempt_exc: BaseException | None, guard_exc: BaseException) -> bool:
@@ -272,38 +288,43 @@ def _execute_guarded_attempt(
     repo_dir: str,
     options: Mapping[str, Any],
 ) -> tuple[E2EAttemptOutcome, BaseException | None]:
-    """Run one attempt with nested finally blocks guaranteeing zero-PR verification and unconditional teardown."""
-    wt_path: str | None = options.get("disposable_worktree")
-    wt_branch: str | None = options.get("worktree_branch")
+    disposable_worktree: str | None = options.get("disposable_worktree")
+    worktree_branch: str | None = options.get("worktree_branch")
     worktree_resolver: Callable[[int, str], tuple[str | None, str | None]] | None = options.get("worktree_resolver")
     if worktree_resolver is not None:
-        resolved_wt, resolved_branch = worktree_resolver(attempt, intent_prefix)
-        wt_path = resolved_wt or wt_path
-        wt_branch = resolved_branch or wt_branch
+        resolved_worktree, resolved_branch = worktree_resolver(attempt, intent_prefix)
+        disposable_worktree = resolved_worktree or disposable_worktree
+        worktree_branch = resolved_branch or worktree_branch
     gh_runner: GhRunnerCallable | None = options.get("gh_runner")
     git_runner: GitRunnerCallable = options.get("git_runner") or run_git
     stage_results: dict[str, Any] = {}
     attempt_exc: BaseException | None = None
-    zero_pr_res: ZeroPRCheckResult | None = None
+    zero_pr_result: ZeroPRCheckResult | None = None
 
     try:
         try:
             raw_outcome = attempt_fn(attempt, intent_prefix)
-            wt_path, wt_branch, stage_results = _extract_attempt_worktree_info(raw_outcome, wt_path, wt_branch)
+            disposable_worktree, worktree_branch, stage_results = _extract_attempt_worktree_info(
+                raw_outcome, disposable_worktree, worktree_branch
+            )
             _check_stage_results_succeeded(stage_results)
         except BaseException as exc:
             attempt_exc = exc
         finally:
             try:
-                zero_pr_res = enforce_zero_pr_guard(
-                    repo_dir, intent_prefix, worktree_branch=wt_branch, gh_runner=gh_runner
+                zero_pr_result = enforce_zero_pr_guard(
+                    repo_dir, intent_prefix, worktree_branch=worktree_branch, gh_runner=gh_runner
                 )
             except BaseException as guard_exc:
                 if _should_override_attempt_error(attempt_exc, guard_exc):
                     attempt_exc = guard_exc
     finally:
-        td_report = teardown_e2e_intent(
-            repo_dir, intent_prefix, disposable_worktree=wt_path, worktree_branch=wt_branch, git_runner=git_runner
+        teardown_report = teardown_e2e_intent(
+            repo_dir,
+            intent_prefix,
+            disposable_worktree=disposable_worktree,
+            worktree_branch=worktree_branch,
+            git_runner=git_runner,
         )
 
     if attempt_exc is None:
@@ -313,8 +334,8 @@ def _execute_guarded_attempt(
                 intent_prefix=intent_prefix,
                 succeeded=True,
                 stage_results=stage_results,
-                teardown_report=td_report,
-                zero_pr_result=zero_pr_res,
+                teardown_report=teardown_report,
+                zero_pr_result=zero_pr_result,
             ),
             None,
         )
@@ -325,8 +346,8 @@ def _execute_guarded_attempt(
             intent_prefix=intent_prefix,
             succeeded=False,
             stage_results=stage_results,
-            teardown_report=td_report,
-            zero_pr_result=zero_pr_res,
+            teardown_report=teardown_report,
+            zero_pr_result=zero_pr_result,
             failure_category=category,
             error_message=str(attempt_exc),
         ),
@@ -342,15 +363,8 @@ def run_e2e_with_retry(
     max_attempts: int = DEFAULT_E2E_MAX_ATTEMPTS,
     **kwargs: Any,
 ) -> E2ERunOutcome:
-    """Execute ``attempt_fn`` with unconditional per-attempt teardown, zero-PR guard, and retry classification."""
     epoch_fn: Callable[[], int] | None = kwargs.pop("epoch_fn", None)
-    extra_keys = set(kwargs) - {
-        "disposable_worktree",
-        "worktree_branch",
-        "worktree_resolver",
-        "gh_runner",
-        "git_runner",
-    }
+    extra_keys = set(kwargs) - _RETRY_ALLOWED_OPTION_KEYS
     if extra_keys:
         raise TypeError(f"run_e2e_with_retry() got unexpected keyword argument(s): {', '.join(sorted(extra_keys))}")
 
@@ -393,10 +407,10 @@ def run_e2e_with_retry(
                 f"Non-retryable E2E machinery failure on attempt {attempt}: {attempt_exc}"
             ) from attempt_exc
 
-    msg = f"E2E model-output failure persisted after {validated_max} attempt(s): {last_error}"
+    error_message = f"E2E model-output failure persisted after {validated_max} attempt(s): {last_error}"
     if isinstance(last_error, E2EModelOutputError):
-        raise E2EModelOutputError(msg) from last_error
-    raise E2EModelOutputError(msg)
+        raise E2EModelOutputError(error_message) from last_error
+    raise E2EModelOutputError(error_message)
 
 
 def run_e2e_flow_test(
@@ -407,7 +421,6 @@ def run_e2e_flow_test(
     dispatcher: Callable[..., int] | None = None,
     **kwargs: Any,
 ) -> E2ERunOutcome:
-    """Run a full disposable ``holon flow`` E2E test through Stages 1-3, halting at Stage 4 pre-PR boundary."""
     cli_args: Sequence[str] = kwargs.pop("cli_args", ())
     options: Mapping[str, Any] | None = kwargs.pop("options", None)
     agent: str | None = kwargs.pop("agent", None)
@@ -419,28 +432,28 @@ def run_e2e_flow_test(
         raise TypeError(f"run_e2e_flow_test() got unexpected keyword argument(s): {', '.join(sorted(kwargs))}")
 
     assert_no_skip_review_flag(cli_args=cli_args, options=options)
-    resolved_agent = agent or os.getenv("HOLON_AGENT", "").strip() or "pi-agent"
-    resolved_model = model or os.getenv("HOLON_MODEL", "").strip() or "local-model"
+    resolved_agent = agent or os.getenv("HOLON_AGENT", "").strip() or _DEFAULT_E2E_AGENT
+    resolved_model = model or os.getenv("HOLON_MODEL", "").strip() or _DEFAULT_E2E_MODEL
 
     def _resolve_attempt_worktree(_attempt: int, intent_prefix: str) -> tuple[str, str]:
         slug = _intent_slug_from_prefix(intent_prefix)
         worktree_branch = f"flow-{slug}"
-        disposable_wt = os.path.join(os.path.dirname(os.path.abspath(repo_dir)), worktree_branch)
-        return disposable_wt, worktree_branch
+        disposable_worktree = os.path.join(os.path.dirname(os.path.abspath(repo_dir)), worktree_branch)
+        return disposable_worktree, worktree_branch
 
     def _run_single_attempt(_attempt: int, intent_prefix: str) -> Mapping[str, Any]:
         slug = _intent_slug_from_prefix(intent_prefix)
-        disposable_wt, worktree_branch = _resolve_attempt_worktree(_attempt, intent_prefix)
-        if not os.path.exists(disposable_wt):
-            add_res = _invoke_git(
+        disposable_worktree, worktree_branch = _resolve_attempt_worktree(_attempt, intent_prefix)
+        if not os.path.exists(disposable_worktree):
+            add_result = _invoke_git(
                 git_runner,
-                ["worktree", "add", "--no-track", "-b", worktree_branch, disposable_wt, "main"],
+                ["worktree", "add", "--no-track", "-b", worktree_branch, disposable_worktree, "main"],
                 repo_dir,
             )
-            if add_res.returncode != 0:
+            if add_result.returncode != 0:
                 raise E2EMachineryError(
-                    f"Failed to provision disposable E2E worktree {disposable_wt!r}: "
-                    f"{(add_res.stderr or add_res.stdout).strip()}"
+                    f"Failed to provision disposable E2E worktree {disposable_worktree!r}: "
+                    f"{(add_result.stderr or add_result.stdout).strip()}"
                 )
 
         intent_data: dict[str, Any] = {
@@ -451,8 +464,8 @@ def run_e2e_flow_test(
             "goal": "Add a deterministic E2E verification helper and unit test.",
             "labels": ["e2e", "flow"],
         }
-        ctx = FlowContext(
-            target_worktree=disposable_wt,
+        flow_context = FlowContext(
+            target_worktree=disposable_worktree,
             intent_data=intent_data,
             agent=resolved_agent,
             model=resolved_model,
@@ -462,17 +475,17 @@ def run_e2e_flow_test(
             auto_calibrate=False,
             dispatcher=dispatcher,
         )
-        checkpoint_file = os.path.join(disposable_wt, ".holon", "e2e_checkpoint.json")
-        engine = E2EPipelineEngine(ctx, checkpoint_path=checkpoint_file)
+        checkpoint_file = os.path.join(disposable_worktree, ".holon", "e2e_checkpoint.json")
+        engine = E2EPipelineEngine(flow_context, checkpoint_path=checkpoint_file)
         results = engine.run()
         _check_stage_results_succeeded(results)
-        review_res = results.get(FlowStage.REVIEW.value)
-        if review_res is None or not review_res.payload.get("stopped_before_pr"):
+        review_result = results.get(FlowStage.REVIEW.value)
+        if review_result is None or not review_result.payload.get("stopped_before_pr"):
             raise E2EMachineryError("E2EPipelineEngine did not stop at the Stage 4 pre-PR boundary.")
         if assertion_fn is not None:
-            assertion_fn(ctx, results)
+            assertion_fn(flow_context, results)
         return {
-            "disposable_worktree": disposable_wt,
+            "disposable_worktree": disposable_worktree,
             "worktree_branch": worktree_branch,
             "stage_results": results,
         }

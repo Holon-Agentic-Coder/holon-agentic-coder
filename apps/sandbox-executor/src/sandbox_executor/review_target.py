@@ -231,7 +231,9 @@ def _classify_target_diff(repo_dir: str, target: ReviewTarget | str, base_branch
         has_diff, detail = _execution_effective_diff(repo_dir, branch, target_branch=base_branch)
         verdict = _DIFF_VERDICT_BY_HAS_DIFF.get(has_diff, DiffVerdict.UNVERIFIED)
         return verdict, detail
-    effective_base_branch = target.base_branch if isinstance(target, ReviewTarget) and target.base_branch else base_branch
+    effective_base_branch = (
+        target.base_branch if isinstance(target, ReviewTarget) and target.base_branch else base_branch
+    )
     base_ref, base_problem = _base_ref(repo_dir, effective_base_branch)
     if base_ref is None:
         return DiffVerdict.UNVERIFIED, base_problem

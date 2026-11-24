@@ -286,7 +286,10 @@ def test_stage5_entry_and_retry_sync_resolve_conflicts_and_block_cleanly(tmp_pat
         retry_safe=lambda: True,
         before_retry=make_calibrate_retry_sync(ctx),
     )
-    assert wrapped() == {"ok": True}
+    from tests.flow.sleep_patch import scoped_sleep_patch
+
+    with scoped_sleep_patch("sandbox_executor.flow.calibrate_retry"):
+        assert wrapped() == {"ok": True}
     assert calls == 2
 
     # A blocked retry sync raises permanent CalibrationSyncError without retrying further.

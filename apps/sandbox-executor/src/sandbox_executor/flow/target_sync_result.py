@@ -62,6 +62,7 @@ class SyncRequest:
     execution_id: str
     last_probe: TargetProbe | None = None
     code_resolver: CodeResolver = fail_closed_code_resolver
+    reentry_round: int = 0
 
 
 @dataclass(frozen=True)

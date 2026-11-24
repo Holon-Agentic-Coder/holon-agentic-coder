@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from sandbox_executor.flow.target_sync_result import SyncRequest, SyncResult
+from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest, SyncResult
 from sandbox_executor.ledger import append_action_record, generate_action_id, query_ledger
 
 SYNC_ACTION = "target_sync"
@@ -31,7 +31,7 @@ def superseded_sync_conflict(ledger_path: str, execution_id: str) -> str:
 
 def sync_row(request: SyncRequest, result: SyncResult, supersedes: str) -> dict[str, Any]:
     """The ``target_sync`` action row for ``result``; ``preserve_shape`` keeps its extra keys in this order."""
-    return {
+    row: dict[str, Any] = {
         "action_id": generate_action_id("SYNC"),
         "execution_id": request.execution_id,
         "action": SYNC_ACTION,
@@ -54,6 +54,9 @@ def sync_row(request: SyncRequest, result: SyncResult, supersedes: str) -> dict[
         "supersedes": supersedes,
         "error_context": result.error or None,
     }
+    if request.reentry_round > 0 or request.boundary is SyncBoundary.FLOW_END:
+        row["reentry_round"] = request.reentry_round
+    return row
 
 
 def append_sync_row(request: SyncRequest, result: SyncResult) -> SyncResult:

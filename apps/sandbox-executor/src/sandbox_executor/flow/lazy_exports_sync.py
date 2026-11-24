@@ -19,6 +19,7 @@ SYNC_LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.conflict_resolver_role": "conflict_code_resolver",
     "sandbox_executor.flow.conflict_resolver_tiers": "next_tier tier_ladder",
+    "sandbox_executor.flow.end_of_flow_sync": "EndOfFlowSeams EndOfFlowSyncResult finish_flow",
     "sandbox_executor.flow.resume_guard": "resume_merge_error",
     "sandbox_executor.flow.merge_git": "git_out has_conflict_markers",
     "sandbox_executor.flow.target_probe": (

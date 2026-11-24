@@ -10,12 +10,29 @@ writes nothing.
 
 from __future__ import annotations
 
-from sandbox_executor.flow.target_probe import probe_target
+from sandbox_executor.flow.target_probe import TargetProbe, probe_target
 from sandbox_executor.flow.target_sync_merge import merge_target
 from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest, SyncResult
 
 
-def sync_with_target(request: SyncRequest) -> SyncResult:
+def _preflight_sync(
+    worktree: str,
+    target_branch: str,
+    boundary: SyncBoundary,
+    last_probe: TargetProbe | None = None,
+    *,
+    head_ref: str = "HEAD",
+) -> tuple[TargetProbe, SyncResult | None]:
+    """Probe ``head_ref`` against ``origin/<target_branch>`` without checkout; return ``(probe, early_result)``."""
+    probe = probe_target(worktree, target_branch, last_probe, head_ref=head_ref)
+    if not probe.moved:
+        return probe, SyncResult("unchanged", probe.head_sha, probe.head_sha, probe.target_sha, probe=probe)
+    if boundary is SyncBoundary.TURN and not probe.conflicted_paths:
+        return probe, SyncResult("deferred", probe.head_sha, probe.head_sha, probe.target_sha, probe=probe)
+    return probe, None
+
+
+def sync_with_target(request: SyncRequest, *, probe: TargetProbe | None = None) -> SyncResult:
     """Sync the flow branch in ``request.worktree`` with ``origin/<request.target_branch>``.
 
     Returns ``unchanged`` when the target is already merged (no merge, push or row), ``deferred`` when it moved without
@@ -25,9 +42,8 @@ def sync_with_target(request: SyncRequest) -> SyncResult:
     Raises:
         TargetProbeError: When the target cannot be fetched or probed; the caller fails closed.
     """
-    probe = probe_target(request.worktree, request.target_branch, request.last_probe)
-    if not probe.moved:
-        return SyncResult("unchanged", probe.head_sha, probe.head_sha, probe.target_sha, probe=probe)
-    if request.boundary is SyncBoundary.TURN and not probe.conflicted_paths:
-        return SyncResult("deferred", probe.head_sha, probe.head_sha, probe.target_sha, probe=probe)
+    if probe is None:
+        probe, early = _preflight_sync(request.worktree, request.target_branch, request.boundary, request.last_probe)
+        if early is not None:
+            return early
     return merge_target(request, probe)

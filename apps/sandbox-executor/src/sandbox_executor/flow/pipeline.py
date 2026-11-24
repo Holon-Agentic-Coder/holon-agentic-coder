@@ -25,6 +25,7 @@ from sandbox_executor.flow.checkpoint import save_checkpoint
 from sandbox_executor.flow.child_progress import has_recorded_decomposition
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure
+from sandbox_executor.flow.end_of_flow_sync import finish_flow
 from sandbox_executor.flow.resume_guard import _resume_context_error
 from sandbox_executor.flow.review_restart import approval_stands, calibrate_with_review_restart
 from sandbox_executor.flow.stage_status import REVIEW_BOUNDARY_STATUSES
@@ -357,6 +358,9 @@ class PipelineEngine:
             if result.status in REVIEW_BOUNDARY_STATUSES:
                 self._handle_review_boundary(stage, result)
                 break
+            rev = self.context.stage_results.get(FlowStage.REVIEW.value)
+            if stage == FlowStage.CALIBRATE and result.status == StageStatus.SUCCESS and rev is not None:
+                self._finalize_approved_flow(stage, rev)
 
         return self.context.stage_results
 
@@ -364,13 +368,23 @@ class PipelineEngine:
         """Handle calibrate dispatch and logging when Stage 4 ends at the consensus boundary."""
         if stage == FlowStage.REVIEW:
             self._calibrate_after_consensus_halt()
+        cal = self.context.stage_results.get(FlowStage.CALIBRATE.value)
+        if approval_stands(self.context, result) and (cal is None or cal.status != StageStatus.FAILED):
+            self._finalize_approved_flow(stage)
+        elif not approval_stands(self.context, result):
+            halt = f"safely halted for human intervention at stage '{stage.value}'. Halting execution without merging."
+            self.context.log(f"Pipeline {halt}")
 
-        verb = (
-            f"finished at the merge boundary: review approved, PR ready for maintainer merge (stage '{stage.value}')."
-            if approval_stands(self.context, result)  # not after a merged-head CI failure withdrew it
-            else f"safely halted for human intervention at stage '{stage.value}'. Halting execution without merging."
-        )
-        self.context.log(f"Pipeline {verb}")
+    def _finalize_approved_flow(self, stage: FlowStage, review: StageResult | None = None) -> None:
+        if review is not None and not approval_stands(self.context, review):
+            return
+        end_sync = finish_flow(self.context, self._run_stage_once, self._record_stage)
+        if end_sync.blocked or not end_sync.clean:
+            self._record_stage(FlowStage.CALIBRATE, end_sync.failure_result(self.context))
+            self.context.log(f"Pipeline blocked at end-of-flow sync: {end_sync.reason}")
+            return
+        done = f"review approved, PR ready for maintainer merge (stage '{stage.value}'); completed successfully."
+        self.context.log(f"Pipeline finished at the merge boundary: {done}")
 
     def _calibrate_after_consensus_halt(self) -> None:
         """Run Stage 5 (or record it as skipped by --skip-calibrate) after Stage 4 ended at the consensus boundary."""

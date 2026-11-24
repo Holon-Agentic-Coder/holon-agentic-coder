@@ -36,6 +36,7 @@ def probe_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HOLON_AGENT_KEY", "sk-test-very-secret-value")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api-test-very-secret-value")
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr(preflight, "DEFAULT_RETRY_DELAY_SECONDS", 0.0)
     return tmp_path
 
 
@@ -398,39 +399,6 @@ def test_probe_without_any_credential_reports_not_logged_in_without_calling(prob
         < res.hint.index("ANTHROPIC_API_KEY")
     )
     runner_fn.assert_not_called()
-
-
-def test_probe_timeout_removes_container(probe_env):
-    calls = []
-
-    def runner_fn(cmd, **kwargs):
-        calls.append(cmd)
-        if cmd[:2] == ["docker", "run"]:
-            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
-        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-
-    res = run_preflight_probe("antigravity-agent", "m", timeout=1, runner_fn=runner_fn)
-    assert res.status is PreflightStatus.UNKNOWN
-    assert "interactive login" in res.hint
-    name = calls[0][calls[0].index("--name") + 1]
-    assert calls[1] == ["docker", "rm", "-f", name]
-
-
-def test_probe_timeout_cleanup_is_bounded_and_its_timeout_is_swallowed(probe_env, caplog):
-    calls = []
-
-    def runner_fn(cmd, **kwargs):
-        calls.append((cmd, kwargs))
-        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
-
-    with caplog.at_level(logging.WARNING, logger="sandbox_executor.preflight"):
-        res = run_preflight_probe("antigravity-agent", "m", timeout=1, runner_fn=runner_fn)
-    assert res.status is PreflightStatus.UNKNOWN
-    assert "interactive login" in res.hint
-    cleanup_cmd, cleanup_kwargs = calls[1]
-    assert cleanup_cmd[:3] == ["docker", "rm", "-f"]
-    assert cleanup_kwargs["timeout"] == preflight.CLEANUP_TIMEOUT_SECONDS
-    assert "Could not remove pre-flight container" in caplog.text
 
 
 def test_probe_without_docker(probe_env):

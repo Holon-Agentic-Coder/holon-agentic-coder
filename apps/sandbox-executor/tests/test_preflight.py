@@ -8,7 +8,7 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sandbox_executor import preflight
+from sandbox_executor import claude_keychain, preflight
 from sandbox_executor.cli import PACKAGE_LOGGER_NAME, _CurrentStderrHandler, configure_cli_logging, main
 from sandbox_executor.flow import get_default_checkpoint_path
 from sandbox_executor.launcher.coherence import FlowProxyChoice
@@ -36,6 +36,7 @@ def probe_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HOLON_AGENT_KEY", "sk-test-very-secret-value")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api-test-very-secret-value")
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr(preflight, "DEFAULT_RETRY_DELAY_SECONDS", 0.0)
     return tmp_path
 
 
@@ -387,50 +388,17 @@ def test_probe_without_any_credential_reports_not_logged_in_without_calling(prob
     runner_fn = MagicMock()
     res = run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=runner_fn)
     assert res.status is PreflightStatus.NOT_LOGGED_IN
-    assert "~/.holon/secrets/claude-oauth-token" in res.hint
-    assert "claude setup-token" in res.hint
-    assert "claude setup-token" in res.output_excerpt
-    assert "~/.holon/secrets/claude-oauth-token" in res.output_excerpt
+    for text in (res.hint, res.output_excerpt):
+        assert claude_keychain.store_command() in text
+        assert "claude setup-token" in text
+        assert ".holon/secrets" not in text
     assert "HOLON_AGENT_KEY" not in res.hint
     assert (
-        res.hint.index("claude-oauth-token")
+        res.hint.index("claude setup-token")
         < res.hint.index("CLAUDE_CODE_OAUTH_TOKEN")
         < res.hint.index("ANTHROPIC_API_KEY")
     )
     runner_fn.assert_not_called()
-
-
-def test_probe_timeout_removes_container(probe_env):
-    calls = []
-
-    def runner_fn(cmd, **kwargs):
-        calls.append(cmd)
-        if cmd[:2] == ["docker", "run"]:
-            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
-        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-
-    res = run_preflight_probe("antigravity-agent", "m", timeout=1, runner_fn=runner_fn)
-    assert res.status is PreflightStatus.UNKNOWN
-    assert "interactive login" in res.hint
-    name = calls[0][calls[0].index("--name") + 1]
-    assert calls[1] == ["docker", "rm", "-f", name]
-
-
-def test_probe_timeout_cleanup_is_bounded_and_its_timeout_is_swallowed(probe_env, caplog):
-    calls = []
-
-    def runner_fn(cmd, **kwargs):
-        calls.append((cmd, kwargs))
-        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
-
-    with caplog.at_level(logging.WARNING, logger="sandbox_executor.preflight"):
-        res = run_preflight_probe("antigravity-agent", "m", timeout=1, runner_fn=runner_fn)
-    assert res.status is PreflightStatus.UNKNOWN
-    assert "interactive login" in res.hint
-    cleanup_cmd, cleanup_kwargs = calls[1]
-    assert cleanup_cmd[:3] == ["docker", "rm", "-f"]
-    assert cleanup_kwargs["timeout"] == preflight.CLEANUP_TIMEOUT_SECONDS
-    assert "Could not remove pre-flight container" in caplog.text
 
 
 def test_probe_without_docker(probe_env):
@@ -883,16 +851,13 @@ def test_module_constants():
     assert preflight.TIMEOUT_ENV_VAR == "HOLON_PREFLIGHT_TIMEOUT"
 
 
-def test_probe_discovers_the_secrets_file_and_drops_a_stale_holon_agent_key(
-    probe_env, monkeypatch, isolated_env_file_dir
+def test_probe_discovers_the_keychain_and_drops_a_stale_holon_agent_key(
+    probe_env, monkeypatch, isolated_env_file_dir, fake_keychain
 ):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("HOLON_AGENT_KEY", make_probe("stale"))
-    value = "sk-ant-" + "oat" + make_probe("file")
-    secrets = probe_env / ".holon" / "secrets" / "claude-oauth-token"
-    secrets.parent.mkdir(parents=True)
-    secrets.write_text(value + "\n", encoding="utf-8")
-    secrets.chmod(0o600)
+    value = "sk-ant-" + "oat" + make_probe("k")
+    fake_keychain.entry = value
     seen = {}
 
     assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok

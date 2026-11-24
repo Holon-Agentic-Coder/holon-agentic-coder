@@ -15,11 +15,20 @@ DOCUMENTED_KEYS: tuple[tuple[str, str, str], ...] = (
     ("HOLON_MODEL", "unset", "Model the runner uses."),
     ("HOLON_AGENT_EFFORT", "`medium`", "Reasoning effort passed to the claude runner."),
     (
+        "HOLON_CLAUDE_CODE_MODE",
+        "`1`",
+        "Enable Claude Code experimental code mode in the claude runner's `--settings` `env` block.",
+    ),
+    (
         "HOLON_AGENT_OAUTH_TOKEN_FILE",
         "unset",
         "Path of a file holding the claude subscription token; read on the host into `HOLON_AGENT_OAUTH_TOKEN`.",
     ),
-    ("HOLON_AGENT_OAUTH_TOKEN", "unset", "Claude subscription token; prefer `HOLON_AGENT_OAUTH_TOKEN_FILE`."),
+    (
+        "HOLON_AGENT_OAUTH_TOKEN",
+        "unset",
+        "Claude subscription token; prefer the OS keychain, or `HOLON_AGENT_OAUTH_TOKEN_FILE`.",
+    ),
     ("HOLON_AGENT_KEY", "unset", "API key of a runner other than claude."),
     ("HOLON_AGENT_SETTINGS", "unset", "Extra claude `--settings` JSON (attribution); no longer needed for the token."),
     (

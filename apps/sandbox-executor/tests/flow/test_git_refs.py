@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -18,6 +19,8 @@ from sandbox_executor.flow import (
     run_review_loop,
     run_review_stage,
 )
+from sandbox_executor.flow.git_refs import _append_ledger_row
+from sandbox_executor.git import run_git as real_run_git
 
 from tests.flow.github.fake_github import FakeGitHub, ci_checks_payload
 from tests.flow.helpers import (
@@ -234,3 +237,29 @@ class TestStageTargetsIgnoreOperatorHead:
         ctx = _dispatch_context(host, agents, dispatcher=_record)
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
         assert modes == [0o644]
+
+
+def test_the_ledger_step_runs_its_whole_worktree_lifecycle_through_the_git_refs_runner(
+    flow_repos, tmp_path, monkeypatch
+):
+    """The ledger worktree module imports no git runner, so a patch of ``git_refs.run_git`` sees every command."""
+    host, _origin = flow_repos
+    branch = "I-1-x/P-2-y/E-3-z/_"
+    _git(host, "push", "-q", "origin", f"main:refs/heads/{branch}")
+    _git(host, "fetch", "-q", "origin")
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    worktree_commands: list[str] = []
+
+    def recording_git(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if args[:1] == ["worktree"]:
+            worktree_commands.append(args[1])
+        return real_run_git(args, **kwargs)
+
+    monkeypatch.setattr("sandbox_executor.flow.git_refs.run_git", recording_git)
+    row = {"entry_type": "summary", "execution_id": "E-3-z", "plan_branch": "I-1-x/P-2-y/_", "status": "success"}
+    context = FlowContext(repo_dir=str(host), token_reduce=False)
+
+    assert _append_ledger_row(context, branch, "executions.jsonl", row, "execute: record success row") is None
+
+    # Sweep (prune, list), the step's own worktree (add), then cleanup (remove, and the prune after the delete).
+    assert worktree_commands == ["prune", "list", "add", "remove", "prune"]

@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-390b1230",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-24T11:14:33.280755+00:00",
+  "updated_ts": "2026-11-24T11:14:33.280755+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795499606-198e5fb6-antigravity-agent",
+      "REV-1795499601-f10fc54a-antigravity-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795496321-flow-e2e-test-teardown/P-1795496340-ANA-G4A/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 2 iteration(s); final verdicts: Reviewer 1 APPROVED (0/0/0); Reviewer 2 APPROVED (0/0/0); Reviewer 3 APPROVED (0/0/0)",
+    "symptoms": []
+  }
+}

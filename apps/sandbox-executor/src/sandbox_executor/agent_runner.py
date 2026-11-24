@@ -10,9 +10,9 @@ import tempfile
 from collections.abc import Callable
 from typing import Any
 
-from sandbox_executor import local_llm
+from sandbox_executor import claude_keychain, local_llm
 from sandbox_executor.agent_attribution import attribution_off_settings
-from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES, SECRETS_FILE_DISPLAY
+from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +209,9 @@ def get_workspace_dir() -> str:
 
 
 _TRUTHY = ("1", "true", "yes", "on")
+_FALSY = ("0", "false", "no", "off")
+ENV_CLAUDE_CODE_MODE = "HOLON_CLAUDE_CODE_MODE"
+CLAUDE_EXPERIMENTAL_CODE_MODE_ENV = "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE"
 
 
 def skip_permissions_enabled() -> bool:
@@ -217,6 +220,14 @@ def skip_permissions_enabled() -> bool:
     Read on every call, so a runner honours the value current when its command is built rather than at import time.
     """
     return os.getenv("HOLON_AGENT_SKIP_PERMISSIONS", "true").lower() in _TRUTHY
+
+
+def claude_code_mode_enabled() -> bool:
+    """Return whether ``HOLON_CLAUDE_CODE_MODE`` (default enabled) turns on Claude Code experimental code mode."""
+    val = os.getenv(ENV_CLAUDE_CODE_MODE)
+    if val is None:
+        return True
+    return val.strip().lower() not in _FALSY
 
 
 class EnvMapping:
@@ -252,9 +263,9 @@ class AgentRunner:
         if self.agent_id == "claude":
             return (
                 "Error: Missing required credentials for agent 'claude'.\n"
-                f"Please write a token or API key to '{SECRETS_FILE_DISPLAY}' (from 'claude setup-token'), set "
-                "'CLAUDE_CODE_OAUTH_TOKEN' (sk-ant-oat...) or 'ANTHROPIC_API_KEY' (sk-ant-api...), or mount "
-                "session credentials. 'HOLON_AGENT_KEY' is not used for claude."
+                "Please store a token or API key from 'claude setup-token' in the host's OS keychain "
+                f"({claude_keychain.store_commands_text()}), set 'CLAUDE_CODE_OAUTH_TOKEN' (sk-ant-oat...) or "
+                "'ANTHROPIC_API_KEY' (sk-ant-api...), or mount a session. 'HOLON_AGENT_KEY' is not used for claude."
             )
         return (
             f"Error: Missing required API credentials for agent '{self.agent_id}'.\n"
@@ -677,7 +688,8 @@ class ClaudeAgentRunner(StandardAgentRunner):
     ) -> list[str]:
         """Build the launch argv with attribution disabled; the pre-flight probe (``compose_cmd``) makes no commits."""
         cmd = super().build_cmd(model_name, prompt_file, intent_file, full_prompt)
-        value = attribution_off_settings(os.getenv("HOLON_AGENT_SETTINGS"))
+        default_env = {CLAUDE_EXPERIMENTAL_CODE_MODE_ENV: "1"} if claude_code_mode_enabled() else None
+        value = attribution_off_settings(os.getenv("HOLON_AGENT_SETTINGS"), default_env=default_env)
         if "--settings" in cmd:
             cmd[cmd.index("--settings") + 1] = value
         else:

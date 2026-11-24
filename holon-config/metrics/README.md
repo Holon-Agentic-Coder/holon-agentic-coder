@@ -32,6 +32,7 @@ Defines the per-intent entropy risk and complexity weight factors:
 
 Fields:
 
+<!-- prettier-ignore -->
 - **`weights`**: Weight factors ($w_1 \dots w_5$) for predicted per-intent entropy ($\Delta S_{\text{intent,pred}}$):
   - `w1_ssa` (0.30): State Surface Area (LOC / files changed).
   - `w2_irr` (0.25): Irreversibility (migrations / destructive ops).

@@ -12,6 +12,7 @@ from sandbox_executor.flow.admission import AdmissionDecision
 from sandbox_executor.flow.github import token_scopes
 from sandbox_executor.launcher import env_files, mounts
 
+from tests import fake_keychain as fake_keychain_helper
 from tests import network_guard
 from tests.credential_env import CREDENTIAL_ENV_NAMES
 from tests.gh_write_guard import guarded_popen
@@ -128,21 +129,31 @@ def no_ambient_credentials(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def isolated_claude_secrets_file(tmp_path_factory, monkeypatch):
-    """Keep every test off the developer's real claude credential file under the real home.
+def isolated_claude_home(tmp_path_factory, monkeypatch):
+    """Keep every test off the real home, where a retired plaintext claude token file could still sit.
 
-    Points HOME at an empty temporary directory and makes the secrets path follow the test's own HOME when it sets one
-    (and this directory when it clears the environment, where `~` would otherwise fall back to the passwd home).
+    Points HOME at an empty temporary directory and makes the legacy token path (the one-time migration's input)
+    follow the test's own HOME when it sets one (and this directory when it clears the environment, where `~` would
+    otherwise fall back to the passwd home).
     """
-    from sandbox_executor import claude_credential
+    from sandbox_executor import claude_token_migration
 
     fake_home = str(tmp_path_factory.mktemp("claude-home"))
     monkeypatch.setenv("HOME", fake_home)
 
-    def secrets_file_path() -> str:
+    def legacy_token_file_path() -> str:
         return os.path.join(os.environ.get("HOME") or fake_home, ".holon", "secrets", "claude-oauth-token")
 
-    monkeypatch.setattr(claude_credential, "secrets_file_path", secrets_file_path)
+    monkeypatch.setattr(claude_token_migration, "legacy_token_file_path", legacy_token_file_path)
+
+
+@pytest.fixture(autouse=True)
+def fake_keychain(monkeypatch) -> fake_keychain_helper.FakeKeychain:
+    """Replace the OS secret store with an empty in-memory fake, so no test starts `security` or `secret-tool`.
+
+    Returns the fake; a test seeds `entry` or flips a failure switch on it.
+    """
+    return fake_keychain_helper.install(monkeypatch)
 
 
 @pytest.fixture(autouse=True)

@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-dcb6d19b",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-24T11:14:34.061053+00:00",
+  "updated_ts": "2026-11-24T11:14:34.061053+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795417112-2d381bdc-claude-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795409213-layered-env-config-v2/P-1795410717-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 7 iteration(s): conflict gate: target branch merged; approval must be re-earned on the new head; final verdicts: Reviewer 1 APPROVED (0/0/0); Reviewer 2 APPROVED (0/0/0); Reviewer 3 APPROVED (0/0/0)",
+    "symptoms": []
+  }
+}

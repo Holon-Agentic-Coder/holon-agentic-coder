@@ -155,11 +155,11 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         area=Area.RUNNER_AND_AGENT,
         purpose=(
             "Claude subscription token; the role dispatcher exports it as `CLAUDE_CODE_OAUTH_TOKEN`. "
-            "Prefer `HOLON_AGENT_OAUTH_TOKEN_FILE`; refused in a project `.env`."
+            "Prefer the OS keychain, or `HOLON_AGENT_OAUTH_TOKEN_FILE`; refused in a project `.env`."
         ),
         value_type="string (credential)",
         default="unset",
-        when_unset="claude uses `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` or its secrets file",
+        when_unset="claude uses `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` or the OS keychain",
         when_invalid="a value not shaped like a subscription token warns once and is forwarded all the same",
         read_side="both",
         since=_CREDENTIALS_DOC,
@@ -168,11 +168,17 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
     EnvironmentVariable(
         name="HOLON_AGENT_OAUTH_TOKEN_FILE",
         area=Area.RUNNER_AND_AGENT,
-        purpose="File holding the claude subscription token; read on the host into `HOLON_AGENT_OAUTH_TOKEN`.",
+        purpose=(
+            "File holding the claude subscription token; read on the host into `HOLON_AGENT_OAUTH_TOKEN`. An explicit "
+            "override of the OS keychain entry, which is the recommended store."
+        ),
         value_type="file path (`~` expanded)",
         default="unset",
         when_unset="no token file is read",
-        when_invalid="a missing, unreadable or empty file warns and sets no token; loose permissions warn",
+        when_invalid=(
+            "a missing, unreadable or empty file, or the retired `~/.holon/secrets/claude-oauth-token`, warns and sets "
+            "no token; loose permissions warn"
+        ),
         read_side="host",
         since=_CREDENTIALS_DOC,
     ),
@@ -233,6 +239,20 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="the default directory, else `~/.gemini/antigravity-cli`",
         when_invalid="a missing directory without `HOLON_AGENT_KEY` fails the run on macOS",
         read_side="host",
+        since=_AGENTS_DOC,
+    ),
+    EnvironmentVariable(
+        name="HOLON_CLAUDE_CODE_MODE",
+        area=Area.RUNNER_AND_AGENT,
+        purpose=(
+            "Enable Claude Code experimental code mode (`CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`) in the claude "
+            "runner's `--settings` `env` block."
+        ),
+        value_type="`1`, `true`, `yes`, `on` enable; `0`, `false`, `no`, `off` disable (any case)",
+        default="`1`",
+        when_unset="code mode is enabled (`CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`)",
+        when_invalid="any value other than `0`, `false`, `no` or `off` keeps code mode enabled",
+        read_side="both",
         since=_AGENTS_DOC,
     ),
     EnvironmentVariable(

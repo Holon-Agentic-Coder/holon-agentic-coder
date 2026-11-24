@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-bfc72e44",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-24T11:14:34.132041+00:00",
+  "updated_ts": "2026-11-24T11:14:34.132041+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795514369-89d84176",
+      "ACT-FIND-1795514366-a3387a43"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795496321-flow-e2e-test-teardown/P-1795496340-ANA-G4A/E-1795497446-ANA-G4A/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 8 finding detected: FIND-R2-008-01",
+    "symptoms": [
+      "run_e2e_flow_test leaks its disposable worktree and flow-<slug> branch when an attempt raises before returning, because wt_path and wt_branch are only populated in _execute_guarded_attempt after attempt_fn returns."
+    ]
+  }
+}

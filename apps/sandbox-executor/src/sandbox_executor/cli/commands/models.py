@@ -84,6 +84,10 @@ def run(args: argparse.Namespace) -> int:
             return 1
 
     capabilities = get_model_capabilities(agent_filter)
+    # One detection per runner, not per model row: for claude each detection may start an OS keychain lookup.
+    auth_statuses = {
+        runner: detect_runner_auth_status(runner) for runner in dict.fromkeys(cap.runner for cap in capabilities)
+    }
 
     if args.json:
         records: list[dict[str, Any]] = [
@@ -93,7 +97,7 @@ def run(args: argparse.Namespace) -> int:
                 "aliases": cap.aliases,
                 "effort_levels": cap.effort_levels,
                 "fallback_tier": cap.fallback_tier,
-                "auth_status": detect_runner_auth_status(cap.runner),
+                "auth_status": auth_statuses[cap.runner],
             }
             for cap in capabilities
         ]
@@ -107,7 +111,7 @@ def run(args: argparse.Namespace) -> int:
             "aliases": ", ".join(cap.aliases) if cap.aliases else "-",
             "effort_levels": ", ".join(cap.effort_levels) if cap.effort_levels else "-",
             "fallback_tier": cap.fallback_tier,
-            "auth_status": detect_runner_auth_status(cap.runner),
+            "auth_status": auth_statuses[cap.runner],
         }
         for cap in capabilities
     ]

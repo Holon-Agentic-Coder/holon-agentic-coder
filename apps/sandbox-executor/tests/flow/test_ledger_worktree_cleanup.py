@@ -109,11 +109,20 @@ def _ledger_temp_entries(temp_dir: Path) -> list[Path]:
     return sorted(temp_dir.glob("holon-flow-ledger-*"))
 
 
-def _plant_leftover(repos: LedgerRepos, name: str, owner_lock: bool = False, keep_directory: bool = True) -> Path:
+def _lock_as_an_unfinished_add(repo: Path, worktree: str) -> None:
+    """Lock a registered worktree the way git does for the length of ``git worktree add``'s checkout."""
+    _git(repo, "worktree", "lock", "--reason", "initializing", worktree)
+
+
+def _plant_leftover(
+    repos: LedgerRepos, name: str, owner_lock: bool = False, keep_directory: bool = True, unfinished_add: bool = False
+) -> Path:
     """Register a ledger worktree the way a killed step leaves it; returns its ``holon-flow-ledger-*`` directory."""
     tmp_root = repos.temp_dir / f"holon-flow-ledger-{name}"
     tmp_root.mkdir()
     _git(repos.host, "worktree", "add", "--detach", str(tmp_root / "worktree"), f"refs/remotes/origin/{BRANCH}")
+    if unfinished_add:
+        _lock_as_an_unfinished_add(repos.host, str(tmp_root / "worktree"))
     if owner_lock:
         (tmp_root / "owner.lock").touch()
     if not keep_directory:
@@ -235,6 +244,26 @@ def test_a_failed_worktree_removal_neither_fails_the_pushed_row_nor_leaves_a_reg
     assert _ledger_temp_entries(ledger_repos.temp_dir) == []
 
 
+def test_a_worktree_add_that_times_out_midway_leaves_no_registration_and_no_temp_directory(ledger_repos, monkeypatch):
+    previous_tip = ledger_repos.origin_tip()
+
+    def git_whose_worktree_add_times_out(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if args[:2] != ["worktree", "add"]:
+            return real_run_git(args, **kwargs)
+        # A runner that kills the add in its checkout leaves the worktree registered and still locked by git.
+        real_run_git(args, **kwargs)
+        _lock_as_an_unfinished_add(ledger_repos.host, args[3])
+        raise TimeoutError("git worktree add timed out")
+
+    monkeypatch.setattr("sandbox_executor.flow.git_refs.run_git", git_whose_worktree_add_times_out)
+
+    assert ledger_repos.append() == "git worktree add timed out"
+
+    assert _ledger_worktrees(ledger_repos.host) == []
+    assert _ledger_temp_entries(ledger_repos.temp_dir) == []
+    assert ledger_repos.origin_tip() == previous_tip
+
+
 @pytest.mark.parametrize("owner_lock", [False, True], ids=["without-a-lock-file", "with-an-unheld-owner-lock"])
 def test_the_next_step_removes_the_worktree_a_killed_step_left_with_its_directory(ledger_repos, owner_lock):
     leftover = _plant_leftover(ledger_repos, "killed", owner_lock=owner_lock)
@@ -279,8 +308,59 @@ def test_the_next_step_removes_the_worktree_of_a_step_whose_process_was_killed(l
     assert _ledger_temp_entries(ledger_repos.temp_dir) == []
 
 
-def test_a_worktree_whose_owner_is_alive_is_left_alone_until_the_owner_lets_go(ledger_repos):
-    leftover = _plant_leftover(ledger_repos, "live", owner_lock=True)
+@pytest.mark.parametrize(
+    ("owner_lock", "keep_directory"),
+    [(False, True), (True, True), (False, False)],
+    ids=["without-a-lock-file", "with-an-unheld-owner-lock", "without-its-directory"],
+)
+def test_the_next_step_removes_the_locked_worktree_a_killed_worktree_add_left(ledger_repos, owner_lock, keep_directory):
+    leftover = _plant_leftover(
+        ledger_repos, "killed", owner_lock=owner_lock, keep_directory=keep_directory, unfinished_add=True
+    )
+    assert _ledger_worktrees(ledger_repos.host) == [_registered_path(leftover)]
+    assert "locked initializing" in _git(ledger_repos.host, "worktree", "list", "--porcelain").splitlines()
+
+    assert ledger_repos.append() is None
+
+    assert _ledger_worktrees(ledger_repos.host) == []
+    assert _ledger_temp_entries(ledger_repos.temp_dir) == []
+
+
+def test_the_next_step_removes_the_worktree_of_a_step_whose_processes_were_killed_during_worktree_add(ledger_repos):
+    host = ledger_repos.host
+    # A checkout filter that kills its whole process group: the step, its ``git worktree add`` and the checkout die
+    # together while git still holds the worktree locked.
+    (host / ".git" / "info").mkdir(exist_ok=True)
+    (host / ".git" / "info" / "attributes").write_text("* filter=kill-the-step\n", encoding="utf-8")
+    _git(host, "config", "filter.kill-the-step.smudge", "kill -KILL 0")
+    environment = {**os.environ, "TMPDIR": str(ledger_repos.temp_dir), "PYTHONPATH": str(SOURCE_ROOT)}
+    killed = subprocess.run(
+        [sys.executable, "-c", KILLED_STEP, str(host), f"refs/remotes/origin/{BRANCH}"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        start_new_session=True,
+    )
+    assert killed.returncode == -signal.SIGKILL, killed.stderr
+    # The step never got its worktree: it died inside ``git worktree add``.
+    assert killed.stdout == ""
+    _git(host, "config", "--unset", "filter.kill-the-step.smudge")
+    (leftover,) = _ledger_temp_entries(ledger_repos.temp_dir)
+    assert _ledger_worktrees(host) == [_registered_path(leftover)]
+    assert "locked initializing" in _git(host, "worktree", "list", "--porcelain").splitlines()
+    assert (leftover / "owner.lock").exists()
+
+    assert ledger_repos.append() is None
+
+    assert _ledger_worktrees(host) == []
+    assert _ledger_temp_entries(ledger_repos.temp_dir) == []
+
+
+@pytest.mark.parametrize("unfinished_add", [False, True], ids=["after-its-worktree-add", "during-its-worktree-add"])
+def test_a_worktree_whose_owner_is_alive_is_left_alone_until_the_owner_lets_go(ledger_repos, unfinished_add):
+    leftover = _plant_leftover(ledger_repos, "live", owner_lock=True, unfinished_add=unfinished_add)
     owner = os.open(leftover / "owner.lock", os.O_RDWR)
     try:
         fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -304,9 +384,18 @@ def test_worktrees_that_are_not_stale_ledger_worktrees_survive_the_sweep(ledger_
     _git(host, "worktree", "add", "--detach", str(operator), "main")
     locked = _plant_leftover(ledger_repos, "locked")
     _git(host, "worktree", "lock", str(locked / "worktree"))
+    locked_for_a_reason = _plant_leftover(ledger_repos, "locked-for-a-reason")
+    _git(host, "worktree", "lock", "--reason", "kept for an inspection", str(locked_for_a_reason / "worktree"))
     on_a_branch = ledger_repos.temp_dir / "holon-flow-ledger-branch" / "worktree"
     _git(host, "worktree", "add", "-b", "kept-branch", str(on_a_branch), "main")
-    kept = sorted([os.path.realpath(operator), _registered_path(locked), os.path.realpath(on_a_branch)])
+    kept = sorted(
+        [
+            os.path.realpath(operator),
+            _registered_path(locked),
+            _registered_path(locked_for_a_reason),
+            os.path.realpath(on_a_branch),
+        ]
+    )
     assert sorted(_registered_worktrees(host)[1:]) == kept
 
     assert ledger_repos.append() is None

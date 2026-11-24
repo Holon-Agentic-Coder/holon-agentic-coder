@@ -545,7 +545,7 @@ def _handle_probe_timeout(
     except (subprocess.TimeoutExpired, OSError) as cleanup_exc:
         logger.warning("Could not remove pre-flight container %s: %s", container_name, cleanup_exc)
 
-    partial = _decode(exc.stdout) + _decode(exc.stderr)
+    partial = _combine_streams(exc.stdout, exc.stderr)
     if _EXPECTED_REPLY_RE.search(partial):
         logger.warning(
             "Pre-flight probe for %s (%s) received the expected OK reply, but container exit timed out after %gs "
@@ -612,9 +612,18 @@ def _run_probe(
     except OSError as exc:
         return _result(PreflightStatus.UNKNOWN, target.agent, target.model, target.image, output=str(exc))
 
-    output = (proc.stdout or "") + (proc.stderr or "")
+    output = _combine_streams(proc.stdout, proc.stderr)
     status = classify_probe_output(proc.returncode, output)
     return _result(status, target.agent, target.model, target.image, exit_code=proc.returncode, output=output)
+
+
+def _combine_streams(stdout: Any, stderr: Any) -> str:
+    """Combine stdout and stderr, joining non-empty streams with a newline when stdout lacks one."""
+    out = _decode(stdout)
+    err = _decode(stderr)
+    if out and err and not out.endswith("\n"):
+        return f"{out}\n{err}"
+    return out + err
 
 
 def _decode(value: Any) -> str:

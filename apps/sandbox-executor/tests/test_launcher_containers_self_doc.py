@@ -39,12 +39,15 @@ def find_docstrings(source: str) -> list[tuple[int, str]]:
     findings: list[tuple[int, str]] = []
     seen_lines: set[int] = set()
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            if ast.get_docstring(node, clean=False) is not None and node.body:
-                lineno = node.body[0].lineno
-                seen_lines.add(lineno)
-                label = getattr(node, "name", "<module>")
-                findings.append((lineno, f"{type(node).__name__}:{label}"))
+        if (
+            isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and ast.get_docstring(node, clean=False) is not None
+            and node.body
+        ):
+            lineno = node.body[0].lineno
+            seen_lines.add(lineno)
+            label = getattr(node, "name", "<module>")
+            findings.append((lineno, f"{type(node).__name__}:{label}"))
         if isinstance(node, (ast.Module, ast.ClassDef)):
             for stmt in node.body:
                 if _is_standalone_string_expr(stmt) and stmt.lineno not in seen_lines:

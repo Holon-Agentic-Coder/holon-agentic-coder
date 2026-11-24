@@ -1,0 +1,125 @@
+"""GitHub REST reads for the bookkeeping-only push gate.
+
+Three reads, one request each: ``compare`` (the paths changed between two commits and whether the head is strictly
+ahead of the base), ``list_earlier_runs`` (the earlier pull-request runs of one workflow on one branch, newest first)
+and ``list_jobs`` (the jobs of one run with their steps, latest attempt). All network access goes through
+``GateClient.opener``, which tests replace with a fake. The token is sent only through
+``scripts.ci_timing_gate.build_request`` (an unredirected header) and is never part of a URL or of the client's repr.
+
+An answer of an unexpected shape raises (``ValueError``, ``KeyError`` or ``TypeError``) and nothing here catches a
+network error: the gate turns every exception into a full run. Standard library only and Python 3.9 syntax, so the gate
+runs on the runner's own ``python3``.
+"""
+
+from __future__ import annotations
+
+import json
+import urllib.parse
+import urllib.request
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+from scripts.ci_timing_gate import API_ROOT, build_request, default_opener
+
+COMPARE_FILE_CAP = 300  # the compare API lists at most 300 changed files, whatever the size of the diff
+PAGE_SIZE = 100
+
+Opener = Callable[[urllib.request.Request], bytes]
+
+
+@dataclass(frozen=True)
+class GateClient:
+    """The repository, credentials and transport used for every API call; the opener is the test injection point."""
+
+    repo: str
+    token: str = field(repr=False)
+    opener: Opener = default_opener
+
+    def get_json(self, path: str) -> dict[str, object]:
+        """Return the decoded JSON object of ``GET /repos/{repo}/{path}``; raise ``ValueError`` for any other JSON."""
+        url = f"{API_ROOT}/repos/{self.repo}/{path}"
+        answer = json.loads(self.opener(build_request(url, self.token)))
+        if not isinstance(answer, dict):
+            raise ValueError("the API answer is not a JSON object")
+        return answer
+
+
+@dataclass(frozen=True)
+class Comparison:
+    """The compare answer the gate needs: the status, every changed path and whether the file list was cut short."""
+
+    status: str
+    paths: tuple[str, ...]
+    truncated: bool
+
+
+@dataclass(frozen=True)
+class RunRef:
+    """One earlier workflow run: its id, its number, the pull-request head it ran on and its status."""
+
+    run_id: int
+    run_number: int
+    head_sha: str
+    status: str
+
+
+def _quote(value: str) -> str:
+    """Quote ``value`` for one URL component; no character is safe, because branch names here contain ``/``."""
+    return urllib.parse.quote(value, safe="")
+
+
+def _file_paths(entry: object) -> list[str]:
+    """Return the new name of a changed file and, for a rename, its old name."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("filename"), str):
+        raise ValueError("a compare file entry has no text filename")
+    previous = entry.get("previous_filename")
+    if previous is None:
+        return [entry["filename"]]
+    if not isinstance(previous, str):
+        raise ValueError("a compare file entry has a previous filename that is not text")
+    return [entry["filename"], previous]
+
+
+def compare(client: GateClient, base: str, head: str) -> Comparison:
+    """Compare ``base...head``: the status is ``ahead`` only when ``head`` is a descendant of ``base``."""
+    answer = client.get_json(f"compare/{_quote(base)}...{_quote(head)}")
+    files = answer.get("files")
+    if not isinstance(files, list):
+        raise ValueError("the compare answer has no file list")
+    paths = tuple(path for entry in files for path in _file_paths(entry))
+    return Comparison(status=str(answer.get("status", "")), paths=paths, truncated=len(files) >= COMPARE_FILE_CAP)
+
+
+def _run_ref(run: object) -> RunRef:
+    """Build a ``RunRef`` from one ``workflow_runs`` entry; a missing field raises."""
+    if not isinstance(run, dict):
+        raise ValueError("a workflow run entry is not an object")
+    return RunRef(
+        run_id=int(run["id"]),
+        run_number=int(run["run_number"]),
+        head_sha=str(run["head_sha"]),
+        status=str(run.get("status", "")),
+    )
+
+
+def list_earlier_runs(client: GateClient, workflow_file: str, branch: str, before_run_number: int) -> list[RunRef]:
+    """Return the pull-request runs of ``workflow_file`` on ``branch`` below ``before_run_number``, highest first.
+
+    One page of 100 runs is read; the gate follows at most 20 of them.
+    """
+    query = f"event=pull_request&branch={_quote(branch)}&per_page={PAGE_SIZE}"
+    answer = client.get_json(f"actions/workflows/{_quote(workflow_file)}/runs?{query}")
+    runs = answer.get("workflow_runs")
+    if not isinstance(runs, list):
+        raise ValueError("the runs answer has no run list")
+    earlier = [ref for ref in map(_run_ref, runs) if ref.run_number < before_run_number]
+    return sorted(earlier, key=lambda ref: ref.run_number, reverse=True)
+
+
+def list_jobs(client: GateClient, run_id: int) -> list[dict[str, object]]:
+    """Return the jobs of run ``run_id`` with their steps: the latest attempt of each job, the API default."""
+    answer = client.get_json(f"actions/runs/{run_id}/jobs?per_page={PAGE_SIZE}")
+    jobs = answer.get("jobs")
+    if not isinstance(jobs, list) or not all(isinstance(job, dict) for job in jobs):
+        raise ValueError("the jobs answer has no job list")
+    return jobs

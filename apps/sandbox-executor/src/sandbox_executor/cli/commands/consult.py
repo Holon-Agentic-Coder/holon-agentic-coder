@@ -1,5 +1,3 @@
-"""Consult command module for knowledge records and wisdom queries."""
-
 from __future__ import annotations
 
 import argparse
@@ -10,10 +8,10 @@ from sandbox_executor import cli
 from sandbox_executor.cli.options import add_target_worktree_option
 
 ORDER = 100
+_ACTION_INDEX_DB_RELATIVE_PATH = "holon-knowledge/.index/action_index.db"
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register the consult subcommand parser."""
     parser = subparsers.add_parser(
         "consult",
         help="Consult knowledge records and wisdom using multi-label queries.",
@@ -81,10 +79,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
 
 def run(args: argparse.Namespace) -> int:
-    """Execute the consult command."""
-    db_path = args.db_path
-    if not db_path:
-        db_path = os.path.join(args.target_worktree, "holon-knowledge/.index/action_index.db")
+    db_path = args.db_path or os.path.join(args.target_worktree, _ACTION_INDEX_DB_RELATIVE_PATH)
     engine = cli.ConsultEngine(project_db_path=db_path)
     result = engine.consult_records(
         all_labels=args.all_labels,

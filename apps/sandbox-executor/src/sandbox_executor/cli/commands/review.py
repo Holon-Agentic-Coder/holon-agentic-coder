@@ -1,5 +1,3 @@
-"""Review command module for running native review loop on execution branch or change branch."""
-
 from __future__ import annotations
 
 import argparse
@@ -23,7 +21,6 @@ ORDER = 70
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register the review-loop subcommand parser."""
     parser = subparsers.add_parser(
         "review-loop",
         aliases=["review", "pr-review-loop"],
@@ -111,6 +108,16 @@ def _validate_review_args(args: argparse.Namespace) -> bool:
     return True
 
 
+def _should_run_local_review(args: argparse.Namespace) -> bool:
+    return bool(
+        getattr(args, "local", False)
+        or getattr(args, "dry_run", False)
+        or getattr(args, "json", False)
+        or os.getenv("HOLON_ROLE")
+        or os.getenv("HOLON_IN_SANDBOX")
+    )
+
+
 def _run_local_review(args: argparse.Namespace, effective_token_reduce: bool) -> None:
     from sandbox_executor.flow import run_review_loop_cli
 
@@ -136,15 +143,6 @@ def _build_container_review_args(args: argparse.Namespace) -> list[str]:
 
 
 def _container_review_worktree(args: argparse.Namespace) -> str:
-    """Return the host worktree the review-loop container reviews in place, with its branches fetched on the host.
-
-    A PR target is resolved to its head branch on the host first; the worktree that has that branch checked out is
-    reused (normally the run's flow-<slug>), and a pr<N>-<slug> worktree is provisioned only when none exists.
-    The plan, execution and base branches are fetched here because the container has no ssh and never fetches.
-
-    Raises:
-        RuntimeError: If a branch cannot be fetched from origin.
-    """
     worktree = os.path.abspath(getattr(args, "target_worktree", None) or ".")
     target = str(args.target).strip()
     base_branch = None
@@ -172,7 +170,6 @@ def _run_container_review(args: argparse.Namespace, effective_token_reduce: bool
 
 
 def run(args: argparse.Namespace) -> int | None:
-    """Execute the review-loop command."""
     try:
         if not _validate_review_args(args):
             return None
@@ -185,17 +182,10 @@ def run(args: argparse.Namespace) -> int | None:
             bool(getattr(args, "token_reduce", False) or getattr(args, "mitm_web", False))
         )
 
-        is_local = (
-            getattr(args, "local", False)
-            or getattr(args, "dry_run", False)
-            or getattr(args, "json", False)
-            or bool(os.getenv("HOLON_ROLE"))
-            or bool(os.getenv("HOLON_IN_SANDBOX"))
-        )
         agent_res, model_res = cli.resolve_runner_and_model(getattr(args, "agent", None), getattr(args, "model", None))
         args.agent, args.model = agent_res.value, model_res.value
 
-        if is_local:
+        if _should_run_local_review(args):
             _run_local_review(args, effective_token_reduce)
         else:
             _run_container_review(args, effective_token_reduce)

@@ -236,6 +236,20 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         since=_AGENTS_DOC,
     ),
     EnvironmentVariable(
+        name="HOLON_CLAUDE_CODE_MODE",
+        area=Area.RUNNER_AND_AGENT,
+        purpose=(
+            "Enable Claude Code experimental code mode (`CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`) in the claude "
+            "runner's `--settings` `env` block."
+        ),
+        value_type="`1`, `true`, `yes`, `on` enable; `0`, `false`, `no`, `off` disable (any case)",
+        default="`1`",
+        when_unset="code mode is enabled (`CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`)",
+        when_invalid="any value other than `0`, `false`, `no` or `off` keeps code mode enabled",
+        read_side="both",
+        since=_AGENTS_DOC,
+    ),
+    EnvironmentVariable(
         name="HOLON_CONFIG_RESOLVED",
         area=Area.RUNNER_AND_AGENT,
         purpose="Marks a role container whose configuration the host resolved; a nested holon reads no layer file.",

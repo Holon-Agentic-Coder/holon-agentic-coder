@@ -29,7 +29,7 @@ from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
 from sandbox_executor import budgets, config_env_secrets, preflight
-from sandbox_executor.agent_runner import RETIRED_ENV_VARS
+from sandbox_executor.agent_runner import ENV_CLAUDE_CODE_MODE, RETIRED_ENV_VARS
 from sandbox_executor.config_env_keys import DOCUMENTED_KEYS, HOST_SET_KEYS
 from sandbox_executor.config_env_model import EffectiveConfig, ParsedLayer, ResolvedSetting
 from sandbox_executor.config_env_parse import parse_env_text
@@ -47,6 +47,7 @@ SECRET_KEYS = frozenset(
 _SECRET_SUFFIXES = ("_TOKEN", "_KEY", "_PASSWORD", "_SECRET")
 # Documented built-in defaults, taken from their owners; a layer value replaces them, the absence of one keeps them.
 DEFAULTS: Mapping[str, str] = {
+    ENV_CLAUDE_CODE_MODE: "1",
     budgets.ENV_TURN_TIMEOUT: f"{budgets.DEFAULT_TURN_SECONDS:g}",
     budgets.ENV_TURN_STALL: f"{budgets.DEFAULT_STALL_SECONDS:g}",
     budgets.ENV_REVIEW_CI_WAIT: f"{budgets.DEFAULT_REVIEW_CI_WAIT_SECONDS:g}",

@@ -10,11 +10,9 @@ import io
 import json
 import os
 import secrets
-import socketserver
 import stat
 import sys
 import tempfile
-import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -24,6 +22,7 @@ from sandbox_executor.launcher import proxy_paths, root_ca, sidecar
 
 from tests.env_file_capture import DockerEnvFileRecorder
 from tests.leak_assertions import assert_no_fragment, make_probe
+from tests.loopback_http import serve_on_loopback
 
 
 class TestRewriteAuthority(unittest.TestCase):
@@ -901,28 +900,6 @@ def _fetcher(payload, calls=None):
     return fetch
 
 
-class _LoopbackHTTPServer(http.server.ThreadingHTTPServer):
-    """An HTTP server on 127.0.0.1 for the tests of the real fetch; it never waits for a name lookup or a handler.
-
-    ``HTTPServer.server_bind`` asks ``socket.getfqdn`` for the name of its own address, a reverse lookup that can take
-    tens of seconds on a runner. Each request is answered on a daemon thread, so a handler that is still writing to a
-    connection the client closed does not hold the shutdown back.
-    """
-
-    def server_bind(self):
-        socketserver.TCPServer.server_bind(self)
-        self.server_name, self.server_port = self.server_address[:2]
-
-
-def _serve_on_loopback(case: unittest.TestCase, handler: type) -> int:
-    """Serve ``handler`` on a free loopback port until ``case`` ends; return the port."""
-    server = _LoopbackHTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
-    case.addCleanup(server.server_close)
-    case.addCleanup(server.shutdown)
-    return server.server_port
-
-
 class TestHostGateways(unittest.TestCase):
     def test_groups_providers_by_server_and_skips_unprobeable_endpoints(self):
         host_config = {
@@ -1154,7 +1131,7 @@ class TestGatewayHealth(unittest.TestCase):
             def log_message(self, *args):
                 pass
 
-        port = _serve_on_loopback(self, Flood)
+        port = serve_on_loopback(self, Flood)
         with self.assertRaises(ValueError):
             local_llm._default_fetch(f"http://127.0.0.1:{port}/health", 2.0)
         health = local_llm.probe_gateway_health(f"http://127.0.0.1:{port}/v1")
@@ -1171,7 +1148,7 @@ class TestGatewayHealth(unittest.TestCase):
             def log_message(self, *args):
                 pass
 
-        port = _serve_on_loopback(self, Redirector)
+        port = serve_on_loopback(self, Redirector)
         health = local_llm.probe_gateway_health(f"http://127.0.0.1:{port}/v1")
         self.assertEqual(health.prefill_cache, "unknown")
         self.assertIn("redirect refused", health.error)

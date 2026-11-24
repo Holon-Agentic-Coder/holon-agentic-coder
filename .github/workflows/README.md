@@ -54,7 +54,9 @@ a test result, yet every push used to run every job in full. `scripts/ci_bookkee
 composite action `.github/actions/bookkeeping-gate`, lets a job skip its expensive steps after such a push. Every job
 still starts, reports under its usual name and ends green, so required status checks are satisfied. The script uses the
 standard library only and runs on the runner's own `python3`, with two sibling modules: `ci_bookkeeping_api.py` (the
-event of the run and the REST reads) and `ci_bookkeeping_chain.py` (the walk through earlier runs).
+event of the run and the REST reads) and `ci_bookkeeping_chain.py` (the walk through earlier runs). It also imports
+`scripts/ci_timing_gate.py`, the source of the request builder, the opener, the override label name and the step-summary
+writer.
 
 ### Bookkeeping paths
 
@@ -113,7 +115,7 @@ Rules that run the full job:
 - `result-affecting-label`: the label that was added or removed is one that a workflow reads.
 - `missing-previous-head`: the event of a push names no previous head.
 - `incomplete-event`: the event or the environment lacks the head commit, the branch, the workflow file, the job name,
-  the run number or the label name.
+  the run number, the run attempt or the label name.
 - `force-push-or-diverged`: the new head is not strictly ahead of the commit it is compared with (a force push or a
   rebase).
 - `diff-too-large`: the comparison lists 300 files or more, which is the most the API returns, so the list may be cut

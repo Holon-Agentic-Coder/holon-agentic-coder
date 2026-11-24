@@ -23,35 +23,30 @@ from sandbox_executor.git import run_git
 
 
 def _seed_disposable_e2e_repository(root: Path) -> tuple[Path, Path]:
-    """Create a disposable local bare ``origin.git`` and working ``repo`` clone for the E2E flow run."""
+    """Create a disposable local bare ``origin.git`` and working ``repo`` for the E2E flow run."""
     origin = root / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
 
-    seed = root / "seed"
-    subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True, capture_output=True)
+    repo = root / "repo"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, capture_output=True)
     for key, val in (("user.email", "e2e@holon.invalid"), ("user.name", "Holon E2E"), ("commit.gpgsign", "false")):
-        subprocess.run(["git", "config", key, val], cwd=seed, check=True, capture_output=True)
+        subprocess.run(["git", "config", key, val], cwd=repo, check=True, capture_output=True)
 
-    ledger_dir = seed / "holon-knowledge" / "ledger"
+    ledger_dir = repo / "holon-knowledge" / "ledger"
     ledger_dir.mkdir(parents=True, exist_ok=True)
     for name in ("intents.jsonl", "plans.jsonl", "executions.jsonl"):
         (ledger_dir / name).write_text("", encoding="utf-8")
 
-    (seed / ".gitignore").write_text(".holon/\nholon-knowledge/.index/\n", encoding="utf-8")
-    (seed / "src").mkdir(exist_ok=True)
-    (seed / "src" / "app.py").write_text(
+    (repo / ".gitignore").write_text(".holon/\nholon-knowledge/.index/\n", encoding="utf-8")
+    (repo / "src").mkdir(exist_ok=True)
+    (repo / "src" / "app.py").write_text(
         '"""Disposable E2E application module."""\n\n\ndef greet(name: str) -> str:\n    return f"Hello, {name}!"\n',
         encoding="utf-8",
     )
-    subprocess.run(["git", "add", "-A"], cwd=seed, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-q", "-m", "seed disposable E2E repo"], cwd=seed, check=True, capture_output=True)
-    subprocess.run(["git", "remote", "add", "origin", str(origin)], cwd=seed, check=True, capture_output=True)
-    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=seed, check=True, capture_output=True)
-
-    repo = root / "repo"
-    subprocess.run(["git", "clone", "-q", str(origin), str(repo)], check=True, capture_output=True)
-    for key, val in (("user.email", "e2e@holon.invalid"), ("user.name", "Holon E2E"), ("commit.gpgsign", "false")):
-        subprocess.run(["git", "config", key, val], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-q", "-m", "seed disposable E2E repo"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", str(origin)], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "push", "-q", "-u", "origin", "main"], cwd=repo, check=True, capture_output=True)
     return repo, origin
 
 

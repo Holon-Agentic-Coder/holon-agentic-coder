@@ -347,15 +347,20 @@ def _delete_scoped_local_branches(scope: _TeardownScope, errors: list[str]) -> l
     if res.returncode != 0:
         errors.append(f"git for-each-ref refs/heads/ failed: {(res.stderr or res.stdout).strip()}")
         return []
-    current = checked_out_branch(scope.repo_dir)
     matching = [
         line.strip()
         for line in res.stdout.splitlines()
         if line.strip()
         and is_ref_within_intent_prefix(line.strip(), scope.intent_prefix, worktree_branch=scope.worktree_branch)
     ]
+    if not matching:
+        return []
+    current = checked_out_branch(scope.repo_dir)
     if current and current in matching:
         _invoke_git(scope.git_runner, ["checkout", "-q", "--detach", "HEAD"], scope.repo_dir)
+    batch_res = _invoke_git(scope.git_runner, ["branch", "-D", *matching], scope.repo_dir)
+    if batch_res.returncode == 0:
+        return matching
     deleted: list[str] = []
     for branch in matching:
         del_res = _invoke_git(scope.git_runner, ["branch", "-D", branch], scope.repo_dir)
@@ -392,8 +397,16 @@ def _discover_scoped_remote_branches(scope: _TeardownScope) -> list[str]:
 
 
 def _delete_scoped_remote_branches(scope: _TeardownScope, errors: list[str]) -> list[str]:
+    branches = _discover_scoped_remote_branches(scope)
+    if not branches:
+        return []
+    batch_push = _invoke_git(scope.git_runner, ["push", "origin", "--delete", *branches], scope.repo_dir)
+    if batch_push.returncode == 0:
+        for branch in branches:
+            _invoke_git(scope.git_runner, ["update-ref", "-d", f"refs/remotes/origin/{branch}"], scope.repo_dir)
+        return branches
     deleted: list[str] = []
-    for branch in _discover_scoped_remote_branches(scope):
+    for branch in branches:
         push_res = _invoke_git(scope.git_runner, ["push", "origin", "--delete", branch], scope.repo_dir)
         _invoke_git(scope.git_runner, ["update-ref", "-d", f"refs/remotes/origin/{branch}"], scope.repo_dir)
         if push_res.returncode == 0 or (

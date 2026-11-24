@@ -43,28 +43,24 @@ from tests.flow.helpers import FakeRoleAgents, _configure_identity, _git
 
 
 def _create_bare_origin_and_clone(tmp_path: Path) -> tuple[Path, Path]:
-    """Create a local bare ``origin.git`` and a seeded working clone ``repo`` on ``main``."""
+    """Create a local bare ``origin.git`` and a seeded working repository ``repo`` on ``main``."""
     origin = tmp_path / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
 
-    seed = tmp_path / "seed"
-    subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True, capture_output=True)
-    _configure_identity(seed)
-    for name in ("intents.jsonl", "plans.jsonl", "executions.jsonl"):
-        ledger_dir = seed / "holon-knowledge" / "ledger"
-        ledger_dir.mkdir(parents=True, exist_ok=True)
-        (ledger_dir / name).write_text("", encoding="utf-8")
-    (seed / ".gitignore").write_text(".holon/\nholon-knowledge/.index/\n", encoding="utf-8")
-    (seed / "src").mkdir(exist_ok=True)
-    (seed / "src" / "app.py").write_text("print('seed')\n", encoding="utf-8")
-    _git(seed, "add", "-A")
-    _git(seed, "commit", "-q", "-m", "seed main")
-    _git(seed, "remote", "add", "origin", str(origin))
-    _git(seed, "push", "-q", "origin", "main")
-
     repo = tmp_path / "repo"
-    subprocess.run(["git", "clone", "-q", str(origin), str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, capture_output=True)
     _configure_identity(repo)
+    ledger_dir = repo / "holon-knowledge" / "ledger"
+    ledger_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("intents.jsonl", "plans.jsonl", "executions.jsonl"):
+        (ledger_dir / name).write_text("", encoding="utf-8")
+    (repo / ".gitignore").write_text(".holon/\nholon-knowledge/.index/\n", encoding="utf-8")
+    (repo / "src").mkdir(exist_ok=True)
+    (repo / "src" / "app.py").write_text("print('seed')\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "seed main")
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "push", "-q", "-u", "origin", "main")
     return repo, origin
 
 
@@ -189,7 +185,7 @@ class TestTeardownAndDeletionEnumeration:
         ]
         for branch in unrelated_branches:
             _git(repo, "branch", branch, "main")
-            _git(repo, "push", "-q", "origin", branch)
+        _git(repo, "push", "-q", "origin", *unrelated_branches)
 
         # Provision an unrelated worktree that must remain untouched.
         unrelated_wt = tmp_path / "flow-unrelated"
@@ -210,7 +206,7 @@ class TestTeardownAndDeletionEnumeration:
         ]
         for branch in scoped_branches:
             _git(repo, "branch", branch, "main")
-            _git(repo, "push", "-q", "origin", branch)
+        _git(repo, "push", "-q", "origin", *scoped_branches)
 
         report = teardown_e2e_intent(
             str(repo),

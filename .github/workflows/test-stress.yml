@@ -98,7 +98,7 @@ jobs:
         run: |
           python3 scripts/ci_timing_gate.py "$TIMING_MODE" \
             --workflow test-stress --job workspace-survival --os "${{ matrix.os }}" --start "$CI_TIMING_START" \
-            --runs 5 --tolerance 0.5 --min-delta 120 --ceiling 600 \
+            --runs 5 --tolerance 0.5 --min-delta 120 --ceiling 900 \
             --junit stress-report.xml --repo "$GITHUB_REPOSITORY" --output ci-timing/record.json \
             --override-label-present "$TIMING_OVERRIDE"
 

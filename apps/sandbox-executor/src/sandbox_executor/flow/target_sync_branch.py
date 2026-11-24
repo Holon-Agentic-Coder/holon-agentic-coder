@@ -26,7 +26,18 @@ def _can_sync_worktree(worktree: str, target_branch: str) -> bool:
 def _best_branch_ref(worktree: str, branch: str) -> str | None:
     """Prefer ``origin/<branch>`` only when it fast-forwards ``refs/heads/<branch>``; never drop local commits."""
     local_ref, remote_ref = f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"
-    local_sha, remote_sha = _rev_sha(worktree, local_ref), _rev_sha(worktree, remote_ref)
+    res = run_git(
+        ["for-each-ref", "--format=%(refname) %(objectname)", local_ref, remote_ref],
+        cwd=worktree,
+        check=False,
+    )
+    refs: dict[str, str] = {}
+    if res.returncode == 0 and isinstance(res.stdout, str):
+        for line in res.stdout.splitlines():
+            name, _, sha = line.partition(" ")
+            if name and sha:
+                refs[name] = sha
+    local_sha, remote_sha = refs.get(local_ref, ""), refs.get(remote_ref, "")
     if not local_sha:
         return remote_ref if remote_sha else None
     if not remote_sha or local_sha == remote_sha:

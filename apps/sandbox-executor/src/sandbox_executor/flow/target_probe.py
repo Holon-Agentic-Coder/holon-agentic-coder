@@ -123,7 +123,7 @@ def probe_target(
     target_sha, head_sha = _rev_parse_pair(worktree, target_ref, head_ref)
     if last_probe is not None and (last_probe.head_sha, last_probe.target_sha) == (head_sha, target_sha):
         return replace(last_probe, cached=True)
-    if _is_ancestor(worktree, target_sha, head_sha):
+    if target_sha == head_sha or _is_ancestor(worktree, target_sha, head_sha):
         return TargetProbe(target_ref, target_sha, head_sha, target_sha, moved=False)
     paths = merge_tree_conflicts(worktree, head_sha, target_sha)
     return TargetProbe(target_ref, target_sha, head_sha, _merge_base(worktree, head_sha, target_sha), True, paths)

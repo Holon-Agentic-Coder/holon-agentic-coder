@@ -30,8 +30,9 @@ jobs:
           # macOS runners showed a 135.2 s same-code swing (235 s vs 370.2 s), so 150 s keeps pure
           # runner variance below the gate while a real slowdown still exceeds it. ubuntu runs the
           # same suite in ~120 s with no comparable swing, so it keeps the script default of 120 s:
-          # the relative gate there deliberately fires only around a doubling, and the 600 s ceiling
-          # remains the absolute backstop on both runners.
+          # the relative gate there deliberately fires only around a doubling, and the 900 s ceiling
+          # remains the absolute backstop on both runners (main already reached 594 s on macos-latest
+          # as the unit suite grew to ~6,965 tests).
           - os: ubuntu-latest
             timing-min-delta: 120
           - os: macos-latest
@@ -65,7 +66,7 @@ jobs:
         run: |
           python3 scripts/ci_timing_gate.py "$TIMING_MODE" \
             --workflow test-unit --job unit --os "${{ matrix.os }}" --start "$CI_TIMING_START" \
-            --runs 5 --tolerance 0.5 --min-delta "${{ matrix.timing-min-delta }}" --ceiling 600 \
+            --runs 5 --tolerance 0.5 --min-delta "${{ matrix.timing-min-delta }}" --ceiling 900 \
             --junit unit-report.xml --repo "$GITHUB_REPOSITORY" --output ci-timing/record.json \
             --override-label-present "$TIMING_OVERRIDE"
 

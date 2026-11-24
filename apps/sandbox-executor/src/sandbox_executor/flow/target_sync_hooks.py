@@ -58,7 +58,7 @@ def active_flow_branch(context: FlowContext, stage: FlowStage) -> str:
         FlowStage.PLAN: (context.plan_branch, context.intent_branch),
         FlowStage.EXECUTE: (context.execution_branch, context.plan_branch, context.intent_branch),
         FlowStage.REVIEW: (context.execution_branch, context.plan_branch),
-        FlowStage.CALIBRATE: (context.calibrated_branch, context.execution_branch),
+        FlowStage.CALIBRATE: (context.execution_branch,),
     }
     return next((branch for branch in candidates.get(stage, ()) if branch), "")
 

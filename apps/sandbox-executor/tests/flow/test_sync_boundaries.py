@@ -394,3 +394,27 @@ def test_child_turn_boundary_syncs_plan_branch_and_propagates_notice(tmp_path: P
     assert "## Target branch merged" in notice
     assert f"`{LEDGER}`" in notice
     assert consume_target_merge_notice(ctx) == ""
+
+
+def test_stage5_resume_flow_start_syncs_execution_branch_not_calibrated(tmp_path: Path) -> None:
+    from sandbox_executor.flow.calibrate_sync import prepare_calibrated_branch
+    from sandbox_executor.flow.target_sync_hooks import active_flow_branch
+    from sandbox_executor.ref_names import calibration_branch
+
+    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n"})
+    calibrated = calibration_branch(FLOW_BRANCH)
+    exec_before = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
+    _git(work, "branch", "--no-track", calibrated, exec_before)
+    _git(work, "push", "-q", "origin", calibrated)
+    _inject_ledger_conflict(work, FLOW_BRANCH, 6)
+
+    ctx = _context_for(work, FlowStage.CALIBRATE)
+    ctx.calibrated_branch = calibrated
+
+    assert active_flow_branch(ctx, FlowStage.CALIBRATE) == FLOW_BRANCH
+    assert at_flow_start(ctx, FlowStage.CALIBRATE) is None
+    assert _git(work, "rev-parse", f"refs/heads/{calibrated}") == exec_before
+    exec_after = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
+    assert exec_after != exec_before
+    assert prepare_calibrated_branch(ctx, exec_after) is True
+    assert _git(work, "rev-parse", f"refs/heads/{calibrated}") == exec_after

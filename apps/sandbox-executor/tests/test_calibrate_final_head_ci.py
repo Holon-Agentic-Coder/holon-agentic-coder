@@ -247,15 +247,16 @@ def test_pr_head_never_matching_pushed_head_is_unknown(tmp_path: Path) -> None:
     assert fakes.probes == 0
 
 
-def test_failure_does_not_end_the_wait_while_other_checks_are_pending(tmp_path: Path) -> None:
+def test_failure_ends_the_wait_early_while_other_checks_are_pending(tmp_path: Path) -> None:
     fakes = Fakes(
         _status([_check("lint", "fail"), _check("unit", "pending")]),
         _status([_check("lint", "fail"), _check("unit", "fail")]),
     )
     record = _run(tmp_path, fakes)
     assert record["state"] == "failed"
-    assert record["failed_checks"] == ["lint", "unit"]
-    assert fakes.sleeps
+    assert record["failed_checks"] == ["lint"]
+    assert fakes.sleeps == []
+    assert fakes.probes == 1
 
 
 # --- the merged-head CI gate runs before any calibration commit is pushed --------------------------------------------

@@ -121,12 +121,14 @@ def _run_loop(tmp_path: Path, monkeypatch, probes: list[dict], fake: FakeTime, p
 
 
 def test_pending_checks_that_settle_reach_consensus_without_charging_the_iteration(tmp_path, monkeypatch):
-    # A one-minute iteration budget: the 15 + 30 + 60 s wait would breach it under the old behaviour.
+    # A one-minute iteration budget: five 15 s polls (75 s) would breach it under the old behaviour.
     monkeypatch.setenv(ENV_STAGE_BUDGET_MINUTES["review_iteration"], "1")
     fake = FakeTime()
-    res = _run_loop(tmp_path, monkeypatch, [PENDING, PENDING, PENDING, PENDING, PASSED], fake, ci_wait_budget=600.0)
+    res = _run_loop(
+        tmp_path, monkeypatch, [PENDING, PENDING, PENDING, PENDING, PENDING, PASSED], fake, ci_wait_budget=600.0
+    )
 
-    assert fake.sleeps == [15.0, 30.0, 60.0, 120.0]
+    assert fake.sleeps == [15.0, 15.0, 15.0, 15.0, 15.0]
     assert res["consensus"]["approved"] is True
     assert res["consensus"]["iterations"] == 1
     assert res["budget_breach"] is None
@@ -164,19 +166,37 @@ def test_budget_already_spent_is_not_waited_out_again():
 
 
 def test_back_off_grows_to_its_ceiling_and_no_further():
-    fake = FakeTime()
-    context = MagicMock()
-    probe = MagicMock(return_value=dict(PENDING))
-    policy = CiWaitPolicy(500.0, 15.0, CI_WAIT_POLL_CEILING_SECONDS, clock=fake.clock, sleep=fake.sleep)
-    status, result = wait_for_pending_ci(context, probe, dict(PENDING), policy)
+    assert CI_WAIT_POLL_CEILING_SECONDS == 15.0
+    fake_small = FakeTime()
+    policy_small = CiWaitPolicy(50.0, 3.0, CI_WAIT_POLL_CEILING_SECONDS, clock=fake_small.clock, sleep=fake_small.sleep)
+    status, result = wait_for_pending_ci(
+        MagicMock(), MagicMock(return_value=dict(PENDING)), dict(PENDING), policy_small
+    )
 
-    assert fake.sleeps == [15.0, 30.0, 60.0, 120.0, 120.0, 120.0, 35.0]
+    assert fake_small.sleeps == [3.0, 6.0, 12.0, 15.0, 14.0]
     assert result.exhausted is True
-    assert result.waited_seconds == 500.0
+    assert result.waited_seconds == 50.0
     assert status["pending"] == 1
-    assert next_poll_interval(120.0) == 120.0
+
+    fake_default = FakeTime()
+    policy_default = CiWaitPolicy(
+        50.0, 15.0, CI_WAIT_POLL_CEILING_SECONDS, clock=fake_default.clock, sleep=fake_default.sleep
+    )
+    wait_for_pending_ci(MagicMock(), MagicMock(return_value=dict(PENDING)), dict(PENDING), policy_default)
+    assert fake_default.sleeps == [15.0, 15.0, 15.0, 5.0]
+
+    fake_clamped = FakeTime()
+    policy_clamped = CiWaitPolicy(
+        35.0, 30.0, CI_WAIT_POLL_CEILING_SECONDS, clock=fake_clamped.clock, sleep=fake_clamped.sleep
+    )
+    wait_for_pending_ci(MagicMock(), MagicMock(return_value=dict(PENDING)), dict(PENDING), policy_clamped)
+    assert fake_clamped.sleeps == [15.0, 15.0, 5.0]
+
+    assert next_poll_interval(5.0) == 10.0
+    assert next_poll_interval(10.0) == 15.0
+    assert next_poll_interval(15.0) == 15.0
+    assert next_poll_interval(120.0) == 15.0
     assert next_poll_interval(500.0, 120.0) == 120.0
-    assert next_poll_interval(15.0) == 30.0
 
 
 def test_wait_ends_as_soon_as_nothing_is_pending():
@@ -185,7 +205,7 @@ def test_wait_ends_as_soon_as_nothing_is_pending():
     policy = CiWaitPolicy(1800.0, 15.0, clock=fake.clock, sleep=fake.sleep)
     status, result = wait_for_pending_ci(MagicMock(), probe, dict(PENDING), policy)
 
-    assert fake.sleeps == [15.0, 30.0]
+    assert fake.sleeps == [15.0, 15.0]
     assert status["all_passed"] is True
     assert result.exhausted is False
 
@@ -441,7 +461,7 @@ def test_wait_logs_a_start_line_each_finished_check_and_one_summary_but_nothing_
         "[Review Loop] CI check 'lint' finished: pass (2 pending).",
         "[Review Loop] CI check 'unit' finished: pass (0 pending).",
         "[Review Loop] CI check 'docs' finished: skipping (0 pending).",
-        "[Review Loop] CI wait settled after 105s: 2 passed, 0 failed, 1 other.",
+        "[Review Loop] CI wait settled after 45s: 2 passed, 0 failed, 1 other.",
     ]
     assert not any("Waiting for" in line for line in context.lines)
 
@@ -485,7 +505,7 @@ def test_wait_without_check_names_logs_the_pending_count_change():
     assert context.lines[1:] == [
         "[Review Loop] CI checks pending: 2 -> 1.",
         "[Review Loop] CI checks pending: 1 -> 0.",
-        "[Review Loop] CI wait settled after 45s: 2 passed, 0 failed, 0 other.",
+        "[Review Loop] CI wait settled after 30s: 2 passed, 0 failed, 0 other.",
     ]
 
 
@@ -903,3 +923,167 @@ def test_objecting_fast_path_skips_local_tests_on_missing_ref(tmp_path, monkeypa
     assert "FIND-REF-001" in res["findings"]
     assert "FIND-CI-001" not in res["findings"]
     assert not any("test results not measured" in log for log in ctx.logs)
+
+
+# --- 15-second poll ceiling and fail-early across all three CI wait callers ------------------------------------------
+
+
+def test_review_loop_fails_early_on_failed_check_while_others_pending(tmp_path, monkeypatch):
+    """Review-loop wait stops immediately when any check fails, even if other checks are still pending."""
+    fake = FakeTime()
+    mixed = _probe(("lint", "fail"), ("macos-tests", "pending"))
+    res = _run_loop(tmp_path, monkeypatch, [PENDING, mixed, PASSED], fake, ci_wait_budget=600.0)
+
+    assert fake.sleeps == [15.0]
+    assert res["consensus"]["approved"] is False
+    assert any(finding.startswith("FIND-CI") for finding in res["findings"])
+    assert res["ci_checks"]["failed"] == 1
+    assert res["ci_checks"]["pending"] == 1
+
+
+def test_settle_pending_ci_caps_polls_at_15s_and_exits_early_on_failure():
+    fake = FakeTime()
+    probes = [dict(PENDING), dict(PENDING), dict(PENDING), dict(PASSED)]
+    policy = CiWaitPolicy(600.0, clock=fake.clock, sleep=fake.sleep)
+    status, waited = settle_pending_ci(MagicMock(), MagicMock(side_effect=probes), dict(PENDING), policy, spent=False)
+
+    assert status["all_passed"] is True
+    assert waited is not None and waited.exhausted is False
+    assert fake.sleeps == [15.0, 15.0, 15.0, 15.0]
+
+    fake_early = FakeTime()
+    mixed = _probe(("lint", "fail"), ("unit", "pending"))
+    probe_early = MagicMock(return_value=dict(PASSED))
+    policy_early = CiWaitPolicy(600.0, clock=fake_early.clock, sleep=fake_early.sleep)
+    status_early, waited_early = settle_pending_ci(MagicMock(), probe_early, mixed, policy_early, spent=False)
+
+    assert status_early["failed"] == 1
+    assert waited_early is not None and waited_early.exhausted is False
+    assert fake_early.sleeps == []
+    assert probe_early.call_count == 0
+
+
+def test_merged_head_gate_caps_poll_interval_at_15s_and_backs_off_from_smaller_interval(tmp_path):
+    from sandbox_executor.flow.review.merged_head_gate import MergedHeadSeams, gate_merged_head_ci
+
+    head_sha = "b" * 40
+    pending_run = [{"check_run_id": 1, "name": "unit", "status": "in_progress", "conclusion": "", "run_id": "11"}]
+
+    fake_small = FakeTime()
+    seams_small = MergedHeadSeams(
+        policy=CiWaitPolicy(50.0, poll_interval=3.0, clock=fake_small.clock, sleep=fake_small.sleep),
+        probe=lambda _sha: pending_run,
+        registration_timeout=0.0,
+    )
+    record_small = gate_merged_head_ci(_context(tmp_path), str(tmp_path), head_sha, seams_small)
+    assert record_small["state"] == "pending"
+    assert fake_small.sleeps == [3.0, 6.0, 12.0, 15.0, 14.0]
+
+    fake_default = FakeTime()
+    seams_default = MergedHeadSeams(
+        policy=CiWaitPolicy(50.0, clock=fake_default.clock, sleep=fake_default.sleep),
+        probe=lambda _sha: pending_run,
+        registration_timeout=0.0,
+    )
+    record_default = gate_merged_head_ci(_context(tmp_path), str(tmp_path), head_sha, seams_default)
+    assert record_default["state"] == "pending"
+    assert fake_default.sleeps == [15.0, 15.0, 15.0, 5.0]
+
+    fake_clamped = FakeTime()
+    seams_clamped = MergedHeadSeams(
+        policy=CiWaitPolicy(35.0, poll_interval=30.0, clock=fake_clamped.clock, sleep=fake_clamped.sleep),
+        probe=lambda _sha: pending_run,
+        registration_timeout=0.0,
+    )
+    record_clamped = gate_merged_head_ci(_context(tmp_path), str(tmp_path), head_sha, seams_clamped)
+    assert record_clamped["state"] == "pending"
+    assert fake_clamped.sleeps == [15.0, 15.0, 5.0]
+
+
+def test_merged_head_gate_fails_early_while_other_checks_are_pending(tmp_path):
+    from sandbox_executor.flow.review.merged_head_gate import MergedHeadSeams, gate_merged_head_ci
+
+    head_sha = "b" * 40
+    in_progress = {"check_run_id": 1, "name": "unit", "status": "in_progress", "conclusion": "", "run_id": "11"}
+    failed = {"check_run_id": 2, "name": "lint", "status": "completed", "conclusion": "failure", "run_id": "12"}
+    passed = {"check_run_id": 1, "name": "unit", "status": "completed", "conclusion": "success", "run_id": "11"}
+
+    fake_initial = FakeTime()
+    probe_initial = MagicMock(side_effect=[[failed, in_progress], [passed]])
+    seams_initial = MergedHeadSeams(
+        policy=CiWaitPolicy(600.0, clock=fake_initial.clock, sleep=fake_initial.sleep),
+        probe=probe_initial,
+        registration_timeout=0.0,
+    )
+    rec_initial = gate_merged_head_ci(_context(tmp_path), str(tmp_path), head_sha, seams_initial)
+    assert rec_initial["state"] == "failed"
+    assert fake_initial.sleeps == []
+    assert probe_initial.call_count == 1
+
+    fake_later = FakeTime()
+    probe_later = MagicMock(side_effect=[[in_progress], [failed, in_progress], [passed]])
+    seams_later = MergedHeadSeams(
+        policy=CiWaitPolicy(600.0, clock=fake_later.clock, sleep=fake_later.sleep),
+        probe=probe_later,
+        registration_timeout=0.0,
+    )
+    rec_later = gate_merged_head_ci(_context(tmp_path), str(tmp_path), head_sha, seams_later)
+    assert rec_later["state"] == "failed"
+    assert fake_later.sleeps == [15.0]
+    assert probe_later.call_count == 2
+
+
+def test_final_head_ci_caps_poll_interval_at_15s_and_fails_early(tmp_path):
+    from sandbox_executor.flow.github.ci_final_head import FinalHeadSeams, check_final_head_ci
+
+    fake_cap = FakeTime()
+    pending = _probe(("unit", "pending"))
+    passed = _probe(("unit", "pass"))
+    probe_cap = MagicMock(side_effect=[pending, pending, pending, passed])
+    seams_cap = FinalHeadSeams(
+        policy=CiWaitPolicy(600.0, clock=fake_cap.clock, sleep=fake_cap.sleep),
+        probe=probe_cap,
+        detail_lookup=lambda _check: None,
+        registration_timeout=0.0,
+        pushed_head=lambda: None,
+    )
+    rec_cap = check_final_head_ci(_context(tmp_path), str(tmp_path), EXEC_TARGET, seams_cap)
+    assert rec_cap["state"] == "success"
+    assert fake_cap.sleeps == [15.0, 15.0, 15.0]
+
+    fake_initial = FakeTime()
+    mixed = _probe(("lint", "fail"), ("unit", "pending"))
+    probe_initial = MagicMock(side_effect=[mixed, _probe(("lint", "fail"), ("unit", "fail"))])
+    seams_initial = FinalHeadSeams(
+        policy=CiWaitPolicy(600.0, clock=fake_initial.clock, sleep=fake_initial.sleep),
+        probe=probe_initial,
+        detail_lookup=lambda _check: None,
+        registration_timeout=0.0,
+        pushed_head=lambda: None,
+    )
+    rec_initial = check_final_head_ci(_context(tmp_path), str(tmp_path), EXEC_TARGET, seams_initial)
+    assert rec_initial["state"] == "failed"
+    assert rec_initial["failed_checks"] == ["lint"]
+    assert fake_initial.sleeps == []
+    assert probe_initial.call_count == 1
+
+    fake_later = FakeTime()
+    probe_later = MagicMock(
+        side_effect=[
+            _probe(("lint", "pending"), ("unit", "pending")),
+            mixed,
+            _probe(("lint", "fail"), ("unit", "fail")),
+        ]
+    )
+    seams_later = FinalHeadSeams(
+        policy=CiWaitPolicy(600.0, clock=fake_later.clock, sleep=fake_later.sleep),
+        probe=probe_later,
+        detail_lookup=lambda _check: None,
+        registration_timeout=0.0,
+        pushed_head=lambda: None,
+    )
+    rec_later = check_final_head_ci(_context(tmp_path), str(tmp_path), EXEC_TARGET, seams_later)
+    assert rec_later["state"] == "failed"
+    assert rec_later["failed_checks"] == ["lint"]
+    assert fake_later.sleeps == [15.0]
+    assert probe_later.call_count == 2

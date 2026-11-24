@@ -88,9 +88,8 @@ def test_scoped_module_has_no_docstrings_or_string_statements(module_name: str) 
     module_path = COMMANDS_DIR / module_name
     source = module_path.read_text(encoding="utf-8")
     findings = _find_docstrings_and_string_statements(source)
-    assert not findings, (
-        f"{module_path} contains docstrings or standalone string statements: "
-        + ", ".join(f"line {line_no}: {text!r}" for line_no, text in findings)
+    assert not findings, f"{module_path} contains docstrings or standalone string statements: " + ", ".join(
+        f"line {line_no}: {text!r}" for line_no, text in findings
     )
 
 

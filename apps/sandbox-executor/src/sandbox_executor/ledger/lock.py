@@ -78,9 +78,7 @@ class LedgerLock:
                 if (time.monotonic() - start_time) >= self.timeout:
                     if self._file is not None:
                         self._file.close()
-                    raise TimeoutError(
-                        f"Timed out waiting for exclusive lock on ledger file: {self.filepath}"
-                    ) from exc
+                    raise TimeoutError(f"Timed out waiting for exclusive lock on ledger file: {self.filepath}") from exc
                 delay = self._sleep_with_backoff(delay)
 
     def __enter__(self) -> TextIO:

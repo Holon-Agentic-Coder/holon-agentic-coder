@@ -27,12 +27,12 @@ LAZY_EXPORTS: dict[str, str] = {
         "redacted_cause"
     ),
     "sandbox_executor.flow.calibrate_rerun": (
-        "HeadMoveCheck RerunSeams head_move_since_calibration post_stale_signal report_staleness rerun_calibration "
-        "review_calibration_freshness"
+        "RerunSeams post_stale_signal report_staleness rerun_calibration review_calibration_freshness"
     ),
     "sandbox_executor.flow.calibrate_stale_warning": (
         "StaleRange WarningSeams post_refreshed refreshed_body resolve_stale stale_body superseded_body warn_stale"
     ),
+    "sandbox_executor.flow.calibrate_staleness": "HeadMoveCheck head_move_since_calibration",
     "sandbox_executor.flow.calibrate_sync": (
         "CalibrationSyncError discard_empty_calibrated_branch prepare_calibrated_branch publish_calibration "
         "record_starting_branch restore_starting_branch sync_execution_ref"

@@ -30,6 +30,8 @@ from sandbox_executor.flow.admission import AdmissionDecision
 from sandbox_executor.git import GitRepository
 from sandbox_executor.plan_paths import REFRESH_MERGE_PREFIX
 
+from tests.repo_templates import copy_template, finish_template
+
 INTENT = "I-1-x/_"
 PREFIX = "I-1-x/P-2-claude-agent-claude-opus-5-5"
 PLAN = f"{PREFIX}/_"
@@ -59,12 +61,13 @@ def failure_row(exec_id: str, partial_head: str) -> str:
     return json.dumps({**row, "partial_head": partial_head}) + "\n"
 
 
-@pytest.fixture
-def host(tmp_path: Path) -> Path:
-    """The host worktree, back on main, with a pushed failed execution branch whose recorded partial head is HEAD~1."""
-    origin = tmp_path / "origin.git"
+@pytest.fixture(scope="session")
+def resume_repos_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> Path:
+    """A bare origin and the host worktree of ``host``, built once and read-only; ``host`` copies them per test."""
+    root = tmp_path_factory.mktemp("resume-repos-template")
+    origin = root / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
-    repo = tmp_path / "host"
+    repo = root / "host"
     subprocess.run(["git", "clone", "-q", str(origin), str(repo)], check=True, capture_output=True)
     for key, value in (("user.email", "t@holon.com"), ("user.name", "T"), ("commit.gpgsign", "false")):
         git(repo, "config", key, value)
@@ -82,7 +85,13 @@ def host(tmp_path: Path) -> Path:
     for branch in ("main", INTENT, PLAN, FAILED):
         git(repo, "push", "-q", "origin", branch)
     git(repo, "checkout", "-q", "main")
-    return repo
+    return finish_template(root)
+
+
+@pytest.fixture
+def host(resume_repos_template: Path, tmp_path: Path) -> Path:
+    """The host worktree, back on main, with a pushed failed execution branch whose recorded partial head is HEAD~1."""
+    return copy_template(resume_repos_template, tmp_path) / "host"
 
 
 def recorded_head(repo: Path) -> str:

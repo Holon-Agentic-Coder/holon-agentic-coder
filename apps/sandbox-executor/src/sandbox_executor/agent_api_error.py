@@ -28,9 +28,7 @@ def detect_api_error(*texts: str) -> str | None:
 
 def _examined_lines(lines: list[str]) -> list[int]:
     non_empty = [index for index, line in enumerate(lines) if line.strip()]
-    scan_all_lines = len(non_empty) <= SHORT_TEXT_MAX_LINES and not any(
-        line.startswith(_PLAN_HEADER) for line in lines
-    )
+    scan_all_lines = len(non_empty) <= SHORT_TEXT_MAX_LINES and not any(line.startswith(_PLAN_HEADER) for line in lines)
     return non_empty if scan_all_lines else non_empty[:1]
 
 

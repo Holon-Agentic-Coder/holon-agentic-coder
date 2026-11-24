@@ -8,8 +8,8 @@ Every CI job takes a timestamp in its first step and calls this script in its la
   record as an artefact named ``ci-timing-<workflow>-<job>-<os>`` once the job has succeeded on ``main``.
 - ``compare`` mode (pull requests) fetches the last N records for the same artefact name from successful ``main`` runs
   and fails the job only when its duration exceeds the baseline median by more than the relative tolerance AND by more
-  than the minimum absolute delta. Test jobs also print the tests whose time grew the most; that report never fails a
-  job on its own.
+  than the minimum absolute delta. Test jobs also print the tests whose time grew the most (the per-test report of
+  ``scripts/ci_timing_noise.py``); that report never fails a job on its own.
 
 Both modes fail above an absolute ceiling, which no label can override. While fewer than N baseline records exist (cold
 start) the relative check is skipped with a notice. The ``timing-regression-accepted`` pull-request label turns a
@@ -39,14 +39,16 @@ import zlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
+try:
+    from scripts.ci_timing_noise import per_test_report
+except ImportError:  # run as a script file: only scripts/ itself is on sys.path
+    from ci_timing_noise import per_test_report
+
 OVERRIDE_LABEL = "timing-regression-accepted"
 API_ROOT = "https://api.github.com"
 RECORD_FILE = "record.json"
 REQUEST_TIMEOUT_SECONDS = 30
 BASELINE_BRANCH = "main"
-REPORT_LIMIT = 10
-REPORT_GROWTH = 0.5
-REPORT_MIN_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -108,20 +110,6 @@ class Verdict:
     lines: tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class Offender:
-    """A test whose time grew beyond the report thresholds."""
-
-    test_id: str
-    baseline: float
-    current: float
-
-    @property
-    def growth(self) -> float:
-        """Return the absolute growth in seconds."""
-        return self.current - self.baseline
-
-
 def artefact_name(workflow: str, job: str, os_name: str) -> str:
     """Return the artefact name that keys records by workflow, job and runner OS."""
     return f"ci-timing-{workflow}-{job}-{os_name}"
@@ -152,50 +140,6 @@ def exceeds_relative(duration: float, median: float, thresholds: Thresholds) -> 
     over_tolerance = duration > median * (1 + thresholds.tolerance)
     over_delta = duration - median > thresholds.min_delta
     return over_tolerance and over_delta
-
-
-def top_offenders(
-    current: dict[str, float],
-    baselines: Sequence[dict[str, float]],
-    limit: int = REPORT_LIMIT,
-    growth: float = REPORT_GROWTH,
-    min_seconds: float = REPORT_MIN_SECONDS,
-) -> list[Offender]:
-    """Return the tests whose time grew by more than ``growth`` and ``min_seconds`` against their baseline median.
-
-    Tests absent from every baseline record are ignored. Rows are sorted by absolute growth, largest first.
-    """
-    rows: list[Offender] = []
-    for test_id, seconds in current.items():
-        median = rolling_median([b[test_id] for b in baselines if test_id in b])
-        if median is None:
-            continue
-        if seconds > median * (1 + growth) and seconds - median > min_seconds:
-            rows.append(Offender(test_id, median, seconds))
-    rows.sort(key=lambda row: (-row.growth, row.test_id))
-    return rows[:limit]
-
-
-def format_report(rows: Sequence[Offender]) -> list[str]:
-    """Render the per-test report as markdown lines."""
-    if not rows:
-        return ["Per-test report: no test grew by more than 50 % and 5 s against its baseline median."]
-    lines = [
-        f"Per-test report: top {len(rows)} tests that grew by more than 50 % and 5 s against their baseline median.",
-        "",
-        "| test | baseline median (s) | current (s) | growth (s) |",
-        "| ---- | ------------------- | ----------- | ---------- |",
-    ]
-    for row in rows:
-        lines.append(f"| `{row.test_id}` | {row.baseline:.1f} | {row.current:.1f} | +{row.growth:.1f} |")
-    return lines
-
-
-def per_test_report(current: dict[str, float], baselines: Sequence[dict[str, float]]) -> list[str]:
-    """Render the per-test report, or say it was skipped when no baseline record carries per-test times."""
-    if not any(baselines):
-        return ["Per-test report: skipped, no baseline records with per-test times yet."]
-    return format_report(top_offenders(current, baselines))
 
 
 def check_ceiling(duration: float, thresholds: Thresholds) -> Verdict | None:

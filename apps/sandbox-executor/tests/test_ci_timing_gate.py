@@ -24,13 +24,10 @@ from scripts.ci_timing_gate import (
     evaluate,
     exceeds_relative,
     fetch_baseline,
-    format_report,
     main,
     parse_junit,
-    per_test_report,
     rolling_median,
     safe_fetch,
-    top_offenders,
 )
 
 DEFAULTS = Thresholds()
@@ -175,40 +172,6 @@ def test_main_override_flag_passes_relative_regression(capsys: pytest.CaptureFix
 
 
 # Per-test top-offender report
-
-
-def test_top_offenders_needs_both_growth_thresholds() -> None:
-    baseline = [{"a": 10.0, "b": 2.0, "c": 20.0, "d": 10.0}]
-    current = {"a": 16.0, "b": 6.0, "c": 26.0, "d": 15.0}
-    # a: +60 % and +6 s; b: +200 % but only +4 s; c: +6 s but only +30 %; d: +50 % exactly, not more.
-    assert [row.test_id for row in top_offenders(current, baseline)] == ["a"]
-
-
-def test_top_offenders_sorted_by_growth_limited_and_ignores_new_tests() -> None:
-    baseline = [{f"t{i}": 10.0 for i in range(12)}, {f"t{i}": 12.0 for i in range(12)}]
-    current = {f"t{i}": 30.0 + i for i in range(12)}
-    current["new_test"] = 500.0
-    rows = top_offenders(current, baseline)
-    assert len(rows) == 10
-    assert rows[0].test_id == "t11"
-    assert rows[0].baseline == 11.0
-    assert rows[0].growth == 30.0
-    assert "new_test" not in {row.test_id for row in rows}
-    assert [row.growth for row in rows] == sorted((row.growth for row in rows), reverse=True)
-
-
-def test_format_report_with_and_without_rows() -> None:
-    assert "no test grew" in format_report([])[0]
-    lines = format_report(top_offenders({"m::slow": 30.0}, [{"m::slow": 10.0}]))
-    assert "| `m::slow` | 10.0 | 30.0 | +20.0 |" in lines
-
-
-def test_per_test_report_skipped_without_baseline_times() -> None:
-    assert per_test_report({"m::slow": 30.0}, []) == [
-        "Per-test report: skipped, no baseline records with per-test times yet."
-    ]
-    assert "skipped" in per_test_report({"m::slow": 30.0}, [{}, {}])[0]
-    assert "no test grew" in per_test_report({"m::slow": 10.0}, [{"m::slow": 10.0}])[0]
 
 
 def write_junit(path: Path, cases: dict[str, float]) -> None:

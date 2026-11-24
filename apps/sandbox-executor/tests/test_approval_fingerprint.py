@@ -2,9 +2,11 @@
 
 Every case works in real temporary git repositories (a bare ``origin`` and a clone); nothing touches the network or
 the repository's own worktree. The starting repositories are built once per session and copied
-(``tests/repo_templates.py``). The Hypothesis properties are derandomized and bounded, because each example copies the
-template and then commits, pushes and merges in its copy. Their boundary cases are explicit examples, so they do not
-depend on what is generated.
+(``tests/repo_templates.py``). The Hypothesis property is derandomized and bounded, because each example copies the
+template and then commits, pushes and merges in its copy. Its boundary cases are explicit examples, so they do not
+depend on what is generated. Two of them are also the single-case forms of the two halves of the property: no main
+move and an edit of the PR's one file (a code edit changes the fingerprint), and a clean merge of a main that moved in
+another file (the fingerprint is kept).
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from sandbox_executor.flow.review.approval_fingerprint import (
 from sandbox_executor.flow.review.conflict_merge import _merge_target_ledger_only
 
 from tests.flow.helpers import _git
-from tests.repo_templates import copy_template, finish_template
+from tests.repo_templates import copy_template, shared_template
 
 BRANCH = "I-1-x/P-2-y/E-3-z/_"
 LEDGER = "holon-knowledge/ledger/executions.jsonl"
@@ -56,10 +58,8 @@ def _ledger_with(work: Path, execution_id: str) -> str:
     return old + json.dumps(row, separators=(",", ":")) + "\n"
 
 
-@pytest.fixture(scope="session")
-def repos_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> Path:
-    """A bare origin with the pushed base commit and a clone on ``BRANCH``, built once; ``_repos`` copies it."""
-    root = tmp_path_factory.mktemp("fingerprint-template")
+def _build_repos(root: Path) -> None:
+    """A bare origin with the pushed base commit and a clone on ``BRANCH``."""
     origin, work = root / "origin.git", root / "work"
     _git(root, "init", "-q", "--bare", "-b", "main", str(origin))
     _git(root, "clone", "-q", str(origin), str(work))
@@ -67,7 +67,12 @@ def repos_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config
     _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
     _git(work, "checkout", "-q", "-b", BRANCH)
     _git(work, "fetch", "-q", "origin")
-    return finish_template(root)
+
+
+@pytest.fixture(scope="session")
+def repos_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> Path:
+    """The repositories of ``_build_repos``, built once and read-only; ``_repos`` copies them."""
+    return shared_template(tmp_path_factory, "fingerprint-template", _build_repos)[0]
 
 
 def _repos(template: Path, root: Path, pr_files: dict[str, str]) -> Path:
@@ -120,13 +125,6 @@ def test_excluded_paths_do_not_change_the_fingerprint(repos_template: Path, tmp_
         "bookkeeping",
     )
     assert _fingerprint(work) == before
-
-
-def test_code_edit_changes_the_fingerprint(repos_template: Path, tmp_path: Path) -> None:
-    work = _repos(repos_template, tmp_path, {"src/pr_a.py": "x = 1\n"})
-    before = _fingerprint(work)
-    _commit(work, {"src/pr_a.py": "x = 2\n"}, "edit")
-    assert _fingerprint(work) != before
 
 
 def test_non_calibration_plan_edit_changes_the_fingerprint(repos_template: Path, tmp_path: Path) -> None:
@@ -182,14 +180,6 @@ def test_hand_resolved_code_conflict_changes_the_fingerprint(repos_template: Pat
     assert _fingerprint(work) != before
 
 
-def test_clean_merge_of_disjoint_main_keeps_the_fingerprint(repos_template: Path, tmp_path: Path) -> None:
-    work = _repos(repos_template, tmp_path, {"src/pr_a.py": "x = 1\n"})
-    before = _fingerprint(work)
-    _advance_main(work, {"src/main_a.py": "y = 1\n"}, "one")
-    _merge_main(work, "one")
-    assert _fingerprint(work) == before
-
-
 def test_none_never_matches() -> None:
     assert not fingerprints_match(None, None)
     assert not fingerprints_match("", "")
@@ -228,7 +218,7 @@ class _ChosenDraws:
         return f"_ChosenDraws({self._chosen})"
 
 
-# The boundaries of the two properties, as explicit examples: (PR change, main moves, edited PR path, new content).
+# The boundaries of the property, as explicit examples: (PR change, main moves, edited PR path, new content).
 ONE_PR_FILE = {"src/pr_a.py": "x = 1\n"}
 NO_MAIN_MOVE = (ONE_PR_FILE, [], "src/pr_a.py", "x = 2\n")
 THREE_MAIN_MOVES = (ONE_PR_FILE, [{path: "y = 1\n"} for path in MAIN_PATHS], "docs/pr_d.md", "new file\n")
@@ -238,33 +228,20 @@ SINGLE_NEWLINE = ({"src/pr_a.py": "\n"}, [{"src/main_a.py": "\n"}], "src/pr_a.py
 
 
 @PROPERTY_SETTINGS
-@example(pr_files=NO_MAIN_MOVE[0], main_moves=NO_MAIN_MOVE[1])
-@example(pr_files=THREE_MAIN_MOVES[0], main_moves=THREE_MAIN_MOVES[1])
-@example(pr_files=ALL_PR_PATHS[0], main_moves=ALL_PR_PATHS[1])
-@example(pr_files=EMPTY_MAIN_MOVE[0], main_moves=EMPTY_MAIN_MOVE[1])
-@example(pr_files=SINGLE_NEWLINE[0], main_moves=SINGLE_NEWLINE[1])
-@given(pr_files=PR_CHANGES, main_moves=MAIN_MOVES)
-def test_property_fingerprint_survives_merges_of_a_disjoint_moving_main(
-    repos_template: Path, pr_files: dict[str, str], main_moves: list[dict[str, str]]
-) -> None:
-    with tempfile.TemporaryDirectory(prefix="holon-fingerprint-") as root:
-        work, before = _merged_repos(repos_template, Path(root), pr_files, main_moves)
-        assert before is not None
-        assert _fingerprint(work) == before
-
-
-@PROPERTY_SETTINGS
 @example(pr_files=NO_MAIN_MOVE[0], main_moves=NO_MAIN_MOVE[1], data=_ChosenDraws(*NO_MAIN_MOVE[2:]))
 @example(pr_files=THREE_MAIN_MOVES[0], main_moves=THREE_MAIN_MOVES[1], data=_ChosenDraws(*THREE_MAIN_MOVES[2:]))
 @example(pr_files=ALL_PR_PATHS[0], main_moves=ALL_PR_PATHS[1], data=_ChosenDraws(*ALL_PR_PATHS[2:]))
 @example(pr_files=EMPTY_MAIN_MOVE[0], main_moves=EMPTY_MAIN_MOVE[1], data=_ChosenDraws(*EMPTY_MAIN_MOVE[2:]))
 @example(pr_files=SINGLE_NEWLINE[0], main_moves=SINGLE_NEWLINE[1], data=_ChosenDraws(*SINGLE_NEWLINE[2:]))
 @given(pr_files=PR_CHANGES, main_moves=MAIN_MOVES, data=st.data())
-def test_property_fingerprint_changes_when_a_pr_file_changes(
+def test_property_fingerprint_survives_merges_of_a_disjoint_moving_main_and_changes_when_a_pr_file_changes(
     repos_template: Path, pr_files: dict[str, str], main_moves: list[dict[str, str]], data: st.DataObject
 ) -> None:
     with tempfile.TemporaryDirectory(prefix="holon-fingerprint-") as root:
+        # The first half of the property is asserted in here, after every merge.
         work, before = _merged_repos(repos_template, Path(root), pr_files, main_moves)
+        assert before is not None
+        assert _fingerprint(work) == before
         path = data.draw(st.sampled_from(PR_PATHS), label="edited PR path")
         old = (work / path).read_text(encoding="utf-8") if (work / path).exists() else ""
         new = data.draw(CONTENT.filter(lambda text: text != old), label="new content")

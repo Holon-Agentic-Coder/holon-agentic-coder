@@ -12,6 +12,11 @@ without that replay and compares everything the three real reports of each block
 two doctor runs): the text, the exit code, the log lines, the gateway probes and any other output. If production
 makes the report depend on how often it ran or on who called it, it fails, and that replay must be removed.
 
+The invalid-value matrix of the same file (``_invalid_value_doctor``) uses both replays too, in another context: an
+isolated ``HOME``, a docker stand-in, an invalid value in a budget, envelope or host models setting, and a report on
+a stream of its own before the text and the ``--json`` doctor run. It has its own two identity tests here, over a
+sample of its own cases that holds every invalid-value slot with every URL prefix.
+
 A worker that ran ``cli.main`` earlier still has the CLI's log handler, which repeats every log line on stderr. The
 tests of the environment report therefore run in both states (``cli_log_handler``), whatever ran before them.
 """
@@ -219,7 +224,7 @@ def test_the_original_function_is_back_after_the_context(counted_section):
 
 
 def _recorded_environment_reports(monkeypatch) -> list[tuple[tuple, tuple]]:
-    """Record ``(context, everything observable)`` of every real environment report; the matrix replay is off."""
+    """Record ``(context, everything observable)`` of every real environment report; the replay is off in both users."""
     real, real_fetchers = cli.report_budgets_and_envelope, redaction_matrix._fetchers
     reports: list[tuple[tuple, tuple]] = []
     probes: list[tuple[str, float]] = []
@@ -254,6 +259,7 @@ def _recorded_environment_reports(monkeypatch) -> list[tuple[tuple, tuple]]:
     monkeypatch.setattr(redaction_matrix, "replayed_environment_report", contextlib.nullcontext)
     # One recording fetcher per fetcher of a block, so the three calls of the block share it as they do in the matrix.
     monkeypatch.setattr(redaction_matrix, "_fetchers", lambda seen: tuple(map(probe_recording, real_fetchers(seen))))
+    monkeypatch.setattr(redaction_matrix, "_empty_health", probe_recording(redaction_matrix._empty_health))
     monkeypatch.setattr(cli, "report_budgets_and_envelope", recording)
     return reports
 
@@ -292,16 +298,20 @@ def test_environment_report_is_identical_in_the_three_calls_of_every_doctor_bloc
     assert bool(stderr_blocks) == cli_log_handler, "log lines reach stderr exactly when the CLI's handler is there"
 
 
-def _differs_in_more_than_repetition(replayed: list[str], every_report_real: list[str]) -> bool:
-    """Whether the two runs of one case show different texts, or the replayed one does not show fewer of them.
+def _shows_another_line(replayed: list[str], every_report_real: list[str]) -> bool:
+    """Whether one of the two runs of a case shows a text with a line that is not a text both runs show.
 
     A text that only one run shows is allowed if each of its lines is a text both runs show: that is stderr under the
     CLI's log handler, which holds every logged line once per report that ran.
     """
     in_both = set(replayed) & set(every_report_real)
     in_one_only = set(replayed) ^ set(every_report_real)
-    same_lines = all(line in in_both for text in in_one_only for line in text.splitlines())
-    return not same_lines or len(replayed) >= len(every_report_real)
+    return not all(line in in_both for text in in_one_only for line in text.splitlines())
+
+
+def _differs_in_more_than_repetition(replayed: list[str], every_report_real: list[str]) -> bool:
+    """Whether the two runs of one case show different texts, or the replayed one does not show fewer of them."""
+    return _shows_another_line(replayed, every_report_real) or len(replayed) >= len(every_report_real)
 
 
 def test_environment_replay_changes_only_how_often_the_matrix_sees_a_text(
@@ -413,3 +423,128 @@ def test_each_environment_replay_context_starts_empty_and_restores_the_report(co
 
     assert len(counted_report) == 3
     assert cli.report_budgets_and_envelope is original
+
+
+# Every 37th case of the invalid-value matrix: 37 shares no factor with its eight slots, so the slots rotate.
+INVALID_VALUE_SAMPLE_STEP = 37
+InvalidValueCase = tuple[str, dict[str, str], dict | None, str]
+
+
+@pytest.fixture
+def invalid_value_process(monkeypatch):
+    """The process state the invalid-value matrix runs its cases in: a docker stand-in and an empty environment."""
+    redaction_matrix._isolate_invalid_value_process(monkeypatch)
+
+
+def _sampled_invalid_value_cases() -> list[InvalidValueCase]:
+    cases = redaction_matrix._invalid_value_cases(seeded_secrets.generator("doctor-replay:invalid-value"))
+    return list(itertools.islice(cases, 0, None, INVALID_VALUE_SAMPLE_STEP))
+
+
+def _invalid_value_doctor(case: InvalidValueCase, home: str) -> tuple[list[int], list[str]]:
+    """Run the doctor part of one invalid-value case as the matrix does; the exit codes and the captured texts."""
+    with redaction_matrix._invalid_value_case(*case, home) as (out, _docker):
+        codes = redaction_matrix._invalid_value_doctor(out)
+    return codes, out
+
+
+def test_invalid_value_sample_covers_every_slot_with_every_prefix_userinfo_form_and_shape():
+    parts = [case_id.split("/") for case_id, _env, _host_config, _credential in _sampled_invalid_value_cases()]
+    slots = [f"env:{name}" for name in redaction_matrix.INVALID_VALUE_ENV]
+    slots += [f"host:{field}" for field in redaction_matrix.INVALID_VALUE_HOST_FIELDS]
+
+    assert {(p[0], p[1]) for p in parts} == set(itertools.product(slots, redaction_matrix.PREFIXES))
+    assert {(p[0], p[2]) for p in parts} == set(itertools.product(slots, redaction_matrix.USERINFO))
+    assert {p[3] for p in parts} == set(redaction_matrix._credential_shapes())
+
+
+def test_configuration_section_is_identical_in_the_text_and_the_json_run_of_an_invalid_value_case(
+    monkeypatch, invalid_value_process, tmp_path
+):
+    real = cli._configuration_section
+    calls: list[tuple[tuple, bool]] = []
+
+    def recording(args):
+        section = real(args)
+        calls.append((section, args.json))
+        return section
+
+    # The matrix's own `_invalid_value_doctor`, with the replay switched off, so both doctor runs compute the section.
+    monkeypatch.setattr(redaction_matrix, "replayed_configuration_section", contextlib.nullcontext)
+    monkeypatch.setattr(cli, "_configuration_section", recording)
+    differing: list[str] = []
+    for case in _sampled_invalid_value_cases():
+        calls.clear()
+        _invalid_value_doctor(case, str(tmp_path))
+        (text_section, text_json), (json_section, json_json) = calls
+        assert (text_json, json_json) == (False, True), case[0]
+        if text_section != json_section:
+            differing.append(case[0])
+
+    assert not differing, (
+        f"the configuration section differs between the text and the `--json` doctor run of one invalid-value case, "
+        f"so it must not be replayed: {differing} {seeded_secrets.seed_note()}"
+    )
+
+
+def test_environment_report_is_identical_in_the_three_calls_of_an_invalid_value_case(
+    monkeypatch, invalid_value_process, cli_log_handler, tmp_path
+):
+    reports = _recorded_environment_reports(monkeypatch)
+    differing: list[str] = []
+    probing_cases = failing_cases = 0
+    for case in _sampled_invalid_value_cases():
+        reports.clear()
+        _invalid_value_doctor(case, str(tmp_path))
+        # The report on a stream of its own, then the text and the `--json` doctor run: no call is on stdout.
+        assert [context for context, _observed in reports] == [(case[2] is None, "_empty_health", False)] * 3, case[0]
+        first = reports[0][1]
+        if any(observed != first for _context, observed in reports):
+            differing.append(case[0])
+        probing_cases += bool(first[4])
+        failing_cases += first[0] != 0
+
+    assert not differing, (
+        f"the environment report differs between the three calls of one invalid-value case, so it must not be "
+        f"replayed: {differing} {seeded_secrets.seed_note()}"
+    )
+    assert probing_cases and failing_cases, "the sample must reach the gateway probe and a rejected value"
+
+
+def test_replays_change_only_how_often_the_invalid_value_matrix_sees_a_text(
+    monkeypatch, invalid_value_process, cli_log_handler, tmp_path
+):
+    differing: list[str] = []
+    for case in _sampled_invalid_value_cases():
+        with monkeypatch.context() as without_replay:
+            without_replay.setattr(redaction_matrix, "replayed_configuration_section", contextlib.nullcontext)
+            without_replay.setattr(redaction_matrix, "replayed_environment_report", contextlib.nullcontext)
+            real_codes, every_section_real = _invalid_value_doctor(case, str(tmp_path))
+        codes, replayed = _invalid_value_doctor(case, str(tmp_path))
+        if codes != real_codes or _shows_another_line(replayed, every_section_real):
+            differing.append(case[0])
+
+    assert not differing, f"{differing} {seeded_secrets.seed_note()}"
+
+
+def test_invalid_value_doctor_computes_the_section_and_the_report_once_per_case(
+    monkeypatch, invalid_value_process, tmp_path
+):
+    real_section, real_report = cli._configuration_section, cli.report_budgets_and_envelope
+    computed: list[str] = []
+
+    def counting_section(args):
+        computed.append("section")
+        return real_section(args)
+
+    def counting_report(fetch=None, out=None):
+        computed.append("report")
+        return real_report(fetch=fetch, out=out)
+
+    monkeypatch.setattr(cli, "_configuration_section", counting_section)
+    monkeypatch.setattr(cli, "report_budgets_and_envelope", counting_report)
+
+    for case in _sampled_invalid_value_cases()[:2]:
+        _invalid_value_doctor(case, str(tmp_path))
+
+    assert computed == ["report", "section"] * 2, "one real run of each per case; nothing is carried to the next case"

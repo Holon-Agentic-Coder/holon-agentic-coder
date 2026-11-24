@@ -30,7 +30,7 @@ from sandbox_executor.flow.admission import AdmissionDecision
 from sandbox_executor.git import GitRepository
 from sandbox_executor.plan_paths import REFRESH_MERGE_PREFIX
 
-from tests.repo_templates import copy_template, finish_template
+from tests.repo_templates import copy_template, shared_template
 
 INTENT = "I-1-x/_"
 PREFIX = "I-1-x/P-2-claude-agent-claude-opus-5-5"
@@ -61,10 +61,8 @@ def failure_row(exec_id: str, partial_head: str) -> str:
     return json.dumps({**row, "partial_head": partial_head}) + "\n"
 
 
-@pytest.fixture(scope="session")
-def resume_repos_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> Path:
-    """A bare origin and the host worktree of ``host``, built once and read-only; ``host`` copies them per test."""
-    root = tmp_path_factory.mktemp("resume-repos-template")
+def _build_resume_repos(root: Path) -> None:
+    """A bare origin and the host worktree of ``host`` with the four pushed branches, back on ``main``."""
     origin = root / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
     repo = root / "host"
@@ -85,7 +83,12 @@ def resume_repos_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git
     for branch in ("main", INTENT, PLAN, FAILED):
         git(repo, "push", "-q", "origin", branch)
     git(repo, "checkout", "-q", "main")
-    return finish_template(root)
+
+
+@pytest.fixture(scope="session")
+def resume_repos_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> Path:
+    """The repositories of ``_build_resume_repos``, built once and read-only; ``host`` copies them per test."""
+    return shared_template(tmp_path_factory, "resume-repos-template", _build_resume_repos)[0]
 
 
 @pytest.fixture

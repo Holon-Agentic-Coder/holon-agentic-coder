@@ -1,15 +1,19 @@
-"""Fixtures for the flow package tests: sandboxed fake reviewers, no real npx and the template flow repositories."""
+"""Fixtures for the flow package tests: sandboxed fake reviewers, no real npx, a knowledge index that does not wait
+for the disk and the template flow repositories."""
 
+import sqlite3
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from sandbox_executor.knowledge import consult
+from sandbox_executor.knowledge import consult, ledger_sync
+from sandbox_executor.knowledge import index as knowledge_index
 from sandbox_executor.knowledge.consult import DEFAULT_LEDGERS
 
 from tests.flow.helpers import _git
 from tests.gh_probe_stub import stubbed_mergeability_read
-from tests.repo_templates import copy_template, finish_template
+from tests.repo_templates import copy_template, shared_template
 from tests.review_fakes import install_fake_reviewers
 
 
@@ -49,14 +53,31 @@ def _no_real_prettier(monkeypatch):
     monkeypatch.setattr(subprocess, "run", guarded_run)
 
 
-@pytest.fixture(scope="session")
-def _flow_repos_template(tmp_path_factory, hermetic_git_config) -> Path:
-    """Build the seeded origin and host clone once per session (per xdist worker); ``flow_repos`` copies it.
+@pytest.fixture(autouse=True)
+def _knowledge_index_without_disk_wait(monkeypatch) -> Callable[[str], sqlite3.Connection]:
+    """Open the knowledge index of every flow test without waiting for the disk; returns production's own opener.
 
-    The tree is made read-only, so a test that pushed to or committed in the template instead of its own
-    copy would fail loudly rather than leak state into the tests after it.
+    Production opens the index with ``synchronous=NORMAL`` (``ledger_sync.connect_wal``), which protects the file
+    from a power loss. A test's index is in its temporary host copy and is deleted with it, and each open, commit
+    and close of it waited for the disk: several hundred times in one test file, for nothing a test reads. The real
+    ``connect_wal`` still runs first, so every other setting is production's own; test_flow_repos_hermetic.py
+    proves that.
     """
-    root = tmp_path_factory.mktemp("flow-template")
+    production_connect = ledger_sync.connect_wal
+
+    def connect(path: str) -> sqlite3.Connection:
+        conn = production_connect(path)
+        conn.execute("PRAGMA synchronous=OFF;")
+        return conn
+
+    # index.py imports the function by name, so it is replaced in both modules that look it up.
+    monkeypatch.setattr(ledger_sync, "connect_wal", connect)
+    monkeypatch.setattr(knowledge_index, "connect_wal", connect)
+    return production_connect
+
+
+def _build_flow_repos(root: Path) -> None:
+    """The seeded origin and a host clone of it, in ``root``."""
     origin = root / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
     seed = root / "seed"
@@ -73,8 +94,17 @@ def _flow_repos_template(tmp_path_factory, hermetic_git_config) -> Path:
     _git(seed, "remote", "add", "origin", str(origin))
     _git(seed, "push", "-q", "origin", "main")
     subprocess.run(["git", "clone", "-q", str(origin), str(root / "host")], check=True, capture_output=True)
-    # Git's sample hooks are never run (the hermetic config sets core.hooksPath); do not copy them per test.
-    return finish_template(root)
+
+
+@pytest.fixture(scope="session")
+def _flow_repos_template(tmp_path_factory, hermetic_git_config) -> Path:
+    """The seeded origin and host clone, built once per test run (also under xdist); ``flow_repos`` copies it.
+
+    The tree is made read-only, so a test that pushed to or committed in the template instead of its own
+    copy would fail loudly rather than leak state into the tests after it. Git's sample hooks are never run (the
+    hermetic config sets core.hooksPath), so the finished template has none to copy per test.
+    """
+    return shared_template(tmp_path_factory, "flow-template", _build_flow_repos)[0]
 
 
 @pytest.fixture

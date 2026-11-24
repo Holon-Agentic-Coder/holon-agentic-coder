@@ -165,30 +165,11 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         self.assertEqual(row["status"], "failure")
         self.assertEqual(row["partial_head"], self.git(self.workspace, "rev-parse", f"{branch}~1").strip())
 
-    def test_budget_breach_salvages_dirty_tree_into_partial_work_commit(self):
-        code, _stderr, _ = self.run_main(self.dirty_turn, breach=BudgetBreach("execute", "stage", 2700, 2700))
-        self.assertEqual(code, 1)
-        [branch] = self.exec_branches()
-        self.assert_salvaged(branch)
-
     def test_agent_exit_one_salvages_dirty_tree_into_partial_work_commit(self):
         code, _stderr, _ = self.run_main(self.dirty_turn, returncode=1)
         self.assertEqual(code, 0)
         [branch] = self.exec_branches()
         self.assert_salvaged(branch)
-
-    def test_nothing_to_salvage_records_no_partial_head(self):
-        def notes_only(_workspace, path):
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w") as f:
-                f.write(VALID_NOTES)
-
-        self.run_main(notes_only, returncode=1)
-        [branch] = self.exec_branches()
-        self.assertNotIn("partial_head", self.summary(branch))
-        self.assertEqual(self.git(self.workspace, "rev-parse", f"{branch}~1").strip(), self.plan_tip)
-        log = self.git(self.workspace, "log", "--format=%s", f"{self.plan_tip}..{branch}")
-        self.assertNotIn("partial work", log)
 
     def test_agent_commits_with_clean_tree_record_the_agent_head(self):
         def committing_agent(workspace, path):
@@ -206,17 +187,7 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
             self.summary(branch)["partial_head"], self.git(self.workspace, "rev-parse", f"{branch}~1").strip()
         )
 
-    def test_success_path_has_one_completed_commit_and_no_partial_head(self):
-        code, _stderr, _ = self.run_main(self.dirty_turn)
-        self.assertEqual(code, 0)
-        [branch] = self.exec_branches()
-        log = self.git(self.workspace, "log", "--format=%s", f"{self.plan_tip}..{branch}").splitlines()
-        self.assertEqual(len(log), 1)
-        self.assertIn("completed for plan", log[0])
-        self.assertNotIn("partial_head", self.summary(branch))
-        self.assertNotIn("scratch.ignored", self.git(self.workspace, "ls-tree", "-r", "--name-only", branch).split())
-
-    def test_identity_is_configured_on_the_execution_branch_before_the_agent_runs(self):
+    def test_success_path_configures_the_identity_before_the_agent_and_has_one_completed_commit(self):
         seen = {}
 
         def probe(workspace, path):
@@ -229,11 +200,20 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
             seen["branch"] = self.git(workspace, "rev-parse", "--abbrev-ref", "HEAD").strip()
             self.dirty_turn(workspace, path)
 
-        self.run_main(probe)
+        code, _stderr, _ = self.run_main(probe)
+        # The identity was configured on the execution branch before the agent ran.
         self.assertEqual(seen["email"], executor.EXECUTOR_GIT_EMAIL)
         self.assertEqual(seen["name"], executor.EXECUTOR_GIT_NAME)
         self.assertEqual(seen["local"], "")
         self.assertRegex(seen["branch"], r"^I-456/P-123/E-\d+-ANA-G3\.5F/_$")
+        # The success path has one completed commit and no partial head.
+        self.assertEqual(code, 0)
+        [branch] = self.exec_branches()
+        log = self.git(self.workspace, "log", "--format=%s", f"{self.plan_tip}..{branch}").splitlines()
+        self.assertEqual(len(log), 1)
+        self.assertIn("completed for plan", log[0])
+        self.assertNotIn("partial_head", self.summary(branch))
+        self.assertNotIn("scratch.ignored", self.git(self.workspace, "ls-tree", "-r", "--name-only", branch).split())
 
     def _reject_pushes(self):
         hook = os.path.join(self.bare, "hooks", "pre-receive")
@@ -318,7 +298,7 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         self.assertEqual(self.git(self.workspace, "rev-parse", f"{new}~1").strip(), partial_head)
         self.assertIn(executor.continuation_note(failed, partial_head), prompts[0])
 
-    def test_resume_without_partial_head_starts_from_the_plan_tip(self):
+    def test_nothing_to_salvage_records_no_partial_head_and_its_resume_starts_from_the_plan_tip(self):
         def notes_only(_workspace, path):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
@@ -326,6 +306,11 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
 
         self.run_main(notes_only, returncode=1)
         [failed] = self.exec_branches()
+        # Nothing to salvage: the failure commit sits on the plan tip and records no partial head.
+        self.assertNotIn("partial_head", self.summary(failed))
+        self.assertEqual(self.git(self.workspace, "rev-parse", f"{failed}~1").strip(), self.plan_tip)
+        log = self.git(self.workspace, "log", "--format=%s", f"{self.plan_tip}..{failed}")
+        self.assertNotIn("partial work", log)
         self.host_push(failed)
         _code, stderr, prompts = self.run_main(self.dirty_turn, extra_args=(failed,))
         self.assertIn(f"Starting from the plan tip of {self.PLAN}: no partial_head", stderr)

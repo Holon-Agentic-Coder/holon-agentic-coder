@@ -1,8 +1,10 @@
-"""Tests that pin what the shared flow fixtures promise: the test host's own ledgers, its own origin, no host ``gh``.
+"""Tests that pin what the shared flow fixtures promise: the test host's own ledgers, its own origin, no host ``gh``,
+and a knowledge index that differs from production's only in not waiting for the disk.
 
 ``flow_repos`` points the knowledge consult at the ledger files of the temporary host (never the checkout pytest was
-started in), and the flow's ``subprocess.run`` guard answers the mergeability probe's ``gh pr view`` read in-process
-(``tests/gh_probe_stub.py``). Both replace work that proved nothing; these tests prove the replacements.
+started in), the flow's ``subprocess.run`` guard answers the mergeability probe's ``gh pr view`` read in-process
+(``tests/gh_probe_stub.py``), and the index of a flow test is opened with ``synchronous=OFF``. All three replace
+work that proved nothing; these tests prove the replacements.
 """
 
 import contextlib
@@ -18,7 +20,8 @@ from sandbox_executor.flow import FlowContext
 from sandbox_executor.flow.github.adapter import MERGEABILITY_FIELDS
 from sandbox_executor.flow.github.pr import check_pr_mergeability
 from sandbox_executor.flow.stages.stage_support import consult_knowledge
-from sandbox_executor.knowledge import consult
+from sandbox_executor.knowledge import consult, ledger_sync
+from sandbox_executor.knowledge import index as knowledge_index
 from sandbox_executor.knowledge.consult import ConsultEngine
 
 from tests import gh_probe_stub
@@ -86,6 +89,24 @@ def test_consult_indexes_the_test_hosts_rows_and_none_of_the_checkouts(flow_repo
         synced = {path for (path,) in conn.execute("SELECT ledger_path FROM ledger_sync_state")}
     assert indexed == seeded, "the index holds rows that the test host's ledgers do not"
     assert synced == set(consult.DEFAULT_LEDGERS)
+
+
+def test_flow_index_differs_from_productions_only_in_not_waiting_for_the_disk(
+    tmp_path, _knowledge_index_without_disk_wait
+):
+    production_connect = _knowledge_index_without_disk_wait
+    pragmas = ("journal_mode", "foreign_keys", "busy_timeout", "synchronous")
+
+    def settings(connect, name: str) -> dict[str, object]:
+        with contextlib.closing(connect(str(tmp_path / name))) as conn:
+            return {pragma: conn.execute(f"PRAGMA {pragma}").fetchone()[0] for pragma in pragmas}
+
+    production = settings(production_connect, "production.db")
+    in_a_flow_test = settings(ledger_sync.connect_wal, "flow-test.db")
+
+    assert knowledge_index.connect_wal is ledger_sync.connect_wal
+    assert production == {"journal_mode": "wal", "foreign_keys": 1, "busy_timeout": 5000, "synchronous": 1}
+    assert in_a_flow_test == {**production, "synchronous": 0}
 
 
 def test_host_origin_is_the_tests_own_origin(flow_repos, _flow_repos_template):

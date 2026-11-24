@@ -9,13 +9,22 @@ fetcher and the ``--json`` flag differ.
 - ``cli.report_budgets_and_envelope`` reads the host configuration and the fetcher, but not ``--json``. One block of
   the case (one host configuration, one fetcher) runs it three times: directly on stdout, and inside the text and the
   ``--json`` doctor run, which both hand in a stream of their own. :func:`replayed_environment_report` leaves the
-  direct call alone, runs the report for the first doctor run and hands the second doctor run the text and the exit
-  code of that run. Both doctor runs still format the text themselves.
+  direct call alone, runs the report for the first caller with a stream and hands every later one the text and the
+  exit code of that run. Both doctor runs still format the text themselves.
 
-The rule: a replay is allowed only for a call that is proven identical. The proof is ``tests/test_doctor_replay.py``;
-if production makes a section depend on anything outside its key, that test fails and the replay must go. A store
-lives only as long as its context (one matrix case for the configuration section, one block of a case for the
-environment report), so nothing is carried further. Every caller receives its own copy.
+There are two users, and each has its own proofs in ``tests/test_doctor_replay.py``:
+
+- ``_doctor``, the doctor entry point of the URL matrix: eight doctor runs and four direct reports on stdout per case,
+  in four blocks. The direct reports all run; one report runs for the two doctor runs of a block.
+- ``_invalid_value_doctor``, the doctor part of the invalid-value matrix: one report on a stream of its own, then the
+  text and the ``--json`` doctor run, all with one environment, one host configuration and one fetcher. No call is on
+  stdout, so one report runs for the three.
+
+The rule: a replay is allowed only for a call that is proven identical. If production makes a section depend on
+anything outside its key, the proof of that user fails and the replay must go there. A user that is not listed here
+has no proof and must not use a replay. A store lives only as long as its context (one matrix case for the
+configuration section, one block of a case for the environment report), so nothing is carried further. Every caller
+receives its own copy.
 """
 
 import argparse
@@ -56,13 +65,13 @@ def replayed_configuration_section() -> Iterator[None]:
 
 @contextlib.contextmanager
 def replayed_environment_report() -> Iterator[None]:
-    """Within the context, run ``cli.report_budgets_and_envelope`` once for the doctor runs that share its inputs.
+    """Within the context, run ``cli.report_budgets_and_envelope`` once for the calls on a stream that share its inputs.
 
     A call without a stream of its own (the direct call, on stdout) always runs the real report. A call with one (a
-    doctor run) is run once per environment, host configuration and fetcher: the real report writes into a buffer,
-    and every such caller, the first one included, gets that text on its stream and the exit code. The host
-    configuration stand-in and the fetcher are part of the key as objects, so a block that installs another stand-in
-    or passes another fetcher runs the report again.
+    doctor run, or a report into a buffer) is run once per environment, host configuration and fetcher: the real
+    report writes into a buffer, and every such caller, the first one included, gets that text on its stream and the
+    exit code. The host configuration stand-in and the fetcher are part of the key as objects, so a block that
+    installs another stand-in or passes another fetcher runs the report again.
     """
     real = cli.report_budgets_and_envelope
     store: dict[tuple[Any, ...], tuple[str, int]] = {}

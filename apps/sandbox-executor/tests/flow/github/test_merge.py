@@ -17,7 +17,7 @@ from sandbox_executor.flow.github.merge import (
 from tests.flow.fake_gh import FakeGitHub
 from tests.flow.github.fake_github import FakeGitHub as AdapterFake
 from tests.flow.helpers import _git
-from tests.repo_templates import copy_template, finish_template
+from tests.repo_templates import copy_template, shared_template
 
 PLAN = "I-1-root/P-2-agent-model/_"
 CHILD_EXEC = "I-1-root/P-2-agent-model--1-add-the-parser/P-3-agent-model/E-4-agent-model/_"
@@ -59,13 +59,8 @@ def _commit(work: Path, branch: str, start: str, path: str, text: str) -> None:
     _git(work, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
 
 
-@pytest.fixture(scope="session")
-def merge_repos_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> Path:
-    """Bare origin holding main, the plan branch and a child execution branch cut from it; plus a host clone.
-
-    Built once and read-only; ``repos`` hands every test its own copy.
-    """
-    root = tmp_path_factory.mktemp("merge-repos-template")
+def _build_merge_repos(root: Path) -> None:
+    """Bare origin holding main, the plan branch and a child execution branch cut from it; plus a host clone."""
     origin = root / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
     work = root / "seed"
@@ -79,7 +74,12 @@ def merge_repos_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_
     _commit(work, CHILD_EXEC, PLAN, "src/parser.py", "PARSER = 1\n")
     host = root / "host"
     subprocess.run(["git", "clone", "-q", str(origin), str(host)], check=True, capture_output=True)
-    return finish_template(root)
+
+
+@pytest.fixture(scope="session")
+def merge_repos_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> Path:
+    """The repositories of ``_build_merge_repos``, built once and read-only; ``repos`` hands every test its own copy."""
+    return shared_template(tmp_path_factory, "merge-repos-template", _build_merge_repos)[0]
 
 
 @pytest.fixture
@@ -219,11 +219,11 @@ def test_a_green_mergeable_pr_is_merged_with_a_merge_commit_only(repos, tmp_path
     assert not any(flag in call for flag in (*FORBIDDEN_FLAGS, "--squash"))
 
 
-@pytest.mark.parametrize("allow_squash", [True, False], ids=["both-allowed", "merge-commit-only"])
-def test_a_repository_allowing_merge_commits_still_uses_a_merge_commit(repos, tmp_path, allow_squash):
+def test_a_repository_allowing_only_merge_commits_uses_a_merge_commit(repos, tmp_path):
     origin, host, _ = repos
     gh, number = _fake(tmp_path, origin)
-    gh.allow_squash_merge = allow_squash
+    # A repository allowing a squash as well is the fake's default, which the test above merges.
+    gh.allow_squash_merge = False
     head = gh.sha(CHILD_EXEC)
 
     result = merge_child_pr(str(host), number, PLAN, runner=gh)

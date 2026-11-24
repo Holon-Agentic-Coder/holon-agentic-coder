@@ -13,6 +13,7 @@ import math
 import re
 from typing import Any
 
+from sandbox_executor import claude_keychain
 from sandbox_executor.config_env import FILE_LAYERS, LAYERS, RESOLVED_MARKER, is_secret_key
 from sandbox_executor.config_env_keys import DOCUMENTED_KEYS
 from sandbox_executor.config_env_model import EffectiveConfig, ResolvedSetting
@@ -104,11 +105,13 @@ def env_example_text() -> str:
         "# Only HOLON_* keys and GITHUB_TOKEN are accepted.",
         "# A project .env may not set token-file references or: " + ", ".join(PROJECT_REFUSED_KEYS) + ".",
         "#",
-        "# Recommended claude credential reference (the token file itself stays mode 0600):",
-        "# HOLON_AGENT_OAUTH_TOKEN_FILE=~/.holon/secrets/claude-oauth-token",
+        "# The claude credential is kept in the OS keychain, not in a file. Store it once (the command prompts):",
+        f"#   macOS: {claude_keychain.STORE_COMMANDS['darwin']}",
+        f"#   Linux: {claude_keychain.STORE_COMMANDS['linux']}",
     ]
     for file_name, value_name, container_name in SECRET_FILE_MAPPINGS:
         lines.append(f"# {file_name} is read into {value_name}, which the container maps to {container_name}.")
+    lines.append("# A token file is an explicit override of the keychain entry; prefer it only to an inline token.")
     lines.append("#")
     for key, default, purpose in DOCUMENTED_KEYS:
         note = " Secret." if is_secret_key(key) else ""

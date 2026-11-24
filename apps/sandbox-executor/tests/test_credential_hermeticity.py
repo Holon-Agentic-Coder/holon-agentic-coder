@@ -17,7 +17,7 @@ DUMMY_VALUE = "sk-ant-oat-dummy-not-real"
 CHILD_TIMEOUT_SECONDS = 120
 _TESTS_DIR = Path(__file__).parent
 _CREDENTIAL_TESTS = (
-    "test_cli.py::test_claude_container_gets_the_discovered_secrets_file_value_by_type",
+    "test_cli.py::test_claude_container_gets_the_discovered_keychain_value_by_type",
     "test_cli.py::test_secrets_travel_in_an_owner_only_env_file_that_is_removed",
     "test_cli.py::test_line_break_in_a_secret_aborts_before_docker_runs",
 )

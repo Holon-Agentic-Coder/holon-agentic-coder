@@ -220,7 +220,6 @@ def _doctor(value: str) -> list[str]:
                 patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
                 _captured(env) as out,
             ):
-                cli.report_budgets_and_envelope(fetch=fetch)
                 for as_json in (False, True):
                     doctor_args = argparse.Namespace(
                         agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None

@@ -6,7 +6,9 @@ repository's own worktree. The Hypothesis properties are derandomized and bounde
 
 from __future__ import annotations
 
+import atexit
 import json
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -52,16 +54,35 @@ def _ledger_with(work: Path, execution_id: str) -> str:
     return old + json.dumps(row, separators=(",", ":")) + "\n"
 
 
+_TEMPLATE_ROOT: Path | None = None
+
+
+def _template_repos() -> Path:
+    """Build the base bare origin and clone once per worker so each case copies it instead of running git init/clone."""
+    global _TEMPLATE_ROOT
+    if _TEMPLATE_ROOT is None:
+        tmp = tempfile.TemporaryDirectory(prefix="holon-fingerprint-template-")
+        atexit.register(tmp.cleanup)
+        root = Path(tmp.name)
+        origin, work = root / "origin.git", root / "work"
+        _git(root, "init", "-q", "--bare", "-b", "main", str(origin))
+        _git(root, "clone", "-q", str(origin), str(work))
+        _git(work, "remote", "set-url", "origin", "../origin.git")
+        _commit(work, {"README.md": "base\n", LEDGER: _ledger_with(work, "E-base")}, "base")
+        _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+        _git(work, "update-ref", TARGET, "HEAD")
+        _git(work, "checkout", "-q", "-b", BRANCH)
+        _TEMPLATE_ROOT = root
+    return _TEMPLATE_ROOT
+
+
 def _repos(root: Path, pr_files: dict[str, str]) -> Path:
     """A bare origin and a clone on ``BRANCH`` whose own change is ``pr_files`` plus one ledger row."""
-    origin, work = root / "origin.git", root / "work"
-    _git(root, "init", "-q", "--bare", "-b", "main", str(origin))
-    _git(root, "clone", "-q", str(origin), str(work))
-    _commit(work, {"README.md": "base\n", LEDGER: _ledger_with(work, "E-base")}, "base")
-    _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
-    _git(work, "checkout", "-q", "-b", BRANCH)
+    template = _template_repos()
+    shutil.copytree(template / "origin.git", root / "origin.git")
+    work = root / "work"
+    shutil.copytree(template / "work", work)
     _commit(work, {**pr_files, LEDGER: _ledger_with(work, "E-pr")}, "pr change")
-    _git(work, "fetch", "-q", "origin")
     return work
 
 
@@ -71,8 +92,8 @@ def _advance_main(work: Path, files: dict[str, str], label: str) -> None:
     _git(work, "merge", "-q", "--ff-only", TARGET)
     _commit(work, {**files, LEDGER: _ledger_with(work, f"E-main-{label}")}, f"main {label}")
     _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    _git(work, "update-ref", TARGET, "HEAD")
     _git(work, "checkout", "-q", BRANCH)
-    _git(work, "fetch", "-q", "origin")
 
 
 def _merge_main(work: Path, label: str) -> None:

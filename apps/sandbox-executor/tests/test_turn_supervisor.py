@@ -351,6 +351,7 @@ class TestRunTurn(unittest.TestCase):
         # A runner that streamed before starting the tool is silent while the tool runs; that silence is not a stall.
         stream = TickStream()
         h = Harness(exit_at=300, stdout=stream)
+        self.addCleanup(stream.close)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
 
@@ -359,6 +360,8 @@ class TestRunTurn(unittest.TestCase):
                 stream.feed(b"tok ")
             elif now <= 210:
                 h.tool_cpu[5001] = h.tool_cpu.get(5001, 0.0) + 1.0
+            elif now >= 300:
+                stream.close()
 
         h.on_tick = tick
         result = h.run(turn=300, stall=90, watch_path=os.path.join(tmp.name, "notes.md"))

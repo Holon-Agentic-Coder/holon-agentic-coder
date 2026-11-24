@@ -905,6 +905,32 @@ def run_e2e_with_retry(
     raise E2EModelOutputError(msg)
 
 
+def _synthesised_host_config_from_env(env: Mapping[str, str]) -> dict[str, Any] | None:
+    """Build a minimal host config dictionary from explicit ``env`` mapping when ``env`` is injected."""
+    base_url = env.get(ENV_LOCAL_BASE_URL, "").strip()
+    if not base_url:
+        return None
+    model_ids = [item.strip() for item in env.get(ENV_LOCAL_MODELS, "").split(",") if item.strip()]
+    if not model_ids:
+        return None
+    provider = env.get(ENV_LOCAL_PROVIDER, "").strip() or "local"
+    return {
+        "providers": {
+            provider: {
+                "baseUrl": base_url,
+                "api": "openai-completions",
+                "apiKey": "holon-local",
+                "models": [{"id": mid} for mid in model_ids],
+            }
+        }
+    }
+
+
+def _allow_list_from_env(env: Mapping[str, str]) -> set[str]:
+    raw = env.get(ENV_HOST_LOCAL_HOSTS, "")
+    return {entry.strip().lower() for entry in raw.split(",") if entry.strip()}
+
+
 def validate_e2e_local_llm_env(
     env: Mapping[str, str] | None = None,
 ) -> tuple[bool, str, list[ModelEnvelope]]:
@@ -928,8 +954,8 @@ def validate_e2e_local_llm_env(
             ),
             [],
         )
-    host_cfg = local_llm.host_models_json() if env is None else None
-    allow = local_llm.host_local_allow_list() if env is None else ()
+    host_cfg = local_llm.host_models_json() if env is None else _synthesised_host_config_from_env(effective_env)
+    allow = local_llm.host_local_allow_list() if env is None else _allow_list_from_env(effective_env)
     _config, envelopes = local_llm.build_envelope_config(host_cfg, allow, env=effective_env)
     if not envelopes:
         raise LocalLLMConfigError(

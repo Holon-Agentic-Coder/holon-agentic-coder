@@ -17,10 +17,6 @@ holon = "sandbox_executor.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/sandbox_executor"]
 
-[tool.taskipy.tasks]
-test = 'pytest -n auto --dist worksteal -m "not integration_test and not stress"'
-test-e2e = "pytest -o norecursedirs= -m e2e apps/sandbox-executor/tests/e2e/test_flow_e2e.py"
-
 [tool.pytest.ini_options]
 pythonpath = ["../..", "src"]
 norecursedirs = ["e2e"]

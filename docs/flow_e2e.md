@@ -37,7 +37,7 @@ The harness enforces five core safety invariants:
    (`FailureCategory.MACHINERY`, such as `E2EMachineryError`, `LocalLLMConfigError`, `LedgerRewriteError`,
    `PrefixScopingError`, `ZeroPRGuardViolationError`, git fetch/push/worktree failures, or unhandled exceptions) fail
    immediately on the first occurrence without retry.
-5. **Unconditional Prefix-Scoped Teardown (`teardown_e2e_intent`)**: Wrapped inside the innermost `try ... finally`
+5. **Unconditional Prefix-Scoped Teardown (`teardown_e2e_intent`)**: Wrapped inside the outermost `try ... finally`
    block of every attempt, teardown removes the disposable worktree (`flow-<slug>` and any `flow-<slug>-rev*` reviewer
    siblings), deletes all local branches under the run's intent prefix, and deletes all remote branches under that
    prefix on `origin`. Every deleted item is enumerated in a `TeardownReport`.

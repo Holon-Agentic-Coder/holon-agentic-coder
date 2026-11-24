@@ -275,6 +275,21 @@ class TestTeardownAndDeletionEnumeration:
         with pytest.raises(PrefixScopingError, match="primary repository directory"):
             teardown_e2e_intent(str(repo), "I-123456-e2e-run", disposable_worktree=str(repo))
 
+    def test_teardown_refuses_worktree_on_out_of_prefix_branch_even_when_dir_ends_with_slug(
+        self, tmp_path: Path
+    ) -> None:
+        repo, _origin = _create_bare_origin_and_clone(tmp_path)
+        prefix = "I-123456-e2e-run"
+        # Directory basename ends with the intent slug ('e2e-run'), but its checked-out branch is unrelated.
+        unrelated_wt = tmp_path / "flow-e2e-run"
+        _git(repo, "worktree", "add", "-q", "-b", "feature-unrelated", str(unrelated_wt), "main")
+
+        with pytest.raises(PrefixScopingError, match="out-of-prefix branch 'feature-unrelated'"):
+            teardown_e2e_intent(str(repo), prefix, disposable_worktree=str(unrelated_wt))
+
+        assert unrelated_wt.is_dir()
+        assert "feature-unrelated" in _local_branches(repo)
+
     def test_teardown_discovers_remote_only_branches_even_when_local_tracking_ref_exists(self, tmp_path: Path) -> None:
         repo, origin = _create_bare_origin_and_clone(tmp_path)
         prefix = "I-123456-e2e-run"
@@ -605,6 +620,42 @@ class TestRetryClassificationAndUnconditionalTeardown:
         assert f"{stray_prefix}/_" not in _local_branches(repo)
         assert f"{stray_prefix}/_" not in _remote_branches(origin)
 
+    def test_zero_pr_guard_violation_takes_precedence_over_retryable_model_output_error(self, tmp_path: Path) -> None:
+        repo, origin = _create_bare_origin_and_clone(tmp_path)
+        stray_prefix = "I-2100000-stray-retry"
+        fake_gh = FakeE2EGhRunner(
+            prs=[
+                {
+                    "number": 105,
+                    "headRefName": f"{stray_prefix}/P-1-PI-M/E-2-PI-M/_",
+                    "baseRefName": "main",
+                    "state": "OPEN",
+                }
+            ]
+        )
+        attempts_called: list[int] = []
+
+        def _failing_model_with_stray_pr(attempt: int, intent_prefix: str) -> dict[str, Any]:
+            attempts_called.append(attempt)
+            _git(repo, "branch", f"{intent_prefix}/_", "main")
+            _git(repo, "push", "-q", "origin", f"{intent_prefix}/_")
+            raise E2EModelOutputError("model output assertion failed")
+
+        with pytest.raises(ZeroPRGuardViolationError, match="#105"):
+            run_e2e_with_retry(
+                _failing_model_with_stray_pr,
+                repo_dir=str(repo),
+                base_slug="stray-retry",
+                max_attempts=3,
+                gh_runner=fake_gh,
+                epoch_fn=lambda: 2100000,
+            )
+
+        assert attempts_called == [1]
+        assert fake_gh.closed_pr_numbers == [105]
+        assert f"{stray_prefix}/_" not in _local_branches(repo)
+        assert f"{stray_prefix}/_" not in _remote_branches(origin)
+
 
 class TestPrePRPipelineExecutionAndLocalLLMEnv:
     """End-to-end execution of ``E2EPipelineEngine`` and ``run_e2e_flow_test`` against local bare remotes."""
@@ -734,3 +785,29 @@ class TestPrePRPipelineExecutionAndLocalLLMEnv:
             validate_e2e_local_llm_env(
                 env={"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_BASE_URL": "http://localhost:11434/v1"}
             )
+
+    def test_validate_e2e_local_llm_env_rejects_non_allowlisted_url_without_os_environ_fallback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Seed os.environ with a valid loopback configuration to verify explicit env never falls back to it.
+        monkeypatch.setenv("HOLON_LOCAL_BASE_URL", "http://localhost:11434/v1")
+        monkeypatch.setenv("HOLON_LOCAL_MODELS", "env-fallback-model")
+        monkeypatch.setenv("HOLON_LOCAL_CONTEXT_WINDOW", "32768")
+
+        non_allowlisted_env = {
+            "HOLON_LOCAL_LLM": "1",
+            "HOLON_LOCAL_BASE_URL": "http://192.168.1.99:11434/v1",
+            "HOLON_LOCAL_MODELS": "qwen2.5-coder:14b",
+            "HOLON_LOCAL_CONTEXT_WINDOW": "32768",
+        }
+        with pytest.raises(LocalLLMConfigError, match="neither a loopback address nor in HOLON_HOST_LOCAL_HOSTS"):
+            validate_e2e_local_llm_env(env=non_allowlisted_env)
+
+        invalid_url_env = {
+            "HOLON_LOCAL_LLM": "1",
+            "HOLON_LOCAL_BASE_URL": "not-a-valid-url",
+            "HOLON_LOCAL_MODELS": "qwen2.5-coder:14b",
+            "HOLON_LOCAL_CONTEXT_WINDOW": "32768",
+        }
+        with pytest.raises(LocalLLMConfigError, match="not a valid URL"):
+            validate_e2e_local_llm_env(env=invalid_url_env)

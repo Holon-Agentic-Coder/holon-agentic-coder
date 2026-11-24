@@ -223,8 +223,8 @@ def _doctor(value: str) -> list[str]:
                     patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
                     patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
                     _captured(env) as out,
-                    # The three environment reports of one block (direct, text doctor, `--json` doctor) have the same
-                    # host configuration and fetcher: the report runs once and its text and code are replayed.
+                    # The two doctor runs of one block have the same host configuration and fetcher: the environment
+                    # report runs for the first one and its text and code are replayed for the second.
                     replayed_environment_report(),
                 ):
                     cli.report_budgets_and_envelope(fetch=fetch)

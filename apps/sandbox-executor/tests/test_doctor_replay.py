@@ -6,11 +6,11 @@ matrix's own ``_doctor`` without that replay and compares what the real ``cli._c
 of its eight call contexts. If production makes the section depend on the host configuration, the fetcher or
 ``--json``, it fails, and the replay must be removed from the matrix.
 
-The matrix also runs the environment report (``cli.report_budgets_and_envelope``) once per block of a case and replays
-its text and exit code for the two doctor runs of the block. The second identity test runs ``_doctor`` without that
-replay and compares everything the three real reports of each block do: the text, the exit code, the log lines, the
-gateway probes and any other output. If production makes the report depend on its stream or on how often it ran, it
-fails, and that replay must be removed.
+The matrix also runs the environment report (``cli.report_budgets_and_envelope``) only once for the two doctor runs of
+one block of a case and replays its text and exit code for the second one. The second identity test runs ``_doctor``
+without that replay and compares everything the three real reports of each block do (the direct one and those of the
+two doctor runs): the text, the exit code, the log lines, the gateway probes and any other output. If production
+makes the report depend on how often it ran or on who called it, it fails, and that replay must be removed.
 """
 
 import argparse
@@ -287,12 +287,12 @@ def test_environment_replay_changes_only_how_often_the_matrix_sees_a_text(monkey
     assert not differing, f"{differing} {seeded_secrets.seed_note()}"
 
 
-def test_matrix_doctor_runs_the_environment_report_once_per_block(monkeypatch, empty_environment):
+def test_matrix_doctor_runs_the_environment_report_twice_per_block(monkeypatch, empty_environment):
     real = cli.report_budgets_and_envelope
-    ran: list[bool] = []
+    ran: list[tuple[bool, bool]] = []
 
     def counting(fetch=None, out=None):
-        ran.append(local_llm.host_models_json() is None)
+        ran.append((local_llm.host_models_json() is None, out is None))
         return real(fetch=fetch, out=out)
 
     monkeypatch.setattr(cli, "report_budgets_and_envelope", counting)
@@ -300,7 +300,9 @@ def test_matrix_doctor_runs_the_environment_report_once_per_block(monkeypatch, e
     redaction_matrix._doctor("http://alice:FGJQVZFGJQVZ@localhost:8081/v1")
     redaction_matrix._doctor("http://alice:ZVQJGFZVQJGF@localhost:8081/v1")
 
-    assert ran == [True, True, False, False] * 2, "one real report per block; nothing is carried to the next block"
+    # Per block: the direct call on stdout, then one report for the two doctor runs. Nothing is carried further.
+    per_block = [(True, True), (True, False)] * 2 + [(False, True), (False, False)] * 2
+    assert ran == per_block * 2
 
 
 @pytest.fixture
@@ -340,19 +342,27 @@ def test_environment_replay_runs_once_per_environment_host_configuration_and_fet
     assert again == 3, "the same environment, host configuration and fetcher again is the same key"
 
 
-def test_every_caller_gets_the_report_text_on_its_own_stream_and_the_exit_code(counted_report, capsys):
-    given = io.StringIO()
+def test_a_report_without_a_stream_of_its_own_is_never_replayed(counted_report, capsys):
+    with replayed_environment_report():
+        on_stdout = [cli.report_budgets_and_envelope() for _ in range(2)]
+        with_a_stream = cli.report_budgets_and_envelope(out=io.StringIO())
+        on_stdout.append(cli.report_budgets_and_envelope())
+
+    assert on_stdout == [1, 2, 4], "every call on stdout runs the report"
+    assert with_a_stream == 3, "and a call with a stream is not answered from a call on stdout"
+    assert capsys.readouterr().out == "report 1\nreport 2\nreport 4\n"
+
+
+def test_every_caller_with_a_stream_gets_the_report_text_on_it_and_the_exit_code(counted_report, capsys):
+    streams = [io.StringIO(), io.StringIO(), io.StringIO()]
 
     with replayed_environment_report():
-        codes = [cli.report_budgets_and_envelope(), cli.report_budgets_and_envelope(out=given)]
-        on_stdout = capsys.readouterr().out
-        codes.append(cli.report_budgets_and_envelope())
+        codes = [cli.report_budgets_and_envelope(out=stream) for stream in streams]
 
     assert codes == [1, 1, 1]
     assert len(counted_report) == 1
-    assert on_stdout == "report 1\n", "the first caller's text goes to its stream, here stdout, and only there"
-    assert given.getvalue() == "report 1\n"
-    assert capsys.readouterr().out == "report 1\n"
+    assert [stream.getvalue() for stream in streams] == ["report 1\n"] * 3
+    assert capsys.readouterr().out == "", "the text goes to the caller's stream and nowhere else"
 
 
 def test_each_environment_replay_context_starts_empty_and_restores_the_report(counted_report):

@@ -6,10 +6,11 @@ fetcher and the ``--json`` flag differ.
 
 - ``cli._configuration_section`` reads none of those three, so it returns the same value in every call of the case,
   and :func:`replayed_configuration_section` computes it once.
-- ``cli.report_budgets_and_envelope`` reads the host configuration and the fetcher, but neither ``--json`` nor the
-  stream it writes to. One block of the case (one host configuration, one fetcher) runs it three times: directly, and
-  inside the text and the ``--json`` doctor run. :func:`replayed_environment_report` runs it once per block and hands
-  the other two callers the text and the exit code of that run. The doctor runs still format the text themselves.
+- ``cli.report_budgets_and_envelope`` reads the host configuration and the fetcher, but not ``--json``. One block of
+  the case (one host configuration, one fetcher) runs it three times: directly on stdout, and inside the text and the
+  ``--json`` doctor run, which both hand in a stream of their own. :func:`replayed_environment_report` leaves the
+  direct call alone, runs the report for the first doctor run and hands the second doctor run the text and the exit
+  code of that run. Both doctor runs still format the text themselves.
 
 The rule: a replay is allowed only for a call that is proven identical. The proof is ``tests/test_doctor_replay.py``;
 if production makes a section depend on anything outside its key, that test fails and the replay must go. A store
@@ -22,7 +23,6 @@ import contextlib
 import io
 import os
 import pickle
-import sys
 from collections.abc import Iterator
 from typing import Any, TextIO
 from unittest.mock import patch
@@ -56,23 +56,27 @@ def replayed_configuration_section() -> Iterator[None]:
 
 @contextlib.contextmanager
 def replayed_environment_report() -> Iterator[None]:
-    """Within the context, run ``cli.report_budgets_and_envelope`` once per environment, host configuration and fetcher.
+    """Within the context, run ``cli.report_budgets_and_envelope`` once for the doctor runs that share its inputs.
 
-    The real report writes into a buffer; every caller, the first one included, gets that text on its own stream
-    (``out``, or the current ``sys.stdout``) and the exit code. The host configuration stand-in and the fetcher are
-    part of the key as objects, so a block that installs another stand-in or passes another fetcher runs the report.
+    A call without a stream of its own (the direct call, on stdout) always runs the real report. A call with one (a
+    doctor run) is run once per environment, host configuration and fetcher: the real report writes into a buffer,
+    and every such caller, the first one included, gets that text on its stream and the exit code. The host
+    configuration stand-in and the fetcher are part of the key as objects, so a block that installs another stand-in
+    or passes another fetcher runs the report again.
     """
     real = cli.report_budgets_and_envelope
     store: dict[tuple[Any, ...], tuple[str, int]] = {}
 
     def replaying(fetch: local_llm.Fetcher | None = None, out: TextIO | None = None) -> int:
+        if out is None:
+            return real(fetch=fetch)
         key = (_environment(), local_llm.host_models_json, fetch)
         if key not in store:
             written = io.StringIO()
             code = real(fetch=fetch, out=written)
             store[key] = (written.getvalue(), code)
         text, code = store[key]
-        (out or sys.stdout).write(text)
+        out.write(text)
         return code
 
     with patch.object(cli, "report_budgets_and_envelope", replaying):

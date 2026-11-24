@@ -64,9 +64,7 @@ def run_cmd(
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     redacted_args = redact_command_args(args)
-    print_args = [
-        arg[:_MAX_PRINT_ARG_LEN] + "..." if len(arg) > _MAX_PRINT_ARG_LEN else arg for arg in redacted_args
-    ]
+    print_args = [arg[:_MAX_PRINT_ARG_LEN] + "..." if len(arg) > _MAX_PRINT_ARG_LEN else arg for arg in redacted_args]
     cmd_str = " ".join(print_args)
     if len(cmd_str) > _MAX_PRINT_LEN:
         cmd_str = cmd_str[: _MAX_PRINT_LEN - 3] + "..."

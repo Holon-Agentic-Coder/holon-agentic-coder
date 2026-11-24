@@ -26,12 +26,14 @@ def _find_docstrings(source: str) -> list[tuple[str, str, int]]:
     tree = ast.parse(source)
     findings: list[tuple[str, str, int]] = []
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            if ast.get_docstring(node, clean=False) is not None:
-                kind = type(node).__name__
-                name = "<module>" if isinstance(node, ast.Module) else node.name
-                lineno = 1 if isinstance(node, ast.Module) else node.lineno
-                findings.append((kind, name, lineno))
+        if (
+            isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and ast.get_docstring(node, clean=False) is not None
+        ):
+            kind = type(node).__name__
+            name = "<module>" if isinstance(node, ast.Module) else node.name
+            lineno = 1 if isinstance(node, ast.Module) else node.lineno
+            findings.append((kind, name, lineno))
     return findings
 
 

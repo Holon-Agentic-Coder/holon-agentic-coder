@@ -15,7 +15,6 @@ from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStat
 from sandbox_executor.flow.calibrate_rerun import (
     HeadMoveCheck,
     RerunSeams,
-    head_move_since_calibration,
     post_stale_signal,
     report_staleness,
     rerun_calibration,
@@ -31,7 +30,8 @@ from sandbox_executor.flow.calibrate_stale_warning import (
     stale_body,
 )
 from sandbox_executor.flow.github.approval_invalidation import CommentRecord
-from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
+from sandbox_executor.flow.review.conflict_merge import _merge_target_ledger_only
+from sandbox_executor.flow.stages.calibrate import _supersede_stale_warning, run_calibrate_stage
 
 from tests.test_calibrate_sync import CALIBRATED, EXEC, commit_file, git, make_repos
 
@@ -52,86 +52,59 @@ def commit_calibration(
     return git(repo, "rev-parse", "HEAD")
 
 
-@pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    r = tmp_path / "predicate"
-    r.mkdir()
-    git(r, "init", "-q", "-b", "main")
-    commit_file(r, "base.txt")
-    return r
-
-
-def test_equal_heads_are_unmoved(repo: Path) -> None:
-    head = git(repo, "rev-parse", "HEAD")
-    check = head_move_since_calibration(str(repo), head, head)
-    assert check == HeadMoveCheck(False, head, head, "the head is the evaluated commit")
-
-
-def test_an_abbreviated_evaluated_sha_still_matches_the_head(repo: Path) -> None:
-    head = git(repo, "rev-parse", "HEAD")
-    assert head_move_since_calibration(str(repo), head[:12], head).moved is False
-
-
-def test_calibration_commits_alone_are_not_a_move(repo: Path) -> None:
-    evaluated = git(repo, "rev-parse", "HEAD")
-    commit_calibration(repo)
-    commit_calibration(repo, rel="holon-knowledge/ledger/executions.jsonl", subject="chore(calibration): record rows")
-    head = git(repo, "rev-parse", "HEAD")
-    check = head_move_since_calibration(str(repo), evaluated, head)
-    assert check.moved is False
-    assert "only calibration commits" in check.reason
-
-
-def test_a_foreign_commit_between_the_calibration_commits_is_a_move(repo: Path) -> None:
-    evaluated = git(repo, "rev-parse", "HEAD")
-    commit_calibration(repo)
-    commit_file(repo, "resolver-fix.txt")
-    head = git(repo, "rev-parse", "HEAD")
-    check = head_move_since_calibration(str(repo), evaluated, head)
-    assert check.moved is True
-    assert "non-calibration commit" in check.reason
-
-
-def test_a_calibration_subject_on_a_foreign_path_is_a_move(repo: Path) -> None:
-    evaluated = git(repo, "rev-parse", "HEAD")
-    commit_calibration(repo, rel="src/sneaky.py")
-    assert head_move_since_calibration(str(repo), evaluated, git(repo, "rev-parse", "HEAD")).moved is True
-
-
-def test_a_merge_commit_is_always_a_move(repo: Path) -> None:
-    evaluated = git(repo, "rev-parse", "HEAD")
-    git(repo, "checkout", "-qb", "side")
-    commit_calibration(repo)
-    git(repo, "checkout", "-q", "main")
-    commit_calibration(repo, rel="holon-knowledge/ledger/executions.jsonl", subject="chore(calibration): record rows")
-    git(repo, "merge", "-q", "--no-ff", "-m", "chore(calibration): merge side", "side")
-    assert head_move_since_calibration(str(repo), evaluated, git(repo, "rev-parse", "HEAD")).moved is True
-
-
-def test_a_non_ancestor_evaluated_sha_is_a_move(repo: Path) -> None:
-    git(repo, "checkout", "-qb", "rewritten")
-    evaluated = commit_file(repo, "old-history.txt")
-    git(repo, "checkout", "-q", "main")
-    head = commit_file(repo, "new-history.txt")
-    check = head_move_since_calibration(str(repo), evaluated, head)
-    assert check.moved is True
-    assert "not an ancestor" in check.reason
-
-
-def test_an_unknown_sha_is_unmoved_with_the_gap_named(repo: Path) -> None:
-    head = git(repo, "rev-parse", "HEAD")
-    check = head_move_since_calibration(str(repo), "", head)
-    assert (check.moved, "unknown" in check.reason) == (False, True)
-
-
 # --- Bounded rerun and stale signal, on the flow-shaped harness (bare origin, host worktree, pushing clone). ---
 
 LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
+TARGET_REF = "refs/remotes/origin/main"
 
 
 @pytest.fixture
 def repos(tmp_path: Path) -> SimpleNamespace:
     return make_repos(tmp_path)
+
+
+def ledger_row(repo: Path, label: str, subject: str = "chore(review): record review rows") -> str:
+    """A ledger-only commit, as the review loop and the engine add: one appended row, no code."""
+    path = repo / LEDGER_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"execution_id": label}) + "\n")
+    git(repo, "add", LEDGER_REL)
+    git(repo, "commit", "-qm", subject)
+    return git(repo, "rev-parse", "HEAD")
+
+
+def advance_main(repos: SimpleNamespace, name: str, text: str = "y\n") -> None:
+    """Commit ``name`` and one ledger row on origin's main from the second clone, leaving it on the execution branch."""
+    other = repos.other
+    git(other, "checkout", "-q", "main")
+    git(other, "pull", "-q", "--ff-only", "origin", "main")
+    commit_file(other, name, text)
+    ledger_row(other, f"E-main-{name}", subject=f"chore: record {name} on main")
+    git(other, "push", "-q", "origin", "main")
+    git(other, "checkout", "-q", EXEC)
+    git(other, "fetch", "-q", "origin")
+
+
+def merge_main(repos: SimpleNamespace, ledger_only: bool = False) -> str:
+    """Merge origin/main into the second clone's execution branch the way the conflict gate does."""
+    outcome = _merge_target_ledger_only(str(repos.other), TARGET_REF, "Merge main into the execution branch")
+    assert (outcome.merged, outcome.ledger_only) == (True, ledger_only), outcome
+    return git(repos.other, "rev-parse", "HEAD")
+
+
+def pr258_history(repos: SimpleNamespace) -> SimpleNamespace:
+    """The history of PR #258 on origin: a report on E, then a ledger-only merge of main and bookkeeping commits."""
+    other = repos.other
+    evaluated = commit_file(other, "feature.py", "x = 1\n")
+    commit_calibration(other, text=f"# Calibration Report for {PLAN_ID}\n\n- **Evaluated Commit SHA:** {evaluated}\n")
+    advance_main(repos, "main-only.txt")
+    ledger_row(other, "E-pr")  # both sides now append to the ledger, so the merge conflicts there and nowhere else
+    merge = merge_main(repos, ledger_only=True)
+    ledger_row(other, "E-review")
+    head = commit_calibration(other, rel="holon-knowledge/kb/k.json", subject="chore(calibration): record knowledge")
+    git(other, "push", "-q", "origin", EXEC)
+    return SimpleNamespace(evaluated=evaluated, merge=merge, head=head)
 
 
 def realistic_calibrate(**kwargs: object) -> SimpleNamespace:
@@ -150,17 +123,30 @@ def realistic_calibrate(**kwargs: object) -> SimpleNamespace:
         handle.write(json.dumps(row) + "\n")
     git(cwd, "add", CAL_REPORT_REL, LEDGER_REL)
     git(cwd, "commit", "-qm", CAL_SUBJECT)
-    return SimpleNamespace(calibrated_branch=CALIBRATED, to_dict=lambda: {"plan_id": PLAN_ID})
+    report = {"plan_id": PLAN_ID, "evaluated_commit_sha": evaluated}
+    return SimpleNamespace(calibrated_branch=CALIBRATED, to_dict=lambda: report)
 
 
-def stage_runner(calls: list[str]) -> object:
-    """A run_calibrate_stage wrapper with the network-facing seams faked, recording each invocation."""
+def stage5_resolve_stale(thread: FakeThread) -> object:
+    """``resolve_stale`` as Stage 5 calls it after the push, routed to the fake thread instead of ``gh``."""
+    seams = WarningSeams(comments=thread.comments, poster=thread.poster, editor=thread.editor)
+    return lambda context, pr_number, evaluated: resolve_stale(context, pr_number, evaluated, seams)
+
+
+def stage_runner(calls: list[str], thread: FakeThread | None = None) -> object:
+    """A run_calibrate_stage wrapper with the network-facing seams faked, recording each invocation.
+
+    Stage 5's own supersede-after-push edits ``thread`` when one is given, else an empty thread nobody reads.
+    """
+    resolver = stage5_resolve_stale(thread or FakeThread())
 
     def run(ctx: FlowContext) -> StageResult:
         calls.append("stage")
         with (
+            patch("sandbox_executor.flow.stages.calibrate._stage5_conflict_gate", return_value=None),
             patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
             patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=realistic_calibrate),
+            patch("sandbox_executor.flow.stages.calibrate.resolve_stale", side_effect=resolver),
             patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", return_value={"state": "success"}),
         ):
             return run_calibrate_stage(ctx)
@@ -168,10 +154,12 @@ def stage_runner(calls: list[str]) -> object:
     return run
 
 
-def calibrated_flow(repos: SimpleNamespace) -> tuple[FlowContext, StageResult, list[str], object]:
+def calibrated_flow(
+    repos: SimpleNamespace, thread: FakeThread | None = None
+) -> tuple[FlowContext, StageResult, list[str], object]:
     """A context whose Stage 5 already ran once, with the stage-call recorder the rerun trigger reuses."""
     calls: list[str] = []
-    run = stage_runner(calls)
+    run = stage_runner(calls, thread)
     ctx = FlowContext(target_worktree=str(repos.host), execution_branch=EXEC, agent="a", model="m")
     result = run(ctx)
     assert result.status == StageStatus.SUCCESS
@@ -241,6 +229,33 @@ def exec_ledger(repos: SimpleNamespace) -> str:
     return git(repos.host, "show", f"{EXEC}:{LEDGER_REL}")
 
 
+def stale_warnings(bodies: list[str]) -> list[str]:
+    return [body for body in bodies if "Calibration report is stale" in body]
+
+
+def refreshed_notes(bodies: list[str]) -> list[str]:
+    return [body for body in bodies if "Calibration refreshed" in body]
+
+
+def push_bookkeeping(repos: SimpleNamespace) -> str:
+    """A review ledger row and a calibration commit pushed to origin after calibration: no change of the PR's own."""
+    git(repos.other, "fetch", "-q", "origin")
+    git(repos.other, "reset", "-q", "--hard", f"origin/{EXEC}")
+    ledger_row(repos.other, "E-review")
+    head = commit_calibration(
+        repos.other, rel="holon-knowledge/kb/k.json", subject="chore(calibration): record knowledge"
+    )
+    git(repos.other, "push", "-q", "origin", EXEC)
+    return head
+
+
+def standalone_context(repos: SimpleNamespace) -> FlowContext:
+    """A review-loop context with no Stage 5 result: the gate can only warn, never rerun."""
+    ctx = FlowContext(target_worktree=str(repos.host), execution_branch=EXEC, agent="a", model="m")
+    ctx.intent_data = {"target_branch": "main"}
+    return ctx
+
+
 def test_a_head_move_after_calibration_reruns_stage5_and_the_report_names_the_new_head(
     repos: SimpleNamespace,
 ) -> None:
@@ -301,23 +316,135 @@ def test_a_head_that_outruns_both_attempts_marks_the_payload_stale(repos: Simple
     assert "not ready to merge" in line and "covers" in line
 
 
-def test_the_stale_signal_is_superseded_by_the_rerun_and_the_refreshed_note_posts_once(repos: SimpleNamespace) -> None:
+def test_the_stale_signal_is_superseded_by_the_rerun_and_no_second_comment_is_posted(repos: SimpleNamespace) -> None:
+    """Stage 5 here cannot reach the thread (its own edit goes nowhere), so the trigger's explicit number supersedes."""
     ctx, result, _, run = calibrated_flow(repos)
     approve_pr(ctx)
-    seams, thread = recording_thread()
+    thread = FakeThread(stale_body(StaleRange("a" * 40, "b" * 40, "an earlier flow")))  # a warning is already open
+    seams = thread.seams()
     move_head(repos)
     refreshed = rerun_calibration(ctx, result, run, seams=seams)
     assert refreshed.status == StageStatus.SUCCESS
-    stale_comments = [body for body in thread.posted if "Calibration report is stale" in body]
-    cleared_comments = [body for body in thread.posted if "Calibration refreshed" in body]
-    assert (len(stale_comments), len(cleared_comments)) == (1, 1)
-    assert "do not merge on this report" in stale_comments[0]
-    assert refreshed.payload["calibrated_head"][:7] in cleared_comments[0]
-    (warning,) = thread.stale_bodies()
-    assert "superseded" in warning and "do not merge" not in warning
+    assert refreshed.payload["stale_warning"] == {"posted": False, "edited": 0, "reason": "no open stale warning"}
+    assert thread.posted == []  # no warning about the report being replaced, and no refreshed note beside the edit
+    (warning,) = (record.body for record in thread.records)
+    assert "superseded" in warning and "Calibration report is stale" not in warning
     assert f"{SUPERSEDED_MARKER_PREFIX}{refreshed.payload['calibrated_head']} -->" in warning
     assert rerun_calibration(ctx, refreshed, run, seams=seams) is refreshed
-    assert (len(thread.posted), len(thread.edits)) == (2, 1)  # nothing new on a repeated check
+    assert (len(thread.posted), len(thread.edits)) == (0, 1)  # nothing new on a repeated check
+
+
+def test_stage5_supersedes_the_warning_right_after_the_push_and_before_the_final_head_ci_check(
+    repos: SimpleNamespace,
+) -> None:
+    thread = FakeThread()
+    ctx, _, _, _ = calibrated_flow(repos, thread)
+    approve_pr(ctx)
+    new_head = move_head(repos)
+    post_stale_signal(ctx, report_staleness(ctx), thread.seams(), pr_number="7")
+    assert len(stale_warnings(thread.stale_bodies())) == 1  # the warning is open when Stage 5 starts
+    seen_at_ci_check: list[str] = []
+
+    def final_head_ci(context: FlowContext, repo_dir: str, branch: str) -> dict[str, str]:
+        (warning,) = thread.stale_bodies()
+        seen_at_ci_check.append(warning)
+        assert "Stale calibration warning superseded" in warning and "Calibration report is stale" not in warning
+        assert f"{SUPERSEDED_MARKER_PREFIX}{new_head} -->" in warning and f"`{new_head[:7]}`" in warning
+        assert parse_evaluated_commit_sha(git(repos.origin, "show", f"{EXEC}:{CAL_REPORT_REL}")) == new_head
+        return {"state": "success"}
+
+    with (
+        patch("sandbox_executor.flow.stages.calibrate._stage5_conflict_gate", return_value=None),
+        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=realistic_calibrate),
+        patch("sandbox_executor.flow.stages.calibrate.resolve_stale", side_effect=stage5_resolve_stale(thread)),
+        patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", side_effect=final_head_ci),
+    ):
+        result = run_calibrate_stage(ctx)
+
+    assert (result.status, len(seen_at_ci_check)) == (StageStatus.SUCCESS, 1)
+    assert result.payload["stale_warning"] == {"posted": False, "edited": 1, "reason": "superseded"}
+    assert (len(thread.records), len(thread.posted), len(thread.edits)) == (1, 1, 1)  # one comment, edited once
+    assert thread.records[0].body == seen_at_ci_check[0]
+
+
+def test_a_failed_publish_leaves_the_warning_open_and_records_no_supersession(repos: SimpleNamespace) -> None:
+    thread = FakeThread()
+    ctx, _, _, _ = calibrated_flow(repos, thread)
+    approve_pr(ctx)
+    move_head(repos)
+    post_stale_signal(ctx, report_staleness(ctx), thread.seams(), pr_number="7")
+    with (
+        patch("sandbox_executor.flow.stages.calibrate._stage5_conflict_gate", return_value=None),
+        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=realistic_calibrate),
+        patch("sandbox_executor.flow.stages.calibrate.publish_calibration", return_value=False),
+        patch("sandbox_executor.flow.stages.calibrate.resolve_stale", side_effect=stage5_resolve_stale(thread)) as hook,
+        patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci") as final_head_ci,
+    ):
+        result = run_calibrate_stage(ctx)
+
+    assert (result.payload["stale_warning"], result.payload["calibrated_head"]) == (None, None)
+    hook.assert_not_called()
+    final_head_ci.assert_not_called()
+    (warning,) = thread.stale_bodies()
+    assert "Calibration report is stale" in warning and thread.edits == []
+
+
+def test_a_rerun_adds_the_refreshed_note_only_when_no_warning_was_superseded(repos: SimpleNamespace) -> None:
+    thread = FakeThread()
+    ctx, result, calls, run = calibrated_flow(repos, thread)
+    approve_pr(ctx)
+    first_head = move_head(repos, "first-fix.txt")
+    first = rerun_calibration(ctx, result, run, seams=thread.seams())
+    assert first.payload["stale_warning"]["edited"] == 0  # no warning was open: the refreshed note is posted once
+    (note,) = thread.posted
+    assert "Calibration refreshed" in note and first_head[:7] in note
+
+    second_head = move_head(repos, "second-fix.txt")
+    post_stale_signal(ctx, report_staleness(ctx), thread.seams(), pr_number="7")  # as a standalone gate would
+    second = rerun_calibration(ctx, first, run, seams=thread.seams())
+    assert (len(calls), second.payload["calibrated_head"]) == (3, second_head)
+    assert second.payload["stale_warning"] == {"posted": False, "edited": 1, "reason": "superseded"}
+    (warning,) = thread.stale_bodies()
+    assert f"{SUPERSEDED_MARKER_PREFIX}{second_head} -->" in warning
+    assert refreshed_notes(thread.posted) == [note]  # the superseded warning names the fresh report: no second note
+    assert len(thread.records) == 2
+
+
+@pytest.mark.parametrize(
+    ("review_payload", "pr_number"),
+    [
+        ({"consensus": {"approved": True, "pr_number": 7}, "pr": {"pr_number": 9}}, "7"),
+        ({"consensus": {"approved": False}, "pr": {"pr_number": 9}}, "9"),  # halted for a human: still the reviewed PR
+        ({"consensus": "approved", "pr": ["9"]}, None),
+        (None, None),
+    ],
+)
+def test_stage5_supersedes_on_the_reviewed_pull_request_approved_or_not(
+    tmp_path: Path, review_payload: dict | None, pr_number: str | None
+) -> None:
+    ctx = pr_context(tmp_path)
+    if review_payload is not None:
+        ctx.stage_results["review"] = StageResult(
+            stage=FlowStage.REVIEW, status=StageStatus.HALTED_FOR_HUMAN, payload=review_payload
+        )
+    record = {"posted": False, "edited": 0, "reason": "no open stale warning"}
+    with patch("sandbox_executor.flow.stages.calibrate.resolve_stale", return_value=record) as hook:
+        assert _supersede_stale_warning(ctx, "c" * 40) is record
+    hook.assert_called_once_with(ctx, pr_number, "c" * 40)
+
+
+def test_a_successful_rerun_on_a_code_push_posts_no_stale_warning(repos: SimpleNamespace) -> None:
+    ctx, result, calls, run = calibrated_flow(repos)
+    approve_pr(ctx)
+    seams, thread = recording_thread()
+    new_head = move_head(repos)
+    refreshed = rerun_calibration(ctx, result, run, seams=seams)
+    assert (len(calls), refreshed.status) == (2, StageStatus.SUCCESS)
+    assert thread.stale_bodies() == [] and thread.edits == []  # no warning at any point, not even a superseded one
+    (note,) = thread.posted
+    assert "Calibration refreshed" in note and new_head[:7] in note
 
 
 def test_a_still_stale_head_never_duplicates_the_stale_comment(repos: SimpleNamespace) -> None:
@@ -325,10 +452,78 @@ def test_a_still_stale_head_never_duplicates_the_stale_comment(repos: SimpleName
     approve_pr(ctx)
     seams, thread = recording_thread()
     new_head = move_head(repos)
-    rerun_calibration(ctx, result, lambda context: result, seams=seams)
+    posted_at_attempt: list[int] = []
+
+    def never_catching_up(context: FlowContext) -> StageResult:
+        posted_at_attempt.append(len(thread.posted))
+        return result
+
+    rerun_calibration(ctx, result, never_catching_up, seams=seams)
+    assert posted_at_attempt == [0, 0]  # nothing is posted while an attempt may still replace the report
     (warning,) = thread.stale_bodies()
     assert "Calibration report is stale" in warning and new_head[:7] in warning
-    assert len(thread.posted) == 1
+    rerun_calibration(ctx, result, never_catching_up, seams=seams)
+    assert (len(thread.posted), len(thread.edits)) == (1, 0)  # one warning, posted after the attempts, never again
+
+
+def test_a_failed_stage5_result_with_a_stale_old_report_posts_the_warning_once(repos: SimpleNamespace) -> None:
+    ctx, _, calls, run = calibrated_flow(repos)
+    approve_pr(ctx)
+    seams, thread = recording_thread()
+    new_head = move_head(repos)
+    failed = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.FAILED, error="calibrate blew up")
+    assert rerun_calibration(ctx, failed, run, seams=seams) is failed
+    assert rerun_calibration(ctx, failed, run, seams=seams) is failed
+    assert len(calls) == 1  # a failed Stage 5 is not rerun here; the old report is only marked
+    (warning,) = thread.stale_bodies()
+    assert "Calibration report is stale" in warning and new_head[:7] in warning
+    assert (len(thread.posted), len(thread.edits)) == (1, 0)
+
+
+def test_a_failed_stage5_result_with_a_current_report_or_a_dry_run_posts_nothing(repos: SimpleNamespace) -> None:
+    ctx, _, calls, run = calibrated_flow(repos)
+    approve_pr(ctx)
+    seams, thread = recording_thread()
+    failed = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.FAILED, error="calibrate blew up")
+    assert rerun_calibration(ctx, failed, run, seams=seams) is failed  # the old report still covers the head
+    move_head(repos)
+    ctx.dry_run = True
+    assert rerun_calibration(ctx, failed, run, seams=seams) is failed
+    assert (thread.posted, thread.edits, len(calls)) == ([], [], 1)
+
+
+def test_a_review_restart_result_posts_nothing_and_is_not_checked(repos: SimpleNamespace) -> None:
+    ctx, result, calls, run = calibrated_flow(repos)
+    approve_pr(ctx)
+    thread, head_lookups = FakeThread(), []
+    seams = RerunSeams(
+        head_resolver=lambda context: head_lookups.append("head") or "",
+        comments=thread.comments,
+        poster=thread.poster,
+        editor=thread.editor,
+    )
+    move_head(repos)
+    restart = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SKIPPED, payload={"review_restart": True})
+    assert rerun_calibration(ctx, restart, run, seams=seams) is restart  # the restart reruns Stage 5 itself
+    assert (thread.posted, thread.edits, head_lookups, len(calls)) == ([], [], [], 1)
+    assert rerun_calibration(ctx, result, lambda context: restart, seams=thread.seams()) is restart
+    assert (thread.posted, thread.edits) == ([], [])
+
+
+def test_a_rerun_that_fails_after_publishing_a_covering_report_posts_nothing(repos: SimpleNamespace) -> None:
+    ctx, result, calls, run = calibrated_flow(repos)
+    approve_pr(ctx)
+    seams, thread = recording_thread()
+    move_head(repos)
+
+    def red_final_head_ci(context: FlowContext) -> StageResult:
+        run(context)  # the fresh report is published, then the final-head CI comes back red
+        return StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.FAILED, error="final-head CI is red")
+
+    failed = rerun_calibration(ctx, result, red_final_head_ci, seams=seams)
+    assert (failed.status, failed.error, len(calls)) == (StageStatus.FAILED, "final-head CI is red", 2)
+    assert report_staleness(ctx).moved is False  # the published report covers the head
+    assert (thread.posted, thread.edits) == ([], [])
 
 
 def stale_check(evaluated: str, head: str) -> HeadMoveCheck:
@@ -367,7 +562,7 @@ def test_a_stale_warning_followed_by_more_commits_leaves_exactly_one_updated_war
     assert (first["posted"], second["edited"], third["edited"]) == (True, 1, 0)
     (warning,) = thread.stale_bodies()
     assert "`ddddddd`" in warning and "`bbbbbbb`" not in warning
-    assert "do not merge on this report" in warning
+    assert "The flow reruns Stage 5 for this head on its next run" in warning
     assert (len(thread.posted), len(thread.edits)) == (1, 1)
 
 
@@ -404,6 +599,26 @@ def test_a_current_report_supersedes_a_leftover_warning(repos: SimpleNamespace) 
     assert thread.posted == []
 
 
+@pytest.mark.parametrize("trigger_site", ["review gate", "pipeline rerun"])
+def test_a_leftover_warning_on_a_covered_pr258_shaped_head_is_superseded_and_nothing_is_posted(
+    repos: SimpleNamespace, trigger_site: str
+) -> None:
+    history = pr258_history(repos)
+    ctx = standalone_context(repos)
+    thread = FakeThread(stale_body(StaleRange(history.evaluated, history.merge, "an earlier flow")))
+    if trigger_site == "review gate":
+        assert review_calibration_freshness(ctx, "7", seams=thread.seams()) is None
+    else:
+        calibrated = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
+        calls: list[str] = []
+        assert rerun_calibration(ctx, calibrated, stage_runner(calls), thread.seams(), pr_number="7") is calibrated
+        assert calls == []
+    (warning,) = thread.stale_bodies()
+    assert "Stale calibration warning superseded" in warning
+    assert f"{SUPERSEDED_MARKER_PREFIX}{history.evaluated} -->" in warning
+    assert (thread.posted, len(thread.edits)) == ([], 1)
+
+
 def test_flow_summary_renders_covering_and_unrefreshed_states() -> None:
     from sandbox_executor.cli.commands.flow import _calibrated_head_line
 
@@ -413,16 +628,17 @@ def test_flow_summary_renders_covering_and_unrefreshed_states() -> None:
     assert _calibrated_head_line(unrefreshed) == "calibration report not refreshed for the current head"
 
 
-def test_the_review_gate_posts_the_signal_and_reruns_inside_a_calibrated_flow(repos: SimpleNamespace) -> None:
+def test_the_review_gate_reruns_without_posting_the_signal_inside_a_calibrated_flow(repos: SimpleNamespace) -> None:
     ctx, _, calls, run = calibrated_flow(repos)
     approve_pr(ctx)
-    seams, _ = recording_seams()
+    seams, thread = recording_thread()
     new_head = move_head(repos)
     record = review_calibration_freshness(ctx, "7", run_stage=run, seams=seams)
     assert (record["moved"], record["rerun"], record["rerun_status"]) == (True, True, "success")
     assert "rerun_error" not in record and "rerun_stale" not in record
     assert record["current_head"] == new_head
-    assert record["signal"]["posted"] is True
+    assert record["signal"] == {"posted": False, "edited": 0, "reason": "the Stage 5 rerun replaced the stale report"}
+    assert thread.stale_bodies() == [] and len(refreshed_notes(thread.posted)) == 1
     assert len(calls) == 2
     assert report_staleness(ctx).moved is False
 
@@ -430,28 +646,38 @@ def test_the_review_gate_posts_the_signal_and_reruns_inside_a_calibrated_flow(re
 def test_the_review_gate_records_a_failed_rerun_outcome(repos: SimpleNamespace) -> None:
     ctx, _, _, _ = calibrated_flow(repos)
     approve_pr(ctx)
-    seams, _ = recording_seams()
-    move_head(repos)
+    seams, thread = recording_thread()
+    new_head = move_head(repos)
+    posted_at_attempt: list[int] = []
 
     def failing(context: FlowContext) -> StageResult:
+        posted_at_attempt.append(len(thread.posted))
         return StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.FAILED, error="calibrate blew up")
 
     record = review_calibration_freshness(ctx, "7", run_stage=failing, seams=seams)
     assert (record["rerun"], record["rerun_status"]) == (True, "failed")
     assert record["rerun_error"] == "calibrate blew up"
+    assert posted_at_attempt == [0]  # the warning appears only after the rerun failed with the report still stale
+    assert (record["signal"]["posted"], len(thread.posted)) == (True, 1)
+    (warning,) = thread.stale_bodies()
+    assert "Calibration report is stale" in warning and new_head[:7] in warning
 
 
 def test_the_review_gate_records_a_rerun_the_head_outran_as_stale(repos: SimpleNamespace) -> None:
     ctx, _, _, _ = calibrated_flow(repos)
     approve_pr(ctx)
-    seams, _ = recording_seams()
+    seams, thread = recording_thread()
     move_head(repos)
+    posted_at_attempt: list[int] = []
 
     def never_catching_up(context: FlowContext) -> StageResult:
+        posted_at_attempt.append(len(thread.posted))
         return StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
 
     record = review_calibration_freshness(ctx, "7", run_stage=never_catching_up, seams=seams)
     assert (record["rerun"], record["rerun_status"], record["rerun_stale"]) == (True, "success", True)
+    assert posted_at_attempt == [0, 0]
+    assert (record["signal"]["posted"], len(stale_warnings(thread.posted)), len(thread.posted)) == (True, 1, 1)
 
 
 def test_the_review_gate_signals_only_without_a_prior_stage5_result(repos: SimpleNamespace) -> None:
@@ -462,7 +688,68 @@ def test_the_review_gate_signals_only_without_a_prior_stage5_result(repos: Simpl
     record = review_calibration_freshness(standalone, "7", run_stage=stage_runner(calls), seams=seams)
     assert (record["moved"], record["rerun"]) == (True, False)
     assert len(calls) == 1  # the standalone loop cannot run Stage 5; the signal still marks the PR
-    assert len([body for body in posted if "Calibration report is stale" in body]) == 1
+    assert (record["signal"]["posted"], len(stale_warnings(posted))) == (True, 1)
+
+
+def test_a_standalone_gate_on_a_code_push_warns_once_and_a_second_pass_does_not_post_again(
+    repos: SimpleNamespace,
+) -> None:
+    calibrated_flow(repos)
+    standalone = standalone_context(repos)
+    seams, thread = recording_thread()
+    new_head = move_head(repos)
+    first = review_calibration_freshness(standalone, "7", seams=seams)
+    second = review_calibration_freshness(standalone, "7", seams=seams)
+    assert (first["moved"], first["signal"]["posted"], first["rerun"]) == (True, True, False)
+    assert "1 commit(s) after the evaluated commit changed the pull request's own change" in first["reason"]
+    assert second["signal"] == {"posted": False, "edited": 0, "reason": "already current"}
+    (warning,) = thread.stale_bodies()
+    assert "Calibration report is stale" in warning and new_head[:7] in warning
+    assert (len(thread.posted), len(thread.edits)) == (1, 0)
+
+
+def test_the_gate_with_skip_calibrate_and_an_unfinished_stage5_result_still_warns(repos: SimpleNamespace) -> None:
+    calibrated_flow(repos)
+    ctx = standalone_context(repos)
+    ctx.skip_calibrate = True  # no Stage 5 will replace the report in this run
+    ctx.stage_results["calibrate"] = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SKIPPED)
+    seams, thread = recording_thread()
+    move_head(repos)
+    record = review_calibration_freshness(ctx, "7", seams=seams)
+    assert (record["signal"]["posted"], record["rerun"], len(stale_warnings(thread.posted))) == (True, False, 1)
+
+
+def test_the_gate_on_a_pr258_shaped_head_posts_nothing(repos: SimpleNamespace) -> None:
+    pr258_history(repos)  # a ledger-only merge of main, a review ledger row and a calibration commit after the report
+    seams, thread = recording_thread()
+    assert review_calibration_freshness(standalone_context(repos), "7", seams=seams) is None
+    assert (thread.posted, thread.edits) == ([], [])
+
+
+def test_the_gate_after_review_ledger_row_and_calibration_commits_posts_nothing(repos: SimpleNamespace) -> None:
+    ctx, result, calls, run = calibrated_flow(repos)
+    approve_pr(ctx)
+    seams, thread = recording_thread()
+    head = push_bookkeeping(repos)
+    assert report_staleness(ctx).current_head == head
+    assert review_calibration_freshness(ctx, "7", run_stage=run, seams=seams) is None
+    assert review_calibration_freshness(standalone_context(repos), "7", seams=seams) is None
+    assert rerun_calibration(ctx, result, run, seams=seams) is result
+    assert (thread.posted, thread.edits, len(calls)) == ([], [], 1)
+
+
+def test_the_gate_defers_to_the_stage5_still_ahead_in_this_run_and_posts_nothing(repos: SimpleNamespace) -> None:
+    _, _, calls, run = calibrated_flow(repos)
+    ctx = standalone_context(repos)
+    ctx.stage_results["calibrate"] = StageResult(
+        stage=FlowStage.CALIBRATE, status=StageStatus.SKIPPED, payload={"review_restart": True}
+    )
+    seams, thread = recording_thread()
+    move_head(repos)
+    record = review_calibration_freshness(ctx, "7", run_stage=run, seams=seams)
+    assert (record["moved"], record["rerun"]) == (True, False)
+    assert record["signal"] == {"posted": False, "edited": 0, "reason": "deferred to Stage 5 of this run"}
+    assert (thread.posted, thread.edits, len(calls)) == ([], [], 1)  # the pipeline's Stage 5 replaces the report
 
 
 def test_the_review_gate_posts_the_refreshed_comment_without_an_approved_consensus(repos: SimpleNamespace) -> None:
@@ -473,8 +760,7 @@ def test_the_review_gate_posts_the_refreshed_comment_without_an_approved_consens
     record = review_calibration_freshness(ctx, "7", run_stage=run, seams=seams)
     assert (record["moved"], record["rerun"]) == (True, True)
     assert len(calls) == 2
-    assert len([body for body in posted if "Calibration report is stale" in body]) == 1
-    assert len([body for body in posted if "Calibration refreshed" in body]) == 1
+    assert (len(stale_warnings(posted)), len(refreshed_notes(posted))) == (0, 1)
 
 
 def test_posting_gate_reports_calibration_freshness(tmp_path: Path) -> None:
@@ -507,12 +793,13 @@ def test_the_review_gate_is_silent_without_a_report_or_a_pr(repos: SimpleNamespa
 def test_both_trigger_sites_firing_on_one_move_cause_exactly_one_rerun(repos: SimpleNamespace) -> None:
     ctx, result, calls, run = calibrated_flow(repos)
     approve_pr(ctx)
-    seams, _ = recording_seams()
+    seams, posted = recording_seams()
     move_head(repos)
     rerun_calibration(ctx, result, run, seams=seams)
     assert len(calls) == 2
     assert review_calibration_freshness(ctx, "7", run_stage=run, seams=seams) is None
     assert len(calls) == 2
+    assert (len(stale_warnings(posted)), len(refreshed_notes(posted)), len(posted)) == (0, 1, 1)
 
 
 def test_the_pipeline_passes_the_stage5_result_through_the_rerun_trigger(tmp_path: Path) -> None:

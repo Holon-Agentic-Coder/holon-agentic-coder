@@ -1,9 +1,3 @@
-"""The per-run holon-coherence token reduction sidecar: setup, teardown and the token-reduction mounts and env vars.
-
-``detect_holon_coherence`` and ``get_host_proxy_envs`` live in ``launcher.coherence`` and are re-exported here, so
-``sandbox_executor.launcher.sidecar`` is the one import path for the proxy surface the flow engine uses.
-"""
-
 import logging
 import os
 import subprocess
@@ -32,8 +26,6 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class _SidecarState:
-    """Tracks the proxy resources created by THIS run so teardown never touches foreign ones."""
-
     container_name: str | None = None
     network_name: str | None = None
     network_created: bool = False
@@ -43,14 +35,6 @@ _sidecar_state = _SidecarState()
 
 
 def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict[str, str]]:
-    """Start this run's holon-coherence proxy sidecar and return the sandbox mounts and env vars.
-
-    Resources are named per run (pid + uuid suffix) and recorded in ``_sidecar_state`` so teardown
-    only ever removes what this run created. The image comes from ``proxy_image.coherence_proxy_image()``.
-
-    Raises:
-        RuntimeError: If Docker networking, the sidecar spawn, or the readiness probe fails.
-    """
     container_name, network_name = _sidecar_names()
 
     ca_cert_path, ca_key_path = root_ca.generate_root_ca()
@@ -81,15 +65,18 @@ def setup_token_reduction_proxy(mitm_web: bool = False) -> tuple[list[str], dict
 
 
 def _sidecar_names() -> tuple[str, str]:
-    """The per-run ``(container name, network name)``, suffixed with the pid and a short uuid."""
     run_suffix = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
     container_name = f"holon-proxy-{run_suffix}"
     network_name = f"holon-net-{run_suffix}"
     return container_name, network_name
 
 
+def _redact_sidecar_output(proxy_spawn: subprocess.CompletedProcess[str]) -> str:
+    raw_output = (proxy_spawn.stderr or "").strip() or (proxy_spawn.stdout or "").strip()
+    return redact_env_literals(redact_agent_secrets(raw_output), names=COMMAND_ECHO_ENV_NAMES)
+
+
 def _spawn_sidecar(plan: sidecar_plan._SidecarPlan) -> None:
-    """Record this run's resources, create its network and start the sidecar; tears down and raises on failure."""
     _sidecar_state.network_name = plan.network_name
     _sidecar_state.network_created = proxy_paths._ensure_network(plan.network_name)
     _sidecar_state.container_name = plan.container_name
@@ -111,11 +98,7 @@ def _spawn_sidecar(plan: sidecar_plan._SidecarPlan) -> None:
         docker_run_proxy, capture_output=True, text=True, check=False, env=sidecar_plan._sidecar_spawn_env(plan)
     )
     if proxy_spawn.returncode != 0:
-        # The sidecar's output can echo the mitmweb `?token=` login URL or the `web_password=` setting.
-        stderr = redact_env_literals(
-            redact_agent_secrets((proxy_spawn.stderr or "").strip() or (proxy_spawn.stdout or "").strip()),
-            names=COMMAND_ECHO_ENV_NAMES,
-        )
+        stderr = _redact_sidecar_output(proxy_spawn)
         teardown_token_reduction_proxy()
         raise RuntimeError(
             f"holon-coherence sidecar '{plan.container_name}' failed to start: {stderr or 'unknown docker error'}. "
@@ -124,7 +107,6 @@ def _spawn_sidecar(plan: sidecar_plan._SidecarPlan) -> None:
 
 
 def _await_sidecar_ready(container_name: str) -> None:
-    """Wait until the sidecar answers an HTTP proxy request on its published port; tears down and raises if not."""
     host_port = proxy_paths._published_loopback_port(container_name)
     if host_port is None:
         teardown_token_reduction_proxy()
@@ -145,13 +127,11 @@ def _await_sidecar_ready(container_name: str) -> None:
 def _sidecar_mounts_and_envs(
     container_name: str, network_name: str, ca_cert_path: str
 ) -> tuple[list[str], dict[str, str]]:
-    """The agent container's network and CA mounts, and the env vars that route it through the sidecar."""
     mounts = ["--network", network_name, *proxy_paths._ca_mount_args(ca_cert_path)]
     return mounts, proxy_paths._build_proxy_envs(ca_cert_path, f"http://{container_name}:{PROXY_LISTEN_PORT}")
 
 
 def teardown_token_reduction_proxy() -> None:
-    """Remove only the sidecar container and network THIS run created (no-op otherwise)."""
     if _sidecar_state.container_name:
         result = proxy_paths._run_docker("rm", "-f", _sidecar_state.container_name)
         if result.returncode != 0:
@@ -182,14 +162,6 @@ def get_token_reduction_mounts_and_envs(
     mitm_web: bool = False,
     proxy_attach: bool = False,
 ) -> tuple[list[str], dict[str, str]]:
-    """Build token-reduction mounts/env vars for an explicitly opted-in run or an attach to a running proxy.
-
-    Opt-in is strictly ``--token-reduce``, ``--mitm-web`` or ``HOLON_TOKEN_REDUCE`` in ``("1", "true", "yes",
-    "on")``. Without an opt-in, ``proxy_attach`` (the flow's detected, user-owned proxy) attaches to that proxy and
-    never spawns a sidecar; ``HOLON_TOKEN_REDUCE`` set to an opt-out value disables both. Host
-    ``HTTP_PROXY``/``HTTPS_PROXY`` alone never change sandbox networking. Any failure degrades to direct egress
-    (empty mounts/envs) with an actionable warning log.
-    """
     opted_in = coherence._token_reduce_opt_in(token_reduce or mitm_web)
     if not opted_in and not (proxy_attach and not coherence._token_reduce_opted_out()):
         return [], {}
@@ -212,7 +184,6 @@ def get_token_reduction_mounts_and_envs(
 
 
 def _opted_in_mounts_and_envs(token_reduce: bool, mitm_web: bool) -> tuple[list[str], dict[str, str]]:
-    """Spawn this run's sidecar for a flag or passive-monitoring opt-in; attach for an env-only opt-in."""
     is_passive = os.getenv("HOLON_PASSIVE_MONITORING", "").strip().lower() in _TRUTHY_ENV_VALUES
     if token_reduce or mitm_web or is_passive:
         if mitm_web:
@@ -222,5 +193,4 @@ def _opted_in_mounts_and_envs(token_reduce: bool, mitm_web: bool) -> tuple[list[
 
 
 def _attach_running_proxy() -> tuple[list[str], dict[str, str]]:
-    """Attach to the user's running proxy; never starts or tears down a sidecar."""
     return proxy_attach._attach_external_proxy()

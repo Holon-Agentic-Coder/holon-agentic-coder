@@ -1,5 +1,3 @@
-"""Reconcile command module for reconciling pending action outcomes."""
-
 from __future__ import annotations
 
 import argparse
@@ -9,10 +7,11 @@ from sandbox_executor import cli
 from sandbox_executor.cli.options import add_target_worktree_option
 
 ORDER = 120
+_DEFAULT_EXPIRE_TTL_DAYS = 14
+_DEFAULT_LEDGER_RELATIVE_PATH = "holon-knowledge/ledger/executions.jsonl"
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register the reconcile subcommand parser."""
     parser = subparsers.add_parser(
         "reconcile",
         help="Reconcile pending action outcomes and expire stale unknown records.",
@@ -35,12 +34,12 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     parser.add_argument(
         "--expire-ttl",
         type=int,
-        default=14,
+        default=_DEFAULT_EXPIRE_TTL_DAYS,
         help="Days after which unknown actions expire to unresolved (default: 14).",
     )
     parser.add_argument(
         "--ledger-path",
-        default="holon-knowledge/ledger/executions.jsonl",
+        default=_DEFAULT_LEDGER_RELATIVE_PATH,
         help="Path to actions ledger JSONL file.",
     )
     add_target_worktree_option(parser, default=".")
@@ -48,7 +47,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
 
 def run(args: argparse.Namespace) -> int:
-    """Execute the reconcile command."""
     ledger_path = args.ledger_path
     if not os.path.isabs(ledger_path):
         ledger_path = os.path.join(args.target_worktree, ledger_path)

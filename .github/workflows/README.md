@@ -41,9 +41,141 @@ a push to `main` once, by `push`. The timing gate on a stacked pull request stil
 trigger or if `push` widens beyond `main`.
 
 Every job of every workflow ends with the CI timing regression gate described below. The six pull-request workflows also
-trigger on the `labeled` and `unlabeled` activity types, so adding or removing the override label re-runs them. All of
-them except `docker-build.yml`, which declares only `contents: read`, grant their job `actions: read` so it can read the
-baseline artefacts.
+trigger on the `labeled` and `unlabeled` activity types, so every label event starts them. The bookkeeping-only push
+gate described below then decides what the jobs do: adding or removing a label that a workflow reads (the override label
+`timing-regression-accepted` or `module-budget-change`) runs every job in full, and any other label skips the expensive
+steps when the same job already passed on the same commit. All six grant their job `actions: read`: the timing gate
+reads the baseline artefacts with it, and the bookkeeping gate reads the earlier runs and their jobs.
+
+## Bookkeeping-Only Push Gate
+
+The flow pushes plan files, execution reports and ledger rows to a pull request several times. Such a push cannot change
+a test result, yet every push used to run every job in full. `scripts/ci_bookkeeping_gate.py`, called through the
+composite action `.github/actions/bookkeeping-gate`, lets a job skip its expensive steps after such a push. Every job
+still starts, reports under its usual name and ends green, so required status checks are satisfied. The script uses the
+standard library only and runs on the runner's own `python3`, with two sibling modules: `ci_bookkeeping_api.py` (the
+event of the run and the REST reads) and `ci_bookkeeping_chain.py` (the walk through earlier runs). It also imports
+`scripts/ci_timing_gate.py`, the source of the request builder, the opener, the override label name and the step-summary
+writer.
+
+### Bookkeeping paths
+
+A path is bookkeeping when it lies under one of three roots, `plans/`, `executions/` or `holon-knowledge/`, and names a
+markdown, JSON or JSONL file: its name ends in `.md`, `.json` or `.jsonl`, in lower case. Paths are matched on whole
+components: the first component must be exactly one of the roots and a file name must follow it. So `plans_helper.py`,
+`docs/plans/x.md` and a file named `plans` are not bookkeeping.
+
+The three file types are the ones that the hygiene job still checks on a skipped push (see "What still runs on a skip").
+A file of any other type under a root, such as `plans/tool.py` or `executions/run.sh`, is not bookkeeping, because a
+skipped job would not check it at all.
+
+A rename counts with both of its names, so a file that moves into or out of a root, or to another file type, is not
+bookkeeping.
+
+### When a job skips
+
+"Bookkeeping gate" is the first step after the checkout in every job of the six pull-request workflows. It says "skip"
+only on positive evidence, and every doubt or error runs the full job. All of the following must hold:
+
+- The run is the first attempt of a `pull_request` run, and its action is `synchronize` (a push), `labeled` or
+  `unlabeled`.
+- For a push: the new head is strictly ahead of the previous head, the comparison lists fewer than 300 files, and every
+  changed path is bookkeeping.
+- For a label event: the label is not one that a workflow reads.
+- The same job really succeeded in the newest earlier run of the same workflow on the same branch, and that run was on
+  the previous head (for a label event: on the current head). When that run was itself skipped, the gate walks back
+  through the skipped runs to the last real success, at most 20 runs, and then requires that every path changed between
+  that commit and the new head is bookkeeping.
+- No run on the way names more than one pull request.
+
+### The marker step
+
+A job that the gate skipped also concludes `success`, so the conclusion of an earlier job proves nothing. Every job
+therefore ends with the step `Full run completed`, which runs only when the gate said "run" and every earlier step
+passed. An earlier job counts as a real success only when this step succeeded. Runs from before the gate existed have no
+marker step, so the first bookkeeping-only push after the gate reaches a pull request runs in full once
+(`previous-run-unverified`).
+
+### Reading the gate output
+
+The gate prints one line in the "Bookkeeping gate" step log and adds the same line to the step summary, for example
+`bookkeeping-gate: decision=RUN rule=non-bookkeeping-change detail=scripts/x.py`. The rule is the reason for the
+decision.
+
+Rules that skip:
+
+- `bookkeeping-only`: a push that changed only bookkeeping paths since the last real success of this job.
+- `label-not-result-affecting`: a label event with a label that no workflow reads, on a commit this job already passed.
+
+Rules that run the full job:
+
+- `event-not-pull-request`: the run is a push to `main`, a manual run or any other event.
+- `rerun-attempt`: the run is a second or later attempt.
+- `action-not-eligible`: the pull request was opened or reopened, or the action is unknown.
+- `result-affecting-label`: the label that was added or removed is one that a workflow reads.
+- `missing-previous-head`: the event of a push names no previous head.
+- `incomplete-event`: the event or the environment lacks the head commit, the branch, the workflow file, the job name,
+  the run number, the run attempt or the label name.
+- `force-push-or-diverged`: the new head is not strictly ahead of the commit it is compared with (a force push or a
+  rebase).
+- `diff-too-large`: the comparison lists 300 files or more, which is the most the API returns, so the list may be cut
+  short.
+- `non-bookkeeping-change`: a changed path lies outside the three roots or is not a markdown, JSON or JSONL file; the
+  detail names the first such path.
+- `previous-run-missing`: there is no earlier run of this workflow on the branch, the newest one is on another commit,
+  it holds no single job with this job's name, or every earlier run was skipped.
+- `shared-head-branch`: an earlier run on the way names more than one pull request, so several open pull requests share
+  the head branch and the run may belong to another one; the detail names the run and the count.
+- `previous-run-not-finished`: an earlier run on the way is still queued or in progress.
+- `previous-run-not-successful`: the job failed or was cancelled in an earlier run; the detail names the conclusion.
+- `previous-run-unverified`: the job succeeded in an earlier run that has no marker step.
+- `chain-too-long`: the newest 20 earlier runs were all skipped and older runs exist; the gate does not look further
+  back.
+- `api-error`: a GitHub API call failed or answered in an unexpected shape, or the gate itself failed; the detail names
+  the error class and never its text.
+
+### What still runs on a skip
+
+The steps that only record a time ("Record job start time", "CI Timing Gate (Start)") still run. The hygiene job also
+keeps "Set up Node.js" and runs `make lint-json` (jq over every JSON and JSONL file) and `make lint-md` (Prettier over
+every markdown file), so the pushed plans, reports and ledger rows are still checked. The timing checks are skipped: a
+job of a few seconds says nothing about a slow-down.
+
+### Forcing a full run
+
+- Re-run the job or the workflow: a second attempt always runs in full.
+- Close and reopen the pull request.
+- Start the workflow by hand (`workflow_dispatch`).
+- Push any change that is not a bookkeeping path, for example a file outside the three roots.
+
+An empty commit does not force a full run: it changes no path, so it counts as bookkeeping-only.
+
+### Limits
+
+- A skipped run does not test a base branch that moved since the last real success. The next push with another change, a
+  re-run and the push to `main` after the merge all run in full.
+- Tests that read the real plans and ledgers do not run on a skipped push. They run on the next full run and on `main`.
+- The gate finds the earlier runs by workflow and head branch, not by pull request, so it assumes one open pull request
+  per head branch. It runs in full when an earlier run names several pull requests (`shared-head-branch`), but the API
+  lists only the open ones: after a second pull request from the same branch is closed, the gate may count a run of that
+  pull request as an earlier run of this one.
+- The gate does not notice a retargeted base. After the base branch of a pull request is changed, a bookkeeping-only
+  push can still skip on the strength of a real success against the old base. Close and reopen the pull request to test
+  against the new one.
+- Skipped jobs appear as very short points in the CI duration report.
+- The marker step proves a real success only while no step of the job uses `continue-on-error`. The wiring test rejects
+  that key in the six workflows.
+
+### Checklist for later changes
+
+- A new job in one of these workflows, or a new pull-request workflow, needs three things: the "Bookkeeping gate" step
+  (`id: bookkeeping`) directly after the checkout, the guard `if: steps.bookkeeping.outputs.skip != 'true'` on every
+  later step that is not cheap, and `Full run completed` as its last step with exactly that guard. The job also needs
+  `actions: read`. `apps/sandbox-executor/tests/test_ci_bookkeeping_wiring.py` enforces this.
+- A new label that a workflow reads must be added to `RESULT_AFFECTING_LABELS` in `scripts/ci_bookkeeping_gate.py`. The
+  same test file scans the workflows for label names and fails on one that is missing.
+- A new rule name must be described in the list above. The same test file compares the list with the constants of the
+  scripts.
 
 ## CI Timing Regression Gate
 
@@ -189,6 +321,22 @@ Repository maintainers configuring branch protection rulesets on `main` should r
     - Calling workflows must execute `actions/checkout` before invoking this local composite action.
     - Check steps must specify `if: always()` to ensure budget enforcement and step summary recording occur even upon
       prior step failure.
+- `.github/actions/bookkeeping-gate/action.yml`: Asks `scripts/ci_bookkeeping_gate.py` whether the job may skip its
+  expensive steps (see "Bookkeeping-Only Push Gate" above). It never fails a job: when the script cannot run, the action
+  prints a warning and the full job runs.
+  - **Inputs:**
+    - `job-name`: (required) The job's base name as the jobs API shows it, without the matrix part, for example `unit`
+      or `Workspace survival`.
+    - `os`: (optional, default: empty) The runner label of a matrix job, for example `ubuntu-latest`.
+  - **Outputs:**
+    - `skip`: `true` when the job may skip its expensive steps, `false` in every other case.
+  - **Prerequisites & Requirements:**
+    - Calling workflows must execute `actions/checkout` before invoking this local composite action, and the step needs
+      `id: bookkeeping`.
+    - The job must grant `actions: read` and `contents: read`.
+    - Guards are written as `steps.bookkeeping.outputs.skip != 'true'`, never as `== 'false'`, so a missing output runs
+      the step. A step that must also run after a failure combines both:
+      `if: always() && steps.bookkeeping.outputs.skip != 'true'`.
 
 ## Standards Alignment
 

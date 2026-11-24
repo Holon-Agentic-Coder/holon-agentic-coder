@@ -2,7 +2,6 @@
 
 import json
 import os
-import stat
 import subprocess
 import time
 from collections.abc import Callable, Iterator
@@ -258,16 +257,6 @@ class FakeRoleAgents:
 
     def roles(self) -> list[str]:
         return [c["role"] for c in self.calls]
-
-
-def _set_user_write(root: Path, enabled: bool) -> None:
-    """Add or strip the owner's write bit on every directory and file under ``root``."""
-    for dirpath, _dirnames, filenames in os.walk(root):
-        for path in [dirpath, *(os.path.join(dirpath, name) for name in filenames)]:
-            if os.path.islink(path):
-                continue
-            mode = os.stat(path).st_mode
-            os.chmod(path, mode | stat.S_IWUSR if enabled else mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
 
 
 def _dispatch_context(host: Path, agents: FakeRoleAgents, **overrides: Any) -> FlowContext:

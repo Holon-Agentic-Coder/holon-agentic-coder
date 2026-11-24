@@ -387,6 +387,21 @@ def test_the_next_step_removes_the_worktree_of_a_step_whose_processes_were_kille
     assert _ledger_temp_entries(ledger_repos.temp_dir) == []
 
 
+def test_the_next_step_unregisters_the_worktree_of_a_worktree_add_killed_before_git_wrote_its_head(ledger_repos):
+    host = ledger_repos.host
+    leftover = _plant_leftover(ledger_repos, "killed", owner_lock=True, unfinished_add=True)
+    # Git writes the registration's HEAD after it locks it: killed in between, the registration has none, and git
+    # refuses to remove it for as long as the worktree directory exists.
+    Path(_git(leftover / "worktree", "rev-parse", "--absolute-git-dir"), "HEAD").unlink()
+    assert _ledger_worktrees(host) == [_registered_path(leftover)]
+    assert "locked initializing" in _git(host, "worktree", "list", "--porcelain").splitlines()
+
+    assert ledger_repos.append() is None
+
+    assert _ledger_worktrees(host) == []
+    assert _ledger_temp_entries(ledger_repos.temp_dir) == []
+
+
 @pytest.mark.parametrize("unfinished_add", [False, True], ids=["after-its-worktree-add", "during-its-worktree-add"])
 def test_a_worktree_whose_owner_is_alive_is_left_alone_until_the_owner_lets_go(ledger_repos, unfinished_add):
     leftover = _plant_leftover(ledger_repos, "live", owner_lock=True, unfinished_add=unfinished_add)

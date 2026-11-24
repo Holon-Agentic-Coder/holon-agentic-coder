@@ -5,10 +5,10 @@ that worktree is registered, the step holds an exclusive ``flock`` on ``owner.lo
 lock file is never staged). The kernel releases the lock when the process dies, however it dies, which is what makes
 "no live process owns this worktree" decidable for the next run.
 
-Leaving the context removes the worktree, deletes the temp directory and only then prunes, so a removal that failed or
-timed out still ends unregistered. Entering it first clears what a killed run left behind: registrations whose
-directory is gone are pruned, and each registered ``holon-flow-ledger-*/worktree`` whose owner lock can be taken (or
-that has none, as the earlier code wrote none) is removed.
+Leaving the context removes the worktree, deletes the temp directory, repeats a removal that did not succeed and only
+then prunes, so a removal that failed or timed out still ends unregistered. Entering it first clears what a killed run
+left behind: registrations whose directory is gone are pruned, and each registered ``holon-flow-ledger-*/worktree``
+whose owner lock can be taken (or that has none, as the earlier code wrote none) is removed.
 
 A ``git worktree add`` that is killed or times out leaves its registration ``locked`` with the reason ``initializing``,
 which a plain ``remove --force`` refuses and ``prune`` skips. Every removal here therefore passes ``--force`` twice,
@@ -89,12 +89,17 @@ def _discard_worktree(repo_dir: str, worktree: str, git: GitRunnerCallable) -> N
     """Unregister a ledger worktree and delete its temp directory; anything that is not one is left on disk.
 
     The second ``--force`` overrides a lock, so the caller must already know the worktree is its own or a sweep
-    candidate: an unfinished ``git worktree add`` leaves a lock that one ``--force`` does not remove.
+    candidate: an unfinished ``git worktree add`` leaves a lock that one ``--force`` does not remove. An add killed
+    before git wrote the registration's ``HEAD`` leaves one that git refuses to remove while its directory exists and
+    that ``prune`` skips as locked, so a removal that did not succeed is repeated once the directory is deleted.
     """
-    _quiet_git(git, ["worktree", "remove", "--force", "--force", worktree], repo_dir)
+    removal = ["worktree", "remove", "--force", "--force", worktree]
+    removed = _quiet_git(git, removal, repo_dir)
     tmp_root = os.path.dirname(worktree)
     if _is_ledger_worktree_path(worktree) and not os.path.islink(tmp_root):
         shutil.rmtree(tmp_root, ignore_errors=True)
+        if removed is None or removed.returncode != 0:
+            _quiet_git(git, removal, repo_dir)
 
 
 def _leftover_worktrees(porcelain: str, repo_dir: str) -> list[str]:

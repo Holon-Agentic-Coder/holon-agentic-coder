@@ -8,23 +8,14 @@ from collections.abc import Mapping
 from typing import Any
 
 from sandbox_executor.calibration import is_metadata_path
+from sandbox_executor.flow import target_sync_hooks as _hooks
 from sandbox_executor.flow.conflict_classes import ConflictClass
 from sandbox_executor.flow.conflict_resolver_role import conflict_code_resolver
 from sandbox_executor.flow.context import FlowContext, FlowStage
 from sandbox_executor.flow.git_refs import _resolve_branch_ref, _track_local_branch
 from sandbox_executor.flow.github.merge import PROTECTED_BRANCHES, _bare_branch
-from sandbox_executor.flow.target_probe import TargetProbe, TargetProbeError
+from sandbox_executor.flow.target_probe import TargetProbeError
 from sandbox_executor.flow.target_sync import sync_with_target
-from sandbox_executor.flow.target_sync_hooks import (
-    _LEDGER_REL,
-    _NOTICE_ATTR,
-    _PROBE_ATTR,
-    _can_sync_worktree,
-    _checkout_active_branch,
-    _execution_id_of,
-    _restore_checked_out_branch,
-    format_target_merge_notice,
-)
 from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest, SyncResult
 from sandbox_executor.review_report import FindingRow, finding_signature
 from sandbox_executor.review_target import ReviewTarget
@@ -48,7 +39,7 @@ def is_ledger_only_sync(result: SyncResult) -> bool:
     return (
         result.status == "merged"
         and bool(result.resolutions)
-        and all(cls == ConflictClass.LEDGER.value for _, cls, _ in result.resolutions)
+        and all(c == ConflictClass.LEDGER.value for _, c, _ in result.resolutions)
     )
 
 
@@ -56,10 +47,9 @@ def compute_rereview_scope(result: SyncResult) -> tuple[str, ...]:
     """Return sorted deduplicated code and test paths touched by an agent-resolved merge commit."""
     if result.status != "merged" or is_mechanical_only(result):
         return ()
-    scoped = set(result.code_paths)
-    for path in result.changed_paths:
-        if path and not is_metadata_path(path) and not path.startswith("holon-knowledge/ledger/"):
-            scoped.add(path)
+    scoped = set(result.code_paths) | {
+        p for p in result.changed_paths if p and not is_metadata_path(p) and not p.startswith("holon-knowledge/ledger/")
+    }
     return tuple(sorted(scoped))
 
 
@@ -85,13 +75,12 @@ def format_conflict_block_reason(result: SyncResult, target_branch: str) -> str:
 def _precheck_review_sync(
     context: FlowContext, branch: str, target_branch: str, boundary: SyncBoundary
 ) -> SyncResult | None:
-    """Return an early ``unchanged`` or ``blocked`` result when the sync cannot run, else ``None``."""
     if context.dry_run or not branch:
         return SyncResult("unchanged", "", "", "")
     if _bare_branch(branch) in PROTECTED_BRANCHES:
         return SyncResult("blocked", "", "", "", error=f"refusing to push to protected branch '{branch}'")
     worktree, strict = context.target_worktree, boundary in _STRICT_BOUNDARIES
-    if not _can_sync_worktree(worktree, target_branch):
+    if not _hooks._can_sync_worktree(worktree, target_branch):
         err = f"fetching '{target_branch}' and '{branch}' failed" if strict else ""
         return SyncResult("blocked" if strict else "unchanged", "", "", "", error=err)
     if _resolve_branch_ref(worktree, branch, prefer_remote=True) is None:
@@ -112,19 +101,18 @@ def sync_review_head(
     if early := _precheck_review_sync(context, branch, target_branch, boundary):
         return early
     worktree = context.target_worktree
-    prev, detached, checkout_err = _checkout_active_branch(context, branch)
+    prev, detached, checkout_err = _hooks._checkout_active_branch(context, branch)
     if checkout_err is not None:
         return SyncResult("blocked", "", "", "", error=checkout_err)
-    last_probe: TargetProbe | None = getattr(context, _PROBE_ATTR, None)
     request = SyncRequest(
         worktree=worktree,
         branch=branch,
         target_branch=target_branch,
         stage=stage.value,
         boundary=boundary,
-        ledger_path=os.path.join(worktree, _LEDGER_REL),
-        execution_id=_execution_id_of(branch, stage, boundary),
-        last_probe=last_probe,
+        ledger_path=os.path.join(worktree, _hooks._LEDGER_REL),
+        execution_id=_hooks._execution_id_of(branch, stage, boundary),
+        last_probe=getattr(context, _hooks._PROBE_ATTR, None),
         code_resolver=conflict_code_resolver(context),
     )
     try:
@@ -132,20 +120,15 @@ def sync_review_head(
     except TargetProbeError as exc:
         return SyncResult("blocked", "", "", "", error=str(exc))
     finally:
-        _restore_checked_out_branch(worktree, prev, detached, branch)
+        _hooks._restore_checked_out_branch(worktree, prev, detached, branch)
     if result.probe is not None:
-        setattr(context, _PROBE_ATTR, result.probe)
+        setattr(context, _hooks._PROBE_ATTR, result.probe)
     if result.status == "merged":
         _track_local_branch(context, branch)
-        setattr(context, _NOTICE_ATTR, format_target_merge_notice(result.target_sha, result.changed_paths))
+        setattr(
+            context, _hooks._NOTICE_ATTR, _hooks.format_target_merge_notice(result.target_sha, result.changed_paths)
+        )
     return result
-
-
-def _record_scope(context: FlowContext, result: SyncResult) -> None:
-    """Store agent-resolved re-review scope on ``context`` when ``result`` resolved ``CODE`` conflicts."""
-    scope = compute_rereview_scope(result)
-    if scope and hasattr(context, "review_scope_paths"):
-        context.review_scope_paths = list(scope)
 
 
 def _apply_turn_sync(
@@ -160,7 +143,8 @@ def _apply_turn_sync(
         context.log(f"[Review Loop] Target sync {label} blocked: {reason}.")
         return resolved_target, f"target sync blocked: {reason}"
     if result.status == "merged":
-        _record_scope(context, result)
+        if (scope := compute_rereview_scope(result)) and hasattr(context, "review_scope_paths"):
+            context.review_scope_paths = list(scope)
         if resolved_target is not None and result.head_after:
             resolved_target = dataclasses.replace(resolved_target, head_sha=result.head_after)
         context.log(f"[Review Loop] Target sync {label} merged '{target_branch}' into '{branch}'.")
@@ -170,7 +154,7 @@ def _apply_turn_sync(
 def sync_before_review_iteration(
     context: FlowContext, resolved_target: ReviewTarget | None, target_branch: str, iteration: int
 ) -> tuple[ReviewTarget | None, str | None]:
-    """Sync the reviewed branch before reviewer dispatch; return ``(updated_target, blocked_error_or_None)``."""
+    """Sync the reviewed branch before reviewer dispatch."""
     return _apply_turn_sync(context, resolved_target, target_branch, f"before iteration {iteration}")
 
 
@@ -179,22 +163,35 @@ def sync_iteration_mergeability(
     resolved_target: ReviewTarget | None,
     target_branch: str,
     iteration: int,
-    last_mergeability: dict[str, Any],
+    mergeability: dict[str, Any],
 ) -> tuple[ReviewTarget | None, dict[str, Any], bool, str | None]:
-    """Run pre-iteration sync and refresh ``last_mergeability`` / ``is_dirty`` if a merge resolved conflicts."""
+    """Run pre-iteration sync and refresh mergeability if a merge resolved conflicts."""
     before_sha = resolved_target.head_sha if resolved_target is not None else ""
     updated, sync_error = sync_before_review_iteration(context, resolved_target, target_branch, iteration)
-    if sync_error is not None:
-        return updated, last_mergeability, bool(last_mergeability.get("is_dirty")), sync_error
-    after_sha = updated.head_sha if updated is not None else ""
-    if updated is not None and after_sha and after_sha != before_sha and last_mergeability.get("is_dirty"):
-        refreshed = {**last_mergeability, "mergeable": "MERGEABLE", "merge_state_status": "CLEAN", "is_dirty": False}
-        return updated, refreshed, False, None
-    return updated, last_mergeability, bool(last_mergeability.get("is_dirty")), None
+    dirty = bool(mergeability.get("is_dirty"))
+    if sync_error is None and updated and updated.head_sha and updated.head_sha != before_sha and dirty:
+        clean = {**mergeability, "mergeable": "MERGEABLE", "merge_state_status": "CLEAN", "is_dirty": False}
+        return updated, clean, False, None
+    return updated, mergeability, dirty, sync_error
 
 
 def sync_after_resolver_turn(
     context: FlowContext, resolved_target: ReviewTarget | None, target_branch: str, iteration: int
 ) -> tuple[ReviewTarget | None, str | None]:
-    """Sync the reviewed branch after a resolver turn completes; return ``(updated_target, blocked_error_or_None)``."""
+    """Sync the reviewed branch after a resolver turn completes."""
     return _apply_turn_sync(context, resolved_target, target_branch, f"after resolver iteration {iteration}")
+
+
+def finalize_resolver_turn(context: FlowContext, target: ReviewTarget, iteration: int, outcome: Any) -> Any:
+    """Run post-turn target sync on a successful resolver outcome and update ``head_sha``/``pushed``."""
+    if outcome.error or context.dry_run:
+        return outcome
+    updated = dataclasses.replace(target, head_sha=outcome.head_sha) if outcome.head_sha else target
+    synced, sync_err = sync_after_resolver_turn(
+        context, updated, str(context.intent_data.get("target_branch") or "main"), iteration
+    )
+    if sync_err:
+        return dataclasses.replace(outcome, error=sync_err)
+    if synced and synced.head_sha and synced.head_sha != outcome.head_sha:
+        return dataclasses.replace(outcome, head_sha=synced.head_sha, pushed=True)
+    return outcome

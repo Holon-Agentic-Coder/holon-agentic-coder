@@ -1,12 +1,3 @@
-"""The rejected attempt of a failed pre-push test run: its patch, failing tests and summary, kept for the next pass.
-
-The resolver's working tree dies with the review-loop container, so when verification fails the uncommitted changes
-are saved as a patch under the git-ignored ``.holon/review/rejected/`` directory of the (host-mounted) workspace,
-next to a small JSON record naming the failing tests and the summary. Everything is redacted before it is capped and
-written, and again when it is read back for the next resolver prompt. Nothing here raises: a failure to capture
-degrades to no artefact.
-"""
-
 import contextlib
 import json
 import os
@@ -28,8 +19,6 @@ _DIFF_PATHSPEC = ["--", ".", ":(exclude)holon-knowledge/ledger/executions.jsonl"
 
 @dataclass(frozen=True)
 class RejectedAttempt:
-    """A failed attempt: the workspace-relative patch path (None when unsaved), failing tests and summary."""
-
     patch_path: str | None
     failed_tests: tuple[str, ...]
     summary: str
@@ -37,15 +26,15 @@ class RejectedAttempt:
 
 
 def _git(workspace: str, args: list[str], env: dict[str, str]) -> str | None:
-    """Run git in ``workspace`` and return its stdout, or None on any failure.
-
-    The workspace is trusted explicitly: a container user that does not own a bind-mounted worktree would otherwise
-    make every git call fail with "dubious ownership", leaving the diff (and so the patch) empty.
-    """
-    trust = ["-c", f"safe.directory={os.path.abspath(workspace)}"]
+    safe_directory_flags = ["-c", f"safe.directory={os.path.abspath(workspace)}"]
     try:
         proc = subprocess.run(
-            ["git", *trust, *args], cwd=workspace, env=env, capture_output=True, text=True, check=False
+            ["git", *safe_directory_flags, *args],
+            cwd=workspace,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
         )
     except OSError:
         return None
@@ -53,48 +42,45 @@ def _git(workspace: str, args: list[str], env: dict[str, str]) -> str | None:
 
 
 def uncommitted_diff(workspace: str) -> str | None:
-    """Return the diff of the working tree against HEAD, new files included, leaving the real index untouched.
-
-    A temporary copy of the index takes the intent-to-add entries, so the repository's own index is never altered.
-    """
     index_path = _git(workspace, ["rev-parse", "--path-format=absolute", "--git-path", "index"], dict(os.environ))
     if index_path is None:
         return None
-    fd, scratch = tempfile.mkstemp(prefix="holon-rejected-index-")
+    fd, scratch_index_path = tempfile.mkstemp(prefix="holon-rejected-index-")
     os.close(fd)
     try:
-        with contextlib.suppress(OSError), open(index_path.strip(), "rb") as source, open(scratch, "wb") as target:
+        with (
+            contextlib.suppress(OSError),
+            open(index_path.strip(), "rb") as source,
+            open(scratch_index_path, "wb") as target,
+        ):
             target.write(source.read())
-        env = {**os.environ, "GIT_INDEX_FILE": scratch}
-        if _git(workspace, ["add", "-N", *_DIFF_PATHSPEC], env) is None:
+        scratch_index_env = {**os.environ, "GIT_INDEX_FILE": scratch_index_path}
+        if _git(workspace, ["add", "-N", *_DIFF_PATHSPEC], scratch_index_env) is None:
             return None
-        return _git(workspace, ["diff", "--no-color", "HEAD", *_DIFF_PATHSPEC], env)
+        return _git(workspace, ["diff", "--no-color", "HEAD", *_DIFF_PATHSPEC], scratch_index_env)
     finally:
         with contextlib.suppress(OSError):
-            os.remove(scratch)
+            os.remove(scratch_index_path)
 
 
 def _cap(text: str, limit: int) -> str:
-    """Cap ``text`` at ``limit`` characters, marking the cut."""
     return text if len(text) <= limit else text[:limit] + _TRUNCATION_MARKER
 
 
 def _write(workspace: str, relative: str, text: str) -> bool:
-    """Write ``text`` under ``workspace``; False when it cannot be written."""
     target = os.path.join(workspace, relative)
+    atomic_tmp_path = target + ".tmp"
     try:
         os.makedirs(os.path.join(workspace, REJECTED_DIR), exist_ok=True)
-        # A temporary name and an atomic replace, so a partial file is never recorded.
-        with open(target + ".tmp", "w", encoding="utf-8") as handle:
+        with open(atomic_tmp_path, "w", encoding="utf-8") as handle:
             handle.write(text)
-        os.replace(target + ".tmp", target)
+        os.replace(atomic_tmp_path, target)
     except OSError:
         return False
     return True
 
 
 def capture_rejected_attempt(workspace: str, iteration: int, raw_output: str) -> RejectedAttempt:
-    """Save the redacted patch and a JSON record of the failing tests and summary for ``iteration``."""
     output = CredentialRedactor.redact_text(raw_output)
     diff = uncommitted_diff(workspace)
     head = (_git(workspace, ["rev-parse", "HEAD"], dict(os.environ)) or "").strip()
@@ -120,7 +106,6 @@ def capture_rejected_attempt(workspace: str, iteration: int, raw_output: str) ->
 
 
 def load_rejected_attempt(workspace: str, iteration: int) -> RejectedAttempt | None:
-    """Read the record saved for ``iteration``, redacted again on the way in; None when absent or unreadable."""
     try:
         with open(os.path.join(workspace, REJECTED_DIR, f"iter-{iteration}.json"), encoding="utf-8") as handle:
             data = json.load(handle)
@@ -139,7 +124,6 @@ def load_rejected_attempt(workspace: str, iteration: int) -> RejectedAttempt | N
 
 
 def clear_rejected_attempts(workspace: str) -> None:
-    """Remove every saved attempt, so a passing run leaves no stale evidence to feed back."""
     directory = os.path.join(workspace, REJECTED_DIR)
     with contextlib.suppress(OSError):
         for name in os.listdir(directory):
@@ -147,19 +131,20 @@ def clear_rejected_attempts(workspace: str) -> None:
                 os.remove(os.path.join(directory, name))
 
 
+def _parse_iteration_number(filename: str) -> int | None:
+    if filename.startswith("iter-") and filename.endswith(".json") and filename[5:-5].isdigit():
+        return int(filename[5:-5])
+    return None
+
+
 def latest_attempt_for_head(workspace: str, head_sha: str) -> tuple[int, RejectedAttempt] | None:
-    """Return the highest-numbered saved attempt made on ``head_sha``, so an attempt on an older head is ignored."""
     directory = os.path.join(workspace, REJECTED_DIR)
     try:
         names = os.listdir(directory)
     except OSError:
         return None
     numbers = sorted(
-        (
-            int(name[5:-5])
-            for name in names
-            if name.startswith("iter-") and name[5:-5].isdigit() and name.endswith(".json")
-        ),
+        (number for name in names if (number := _parse_iteration_number(name)) is not None),
         reverse=True,
     )
     for number in numbers:
@@ -170,7 +155,6 @@ def latest_attempt_for_head(workspace: str, head_sha: str) -> tuple[int, Rejecte
 
 
 def read_saved_patch(workspace: str, attempt: RejectedAttempt, limit: int = PATCH_MAX_CHARS) -> str:
-    """Return the saved patch redacted and capped at ``limit``, or an empty string when unreadable."""
     if not attempt.patch_path:
         return ""
     try:
@@ -182,7 +166,6 @@ def read_saved_patch(workspace: str, attempt: RejectedAttempt, limit: int = PATC
 
 
 def previous_failure_section(workspace: str, head_sha: str) -> str:
-    """Build the resolver prompt section for the latest failed attempt on ``head_sha``; empty when there is none."""
     found = latest_attempt_for_head(workspace, head_sha)
     if found is None:
         return ""

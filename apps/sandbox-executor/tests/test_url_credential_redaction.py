@@ -41,6 +41,7 @@ from sandbox_executor import cli, local_llm
 from sandbox_executor.launcher import env_files, proxy_readiness, root_ca
 
 from tests import seeded_secrets
+from tests.doctor_replay import replayed_configuration_section
 
 FRAGMENT_LEN = 4
 _LETTERS = "FGJQVZ"
@@ -212,21 +213,24 @@ def _doctor(value: str) -> list[str]:
     )
     env = {"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_BASE_URL": value, "HOLON_LOCAL_MODELS": "m1"}
     texts: list[str] = []
-    for host_config in (None, _host_config(value)):
-        for fetch in _fetchers(texts):
-            with (
-                # Plain stand-ins, not MagicMocks: building a mock per call dominated this matrix's runtime.
-                patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
-                patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
-                _captured(env) as out,
-            ):
-                cli.report_budgets_and_envelope(fetch=fetch)
-                for as_json in (False, True):
-                    doctor_args = argparse.Namespace(
-                        agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None
-                    )
-                    cli.run_doctor(doctor_args, fetch=fetch)
-            texts.extend(out)
+    # The eight doctor runs of one case differ only in host configuration, fetcher and `--json`; the configuration
+    # section reads none of them (proved in test_doctor_replay.py), so it is computed once per case and replayed.
+    with replayed_configuration_section():
+        for host_config in (None, _host_config(value)):
+            for fetch in _fetchers(texts):
+                with (
+                    # Plain stand-ins, not MagicMocks: building a mock per call dominated this matrix's runtime.
+                    patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
+                    patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
+                    _captured(env) as out,
+                ):
+                    cli.report_budgets_and_envelope(fetch=fetch)
+                    for as_json in (False, True):
+                        doctor_args = argparse.Namespace(
+                            agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None
+                        )
+                        cli.run_doctor(doctor_args, fetch=fetch)
+                texts.extend(out)
     return texts
 
 
@@ -658,6 +662,7 @@ def test_credential_in_invalid_envelope_value_never_echoed(monkeypatch, tmp_path
             patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
             patch.object(subprocess, "run", docker),
             _captured({**env, "HOME": str(tmp_path)}) as out,
+            replayed_configuration_section(),
         ):
             env_out = io.StringIO()
             codes = [cli.report_budgets_and_envelope(fetch=lambda url, timeout: b"{}", out=env_out)]

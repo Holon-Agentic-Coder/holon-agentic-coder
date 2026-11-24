@@ -36,6 +36,7 @@ from sandbox_executor.e2e_harness import (
     validate_e2e_local_llm_env,
 )
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
+from sandbox_executor.git import run_git
 from sandbox_executor.ledger import LedgerRewriteError
 from sandbox_executor.local_llm import LocalLLMConfigError
 
@@ -274,6 +275,48 @@ class TestTeardownAndDeletionEnumeration:
         with pytest.raises(PrefixScopingError, match="primary repository directory"):
             teardown_e2e_intent(str(repo), "I-123456-e2e-run", disposable_worktree=str(repo))
 
+    def test_teardown_discovers_remote_only_branches_even_when_local_tracking_ref_exists(self, tmp_path: Path) -> None:
+        repo, origin = _create_bare_origin_and_clone(tmp_path)
+        prefix = "I-123456-e2e-run"
+        tracked_branch = f"{prefix}/_"
+        remote_only_branch = f"{prefix}/P-10-PI-M/_"
+
+        _git(repo, "branch", tracked_branch, "main")
+        _git(repo, "push", "-q", "origin", tracked_branch)
+        # Create a second scoped branch directly on origin without any local tracking ref in repo.
+        _git(origin, "branch", remote_only_branch, "main")
+
+        report = teardown_e2e_intent(str(repo), prefix)
+
+        assert report.errors == ()
+        assert set(report.deleted_remote_branches) == {tracked_branch, remote_only_branch}
+        assert tracked_branch not in _remote_branches(origin)
+        assert remote_only_branch not in _remote_branches(origin)
+
+    def test_teardown_records_error_when_remote_push_delete_fails(self, tmp_path: Path) -> None:
+        repo, origin = _create_bare_origin_and_clone(tmp_path)
+        prefix = "I-123456-e2e-run"
+        branch = f"{prefix}/_"
+        _git(repo, "branch", branch, "main")
+        _git(repo, "push", "-q", "origin", branch)
+
+        def _failing_push_delete(
+            args: list[str], cwd: str | None = None, check: bool = True
+        ) -> subprocess.CompletedProcess[str]:
+            if args[:3] == ["push", "origin", "--delete"]:
+                return subprocess.CompletedProcess(["git", *args], 1, "", "remote rejected delete")
+            return run_git(args, cwd=cwd, check=check)
+
+        report = teardown_e2e_intent(str(repo), prefix, git_runner=_failing_push_delete)
+
+        assert report.deleted_remote_branches == ()
+        assert len(report.errors) == 1
+        assert "remote rejected delete" in report.errors[0]
+        assert branch in _remote_branches(origin)
+        # Local tracking ref must remain intact when remote deletion failed.
+        tracking_check = run_git(["rev-parse", "--verify", f"refs/remotes/origin/{branch}"], cwd=str(repo), check=False)
+        assert tracking_check.returncode == 0
+
 
 class TestZeroPRGuardAndNoSkipReview:
     """Zero-PR guard verification, stray-PR automatic closure, and ``--skip-review`` prohibition."""
@@ -503,7 +546,7 @@ class TestRetryClassificationAndUnconditionalTeardown:
             assert f"{prefix}/_" not in _local_branches(repo)
             assert f"{prefix}/_" not in _remote_branches(origin)
 
-    def test_run_e2e_with_retry_fails_immediately_on_machinery_error_and_Still_tears_down(self, tmp_path: Path) -> None:
+    def test_run_e2e_with_retry_fails_immediately_on_machinery_error_and_still_tears_down(self, tmp_path: Path) -> None:
         repo, origin = _create_bare_origin_and_clone(tmp_path)
         fake_gh = FakeE2EGhRunner(prs=[])
         prefixes: list[str] = []
@@ -607,6 +650,38 @@ class TestPrePRPipelineExecutionAndLocalLLMEnv:
         assert len(report.deleted_remote_branches) == 3  # intent + plan + execute
 
         # Verify all disposable refs were deleted while main and I-999999-keep/_ remain intact.
+        assert _local_branches(repo) == {"main", "I-999999-keep/_"}
+        assert _remote_branches(origin) == {"main", "I-999999-keep/_"}
+
+    def test_run_e2e_flow_test_tears_down_worktree_and_branches_when_attempt_raises(self, tmp_path: Path) -> None:
+        repo, origin = _create_bare_origin_and_clone(tmp_path)
+        _git(repo, "branch", "I-999999-keep/_", "main")
+        _git(repo, "push", "-q", "origin", "I-999999-keep/_")
+
+        agents = FakeRoleAgents(tmp_path, origin, recorded_test_pass_rate=1.0)
+        fake_gh = FakeE2EGhRunner(prs=[])
+        created_worktrees: list[Path] = []
+
+        def _failing_assertion(ctx: FlowContext, _results: dict[str, StageResult]) -> None:
+            wt = Path(ctx.target_worktree)
+            assert wt.is_dir()
+            created_worktrees.append(wt)
+            raise E2EMachineryError("simulated post-stage failure")
+
+        with pytest.raises(E2EMachineryError, match="simulated post-stage failure"):
+            run_e2e_flow_test(
+                str(repo),
+                base_slug="fail-teardown",
+                max_attempts=2,
+                agent="claude-agent",
+                model="claude-opus-5-5",
+                dispatcher=agents,
+                assertion_fn=_failing_assertion,
+                gh_runner=fake_gh,
+            )
+
+        assert len(created_worktrees) == 1
+        assert not created_worktrees[0].exists()
         assert _local_branches(repo) == {"main", "I-999999-keep/_"}
         assert _remote_branches(origin) == {"main", "I-999999-keep/_"}
 

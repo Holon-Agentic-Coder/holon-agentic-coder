@@ -390,8 +390,6 @@ def _discover_scoped_remote_branches(scope: _TeardownScope) -> list[str]:
     )
     if tracking_res.returncode == 0:
         _collect_scoped_refs(tracking_res.stdout.splitlines(), scope, discovered)
-    if discovered:
-        return sorted(discovered)
     ls_res = _invoke_git(
         scope.git_runner,
         ["ls-remote", "--heads", "origin", f"refs/heads/{scope.intent_prefix}", f"refs/heads/{scope.intent_prefix}/*"],
@@ -401,6 +399,13 @@ def _discover_scoped_remote_branches(scope: _TeardownScope) -> list[str]:
         ref_cols = [parts[1] for line in ls_res.stdout.splitlines() if len(parts := line.strip().split()) >= 2]
         _collect_scoped_refs(ref_cols, scope, discovered)
     return sorted(discovered)
+
+
+def _remote_branch_absent(scope: _TeardownScope, branch: str) -> bool:
+    ls_res = _invoke_git(scope.git_runner, ["ls-remote", "--heads", "origin", f"refs/heads/{branch}"], scope.repo_dir)
+    if ls_res.returncode != 0:
+        return False
+    return not ls_res.stdout.strip()
 
 
 def _delete_scoped_remote_branches(scope: _TeardownScope, errors: list[str]) -> list[str]:
@@ -413,13 +418,8 @@ def _delete_scoped_remote_branches(scope: _TeardownScope, errors: list[str]) -> 
     deleted: list[str] = []
     for branch in branches:
         push_res = _invoke_git(scope.git_runner, ["push", "origin", "--delete", branch], scope.repo_dir)
-        _invoke_git(scope.git_runner, ["update-ref", "-d", f"refs/remotes/origin/{branch}"], scope.repo_dir)
-        if push_res.returncode == 0 or (
-            _invoke_git(
-                scope.git_runner, ["rev-parse", "--verify", f"refs/remotes/origin/{branch}"], scope.repo_dir
-            ).returncode
-            != 0
-        ):
+        if push_res.returncode == 0 or _remote_branch_absent(scope, branch):
+            _invoke_git(scope.git_runner, ["update-ref", "-d", f"refs/remotes/origin/{branch}"], scope.repo_dir)
             deleted.append(branch)
         else:
             errors.append(f"git push origin --delete {branch} failed: {(push_res.stderr or push_res.stdout).strip()}")
@@ -729,6 +729,11 @@ def _execute_guarded_attempt(
     """Run one attempt with nested finally blocks guaranteeing zero-PR verification and unconditional teardown."""
     wt_path: str | None = options.get("disposable_worktree")
     wt_branch: str | None = options.get("worktree_branch")
+    worktree_resolver: Callable[[int, str], tuple[str | None, str | None]] | None = options.get("worktree_resolver")
+    if worktree_resolver is not None:
+        resolved_wt, resolved_branch = worktree_resolver(attempt, intent_prefix)
+        wt_path = resolved_wt or wt_path
+        wt_branch = resolved_branch or wt_branch
     gh_runner: GhRunnerCallable | None = options.get("gh_runner")
     git_runner: GitRunnerCallable = options.get("git_runner") or run_git
     stage_results: dict[str, Any] = {}
@@ -793,7 +798,13 @@ def run_e2e_with_retry(
 ) -> E2ERunOutcome:
     """Execute ``attempt_fn`` with unconditional per-attempt teardown, zero-PR guard, and retry classification."""
     epoch_fn: Callable[[], int] | None = kwargs.pop("epoch_fn", None)
-    extra_keys = set(kwargs) - {"disposable_worktree", "worktree_branch", "gh_runner", "git_runner"}
+    extra_keys = set(kwargs) - {
+        "disposable_worktree",
+        "worktree_branch",
+        "worktree_resolver",
+        "gh_runner",
+        "git_runner",
+    }
     if extra_keys:
         raise TypeError(f"run_e2e_with_retry() got unexpected keyword argument(s): {', '.join(sorted(extra_keys))}")
 
@@ -930,10 +941,15 @@ def run_e2e_flow_test(
     resolved_agent = agent or os.getenv("HOLON_AGENT", "").strip() or "pi-agent"
     resolved_model = model or os.getenv("HOLON_MODEL", "").strip() or "local-model"
 
-    def _run_single_attempt(_attempt: int, intent_prefix: str) -> Mapping[str, Any]:
+    def _resolve_attempt_worktree(_attempt: int, intent_prefix: str) -> tuple[str, str]:
         slug = _intent_slug_from_prefix(intent_prefix)
         worktree_branch = f"flow-{slug}"
         disposable_wt = os.path.join(os.path.dirname(os.path.abspath(repo_dir)), worktree_branch)
+        return disposable_wt, worktree_branch
+
+    def _run_single_attempt(_attempt: int, intent_prefix: str) -> Mapping[str, Any]:
+        slug = _intent_slug_from_prefix(intent_prefix)
+        disposable_wt, worktree_branch = _resolve_attempt_worktree(_attempt, intent_prefix)
         if not os.path.exists(disposable_wt):
             add_res = _invoke_git(
                 git_runner,
@@ -985,6 +1001,7 @@ def run_e2e_flow_test(
         repo_dir=repo_dir,
         base_slug=base_slug,
         max_attempts=max_attempts,
+        worktree_resolver=_resolve_attempt_worktree,
         gh_runner=gh_runner,
         git_runner=git_runner,
     )

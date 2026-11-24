@@ -24,13 +24,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from sandbox_executor import local_llm
+from sandbox_executor import claude_token_migration, local_llm
 from sandbox_executor.agent_defaults import AGENT_IMAGE_MAPPING, normalise_agent_id
-from sandbox_executor.claude_credential import (
-    SECRETS_FILE_DISPLAY,
-    pin_claude_credential,
-    resolve_claude_credential,
-)
+from sandbox_executor.claude_credential import pin_claude_credential, resolve_claude_credential
 
 logger = logging.getLogger(__name__)
 
@@ -153,13 +149,6 @@ _PATTERNS: tuple[tuple[PreflightStatus, re.Pattern[str]], ...] = (
     ),
 )
 
-_CLAUDE_NOT_LOGGED_IN_HINT = (
-    f"No claude credential reached the container. Write it to {SECRETS_FILE_DISPLAY} (mode 0600), or set "
-    "CLAUDE_CODE_OAUTH_TOKEN for a subscription token (sk-ant-oat..., from 'claude setup-token'), or set "
-    "ANTHROPIC_API_KEY for an API key (sk-ant-api...). Alternatively initialise and mount the session "
-    "(see docs/executor/agent_credentials_requirements.md), or choose another runner with --agent or HOLON_AGENT."
-)
-
 _HINTS: dict[PreflightStatus, str] = {
     PreflightStatus.OK: "",
     PreflightStatus.QUOTA_EXHAUSTED: (
@@ -250,15 +239,17 @@ def redact_output(text: str) -> str:
 
 def _missing_credential_message(agent: str, agent_id: str) -> str:
     if agent_id == "claude":
-        return (
-            f"No claude credential was found: {SECRETS_FILE_DISPLAY} is missing or empty and neither "
-            "CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set. Run 'claude setup-token' to obtain a token."
-        )
+        return claude_token_migration.claude_missing_credential_message()
     return f"No HOLON_AGENT_KEY is set and no session credentials for '{agent}' were found to mount."
 
 
 def _has_host_credential(agent_id: str, session_mounts: list[str]) -> bool:
-    """Return True when some credential could reach the container, mirroring the in-container validators."""
+    """Return True when some credential could reach the container, mirroring the in-container validators.
+
+    For claude, a legacy plaintext token file is first imported into the OS keychain and deleted (one-time migration).
+    """
+    if agent_id == "claude":
+        claude_token_migration.migrate_legacy_token_file()
     if session_mounts:
         return True
     if agent_id == "claude":
@@ -392,7 +383,8 @@ def run_preflight_probe(  # noqa: PLR0911
     Side effects:
         Runs one ``docker run`` (one real model call). Credentials reach the container through a 0600 ``--env-file``
         under ``~/.holon/tmp/env-files``, removed once the probe returns, times out or fails. On timeout the probe
-        container is removed with ``docker rm -f``. Nothing is written to the repository or the ledgers.
+        container is removed with ``docker rm -f``. Nothing is written to the repository or the ledgers. For claude, a
+        legacy plaintext token file is imported into the OS keychain and deleted.
     """
     run = runner_fn or subprocess.run
     agent_id = normalise_agent_id(agent)
@@ -438,7 +430,7 @@ def run_preflight_probe(  # noqa: PLR0911
             model,
             image,
             output=_missing_credential_message(agent, agent_id),
-            hint=_CLAUDE_NOT_LOGGED_IN_HINT if agent_id == "claude" else None,
+            hint=claude_token_migration.claude_not_logged_in_hint() if agent_id == "claude" else None,
         )
 
     container_name = f"holon-preflight-{uuid.uuid4().hex[:12]}"

@@ -5,7 +5,7 @@ import stat
 from unittest.mock import patch
 
 import pytest
-from sandbox_executor import claude_credential
+from sandbox_executor import claude_credential, claude_keychain
 from sandbox_executor.agent_runner import get_runner
 
 from tests.leak_assertions import assert_no_leak, make_probe
@@ -128,13 +128,16 @@ def test_claude_runner_no_longer_requires_holon_agent_key_but_others_do():
     assert "HOLON_AGENT_KEY" in get_runner("pi").required_keys
 
 
-def test_claude_validation_ignores_holon_agent_key_and_names_the_secrets_file(home, monkeypatch, capsys):
+def test_claude_validation_ignores_holon_agent_key_and_names_the_keychain(home, monkeypatch, capsys):
     monkeypatch.setenv("HOLON_AGENT_KEY", make_probe("generic"))
     monkeypatch.setenv("HOLON_SECRET_BUNDLE_PATH", str(home / "absent.json"))
     with patch("os.path.exists", return_value=False), pytest.raises(SystemExit):
         get_runner("claude").validate()
     err = capsys.readouterr().err
-    assert "~/.holon/secrets/claude-oauth-token" in err and "HOLON_AGENT_KEY' is not used" in err
+    for command in claude_keychain.STORE_COMMANDS.values():
+        assert command in err
+    assert "claude setup-token" in err and "HOLON_AGENT_KEY' is not used" in err
+    assert ".holon/secrets" not in err
 
 
 def test_claude_validation_passes_with_a_claude_variable(home, monkeypatch):

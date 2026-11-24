@@ -24,7 +24,6 @@ CLAUDE_CREDENTIAL_ENV_NAMES: tuple[str, ...] = (OAUTH_TOKEN_ENV, API_KEY_ENV)
 # role dispatcher maps it to CLAUDE_CODE_OAUTH_TOKEN, so exactly one copy of the credential is forwarded.
 HOLON_OAUTH_TOKEN_ENV = "HOLON_AGENT_OAUTH_TOKEN"
 OAUTH_TOKEN_PREFIX = "sk-ant-oat"
-SECRETS_FILE_DISPLAY = "~/.holon/secrets/claude-oauth-token"
 
 
 def classify_credential(value: str) -> str:

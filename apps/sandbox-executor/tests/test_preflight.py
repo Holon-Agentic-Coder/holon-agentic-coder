@@ -8,7 +8,7 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sandbox_executor import preflight
+from sandbox_executor import claude_keychain, preflight
 from sandbox_executor.cli import PACKAGE_LOGGER_NAME, _CurrentStderrHandler, configure_cli_logging, main
 from sandbox_executor.flow import get_default_checkpoint_path
 from sandbox_executor.launcher.coherence import FlowProxyChoice
@@ -387,13 +387,13 @@ def test_probe_without_any_credential_reports_not_logged_in_without_calling(prob
     runner_fn = MagicMock()
     res = run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=runner_fn)
     assert res.status is PreflightStatus.NOT_LOGGED_IN
-    assert "~/.holon/secrets/claude-oauth-token" in res.hint
-    assert "claude setup-token" in res.hint
-    assert "claude setup-token" in res.output_excerpt
-    assert "~/.holon/secrets/claude-oauth-token" in res.output_excerpt
+    for text in (res.hint, res.output_excerpt):
+        assert claude_keychain.store_command() in text
+        assert "claude setup-token" in text
+        assert ".holon/secrets" not in text
     assert "HOLON_AGENT_KEY" not in res.hint
     assert (
-        res.hint.index("claude-oauth-token")
+        res.hint.index("claude setup-token")
         < res.hint.index("CLAUDE_CODE_OAUTH_TOKEN")
         < res.hint.index("ANTHROPIC_API_KEY")
     )

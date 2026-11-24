@@ -41,7 +41,7 @@ from sandbox_executor import cli, local_llm
 from sandbox_executor.launcher import env_files, proxy_readiness, root_ca
 
 from tests import seeded_secrets
-from tests.doctor_replay import replayed_configuration_section
+from tests.doctor_replay import replayed_configuration_section, replayed_environment_report
 
 FRAGMENT_LEN = 4
 _LETTERS = "FGJQVZ"
@@ -223,6 +223,9 @@ def _doctor(value: str) -> list[str]:
                     patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
                     patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
                     _captured(env) as out,
+                    # The three environment reports of one block (direct, text doctor, `--json` doctor) have the same
+                    # host configuration and fetcher: the report runs once and its text and code are replayed.
+                    replayed_environment_report(),
                 ):
                     cli.report_budgets_and_envelope(fetch=fetch)
                     for as_json in (False, True):

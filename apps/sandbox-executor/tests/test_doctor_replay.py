@@ -1,25 +1,34 @@
 """Proof that ``tests/doctor_replay.py`` replays only what is identical, and that the replay keeps callers apart.
 
 The redaction matrix (``tests/test_url_credential_redaction.py``) computes the configuration section of ``holon
-doctor`` once per case and replays it for the other doctor runs of that case. The first test here runs the matrix's
-own ``_doctor`` without the replay and compares what the real ``cli._configuration_section`` returns in each of its
-eight call contexts. If production makes the section depend on the host configuration, the fetcher or ``--json``, it
-fails, and the replay must be removed from the matrix.
+doctor`` once per case and replays it for the other doctor runs of that case. The first identity test here runs the
+matrix's own ``_doctor`` without that replay and compares what the real ``cli._configuration_section`` returns in each
+of its eight call contexts. If production makes the section depend on the host configuration, the fetcher or
+``--json``, it fails, and the replay must be removed from the matrix.
+
+The matrix also runs the environment report (``cli.report_budgets_and_envelope``) once per block of a case and replays
+its text and exit code for the two doctor runs of the block. The second identity test runs ``_doctor`` without that
+replay and compares everything the three real reports of each block do: the text, the exit code, the log lines, the
+gateway probes and any other output. If production makes the report depend on its stream or on how often it ran, it
+fails, and that replay must be removed.
 """
 
 import argparse
 import contextlib
+import io
 import itertools
+import logging
 import os
 import shutil
 import socket
+import sys
 
 import pytest
 from sandbox_executor import cli, config_env, local_llm
 
 from tests import seeded_secrets
 from tests import test_url_credential_redaction as redaction_matrix
-from tests.doctor_replay import replayed_configuration_section
+from tests.doctor_replay import replayed_configuration_section, replayed_environment_report
 
 SAMPLED_SHAPES = ("plain", "double-slash", "percent-encoded", "digits1-slash", "digits3-fragment", "digits7-colon")
 DOCTOR_ARGS = argparse.Namespace(agent="antigravity-agent", model="gemini-3.8-flash-medium", json=False, timeout=None)
@@ -193,3 +202,169 @@ def test_the_original_function_is_back_after_the_context(counted_section):
         raise RuntimeError("inside")
 
     assert cli._configuration_section is original
+
+
+def _recorded_environment_reports(monkeypatch) -> list[tuple[tuple, tuple]]:
+    """Record ``(context, everything observable)`` of every real environment report; the matrix replay is off."""
+    real, real_fetchers = cli.report_budgets_and_envelope, redaction_matrix._fetchers
+    reports: list[tuple[tuple, tuple]] = []
+    probes: list[tuple[str, float]] = []
+
+    def probe_recording(fetch):
+        def recorded(url: str, timeout: float) -> bytes:
+            probes.append((url, timeout))
+            return fetch(url, timeout)
+
+        recorded.__name__ = fetch.__name__
+        return recorded
+
+    def recording(fetch, out=None):
+        # Inside the matrix's `_captured`, `sys.stdout` and `sys.stderr` are buffers.
+        streams = (out or sys.stdout, sys.stdout, sys.stderr)
+        starts = [len(stream.getvalue()) for stream in streams]
+        first_probe = len(probes)
+        logged = redaction_matrix._Capture()
+        logger = logging.getLogger("sandbox_executor")
+        logger.addHandler(logged)
+        try:
+            # The caller's own arguments: the report sees the same fetcher object and stream as in the matrix.
+            code = real(fetch=fetch, out=out)
+        finally:
+            logger.removeHandler(logged)
+        text, stdout, stderr = (stream.getvalue()[start:] for stream, start in zip(streams, starts, strict=True))
+        beside_the_report = (stdout if out is not None else "", stderr)
+        context = (local_llm.host_models_json() is None, fetch.__name__, out is None)
+        reports.append((context, (code, text, beside_the_report, logged.lines, probes[first_probe:])))
+        return code
+
+    monkeypatch.setattr(redaction_matrix, "replayed_environment_report", contextlib.nullcontext)
+    # One recording fetcher per fetcher of a block, so the three calls of the block share it as they do in the matrix.
+    monkeypatch.setattr(redaction_matrix, "_fetchers", lambda seen: tuple(map(probe_recording, real_fetchers(seen))))
+    monkeypatch.setattr(cli, "report_budgets_and_envelope", recording)
+    return reports
+
+
+def test_environment_report_is_identical_in_the_three_calls_of_every_doctor_block(monkeypatch, empty_environment):
+    reports = _recorded_environment_reports(monkeypatch)
+    differing: list[str] = []
+    probing_blocks = logging_blocks = 0
+    for case_id, value in _sampled_values():
+        reports.clear()
+        redaction_matrix._doctor(value)
+        blocks = [reports[start : start + 3] for start in range(0, len(reports), 3)]
+        # Host configuration absent or present, each with the responding and the failing fetcher.
+        assert [block[0][0][:2] for block in blocks] == [*itertools.product((True, False), ("ok", "fail"))], case_id
+        for block in blocks:
+            (host_absent, fetcher, _direct), first = block[0]
+            # The direct call on stdout first, then the two doctor runs, which pass their own stream.
+            assert [context for context, _observed in block] == [
+                (host_absent, fetcher, True),
+                (host_absent, fetcher, False),
+                (host_absent, fetcher, False),
+            ], case_id
+            if any(observed != first for _context, observed in block):
+                differing.append(f"{case_id} host_absent={host_absent} fetcher={fetcher}")
+            probing_blocks += bool(first[4])
+            logging_blocks += bool(first[3])
+
+    assert not differing, (
+        f"the environment report differs between the three calls of one doctor block, so it must not be replayed: "
+        f"{differing} {seeded_secrets.seed_note()}"
+    )
+    assert probing_blocks and logging_blocks, "the sample must reach the gateway probe and a logged line"
+
+
+def test_environment_replay_changes_only_how_often_the_matrix_sees_a_text(monkeypatch, empty_environment):
+    differing: list[str] = []
+    for case_id, value in _sampled_values():
+        with monkeypatch.context() as without_replay:
+            without_replay.setattr(redaction_matrix, "replayed_environment_report", contextlib.nullcontext)
+            every_report_real = redaction_matrix._doctor(value)
+        replayed = redaction_matrix._doctor(value)
+        if set(replayed) != set(every_report_real) or len(replayed) >= len(every_report_real):
+            differing.append(case_id)
+
+    assert not differing, f"{differing} {seeded_secrets.seed_note()}"
+
+
+def test_matrix_doctor_runs_the_environment_report_once_per_block(monkeypatch, empty_environment):
+    real = cli.report_budgets_and_envelope
+    ran: list[bool] = []
+
+    def counting(fetch=None, out=None):
+        ran.append(local_llm.host_models_json() is None)
+        return real(fetch=fetch, out=out)
+
+    monkeypatch.setattr(cli, "report_budgets_and_envelope", counting)
+
+    redaction_matrix._doctor("http://alice:FGJQVZFGJQVZ@localhost:8081/v1")
+    redaction_matrix._doctor("http://alice:ZVQJGFZVQJGF@localhost:8081/v1")
+
+    assert ran == [True, True, False, False] * 2, "one real report per block; nothing is carried to the next block"
+
+
+@pytest.fixture
+def counted_report(monkeypatch):
+    """Stand in for the real environment report with one that counts its runs and writes and returns the count."""
+    runs: list[tuple[str | None, object]] = []
+
+    def report(fetch=None, out=None):
+        runs.append((os.environ.get("HOLON_LOCAL_BASE_URL"), fetch))
+        print(f"report {len(runs)}", file=out or sys.stdout)
+        return len(runs)
+
+    monkeypatch.setattr(cli, "report_budgets_and_envelope", report)
+    return runs
+
+
+def test_environment_replay_runs_once_per_environment_host_configuration_and_fetcher(counted_report, monkeypatch):
+    def fetch(url: str, timeout: float) -> bytes:
+        return b"{}"
+
+    def other_fetch(url: str, timeout: float) -> bytes:
+        return b"{}"
+
+    monkeypatch.setenv("HOLON_LOCAL_BASE_URL", "one")
+    with replayed_environment_report():
+        first = [cli.report_budgets_and_envelope(fetch=fetch, out=io.StringIO()) for _ in range(3)]
+        cli.report_budgets_and_envelope(fetch=other_fetch, out=io.StringIO())
+        monkeypatch.setenv("HOLON_LOCAL_BASE_URL", "two")
+        cli.report_budgets_and_envelope(fetch=fetch, out=io.StringIO())
+        with monkeypatch.context() as other_host_configuration:
+            other_host_configuration.setattr(local_llm, "host_models_json", lambda: {"providers": {}})
+            cli.report_budgets_and_envelope(fetch=fetch, out=io.StringIO())
+        again = cli.report_budgets_and_envelope(fetch=fetch, out=io.StringIO())
+
+    assert counted_report == [("one", fetch), ("one", other_fetch), ("two", fetch), ("two", fetch)]
+    assert first == [1, 1, 1]
+    assert again == 3, "the same environment, host configuration and fetcher again is the same key"
+
+
+def test_every_caller_gets_the_report_text_on_its_own_stream_and_the_exit_code(counted_report, capsys):
+    given = io.StringIO()
+
+    with replayed_environment_report():
+        codes = [cli.report_budgets_and_envelope(), cli.report_budgets_and_envelope(out=given)]
+        on_stdout = capsys.readouterr().out
+        codes.append(cli.report_budgets_and_envelope())
+
+    assert codes == [1, 1, 1]
+    assert len(counted_report) == 1
+    assert on_stdout == "report 1\n", "the first caller's text goes to its stream, here stdout, and only there"
+    assert given.getvalue() == "report 1\n"
+    assert capsys.readouterr().out == "report 1\n"
+
+
+def test_each_environment_replay_context_starts_empty_and_restores_the_report(counted_report):
+    original = cli.report_budgets_and_envelope
+
+    for _block in range(3):
+        with replayed_environment_report():
+            assert cli.report_budgets_and_envelope is not original
+            cli.report_budgets_and_envelope(out=io.StringIO())
+            cli.report_budgets_and_envelope(out=io.StringIO())
+    with pytest.raises(RuntimeError, match="inside"), replayed_environment_report():
+        raise RuntimeError("inside")
+
+    assert len(counted_report) == 3
+    assert cli.report_budgets_and_envelope is original

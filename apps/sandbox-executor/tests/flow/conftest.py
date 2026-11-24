@@ -1,6 +1,5 @@
 """Fixtures for the flow package tests: sandboxed fake reviewers, no real npx and the template flow repositories."""
 
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -8,8 +7,9 @@ import pytest
 from sandbox_executor.knowledge import consult
 from sandbox_executor.knowledge.consult import DEFAULT_LEDGERS
 
-from tests.flow.helpers import _git, _set_user_write
+from tests.flow.helpers import _git
 from tests.gh_probe_stub import stubbed_mergeability_read
+from tests.repo_templates import copy_template, finish_template
 from tests.review_fakes import install_fake_reviewers
 
 
@@ -74,10 +74,7 @@ def _flow_repos_template(tmp_path_factory, hermetic_git_config) -> Path:
     _git(seed, "push", "-q", "origin", "main")
     subprocess.run(["git", "clone", "-q", str(origin), str(root / "host")], check=True, capture_output=True)
     # Git's sample hooks are never run (the hermetic config sets core.hooksPath); do not copy them per test.
-    for sample in root.glob("**/hooks/*.sample"):
-        sample.unlink()
-    _set_user_write(root, enabled=False)
-    return root
+    return finish_template(root)
 
 
 @pytest.fixture
@@ -86,18 +83,8 @@ def flow_repos(tmp_path, monkeypatch, _flow_repos_template):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     origin = tmp_path / "origin.git"
     host = tmp_path / "host"
-    for name, target in (("origin.git", origin), ("host", host)):
-        shutil.copytree(_flow_repos_template / name, target, symlinks=True)
-        _set_user_write(target, enabled=True)
-    # Re-point the host's origin at the test's own copy without a git process: the clone recorded the template's path.
-    config = host / ".git" / "config"
-    config.write_text(
-        config.read_text(encoding="utf-8").replace(str(_flow_repos_template / "origin.git"), str(origin)),
-        encoding="utf-8",
-    )
-    repointed = config.read_text(encoding="utf-8")
-    assert str(origin) in repointed, "host does not point at its own origin"
-    assert str(_flow_repos_template) not in repointed, "host still points at the shared template"
+    # The copy re-points the host's origin at the test's own origin: the clone recorded the template's path.
+    copy_template(_flow_repos_template, tmp_path, names=("origin.git", "host"))
     # Production runs the flow from the host checkout, so the consult's relative default ledgers are the host's own.
     # The test host is this temporary copy, not the checkout pytest was started in.
     ledger_dir = host / "holon-knowledge" / "ledger"

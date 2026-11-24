@@ -16,3 +16,13 @@ holon = "sandbox_executor.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sandbox_executor"]
+
+[tool.pytest.ini_options]
+pythonpath = ["../..", "src"]
+norecursedirs = ["e2e"]
+addopts = ["--strict-markers"]
+markers = [
+    "integration_test: marks tests as integration tests",
+    "stress: marks long-running checks that re-run the unit suite in a child process (workspace survival, hermetic canary)",
+    "e2e: marks opt-in end-to-end flow tests against a host-local model endpoint",
+]

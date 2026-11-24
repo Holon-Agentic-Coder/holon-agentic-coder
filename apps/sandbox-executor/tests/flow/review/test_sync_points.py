@@ -130,7 +130,23 @@ def test_stage4_iteration_and_resolver_turn_boundaries_resolve_injected_conflict
     assert err is None
     assert is_dirty is False and mergeability["merge_state_status"] == "CLEAN"
     assert updated is not None and updated.head_sha != before
-    assert APP in ctx.review_scope_paths
+    assert ctx.review_scope_paths == []  # Unapproved PR must never be narrowed to conflict-resolved paths.
+
+    # When already in a post-approval scoped re-review, a further agent merge unions into review_scope_paths.
+    ctx.review_scope_paths = ["src/other.py"]
+    commit_on(work, "main", {APP: "y = 3\n"}, "target code 2")
+    commit_on(work, FLOW_BRANCH, {APP: "x = 2\n"}, "flow code 2")
+    before_union = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
+    ctx.dispatcher = FakeResolverDispatcher([(_resolve_app, "resolved")])
+    updated_u, _, _, err_u = sync_iteration_mergeability(
+        ctx,
+        ReviewTarget(raw=FLOW_BRANCH, head_branch=FLOW_BRANCH, head_sha=before_union),
+        "main",
+        2,
+        {"mergeable": "CONFLICTING", "merge_state_status": "DIRTY", "is_dirty": True},
+    )
+    assert err_u is None and updated_u is not None and updated_u.head_sha != before_union
+    assert ctx.review_scope_paths == [APP, "src/other.py"]
 
     # Resolver turn boundary also resolves a newly injected target ledger conflict.
     _inject_ledger_conflict(work, FLOW_BRANCH, 4)
@@ -279,3 +295,128 @@ def test_stage5_entry_and_retry_sync_resolve_conflicts_and_block_cleanly(tmp_pat
     ctx_fail = _ctx(work, dispatcher=FakeResolverDispatcher([(None, "cannot_decide")] * 3))
     with pytest.raises(CalibrationSyncError, match=r"code conflicts with main in: src/app\.py"):
         make_calibrate_retry_sync(ctx_fail)(1)
+
+
+def test_finalize_resolver_turn_commits_pending_ledger_rows_and_preserves_full_scope(tmp_path: Path) -> None:
+    from sandbox_executor.flow.review.resolver import ResolverOutcome
+    from sandbox_executor.flow.review.sync_points import finalize_resolver_turn
+
+    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
+    commit_on(work, "main", {APP: "y = 2\n"}, "target code")
+    commit_on(work, FLOW_BRANCH, {APP: "x = 1\n"}, "flow code")
+    _git(work, "checkout", FLOW_BRANCH)
+    before = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
+    # Append uncommitted ACT-REV row to tracked executions.jsonl before finalize_resolver_turn.
+    with open(work / LEDGER, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"action_id": "ACT-REV-1", "execution_id": "REV-1", "action": "review"}) + "\n")
+
+    ctx = _ctx(work, dispatcher=FakeResolverDispatcher([(_resolve_app, "resolved")]))
+    ctx.review_scope_paths = ["src/stale.py"]
+    target = ReviewTarget(raw=FLOW_BRANCH, head_branch=FLOW_BRANCH, head_sha=before)
+    outcome = ResolverOutcome(dispositions=(), pushed=True, head_sha=before)
+
+    final = finalize_resolver_turn(ctx, target, 1, outcome)
+
+    assert final.error is None
+    assert final.pushed is True and final.head_sha != before
+    assert ctx.review_scope_paths == []  # Resolver push forces full review even after agent-resolved sync.
+
+
+def test_conflict_gate_blocks_dry_run_head_and_deferred_or_unprobed_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sandbox_executor.flow.review import conflict_gate
+    from sandbox_executor.flow.target_sync_result import SyncBoundary
+
+    # Strict boundary blocks detached HEAD.
+    ctx_head = FlowContext(target_worktree=str(tmp_path), execution_branch="HEAD", token_reduce=False)
+    res_head = sync_points.sync_review_head(ctx_head, "HEAD", "main", SyncBoundary.PUSH)
+    assert res_head.status == "blocked"
+
+    # _approved_post_gate blocks a conflicting head in dry_run without merging or posting.
+    ctx_dry = FlowContext(target_worktree=str(tmp_path), execution_branch=FLOW_BRANCH, dry_run=True, token_reduce=False)
+    post = MagicMock()
+    dirty = {"mergeable": "CONFLICTING", "merge_state_status": "DIRTY", "is_dirty": True}
+    req = PostRequest(
+        repo_dir=str(tmp_path),
+        review_target=FLOW_BRANCH,
+        consensus_data={"approved": True, "base_branch": "main"},
+        proxy_env=None,
+        reviewers=[],
+        title="t",
+        iteration=1,
+        mergeability_probe=lambda *a, **k: dict(dirty),
+    )
+    post_err, _ = post_review_consensus(post, ctx_dry, str(tmp_path / "gate.jsonl"), req)
+    post.assert_not_called()
+    assert post_err is not None and "dry run" in post_err
+
+    # _gate_conflicting_head blocks on deferred or unprobed unchanged SyncResult.
+    ctx_real = FlowContext(target_worktree=str(tmp_path), execution_branch=FLOW_BRANCH, token_reduce=False)
+    merge = conflict_gate._GateMerge(trailers="", iteration=1)
+    for bad in (SyncResult("deferred", "a", "a", "b"), SyncResult("unchanged", "", "", "")):
+        monkeypatch.setattr(sync_points, "sync_review_head", lambda *a, _b=bad, **k: _b)
+        gate = conflict_gate._gate_conflicting_head(ctx_real, FLOW_BRANCH, "main", dirty, merge)
+        assert gate.conflicting is True and gate.blocked_reason is not None
+
+
+def test_prepare_execution_branch_syncs_before_calibrated_and_retry_reanchors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sandbox_executor.flow.calibrate_sync import publish_calibration
+    from sandbox_executor.flow.stages import calibrate as cal_stage
+    from sandbox_executor.ref_names import calibration_branch
+
+    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
+    calibrated = calibration_branch(FLOW_BRANCH)
+
+    # Blocked sync_before_calibration does not create/leak /calibrated.
+    commit_on(work, "main", {APP: "main = 1\n"}, "main code")
+    commit_on(work, FLOW_BRANCH, {APP: "flow = 1\n"}, "flow code")
+    ctx_blk = _ctx(work, dispatcher=FakeResolverDispatcher([(None, "cannot_decide")] * 3))
+    failure, sha, created = cal_stage._prepare_execution_branch(ctx_blk, "2026-11-24T00:00:00Z")
+    assert failure is not None and sha is None and created is False
+    assert _git(work, "branch", "--list", calibrated) == ""
+
+    # Mechanical sync_before_calibration runs before prepare_calibrated_branch so /calibrated starts at merged SHA.
+    r2 = tmp_path / "r2"
+    r2.mkdir()
+    _, work2 = build_flow_repos(r2, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
+    _inject_ledger_conflict(work2, FLOW_BRANCH, 2)
+    ctx_ok = _ctx(work2)
+    failure2, start_sha, created2 = cal_stage._prepare_execution_branch(ctx_ok, "2026-11-24T00:00:00Z")
+    assert failure2 is None and created2 is True and start_sha is not None
+    assert _git(work2, "rev-parse", f"refs/heads/{calibrated}") == start_sha
+    assert _git(work2, "rev-parse", f"refs/heads/{FLOW_BRANCH}") == start_sha
+
+    # Mechanical retry sync re-anchors /calibrated and updates start_sha so publish_calibration --ff-only succeeds.
+    _inject_ledger_conflict(work2, FLOW_BRANCH, 3)
+    updated_shas: list[str] = []
+    make_calibrate_retry_sync(ctx_ok, on_head_updated=updated_shas.append)(1)
+    assert len(updated_shas) == 1 and updated_shas[0] != start_sha
+    assert _git(work2, "rev-parse", f"refs/heads/{calibrated}") == updated_shas[0]
+    _git(work2, "checkout", calibrated)
+    (work2 / "cal.md").write_text("report\n", encoding="utf-8")
+    _git(work2, "add", "cal.md")
+    _git(work2, "commit", "-m", "cal report")
+    ctx_ok.calibrated_branch = calibrated
+    assert publish_calibration(ctx_ok) is True
+
+    # Agent-resolved sync_before_calibration triggers Stage 4 review restart via stage5_merged_head_gate.
+    r3 = tmp_path / "r3"
+    r3.mkdir()
+    _, work3 = build_flow_repos(r3, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
+    commit_on(work3, "main", {APP: "y = 2\n"}, "main code")
+    commit_on(work3, FLOW_BRANCH, {APP: "x = 1\n"}, "flow code")
+    approved_sha = _git(work3, "rev-parse", f"origin/{FLOW_BRANCH}")
+    ctx_r = _ctx(work3, dispatcher=FakeResolverDispatcher([(_resolve_app, "resolved")]))
+    ctx_r.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW,
+        status=StageStatus.APPROVED,
+        payload={"consensus": {"approved": True, "target_commit": approved_sha, "approval_fingerprint": "pf1:abc"}},
+    )
+    monkeypatch.setattr("sandbox_executor.flow.review_restart.withdraw_consensus", lambda *a, **k: {"withdrawn": True})
+    stopped, sha3, created3 = cal_stage._prepare_execution_branch(ctx_r, "2026-11-24T00:00:00Z")
+    assert stopped is not None and stopped.payload.get("review_restart") is True
+    assert sha3 is None and created3 is False
+    assert _git(work3, "branch", "--list", calibrated) == ""

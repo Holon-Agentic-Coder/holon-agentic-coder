@@ -20,9 +20,10 @@ from sandbox_executor.agent_defaults import FALLBACK_AGENT
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.dispatch import _dispatch_role
 from sandbox_executor.flow.host_remote import push_commit, remote_error
+from sandbox_executor.flow.review.adjudication import _lookup_introducing_action_id
 from sandbox_executor.flow.review.ensemble import _ENGINE_PASSES_PER_DISPATCH
 from sandbox_executor.flow.review.records import _bounded_error_context, record_review_action
-from sandbox_executor.flow.review.sync_points import _lookup_introducing_action_id, finalize_resolver_turn
+from sandbox_executor.flow.review.sync_points import finalize_resolver_turn
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.module_budget_guard import budget_push_refusal
 from sandbox_executor.redaction import redact_agent_secrets

@@ -115,15 +115,17 @@ def _gate_conflicting_head(
         return _ConflictGateResult(conflicting=True, blocked_reason=UNPUSHED_ROWS_REASON)
     stage = FlowStage.CALIBRATE if merge.boundary is SyncBoundary.CALIBRATE else FlowStage.REVIEW
     result = _sp.sync_review_head(context, branch, target_branch, merge.boundary, stage=stage)
-    if result.status in ("unchanged", "deferred"):
+    if result.status == "unchanged" and result.probe is not None and not result.probe.moved:
         return _ConflictGateResult(conflicting=False)
     if result.status == "merged":
         mech, scope = _sp.is_mechanical_only(result), _sp.compute_rereview_scope(result)
+        ledger = _sp.is_ledger_only_sync(result)
         context.log(f"[Review Loop] Conflict gate on '{branch}': {MERGED_REASON}.")
-        return _ConflictGateResult(
-            True, True, _sp.is_ledger_only_sync(result), MERGED_REASON, result.head_after, mech, scope
-        )
-    reason = _sp.format_conflict_block_reason(result, target_branch)
+        return _ConflictGateResult(True, True, ledger, MERGED_REASON, result.head_after, mech, scope)
+    if result.status in ("unchanged", "deferred"):
+        reason = f"target sync {result.status} without resolving conflicts with {target_branch}"
+    else:
+        reason = _sp.format_conflict_block_reason(result, target_branch)
     context.log(f"[Review Loop] Conflict gate on '{branch}': {reason}.")
     return _ConflictGateResult(True, False, False, reason, "")
 
@@ -151,11 +153,11 @@ def _approved_post_gate(
     """Gate an approved post: None lets it proceed, else the post error and the ``posting_res`` to return."""
     from sandbox_executor.flow.review.records import record_review_action  # Lazy: records imports review_report.
 
-    review_target = request.review_target
-    target_branch = str(request.consensus_data.get("base_branch") or "main")
+    review_target, target_branch = request.review_target, str(request.consensus_data.get("base_branch") or "main")
     mergeability = probe(target_branch=target_branch)
     branch = context.execution_branch or (review_target if not review_target.isdigit() else None)
-    merge = _GateMerge(format_review_git_trailers("pr_review", request.iteration), request.iteration)
+    trailers = format_review_git_trailers("pr_review", request.iteration)
+    merge = None if context.dry_run else _GateMerge(trailers, request.iteration)
     gate = _gate_conflicting_head(context, branch, target_branch, mergeability, merge)
     if gate.blocked_reason is None:
         return None

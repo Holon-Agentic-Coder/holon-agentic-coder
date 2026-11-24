@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import os
-from collections.abc import Mapping
 from typing import Any
 
 from sandbox_executor.calibration import is_metadata_path
@@ -14,19 +13,13 @@ from sandbox_executor.flow.conflict_resolver_role import conflict_code_resolver
 from sandbox_executor.flow.context import FlowContext, FlowStage
 from sandbox_executor.flow.git_refs import _resolve_branch_ref, _track_local_branch
 from sandbox_executor.flow.github.merge import PROTECTED_BRANCHES, _bare_branch
-from sandbox_executor.flow.target_probe import TargetProbeError
+from sandbox_executor.flow.review.ledger_commit import _commit_pending_ledger_rows
+from sandbox_executor.flow.target_probe import TargetProbeError, probe_target
 from sandbox_executor.flow.target_sync import sync_with_target
 from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest, SyncResult
-from sandbox_executor.review_report import FindingRow, finding_signature
 from sandbox_executor.review_target import ReviewTarget
 
 _STRICT_BOUNDARIES = frozenset({SyncBoundary.PUSH, SyncBoundary.CALIBRATE})
-
-
-def _lookup_introducing_action_id(row: FindingRow, action_ids: Mapping[str, str]) -> str | None:
-    """Find the ACT-FIND action_id that first introduced ``row``."""
-    sig_key = str(finding_signature(row.severity, row.path, row.line, row.summary))
-    return action_ids.get(row.id) or action_ids.get(sig_key)
 
 
 def is_mechanical_only(result: SyncResult) -> bool:
@@ -60,12 +53,10 @@ def format_conflict_block_reason(result: SyncResult, target_branch: str) -> str:
     if unresolved_code:
         suffix = f" ({result.test_result})" if result.test_result else ""
         return f"code conflicts with {target_branch} in: {', '.join(unresolved_code)}{suffix}"
-    class_by_path = {path: cls for path, cls, _ in result.resolutions}
     unresolved_other = [path for path in result.conflicted_paths if path not in resolved]
     if unresolved_other:
-        labelled = [f"{p} ({class_by_path[p]})" if p in class_by_path else p for p in unresolved_other]
         detail = f": {result.error}" if result.error else ""
-        return f"merge conflicts with {target_branch} in: {', '.join(labelled)}{detail}"
+        return f"merge conflicts with {target_branch} in: {', '.join(unresolved_other)}{detail}"
     if result.resolutions and result.error:
         classes = ", ".join(sorted({cls for _, cls, _ in result.resolutions}))
         return f"merging {target_branch} ({classes}) failed: {result.error}"
@@ -75,11 +66,15 @@ def format_conflict_block_reason(result: SyncResult, target_branch: str) -> str:
 def _precheck_review_sync(
     context: FlowContext, branch: str, target_branch: str, boundary: SyncBoundary
 ) -> SyncResult | None:
-    if context.dry_run or not branch or branch == "HEAD":
+    strict = boundary in _STRICT_BOUNDARIES
+    if context.dry_run:
         return SyncResult("unchanged", "", "", "")
+    if not branch or branch == "HEAD":
+        err = "cannot sync detached HEAD or empty branch" if strict else ""
+        return SyncResult("blocked" if strict else "unchanged", "", "", "", error=err)
     if _bare_branch(branch) in PROTECTED_BRANCHES:
         return SyncResult("blocked", "", "", "", error=f"refusing to push to protected branch '{branch}'")
-    worktree, strict = context.target_worktree, boundary in _STRICT_BOUNDARIES
+    worktree = context.target_worktree
     if not _hooks._can_sync_worktree(worktree, target_branch):
         err = f"fetching '{target_branch}' and '{branch}' failed" if strict else ""
         return SyncResult("blocked" if strict else "unchanged", "", "", "", error=err)
@@ -104,18 +99,22 @@ def sync_review_head(
     prev, detached, checkout_err = _hooks._checkout_active_branch(context, branch)
     if checkout_err is not None:
         return SyncResult("blocked", "", "", "", error=checkout_err)
-    request = SyncRequest(
-        worktree=worktree,
-        branch=branch,
-        target_branch=target_branch,
-        stage=stage.value,
-        boundary=boundary,
-        ledger_path=os.path.join(worktree, _hooks._LEDGER_REL),
-        execution_id=_hooks._execution_id_of(branch, stage, boundary),
-        last_probe=getattr(context, _hooks._PROBE_ATTR, None),
-        code_resolver=conflict_code_resolver(context),
-    )
     try:
+        probe = probe_target(worktree, target_branch, getattr(context, _hooks._PROBE_ATTR, None))
+        will_merge = probe.moved and (boundary is not SyncBoundary.TURN or bool(probe.conflicted_paths))
+        if will_merge and _commit_pending_ledger_rows(context, context.review_iterations_done, "before target sync"):
+            probe = None
+        request = SyncRequest(
+            worktree=worktree,
+            branch=branch,
+            target_branch=target_branch,
+            stage=stage.value,
+            boundary=boundary,
+            ledger_path=os.path.join(worktree, _hooks._LEDGER_REL),
+            execution_id=_hooks._execution_id_of(branch, stage, boundary),
+            last_probe=probe,
+            code_resolver=conflict_code_resolver(context),
+        )
         result = sync_with_target(request)
     except TargetProbeError as exc:
         return SyncResult("blocked", "", "", "", error=str(exc))
@@ -143,8 +142,8 @@ def _apply_turn_sync(
         context.log(f"[Review Loop] Target sync {label} blocked: {reason}.")
         return resolved_target, f"target sync blocked: {reason}"
     if result.status == "merged":
-        if (scope := compute_rereview_scope(result)) and hasattr(context, "review_scope_paths"):
-            context.review_scope_paths = list(scope)
+        if (scope := compute_rereview_scope(result)) and getattr(context, "review_scope_paths", None):
+            context.review_scope_paths = sorted(set(context.review_scope_paths) | set(scope))
         if resolved_target is not None and result.head_after:
             resolved_target = dataclasses.replace(resolved_target, head_sha=result.head_after)
         context.log(f"[Review Loop] Target sync {label} merged '{target_branch}' into '{branch}'.")

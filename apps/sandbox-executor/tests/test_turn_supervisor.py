@@ -96,7 +96,16 @@ class FakeClock:
 class FakeProc:
     """A child that exits at ``exit_at`` fake seconds, or when signalled (unless it ignores SIGTERM)."""
 
-    def __init__(self, clock, exit_at=None, returncode=0, stdout=b"", stderr=b"", ignores_sigterm=False):  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913
+        self,
+        clock,
+        exit_at=None,
+        returncode=0,
+        stdout=b"",
+        stderr=b"",
+        ignores_sigterm=False,
+        lingering_pipe=False,
+    ):
         self.clock = clock
         self.exit_at = exit_at
         self.final_returncode = returncode
@@ -104,12 +113,15 @@ class FakeProc:
         self.stdout = stdout if isinstance(stdout, TickStream) else io.BytesIO(stdout)
         self.stderr = io.BytesIO(stderr)
         self.ignores_sigterm = ignores_sigterm
+        self.lingering_pipe = lingering_pipe
         self.returncode = None
         self.popen_kwargs = {}
 
     def poll(self):
         if self.returncode is None and self.exit_at is not None and self.clock() >= self.exit_at:
             self.returncode = self.final_returncode
+            if not self.lingering_pipe and isinstance(self.stdout, TickStream):
+                self.stdout.close()
         return self.returncode
 
     def signal(self, sig):
@@ -236,6 +248,7 @@ class TestRunTurn(unittest.TestCase):
             sleeper=h.sleeper,
             popen_factory=h.popen,
             tool_sampler=h.tool_sampler,
+            child_lister=h.child_lister,
             killpg=h.killpg,
             getpgid=h.getpgid,
         )
@@ -309,6 +322,7 @@ class TestRunTurn(unittest.TestCase):
             sleeper=h.sleeper,
             popen_factory=h.popen,
             tool_sampler=h.tool_sampler,
+            child_lister=h.child_lister,
             killpg=h.killpg,
             getpgid=h.getpgid,
         )
@@ -488,7 +502,7 @@ class TestRunTurn(unittest.TestCase):
         # N5: the agent exits but a descendant keeps stdout open, so the reader never sees EOF; the rest of the
         # agent's process group (pgid == agent pid) gets SIGTERM, and the agent's own exit status is kept.
         stream = TickStream()
-        h = Harness(exit_at=5, stdout=stream)
+        h = Harness(exit_at=5, stdout=stream, lingering_pipe=True)
         self.addCleanup(stream.close)
         signals = []
         readers = RecordedReaders()
@@ -506,6 +520,7 @@ class TestRunTurn(unittest.TestCase):
                 sleeper=h.sleeper,
                 popen_factory=h.popen,
                 tool_sampler=h.tool_sampler,
+                child_lister=h.child_lister,
                 killpg=killpg,
                 getpgid=h.getpgid,
             )
@@ -517,7 +532,7 @@ class TestRunTurn(unittest.TestCase):
         # A descendant that ignores SIGTERM keeps the pipe open; after a bounded reader wait the group gets
         # SIGKILL, and the readers are joined again before the output is read.
         stream = TickStream()
-        h = Harness(exit_at=5, stdout=stream)
+        h = Harness(exit_at=5, stdout=stream, lingering_pipe=True)
         self.addCleanup(stream.close)
         signals = []
         readers = RecordedReaders()
@@ -536,6 +551,7 @@ class TestRunTurn(unittest.TestCase):
                 sleeper=h.sleeper,
                 popen_factory=h.popen,
                 tool_sampler=h.tool_sampler,
+                child_lister=h.child_lister,
                 killpg=killpg,
                 getpgid=h.getpgid,
             )
@@ -544,7 +560,7 @@ class TestRunTurn(unittest.TestCase):
 
     def test_lingering_pipe_holder_that_survives_sigkill_does_not_hang(self):
         stream = TickStream()
-        h = Harness(exit_at=5, stdout=stream)
+        h = Harness(exit_at=5, stdout=stream, lingering_pipe=True)
         self.addCleanup(stream.close)
         signals = []
         with mock.patch.object(turns, "READER_JOIN_TIMEOUT_SECONDS", 0.05):
@@ -555,6 +571,7 @@ class TestRunTurn(unittest.TestCase):
                 sleeper=h.sleeper,
                 popen_factory=h.popen,
                 tool_sampler=h.tool_sampler,
+                child_lister=h.child_lister,
                 killpg=lambda pgid, sig: signals.append((pgid, sig)),
                 getpgid=h.getpgid,
             )
@@ -563,7 +580,7 @@ class TestRunTurn(unittest.TestCase):
 
     def test_lingering_pipe_holder_never_signals_its_own_process_group(self):
         stream = TickStream()
-        h = Harness(exit_at=5, stdout=stream)
+        h = Harness(exit_at=5, stdout=stream, lingering_pipe=True)
         self.addCleanup(stream.close)
         signals = []
         with mock.patch.object(turns, "READER_JOIN_TIMEOUT_SECONDS", 0.05):
@@ -574,6 +591,7 @@ class TestRunTurn(unittest.TestCase):
                 sleeper=h.sleeper,
                 popen_factory=h.popen,
                 tool_sampler=h.tool_sampler,
+                child_lister=h.child_lister,
                 killpg=lambda pgid, sig: signals.append((pgid, sig)),
                 getpgid=lambda pid: CHILD_PID,
             )

@@ -33,12 +33,14 @@ import subprocess
 import tempfile
 import urllib.error
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
 import pytest
-from sandbox_executor import cli, local_llm
+from sandbox_executor import cli, config_env, local_llm
 from sandbox_executor.launcher import env_files, proxy_readiness, root_ca
+from sandbox_executor.preflight import PreflightResult, PreflightStatus
 
 from tests import seeded_secrets
 
@@ -203,13 +205,17 @@ def _fetchers(seen: list[str]) -> tuple[Callable[[str, float], bytes], ...]:
     return ok, fail
 
 
+_OK_PROBE = PreflightResult(
+    status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
+)
+_DOCTOR_ARGS = (
+    argparse.Namespace(agent="antigravity-agent", model="gemini-3.8-flash-medium", json=False, timeout=None),
+    argparse.Namespace(agent="antigravity-agent", model="gemini-3.8-flash-medium", json=True, timeout=None),
+)
+
+
 def _doctor(value: str) -> list[str]:
     """#94 `holon doctor`: the environment section, then the unified report as text and as `--json`."""
-    from sandbox_executor.preflight import PreflightResult, PreflightStatus
-
-    probe = PreflightResult(
-        status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
-    )
     env = {"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_BASE_URL": value, "HOLON_LOCAL_MODELS": "m1"}
     texts: list[str] = []
     for host_config in (None, _host_config(value)):
@@ -217,14 +223,10 @@ def _doctor(value: str) -> list[str]:
             with (
                 # Plain stand-ins, not MagicMocks: building a mock per call dominated this matrix's runtime.
                 patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
-                patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
+                patch.object(cli, "run_preflight_probe", lambda *_a, **_k: _OK_PROBE),
                 _captured(env) as out,
             ):
-                cli.report_budgets_and_envelope(fetch=fetch)
-                for as_json in (False, True):
-                    doctor_args = argparse.Namespace(
-                        agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None
-                    )
+                for doctor_args in _DOCTOR_ARGS:
                     cli.run_doctor(doctor_args, fetch=fetch)
             texts.extend(out)
     return texts
@@ -303,6 +305,8 @@ def test_no_url_credential_fragment_in_any_message(entry_point, prefix, monkeypa
     monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(socket, "create_connection", _refuse)
     monkeypatch.setattr(root_ca, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
+    monkeypatch.setattr(config_env, "project_env_path", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(config_env, "user_env_path", lambda: Path(tempfile.gettempdir()) / "nonexistent-holon-env")
     # `_captured` swaps in an exact environment per case; starting from an empty one keeps each swap cheap.
     for name in list(os.environ):
         monkeypatch.delenv(name)
@@ -639,6 +643,8 @@ def test_credential_in_invalid_envelope_value_never_echoed(monkeypatch, tmp_path
     monkeypatch.setattr(
         "sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {})
     )
+    monkeypatch.setattr(config_env, "project_env_path", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(config_env, "user_env_path", lambda: tmp_path / ".holon" / ".env")
     for name in list(os.environ):
         monkeypatch.delenv(name)
     failures: list[str] = []

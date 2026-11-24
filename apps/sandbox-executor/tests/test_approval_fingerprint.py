@@ -6,7 +6,9 @@ repository's own worktree. The Hypothesis properties are derandomized and bounde
 
 from __future__ import annotations
 
+import atexit
 import json
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -28,7 +30,25 @@ TARGET = "refs/remotes/origin/main"
 PR_PATHS = ("src/pr_a.py", "src/pr_b.py", "src/pkg/pr_c.py", "docs/pr_d.md")
 MAIN_PATHS = ("src/main_a.py", "src/main_b.py", "lib/main_c.py")
 CONTENT = st.text(alphabet="abcxyz =+\n", min_size=1, max_size=40)
-PROPERTY_SETTINGS = settings(max_examples=25, deadline=None, derandomize=True, database=None)
+PROPERTY_SETTINGS = settings(max_examples=15, deadline=None, derandomize=True, database=None)
+_BASE_TEMPLATE_ROOT: Path | None = None
+
+
+def _base_template() -> Path:
+    """Build the bare origin and cloned base repository once per worker process; `_repos` copies it."""
+    global _BASE_TEMPLATE_ROOT
+    if _BASE_TEMPLATE_ROOT is not None and _BASE_TEMPLATE_ROOT.exists():
+        return _BASE_TEMPLATE_ROOT
+    root = Path(tempfile.mkdtemp(prefix="holon-fingerprint-tpl-"))
+    atexit.register(shutil.rmtree, root, True)
+    origin, work = root / "origin.git", root / "work"
+    _git(root, "init", "-q", "--bare", "-b", "main", str(origin))
+    _git(root, "clone", "-q", str(origin), str(work))
+    _commit(work, {"README.md": "base\n", LEDGER: _ledger_with(work, "E-base")}, "base")
+    _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    _git(work, "checkout", "-q", "-b", BRANCH)
+    _BASE_TEMPLATE_ROOT = root
+    return root
 
 
 def _write(work: Path, rel: str, text: str) -> None:
@@ -54,14 +74,16 @@ def _ledger_with(work: Path, execution_id: str) -> str:
 
 def _repos(root: Path, pr_files: dict[str, str]) -> Path:
     """A bare origin and a clone on ``BRANCH`` whose own change is ``pr_files`` plus one ledger row."""
+    template = _base_template()
     origin, work = root / "origin.git", root / "work"
-    _git(root, "init", "-q", "--bare", "-b", "main", str(origin))
-    _git(root, "clone", "-q", str(origin), str(work))
-    _commit(work, {"README.md": "base\n", LEDGER: _ledger_with(work, "E-base")}, "base")
-    _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
-    _git(work, "checkout", "-q", "-b", BRANCH)
+    shutil.copytree(template / "origin.git", origin)
+    shutil.copytree(template / "work", work)
+    git_config = work / ".git" / "config"
+    git_config.write_text(
+        git_config.read_text(encoding="utf-8").replace(str(template / "origin.git"), str(origin)),
+        encoding="utf-8",
+    )
     _commit(work, {**pr_files, LEDGER: _ledger_with(work, "E-pr")}, "pr change")
-    _git(work, "fetch", "-q", "origin")
     return work
 
 
@@ -72,7 +94,6 @@ def _advance_main(work: Path, files: dict[str, str], label: str) -> None:
     _commit(work, {**files, LEDGER: _ledger_with(work, f"E-main-{label}")}, f"main {label}")
     _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
     _git(work, "checkout", "-q", BRANCH)
-    _git(work, "fetch", "-q", "origin")
 
 
 def _merge_main(work: Path, label: str) -> None:

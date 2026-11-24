@@ -87,7 +87,8 @@ def user_env_path() -> Path:
 
 def project_env_path(start: str | os.PathLike[str]) -> Path | None:
     """The project layer file at the git top level above ``start`` (a ``.git`` file or directory), or None."""
-    for directory in (Path(start).resolve(), *Path(start).resolve().parents):
+    resolved = Path(start).resolve()
+    for directory in (resolved, *resolved.parents):
         if (directory / ".git").exists():
             return directory / ".env"
     return None

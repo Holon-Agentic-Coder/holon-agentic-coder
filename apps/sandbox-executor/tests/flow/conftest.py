@@ -76,6 +76,11 @@ def flow_repos(tmp_path, monkeypatch, _flow_repos_template):
     for name, target in (("origin.git", origin), ("host", host)):
         shutil.copytree(_flow_repos_template / name, target, symlinks=True)
         _set_user_write(target, enabled=True)
-    _git(host, "remote", "set-url", "origin", str(origin))
-    assert _git(host, "remote", "get-url", "origin") == str(origin), "host still points at the shared template"
+    template_origin = str(_flow_repos_template / "origin.git")
+    git_config = host / ".git" / "config"
+    updated_config = git_config.read_text(encoding="utf-8").replace(template_origin, str(origin))
+    assert str(origin) in updated_config and template_origin not in updated_config, (
+        "host still points at the shared template"
+    )
+    git_config.write_text(updated_config, encoding="utf-8")
     return host, origin

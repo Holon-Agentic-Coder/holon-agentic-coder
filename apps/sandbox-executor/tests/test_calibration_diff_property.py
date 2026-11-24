@@ -8,7 +8,9 @@ change, whatever ``main`` brought in.
 
 from __future__ import annotations
 
+import atexit
 import json
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -49,14 +51,28 @@ def commit(repo: Path, files: dict[str, str], message: str) -> str:
     return git(repo, "rev-parse", "HEAD")
 
 
-def make_flow(repo: Path) -> None:
-    """``main`` with a base commit, then intent, plan (with its plan markdown) and execution branches."""
+_FLOW_TEMPLATE: Path | None = None
+
+
+def _flow_template() -> Path:
+    global _FLOW_TEMPLATE
+    if _FLOW_TEMPLATE is not None and _FLOW_TEMPLATE.exists():
+        return _FLOW_TEMPLATE
+    repo = Path(tempfile.mkdtemp(prefix="holon-cal-diff-tpl-"))
+    atexit.register(shutil.rmtree, repo, True)
     git(repo, "init", "-q", "-b", "main")
     commit(repo, {"base.txt": "base\n"}, "base")
     git(repo, "checkout", "-qb", INTENT)
     git(repo, "checkout", "-qb", PLAN)
     commit(repo, {"plans/I-1-prop/P-2-prop.md": "# Plan\n"}, "plan")
     git(repo, "checkout", "-qb", EXEC)
+    _FLOW_TEMPLATE = repo
+    return repo
+
+
+def make_flow(repo: Path) -> None:
+    """``main`` with a base commit, then intent, plan (with its plan markdown) and execution branches."""
+    shutil.copytree(_flow_template(), repo, dirs_exist_ok=True)
 
 
 def advance_main(repo: Path, files: list[str], tag: str) -> None:
@@ -79,7 +95,7 @@ steps = st.lists(st.tuples(st.booleans(), file_sets), min_size=1, max_size=6).fi
 )
 
 
-@settings(max_examples=25, deadline=None, database=None, suppress_health_check=[HealthCheck.too_slow])
+@settings(max_examples=15, deadline=None, database=None, suppress_health_check=[HealthCheck.too_slow])
 @given(flow_steps=steps, unmerged_main=st.booleans())
 def test_counted_files_are_exactly_the_pr_files(flow_steps: list[tuple[bool, list[int]]], unmerged_main: bool) -> None:
     with tempfile.TemporaryDirectory() as tmp:

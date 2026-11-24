@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.ci_bookkeeping_api import COMPARE_FILE_CAP, GateClient, compare, list_earlier_runs, list_jobs
+from scripts.ci_bookkeeping_api import COMPARE_FILE_CAP, GateClient, RunRef, compare, list_earlier_runs, list_jobs
 from scripts.ci_bookkeeping_chain import (
     CHAIN_RULES,
     FULL_RUN_STEP,
@@ -21,6 +21,7 @@ from scripts.ci_bookkeeping_chain import (
     RULE_PREVIOUS_RUN_NOT_SUCCESSFUL,
     RULE_PREVIOUS_RUN_SUCCEEDED,
     RULE_PREVIOUS_RUN_UNVERIFIED,
+    RULE_SHARED_HEAD_BRANCH,
     UNVERIFIED,
     JobQuery,
     classify_job,
@@ -29,6 +30,7 @@ from scripts.ci_bookkeeping_chain import (
 )
 from tests.ci_bookkeeping_fakes import (
     BRANCH,
+    MACOS_JOB,
     REPO,
     TOKEN,
     UNIT_JOB,
@@ -44,7 +46,8 @@ from tests.ci_bookkeeping_fakes import (
 SHA_A = "a" * 40
 SHA_B = "b" * 40
 SHA_C = "c" * 40
-MACOS_JOB = "unit (macos-latest, 150)"
+# No workflow of this repository shows a job with two matrix values; ``match_job`` accepts the shape all the same.
+TWO_VALUE_JOB = "unit (ubuntu-latest, 120)"
 CURRENT_RUN = 50
 
 
@@ -76,9 +79,9 @@ def names(*job_names: str) -> list[dict[str, object]]:
     [
         pytest.param(["build"], "build", "", "build", id="exact name without a label"),
         pytest.param(["build"], "build", "ubuntu-latest", "build", id="exact name with a label"),
-        pytest.param(["unit (ubuntu-latest)"], "unit", "ubuntu-latest", "unit (ubuntu-latest)", id="matrix"),
-        pytest.param([UNIT_JOB, MACOS_JOB], "unit", "ubuntu-latest", UNIT_JOB, id="matrix with an include value"),
+        pytest.param([UNIT_JOB, MACOS_JOB], "unit", "ubuntu-latest", UNIT_JOB, id="matrix"),
         pytest.param([UNIT_JOB, MACOS_JOB], "unit", "macos-latest", MACOS_JOB, id="the other runner"),
+        pytest.param([TWO_VALUE_JOB, MACOS_JOB], "unit", "ubuntu-latest", TWO_VALUE_JOB, id="two matrix values"),
         pytest.param(
             ["Workspace survival (ubuntu-latest)"],
             "Workspace survival",
@@ -91,7 +94,7 @@ def names(*job_names: str) -> list[dict[str, object]]:
         pytest.param(["unit-extra (ubuntu-latest)"], "unit", "ubuntu-latest", None, id="a longer job name"),
         pytest.param(["unit (ubuntu-latest-xl)"], "unit", "ubuntu-latest", None, id="a longer runner label"),
         pytest.param(["unit (ubuntu-latest) extra"], "unit", "ubuntu-latest", None, id="text after the bracket"),
-        pytest.param(["unit (ubuntu-latest)", UNIT_JOB], "unit", "ubuntu-latest", None, id="two matching jobs"),
+        pytest.param([TWO_VALUE_JOB, UNIT_JOB], "unit", "ubuntu-latest", None, id="two matching jobs"),
         pytest.param([UNIT_JOB, MACOS_JOB], "unit", "", None, id="two matrix jobs and no label"),
         pytest.param([], "unit", "ubuntu-latest", None, id="no jobs"),
     ],
@@ -165,6 +168,37 @@ def test_a_run_that_is_not_finished_is_not_trusted() -> None:
 
     assert (result.real_sha, result.rule) == (None, RULE_PREVIOUS_RUN_NOT_FINISHED)
     assert fake.calls("/jobs") == []
+
+
+@pytest.mark.parametrize("status", ["completed", "in_progress"])
+def test_a_run_that_names_several_pull_requests_is_not_trusted(status) -> None:
+    both = [{"number": 7}, {"number": 8}]
+    fake = FakeGitHub().add_run(49, SHA_B, real_success_job(), status=status, pull_requests=both)
+
+    result = find_real_success(client_for(fake), query())
+
+    assert (result.real_sha, result.rule) == (None, RULE_SHARED_HEAD_BRANCH)
+    assert result.detail == "run 49 names 2 pull requests"
+    assert fake.calls("/jobs") == []
+
+
+def test_an_older_run_that_names_several_pull_requests_ends_the_walk() -> None:
+    fake = FakeGitHub().add_run(48, SHA_A, real_success_job(), pull_requests=[{"number": 7}, {"number": 8}])
+    fake.add_run(49, SHA_B, gate_skipped_job())
+
+    result = find_real_success(client_for(fake), query(SHA_B))
+
+    assert (result.real_sha, result.rule) == (None, RULE_SHARED_HEAD_BRANCH)
+    assert fake.calls("/jobs") == [f"https://api.github.com/repos/{REPO}/actions/runs/1049/jobs?per_page=100"]
+
+
+@pytest.mark.parametrize("pull_requests", [[], None], ids=["an empty list", "null"])
+def test_a_run_that_names_no_pull_request_is_still_walked(pull_requests) -> None:
+    fake = FakeGitHub().add_run(49, SHA_B, real_success_job(), pull_requests=pull_requests)
+
+    result = find_real_success(client_for(fake), query())
+
+    assert (result.real_sha, result.rule) == (SHA_B, RULE_PREVIOUS_RUN_SUCCEEDED)
 
 
 def test_a_run_without_the_job_is_previous_run_missing() -> None:
@@ -279,15 +313,25 @@ def test_earlier_runs_are_sorted_by_run_number_highest_first() -> None:
 
     runs = list_earlier_runs(client_for(fake), WORKFLOW, BRANCH, CURRENT_RUN)
 
-    assert [(ref.run_number, ref.run_id, ref.head_sha, ref.status) for ref in runs] == [
-        (49, 1049, SHA_B, "completed"),
-        (12, 1012, SHA_C, "completed"),
-        (7, 1007, SHA_A, "completed"),
+    assert runs == [
+        RunRef(1049, 49, SHA_B, "completed", 1),
+        RunRef(1012, 12, SHA_C, "completed", 1),
+        RunRef(1007, 7, SHA_A, "completed", 1),
     ]
 
 
+def test_a_run_entry_counts_the_pull_requests_it_names() -> None:
+    fake = FakeGitHub().add_run(47, SHA_A).add_run(48, SHA_B, pull_requests=[])
+    fake.add_run(49, SHA_C, pull_requests=[{"number": 7}, {"number": 8}])
+    del fake.runs[0]["pull_requests"]
+
+    runs = list_earlier_runs(client_for(fake), WORKFLOW, BRANCH, CURRENT_RUN)
+
+    assert [(ref.run_number, ref.pull_request_count) for ref in runs] == [(49, 2), (48, 0), (47, 0)]
+
+
 def test_the_chain_rules_are_listed_once_each() -> None:
-    assert len(set(CHAIN_RULES)) == len(CHAIN_RULES) == 6
+    assert len(set(CHAIN_RULES)) == len(CHAIN_RULES) == 7
 
 
 # --- API reads -------------------------------------------------------------------------------------------------------
@@ -341,6 +385,13 @@ def test_runs_and_jobs_raise_on_an_answer_of_the_wrong_shape() -> None:
         list_earlier_runs(client_for(fake), WORKFLOW, BRANCH, CURRENT_RUN)
     with pytest.raises(ValueError):
         list_jobs(client_for(fake), 1049)
+
+
+def test_a_run_entry_whose_pull_requests_are_not_a_list_raises() -> None:
+    fake = FakeGitHub().add_run(49, SHA_B, real_success_job(), pull_requests={"number": 7})
+
+    with pytest.raises(ValueError, match="pull request list"):
+        list_earlier_runs(client_for(fake), WORKFLOW, BRANCH, CURRENT_RUN)
 
 
 def test_a_run_entry_without_its_head_commit_raises() -> None:

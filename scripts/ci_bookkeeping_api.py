@@ -57,12 +57,13 @@ class Comparison:
 
 @dataclass(frozen=True)
 class RunRef:
-    """One earlier workflow run: its id, its number, the pull-request head it ran on and its status."""
+    """One earlier workflow run: its id, number, pull-request head and status, and how many pull requests it names."""
 
     run_id: int
     run_number: int
     head_sha: str
     status: str
+    pull_request_count: int
 
 
 def _quote(value: str) -> str:
@@ -96,11 +97,16 @@ def _run_ref(run: object) -> RunRef:
     """Build a ``RunRef`` from one ``workflow_runs`` entry; a missing field raises."""
     if not isinstance(run, dict):
         raise ValueError("a workflow run entry is not an object")
+    # The open pull requests whose head is the run's branch; the API answers null or an empty list when it knows none.
+    pull_requests = run.get("pull_requests") or []
+    if not isinstance(pull_requests, list):
+        raise ValueError("a workflow run entry has a pull request list that is not a list")
     return RunRef(
         run_id=int(run["id"]),
         run_number=int(run["run_number"]),
         head_sha=str(run["head_sha"]),
         status=str(run.get("status", "")),
+        pull_request_count=len(pull_requests),
     )
 
 

@@ -21,7 +21,9 @@ API = f"https://api.github.com/repos/{REPO}/"
 TOKEN = "fake-token-for-the-bookkeeping-gate"
 BRANCH = "I-1-intent/P-1-plan/E-1-execution/_"
 WORKFLOW = "test-unit.yml"
-UNIT_JOB = "unit (ubuntu-latest, 120)"
+# The names the jobs API shows for the two jobs of the unit workflow's matrix.
+UNIT_JOB = "unit (ubuntu-latest)"
+MACOS_JOB = "unit (macos-latest)"
 
 _COMPARE = re.compile(r"^compare/([^/?]+)\.\.\.([^/?]+)$")
 _RUNS = re.compile(r"^actions/workflows/([^/?]+)/runs\?(.+)$")
@@ -29,7 +31,7 @@ _JOBS = re.compile(r"^actions/runs/(\d+)/jobs\?per_page=100$")
 
 
 def run(run_number: int, head_sha: str, **overrides: object) -> dict[str, object]:
-    """Return a recorded-shape ``workflow_runs`` entry: a completed pull-request run with the id ``1000 + number``."""
+    """Return a recorded-shape ``workflow_runs`` entry: a completed run of one pull request, id ``1000 + number``."""
     base: dict[str, object] = {
         "id": 1000 + run_number,
         "run_number": run_number,
@@ -38,6 +40,7 @@ def run(run_number: int, head_sha: str, **overrides: object) -> dict[str, object
         "event": "pull_request",
         "status": "completed",
         "path": f".github/workflows/{WORKFLOW}",
+        "pull_requests": [{"number": 7}],
     }
     return {**base, **overrides}
 

@@ -10,7 +10,7 @@ are checked in this order, and the first one that fails decides for a full run:
    ``pull_request`` run with the action ``synchronize``, ``labeled`` or ``unlabeled``.
 2. ``result-affecting-label`` (label events), ``missing-previous-head`` (``synchronize``), ``incomplete-event``.
 3. ``force-push-or-diverged``, ``diff-too-large``, ``non-bookkeeping-change`` (``synchronize``): the new head is
-   strictly ahead of the previous head and every changed path, both names of a rename, lies under a bookkeeping root.
+   strictly ahead of the previous head and every changed path, both names of a rename, is a bookkeeping path.
 4. The rules of ``scripts.ci_bookkeeping_chain``: the same job really succeeded on the previous head (for a label event:
    on the current head), reached through a chain of runs that this gate skipped.
 5. When that real success is on an older commit, the checks of point 3 again, from that commit to the new head.
@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import posixpath
 import sys
 import urllib.error
 from collections.abc import Mapping, Sequence
@@ -40,6 +41,8 @@ from scripts.ci_bookkeeping_chain import (
 from scripts.ci_timing_gate import OVERRIDE_LABEL, default_opener, write_step_summary
 
 BOOKKEEPING_ROOTS = ("plans", "executions", "holon-knowledge")
+# The file types a skipped hygiene job still checks (``make lint-md``, ``make lint-json``); any other type runs in full.
+BOOKKEEPING_SUFFIXES = (".md", ".json", ".jsonl")
 # Every label that a workflow reads belongs here: adding or removing one can change a job's result.
 RESULT_AFFECTING_LABELS = frozenset({OVERRIDE_LABEL, "module-budget-change"})
 ELIGIBLE_ACTIONS = ("synchronize", "labeled", "unlabeled")
@@ -74,9 +77,9 @@ SKIP_RULES = (RULE_BOOKKEEPING_ONLY, RULE_LABEL_NOT_RESULT_AFFECTING)
 
 
 def is_bookkeeping_path(path: str) -> bool:
-    """Return true only when the first whole component of ``path`` is a bookkeeping root and something follows it."""
+    """Return true only for a markdown, JSON or JSONL file whose first whole path component is a bookkeeping root."""
     root, _, rest = path.partition("/")
-    return root in BOOKKEEPING_ROOTS and bool(rest)
+    return root in BOOKKEEPING_ROOTS and posixpath.splitext(rest)[1] in BOOKKEEPING_SUFFIXES
 
 
 def first_outside_path(paths: Sequence[str]) -> str | None:

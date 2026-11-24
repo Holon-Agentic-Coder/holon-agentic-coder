@@ -18,6 +18,7 @@ from scripts.ci_bookkeeping_api import COMPARE_FILE_CAP, GateClient, GateContext
 from scripts.ci_bookkeeping_chain import CHAIN_RULES, RULE_PREVIOUS_RUN_SUCCEEDED, Decision
 from scripts.ci_bookkeeping_gate import (
     BOOKKEEPING_ROOTS,
+    BOOKKEEPING_SUFFIXES,
     RESULT_AFFECTING_LABELS,
     RUN_RULES,
     SKIP_RULES,
@@ -29,6 +30,7 @@ from scripts.ci_bookkeeping_gate import (
 )
 from tests.ci_bookkeeping_fakes import (
     BRANCH,
+    MACOS_JOB,
     REPO,
     TOKEN,
     WORKFLOW,
@@ -91,6 +93,17 @@ def gate(fake: FakeGitHub, gate_context: GateContext | None = None) -> Decision:
         ("plans/x.md", True),
         ("executions/a/b.md", True),
         (LEDGER_FILE, True),
+        ("holon-knowledge/kb/index.json", True),
+        ("plans/I-1-intent/P-1-plan.v2.md", True),
+        ("plans/x.py", False),
+        ("executions/run.sh", False),
+        ("holon-knowledge/hooks/config.yml", False),
+        ("plans/conftest.py", False),
+        ("executions/Makefile", False),
+        ("plans/x.MD", False),
+        ("plans/x.md.py", False),
+        ("plans/.md", False),
+        ("plans/x.md/", False),
         ("plans_helper.py", False),
         ("src/holon-knowledge-tool.py", False),
         ("plans", False),
@@ -101,7 +114,7 @@ def gate(fake: FakeGitHub, gate_context: GateContext | None = None) -> Decision:
         ("", False),
     ],
 )
-def test_is_bookkeeping_path_matches_whole_first_components_only(path: str, expected: bool) -> None:
+def test_is_bookkeeping_path_matches_a_checked_file_type_under_a_whole_root_only(path: str, expected: bool) -> None:
     assert is_bookkeeping_path(path) is expected
 
 
@@ -109,10 +122,15 @@ def test_bookkeeping_roots_are_the_three_directories_the_flow_writes() -> None:
     assert BOOKKEEPING_ROOTS == ("plans", "executions", "holon-knowledge")
 
 
+def test_bookkeeping_suffixes_are_the_file_types_the_skipped_hygiene_job_checks() -> None:
+    assert BOOKKEEPING_SUFFIXES == (".md", ".json", ".jsonl")
+
+
 def test_first_outside_path_names_the_first_path_that_is_not_bookkeeping() -> None:
     assert first_outside_path([PLAN_FILE, REPORT_FILE]) is None
     assert first_outside_path([]) is None
     assert first_outside_path([PLAN_FILE, CODE_FILE, "README.md"]) == CODE_FILE
+    assert first_outside_path([PLAN_FILE, "plans/tool.py", CODE_FILE]) == "plans/tool.py"
 
 
 # --- a push (synchronize) --------------------------------------------------------------------------------------------
@@ -141,6 +159,20 @@ def test_mixed_change_runs_names_the_path_and_does_not_ask_for_runs() -> None:
 
     assert gate(fake) == Decision(False, "non-bookkeeping-change", CODE_FILE)
     assert fake.calls("actions/") == []
+
+
+@pytest.mark.parametrize("path", ["plans/tool.py", "executions/run.sh", "holon-knowledge/hooks/config.yml"])
+def test_file_of_another_type_under_a_bookkeeping_root_runs(path: str) -> None:
+    fake = pushed(PLAN_FILE, path).add_run(49, SHA_B, real_success_job())
+
+    assert gate(fake) == Decision(False, "non-bookkeeping-change", path)
+    assert fake.calls("actions/") == []
+
+
+def test_rename_to_another_file_type_inside_a_bookkeeping_root_runs() -> None:
+    decision = gate(pushed(("plans/notes.md", "plans/notes.py")).add_run(49, SHA_B, real_success_job()))
+
+    assert decision == Decision(False, "non-bookkeeping-change", "plans/notes.py")
 
 
 @pytest.mark.parametrize(
@@ -203,7 +235,7 @@ def test_file_list_just_below_the_api_cap_skips() -> None:
             id="a success from before the gate",
         ),
         pytest.param(
-            real_success_job("unit (macos-latest, 150)"),
+            real_success_job(MACOS_JOB),
             "previous-run-missing",
             "no single matching job in run 49",
             id="only the other runner's job",
@@ -230,6 +262,14 @@ def test_previous_run_still_in_progress_runs() -> None:
     fake = pushed(PLAN_FILE).add_run(49, SHA_B, real_success_job(), status="in_progress")
 
     assert gate(fake) == Decision(False, "previous-run-not-finished", "run 49")
+
+
+def test_previous_run_that_names_two_pull_requests_runs() -> None:
+    both = [{"number": 7}, {"number": 8}]
+    fake = pushed(PLAN_FILE).add_run(49, SHA_B, real_success_job(), pull_requests=both)
+
+    assert gate(fake) == Decision(False, "shared-head-branch", "run 49 names 2 pull requests")
+    assert fake.calls("/jobs?") == []
 
 
 def test_run_of_another_workflow_or_branch_is_not_a_previous_run() -> None:
@@ -479,6 +519,11 @@ def scenes() -> list[tuple[FakeGitHub, GateContext]]:
         (pushed(PLAN_FILE).add_run(49, SHA_B, job(conclusion="failure")), context()),
         (pushed(PLAN_FILE).add_run(49, SHA_B, legacy_success_job()), context()),
         (pushed(PLAN_FILE).add_run(49, SHA_B, gate_skipped_job()), context()),
+        (
+            pushed(PLAN_FILE).add_run(49, SHA_B, real_success_job(), pull_requests=[{"number": 7}, {"number": 8}]),
+            context(),
+        ),
+        (pushed("plans/tool.py").add_run(49, SHA_B, real_success_job()), context()),
         (broken, context()),
         (pushed(PLAN_FILE), context(event_name="push")),
         (pushed(PLAN_FILE), context(run_attempt=2)),

@@ -8,8 +8,10 @@ the gate existed) or not successful (everything else).
 
 ``find_real_success`` starts at the newest earlier run of the same workflow on the same branch, which must be on the
 commit the caller names, and follows gate-skipped jobs to older runs until it meets a real success. Anything else on
-the way ends the walk without one, under a rule name the gate prints as its ``Decision`` for a full run. No exception
-is caught here: the gate turns every exception into a full run. Standard library only and Python 3.9 syntax.
+the way ends the walk without one, under a rule name the gate prints as its ``Decision`` for a full run. Runs are found
+by branch, not by pull request, so a run that names several pull requests proves nothing about this one and ends the
+walk too. No exception is caught here: the gate turns every exception into a full run. Standard library only and
+Python 3.9 syntax.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ UNVERIFIED = "unverified"
 NOT_SUCCESSFUL = "not-successful"
 
 RULE_PREVIOUS_RUN_MISSING = "previous-run-missing"
+RULE_SHARED_HEAD_BRANCH = "shared-head-branch"
 RULE_PREVIOUS_RUN_NOT_FINISHED = "previous-run-not-finished"
 RULE_PREVIOUS_RUN_NOT_SUCCESSFUL = "previous-run-not-successful"
 RULE_PREVIOUS_RUN_UNVERIFIED = "previous-run-unverified"
@@ -35,6 +38,7 @@ RULE_CHAIN_TOO_LONG = "chain-too-long"
 RULE_PREVIOUS_RUN_SUCCEEDED = "previous-run-succeeded"
 CHAIN_RULES = (
     RULE_PREVIOUS_RUN_MISSING,
+    RULE_SHARED_HEAD_BRANCH,
     RULE_PREVIOUS_RUN_NOT_FINISHED,
     RULE_PREVIOUS_RUN_NOT_SUCCESSFUL,
     RULE_PREVIOUS_RUN_UNVERIFIED,
@@ -97,8 +101,10 @@ def _is_match(name: str, job_name: str, os_name: str) -> bool:
 def match_job(jobs: Sequence[dict[str, object]], job_name: str, os_name: str) -> dict[str, object] | None:
     """Return the one job of ``jobs`` named ``job_name``, with or without matrix values; ``None`` for none or several.
 
-    A matrix job is shown as ``unit (ubuntu-latest)`` or, when an ``include`` entry adds a value, as
-    ``unit (ubuntu-latest, 120)``; both match ``unit`` with the runner label ``ubuntu-latest``.
+    A matrix job is shown with the values of its ``matrix`` keys, as ``unit (ubuntu-latest)``; a value that an
+    ``include`` entry adds to such a job is not part of the name. A name with several values, such as
+    ``unit (ubuntu-latest, 120)``, is accepted all the same: both names match ``unit`` with the runner label
+    ``ubuntu-latest``.
     """
     matches = [job for job in jobs if _is_match(str(job.get("name", "")), job_name, os_name)]
     return matches[0] if len(matches) == 1 else None
@@ -120,11 +126,22 @@ def classify_job(job: dict[str, object]) -> str:
     return NOT_SUCCESSFUL
 
 
+def _untrusted(run: RunRef) -> ChainResult | None:
+    """Return the result for a ``run`` that is not trusted whatever its jobs say, or ``None`` when its jobs count."""
+    where = f"run {run.run_number}"
+    if run.pull_request_count > 1:
+        return ChainResult(None, RULE_SHARED_HEAD_BRANCH, f"{where} names {run.pull_request_count} pull requests")
+    if run.status != "completed":
+        return ChainResult(None, RULE_PREVIOUS_RUN_NOT_FINISHED, where)
+    return None
+
+
 def _visit(client: GateClient, run: RunRef, query: JobQuery) -> ChainResult | None:
     """Return the walk's result at ``run``, or ``None`` when the gate skipped the job there and the walk goes on."""
     where = f"run {run.run_number}"
-    if run.status != "completed":
-        return ChainResult(None, RULE_PREVIOUS_RUN_NOT_FINISHED, where)
+    untrusted = _untrusted(run)
+    if untrusted is not None:
+        return untrusted
     job = match_job(list_jobs(client, run.run_id), query.job_name, query.os_name)
     if job is None:
         return ChainResult(None, RULE_PREVIOUS_RUN_MISSING, f"no single matching job in {where}")

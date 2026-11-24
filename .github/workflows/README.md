@@ -58,10 +58,17 @@ event of the run and the REST reads) and `ci_bookkeeping_chain.py` (the walk thr
 
 ### Bookkeeping paths
 
-A path is bookkeeping when it lies under one of three roots: `plans/`, `executions/` or `holon-knowledge/`. Paths are
-matched on whole components: the first component must be exactly one of the roots and something must follow it. So
-`plans_helper.py`, `docs/plans/x.md` and a file named `plans` are not bookkeeping. A rename counts with both of its
-names, so a file that moves into or out of a root is not bookkeeping.
+A path is bookkeeping when it lies under one of three roots, `plans/`, `executions/` or `holon-knowledge/`, and names a
+markdown, JSON or JSONL file: its name ends in `.md`, `.json` or `.jsonl`, in lower case. Paths are matched on whole
+components: the first component must be exactly one of the roots and a file name must follow it. So `plans_helper.py`,
+`docs/plans/x.md` and a file named `plans` are not bookkeeping.
+
+The three file types are the ones that the hygiene job still checks on a skipped push (see "What still runs on a skip").
+A file of any other type under a root, such as `plans/tool.py` or `executions/run.sh`, is not bookkeeping, because a
+skipped job would not check it at all.
+
+A rename counts with both of its names, so a file that moves into or out of a root, or to another file type, is not
+bookkeeping.
 
 ### When a job skips
 
@@ -77,6 +84,7 @@ only on positive evidence, and every doubt or error runs the full job. All of th
   the previous head (for a label event: on the current head). When that run was itself skipped, the gate walks back
   through the skipped runs to the last real success, at most 20 runs, and then requires that every path changed between
   that commit and the new head is bookkeeping.
+- No run on the way names more than one pull request.
 
 ### The marker step
 
@@ -110,9 +118,12 @@ Rules that run the full job:
   rebase).
 - `diff-too-large`: the comparison lists 300 files or more, which is the most the API returns, so the list may be cut
   short.
-- `non-bookkeeping-change`: a changed path lies outside the three roots; the detail names the first such path.
+- `non-bookkeeping-change`: a changed path lies outside the three roots or is not a markdown, JSON or JSONL file; the
+  detail names the first such path.
 - `previous-run-missing`: there is no earlier run of this workflow on the branch, the newest one is on another commit,
   it holds no single job with this job's name, or every earlier run was skipped.
+- `shared-head-branch`: an earlier run on the way names more than one pull request, so several open pull requests share
+  the head branch and the run may belong to another one; the detail names the run and the count.
 - `previous-run-not-finished`: an earlier run on the way is still queued or in progress.
 - `previous-run-not-successful`: the job failed or was cancelled in an earlier run; the detail names the conclusion.
 - `previous-run-unverified`: the job succeeded in an earlier run that has no marker step.
@@ -132,7 +143,7 @@ job of a few seconds says nothing about a slow-down.
 - Re-run the job or the workflow: a second attempt always runs in full.
 - Close and reopen the pull request.
 - Start the workflow by hand (`workflow_dispatch`).
-- Push any change outside the three roots.
+- Push any change that is not a bookkeeping path, for example a file outside the three roots.
 
 An empty commit does not force a full run: it changes no path, so it counts as bookkeeping-only.
 
@@ -141,6 +152,13 @@ An empty commit does not force a full run: it changes no path, so it counts as b
 - A skipped run does not test a base branch that moved since the last real success. The next push with another change, a
   re-run and the push to `main` after the merge all run in full.
 - Tests that read the real plans and ledgers do not run on a skipped push. They run on the next full run and on `main`.
+- The gate finds the earlier runs by workflow and head branch, not by pull request, so it assumes one open pull request
+  per head branch. It runs in full when an earlier run names several pull requests (`shared-head-branch`), but the API
+  lists only the open ones: after a second pull request from the same branch is closed, the gate may count a run of that
+  pull request as an earlier run of this one.
+- The gate does not notice a retargeted base. After the base branch of a pull request is changed, a bookkeeping-only
+  push can still skip on the strength of a real success against the old base. Close and reopen the pull request to test
+  against the new one.
 - Skipped jobs appear as very short points in the CI duration report.
 - The marker step proves a real success only while no step of the job uses `continue-on-error`. The wiring test rejects
   that key in the six workflows.

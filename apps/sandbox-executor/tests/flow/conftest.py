@@ -5,8 +5,11 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from sandbox_executor.knowledge import consult
+from sandbox_executor.knowledge.consult import DEFAULT_LEDGERS
 
 from tests.flow.helpers import _git, _set_user_write
+from tests.gh_probe_stub import stubbed_mergeability_read
 from tests.review_fakes import install_fake_reviewers
 
 
@@ -27,6 +30,10 @@ def _no_real_prettier(monkeypatch):
     The calibrate stage formats its report through ``calibration._prettier_failure``; faking that seam to report a
     passing check keeps the flow tests independent of npx being installed. Tests of the formatter itself live in
     test_calibration.py.
+
+    The same wrapper answers the mergeability probe's ``gh pr view`` read in-process with the failure the host's real
+    ``gh`` gives in a temporary repository (``tests/gh_probe_stub.py``), so the local git fallback decides as before
+    and no ``gh`` process starts. A test's own fake ``gh`` on ``PATH`` or its own ``subprocess.run`` patch still wins.
     """
     monkeypatch.setattr("sandbox_executor.calibration._prettier_failure", lambda report_rel, repo_dir: None)
     real_run = subprocess.run
@@ -34,6 +41,9 @@ def _no_real_prettier(monkeypatch):
     def guarded_run(cmd, *args, **kwargs):
         if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "npx":
             raise AssertionError(f"real npx invoked: {cmd}")
+        stubbed = stubbed_mergeability_read(cmd)
+        if stubbed is not None:
+            return stubbed
         return real_run(cmd, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", guarded_run)
@@ -63,6 +73,9 @@ def _flow_repos_template(tmp_path_factory, hermetic_git_config) -> Path:
     _git(seed, "remote", "add", "origin", str(origin))
     _git(seed, "push", "-q", "origin", "main")
     subprocess.run(["git", "clone", "-q", str(origin), str(root / "host")], check=True, capture_output=True)
+    # Git's sample hooks are never run (the hermetic config sets core.hooksPath); do not copy them per test.
+    for sample in root.glob("**/hooks/*.sample"):
+        sample.unlink()
     _set_user_write(root, enabled=False)
     return root
 
@@ -76,6 +89,17 @@ def flow_repos(tmp_path, monkeypatch, _flow_repos_template):
     for name, target in (("origin.git", origin), ("host", host)):
         shutil.copytree(_flow_repos_template / name, target, symlinks=True)
         _set_user_write(target, enabled=True)
-    _git(host, "remote", "set-url", "origin", str(origin))
-    assert _git(host, "remote", "get-url", "origin") == str(origin), "host still points at the shared template"
+    # Re-point the host's origin at the test's own copy without a git process: the clone recorded the template's path.
+    config = host / ".git" / "config"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(str(_flow_repos_template / "origin.git"), str(origin)),
+        encoding="utf-8",
+    )
+    repointed = config.read_text(encoding="utf-8")
+    assert str(origin) in repointed, "host does not point at its own origin"
+    assert str(_flow_repos_template) not in repointed, "host still points at the shared template"
+    # Production runs the flow from the host checkout, so the consult's relative default ledgers are the host's own.
+    # The test host is this temporary copy, not the checkout pytest was started in.
+    ledger_dir = host / "holon-knowledge" / "ledger"
+    monkeypatch.setattr(consult, "DEFAULT_LEDGERS", [str(ledger_dir / Path(path).name) for path in DEFAULT_LEDGERS])
     return host, origin

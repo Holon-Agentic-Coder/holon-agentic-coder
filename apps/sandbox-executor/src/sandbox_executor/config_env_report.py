@@ -4,13 +4,18 @@ A secret value is never rendered: its row shows ``set (<layer>)``. Like every ot
 values are withheld unless known to be safe), a non-secret value is shown only when it is plainly harmless: a finite
 decimal or ``unlimited`` for a numeric key, otherwise a short value without a URL authority, ``@``, a token-like run or
 a non-finite number, which the command redactor leaves unchanged. Any other value shows as
-``set (<layer>; value withheld)``. The rendering reads only the configuration it is given, never ``os.environ``.
+``set (<layer>; value withheld)``. The rendering reads configuration values only from the configuration it is given;
+``os.environ`` is inspected solely to check ``COMMAND_ECHO_ENV_NAMES`` during redaction, and the bounded redaction
+cache is keyed on a SHA-256 digest so plaintext credentials are never retained in memory.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
+import os
 import re
+from collections import OrderedDict
 from typing import Any
 
 from sandbox_executor import claude_keychain
@@ -18,13 +23,38 @@ from sandbox_executor.config_env import FILE_LAYERS, LAYERS, RESOLVED_MARKER, is
 from sandbox_executor.config_env_keys import DOCUMENTED_KEYS
 from sandbox_executor.config_env_model import EffectiveConfig, ResolvedSetting
 from sandbox_executor.config_env_secrets import PROJECT_REFUSED_KEYS, SECRET_FILE_MAPPINGS
-from sandbox_executor.redaction import carries_url_password, redact_command
+from sandbox_executor.redaction import COMMAND_ECHO_ENV_NAMES, carries_url_password, redact_command
 
 REPORT_HEADING = "Configuration (HOLON_* settings):"
 _NUMERIC_SUFFIXES = ("_SECONDS", "_MINUTES", "_TIMEOUT", "_TOKENS", "_WINDOW", "_BYTES", "_PORT")
 _NUMBER_RE = re.compile(r"\d{1,12}(?:\.\d{1,6})?")
 _PLAIN_VALUE_RE = re.compile(r"[A-Za-z0-9/~][A-Za-z0-9._,:+/~-]{0,79}")
 _TOKEN_RUN_RE = re.compile(r"[A-Za-z0-9]{20}")
+_REDACTION_CACHE_MAXSIZE = 512
+_REDACTION_CACHE: OrderedDict[bytes, bool] = OrderedDict()
+
+
+def _plain_value_cache_key(key: str, value: str) -> bytes:
+    hasher = hashlib.sha256()
+    for part in (key, value, *(os.environ.get(name, "") for name in COMMAND_ECHO_ENV_NAMES)):
+        encoded = part.encode("utf-8", errors="surrogatepass")
+        hasher.update(len(encoded).to_bytes(8, "big"))
+        hasher.update(encoded)
+    return hasher.digest()
+
+
+def _plain_value_redaction_safe(key: str, value: str) -> bool:
+    digest = _plain_value_cache_key(key, value)
+    cached = _REDACTION_CACHE.get(digest)
+    if cached is not None:
+        _REDACTION_CACHE.move_to_end(digest)
+        return cached
+    item = f"{key}={value}"
+    safe = redact_command([item]) == item and not carries_url_password(value)
+    _REDACTION_CACHE[digest] = safe
+    if len(_REDACTION_CACHE) > _REDACTION_CACHE_MAXSIZE:
+        _REDACTION_CACHE.popitem(last=False)
+    return safe
 
 
 def _plain_value(key: str, value: str) -> bool:
@@ -38,8 +68,7 @@ def _plain_value(key: str, value: str) -> bool:
             return False
     except ValueError:
         pass
-    item = f"{key}={value}"
-    return redact_command([item]) == item and not ("@" in value and carries_url_password(value))
+    return _plain_value_redaction_safe(key, value)
 
 
 def _display(setting: ResolvedSetting, masked: bool) -> tuple[str | None, str]:
@@ -78,21 +107,21 @@ def _provenance(row: dict[str, Any], inherited: bool) -> str:
     return f"{source}; shadows {', '.join(row['shadowed'])}" if row["shadowed"] else source
 
 
-def format_config_report(config: EffectiveConfig) -> list[str]:
+def format_config_report(config: EffectiveConfig, rows: list[dict[str, Any]] | None = None) -> list[str]:
     """The text report: a heading, one ``KEY = value   [source; shadows ...]`` line per row, then the warnings."""
+    resolved_rows = setting_rows(config) if rows is None else rows
     lines = [REPORT_HEADING]
-    lines.extend(
-        f"  {row['key']} = {row['display']}   [{_provenance(row, config.inherited)}]" for row in setting_rows(config)
-    )
+    lines.extend(f"  {row['key']} = {row['display']}   [{_provenance(row, config.inherited)}]" for row in resolved_rows)
     if config.inherited:
         lines.append(f"  (inherited: {RESOLVED_MARKER}=1, so no layer file was read)")
     lines.extend(f"WARNING: {warning.removeprefix('Warning: ')}" for warning in config.warnings)
     return lines
 
 
-def configuration_payload(config: EffectiveConfig) -> dict[str, Any]:
+def configuration_payload(config: EffectiveConfig, rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """The ``--json`` form: ``settings`` rows, ``warnings`` and whether the resolution was inherited."""
-    return {"settings": setting_rows(config), "warnings": list(config.warnings), "inherited": config.inherited}
+    resolved_rows = setting_rows(config) if rows is None else rows
+    return {"settings": resolved_rows, "warnings": list(config.warnings), "inherited": config.inherited}
 
 
 def env_example_text() -> str:

@@ -177,7 +177,6 @@ class TestExecutor(unittest.TestCase):
             return redact_agent_secrets(notice + tail.decode("utf-8", errors="replace"))
 
         superseded_leaks = {}
-        noise = "noise line\n" * 100
         with patch.dict(os.environ, {"GITHUB_TOKEN": "", "GH_TOKEN": "", "HOLON_AGENT_KEY": ""}):
             self.assertEqual(redact_env_literals(secret), secret, "the sweep must not know this value")
             for label, unit in shapes.items():
@@ -187,13 +186,13 @@ class TestExecutor(unittest.TestCase):
 
                 legacy_leaks = 0
                 for cut_at in range(1, len(unit)):
-                    stream = noise + unit + "y" * (tail_budget - (len(unit) - cut_at))
+                    stream = ("noise line\n" * 20) + unit + "y" * (tail_budget - (len(unit) - cut_at))
                     bounded, truncated, _ = sanitize_agent_output(redact_env_literals(stream), budget)
                     self.assertTrue(truncated)
                     result = redact_agent_secrets(bounded)
                     for window in windows:
                         self.assertNotIn(window, result, f"{label}: fragment {window!r} survived cut {cut_at}.")
-                    if label == "single token" or not legacy_leaks:
+                    if legacy_leaks == 0 or label == "single token":
                         legacy = superseded_fragment_heuristic(stream)
                         if any(window in legacy for window in windows):
                             legacy_leaks += 1

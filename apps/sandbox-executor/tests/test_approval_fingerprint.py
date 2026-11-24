@@ -1,7 +1,12 @@
 """The PR-own change fingerprint: what it binds, what it excludes, and its invariance across merges of a moving main.
 
-Every case builds real temporary git repositories (a bare ``origin`` and a clone); nothing touches the network or the
-repository's own worktree. The Hypothesis properties are derandomized and bounded, because each example builds repos.
+Every case works in real temporary git repositories (a bare ``origin`` and a clone); nothing touches the network or
+the repository's own worktree. The starting repositories are built once per session and copied
+(``tests/repo_templates.py``). The Hypothesis property is derandomized and bounded, because each example copies the
+template and then commits, pushes and merges in its copy. Its boundary cases are explicit examples, so they do not
+depend on what is generated. Two of them are also the single-case forms of the two halves of the property: no main
+move and an edit of the PR's one file (a code edit changes the fingerprint), and a clean merge of a main that moved in
+another file (the fingerprint is kept).
 """
 
 from __future__ import annotations
@@ -10,7 +15,8 @@ import json
 import tempfile
 from pathlib import Path
 
-from hypothesis import given, settings
+import pytest
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from sandbox_executor.flow.review.approval_fingerprint import (
     FINGERPRINT_VERSION,
@@ -21,6 +27,7 @@ from sandbox_executor.flow.review.approval_fingerprint import (
 from sandbox_executor.flow.review.conflict_merge import _merge_target_ledger_only
 
 from tests.flow.helpers import _git
+from tests.repo_templates import copy_template, shared_template
 
 BRANCH = "I-1-x/P-2-y/E-3-z/_"
 LEDGER = "holon-knowledge/ledger/executions.jsonl"
@@ -28,7 +35,7 @@ TARGET = "refs/remotes/origin/main"
 PR_PATHS = ("src/pr_a.py", "src/pr_b.py", "src/pkg/pr_c.py", "docs/pr_d.md")
 MAIN_PATHS = ("src/main_a.py", "src/main_b.py", "lib/main_c.py")
 CONTENT = st.text(alphabet="abcxyz =+\n", min_size=1, max_size=40)
-PROPERTY_SETTINGS = settings(max_examples=25, deadline=None, derandomize=True, database=None)
+PROPERTY_SETTINGS = settings(max_examples=12, deadline=None, derandomize=True, database=None)
 
 
 def _write(work: Path, rel: str, text: str) -> None:
@@ -37,12 +44,11 @@ def _write(work: Path, rel: str, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _commit(work: Path, files: dict[str, str], message: str) -> str:
+def _commit(work: Path, files: dict[str, str], message: str) -> None:
     for rel, text in files.items():
         _write(work, rel, text)
     _git(work, "add", "-A")
     _git(work, "commit", "-q", "--allow-empty", "-m", message)
-    return _git(work, "rev-parse", "HEAD")
 
 
 def _ledger_with(work: Path, execution_id: str) -> str:
@@ -52,27 +58,38 @@ def _ledger_with(work: Path, execution_id: str) -> str:
     return old + json.dumps(row, separators=(",", ":")) + "\n"
 
 
-def _repos(root: Path, pr_files: dict[str, str]) -> Path:
-    """A bare origin and a clone on ``BRANCH`` whose own change is ``pr_files`` plus one ledger row."""
+def _build_repos(root: Path) -> None:
+    """A bare origin with the pushed base commit and a clone on ``BRANCH``."""
     origin, work = root / "origin.git", root / "work"
     _git(root, "init", "-q", "--bare", "-b", "main", str(origin))
     _git(root, "clone", "-q", str(origin), str(work))
     _commit(work, {"README.md": "base\n", LEDGER: _ledger_with(work, "E-base")}, "base")
     _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
     _git(work, "checkout", "-q", "-b", BRANCH)
-    _commit(work, {**pr_files, LEDGER: _ledger_with(work, "E-pr")}, "pr change")
     _git(work, "fetch", "-q", "origin")
+
+
+@pytest.fixture(scope="session")
+def repos_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> Path:
+    """The repositories of ``_build_repos``, built once and read-only; ``_repos`` copies them."""
+    return shared_template(tmp_path_factory, "fingerprint-template", _build_repos)[0]
+
+
+def _repos(template: Path, root: Path, pr_files: dict[str, str]) -> Path:
+    """A bare origin and a clone on ``BRANCH`` whose own change is ``pr_files`` plus one ledger row."""
+    work = copy_template(template, root) / "work"
+    _commit(work, {**pr_files, LEDGER: _ledger_with(work, "E-pr")}, "pr change")
     return work
 
 
 def _advance_main(work: Path, files: dict[str, str], label: str) -> None:
     """Commit ``files`` and one ledger row on origin's main, leaving the clone on ``BRANCH``."""
-    _git(work, "checkout", "-q", "main")
-    _git(work, "merge", "-q", "--ff-only", TARGET)
+    # Local main is always behind or at origin/main here, so this is the checkout plus fast-forward in one process.
+    _git(work, "checkout", "-q", "--no-track", "-B", "main", TARGET)
     _commit(work, {**files, LEDGER: _ledger_with(work, f"E-main-{label}")}, f"main {label}")
+    # The push also moves refs/remotes/origin/main of the clone, so no fetch is needed afterwards.
     _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
     _git(work, "checkout", "-q", BRANCH)
-    _git(work, "fetch", "-q", "origin")
 
 
 def _merge_main(work: Path, label: str) -> None:
@@ -86,16 +103,16 @@ def _fingerprint(work: Path) -> str | None:
     return pr_change_fingerprint(str(work), "HEAD", TARGET)
 
 
-def test_fingerprint_is_versioned_and_stable(tmp_path: Path) -> None:
-    work = _repos(tmp_path, {"src/pr_a.py": "x = 1\n"})
+def test_fingerprint_is_versioned_and_stable(repos_template: Path, tmp_path: Path) -> None:
+    work = _repos(repos_template, tmp_path, {"src/pr_a.py": "x = 1\n"})
     first = _fingerprint(work)
     assert first is not None and first.startswith(f"{FINGERPRINT_VERSION}:") and len(first) == 44
     assert _fingerprint(work) == first
     assert approval_fingerprint_of(str(work), _git(work, "rev-parse", "HEAD"), "main") == first
 
 
-def test_excluded_paths_do_not_change_the_fingerprint(tmp_path: Path) -> None:
-    work = _repos(tmp_path, {"src/pr_a.py": "x = 1\n"})
+def test_excluded_paths_do_not_change_the_fingerprint(repos_template: Path, tmp_path: Path) -> None:
+    work = _repos(repos_template, tmp_path, {"src/pr_a.py": "x = 1\n"})
     before = _fingerprint(work)
     _commit(
         work,
@@ -110,30 +127,23 @@ def test_excluded_paths_do_not_change_the_fingerprint(tmp_path: Path) -> None:
     assert _fingerprint(work) == before
 
 
-def test_code_edit_changes_the_fingerprint(tmp_path: Path) -> None:
-    work = _repos(tmp_path, {"src/pr_a.py": "x = 1\n"})
-    before = _fingerprint(work)
-    _commit(work, {"src/pr_a.py": "x = 2\n"}, "edit")
-    assert _fingerprint(work) != before
-
-
-def test_non_calibration_plan_edit_changes_the_fingerprint(tmp_path: Path) -> None:
-    work = _repos(tmp_path, {"src/pr_a.py": "x = 1\n"})
+def test_non_calibration_plan_edit_changes_the_fingerprint(repos_template: Path, tmp_path: Path) -> None:
+    work = _repos(repos_template, tmp_path, {"src/pr_a.py": "x = 1\n"})
     before = _fingerprint(work)
     _commit(work, {"plans/I-1-x/P-2-y.md": "# plan\n"}, "plan")
     assert _fingerprint(work) != before
 
 
-def test_mode_only_change_changes_the_fingerprint(tmp_path: Path) -> None:
-    work = _repos(tmp_path, {"scripts/run.sh": "echo hi\n"})
+def test_mode_only_change_changes_the_fingerprint(repos_template: Path, tmp_path: Path) -> None:
+    work = _repos(repos_template, tmp_path, {"scripts/run.sh": "echo hi\n"})
     before = _fingerprint(work)
     _git(work, "update-index", "--chmod=+x", "scripts/run.sh")
     _git(work, "commit", "-q", "-m", "chmod")
     assert _fingerprint(work) != before
 
 
-def test_binary_change_changes_the_fingerprint(tmp_path: Path) -> None:
-    work = _repos(tmp_path, {"src/pr_a.py": "x = 1\n"})
+def test_binary_change_changes_the_fingerprint(repos_template: Path, tmp_path: Path) -> None:
+    work = _repos(repos_template, tmp_path, {"src/pr_a.py": "x = 1\n"})
     (work / "assets").mkdir()
     (work / "assets/blob.bin").write_bytes(b"\x00\x01binary")
     _git(work, "add", "-A")
@@ -144,13 +154,13 @@ def test_binary_change_changes_the_fingerprint(tmp_path: Path) -> None:
     assert before is not None and _fingerprint(work) != before
 
 
-def test_empty_pr_change_has_no_fingerprint(tmp_path: Path) -> None:
-    work = _repos(tmp_path, {})
+def test_empty_pr_change_has_no_fingerprint(repos_template: Path, tmp_path: Path) -> None:
+    work = _repos(repos_template, tmp_path, {})
     assert _fingerprint(work) is None
 
 
-def test_unknown_refs_have_no_fingerprint(tmp_path: Path) -> None:
-    work = _repos(tmp_path, {"src/pr_a.py": "x = 1\n"})
+def test_unknown_refs_have_no_fingerprint(repos_template: Path, tmp_path: Path) -> None:
+    work = _repos(repos_template, tmp_path, {"src/pr_a.py": "x = 1\n"})
     assert pr_change_fingerprint(str(work), "HEAD", "refs/remotes/origin/missing") is None
     assert pr_change_fingerprint(str(work), "0" * 40, TARGET) is None
     assert approval_fingerprint_of(str(work), "HEAD", "main") is None
@@ -159,8 +169,8 @@ def test_unknown_refs_have_no_fingerprint(tmp_path: Path) -> None:
     assert approval_fingerprint_of(str(tmp_path / "no-repo"), "abc", "main") is None
 
 
-def test_hand_resolved_code_conflict_changes_the_fingerprint(tmp_path: Path) -> None:
-    work = _repos(tmp_path, {"src/pr_a.py": "x = 1\n"})
+def test_hand_resolved_code_conflict_changes_the_fingerprint(repos_template: Path, tmp_path: Path) -> None:
+    work = _repos(repos_template, tmp_path, {"src/pr_a.py": "x = 1\n"})
     before = _fingerprint(work)
     _advance_main(work, {"src/pr_a.py": "x = 3\n"}, "clash")
     outcome = _merge_target_ledger_only(str(work), TARGET, "Merge main (clash)")
@@ -168,14 +178,6 @@ def test_hand_resolved_code_conflict_changes_the_fingerprint(tmp_path: Path) -> 
     _git(work, "merge", "--no-ff", "-X", "theirs", TARGET, "-m", "hand merge")
     _commit(work, {"src/pr_a.py": "x = 1\nx = 3\n"}, "hand resolution")
     assert _fingerprint(work) != before
-
-
-def test_clean_merge_of_disjoint_main_keeps_the_fingerprint(tmp_path: Path) -> None:
-    work = _repos(tmp_path, {"src/pr_a.py": "x = 1\n"})
-    before = _fingerprint(work)
-    _advance_main(work, {"src/main_a.py": "y = 1\n"}, "one")
-    _merge_main(work, "one")
-    assert _fingerprint(work) == before
 
 
 def test_none_never_matches() -> None:
@@ -190,9 +192,11 @@ PR_CHANGES = st.dictionaries(st.sampled_from(PR_PATHS), CONTENT, min_size=1)
 MAIN_MOVES = st.lists(st.dictionaries(st.sampled_from(MAIN_PATHS), CONTENT), min_size=0, max_size=3)
 
 
-def _merged_repos(root: Path, pr_files: dict[str, str], main_moves: list[dict[str, str]]) -> tuple[Path, str | None]:
+def _merged_repos(
+    template: Path, root: Path, pr_files: dict[str, str], main_moves: list[dict[str, str]]
+) -> tuple[Path, str | None]:
     """The clone after ``len(main_moves)`` merges of a moving main, and the fingerprint before the first merge."""
-    work = _repos(root, pr_files)
+    work = _repos(template, root, pr_files)
     before = _fingerprint(work)
     for index, files in enumerate(main_moves):
         _advance_main(work, files, str(index))
@@ -201,24 +205,43 @@ def _merged_repos(root: Path, pr_files: dict[str, str], main_moves: list[dict[st
     return work, before
 
 
+class _ChosenDraws:
+    """Stands in for ``st.data()`` in an explicit example: ``draw`` returns the value chosen for its label."""
+
+    def __init__(self, path: str, content: str) -> None:
+        self._chosen = {"edited PR path": path, "new content": content}
+
+    def draw(self, _strategy: st.SearchStrategy[str], label: str) -> str:
+        return self._chosen[label]
+
+    def __repr__(self) -> str:
+        return f"_ChosenDraws({self._chosen})"
+
+
+# The boundaries of the property, as explicit examples: (PR change, main moves, edited PR path, new content).
+ONE_PR_FILE = {"src/pr_a.py": "x = 1\n"}
+NO_MAIN_MOVE = (ONE_PR_FILE, [], "src/pr_a.py", "x = 2\n")
+THREE_MAIN_MOVES = (ONE_PR_FILE, [{path: "y = 1\n"} for path in MAIN_PATHS], "docs/pr_d.md", "new file\n")
+ALL_PR_PATHS = ({path: f"{path}\n" for path in PR_PATHS}, [{"src/main_a.py": "y = 1\n"}], "src/pkg/pr_c.py", "c\n")
+EMPTY_MAIN_MOVE = (ONE_PR_FILE, [{}], "src/pr_b.py", "z = 1\n")
+SINGLE_NEWLINE = ({"src/pr_a.py": "\n"}, [{"src/main_a.py": "\n"}], "src/pr_a.py", "\n\n")
+
+
 @PROPERTY_SETTINGS
-@given(pr_files=PR_CHANGES, main_moves=MAIN_MOVES)
-def test_property_fingerprint_survives_merges_of_a_disjoint_moving_main(
-    pr_files: dict[str, str], main_moves: list[dict[str, str]]
+@example(pr_files=NO_MAIN_MOVE[0], main_moves=NO_MAIN_MOVE[1], data=_ChosenDraws(*NO_MAIN_MOVE[2:]))
+@example(pr_files=THREE_MAIN_MOVES[0], main_moves=THREE_MAIN_MOVES[1], data=_ChosenDraws(*THREE_MAIN_MOVES[2:]))
+@example(pr_files=ALL_PR_PATHS[0], main_moves=ALL_PR_PATHS[1], data=_ChosenDraws(*ALL_PR_PATHS[2:]))
+@example(pr_files=EMPTY_MAIN_MOVE[0], main_moves=EMPTY_MAIN_MOVE[1], data=_ChosenDraws(*EMPTY_MAIN_MOVE[2:]))
+@example(pr_files=SINGLE_NEWLINE[0], main_moves=SINGLE_NEWLINE[1], data=_ChosenDraws(*SINGLE_NEWLINE[2:]))
+@given(pr_files=PR_CHANGES, main_moves=MAIN_MOVES, data=st.data())
+def test_property_fingerprint_survives_merges_of_a_disjoint_moving_main_and_changes_when_a_pr_file_changes(
+    repos_template: Path, pr_files: dict[str, str], main_moves: list[dict[str, str]], data: st.DataObject
 ) -> None:
     with tempfile.TemporaryDirectory(prefix="holon-fingerprint-") as root:
-        work, before = _merged_repos(Path(root), pr_files, main_moves)
+        # The first half of the property is asserted in here, after every merge.
+        work, before = _merged_repos(repos_template, Path(root), pr_files, main_moves)
         assert before is not None
         assert _fingerprint(work) == before
-
-
-@PROPERTY_SETTINGS
-@given(pr_files=PR_CHANGES, main_moves=MAIN_MOVES, data=st.data())
-def test_property_fingerprint_changes_when_a_pr_file_changes(
-    pr_files: dict[str, str], main_moves: list[dict[str, str]], data: st.DataObject
-) -> None:
-    with tempfile.TemporaryDirectory(prefix="holon-fingerprint-") as root:
-        work, before = _merged_repos(Path(root), pr_files, main_moves)
         path = data.draw(st.sampled_from(PR_PATHS), label="edited PR path")
         old = (work / path).read_text(encoding="utf-8") if (work / path).exists() else ""
         new = data.draw(CONTENT.filter(lambda text: text != old), label="new content")

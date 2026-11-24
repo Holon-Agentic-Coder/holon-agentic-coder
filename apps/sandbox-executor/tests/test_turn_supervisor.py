@@ -236,6 +236,7 @@ class TestRunTurn(unittest.TestCase):
             sleeper=h.sleeper,
             popen_factory=h.popen,
             tool_sampler=h.tool_sampler,
+            child_lister=h.child_lister,
             killpg=h.killpg,
             getpgid=h.getpgid,
         )
@@ -309,6 +310,7 @@ class TestRunTurn(unittest.TestCase):
             sleeper=h.sleeper,
             popen_factory=h.popen,
             tool_sampler=h.tool_sampler,
+            child_lister=h.child_lister,
             killpg=h.killpg,
             getpgid=h.getpgid,
         )
@@ -359,10 +361,16 @@ class TestRunTurn(unittest.TestCase):
                 stream.feed(b"tok ")
             elif now <= 210:
                 h.tool_cpu[5001] = h.tool_cpu.get(5001, 0.0) + 1.0
+            elif now >= 300:
+                # The runner exits now and its pipe closes with it. Left open, the pipe would make this a lingering
+                # pipe holder case, which has its own tests below and costs a real READER_JOIN_TIMEOUT_SECONDS.
+                stream.close()
 
         h.on_tick = tick
         result = h.run(turn=300, stall=90, watch_path=os.path.join(tmp.name, "notes.md"))
         self.assertIsNone(result.breach)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(h.signals, [])
 
     def test_idle_runner_with_idle_descendants_still_breaches_the_turn_budget(self):
         # A long-lived helper that only wakes up occasionally (below the CPU threshold) is not tool progress.
@@ -506,6 +514,7 @@ class TestRunTurn(unittest.TestCase):
                 sleeper=h.sleeper,
                 popen_factory=h.popen,
                 tool_sampler=h.tool_sampler,
+                child_lister=h.child_lister,
                 killpg=killpg,
                 getpgid=h.getpgid,
             )
@@ -536,6 +545,7 @@ class TestRunTurn(unittest.TestCase):
                 sleeper=h.sleeper,
                 popen_factory=h.popen,
                 tool_sampler=h.tool_sampler,
+                child_lister=h.child_lister,
                 killpg=killpg,
                 getpgid=h.getpgid,
             )
@@ -555,6 +565,7 @@ class TestRunTurn(unittest.TestCase):
                 sleeper=h.sleeper,
                 popen_factory=h.popen,
                 tool_sampler=h.tool_sampler,
+                child_lister=h.child_lister,
                 killpg=lambda pgid, sig: signals.append((pgid, sig)),
                 getpgid=h.getpgid,
             )
@@ -574,6 +585,7 @@ class TestRunTurn(unittest.TestCase):
                 sleeper=h.sleeper,
                 popen_factory=h.popen,
                 tool_sampler=h.tool_sampler,
+                child_lister=h.child_lister,
                 killpg=lambda pgid, sig: signals.append((pgid, sig)),
                 getpgid=lambda pid: CHILD_PID,
             )

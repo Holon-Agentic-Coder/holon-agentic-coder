@@ -312,6 +312,8 @@ class TestStage2AdoptionWiring:
         ctx.intent_data["replan_feedback"] = "re-plan requested"
         ctx.plan_branch = None
         assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+        # A re-plan request dispatches the planner although a complete plan branch already exists.
+        assert second_agents.roles() == ["planner"]
         second_branch = ctx.plan_branch
         assert second_branch is not None and second_branch != first_branch
 

@@ -84,16 +84,32 @@ def _merge_base(worktree: str, head_sha: str, target_sha: str) -> str:
     return (res.stdout or "").strip() if res.returncode == 0 and isinstance(res.stdout, str) else ""
 
 
+def _rev_parse_pair(worktree: str, first_ref: str, second_ref: str) -> tuple[str, str]:
+    res = run_git(
+        ["rev-parse", "--quiet", f"{first_ref}^{{commit}}", f"{second_ref}^{{commit}}"], cwd=worktree, check=False
+    )
+    lines = (res.stdout or "").splitlines() if res.returncode == 0 and isinstance(res.stdout, str) else []
+    if len(lines) == 2 and lines[0] and lines[1]:
+        return lines[0], lines[1]
+    return _rev_parse(worktree, first_ref), _rev_parse(worktree, second_ref)
+
+
 def probe_target(
-    worktree: str, target_branch: str, last_probe: TargetProbe | None = None, *, fetch: bool = True
+    worktree: str,
+    target_branch: str,
+    last_probe: TargetProbe | None = None,
+    *,
+    fetch: bool = True,
+    head_ref: str = "HEAD",
 ) -> TargetProbe:
-    """Probe ``HEAD`` of ``worktree`` against ``origin/<target_branch>``, reusing ``last_probe`` when nothing moved.
+    """Probe ``head_ref`` of ``worktree`` against ``origin/<target_branch>``, reusing ``last_probe`` when unchanged.
 
     Args:
         worktree: The flow worktree.
         target_branch: The branch the flow merges into.
         last_probe: The caller's cached probe; returned with ``cached=True`` when both SHAs are unchanged.
         fetch: Fetch the target first (False inside role containers, which never reach the remote).
+        head_ref: Revision to compare against ``origin/<target_branch>`` (defaults to ``HEAD``).
 
     Raises:
         TargetProbeError: When the fetch, a ``rev-parse`` or ``merge-tree`` fails.
@@ -104,8 +120,7 @@ def probe_target(
         except HostRemoteError as exc:
             raise TargetProbeError(str(exc)) from exc
     target_ref = f"origin/{target_branch}"
-    target_sha = _rev_parse(worktree, target_ref)
-    head_sha = _rev_parse(worktree, "HEAD")
+    target_sha, head_sha = _rev_parse_pair(worktree, target_ref, head_ref)
     if last_probe is not None and (last_probe.head_sha, last_probe.target_sha) == (head_sha, target_sha):
         return replace(last_probe, cached=True)
     if _is_ancestor(worktree, target_sha, head_sha):

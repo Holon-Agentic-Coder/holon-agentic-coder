@@ -12,7 +12,7 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.git_refs import _resolve_branch_ref, _track_local_branch
 from sandbox_executor.flow.target_probe import TargetProbeError
-from sandbox_executor.flow.target_sync import sync_with_target
+from sandbox_executor.flow.target_sync import _preflight_sync, sync_with_target
 from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest, SyncResult
 from sandbox_executor.git import run_git
 
@@ -69,10 +69,10 @@ def _can_sync_worktree(worktree: str, target_branch: str) -> bool:
     return bool(res and res.returncode == 0 and isinstance(res.stdout, str) and res.stdout.strip())
 
 
-def _checkout_active_branch(context: FlowContext, branch: str) -> tuple[str, bool, str | None]:
+def _checkout_active_branch(context: FlowContext, branch: str, ref: str | None = None) -> tuple[str, bool, str | None]:
     """Check out ``branch`` at its latest ref in ``context.target_worktree``; return ``(prev, detached, error)``."""
     worktree = context.target_worktree
-    ref = _resolve_branch_ref(worktree, branch, prefer_remote=True)
+    ref = ref or _resolve_branch_ref(worktree, branch, prefer_remote=True)
     if ref is None:
         return "", False, None
     current = _checked_out_branch(worktree)
@@ -105,10 +105,11 @@ def _blocked_stage_failure(
         f"{stage.value.capitalize()} stage failed at {boundary.value}: target sync of '{branch}' with "
         f"'origin/{base_branch_name(context)}' was blocked{where}: {detail}"
     )
+    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     return _stage_failure(
         context,
         stage,
-        datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        ts,
         msg,
         sync_boundary=boundary.value,
         conflicted_paths=list(result.conflicted_paths or result.code_paths),
@@ -133,32 +134,29 @@ def _run_boundary_sync(
     branch = active_flow_branch(context, stage)
     if context.dry_run or not branch or not _can_sync_worktree(worktree, target_branch):
         return SyncResult("unchanged", "", "", ""), None
-    if _resolve_branch_ref(worktree, branch, prefer_remote=True) is None:
+    if (branch_ref := _resolve_branch_ref(worktree, branch, prefer_remote=True)) is None:
         return SyncResult("unchanged", "", "", ""), None
-    prev, detached, checkout_err = _checkout_active_branch(context, branch)
-    if checkout_err is not None:
-        blocked = SyncResult("blocked", "", "", "", error=checkout_err)
-        return blocked, _blocked_stage_failure(context, stage, boundary, branch, blocked)
-    request = SyncRequest(
-        worktree=worktree,
-        branch=branch,
-        target_branch=target_branch,
-        stage=stage.value,
-        boundary=boundary,
-        ledger_path=os.path.join(worktree, _LEDGER_REL),
-        execution_id=_execution_id_of(branch, stage, boundary),
-        last_probe=getattr(context, _PROBE_ATTR, None),
-        code_resolver=conflict_code_resolver(context),
-    )
+    last = getattr(context, _PROBE_ATTR, None)
     try:
-        result = sync_with_target(request)
+        probe, early = _preflight_sync(worktree, target_branch, boundary, last, head_ref=branch_ref)
     except TargetProbeError as exc:
         blocked = SyncResult("blocked", "", "", "", error=str(exc))
         return blocked, _blocked_stage_failure(context, stage, boundary, branch, blocked)
+    setattr(context, _PROBE_ATTR, probe)
+    if early is not None:
+        return early, None
+    prev, detached, checkout_err = _checkout_active_branch(context, branch, branch_ref)
+    if checkout_err is not None:
+        blocked = SyncResult("blocked", "", "", "", error=checkout_err)
+        return blocked, _blocked_stage_failure(context, stage, boundary, branch, blocked)
+    ledger, exec_id = os.path.join(worktree, _LEDGER_REL), _execution_id_of(branch, stage, boundary)
+    req = SyncRequest(
+        worktree, branch, target_branch, stage.value, boundary, ledger, exec_id, probe, conflict_code_resolver(context)
+    )
+    try:
+        result = sync_with_target(req, probe=probe)
     finally:
         _restore_checked_out_branch(worktree, prev, detached, branch)
-    if result.probe is not None:
-        setattr(context, _PROBE_ATTR, result.probe)
     if result.status == "merged":
         _after_boundary_merge(context, stage, branch, result)
     failure = _blocked_stage_failure(context, stage, boundary, branch, result) if result.status == "blocked" else None

@@ -36,8 +36,9 @@ class EndOfFlowSyncResult:
     blocked: bool = False
     skipped: bool = False
 
-    def failure_result(self, prev: StageResult | None) -> StageResult:
-        """Build the failed Stage 5 result recording end-of-flow sync diagnostics while preserving ``prev``."""
+    def failure_result(self, context: FlowContext) -> StageResult:
+        """Build the failed Stage 5 result with end-of-flow sync diagnostics while preserving existing payload."""
+        prev = context.stage_results.get(FlowStage.CALIBRATE.value)
         diag = {
             "rounds": self.rounds,
             "mergeable": self.mergeable,
@@ -86,10 +87,7 @@ def _probe_mergeability(context: FlowContext, branch: str, target_branch: str, s
         if mergeable != "UNKNOWN" or state == "MISSING_REF":
             return verdict
         if attempt < MAX_UNKNOWN_MERGEABILITY_PROBES:
-            context.log(
-                f"End-of-flow sync: PR mergeability is UNKNOWN "
-                f"(probe {attempt} of {MAX_UNKNOWN_MERGEABILITY_PROBES}); re-probing."
-            )
+            context.log(f"End-of-flow sync: mergeability UNKNOWN ({attempt}/{MAX_UNKNOWN_MERGEABILITY_PROBES}).")
             seams.sleep(2 * attempt)
     return verdict
 
@@ -187,10 +185,7 @@ def finish_flow(
             reason = f"PR still conflicting ({mergeable}/{state}) after {MAX_END_OF_FLOW_REENTRIES} end-of-flow rounds"
             return _blocked_result(rounds, mergeable, state, reason)
         rounds += 1
-        context.log(
-            f"End-of-flow sync (round {rounds} of {MAX_END_OF_FLOW_REENTRIES}): "
-            f"PR is {mergeable}/{state}; syncing '{branch}' with '{target_branch}'."
-        )
+        context.log(f"End-of-flow sync round {rounds}/{MAX_END_OF_FLOW_REENTRIES}: {mergeable}/{state} on '{branch}'.")
         sync_result = _run_flow_end_sync(context, branch, target_branch, rounds, active_seams)
         if sync_result.status == "blocked":
             return _blocked_result(rounds, mergeable, state, format_conflict_block_reason(sync_result, target_branch))

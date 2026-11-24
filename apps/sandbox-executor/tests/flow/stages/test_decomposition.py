@@ -532,6 +532,7 @@ class TestEntropyBudgetHandoffInFlow:
             review_iterations_done=3,
             admission={"state": "admitted"},
             carried_review_findings=[{"id": "R1-F1", "severity": "nit", "summary": "A parent nit."}],
+            review_scope_paths=["src/parent.py"],
             merged_head_restart_allowed=False,
             **parent_values,
         )
@@ -552,6 +553,7 @@ class TestEntropyBudgetHandoffInFlow:
             "review_iterations_done": 0,  # A child intent runs its own Stage 4, so its review count starts afresh.
             "admission": None,  # A child intent runs its own Stage 3 admission.
             "carried_review_findings": [],  # The parent's open findings belong to the parent's review.
+            "review_scope_paths": [],  # A child intent starts with a full-diff Stage 4 review scope.
             "checkpoint_path": None,  # A child intent checkpoints at its own default path.
             "merged_head_restart_allowed": True,  # A child intent's Stage 5 has its own restart budget.
         }

@@ -6,6 +6,7 @@ It imports nothing, so loading it never pulls in a flow submodule.
 from __future__ import annotations
 
 SYNC_LAZY_EXPORTS: dict[str, str] = {
+    "sandbox_executor.flow.calibrate_target_sync": "make_calibrate_retry_sync sync_before_calibration",
     "sandbox_executor.flow.conflict_classes": (
         "ConflictClass ConflictSides classify_merge_conflicts classify_path classify_sides read_sides unmerged_stages"
     ),

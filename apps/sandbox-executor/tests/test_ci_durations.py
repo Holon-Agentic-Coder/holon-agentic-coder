@@ -412,8 +412,8 @@ def test_ceilings_are_read_from_the_committed_workflows() -> None:
         ("make.yml", "build"): 300,
         ("test-hygiene.yml", "hygiene"): 300,
         ("test-integration.yml", "integration"): 300,
-        ("test-stress.yml", "workspace-survival"): 600,
-        ("test-stress.yml", "Workspace survival"): 600,
+        ("test-stress.yml", "workspace-survival"): 900,
+        ("test-stress.yml", "Workspace survival"): 900,
         ("test-unit.yml", "unit"): 600,
         ("ci-durations.yml", "report"): 600,
     }
@@ -423,7 +423,7 @@ def test_ceilings_are_read_from_the_committed_workflows() -> None:
         ceiling_for(
             point(1, 1.0, job="Workspace survival (ubuntu-latest)", workflow_path="x/test-stress.yml"), ceilings
         )
-        == 600
+        == 900
     )
     assert ceiling_for(point(1, 1.0, job="lint"), ceilings) is None
 

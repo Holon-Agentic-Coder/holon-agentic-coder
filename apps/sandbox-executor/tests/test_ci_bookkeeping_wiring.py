@@ -13,12 +13,13 @@ from pathlib import Path
 import pytest
 
 from scripts.ci_bookkeeping_chain import FULL_RUN_STEP
-from scripts.ci_bookkeeping_gate import RESULT_AFFECTING_LABELS
+from scripts.ci_bookkeeping_gate import BOOKKEEPING_ROOTS, RESULT_AFFECTING_LABELS, RUN_RULES, SKIP_RULES
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 ACTION_PATH = "./.github/actions/bookkeeping-gate"
 ACTION_FILE = REPO_ROOT / ".github" / "actions" / "bookkeeping-gate" / "action.yml"
+README = WORKFLOWS / "README.md"
 
 GATE_STEP = "Bookkeeping gate"
 GUARD = "steps.bookkeeping.outputs.skip != 'true'"
@@ -260,3 +261,18 @@ def test_action_calls_the_gate_module_and_falls_back_to_a_full_run() -> None:
     assert 'echo "skip=false" >> "${GITHUB_OUTPUT}"' in script
     assert "skip=true" not in text
     assert "${{" not in script, "inputs reach the script through env, never as pasted text"
+
+
+def test_readme_documents_the_gate_the_roots_and_every_rule_it_prints() -> None:
+    text = README.read_text(encoding="utf-8")
+    section = text.partition("\n## Bookkeeping-Only Push Gate\n")[2].partition("\n## ")[0]
+
+    assert section, "the README has the section about the gate"
+    assert text.index("## Bookkeeping-Only Push Gate") < text.index("## CI Timing Regression Gate")
+    for root in BOOKKEEPING_ROOTS:
+        assert f"`{root}/`" in section
+    assert "`.github/actions/bookkeeping-gate`" in section
+    assert f"`{FULL_RUN_STEP}`" in section
+    assert "### Forcing a full run" in section
+    assert set(re.findall(r"^- `([a-z-]+)`: ", section, flags=re.MULTILINE)) == set(RUN_RULES + SKIP_RULES)
+    assert "- `.github/actions/bookkeeping-gate/action.yml`: " in text.partition("\n## Composite Actions\n")[2]

@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
-from sandbox_executor.flow import FlowContext, git_refs
+from sandbox_executor.flow import FlowContext, git_refs, ledger_worktree
 from sandbox_executor.git import run_git as real_run_git
+from sandbox_executor.ledger import LedgerRewriteError
 
 from tests.flow.helpers import _git, _ledger_rows
 
@@ -21,6 +26,18 @@ LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
 EARLIER_ROW: dict[str, Any] = {"entry_type": "summary", "execution_id": "E-3-z", "plan_branch": "I-1-x/P-2-y/_"}
 NEW_ROW: dict[str, Any] = {**EARLIER_ROW, "status": "success", "ledger_revision": 2}
 MESSAGE = "execute: record success row for E-3-z"
+SOURCE_ROOT = Path(git_refs.__file__).resolve().parents[2]
+
+# What a ledger step does up to the moment it is killed: enter the worktree, report its path, die without cleanup.
+KILLED_STEP = """
+import os, signal, sys
+from sandbox_executor.flow.ledger_worktree import _ledger_worktree
+from sandbox_executor.git import run_git
+
+with _ledger_worktree(sys.argv[1], sys.argv[2], run_git) as worktree:
+    print(worktree, flush=True)
+    os.kill(os.getpid(), signal.SIGKILL)
+"""
 
 
 @dataclass(frozen=True)
@@ -59,13 +76,20 @@ def ledger_repos(flow_repos, tmp_path, monkeypatch) -> LedgerRepos:
 
 
 class RecordingGit:
-    """Stands in for ``git_refs.run_git``: records each call's arguments and options, then runs the real command."""
+    """Stands in for ``git_refs.run_git``: records each call's arguments and options, then runs the real command.
 
-    def __init__(self) -> None:
+    ``failures`` maps the leading arguments of a command to the error raised in place of running it.
+    """
+
+    def __init__(self, failures: dict[tuple[str, ...], Exception] | None = None) -> None:
         self.calls: list[tuple[list[str], dict[str, Any]]] = []
+        self.failures = failures or {}
 
     def __call__(self, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         self.calls.append((list(args), dict(kwargs)))
+        for leading, error in self.failures.items():
+            if tuple(args[: len(leading)]) == leading:
+                raise error
         return real_run_git(args, **kwargs)
 
 
@@ -83,6 +107,23 @@ def _ledger_worktrees(repo: Path) -> list[str]:
 def _ledger_temp_entries(temp_dir: Path) -> list[Path]:
     """The ``holon-flow-ledger-*`` entries in the test's temp directory."""
     return sorted(temp_dir.glob("holon-flow-ledger-*"))
+
+
+def _plant_leftover(repos: LedgerRepos, name: str, owner_lock: bool = False, keep_directory: bool = True) -> Path:
+    """Register a ledger worktree the way a killed step leaves it; returns its ``holon-flow-ledger-*`` directory."""
+    tmp_root = repos.temp_dir / f"holon-flow-ledger-{name}"
+    tmp_root.mkdir()
+    _git(repos.host, "worktree", "add", "--detach", str(tmp_root / "worktree"), f"refs/remotes/origin/{BRANCH}")
+    if owner_lock:
+        (tmp_root / "owner.lock").touch()
+    if not keep_directory:
+        shutil.rmtree(tmp_root)
+    return tmp_root
+
+
+def _registered_path(tmp_root: Path) -> str:
+    """The path git reports for the worktree in ``tmp_root`` (git resolves symlinks in what it registers)."""
+    return os.path.join(os.path.realpath(tmp_root), "worktree")
 
 
 def _show(repo: Path, spec: str) -> str:
@@ -148,3 +189,156 @@ def test_a_successful_ledger_step_runs_the_same_git_commands_in_its_worktree(led
         (["rev-parse", "HEAD"], {"cwd": worktree}),
         (["push", "origin", f"HEAD:refs/heads/{BRANCH}"], {"cwd": worktree, "timeout": 300}),
     ]
+
+
+def test_a_ledger_step_that_raises_midway_removes_its_worktree_before_the_error_propagates(ledger_repos, monkeypatch):
+    previous_tip = ledger_repos.origin_tip()
+    registered_while_running: list[str] = []
+
+    def rejecting_validator(_ledger_path: str, **_keys: str) -> None:
+        registered_while_running.extend(_ledger_worktrees(ledger_repos.host))
+        raise LedgerRewriteError("an earlier row was rewritten")
+
+    monkeypatch.setattr("sandbox_executor.flow.git_refs.validate_ledger_file_unique_ids", rejecting_validator)
+
+    with pytest.raises(LedgerRewriteError, match="an earlier row was rewritten"):
+        ledger_repos.append()
+
+    # The worktree was there when the step raised, so its absence now is the removal on the way out.
+    assert len(registered_while_running) == 1
+    assert _ledger_worktrees(ledger_repos.host) == []
+    assert _ledger_temp_entries(ledger_repos.temp_dir) == []
+    assert ledger_repos.origin_tip() == previous_tip
+
+
+def test_a_ledger_step_that_returns_an_error_leaves_no_worktree_and_no_temp_directory(ledger_repos, monkeypatch):
+    previous_tip = ledger_repos.origin_tip()
+    git = RecordingGit({("push",): RuntimeError("the remote refused the push")})
+    monkeypatch.setattr("sandbox_executor.flow.git_refs.run_git", git)
+
+    assert ledger_repos.append() == "the remote refused the push"
+
+    assert _ledger_worktrees(ledger_repos.host) == []
+    assert _ledger_temp_entries(ledger_repos.temp_dir) == []
+    assert ledger_repos.origin_tip() == previous_tip
+
+
+def test_a_failed_worktree_removal_neither_fails_the_pushed_row_nor_leaves_a_registration(ledger_repos, monkeypatch):
+    git = RecordingGit({("worktree", "remove"): TimeoutError("git worktree remove timed out")})
+    monkeypatch.setattr("sandbox_executor.flow.git_refs.run_git", git)
+
+    assert ledger_repos.append() is None
+
+    assert _ledger_rows(ledger_repos.origin, ledger_repos.origin_tip(), "executions.jsonl")[-1] == NEW_ROW
+    # The removal never ran: only deleting the directory first and pruning afterwards clears the registration.
+    assert _ledger_worktrees(ledger_repos.host) == []
+    assert _ledger_temp_entries(ledger_repos.temp_dir) == []
+
+
+@pytest.mark.parametrize("owner_lock", [False, True], ids=["without-a-lock-file", "with-an-unheld-owner-lock"])
+def test_the_next_step_removes_the_worktree_a_killed_step_left_with_its_directory(ledger_repos, owner_lock):
+    leftover = _plant_leftover(ledger_repos, "killed", owner_lock=owner_lock)
+    assert _ledger_worktrees(ledger_repos.host) == [_registered_path(leftover)]
+
+    assert ledger_repos.append() is None
+
+    assert _ledger_worktrees(ledger_repos.host) == []
+    assert not leftover.exists()
+    assert _ledger_temp_entries(ledger_repos.temp_dir) == []
+
+
+def test_the_next_step_unregisters_the_worktree_a_killed_step_left_without_its_directory(ledger_repos):
+    leftover = _plant_leftover(ledger_repos, "killed", keep_directory=False)
+    assert _ledger_worktrees(ledger_repos.host) == [_registered_path(leftover)]
+
+    assert ledger_repos.append() is None
+
+    assert _ledger_worktrees(ledger_repos.host) == []
+
+
+def test_the_next_step_removes_the_worktree_of_a_step_whose_process_was_killed(ledger_repos):
+    environment = {**os.environ, "TMPDIR": str(ledger_repos.temp_dir), "PYTHONPATH": str(SOURCE_ROOT)}
+    killed = subprocess.run(
+        [sys.executable, "-c", KILLED_STEP, str(ledger_repos.host), f"refs/remotes/origin/{BRANCH}"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert killed.returncode == -signal.SIGKILL, killed.stderr
+    leftover = Path(killed.stdout.strip()).parent
+    assert leftover.parent == ledger_repos.temp_dir
+    # The kill skipped the cleanup: the registration, the directory and the (now unheld) owner lock are all there.
+    assert _ledger_worktrees(ledger_repos.host) == [_registered_path(leftover)]
+    assert (leftover / "owner.lock").exists()
+
+    assert ledger_repos.append() is None
+
+    assert _ledger_worktrees(ledger_repos.host) == []
+    assert _ledger_temp_entries(ledger_repos.temp_dir) == []
+
+
+def test_a_worktree_whose_owner_is_alive_is_left_alone_until_the_owner_lets_go(ledger_repos):
+    leftover = _plant_leftover(ledger_repos, "live", owner_lock=True)
+    owner = os.open(leftover / "owner.lock", os.O_RDWR)
+    try:
+        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        assert ledger_repos.append() is None
+
+        assert _ledger_worktrees(ledger_repos.host) == [_registered_path(leftover)]
+        assert (leftover / "worktree" / LEDGER_REL).exists()
+    finally:
+        os.close(owner)
+
+    assert ledger_repos.append({**NEW_ROW, "ledger_revision": 3}) is None
+
+    assert _ledger_worktrees(ledger_repos.host) == []
+    assert not leftover.exists()
+
+
+def test_worktrees_that_are_not_stale_ledger_worktrees_survive_the_sweep(ledger_repos, tmp_path):
+    host = ledger_repos.host
+    operator = tmp_path / "operator" / "worktree"
+    _git(host, "worktree", "add", "--detach", str(operator), "main")
+    locked = _plant_leftover(ledger_repos, "locked")
+    _git(host, "worktree", "lock", str(locked / "worktree"))
+    on_a_branch = ledger_repos.temp_dir / "holon-flow-ledger-branch" / "worktree"
+    _git(host, "worktree", "add", "-b", "kept-branch", str(on_a_branch), "main")
+    kept = sorted([os.path.realpath(operator), _registered_path(locked), os.path.realpath(on_a_branch)])
+    assert sorted(_registered_worktrees(host)[1:]) == kept
+
+    assert ledger_repos.append() is None
+
+    assert sorted(_registered_worktrees(host)[1:]) == kept
+    assert all(os.path.exists(os.path.join(path, ".git")) for path in kept)
+
+
+def test_a_sweep_that_cannot_list_worktrees_does_not_fail_the_ledger_step(ledger_repos, monkeypatch):
+    git = RecordingGit({("worktree", "list"): TimeoutError("git worktree list timed out")})
+    monkeypatch.setattr("sandbox_executor.flow.git_refs.run_git", git)
+
+    assert ledger_repos.append() is None
+
+    assert _ledger_rows(ledger_repos.origin, ledger_repos.origin_tip(), "executions.jsonl")[-1] == NEW_ROW
+    assert _ledger_worktrees(ledger_repos.host) == []
+    assert _ledger_temp_entries(ledger_repos.temp_dir) == []
+
+
+def test_discarding_a_worktree_deletes_only_a_real_ledger_temp_directory(ledger_repos, tmp_path):
+    host = ledger_repos.host
+    elsewhere = tmp_path / "elsewhere"
+    _git(host, "worktree", "add", "--detach", str(elsewhere / "worktree"), "main")
+    real_root = tmp_path / "real-root"
+    linked = ledger_repos.temp_dir / "holon-flow-ledger-linked"
+    _git(host, "worktree", "add", "--detach", str(real_root / "worktree"), "main")
+    linked.symlink_to(real_root, target_is_directory=True)
+
+    ledger_worktree._discard_worktree(str(host), str(elsewhere / "worktree"), real_run_git)
+    ledger_worktree._discard_worktree(str(host), str(linked / "worktree"), real_run_git)
+
+    # Both are unregistered, but neither parent is a ``holon-flow-ledger-*`` directory of its own: they stay on disk.
+    assert _registered_worktrees(host) == [os.path.realpath(host)]
+    assert elsewhere.is_dir()
+    assert real_root.is_dir() and linked.is_symlink()

@@ -1,13 +1,3 @@
-"""Fail-closed resolution of Stage 4 review targets.
-
-A review target is an execution branch, a plain branch, a PR number or a GitHub PR URL. This module
-turns one into a verified head branch and head SHA, and classifies the diff the review would judge as
-verified, empty or unverified. It only reads: it never posts a review, never creates a PR and never
-merges. Every error message is redacted before it is raised, so callers can log it as it is.
-
-An all-digit target is always treated as a PR number, never as a branch name.
-"""
-
 from __future__ import annotations
 
 import json
@@ -38,6 +28,7 @@ __all__ = [
 
 PR_VIEW_FIELDS = "number,headRefName,headRefOid,baseRefName,title,body"
 GH_TIMEOUT_SECONDS = 60
+_PR_FETCH_TIMEOUT_SECONDS = 300
 
 _PR_URL = re.compile(r"^https://github\.com/[^/\s]+/[^/\s]+/pull/(\d+)(?:[/?#].*)?$")
 
@@ -45,17 +36,12 @@ RunGh = Callable[[list[str], str | None], "subprocess.CompletedProcess[str]"]
 
 
 class ReviewTargetError(RuntimeError):
-    """Raised when a review target cannot be resolved; the message is already redacted."""
-
     def __init__(self, message: str) -> None:
-        """Store the redacted form of ``message``."""
         super().__init__(redact_agent_secrets(message))
 
 
 @dataclass(frozen=True)
 class ReviewTarget:
-    """A review target resolved to the branch and commit the review actually judges."""
-
     raw: str
     head_branch: str
     head_sha: str
@@ -66,39 +52,48 @@ class ReviewTarget:
 
     @property
     def is_pr(self) -> bool:
-        """Return True when the target was resolved from a pull request."""
         return self.pr_number is not None
 
 
 class DiffVerdict(StrEnum):
-    """Outcome of the empty-diff guard."""
-
     VERIFIED = "verified"
     EMPTY = "empty"
     UNVERIFIED = "unverified"
 
 
+_DIFF_VERDICT_BY_HAS_DIFF: dict[bool | None, DiffVerdict] = {
+    True: DiffVerdict.VERIFIED,
+    False: DiffVerdict.EMPTY,
+}
+
+
 def is_pr_reference(target: str) -> bool:
-    """Return True for a bare PR number or a GitHub pull request URL."""
-    clean = target.strip()
-    return clean.isdigit() or bool(_PR_URL.match(clean))
+    cleaned_target = target.strip()
+    return cleaned_target.isdigit() or bool(_PR_URL.match(cleaned_target))
 
 
 def _default_run_gh(argv: list[str], cwd: str | None) -> subprocess.CompletedProcess[str]:
-    """Run gh with the same bounded, non-raising shape the flow uses."""
     if shutil.which("gh") is None:
         raise ReviewTargetError("gh is not available on PATH, so the pull request head cannot be resolved")
     return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False, timeout=GH_TIMEOUT_SECONDS)
 
 
 def _pr_number(target: str) -> int:
-    """Return the PR number a bare number or PR URL names."""
     match = _PR_URL.match(target)
     return int(match.group(1) if match else target)
 
 
+def _parse_pr_view_payload(target: str, stdout: str) -> dict[str, Any]:
+    try:
+        pr_payload: Any = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise ReviewTargetError(f"gh pr view {target} returned invalid JSON") from exc
+    if not isinstance(pr_payload, dict):
+        raise ReviewTargetError(f"gh pr view {target} returned an unexpected payload")
+    return pr_payload
+
+
 def _resolve_pr(repo_dir: str, target: str, run_gh: RunGh) -> ReviewTarget:
-    """Resolve a PR number or URL to its head branch and head SHA through ``gh pr view``."""
     argv = ["gh", "pr", "view", target, "--json", PR_VIEW_FIELDS]
     try:
         proc = run_gh(argv, repo_dir)
@@ -109,31 +104,26 @@ def _resolve_pr(repo_dir: str, target: str, run_gh: RunGh) -> ReviewTarget:
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip() or f"exit code {proc.returncode}"
         raise ReviewTargetError(f"gh pr view {target} failed: {stderr}")
-    try:
-        data: Any = json.loads(proc.stdout or "")
-    except json.JSONDecodeError as exc:
-        raise ReviewTargetError(f"gh pr view {target} returned invalid JSON") from exc
-    if not isinstance(data, dict):
-        raise ReviewTargetError(f"gh pr view {target} returned an unexpected payload")
-    head_branch = str(data.get("headRefName") or "").strip()
-    head_sha = str(data.get("headRefOid") or "").strip()
+    pr_payload = _parse_pr_view_payload(target, proc.stdout or "")
+    head_branch = str(pr_payload.get("headRefName") or "").strip()
+    head_sha = str(pr_payload.get("headRefOid") or "").strip()
     if not head_branch or not head_sha:
         raise ReviewTargetError(f"gh pr view {target} reported no head branch or head SHA")
-    number = data.get("number")
-    base_branch = str(data.get("baseRefName") or "").strip() or None
+    raw_number = pr_payload.get("number")
+    resolved_pr_number = int(raw_number) if str(raw_number or "").isdigit() else _pr_number(target)
+    base_branch = str(pr_payload.get("baseRefName") or "").strip() or None
     return ReviewTarget(
         raw=target,
         head_branch=head_branch,
         head_sha=head_sha,
-        pr_number=int(number) if str(number or "").isdigit() else _pr_number(target),
-        title=data.get("title"),
-        body=data.get("body"),
+        pr_number=resolved_pr_number,
+        title=pr_payload.get("title"),
+        body=pr_payload.get("body"),
         base_branch=base_branch,
     )
 
 
 def _resolve_branch(repo_dir: str, branch: str) -> ReviewTarget:
-    """Resolve a branch to its full tip SHA, reusing the flow's resolve logic (fetching first only on the host)."""
     from sandbox_executor.flow import _resolve_review_commit
 
     short_sha = _resolve_review_commit(repo_dir, branch, fetch=not workspace_mounted())
@@ -147,29 +137,15 @@ def _resolve_branch(repo_dir: str, branch: str) -> ReviewTarget:
 
 
 def resolve_review_target(repo_dir: str, target: str, run_gh: RunGh | None = None) -> ReviewTarget:
-    """Resolve a branch, PR number or PR URL to a verified head branch and head SHA.
-
-    Args:
-        repo_dir: Repository the review runs in (gh's working directory for PR lookups).
-        target: Raw review target.
-        run_gh: Optional gh runner taking ``(argv, cwd)``; defaults to a bounded ``subprocess.run``.
-
-    Returns:
-        ReviewTarget: The resolved target.
-
-    Raises:
-        ReviewTargetError: If gh is missing, fails, times out or reports no head, or the branch does not resolve.
-    """
-    clean = target.strip()
-    if not clean:
+    cleaned_target = target.strip()
+    if not cleaned_target:
         raise ReviewTargetError("the review target is empty")
-    if is_pr_reference(clean):
-        return _resolve_pr(repo_dir, clean, run_gh or _default_run_gh)
-    return _resolve_branch(repo_dir, clean)
+    if is_pr_reference(cleaned_target):
+        return _resolve_pr(repo_dir, cleaned_target, run_gh or _default_run_gh)
+    return _resolve_branch(repo_dir, cleaned_target)
 
 
 def _diff_verdict(repo_dir: str, base_ref: str, head_ref: str) -> tuple[DiffVerdict, str]:
-    """Classify the net diff between ``base_ref`` and ``head_ref``."""
     try:
         changed = changed_paths(repo_dir, base_ref, head_ref)
     except (RuntimeError, TimeoutError) as exc:
@@ -180,13 +156,6 @@ def _diff_verdict(repo_dir: str, base_ref: str, head_ref: str) -> tuple[DiffVerd
 
 
 def _fetched_branch_ref(repo_dir: str, branch: str, role: str) -> tuple[str | None, str]:
-    """Return ``(ref, "")`` for ``branch`` as origin has it, or ``(None, reason)`` when it is unusable.
-
-    With an 'origin' remote the branch is fetched first and a failed fetch is a reason to refuse, so a
-    stale cached or unpushed local copy never decides the verdict (as for execution branches). In a
-    mounted role container nothing is fetched (it has no ssh): the ref the host fetched must exist.
-    Without an 'origin' remote there is nothing to fetch, so the local branch is used as it is.
-    """
     from sandbox_executor.flow.git_refs import (
         _fetch_refspecs_error,
         _has_origin_remote,
@@ -197,12 +166,12 @@ def _fetched_branch_ref(repo_dir: str, branch: str, role: str) -> tuple[str | No
     has_origin = _has_origin_remote(repo_dir)
     mounted = has_origin and workspace_mounted()
     if has_origin and not mounted:
-        refspec = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
-        error = _fetch_refspecs_error(repo_dir, [refspec])
-        if error is not None:
-            return None, f"{role} '{branch}' could not be fetched from origin: {error}"
-    if mounted and (unfetched := _unfetched_branch_message(repo_dir, [branch], role)):
-        return None, unfetched
+        remote_refspec = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
+        fetch_error = _fetch_refspecs_error(repo_dir, [remote_refspec])
+        if fetch_error is not None:
+            return None, f"{role} '{branch}' could not be fetched from origin: {fetch_error}"
+    if mounted and (unfetched_error := _unfetched_branch_message(repo_dir, [branch], role)):
+        return None, unfetched_error
     ref = _resolve_branch_ref(repo_dir, branch, prefer_remote=True)
     if ref is None:
         return None, f"{role} '{branch}' could not be resolved"
@@ -210,27 +179,25 @@ def _fetched_branch_ref(repo_dir: str, branch: str, role: str) -> tuple[str | No
 
 
 def _base_ref(repo_dir: str, base_branch: str) -> tuple[str | None, str]:
-    """Return ``(ref, "")`` for the base to diff against, or ``(None, reason)`` when it is unusable."""
     return _fetched_branch_ref(repo_dir, base_branch, "base branch")
 
 
 def _pr_head_ref(repo_dir: str, sha: str) -> str | None:
-    """Return a PR head SHA once it is present, fetching it from origin on the host when it is not there yet."""
     from sandbox_executor.flow import _has_origin_remote
 
     if _commit_exists(repo_dir, sha):
         return sha
     if _has_origin_remote(repo_dir) and not workspace_mounted():
-        run_git(["fetch", "--no-tags", "origin", sha], cwd=repo_dir, check=False, timeout=300)
+        run_git(
+            ["fetch", "--no-tags", "origin", sha],
+            cwd=repo_dir,
+            check=False,
+            timeout=_PR_FETCH_TIMEOUT_SECONDS,
+        )
     return sha if _commit_exists(repo_dir, sha) else None
 
 
 def _head_ref(repo_dir: str, target: ReviewTarget | str) -> tuple[str | None, str]:
-    """Return ``(ref, "")`` for the head to diff, or ``(None, reason)`` when it is unusable.
-
-    A resolved PR is diffed by its head SHA and 'HEAD' by the checkout. A plain branch is fetched from
-    origin like the base, so a stale or unpushed local copy of it is never judged verified.
-    """
     if isinstance(target, ReviewTarget):
         ref = _pr_head_ref(repo_dir, target.head_sha)
         return ref, "" if ref else f"'{target.head_branch}' could not be resolved to a commit"
@@ -241,31 +208,11 @@ def _head_ref(repo_dir: str, target: ReviewTarget | str) -> tuple[str | None, st
 
 
 def _commit_exists(repo_dir: str, rev: str) -> bool:
-    """Return True when ``rev`` names a commit in ``repo_dir``."""
     proc = run_git(["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"], cwd=repo_dir, check=False)
     return proc.returncode == 0
 
 
 def verify_review_diff(repo_dir: str, target: ReviewTarget | str, base_branch: str = "main") -> tuple[DiffVerdict, str]:
-    """Classify the diff a review of ``target`` would judge, failing closed.
-
-    Execution branches are compared with their parent plan branch (the flow's existing guard). A resolved
-    PR is compared by its head SHA with its own base branch, falling back to ``base_branch`` when gh
-    reported none; a branch is compared by its tip with ``base_branch``.
-    With an 'origin' remote the base and a plain-branch head are fetched first. A raw PR reference
-    that was never resolved is unverified, and so is any git failure, including a failed fetch from
-    origin and a git command that times out. No gh call is made here, so the guard never depends on gh
-    being installed.
-
-    Args:
-        repo_dir: Repository to inspect.
-        target: A resolved target, or a raw target string.
-        base_branch: Branch a non-execution target is compared with (the intent's target branch) when a
-            resolved PR carries no base branch of its own.
-
-    Returns:
-        tuple[DiffVerdict, str]: The verdict and a redacted, human-readable detail.
-    """
     try:
         return _classify_target_diff(repo_dir, target, base_branch)
     except (TimeoutError, subprocess.TimeoutExpired) as exc:
@@ -273,7 +220,6 @@ def verify_review_diff(repo_dir: str, target: ReviewTarget | str, base_branch: s
 
 
 def _classify_target_diff(repo_dir: str, target: ReviewTarget | str, base_branch: str) -> tuple[DiffVerdict, str]:
-    """Classify the diff for ``verify_review_diff``; a git timeout propagates to the caller."""
     from sandbox_executor.flow import _execution_effective_diff, _execution_parent_plan_branch
 
     if isinstance(target, ReviewTarget) and not target.is_pr:
@@ -283,14 +229,14 @@ def _classify_target_diff(repo_dir: str, target: ReviewTarget | str, base_branch
         return DiffVerdict.UNVERIFIED, f"pull request '{branch}' was not resolved to a head commit"
     if isinstance(target, str) and _execution_parent_plan_branch(branch) is not None:
         has_diff, detail = _execution_effective_diff(repo_dir, branch, target_branch=base_branch)
-        verdict = {True: DiffVerdict.VERIFIED, False: DiffVerdict.EMPTY}.get(has_diff, DiffVerdict.UNVERIFIED)
+        verdict = _DIFF_VERDICT_BY_HAS_DIFF.get(has_diff, DiffVerdict.UNVERIFIED)
         return verdict, detail
-    if isinstance(target, ReviewTarget) and target.base_branch:
-        base_branch = target.base_branch
-    base_ref, base_problem = _base_ref(repo_dir, base_branch)
+    effective_base_branch = target.base_branch if isinstance(target, ReviewTarget) and target.base_branch else base_branch
+    base_ref, base_problem = _base_ref(repo_dir, effective_base_branch)
     if base_ref is None:
         return DiffVerdict.UNVERIFIED, base_problem
-    head_ref, head_problem = _head_ref(repo_dir, target if isinstance(target, ReviewTarget) else branch)
+    resolved_head_target: ReviewTarget | str = target if isinstance(target, ReviewTarget) else branch
+    head_ref, head_problem = _head_ref(repo_dir, resolved_head_target)
     if head_ref is None:
         return DiffVerdict.UNVERIFIED, head_problem
     return _diff_verdict(repo_dir, base_ref, head_ref)
@@ -299,19 +245,6 @@ def _classify_target_diff(repo_dir: str, target: ReviewTarget | str, base_branch
 def classify_review_diff(
     repo_dir: str, raw_target: str, base_branch: str = "main", run_gh: RunGh | None = None
 ) -> tuple[DiffVerdict, str]:
-    """Run the empty-diff guard for a raw target, resolving a PR reference to its head first.
-
-    A PR reference that cannot be resolved is unverified, with the redacted resolution error as detail.
-
-    Args:
-        repo_dir: Repository to inspect.
-        raw_target: Branch, PR number or PR URL as the caller received it.
-        base_branch: Branch a non-execution target is compared with when a PR names no base of its own.
-        run_gh: Optional gh runner for the PR lookup; defaults to a bounded ``subprocess.run``.
-
-    Returns:
-        tuple[DiffVerdict, str]: The verdict and a redacted, human-readable detail.
-    """
     target: ReviewTarget | str = raw_target
     if is_pr_reference(raw_target):
         try:

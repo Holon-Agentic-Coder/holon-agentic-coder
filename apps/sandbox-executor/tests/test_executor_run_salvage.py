@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from sandbox_executor.budgets import BudgetBreach
@@ -19,6 +20,7 @@ from tests.executor_fixtures import (
     _agent_turns_use_run_cmd,  # noqa: F401  (autouse fixture)
     _workspace_is_mounted,  # noqa: F401  (autouse fixture)
 )
+from tests.repo_templates import copy_template, finish_template
 
 
 class TestExecutorPartialWorkSalvage(unittest.TestCase):
@@ -26,16 +28,17 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
 
     PLAN = "I-456/P-123/_"
 
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory(prefix="sandbox_salvage_test_")
-        self.addCleanup(tmp.cleanup)
-        self.root = tmp.name
-        self.bare = os.path.join(self.root, "origin.git")
-        self.seed = os.path.join(self.root, "seed")
-        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", self.bare], check=True)
-        self.git(self.bare, "config", "core.hooksPath", os.path.join(self.bare, "hooks"))
-        self.workspace = ""
-        subprocess.run(["git", "init", "-q", "-b", "main", self.seed], check=True)
+    @classmethod
+    def setUpClass(cls):
+        """Build the bare origin and the seed with the pushed plan commit once; ``setUp`` copies them per test."""
+        tmp = tempfile.TemporaryDirectory(prefix="sandbox_salvage_template_")
+        cls.addClassCleanup(tmp.cleanup)
+        cls.template = tmp.name
+        bare = os.path.join(cls.template, "origin.git")
+        seed = os.path.join(cls.template, "seed")
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", bare], check=True)
+        cls.git(bare, "config", "core.hooksPath", os.path.join(bare, "hooks"))
+        subprocess.run(["git", "init", "-q", "-b", "main", seed], check=True)
         files = {
             ".gitignore": "*.ignored\n",
             "src/codebase.py": "def app(): pass\n",
@@ -47,13 +50,23 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
             "holon-knowledge/ledger/intents.jsonl": json.dumps({"branch": "I-456/_", "slug": "intent-456"}) + "\n",
         }
         for rel, content in files.items():
-            os.makedirs(os.path.dirname(os.path.join(self.seed, rel)) or self.seed, exist_ok=True)
-            with open(os.path.join(self.seed, rel), "w") as f:
+            os.makedirs(os.path.dirname(os.path.join(seed, rel)) or seed, exist_ok=True)
+            with open(os.path.join(seed, rel), "w") as f:
                 f.write(content)
-        self.git(self.seed, "add", "-A")
-        self.git(self.seed, "commit", "-q", "-m", "plan")
-        self.git(self.seed, "push", "-q", self.bare, f"HEAD:refs/heads/{self.PLAN}")
-        self.plan_tip = self.git(self.seed, "rev-parse", "HEAD").strip()
+        cls.git(seed, "add", "-A")
+        cls.git(seed, "commit", "-q", "-m", "plan")
+        cls.git(seed, "push", "-q", bare, f"HEAD:refs/heads/{cls.PLAN}")
+        cls.plan_tip = cls.git(seed, "rev-parse", "HEAD").strip()
+        finish_template(Path(cls.template))
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="sandbox_salvage_test_")
+        self.addCleanup(tmp.cleanup)
+        self.root = tmp.name
+        copy_template(Path(self.template), Path(self.root))
+        self.bare = os.path.join(self.root, "origin.git")
+        self.seed = os.path.join(self.root, "seed")
+        self.workspace = ""
         self.runs = 0
 
     @staticmethod

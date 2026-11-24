@@ -254,6 +254,8 @@ def _mask_url_userinfo(text: str) -> str:
     Returns:
         The text with each matched userinfo replaced by `REDACTION_MARKER`.
     """
+    if "@" not in text:
+        return text
     for start_re in (_URL_AUTHORITY_START_RE, _URL_VAR_PREFIX_RE):
         out: list[str] = []
         pos = 0
@@ -619,7 +621,10 @@ def redact_command(argv: Sequence[str]) -> str:
     Returns:
         A single space-joined line that is safe to print or log. The input is not modified.
     """
-    s = " ".join(redact_command_args(argv))
+    redacted = redact_command_args(argv)
+    if len(redacted) <= 1:
+        return redacted[0] if redacted else ""
+    s = " ".join(redacted)
     # Swept again over the joined line, so a value that spans an argument boundary is caught (for
     # example `password:` and its value passed as two arguments).
     s = redact_text(s)

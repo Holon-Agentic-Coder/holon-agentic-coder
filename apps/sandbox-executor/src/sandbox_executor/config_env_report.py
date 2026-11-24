@@ -39,7 +39,7 @@ def _plain_value(key: str, value: str) -> bool:
     except ValueError:
         pass
     item = f"{key}={value}"
-    return redact_command([item]) == item and not carries_url_password(value)
+    return redact_command([item]) == item and not ("@" in value and carries_url_password(value))
 
 
 def _display(setting: ResolvedSetting, masked: bool) -> tuple[str | None, str]:

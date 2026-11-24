@@ -20,6 +20,7 @@ from sandbox_executor.calibration import (
 )
 from sandbox_executor.flow.calibrate_promotion import _commit_stage5_promoted_artifacts
 from sandbox_executor.flow.calibrate_retry import CalibrationRetriesExhausted, call_with_retries, redacted_cause
+from sandbox_executor.flow.calibrate_stale_warning import resolve_stale
 from sandbox_executor.flow.calibrate_sync import (
     CalibrationSyncError,
     discard_empty_calibrated_branch,
@@ -235,6 +236,33 @@ def _fail_closed(
     )
 
 
+def _review_pr_number(context: FlowContext) -> str | None:
+    """The pull request Stage 4 reviewed (its consensus, else its ``pr`` entry), approved or not; None if unknown."""
+    review = context.stage_results.get("review")
+    payload = review.payload if review is not None and isinstance(review.payload, dict) else {}
+    entries = (payload.get("consensus"), payload.get("pr"))
+    numbers = (entry.get("pr_number") for entry in entries if isinstance(entry, dict))
+    return next((str(number) for number in numbers if number), None)
+
+
+def _supersede_stale_warning(context: FlowContext, evaluated_sha: str) -> dict[str, Any]:
+    """Mark an open stale-calibration warning superseded by the report just published; never posts, never raises."""
+    record = resolve_stale(context, _review_pr_number(context), evaluated_sha)
+    if record.get("edited"):
+        context.log(f"Stage 5: the stale-calibration warning is superseded by the report on {evaluated_sha[:12]}.")
+    return record
+
+
+def _publish_and_supersede(
+    context: FlowContext, report_dict: dict[str, Any] | None, start_sha: str | None
+) -> tuple[bool, dict[str, Any] | None]:
+    """Publish /calibrated, then supersede the stale warning before the final-head CI wait: (pushed, its record)."""
+    if not publish_calibration(context):
+        return False, None
+    evaluated_sha = str((report_dict or {}).get("evaluated_commit_sha") or start_sha or "")
+    return True, _supersede_stale_warning(context, evaluated_sha)
+
+
 def _calibrate_execution_branch(context: FlowContext, merged_head_ci: dict[str, Any] | None = None) -> StageResult:
     """Execute Stage 5: Post-Execution Calibration.
 
@@ -279,11 +307,11 @@ def _calibrate_execution_branch(context: FlowContext, merged_head_ci: dict[str, 
     promoted_candidates = outcome.promoted_candidates
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    pushed = False
+    pushed, stale_warning = False, None
     # run_stage5 raises on every calibration failure, so reaching here means the report was generated.
     publish_attempted = not context.dry_run and bool(context.calibrated_branch)
     if publish_attempted:
-        pushed = publish_calibration(context)
+        pushed, stale_warning = _publish_and_supersede(context, report_dict, start_sha)
 
     final_head_ci = check_final_head_ci(context, repo_dir, context.execution_branch) if pushed else not_pushed_record()
     context.log(format_final_head_ci(final_head_ci))
@@ -314,6 +342,7 @@ def _calibrate_execution_branch(context: FlowContext, merged_head_ci: dict[str, 
             "merged_head_ci": merged_head_ci,
             "final_head_ci": final_head_ci,
             "ci_verdict": reverified,
+            "stale_warning": stale_warning,
         },
     )
     context.stage_results["calibrate"] = result

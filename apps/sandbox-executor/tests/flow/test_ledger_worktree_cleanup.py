@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 from sandbox_executor.flow import FlowContext, git_refs, ledger_worktree
 from sandbox_executor.git import run_git as real_run_git
-from sandbox_executor.ledger import LedgerRewriteError
+from sandbox_executor.ledger import LedgerRewriteError, validate_ledger_file_unique_ids
 
 from tests.flow.helpers import _git, _ledger_rows
 
@@ -405,6 +405,31 @@ def test_a_worktree_whose_owner_is_alive_is_left_alone_until_the_owner_lets_go(l
 
     assert _ledger_worktrees(ledger_repos.host) == []
     assert not leftover.exists()
+
+
+def test_a_step_that_starts_while_another_is_running_leaves_the_running_steps_worktree_alone(ledger_repos, monkeypatch):
+    host = ledger_repos.host
+    running: list[str] = []
+    registered_after_the_other_step: list[str] = []
+
+    def validator_during_which_another_step_runs(ledger_path: str, **keys: str) -> None:
+        running.append(ledger_path.removesuffix(f"/{LEDGER_REL}"))
+        # The other step sweeps on its way in: only the lock the running step really holds spares its worktree.
+        with ledger_worktree._ledger_worktree(str(host), f"refs/remotes/origin/{BRANCH}", real_run_git) as other:
+            assert other != running[0]
+        registered_after_the_other_step.extend(_ledger_worktrees(host))
+        validate_ledger_file_unique_ids(ledger_path, **keys)
+
+    monkeypatch.setattr(
+        "sandbox_executor.flow.git_refs.validate_ledger_file_unique_ids", validator_during_which_another_step_runs
+    )
+
+    assert ledger_repos.append() is None
+
+    assert registered_after_the_other_step == [_registered_path(Path(running[0]).parent)]
+    assert _ledger_rows(ledger_repos.origin, ledger_repos.origin_tip(), "executions.jsonl")[-1] == NEW_ROW
+    assert _ledger_worktrees(host) == []
+    assert _ledger_temp_entries(ledger_repos.temp_dir) == []
 
 
 def test_worktrees_that_are_not_stale_ledger_worktrees_survive_the_sweep(ledger_repos, tmp_path):

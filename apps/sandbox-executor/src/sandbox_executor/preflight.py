@@ -454,55 +454,115 @@ def run_preflight_probe(  # noqa: PLR0911
             return _result(PreflightStatus.UNKNOWN, agent, model, image, output=str(exc))
         # Right after `docker run`, as in run_docker_container; docker reads the file on the client side.
         docker_cmd[2:2] = ["--env-file", env_file]
+    target = _ProbeTarget(agent=agent, model=model, image=image, limit=limit)
     try:
-        return _run_probe(run, docker_cmd, container_name, limit, agent, model, image)
+        return _run_probe(run, docker_cmd, container_name, target)
     finally:
         if env_file:
             with contextlib.suppress(FileNotFoundError):
                 os.remove(env_file)
 
 
-def _run_probe(  # noqa: PLR0913
+@dataclass(frozen=True)
+class _ProbeTarget:
+    """Immutable metadata and timeout budget for a pre-flight probe execution."""
+
+    agent: str
+    model: str
+    image: str
+    limit: float
+
+
+def _handle_probe_timeout(
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    container_name: str,
+    target: _ProbeTarget,
+    exc: subprocess.TimeoutExpired,
+) -> PreflightResult:
+    """Clean up a timed-out probe container and classify any captured partial output."""
+    try:
+        run(
+            ["docker", "rm", "-f", container_name],
+            capture_output=True,
+            text=True,
+            timeout=CLEANUP_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as cleanup_exc:
+        logger.warning("Could not remove pre-flight container %s: %s", container_name, cleanup_exc)
+
+    partial = _decode(exc.stdout) + _decode(exc.stderr)
+    if _EXPECTED_REPLY_RE.search(partial):
+        logger.warning(
+            "Pre-flight probe for %s (%s) received the expected OK reply, but container exit timed out after %gs "
+            "(slow exit).",
+            target.agent,
+            target.model,
+            target.limit,
+        )
+        return _result(
+            PreflightStatus.OK,
+            target.agent,
+            target.model,
+            target.image,
+            exit_code=None,
+            output=partial,
+            hint=(
+                f"Expected OK reply was received, but container exit timed out after {target.limit:g}s (slow exit)."
+            ),
+        )
+
+    classified = classify_probe_output(None, partial)
+    if classified in (PreflightStatus.QUOTA_EXHAUSTED, PreflightStatus.NOT_LOGGED_IN, PreflightStatus.EXPIRED_KEY):
+        return _result(classified, target.agent, target.model, target.image, exit_code=None, output=partial)
+
+    if partial.strip():
+        return _result(
+            PreflightStatus.UNKNOWN,
+            target.agent,
+            target.model,
+            target.image,
+            exit_code=None,
+            output=partial,
+            hint=(
+                f"The probe timed out after {target.limit:g}s after capturing output. "
+                f"Inspect the output below or raise {TIMEOUT_ENV_VAR}."
+            ),
+        )
+
+    return _result(
+        PreflightStatus.UNKNOWN,
+        target.agent,
+        target.model,
+        target.image,
+        exit_code=None,
+        output=partial,
+        hint=(
+            f"The probe did not finish within {target.limit:g}s; the runner may be waiting on an interactive login. "
+            f"Initialise the session interactively or raise {TIMEOUT_ENV_VAR}."
+        ),
+    )
+
+
+def _run_probe(
     run: Callable[..., subprocess.CompletedProcess[str]],
     docker_cmd: list[str],
     container_name: str,
-    limit: float,
-    agent: str,
-    model: str,
-    image: str,
+    target: _ProbeTarget,
 ) -> PreflightResult:
     """Run the probe container and classify the outcome; on timeout remove the container."""
     try:
-        proc = run(docker_cmd, capture_output=True, text=True, timeout=limit, check=False, stdin=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired as exc:
-        try:
-            run(
-                ["docker", "rm", "-f", container_name],
-                capture_output=True,
-                text=True,
-                timeout=CLEANUP_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except (subprocess.TimeoutExpired, OSError) as cleanup_exc:
-            logger.warning("Could not remove pre-flight container %s: %s", container_name, cleanup_exc)
-        partial = _decode(exc.stdout) + _decode(exc.stderr)
-        return _result(
-            PreflightStatus.UNKNOWN,
-            agent,
-            model,
-            image,
-            output=partial,
-            hint=(
-                f"The probe did not finish within {limit:g}s; the runner may be waiting on an interactive login. "
-                f"Initialise the session interactively or raise {TIMEOUT_ENV_VAR}."
-            ),
+        proc = run(
+            docker_cmd, capture_output=True, text=True, timeout=target.limit, check=False, stdin=subprocess.DEVNULL
         )
+    except subprocess.TimeoutExpired as exc:
+        return _handle_probe_timeout(run, container_name, target, exc)
     except OSError as exc:
-        return _result(PreflightStatus.UNKNOWN, agent, model, image, output=str(exc))
+        return _result(PreflightStatus.UNKNOWN, target.agent, target.model, target.image, output=str(exc))
 
     output = (proc.stdout or "") + (proc.stderr or "")
     status = classify_probe_output(proc.returncode, output)
-    return _result(status, agent, model, image, exit_code=proc.returncode, output=output)
+    return _result(status, target.agent, target.model, target.image, exit_code=proc.returncode, output=output)
 
 
 def _decode(value: Any) -> str:

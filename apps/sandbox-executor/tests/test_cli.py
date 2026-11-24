@@ -1423,16 +1423,14 @@ def _run_planner(repo_dir: str) -> int:
 
 
 @pytest.mark.parametrize(
-    ("prefix", "expected"), [("sk-ant-" + "oat", "CLAUDE_CODE_OAUTH_TOKEN"), ("sk-ant-" + "api", "ANTHROPIC_API_KEY")]
+    "typed", [("sk-ant-" + "oat", "CLAUDE_CODE_OAUTH_TOKEN"), ("sk-ant-" + "api", "ANTHROPIC_API_KEY")]
 )
-def test_claude_container_gets_the_discovered_secrets_file_value_by_type(
-    leak_env, monkeypatch, capsys, prefix, expected
+def test_claude_container_gets_the_discovered_keychain_value_by_type(
+    leak_env, monkeypatch, capsys, fake_keychain, typed
 ):
-    value = prefix + make_probe("file")
-    secrets = os.path.join(os.environ["HOME"], ".holon", "secrets")
-    os.makedirs(secrets)
-    with open(os.path.join(secrets, "claude-oauth-token"), "w", encoding="utf-8") as fh:
-        fh.write(value + "\n")
+    prefix, expected = typed
+    value = prefix + make_probe("k")
+    fake_keychain.entry = value
     monkeypatch.delenv("ANTHROPIC_API_KEY")
     docker = _RecordingDocker()
     monkeypatch.setattr(subprocess, "run", docker)

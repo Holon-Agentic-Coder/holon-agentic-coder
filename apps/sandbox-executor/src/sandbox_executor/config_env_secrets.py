@@ -2,8 +2,10 @@
 
 A layer names a credential by the path of its token file (``HOLON_AGENT_OAUTH_TOKEN_FILE``); the file is read on the
 host into the value variable of the same layer (``HOLON_AGENT_OAUTH_TOKEN``), which reaches a role container only
-through the 0600 docker env-file, where the image's role dispatcher maps it to the vendor variable. Every warning
-names a path, a mode or a key, never a value. The only subprocess is a local, read-only ``git ls-files``.
+through the 0600 docker env-file, where the image's role dispatcher maps it to the vendor variable. A reference to the
+retired plaintext claude token file is ignored: that file is only ever opened by its one-time import into the OS
+keychain (``claude_token_migration``). Every warning names a path, a mode or a key, never a value. The only subprocess
+is a local, read-only ``git ls-files``.
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ import os
 import subprocess
 from collections.abc import Iterable, Mapping
 
-from sandbox_executor import claude_credential
+from sandbox_executor import claude_credential, claude_token_migration
 
 # (file key, value key, in-container variable): the file key names a token file, whose single token becomes the value
 # key in the same layer; the role dispatcher exports it under the in-container variable. The variable names are spelled
@@ -53,7 +55,8 @@ _GIT_TIMEOUT_SECONDS = 10.0
 def expand_secret_files(layer_values: Mapping[str, str], origin: str) -> tuple[dict[str, str], list[str]]:
     """Read every referenced token file of one layer into the value key of that same layer.
 
-    A value key the layer defines itself is kept. An empty file key (``KEY=``) references nothing.
+    A value key the layer defines itself is kept. An empty file key (``KEY=``) references nothing. A reference to the
+    retired plaintext claude token file is never opened and yields no value.
 
     Args:
         layer_values: The accepted keys of the layer.
@@ -69,6 +72,12 @@ def expand_secret_files(layer_values: Mapping[str, str], origin: str) -> tuple[d
         if not reference or value_key in values:
             continue
         path = os.path.expanduser(reference)
+        if claude_token_migration.is_legacy_token_file(path):
+            warnings.append(
+                f"Warning: {origin}: ignoring {file_key}: {path} is the retired plaintext claude token file, which is "
+                "no longer read. Remove the reference; the claude credential is kept in the OS keychain."
+            )
+            continue
         token, warning = claude_credential.read_token_file(path)
         if warning:
             warnings.append(warning)

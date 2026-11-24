@@ -191,6 +191,17 @@ def check_file_credentials(file_path: str) -> list[str]:
     return violations
 
 
+_GITHUB_CREDENTIAL_MARKERS: tuple[str, ...] = (
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "x-access-token:",
+)
+
+
 def find_github_credentials(files: Sequence[str]) -> list[tuple[str, int, str]]:
     """Scan files for GitHub token shapes, with no path or placeholder exemptions.
 
@@ -213,8 +224,11 @@ def find_github_credentials(files: Sequence[str]) -> list[tuple[str, int, str]]:
             if not os.path.isfile(file_path) or os.path.getsize(file_path) > 2 * 1024 * 1024:
                 continue
             with open(file_path, encoding="utf-8", errors="ignore") as f:
-                for line_no, line in enumerate(f, start=1):
-                    findings.extend((file_path, line_no, name) for name, pat in patterns if pat.search(line))
+                content = f.read()
+            if not any(marker in content for marker in _GITHUB_CREDENTIAL_MARKERS):
+                continue
+            for line_no, line in enumerate(content.splitlines(), start=1):
+                findings.extend((file_path, line_no, name) for name, pat in patterns if pat.search(line))
         except OSError:
             continue
     return findings

@@ -41,14 +41,13 @@ def git(repo: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
 
 
-def commit(repo: Path, files: dict[str, str], message: str) -> str:
+def commit(repo: Path, files: dict[str, str], message: str) -> None:
     for rel, text in files.items():
         path = repo / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
     git(repo, "add", "--", *files)
     git(repo, "commit", "-qm", message)
-    return git(repo, "rev-parse", "HEAD")
 
 
 _FLOW_TEMPLATE: Path | None = None

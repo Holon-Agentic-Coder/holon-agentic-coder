@@ -236,6 +236,7 @@ class TestRunTurn(unittest.TestCase):
             sleeper=h.sleeper,
             popen_factory=h.popen,
             tool_sampler=h.tool_sampler,
+            child_lister=h.child_lister,
             killpg=h.killpg,
             getpgid=h.getpgid,
         )
@@ -309,6 +310,7 @@ class TestRunTurn(unittest.TestCase):
             sleeper=h.sleeper,
             popen_factory=h.popen,
             tool_sampler=h.tool_sampler,
+            child_lister=h.child_lister,
             killpg=h.killpg,
             getpgid=h.getpgid,
         )
@@ -509,6 +511,7 @@ class TestRunTurn(unittest.TestCase):
                 sleeper=h.sleeper,
                 popen_factory=h.popen,
                 tool_sampler=h.tool_sampler,
+                child_lister=h.child_lister,
                 killpg=killpg,
                 getpgid=h.getpgid,
             )
@@ -539,6 +542,7 @@ class TestRunTurn(unittest.TestCase):
                 sleeper=h.sleeper,
                 popen_factory=h.popen,
                 tool_sampler=h.tool_sampler,
+                child_lister=h.child_lister,
                 killpg=killpg,
                 getpgid=h.getpgid,
             )
@@ -558,6 +562,7 @@ class TestRunTurn(unittest.TestCase):
                 sleeper=h.sleeper,
                 popen_factory=h.popen,
                 tool_sampler=h.tool_sampler,
+                child_lister=h.child_lister,
                 killpg=lambda pgid, sig: signals.append((pgid, sig)),
                 getpgid=h.getpgid,
             )
@@ -577,6 +582,7 @@ class TestRunTurn(unittest.TestCase):
                 sleeper=h.sleeper,
                 popen_factory=h.popen,
                 tool_sampler=h.tool_sampler,
+                child_lister=h.child_lister,
                 killpg=lambda pgid, sig: signals.append((pgid, sig)),
                 getpgid=lambda pid: CHILD_PID,
             )

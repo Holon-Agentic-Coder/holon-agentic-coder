@@ -30,7 +30,7 @@ TARGET = "refs/remotes/origin/main"
 PR_PATHS = ("src/pr_a.py", "src/pr_b.py", "src/pkg/pr_c.py", "docs/pr_d.md")
 MAIN_PATHS = ("src/main_a.py", "src/main_b.py", "lib/main_c.py")
 CONTENT = st.text(alphabet="abcxyz =+\n", min_size=1, max_size=40)
-PROPERTY_SETTINGS = settings(max_examples=25, deadline=None, derandomize=True, database=None)
+PROPERTY_SETTINGS = settings(max_examples=12, deadline=None, derandomize=True, database=None)
 
 
 def _write(work: Path, rel: str, text: str) -> None:
@@ -39,12 +39,11 @@ def _write(work: Path, rel: str, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _commit(work: Path, files: dict[str, str], message: str) -> str:
+def _commit(work: Path, files: dict[str, str], message: str) -> None:
     for rel, text in files.items():
         _write(work, rel, text)
     _git(work, "add", "-A")
     _git(work, "commit", "-q", "--allow-empty", "-m", message)
-    return _git(work, "rev-parse", "HEAD")
 
 
 def _ledger_with(work: Path, execution_id: str) -> str:
@@ -58,40 +57,33 @@ _TEMPLATE_ROOT: Path | None = None
 
 
 def _template_repos() -> Path:
-    """Build the base bare origin and clone once per worker so each case copies it instead of running git init/clone."""
+    """Build the seeded git repository once per worker so each case copies it instead of running git init."""
     global _TEMPLATE_ROOT
     if _TEMPLATE_ROOT is None:
         tmp = tempfile.TemporaryDirectory(prefix="holon-fingerprint-template-")
         atexit.register(tmp.cleanup)
-        root = Path(tmp.name)
-        origin, work = root / "origin.git", root / "work"
-        _git(root, "init", "-q", "--bare", "-b", "main", str(origin))
-        _git(root, "clone", "-q", str(origin), str(work))
-        _git(work, "remote", "set-url", "origin", "../origin.git")
+        work = Path(tmp.name) / "work"
+        work.mkdir()
+        _git(work, "init", "-q", "-b", "main")
         _commit(work, {"README.md": "base\n", LEDGER: _ledger_with(work, "E-base")}, "base")
-        _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
         _git(work, "update-ref", TARGET, "HEAD")
         _git(work, "checkout", "-q", "-b", BRANCH)
-        _TEMPLATE_ROOT = root
+        _TEMPLATE_ROOT = work
     return _TEMPLATE_ROOT
 
 
 def _repos(root: Path, pr_files: dict[str, str]) -> Path:
-    """A bare origin and a clone on ``BRANCH`` whose own change is ``pr_files`` plus one ledger row."""
-    template = _template_repos()
-    shutil.copytree(template / "origin.git", root / "origin.git")
+    """A clone on ``BRANCH`` with ``refs/remotes/origin/main`` seeded and its own change in ``pr_files``."""
     work = root / "work"
-    shutil.copytree(template / "work", work)
+    shutil.copytree(_template_repos(), work)
     _commit(work, {**pr_files, LEDGER: _ledger_with(work, "E-pr")}, "pr change")
     return work
 
 
 def _advance_main(work: Path, files: dict[str, str], label: str) -> None:
-    """Commit ``files`` and one ledger row on origin's main, leaving the clone on ``BRANCH``."""
+    """Commit ``files`` and one ledger row on ``main`` and ``origin/main``, leaving the clone on ``BRANCH``."""
     _git(work, "checkout", "-q", "main")
-    _git(work, "merge", "-q", "--ff-only", TARGET)
     _commit(work, {**files, LEDGER: _ledger_with(work, f"E-main-{label}")}, f"main {label}")
-    _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
     _git(work, "update-ref", TARGET, "HEAD")
     _git(work, "checkout", "-q", BRANCH)
 

@@ -203,6 +203,12 @@ def _fetchers(seen: list[str]) -> tuple[Callable[[str, float], bytes], ...]:
     return ok, fail
 
 
+_DOCTOR_ARGS = (
+    argparse.Namespace(agent="antigravity-agent", model="gemini-3.8-flash-medium", json=False, timeout=None),
+    argparse.Namespace(agent="antigravity-agent", model="gemini-3.8-flash-medium", json=True, timeout=None),
+)
+
+
 def _doctor(value: str) -> list[str]:
     """#94 `holon doctor`: the environment section, then the unified report as text and as `--json`."""
     from sandbox_executor.preflight import PreflightResult, PreflightStatus
@@ -212,20 +218,19 @@ def _doctor(value: str) -> list[str]:
     )
     env = {"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_BASE_URL": value, "HOLON_LOCAL_MODELS": "m1"}
     texts: list[str] = []
-    for host_config in (None, _host_config(value)):
-        for fetch in _fetchers(texts):
-            with (
-                # Plain stand-ins, not MagicMocks: building a mock per call dominated this matrix's runtime.
-                patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
-                patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
-                _captured(env) as out,
-            ):
-                for as_json in (False, True):
-                    doctor_args = argparse.Namespace(
-                        agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None
-                    )
+    current_host_config: list[dict | None] = [None]
+    with (
+        # Plain stand-ins, not MagicMocks: building a mock per call dominated this matrix's runtime.
+        patch.object(local_llm, "host_models_json", lambda *_a, **_k: current_host_config[0]),
+        patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
+        _captured(env) as out,
+    ):
+        for host_config in (None, _host_config(value)):
+            current_host_config[0] = host_config
+            for fetch in _fetchers(texts):
+                for doctor_args in _DOCTOR_ARGS:
                     cli.run_doctor(doctor_args, fetch=fetch)
-            texts.extend(out)
+    texts.extend(out)
     return texts
 
 
@@ -638,11 +643,13 @@ def test_credential_in_invalid_envelope_value_never_echoed(monkeypatch, tmp_path
     monkeypatch.setattr(
         "sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {})
     )
+    monkeypatch.setattr(cli, "run_preflight_probe", lambda *_a, **_k: probe)
     for name in list(os.environ):
         monkeypatch.delenv(name)
     failures: list[str] = []
     collided: list[str] = []
     cases = list(_invalid_value_cases(seeded_secrets.generator("url-redaction:invalid-envelope")))
+    empty_fetch = lambda url, timeout: b"{}"  # noqa: E731
     for case_id, env, host_config, credential in cases:
         # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variable to the
         # container unchanged: through the env-file, so neither the argv nor the echo may hold a fragment of it.
@@ -654,23 +661,14 @@ def test_credential_in_invalid_envelope_value_never_echoed(monkeypatch, tmp_path
         with (
             patch.object(tempfile, "_get_candidate_names", colliding),
             patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
-            patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
             patch.object(subprocess, "run", docker),
             _captured({**env, "HOME": str(tmp_path)}) as out,
         ):
             env_out = io.StringIO()
-            codes = [cli.report_budgets_and_envelope(fetch=lambda url, timeout: b"{}", out=env_out)]
+            codes = [cli.report_budgets_and_envelope(fetch=empty_fetch, out=env_out)]
             out.append(env_out.getvalue())
-            for as_json in (False, True):
-                doctor_args = argparse.Namespace(
-                    agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None
-                )
-                codes.append(
-                    cli.run_doctor(
-                        doctor_args,
-                        fetch=lambda url, timeout: b"{}",
-                    )
-                )
+            for doctor_args in _DOCTOR_ARGS:
+                codes.append(cli.run_doctor(doctor_args, fetch=empty_fetch))
             codes.append(cli.run_docker_container("planner", "img", [], agent_id="pi"))
         if _leaks(_without_fixture_paths(out, docker.argv, str(tmp_path)), credential):
             failures.append(case_id)

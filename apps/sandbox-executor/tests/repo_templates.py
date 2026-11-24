@@ -1,6 +1,6 @@
 """Build fixture git repositories once and hand every test its own copy.
 
-Three rules of use:
+Four rules of use:
 
 - A template is never written to after it is built: ``finish_template`` makes the tree read-only, so a test that
   commits in or pushes to the template fails loudly.

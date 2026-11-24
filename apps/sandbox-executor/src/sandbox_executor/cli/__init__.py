@@ -555,7 +555,11 @@ def _configuration_section(args: argparse.Namespace) -> tuple[dict[str, Any], li
     config = config_env.current() or config_env.load_effective_config()
     flags = {"HOLON_AGENT": getattr(args, "agent", None), "HOLON_MODEL": getattr(args, "model", None)}
     config = config_env.with_cli_overrides(config, {key: value for key, value in flags.items() if value})
-    return config_env_report.configuration_payload(config), config_env_report.format_config_report(config)
+    rows = config_env_report.setting_rows(config)
+    return (
+        config_env_report.configuration_payload(config, rows=rows),
+        config_env_report.format_config_report(config, rows=rows),
+    )
 
 
 def run_doctor(args: argparse.Namespace, fetch: local_llm.Fetcher | None = None) -> int:

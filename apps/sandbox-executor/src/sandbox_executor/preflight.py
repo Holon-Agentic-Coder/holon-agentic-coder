@@ -561,9 +561,7 @@ def _handle_probe_timeout(
             target.image,
             exit_code=None,
             output=partial,
-            hint=(
-                f"Expected OK reply was received, but container exit timed out after {target.limit:g}s (slow exit)."
-            ),
+            hint=(f"Expected OK reply was received, but container exit timed out after {target.limit:g}s (slow exit)."),
         )
 
     classified = classify_probe_output(None, partial)

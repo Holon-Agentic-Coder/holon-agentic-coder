@@ -22,6 +22,7 @@ from sandbox_executor.preflight import (
 )
 
 from tests.flow.lookup_patch import patch_lookup_sites
+from tests.flow.sleep_patch import scoped_sleep_patch
 from tests.leak_assertions import CREDENTIAL_FREE_URLS, assert_no_leak, make_probe, make_url_probe, url_userinfo_cases
 
 _NO_PROXY = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
@@ -523,7 +524,7 @@ def test_probe_retries_transient_unknown_and_succeeds_on_later_attempt(probe_env
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="OK\n", stderr="")
 
-    with patch("sandbox_executor.preflight.time.sleep") as sleep_mock:
+    with scoped_sleep_patch("sandbox_executor.preflight") as sleep_mock:
         res = run_preflight_probe("antigravity-agent", "m", timeout=5, runner_fn=runner_fn)
 
     assert res.ok
@@ -546,7 +547,7 @@ def test_probe_exhausted_transient_unknown_retries_fail_closed(probe_env, monkey
         env_file_paths.append(_env_file_of(cmd))
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
-    with patch("sandbox_executor.preflight.time.sleep") as sleep_mock:
+    with scoped_sleep_patch("sandbox_executor.preflight") as sleep_mock:
         res = run_preflight_probe("antigravity-agent", "m", timeout=5, runner_fn=runner_fn)
 
     assert res.status is PreflightStatus.UNKNOWN
@@ -569,13 +570,13 @@ def test_probe_exhausted_transient_unknown_retries_fail_closed(probe_env, monkey
     ],
     ids=["not-logged-in", "expired-key", "quota-exhausted", "invalid-model"],
 )
-def test_probe_clear_auth_quota_and_model_errors_fail_immediately_without_retry(probe_env, monkeypatch, stderr, expected):
+def test_probe_clear_auth_quota_and_model_errors_fail_immediately_without_retry(
+    probe_env, monkeypatch, stderr, expected
+):
     monkeypatch.setattr(preflight, "DEFAULT_RETRY_DELAY_SECONDS", 2.0)
-    runner_fn = MagicMock(
-        return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=stderr)
-    )
+    runner_fn = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=stderr))
 
-    with patch("sandbox_executor.preflight.time.sleep") as sleep_mock:
+    with scoped_sleep_patch("sandbox_executor.preflight") as sleep_mock:
         res = run_preflight_probe("antigravity-agent", "m", timeout=5, runner_fn=runner_fn)
 
     assert res.status is expected

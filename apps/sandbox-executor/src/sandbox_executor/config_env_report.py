@@ -4,15 +4,18 @@ A secret value is never rendered: its row shows ``set (<layer>)``. Like every ot
 values are withheld unless known to be safe), a non-secret value is shown only when it is plainly harmless: a finite
 decimal or ``unlimited`` for a numeric key, otherwise a short value without a URL authority, ``@``, a token-like run or
 a non-finite number, which the command redactor leaves unchanged. Any other value shows as
-``set (<layer>; value withheld)``. The rendering reads only the configuration it is given, never ``os.environ``.
+``set (<layer>; value withheld)``. The rendering reads configuration values only from the configuration it is given;
+``os.environ`` is inspected solely to check ``COMMAND_ECHO_ENV_NAMES`` during redaction, and the bounded redaction
+cache is keyed on a SHA-256 digest so plaintext credentials are never retained in memory.
 """
 
 from __future__ import annotations
 
-import functools
+import hashlib
 import math
 import os
 import re
+from collections import OrderedDict
 from typing import Any
 
 from sandbox_executor import claude_keychain
@@ -27,13 +30,31 @@ _NUMERIC_SUFFIXES = ("_SECONDS", "_MINUTES", "_TIMEOUT", "_TOKENS", "_WINDOW", "
 _NUMBER_RE = re.compile(r"\d{1,12}(?:\.\d{1,6})?")
 _PLAIN_VALUE_RE = re.compile(r"[A-Za-z0-9/~][A-Za-z0-9._,:+/~-]{0,79}")
 _TOKEN_RUN_RE = re.compile(r"[A-Za-z0-9]{20}")
+_REDACTION_CACHE_MAXSIZE = 512
+_REDACTION_CACHE: OrderedDict[bytes, bool] = OrderedDict()
 
 
-@functools.lru_cache(maxsize=512)
-def _plain_value_redaction_safe(key: str, value: str, echo_env: tuple[str, ...]) -> bool:
-    del echo_env
+def _plain_value_cache_key(key: str, value: str) -> bytes:
+    hasher = hashlib.sha256()
+    for part in (key, value, *(os.environ.get(name, "") for name in COMMAND_ECHO_ENV_NAMES)):
+        encoded = part.encode("utf-8", errors="surrogatepass")
+        hasher.update(len(encoded).to_bytes(8, "big"))
+        hasher.update(encoded)
+    return hasher.digest()
+
+
+def _plain_value_redaction_safe(key: str, value: str) -> bool:
+    digest = _plain_value_cache_key(key, value)
+    cached = _REDACTION_CACHE.get(digest)
+    if cached is not None:
+        _REDACTION_CACHE.move_to_end(digest)
+        return cached
     item = f"{key}={value}"
-    return redact_command([item]) == item and not carries_url_password(value)
+    safe = redact_command([item]) == item and not carries_url_password(value)
+    _REDACTION_CACHE[digest] = safe
+    if len(_REDACTION_CACHE) > _REDACTION_CACHE_MAXSIZE:
+        _REDACTION_CACHE.popitem(last=False)
+    return safe
 
 
 def _plain_value(key: str, value: str) -> bool:
@@ -47,8 +68,7 @@ def _plain_value(key: str, value: str) -> bool:
             return False
     except ValueError:
         pass
-    echo_env = tuple(os.environ.get(name, "") for name in COMMAND_ECHO_ENV_NAMES)
-    return _plain_value_redaction_safe(key, value, echo_env)
+    return _plain_value_redaction_safe(key, value)
 
 
 def _display(setting: ResolvedSetting, masked: bool) -> tuple[str | None, str]:

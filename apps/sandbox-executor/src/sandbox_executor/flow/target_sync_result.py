@@ -33,6 +33,7 @@ class CodeResolution:
     tier: str = ""
     attempts: int = 0
     test_result: str = ""
+    test_edits: tuple[str, ...] = ()
 
 
 class CodeResolver(Protocol):
@@ -87,3 +88,4 @@ class SyncResult:
     ledger_row_id: str = ""
     error: str = ""
     conflicted_paths: tuple[str, ...] = field(default=())
+    resolver_test_edits: tuple[str, ...] = ()

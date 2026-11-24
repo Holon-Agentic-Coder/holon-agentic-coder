@@ -152,7 +152,7 @@ class _ConflictCodeResolver:
             error = stage_resolution(attempt.worktree, attempt.paths, check.test_edits)
             if error:
                 return CodeResolution(False, attempt.tier, attempt.number, _bounded(f"staging failed: {error}")), False
-            return CodeResolution(True, attempt.tier, attempt.number, "passed"), False
+            return CodeResolution(True, attempt.tier, attempt.number, "passed", check.test_edits), False
         detail = _describe(verdict, f"rejected edits: {check.reason}" if not check.ok else "")
         label = f"{attempt.probe.target_sha[:12]}-attempt-{attempt.number}-{attempt.tier}"
         save_attempt_diff(attempt.worktree, [*attempt.paths, *check.test_edits], label)

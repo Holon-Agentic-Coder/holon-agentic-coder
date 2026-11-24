@@ -210,3 +210,24 @@ def test_a_container_without_a_verdict_counts_as_agent_failure(work, pushes):
     result = _sync(work, dispatcher)
     assert result.status == "blocked" and dispatcher.tiers() == [HAIKU, SONNET, OPUS]
     assert result.test_result.startswith("agent_failed")
+
+
+def test_resolver_test_edits_propagate_to_sync_result(tmp_path, pushes):
+    files = {
+        LEDGER: json.dumps({"execution_id": "E-base"}) + "\n",
+        APP: "x = 0\n",
+        "tests/test_app.py": "assert True\n",
+    }
+    _, work = build_flow_repos(tmp_path, {**files, ".gitignore": "tmp/\n"})
+    commit_on(work, "main", {APP: "y = 2\n", "src/target_only.py": "t = 1\n"}, "target")
+    commit_on(work, FLOW_BRANCH, {APP: "x = 1\n"}, "flow")
+
+    def resolve_with_test_edit(w: Path) -> None:
+        _resolve(w)
+        (w / "tests/test_app.py").write_text("assert 1 == 1\n", encoding="utf-8")
+
+    result = _sync(work, FakeDispatcher([(resolve_with_test_edit, "resolved")]))
+    assert result.status == "merged"
+    assert result.code_paths == (APP,)
+    assert result.resolver_test_edits == ("tests/test_app.py",)
+    assert "src/target_only.py" in result.changed_paths

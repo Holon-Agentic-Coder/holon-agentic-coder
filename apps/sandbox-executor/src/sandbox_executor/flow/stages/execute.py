@@ -96,6 +96,7 @@ class ExecuteState:
     container_status: str | None = None
     base_payload: dict[str, Any] = field(default_factory=dict)
     changed: list[str] = field(default_factory=list)
+    tested_head: str = ""
 
 
 class ExecuteStage:
@@ -305,6 +306,8 @@ class ExecuteStage:
         context.execution_branch = exec_branch
         _track_local_branch(context, exec_branch)
         state.exec_ref = exec_ref = f"refs/remotes/origin/{exec_branch}"
+        tip = run_git(["rev-parse", "--verify", f"{exec_ref}^{{commit}}"], cwd=state.repo_dir, check=False)
+        state.tested_head = tip.stdout.strip() if tip.returncode == 0 else ""
         rows = _read_ledger_rows(state.repo_dir, exec_ref, "executions.jsonl")
         state.summary_row = summary_row = _latest_execution_summary(rows, exec_id, exec_ref)
         state.container_status = str(summary_row.get("status")) if summary_row else None
@@ -394,6 +397,10 @@ class ExecuteStage:
         )
         if violation is not None:
             return violation
+        # The commit Stage 3 tested, captured before STAGE_END sync so Stage 4 applies test evidence only to it.
+        if not state.tested_head:
+            tip = run_git(["rev-parse", "--verify", f"{state.exec_ref}^{{commit}}"], cwd=state.repo_dir, check=False)
+            state.tested_head = tip.stdout.strip() if tip.returncode == 0 else ""
         if (
             not state.base_payload.get("sync_conflict_resolved")
             and (end_err := at_stage_boundary(context, FlowStage.EXECUTE, SyncBoundary.STAGE_END)) is not None
@@ -401,9 +408,6 @@ class ExecuteStage:
             return end_err
         end_time = _utc_now()
         context.log(f"Stage 3 completed: Execution branch '{state.exec_branch}' changes {len(state.changed)} path(s).")
-        # The commit Stage 3 tested, so Stage 4 applies its test evidence only to an unchanged head.
-        tip = run_git(["rev-parse", "--verify", f"{state.exec_ref}^{{commit}}"], cwd=state.repo_dir, check=False)
-        tested_head = tip.stdout.strip() if tip.returncode == 0 else ""
         result = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
@@ -413,7 +417,7 @@ class ExecuteStage:
             payload={
                 **state.base_payload,
                 "changed_files": len(state.changed),
-                "head_sha": tested_head,
+                "head_sha": state.tested_head,
                 **_recorded_test_fields(summary_row),
             },
         )

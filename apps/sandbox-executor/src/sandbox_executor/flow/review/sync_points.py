@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+from collections.abc import Callable
 from typing import Any
 
 from sandbox_executor.calibration import is_metadata_path
@@ -41,8 +42,10 @@ def compute_rereview_scope(result: SyncResult) -> tuple[str, ...]:
     """Return sorted deduplicated code and test paths touched by an agent-resolved merge commit."""
     if result.status != "merged" or is_mechanical_only(result):
         return ()
-    scoped = set(result.code_paths) | {
-        p for p in result.changed_paths if p and not is_metadata_path(p) and not p.startswith("holon-knowledge/ledger/")
+    scoped = {
+        p
+        for p in (*result.code_paths, *result.resolver_test_edits)
+        if p and not is_metadata_path(p) and not p.startswith("holon-knowledge/ledger/")
     }
     return tuple(sorted(scoped))
 
@@ -162,16 +165,15 @@ def sync_iteration_mergeability(
     resolved_target: ReviewTarget | None,
     target_branch: str,
     iteration: int,
-    mergeability: dict[str, Any],
+    mergeability_probe: Callable[[], dict[str, Any]],
 ) -> tuple[ReviewTarget | None, dict[str, Any], bool, str | None]:
-    """Run pre-iteration sync and refresh mergeability if a merge resolved conflicts."""
+    """Probe mergeability, run pre-iteration sync, and re-probe when a merge advanced the head."""
+    mergeability = mergeability_probe()
     before_sha = resolved_target.head_sha if resolved_target is not None else ""
     updated, sync_error = sync_before_review_iteration(context, resolved_target, target_branch, iteration)
-    dirty = bool(mergeability.get("is_dirty"))
-    if sync_error is None and updated and updated.head_sha and updated.head_sha != before_sha and dirty:
-        clean = {**mergeability, "mergeable": "MERGEABLE", "merge_state_status": "CLEAN", "is_dirty": False}
-        return updated, clean, False, None
-    return updated, mergeability, dirty, sync_error
+    if sync_error is None and updated and updated.head_sha and updated.head_sha != before_sha:
+        mergeability = mergeability_probe()
+    return updated, mergeability, bool(mergeability.get("is_dirty")), sync_error
 
 
 def sync_after_resolver_turn(

@@ -321,6 +321,24 @@ class TestRecordExecution:
         assert result.status == StageStatus.SUCCESS and ctx.stage_results["execute"] is result
         assert result.payload["changed_files"] == 1 and result.payload["execution_id"] == EXEC_ID
 
+    def test_captures_tested_head_before_stage_end_sync(self, ctx):
+        from types import SimpleNamespace
+
+        heads = iter(["tested-sha", "merged-sha"])
+
+        def fake_git(*_a, **_k):
+            return SimpleNamespace(returncode=0, stdout=f"{next(heads)}\n")
+
+        with (
+            patch(f"{EXECUTE}.touch_set_violation_result", return_value=None),
+            patch(f"{EXECUTE}.run_git", side_effect=fake_git),
+            patch(f"{EXECUTE}.at_stage_boundary", return_value=None) as sync_end,
+        ):
+            result = prepared_stage(ctx).record_execution()
+        sync_end.assert_called_once()
+        assert result.status == StageStatus.SUCCESS
+        assert result.payload["head_sha"] == "tested-sha"
+
     def test_stops_on_a_non_success_status(self, ctx):
         result = prepared_stage(ctx, summary_row=summary_row("failure")).record_execution()
         assert result.status == StageStatus.FAILED

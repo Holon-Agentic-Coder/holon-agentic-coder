@@ -71,6 +71,7 @@ def _resolve(request: SyncRequest, probe: TargetProbe, result: SyncResult) -> Sy
     result = replace(
         result,
         code_paths=tuple(outcome.code_paths),
+        resolver_test_edits=tuple(code.test_edits),
         resolver_tier=code.tier,
         attempts=code.attempts,
         test_result=code.test_result,

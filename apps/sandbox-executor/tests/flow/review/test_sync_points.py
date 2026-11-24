@@ -65,7 +65,8 @@ def test_mechanical_vs_agent_helpers_and_rereview_scope() -> None:
         resolutions=((APP, "code", "tier-1"),),
         code_paths=(APP,),
         resolver_tier="tier-1",
-        changed_paths=(APP, "tests/test_app.py", LEDGER),
+        changed_paths=(APP, "tests/test_app.py", "src/target_only.py", LEDGER),
+        resolver_test_edits=("tests/test_app.py",),
     )
     assert is_mechanical_only(agent) is False
     assert is_ledger_only_sync(agent) is False
@@ -123,27 +124,37 @@ def test_stage4_iteration_and_resolver_turn_boundaries_resolve_injected_conflict
     ctx = _ctx(work, dispatcher=dispatcher)
     target = ReviewTarget(raw=FLOW_BRANCH, head_branch=FLOW_BRANCH, head_sha=before)
 
-    updated, mergeability, is_dirty, err = sync_iteration_mergeability(
-        ctx, target, "main", 1, {"mergeable": "CONFLICTING", "merge_state_status": "DIRTY", "is_dirty": True}
+    probes = iter(
+        [
+            {"mergeable": "CONFLICTING", "merge_state_status": "DIRTY", "is_dirty": True},
+            {"mergeable": "MERGEABLE", "merge_state_status": "BLOCKED", "is_dirty": False},
+        ]
     )
+    updated, mergeability, is_dirty, err = sync_iteration_mergeability(ctx, target, "main", 1, lambda: next(probes))
 
     assert err is None
-    assert is_dirty is False and mergeability["merge_state_status"] == "CLEAN"
+    assert is_dirty is False and mergeability["merge_state_status"] == "BLOCKED"
     assert updated is not None and updated.head_sha != before
     assert ctx.review_scope_paths == []  # Unapproved PR must never be narrowed to conflict-resolved paths.
 
     # When already in a post-approval scoped re-review, a further agent merge unions into review_scope_paths.
     ctx.review_scope_paths = ["src/other.py"]
-    commit_on(work, "main", {APP: "y = 3\n"}, "target code 2")
+    commit_on(work, "main", {APP: "y = 3\n", "src/unrelated_target.py": "u = 1\n"}, "target code 2")
     commit_on(work, FLOW_BRANCH, {APP: "x = 2\n"}, "flow code 2")
     before_union = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
     ctx.dispatcher = FakeResolverDispatcher([(_resolve_app, "resolved")])
+    probes_u = iter(
+        [
+            {"mergeable": "CONFLICTING", "merge_state_status": "DIRTY", "is_dirty": True},
+            {"mergeable": "MERGEABLE", "merge_state_status": "CLEAN", "is_dirty": False},
+        ]
+    )
     updated_u, _, _, err_u = sync_iteration_mergeability(
         ctx,
         ReviewTarget(raw=FLOW_BRANCH, head_branch=FLOW_BRANCH, head_sha=before_union),
         "main",
         2,
-        {"mergeable": "CONFLICTING", "merge_state_status": "DIRTY", "is_dirty": True},
+        lambda: next(probes_u),
     )
     assert err_u is None and updated_u is not None and updated_u.head_sha != before_union
     assert ctx.review_scope_paths == [APP, "src/other.py"]
@@ -169,7 +180,8 @@ def test_agent_resolved_merge_never_carries_approval_and_preserves_scope_across_
         resolutions=((APP, "code", "tier-1"),),
         code_paths=(APP,),
         resolver_tier="tier-1",
-        changed_paths=(APP, "tests/test_app.py"),
+        changed_paths=(APP, "tests/test_app.py", "src/target_only.py"),
+        resolver_test_edits=("tests/test_app.py",),
     )
     monkeypatch.setattr(sync_points, "sync_review_head", lambda *a, **k: agent_merged)
     monkeypatch.setattr(approval_carry_over, "approval_fingerprint_of", lambda *a, **k: "pf1:" + "e" * 40)

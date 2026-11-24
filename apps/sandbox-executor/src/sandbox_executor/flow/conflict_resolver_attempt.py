@@ -15,6 +15,7 @@ rename counts as out of set.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -158,13 +159,25 @@ def discard_tampered(worktree: str, before: MergeSnapshot) -> str:
     return "" if res.returncode == 0 else f"could not restore HEAD to {before.head[:12]}"
 
 
+_SAFE_LABEL_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_artefact_label(label: str) -> str:
+    cleaned = _SAFE_LABEL_RE.sub("_", label).strip("._-")
+    cleaned = re.sub(r"\.{2,}", "_", cleaned)
+    return cleaned or "attempt"
+
+
 def save_attempt_diff(worktree: str, paths: list[str], label: str) -> str:
     """Write the attempt's ``git diff`` of the conflict paths under ``tmp/conflict-resolver/``; return its path."""
-    target = Path(worktree) / ARTEFACT_DIR / f"{label}.diff"
+    artefact_dir = (Path(worktree) / ARTEFACT_DIR).resolve()
+    target = (artefact_dir / f"{_safe_artefact_label(label)}.diff").resolve()
+    if not target.is_relative_to(artefact_dir) or target.parent != artefact_dir:
+        return ""
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
+        artefact_dir.mkdir(parents=True, exist_ok=True)
         # Self-ignoring, so an artefact is never swept into a commit even where ``tmp/`` is not git-ignored.
-        (target.parent / ".gitignore").write_text("*\n", encoding="utf-8")
+        (artefact_dir / ".gitignore").write_text("*\n", encoding="utf-8")
         target.write_text(git_out(worktree, "diff", "--", *paths), encoding="utf-8")
     except OSError:
         return ""

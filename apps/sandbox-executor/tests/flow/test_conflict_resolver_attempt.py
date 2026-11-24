@@ -101,6 +101,19 @@ def test_saved_diff_artefacts_are_not_new_files(work):
     assert check_attempt(str(work), ["app.py"], before).ok
 
 
+@pytest.mark.parametrize("label", ["abc-attempt-1-anthropic/claude-opus-5-5", "../../escape", "../a/b..c"])
+def test_save_attempt_diff_sanitises_label_and_stays_inside_artefact_dir(work, label):
+    before = snapshot_merge(str(work))
+    _resolve(work)
+    saved = save_attempt_diff(str(work), ["app.py"], label)
+    artefact_dir = (work / ARTEFACT_DIR).resolve()
+    saved_path = Path(saved).resolve()
+    assert saved_path.parent == artefact_dir and saved_path.suffix == ".diff"
+    assert (artefact_dir / ".gitignore").read_text(encoding="utf-8") == "*\n"
+    assert "value = 3" in saved_path.read_text(encoding="utf-8")
+    assert check_attempt(str(work), ["app.py"], before).ok
+
+
 @pytest.mark.parametrize(
     "write",
     [

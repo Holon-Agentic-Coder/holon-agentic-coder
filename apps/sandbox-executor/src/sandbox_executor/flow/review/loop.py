@@ -335,11 +335,9 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         iteration_timer = StageTimer("review", iteration_budget_seconds, clock=clock)
 
         # 1. Mergeability inspection and pre-iteration target sync
-        last_mergeability = check_pr_mergeability(
-            repo_dir, review_target, target_branch=target_branch, proxy_env=proxy_env, github=github
-        )
+        mp = functools.partial(check_pr_mergeability, repo_dir, review_target, target_branch, proxy_env, github=github)
         resolved_target, last_mergeability, is_dirty, sync_err = sync_iteration_mergeability(
-            context, resolved_target, target_branch, iteration, last_mergeability
+            context, resolved_target, target_branch, iteration, mp
         )
         infra_error = infra_error or sync_err
         missing_ref = last_mergeability.get("merge_state_status") == "MISSING_REF"

@@ -107,6 +107,43 @@ def test_consult_indexes_a_canonical_action_once_with_the_canonical_payload(tmp_
         conn.close()
 
 
+def _index_counts(db: ActionIndexDatabase) -> tuple[int, int, int]:
+    conn = db.get_connection()
+    try:
+        records = conn.execute("SELECT COUNT(*) FROM action_records").fetchone()[0]
+        fts = conn.execute("SELECT COUNT(*) FROM action_records_fts").fetchone()[0]
+        successes = conn.execute("SELECT SUM(success_count) FROM action_signatures").fetchone()[0]
+        return records, fts, successes
+    finally:
+        conn.close()
+
+
+def test_consult_indexes_fragment_rows_beside_a_non_object_json_line(tmp_path: Path) -> None:
+    canonical = _write(tmp_path, f"{LEDGER_REL}/executions.jsonl", [])
+    fragment = tmp_path / LEDGER_REL / "pending/executions/I-1-a.jsonl"
+    fragment.parent.mkdir(parents=True, exist_ok=True)
+    action = {"entry_type": "action", "action_id": "ACT-1", "action": "Wire cache", "verdict": "success"}
+    fragment.write_text("[1]\n" + _jsonl([action]), encoding="utf-8")
+    db = ActionIndexDatabase(db_path=str(tmp_path / "index.db"))
+    result = ConsultEngine(db=db, auto_sync_ledgers=[str(canonical)]).consult_records(query_text="cache")
+    assert [r["action_id"] for r in result.records] == ["ACT-1"]
+
+
+def test_a_promoted_fragment_row_is_not_indexed_again_from_canonical(tmp_path: Path) -> None:
+    action = {"entry_type": "action", "action_id": "ACT-1", "action": "Wire cache", "verdict": "success"}
+    canonical = _write(tmp_path, f"{LEDGER_REL}/executions.jsonl", [])
+    fragment = _write(tmp_path, f"{LEDGER_REL}/pending/executions/I-1-a.jsonl", [action])
+    db = ActionIndexDatabase(db_path=str(tmp_path / "index.db"))
+    engine = ConsultEngine(db=db, auto_sync_ledgers=[str(canonical)])
+    engine.consult_records(query_text="cache")
+    assert _index_counts(db) == (1, 1, 1)
+    canonical.write_text(_jsonl([action]), encoding="utf-8")
+    fragment.unlink()
+    result = engine.consult_records(query_text="cache")
+    assert [r["action_id"] for r in result.records] == ["ACT-1"]
+    assert _index_counts(db) == (1, 1, 1)
+
+
 def test_canonical_duplicates_are_never_collapsed(tmp_path: Path) -> None:
     row = _plan("P-1", "I-1-a", "2026-11-25T09:00:00Z")
     canonical = _write(tmp_path, f"{LEDGER_REL}/plans.jsonl", [row, row])

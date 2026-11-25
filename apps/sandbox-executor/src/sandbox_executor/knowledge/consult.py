@@ -10,8 +10,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.knowledge.consult_filters import ConsultQuery, build_where, clean_labels, row_to_record
+from sandbox_executor.knowledge.fragment_identities import RowIdentity
 from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, ActionIndexDatabase
-from sandbox_executor.ledger.merged import fragment_sync_plan
+from sandbox_executor.ledger.merged import fragment_sync_plan, ledger_row_identity
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +76,13 @@ class ConsultEngine:
 
     def _sync_if_needed(self) -> None:
         for ledger in self.ledgers:
-            for ledger_path, skip_row in [(ledger, None), *fragment_sync_plan(ledger)]:
+            identity_of = ledger_row_identity(ledger)
+            syncs = [(ledger, None, RowIdentity(ledger, identity_of))]
+            fragment_identity = RowIdentity(ledger, identity_of, record=True)
+            syncs += [(path, skip_row, fragment_identity) for path, skip_row in fragment_sync_plan(ledger)]
+            for ledger_path, skip_row, identity in syncs:
                 try:
-                    self.db.sync_ledger(ledger_path, skip_row)
+                    self.db.sync_ledger(ledger_path, skip_row, identity)
                 except Exception as e:
                     logger.debug("Failed incremental sync for %s: %s", ledger_path, e)
 

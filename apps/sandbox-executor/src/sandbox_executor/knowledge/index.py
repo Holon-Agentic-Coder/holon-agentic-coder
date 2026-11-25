@@ -6,6 +6,7 @@ import sqlite3
 from collections.abc import Callable
 from typing import Any
 
+from sandbox_executor.knowledge.fragment_identities import RowIdentity
 from sandbox_executor.knowledge.ledger_sync import compute_signature_hash, connect_wal, sync_ledger_incremental
 
 logger = logging.getLogger(__name__)
@@ -170,5 +171,10 @@ class ActionIndexDatabase:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def sync_ledger(self, ledger_path: str, skip_row: Callable[[dict[str, Any]], bool] | None = None) -> int:
-        return sync_ledger_incremental(self.db_path, ledger_path, skip_row)
+    def sync_ledger(
+        self,
+        ledger_path: str,
+        skip_row: Callable[[dict[str, Any]], bool] | None = None,
+        identity: RowIdentity | None = None,
+    ) -> int:
+        return sync_ledger_incremental(self.db_path, ledger_path, skip_row, identity)

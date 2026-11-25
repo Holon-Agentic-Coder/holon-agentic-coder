@@ -1,13 +1,3 @@
-"""Guarded merge of a child PR into its plan branch: merge commit or squash, CI green and mergeable, never ``main``.
-
-This is the only place the flow engine merges a pull request. :func:`merge_refusal_reason` is a pure, fail-closed check
-run twice per merge (before the plan branch is brought into the child and immediately before the merge): it refuses
-``main``, ``master``, the default branch, any base other than the expected plan branch, and a failed default-branch
-lookup. Only ``gh pr merge <n> --merge|--squash --match-head-commit <sha>`` is run (:mod:`.merge_method` picks the
-flag, :func:`.adapter.merge_argv` refuses any other); never ``--rebase``, ``--auto``, ``--admin`` or
-``--delete-branch``. ``gh`` is reached only through a runner.
-"""
-
 from __future__ import annotations
 
 import os
@@ -29,30 +19,27 @@ from sandbox_executor.flow.ledger_interleave import resolve_ledger_only_conflict
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
 
-#: Runs ``gh <args>`` in a directory and returns the completed process; tests pass a fake.
 GhRunner = Callable[[list[str], str], subprocess.CompletedProcess[str]]
 
 PR_VIEW_FIELDS = "number,state,baseRefName,headRefName,headRefOid,mergeable,mergeCommit,url"
-# How long a merge waits for GitHub to recompute mergeability and for CI to settle after the head moved.
 MERGE_SETTLE_SECONDS = 900.0
 MERGE_POLL_SECONDS = 15.0
 
+_CI_FAIL_BUCKETS = frozenset({"fail", "cancel"})
+_CI_PASS_BUCKETS = frozenset({"pass", "skipping"})
+_RETRYABLE_CI_STATES = frozenset({"pending", "unmeasured"})
+
 
 def run_gh(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-    """Run ``gh`` with ``args`` in ``cwd``; a missing binary or a timeout becomes a failed process, never a raise."""
     return GitHubAdapter(cwd).gh(args)
 
 
 def gh_runner(runner: GhRunner | None, github: GitHubAdapter | None = None) -> GhRunner:
-    """Return ``runner``, else ``github.gh``, else this module's :func:`run_gh` looked up at call time (the seam
-    tests patch)."""
     return runner or (github.gh if github is not None else run_gh)
 
 
 @dataclass
 class MergeResult:
-    """Outcome of :func:`merge_child_pr`: a refusal is ``merged=False`` with a ``reason``, never a raise."""
-
     merged: bool
     merge_commit: str | None = None
     reason: str | None = None
@@ -60,14 +47,12 @@ class MergeResult:
 
 
 def _gh_json(repo_dir: str, args: list[str], runner: GhRunner) -> Any:
-    """Run a ``gh ... --json`` command and return its parsed output, or None when it failed or printed no JSON."""
     return parse_gh_json(runner(args, repo_dir).stdout)
 
 
 def lookup_default_branch(
     repo_dir: str, runner: GhRunner | None = None, *, github: GitHubAdapter | None = None
 ) -> str | None:
-    """Return the repository default branch from ``gh repo view``, or None on any failure (never a ``main`` guess)."""
     data = _gh_json(repo_dir, ["repo", "view", "--json", "defaultBranchRef"], gh_runner(runner, github))
     ref = data.get("defaultBranchRef") if isinstance(data, dict) else None
     name = ref.get("name") if isinstance(ref, dict) else None
@@ -77,26 +62,23 @@ def lookup_default_branch(
 def view_pr(
     repo_dir: str, pr: str, runner: GhRunner | None = None, *, github: GitHubAdapter | None = None
 ) -> dict[str, Any] | None:
-    """Return the ``gh pr view`` facts of a PR (number, URL or head branch), or None when they cannot be read."""
     data = _gh_json(repo_dir, ["pr", "view", str(pr), "--json", PR_VIEW_FIELDS], gh_runner(runner, github))
     return data if isinstance(data, dict) else None
 
 
 def _ci_state(repo_dir: str, pr_number: int | str, runner: GhRunner) -> str:
-    """Return ``green``, ``pending``, ``red`` or ``unmeasured`` for a PR's checks (no checks is never green)."""
     checks = _gh_json(repo_dir, ["pr", "checks", str(pr_number), "--json", "bucket,name,state"], runner)
     if not isinstance(checks, list) or not checks:
         return "unmeasured"
     buckets = {str(c.get("bucket") or "").lower() for c in checks if isinstance(c, dict)}
-    if buckets & {"fail", "cancel"}:
+    if buckets & _CI_FAIL_BUCKETS:
         return "red"
-    if buckets - {"pass", "skipping"}:
+    if buckets - _CI_PASS_BUCKETS:
         return "pending"
     return "green"
 
 
 def _settle_reason(repo_dir: str, pr_number: int | str, head_sha: str, runner: GhRunner) -> tuple[str | None, bool]:
-    """Return ``(reason, retry)``: why the PR is not ready to merge at ``head_sha`` and whether waiting may help."""
     pr = view_pr(repo_dir, str(pr_number), runner) or {}
     if pr.get("headRefOid") != head_sha:
         return f"the PR head is {pr.get('headRefOid')!r}, not the verified head {head_sha!r}", True
@@ -105,13 +87,11 @@ def _settle_reason(repo_dir: str, pr_number: int | str, head_sha: str, runner: G
         return f"the PR is not mergeable (mergeable={mergeable})", mergeable == "UNKNOWN"
     ci = _ci_state(repo_dir, pr_number, runner)
     if ci != "green":
-        # Checks on a freshly pushed head may not be registered yet, so "unmeasured" is waited on like "pending".
-        return f"CI is not green on the PR head (checks {ci})", ci in ("pending", "unmeasured")
+        return f"CI is not green on the PR head (checks {ci})", ci in _RETRYABLE_CI_STATES
     return None, False
 
 
 def _await_ready(repo_dir: str, pr_number: int | str, head_sha: str, runner: GhRunner) -> str | None:
-    """Wait (bounded by ``MERGE_SETTLE_SECONDS``) until the PR is mergeable with green CI; return a refusal or None."""
     deadline = time.monotonic() + MERGE_SETTLE_SECONDS
     while True:
         reason, retry = _settle_reason(repo_dir, pr_number, head_sha, runner)
@@ -128,8 +108,6 @@ def _commit_env() -> dict[str, str]:
 
 
 def _merge_in_worktree(worktree: str, source_ref: str, message: str) -> tuple[str | None, tuple[str, ...]]:
-    """Merge ``source_ref`` into the worktree's HEAD with a merge commit; return why it failed (or None) and the
-    paths left unmerged, read before the merge is aborted."""
     merge = run_git(["merge", "--no-ff", "-m", message, source_ref], cwd=worktree, check=False, env=_commit_env())
     if merge.returncode == 0:
         return None, ()
@@ -147,10 +125,6 @@ def _merge_in_worktree(worktree: str, source_ref: str, message: str) -> tuple[st
 
 @dataclass(frozen=True)
 class BranchMerge:
-    """Outcome of :func:`merge_branch_detailed`: the target's tip on origin (None on failure), why it failed, the
-    conflicting paths of an aborted merge, the source commit that was merged (or already contained) and the merge
-    commit this call pushed (None when the source was already contained)."""
-
     target_sha: str | None
     reason: str = ""
     conflicts: tuple[str, ...] = ()
@@ -161,24 +135,11 @@ class BranchMerge:
 def merge_into_branch(
     repo_dir: str, source_branch: str, target_branch: str, message: str, default_branch: str | None = None
 ) -> tuple[str | None, str]:
-    """Merge ``origin/source_branch`` into ``target_branch`` on origin with a merge commit, in a temporary worktree.
-
-    A ``target_branch`` that is empty, ``main``, ``master`` or ``default_branch`` is refused before anything is
-    fetched or pushed. Both branches are fetched first. When the source is already an ancestor of the target nothing
-    is written. Ledger-only conflicts are resolved with :mod:`sandbox_executor.flow.ledger_interleave`; any other
-    conflict aborts the merge, names the conflicting files and nothing is pushed. The operator's checkout is never
-    touched.
-
-    Returns:
-        tuple[str | None, str]: ``(target_sha, "")`` with the target's tip on origin after the merge, or
-        ``(None, reason)`` when it could not be merged or pushed.
-    """
     merged = merge_branch_detailed(repo_dir, source_branch, target_branch, message, default_branch)
     return merged.target_sha, merged.reason
 
 
 def _fetched_tips(repo_dir: str, source_branch: str, target_branch: str) -> tuple[tuple[str, str], str]:
-    """Fetch both branches and return ``((target_sha, source_sha), "")``, or ``(("", ""), reason)`` on failure."""
     fetch_error = _fetch_refspecs_error(
         repo_dir, [f"+refs/heads/{b}:refs/remotes/origin/{b}" for b in (source_branch, target_branch)]
     )
@@ -194,7 +155,6 @@ def _fetched_tips(repo_dir: str, source_branch: str, target_branch: str) -> tupl
 def merge_branch_detailed(
     repo_dir: str, source_branch: str, target_branch: str, message: str, default_branch: str | None = None
 ) -> BranchMerge:
-    """:func:`merge_into_branch` with its conflicting paths and the merged source commit (see :class:`BranchMerge`)."""
     target = _bare_branch(target_branch)
     if not target or target in PROTECTED_BRANCHES or target == _bare_branch(default_branch):
         reason = f"refusing to push to '{target}': it is empty, main, master or the repository default branch"
@@ -226,7 +186,6 @@ def merge_branch_detailed(
 
 
 def _merged_result(pr: dict[str, Any], plan_branch: str, already_merged: bool) -> MergeResult:
-    """Result for a merged PR: success when it merged into the plan branch, a refusal otherwise."""
     base = _bare_branch(pr.get("baseRefName"))
     if base != _bare_branch(plan_branch):
         return MergeResult(False, reason=f"the PR is merged into '{base}', not '{plan_branch}'")
@@ -238,11 +197,6 @@ def _merged_result(pr: dict[str, Any], plan_branch: str, already_merged: bool) -
 def _guard(
     repo_dir: str, pr: dict[str, Any], plan_branch: str, expected_head: str | None, runner: GhRunner
 ) -> tuple[str | None, str | None]:
-    """Run the refusal checks against a freshly read PR and a fresh default-branch lookup; return (reason, default).
-
-    Besides :func:`merge_refusal_reason` on the base, the PR head must not be ``main``, ``master`` or the default
-    branch (the plan branch is pushed into it) and, when ``expected_head`` is given, must be exactly that branch.
-    """
     default = lookup_default_branch(repo_dir, runner)
     reason = merge_refusal_reason(pr.get("baseRefName"), plan_branch, default)
     head = _bare_branch(pr.get("headRefName"))
@@ -253,14 +207,16 @@ def _guard(
     return reason, default
 
 
+def _reread_and_guard(
+    repo_dir: str, pr_number: Any, plan_branch: str, expected_head: str | None, gh: GhRunner
+) -> str | None:
+    fresh_pr = view_pr(repo_dir, str(pr_number), gh) or {}
+    return _guard(repo_dir, fresh_pr, plan_branch, expected_head, gh)[0]
+
+
 def _verified_head(
     repo_dir: str, pr: dict[str, Any], plan_branch: str, expected_head: str | None, gh: GhRunner
 ) -> tuple[str | None, str]:
-    """Guard an open PR, bring the plan branch into its head, and wait until it is ready to merge at that head.
-
-    Returns:
-        tuple[str | None, str]: ``(head_sha, "")`` when the PR may be merged at ``head_sha``, else ``(None, reason)``.
-    """
     number, state = pr.get("number"), str(pr.get("state") or "").upper()
     reason = f"PR #{number} is {state or 'in an unknown state'}" if state != "OPEN" else None
     if reason:
@@ -273,13 +229,11 @@ def _verified_head(
     if head_sha is None:
         return None, f"bringing '{plan_branch}' into the child failed: {merge_error}"
     reason = _await_ready(repo_dir, number, head_sha, gh)
-    # Re-read the PR immediately before merging: its base may have been edited since the first check.
-    reason = reason or _guard(repo_dir, view_pr(repo_dir, str(number), gh) or {}, plan_branch, expected_head, gh)[0]
+    reason = reason or _reread_and_guard(repo_dir, number, plan_branch, expected_head, gh)
     return (None, reason) if reason else (head_sha, "")
 
 
 def _merge_argv(pr_number: int | str, flag: str, head_sha: str | None, reason: str) -> tuple[list[str] | None, str]:
-    """Return ``(argv, "")`` for the guarded ``gh pr merge`` at a verified head, else ``(None, reason)``."""
     if head_sha is None:
         return None, reason
     try:
@@ -295,15 +249,6 @@ def merge_child_pr(
     runner: GhRunner | None = None,
     expected_head: str | None = None,
 ) -> MergeResult:
-    """Merge a child PR into ``plan_branch`` with the repository's allowed method, only when every guard passes.
-
-    Steps: read the PR (an already merged PR into the plan branch is an idempotent success); look up the merge method
-    (:func:`lookup_merge_flag`; a failed lookup or no allowed method refuses before anything is written); refuse
-    through :func:`merge_refusal_reason` and refuse a head that is protected or not ``expected_head``; bring the plan
-    branch into the child head (ledger-only conflicts interleaved, anything else refused); wait, bounded, for the PR to
-    be mergeable with green CI on that head; re-read the PR and re-run the refusal check; then
-    ``gh pr merge <flag> --match-head-commit`` and verify the PR reports ``MERGED``.
-    """
     gh = gh_runner(runner)
     pr = view_pr(repo_dir, str(pr_number), gh)
     if pr is None:

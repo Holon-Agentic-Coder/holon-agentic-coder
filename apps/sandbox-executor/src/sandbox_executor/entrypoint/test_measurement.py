@@ -1,9 +1,3 @@
-"""Measure the project's tests: run ``uv run task test`` and reduce the pytest summary to a structured result.
-
-Shared by the Stage 3 executor entrypoint and the Stage 4 review loop. A missing measurement is never a pass: any run
-that cannot be fully reconciled records a null rate and an explicit ``run_error``.
-"""
-
 from __future__ import annotations
 
 import os
@@ -31,8 +25,6 @@ Runner = Callable[[list[str], str, float], "subprocess.CompletedProcess[str]"]
 
 @dataclass(frozen=True)
 class TestMeasurement:
-    """One test run: ``rate`` is None unless counts were parsed; ``run_error`` explains every null."""
-
     __test__ = False
 
     rate: float | None
@@ -45,7 +37,6 @@ class TestMeasurement:
 
 
 def parse_pytest_counts(output: str) -> tuple[int, int, int] | None:
-    """Return ``(passed, failed, errored)`` from the final pytest summary line, or None when there is none."""
     for line in reversed(output.splitlines()):
         match = _SUMMARY_LINE_RE.match(line.strip())
         if not match:
@@ -66,7 +57,6 @@ def _unmeasured(exit_code: int, error: str, output: str = "") -> TestMeasurement
 
 
 def measure_from_result(result: subprocess.CompletedProcess[str]) -> TestMeasurement:
-    """Reduce a finished test run to a measurement; anything unreconcilable is unmeasured with an error."""
     output = "\n".join(part for part in (result.stdout, result.stderr) if part)
     if result.returncode == MISSING_TOOL_EXIT_CODE and "was not found on PATH" in (result.stderr or ""):
         return _unmeasured(result.returncode, (result.stderr or "").strip(), output)
@@ -81,7 +71,6 @@ def measure_from_result(result: subprocess.CompletedProcess[str]) -> TestMeasure
 
 
 def configured_timeout() -> float:
-    """The test-run timeout in seconds: ``HOLON_TEST_MEASUREMENT_TIMEOUT_SECONDS`` or the default."""
     try:
         value = float(os.environ.get(TEST_TIMEOUT_ENV, ""))
     except ValueError:
@@ -90,7 +79,6 @@ def configured_timeout() -> float:
 
 
 def _run_in_process_group(argv: list[str], cwd: str, timeout: float) -> subprocess.CompletedProcess[str]:
-    """Run ``argv``; on timeout kill the whole process group and raise ``TimeoutExpired``."""
     with subprocess.Popen(
         argv,
         cwd=cwd,
@@ -111,7 +99,6 @@ def _run_in_process_group(argv: list[str], cwd: str, timeout: float) -> subproce
 
 
 def run_test_task(workspace: str, runner: Runner | None = None, timeout: float | None = None) -> TestMeasurement:
-    """Run the project's test task in ``workspace`` and measure it; never raises or reports an unseen pass."""
     run = runner or _run_in_process_group
     limit = timeout if timeout is not None else configured_timeout()
     try:

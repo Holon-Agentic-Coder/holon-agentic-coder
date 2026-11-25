@@ -171,7 +171,7 @@ def test_stage_5_commits_the_report_on_a_nested_layout(layout: SimpleNamespace, 
     git(layout.host, "checkout", "-qb", "operator-work", "main")
     ctx = FlowContext(target_worktree=str(layout.host), execution_branch=EXEC, agent="a", model="m", skip_push=True)
     with (
-        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", return_value={"state": "success"}),
     ):
         result = run_calibrate_stage(ctx)

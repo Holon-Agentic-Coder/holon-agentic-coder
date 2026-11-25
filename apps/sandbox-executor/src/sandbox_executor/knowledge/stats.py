@@ -1,8 +1,7 @@
-"""Telemetry collection and self-metrics reporting engine for holon stats."""
-
 from __future__ import annotations
 
 import logging
+import sqlite3
 from datetime import UTC, datetime
 from typing import Any
 
@@ -11,9 +10,55 @@ from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, ActionInde
 logger = logging.getLogger(__name__)
 
 
-class TelemetryCollector:
-    """Collects and aggregates operational self-metrics across consult and execution phases."""
+def _percentile(vals: list[float], pct: float) -> float:
+    if not vals:
+        return 0.0
+    idx = round((len(vals) - 1) * pct)
+    return vals[idx]
 
+
+def _query_consult_telemetry(cur: sqlite3.Cursor) -> dict[str, Any]:
+    cur.execute(
+        """
+        SELECT latency_ms, tokens_injected, cache_hit
+        FROM consult_telemetry
+        ORDER BY latency_ms ASC;
+        """
+    )
+    telemetry_rows = cur.fetchall()
+    total_consults = len(telemetry_rows)
+    latencies = [float(r["latency_ms"]) for r in telemetry_rows]
+    tokens = sum(int(r["tokens_injected"]) for r in telemetry_rows)
+    cache_hits = sum(1 for r in telemetry_rows if r["cache_hit"])
+    hit_rate = (cache_hits / total_consults * 100.0) if total_consults > 0 else 0.0
+    return {
+        "total_consults": total_consults,
+        "cache_hit_rate_pct": round(hit_rate, 2),
+        "latency_p50_ms": round(_percentile(latencies, 0.50), 3),
+        "latency_p90_ms": round(_percentile(latencies, 0.90), 3),
+        "latency_p95_ms": round(_percentile(latencies, 0.95), 3),
+        "latency_p99_ms": round(_percentile(latencies, 0.99), 3),
+        "total_injected_tokens": tokens,
+    }
+
+
+def _query_veto_counts(cur: sqlite3.Cursor) -> tuple[int, int]:
+    cur.execute("SELECT count(*) FROM active_vetoes WHERE is_shadow = 1 AND state != 'lifted';")
+    shadow_vetoes = cur.fetchone()[0]
+    cur.execute("SELECT count(*) FROM active_vetoes WHERE is_shadow = 0 AND state != 'lifted';")
+    active_blocks = cur.fetchone()[0]
+    return shadow_vetoes, active_blocks
+
+
+def _query_index_totals(cur: sqlite3.Cursor) -> tuple[int, int]:
+    cur.execute("SELECT count(*) FROM action_records;")
+    total_records = cur.fetchone()[0]
+    cur.execute("SELECT count(*) FROM action_signatures;")
+    total_signatures = cur.fetchone()[0]
+    return total_records, total_signatures
+
+
+class TelemetryCollector:
     @classmethod
     def record_consult(  # noqa: PLR0913
         cls,
@@ -24,7 +69,6 @@ class TelemetryCollector:
         cache_hit: bool = False,
         index_db: ActionIndexDatabase | None = None,
     ) -> None:
-        """Record an individual consult query invocation."""
         db = index_db or ActionIndexDatabase(DEFAULT_PROJECT_DB_PATH)
         conn = db.get_connection()
         try:
@@ -51,63 +95,17 @@ class TelemetryCollector:
 
     @classmethod
     def get_telemetry_stats(cls, index_db: ActionIndexDatabase | None = None) -> dict[str, Any]:
-        """Compute aggregated operational metrics from SQLite tables."""
         db = index_db or ActionIndexDatabase(DEFAULT_PROJECT_DB_PATH)
         conn = db.get_connection()
 
         try:
             cur = conn.cursor()
-
-            # Consult telemetry metrics
-            cur.execute(
-                """
-                SELECT latency_ms, tokens_injected, cache_hit
-                FROM consult_telemetry
-                ORDER BY latency_ms ASC;
-                """
-            )
-            telemetry_rows = cur.fetchall()
-
-            total_consults = len(telemetry_rows)
-            latencies = [float(r["latency_ms"]) for r in telemetry_rows]
-            tokens = sum(int(r["tokens_injected"]) for r in telemetry_rows)
-            cache_hits = sum(1 for r in telemetry_rows if r["cache_hit"])
-
-            def percentile(vals: list[float], pct: float) -> float:
-                if not vals:
-                    return 0.0
-                idx = round((len(vals) - 1) * pct)
-                return vals[idx]
-
-            p50 = percentile(latencies, 0.50)
-            p90 = percentile(latencies, 0.90)
-            p95 = percentile(latencies, 0.95)
-            p99 = percentile(latencies, 0.99)
-
-            hit_rate = (cache_hits / total_consults * 100.0) if total_consults > 0 else 0.0
-
-            # Veto statistics
-            cur.execute("SELECT count(*) FROM active_vetoes WHERE is_shadow = 1 AND state != 'lifted';")
-            shadow_vetoes = cur.fetchone()[0]
-
-            cur.execute("SELECT count(*) FROM active_vetoes WHERE is_shadow = 0 AND state != 'lifted';")
-            active_blocks = cur.fetchone()[0]
-
-            # Index totals
-            cur.execute("SELECT count(*) FROM action_records;")
-            total_records = cur.fetchone()[0]
-
-            cur.execute("SELECT count(*) FROM action_signatures;")
-            total_signatures = cur.fetchone()[0]
+            consult_metrics = _query_consult_telemetry(cur)
+            shadow_vetoes, active_blocks = _query_veto_counts(cur)
+            total_records, total_signatures = _query_index_totals(cur)
 
             return {
-                "total_consults": total_consults,
-                "cache_hit_rate_pct": round(hit_rate, 2),
-                "latency_p50_ms": round(p50, 3),
-                "latency_p90_ms": round(p90, 3),
-                "latency_p95_ms": round(p95, 3),
-                "latency_p99_ms": round(p99, 3),
-                "total_injected_tokens": tokens,
+                **consult_metrics,
                 "shadow_veto_warnings": shadow_vetoes,
                 "active_veto_blocks": active_blocks,
                 "total_action_records": total_records,
@@ -118,7 +116,6 @@ class TelemetryCollector:
 
 
 def format_stats_dashboard(stats: dict[str, Any]) -> str:
-    """Format operational metrics into an ASCII dashboard table."""
     lines = [
         "===========================================================",
         "               HOLON OPERATIONAL SELF-METRICS              ",

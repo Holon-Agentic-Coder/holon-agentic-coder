@@ -7,6 +7,7 @@ never pulls in a flow submodule.
 from __future__ import annotations
 
 from sandbox_executor.flow.lazy_exports_review import REVIEW_LAZY_EXPORTS
+from sandbox_executor.flow.lazy_exports_sync import SYNC_LAZY_EXPORTS
 
 LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.entrypoint.planner": "parse_metrics",
@@ -183,4 +184,5 @@ LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.redaction": "redact_agent_secrets",
     "sandbox_executor.review_report": "build_pr_review_consensus_report",
     **REVIEW_LAZY_EXPORTS,
+    **SYNC_LAZY_EXPORTS,
 }

@@ -506,3 +506,53 @@ def test_an_unreadable_merged_fingerprint_keeps_todays_ci_wait(tmp_path: Path, m
     assert stopped is None and record["state"] == "passed"
     assert fakes.probed == [MERGED]
     assert "approval_carry_over" not in record
+
+
+# --- 15-second poll ceiling and fail-early --------------------------------------------------------------------------
+
+
+def test_merged_head_gate_caps_poll_interval_at_15s_and_backs_off_from_smaller_interval(tmp_path: Path) -> None:
+    pending_run = [check("unit", None, "in_progress")]
+
+    fakes_small = Fakes(pending_run)
+    seams_small = MergedHeadSeams(
+        policy=CiWaitPolicy(50.0, poll_interval=3.0, clock=lambda: fakes_small.now, sleep=fakes_small.sleep),
+        probe=fakes_small.probe,
+        registration_timeout=0.0,
+    )
+    record_small = gate_merged_head_ci(_ctx(tmp_path), str(tmp_path), MERGED, seams_small)
+    assert record_small["state"] == "pending"
+    assert fakes_small.sleeps == [3.0, 6.0, 12.0, 15.0, 14.0]
+
+    fakes_default = Fakes(pending_run)
+    record_default = _gate(tmp_path, fakes_default, budget=50.0)
+    assert record_default["state"] == "pending"
+    assert fakes_default.sleeps == [15.0, 15.0, 15.0, 5.0]
+
+    fakes_clamped = Fakes(pending_run)
+    seams_clamped = MergedHeadSeams(
+        policy=CiWaitPolicy(35.0, poll_interval=30.0, clock=lambda: fakes_clamped.now, sleep=fakes_clamped.sleep),
+        probe=fakes_clamped.probe,
+        registration_timeout=0.0,
+    )
+    record_clamped = gate_merged_head_ci(_ctx(tmp_path), str(tmp_path), MERGED, seams_clamped)
+    assert record_clamped["state"] == "pending"
+    assert fakes_clamped.sleeps == [15.0, 15.0, 5.0]
+
+
+def test_merged_head_gate_fails_early_while_other_checks_are_pending(tmp_path: Path) -> None:
+    in_progress = check("unit", None, "in_progress", check_run_id=1, run_id="11")
+    failed = check("lint", "failure", "completed", check_run_id=2, run_id="12")
+    passed = check("unit", "success", "completed", check_run_id=1, run_id="11")
+
+    fakes_initial = Fakes([failed, in_progress], [passed])
+    rec_initial = _gate(tmp_path, fakes_initial)
+    assert rec_initial["state"] == "failed"
+    assert fakes_initial.sleeps == []
+    assert len(fakes_initial.probed) == 1
+
+    fakes_later = Fakes([in_progress], [failed, in_progress], [passed])
+    rec_later = _gate(tmp_path, fakes_later)
+    assert rec_later["state"] == "failed"
+    assert fakes_later.sleeps == [15.0]
+    assert len(fakes_later.probed) == 2

@@ -8,7 +8,9 @@ change, whatever ``main`` brought in.
 
 from __future__ import annotations
 
+import atexit
 import json
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -39,24 +41,38 @@ def git(repo: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
 
 
-def commit(repo: Path, files: dict[str, str], message: str) -> str:
+def commit(repo: Path, files: dict[str, str], message: str) -> None:
     for rel, text in files.items():
         path = repo / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
     git(repo, "add", "--", *files)
     git(repo, "commit", "-qm", message)
-    return git(repo, "rev-parse", "HEAD")
+
+
+_FLOW_TEMPLATE: Path | None = None
+
+
+def _flow_template() -> Path:
+    global _FLOW_TEMPLATE
+    if _FLOW_TEMPLATE is None:
+        tmp = tempfile.TemporaryDirectory(prefix="holon-cal-diff-template-")
+        atexit.register(tmp.cleanup)
+        repo = Path(tmp.name) / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "main")
+        commit(repo, {"base.txt": "base\n"}, "base")
+        git(repo, "checkout", "-qb", INTENT)
+        git(repo, "checkout", "-qb", PLAN)
+        commit(repo, {"plans/I-1-prop/P-2-prop.md": "# Plan\n"}, "plan")
+        git(repo, "checkout", "-qb", EXEC)
+        _FLOW_TEMPLATE = repo
+    return _FLOW_TEMPLATE
 
 
 def make_flow(repo: Path) -> None:
     """``main`` with a base commit, then intent, plan (with its plan markdown) and execution branches."""
-    git(repo, "init", "-q", "-b", "main")
-    commit(repo, {"base.txt": "base\n"}, "base")
-    git(repo, "checkout", "-qb", INTENT)
-    git(repo, "checkout", "-qb", PLAN)
-    commit(repo, {"plans/I-1-prop/P-2-prop.md": "# Plan\n"}, "plan")
-    git(repo, "checkout", "-qb", EXEC)
+    shutil.copytree(_flow_template(), repo, dirs_exist_ok=True)
 
 
 def advance_main(repo: Path, files: list[str], tag: str) -> None:

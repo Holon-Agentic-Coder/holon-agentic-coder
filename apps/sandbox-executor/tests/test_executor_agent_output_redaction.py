@@ -186,15 +186,16 @@ class TestExecutor(unittest.TestCase):
 
                 legacy_leaks = 0
                 for cut_at in range(1, len(unit)):
-                    stream = ("noise line\n" * 8000) + unit + "y" * (tail_budget - (len(unit) - cut_at))
+                    stream = ("noise line\n" * 20) + unit + "y" * (tail_budget - (len(unit) - cut_at))
                     bounded, truncated, _ = sanitize_agent_output(redact_env_literals(stream), budget)
                     self.assertTrue(truncated)
                     result = redact_agent_secrets(bounded)
                     for window in windows:
                         self.assertNotIn(window, result, f"{label}: fragment {window!r} survived cut {cut_at}.")
-                    legacy = superseded_fragment_heuristic(stream)
-                    if any(window in legacy for window in windows):
-                        legacy_leaks += 1
+                    if legacy_leaks == 0 or label == "single token":
+                        legacy = superseded_fragment_heuristic(stream)
+                        if any(window in legacy for window in windows):
+                            legacy_leaks += 1
                 superseded_leaks[label] = legacy_leaks
 
         # The replaced heuristic must demonstrably leak on the split-anchor shapes, or this test has

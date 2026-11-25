@@ -1,18 +1,3 @@
-"""Stage 5's report of CI on the final head: the head calibration pushed, which the reviewers did not vote on.
-
-The check reports; Stage 5 acts on it (:mod:`sandbox_executor.flow.github.ci_reverify`). It waits with the existing CI
-wait facility (:mod:`sandbox_executor.flow.github.ci_wait`) on the review CI wait budget, classifies the outcome and
-returns a plain record. It reruns a failed job at most once, and only when every failed check is a timing gate and the
-commits from the approved head to the final head touch nothing but bookkeeping paths (plans, executions and the
-knowledge base); every other failure, and a second timing failure, yields exactly the record it yields today. It never
-touches the CI timing limit; merging stays with the human maintainer.
-
-States: ``success``, ``failed`` (any failed check, a timing gate included, because a job over its time limit is a
-failed check), ``unknown`` (CI was not measured or was still pending when the budget ran out) and ``skipped``
-(nothing was pushed). A record that went through the automatic rerun carries an additive ``timing_rerun`` note for
-auditability.
-"""
-
 from __future__ import annotations
 
 import functools
@@ -47,14 +32,11 @@ from sandbox_executor.knowledge import CredentialRedactor
 
 MAX_REASON_CHARS = 300
 
-# A head whose new commits name only these path roots changed no code; only such a head earns the one automatic rerun.
 BOOKKEEPING_PATH_PREFIXES = ("plans/", "executions/", "holon-knowledge/")
 
 
 @dataclass(frozen=True)
 class FinalHeadSeams:
-    """Optional collaborators of :func:`check_final_head_ci`; tests inject fakes, the flow uses the defaults."""
-
     proxy_env: Mapping[str, str] = field(default_factory=dict)
     policy: CiWaitPolicy | None = None
     probe: Callable[[], dict[str, Any]] | None = None
@@ -65,13 +47,11 @@ class FinalHeadSeams:
     rerun_dispatcher: Callable[[str], bool] | None = None
     changed_paths: Callable[[str, str], list[str] | None] | None = None
     approved_head: Callable[[], str | None] | None = None
-    github: GitHubAdapter | None = None  # PR head, CI probes and reruns (not ``detail_lookup``); default over checkout.
+    github: GitHubAdapter | None = None
 
 
 @dataclass(frozen=True)
 class _FinalHeadCheck:
-    """One invocation's fixed arguments, bundled so the rerun helpers stay within the argument limit."""
-
     context: FlowContext
     repo_dir: str
     branch: str
@@ -79,7 +59,6 @@ class _FinalHeadCheck:
     github: GitHubAdapter
 
     def default_probe(self) -> Callable[[], dict[str, Any]]:
-        """The CI probe of the branch through the check's adapter."""
         proxy_env = dict(self.seams.proxy_env)
         return functools.partial(probe_ci_checks, self.repo_dir, self.branch, proxy_env=proxy_env, github=self.github)
 
@@ -107,10 +86,6 @@ def _git_gh_head(check: _FinalHeadCheck) -> tuple[Callable[[], str | None], ...]
 
 
 def _wait_for_pr_head(check: _FinalHeadCheck, policy: Any) -> None:
-    """Wait until the PR head is the pushed SHA, so checks of the previous head are never taken for the final head.
-
-    When either SHA cannot be read the head is unverifiable and the probe proceeds as before.
-    """
     seams = check.seams
     default_pushed, default_pr = _git_gh_head(check)
     pushed = (seams.pushed_head or default_pushed)()
@@ -138,7 +113,6 @@ def _record(state: str, reason: str = "", **extra: Any) -> dict[str, Any]:
 
 
 def not_pushed_record() -> dict[str, Any]:
-    """The record of a stage that pushed nothing, so the key is always present."""
     return _record("skipped", "nothing pushed")
 
 
@@ -151,7 +125,6 @@ def _failed_details(ci_status: dict[str, Any], names: list[str], detail_lookup: 
 def classify_final_head(
     ci_status: dict[str, Any], wait_record: dict[str, Any] | None, detail_lookup: DetailLookup
 ) -> dict[str, Any]:
-    """Turn a settled CI probe into the final-head record; any failed check, a timing gate included, is ``failed``."""
     if ci_status.get("source") != "github_cli":
         return _record("unknown", "CI checks were not measured on GitHub.", ci_wait=wait_record)
     names = _extract_failed_ci_check_names(ci_status)
@@ -175,14 +148,13 @@ def _settled_status(check: _FinalHeadCheck) -> tuple[dict[str, Any], dict[str, A
     _wait_for_pr_head(check, policy)
     ci_status = probe()
     if ci_status.get("source") != "github_cli":
-        # A push returns before GitHub registers the new runs, so give them time to appear.
-        timeout = resolve_ci_registration_timeout(seams.registration_timeout)
+        registration_timeout = resolve_ci_registration_timeout(seams.registration_timeout)
         _wait_for_ci_registration(
             context,
             check.repo_dir,
             check.branch,
             dict(seams.proxy_env),
-            timeout,
+            registration_timeout,
             CI_REGISTRATION_POLL_SECONDS,
             policy.clock,
             policy.sleep,
@@ -191,20 +163,17 @@ def _settled_status(check: _FinalHeadCheck) -> tuple[dict[str, Any], dict[str, A
         ci_status = probe()
     if ci_status.get("source") != "github_cli" or ci_status.get("pending", 0) <= 0:
         return ci_status, None
-    # Any failed check ends the wait early rather than idling on remaining pending checks.
-    ci_status, waited = wait_for_pending_ci(context, probe, ci_status, policy)
+    ci_status, waited = wait_for_pending_ci(context, probe, ci_status, policy, stop_on_failure=True)
     return ci_status, waited.as_record()
 
 
 def _classify_settled(check: _FinalHeadCheck) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Wait for a settled CI probe and classify it, returning the record and the probe it was built from."""
     ci_status, wait_record = _settled_status(check)
     lookup = check.seams.detail_lookup or gh_detail_lookup(check.repo_dir, check.seams.proxy_env)
     return classify_final_head(ci_status, wait_record, lookup), ci_status
 
 
 def _git_changed_paths(repo_dir: str, proxy_env: Mapping[str, str]) -> Callable[[str, str], list[str] | None]:
-    """A lister of the paths changed from ``approved`` to ``head``; None on any error (fail-closed)."""
     env = {**os.environ, **proxy_env, "DOCKER_CLI_HINTS": "false"}
 
     def changed(approved: str, head: str) -> list[str] | None:
@@ -228,17 +197,14 @@ def _git_changed_paths(repo_dir: str, proxy_env: Mapping[str, str]) -> Callable[
 
 
 def _bookkeeping_only(paths: list[str] | None) -> bool:
-    """Whether a diff names only plan, execution and knowledge-base files; an unreadable or empty diff is not one."""
     return bool(paths) and all(path.startswith(BOOKKEEPING_PATH_PREFIXES) for path in paths)
 
 
 def _timing_gate_only(details: list[dict[str, Any]]) -> bool:
-    """Whether every failed check is tagged as a timing-gate failure; no details means nothing is known."""
     return bool(details) and all(detail.get("timing_gate") for detail in details)
 
 
 def _failed_run_ids(ci_status: dict[str, Any], names: list[str]) -> list[str] | None:
-    """The Actions run ids behind the failed checks, or None when any failed check has no parsable run link."""
     run_ids: list[str] = []
     for check in _failed_checks_by_name(ci_status, names):
         run_id = parse_run_id(check.get("link"))
@@ -250,30 +216,28 @@ def _failed_run_ids(ci_status: dict[str, Any], names: list[str]) -> list[str] | 
 
 
 def _resolve_final_head(check: _FinalHeadCheck) -> str | None:
-    """The head CI was measured on: the PR head, or the pushed head when the PR head is unreadable."""
     default_pushed, default_pr = _git_gh_head(check)
     return (check.seams.pr_head or default_pr)() or (check.seams.pushed_head or default_pushed)()
 
 
 def _eligible_run_ids(check: _FinalHeadCheck, record: dict[str, Any], ci_status: dict[str, Any]) -> list[str] | None:
-    """Run ids eligible for the one automatic rerun, or None; every undecidable input is ineligible (fail-closed)."""
     if ci_status.get("pending", 0) > 0 or not _timing_gate_only(record["failed_details"]):
         return None
     approved = (check.seams.approved_head or (lambda: approved_head_of(check.context)))()
     if not approved:
         return None
-    # Diff against the head the checks ran on, not the workspace HEAD, which may have moved since the push.
-    final = _resolve_final_head(check)
-    if not final:
+    measured_head = _resolve_final_head(check)
+    if not measured_head:
         return None
-    paths = (check.seams.changed_paths or _git_changed_paths(check.repo_dir, check.seams.proxy_env))(approved, final)
+    paths = (check.seams.changed_paths or _git_changed_paths(check.repo_dir, check.seams.proxy_env))(
+        approved, measured_head
+    )
     if not _bookkeeping_only(paths):
         return None
     return _failed_run_ids(ci_status, record["failed_checks"])
 
 
 def _wait_for_rerun_start(probe: Callable[[], dict[str, Any]], names: list[str], policy: Any, timeout: float) -> None:
-    """Poll until none of ``names`` is still reported failed (the reruns registered) or ``timeout`` elapses."""
     deadline = policy.clock() + timeout
     while set(_extract_failed_ci_check_names(probe())) & set(names):
         remaining = deadline - policy.clock()
@@ -283,7 +247,6 @@ def _wait_for_rerun_start(probe: Callable[[], dict[str, Any]], names: list[str],
 
 
 def _dispatch_rerun(check: _FinalHeadCheck, run_id: str) -> bool:
-    """Dispatch one rerun through the check's adapter; any exception is a failed dispatch (fail-closed)."""
     try:
         return check.github.rerun_failed(run_id, timeout=STEP_LOOKUP_TIMEOUT_SECONDS)
     except Exception:
@@ -291,24 +254,19 @@ def _dispatch_rerun(check: _FinalHeadCheck, run_id: str) -> bool:
 
 
 def _retry_timing_noise(check: _FinalHeadCheck, record: dict[str, Any], ci_status: dict[str, Any]) -> dict[str, Any]:
-    """Rerun a timing-gate-only failure on a bookkeeping-only head once and re-classify; anything else is unchanged.
-
-    Called exactly once per :func:`check_final_head_ci` invocation and never loops, so a head gets at most one rerun;
-    a second failure returns a ``failed`` record exactly as today, annotated with the ``timing_rerun`` note.
-    """
     run_ids = _eligible_run_ids(check, record, ci_status)
     if not run_ids:
         return record
     check.context.log(f"Final-head CI: rerunning timing-gate failure on a bookkeeping-only head: {', '.join(run_ids)}")
     seams = check.seams
-    # A failed dispatch (False, including gh missing, a spawn error or any exception) is fail-closed.
     rerun = seams.rerun_dispatcher or functools.partial(_dispatch_rerun, check)
-    if not all(rerun(run_id) for run_id in run_ids):
+    all_reruns_dispatched = all(rerun(run_id) for run_id in run_ids)
+    if not all_reruns_dispatched:
         return {**record, "timing_rerun": {"attempted": False, "reason": "the rerun could not be dispatched"}}
     probe = seams.probe or check.default_probe()
     policy = seams.policy or CiWaitPolicy(resolve_review_ci_wait_seconds(os.environ))
-    timeout = resolve_ci_registration_timeout(seams.registration_timeout)
-    _wait_for_rerun_start(probe, record["failed_checks"], policy, timeout)
+    registration_timeout = resolve_ci_registration_timeout(seams.registration_timeout)
+    _wait_for_rerun_start(probe, record["failed_checks"], policy, registration_timeout)
     retried, _ = _classify_settled(check)
     return {**retried, "timing_rerun": {"attempted": True, "run_ids": run_ids, "outcome": retried["state"]}}
 
@@ -316,7 +274,6 @@ def _retry_timing_noise(check: _FinalHeadCheck, record: dict[str, Any], ci_statu
 def check_final_head_ci(
     context: FlowContext, repo_dir: str, branch: str, seams: FinalHeadSeams | None = None
 ) -> dict[str, Any]:
-    """Wait for CI on the pushed final head and report the outcome; never raises and never changes the stage status."""
     if context.dry_run or context.skip_push:
         return _record("skipped", "dry run" if context.dry_run else "push skipped")
     seams = seams or FinalHeadSeams()
@@ -332,7 +289,6 @@ def check_final_head_ci(
 
 
 def format_final_head_ci(record: Mapping[str, Any] | None) -> str:
-    """One summary line for the stage log and the flow summary."""
     state = (record or {}).get("state", "skipped")
     reason = (record or {}).get("reason") or ""
     if state == "success":

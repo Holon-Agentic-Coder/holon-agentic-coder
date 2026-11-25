@@ -75,6 +75,15 @@ SURVIVAL_HAZARDS = {
 
 SURVIVAL_CANARY_CONTENT = "canary-must-survive-suite-run"
 
+#: Fixed git identity for the controls' commits. A throwaway ``HOME`` has no git config, and on a host
+#: without a fully qualified domain name git cannot derive an email and refuses to commit.
+GIT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "Holon Stress Control",
+    "GIT_AUTHOR_EMAIL": "stress-control@holon.invalid",
+    "GIT_COMMITTER_NAME": "Holon Stress Control",
+    "GIT_COMMITTER_EMAIL": "stress-control@holon.invalid",
+}
+
 
 def run_generated_child(
     context: ChildContext, body: str, tmp_path: Path, extra_env: dict[str, str] | None = None
@@ -112,7 +121,8 @@ def _canary_check(body: str, tmp_path: Path) -> list[str]:
 
 
 def _git(*args: str, cwd: str) -> None:
-    subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=60, check=True)
+    env = os.environ | GIT_IDENTITY
+    subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=60, check=True)
 
 
 def _survival_check(body: str, tmp_path: Path) -> list[str]:
@@ -125,7 +135,7 @@ def _survival_check(body: str, tmp_path: Path) -> list[str]:
         _git("add", "-A", cwd=workspace)
         _git("commit", "-q", "-m", "seed", cwd=workspace)
         head_sha = git_head(workspace).stdout.strip()
-        run_generated_child(context, body, tmp_path)
+        run_generated_child(context, body, tmp_path, GIT_IDENTITY)
         return survival_violations(workspace, canary, SURVIVAL_CANARY_CONTENT, head_sha)
 
 

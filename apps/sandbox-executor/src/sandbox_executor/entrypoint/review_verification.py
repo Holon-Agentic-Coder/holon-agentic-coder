@@ -1,22 +1,14 @@
-"""Pre-push verification failures of the containerised Stage 4 resolver.
-
-A verification tool that cannot be started (``uv`` missing from the image, say) is reported as a structured failure
-that names it, distinct from a lint or test failure, so the resolver records it and never commits or pushes.
-"""
-
 import subprocess
 from collections.abc import Callable
 
 from sandbox_executor.entrypoint.rejected_attempt import capture_rejected_attempt
 from sandbox_executor.entrypoint.review_failure_detail import build_test_failure_message
 
-# Exit code and stderr marker of a command whose executable could not be started (the shell's "command not found").
 MISSING_TOOL_EXIT_CODE = 127
 MISSING_TOOL_MARKER = "was not found on PATH"
 
 
 def missing_tool_result(args: list[str], exc: OSError) -> subprocess.CompletedProcess[str]:
-    """Describe a command that could not be started as a failed ``CompletedProcess`` naming the executable."""
     tool = args[0] if args else "<empty command>"
     if isinstance(exc, FileNotFoundError) and exc.filename in (None, tool):
         detail = f"required tool '{tool}' {MISSING_TOOL_MARKER}"
@@ -27,6 +19,14 @@ def missing_tool_result(args: list[str], exc: OSError) -> subprocess.CompletedPr
     return subprocess.CompletedProcess(args, MISSING_TOOL_EXIT_CODE, stdout="", stderr=detail)
 
 
+def _is_missing_tool_result(result: subprocess.CompletedProcess[str]) -> bool:
+    return result.returncode == MISSING_TOOL_EXIT_CODE and MISSING_TOOL_MARKER in (result.stderr or "")
+
+
+def _combine_stderr_before_stdout(result: subprocess.CompletedProcess[str], fallback: str) -> str:
+    return "\n".join(part for part in (result.stderr, result.stdout) if part).strip() or fallback
+
+
 def verification_error(
     step: str,
     result: subprocess.CompletedProcess[str],
@@ -34,16 +34,9 @@ def verification_error(
     workspace: str | None = None,
     iteration: int | None = None,
 ) -> str:
-    """Describe a failed pre-push ``step``, keeping a tool that could not run apart from a real lint or test failure.
-
-    ``bound`` redacts and caps the command output; the caller supplies it so this module stays free of engine imports.
-    A real test failure with a ``workspace`` names the failed tests and writes the full output under ``.holon/``;
-    given an ``iteration`` it also saves the rejected diff and test summary (see ``rejected_attempt``).
-    """
-    is_missing_tool = result.returncode == MISSING_TOOL_EXIT_CODE and MISSING_TOOL_MARKER in (result.stderr or "")
+    is_missing_tool = _is_missing_tool_result(result)
     if step == "test" and workspace and not is_missing_tool:
-        # stderr first so the excerpt tail is the pytest summary on stdout, where the FAILED lines are.
-        raw = "\n".join(part for part in (result.stderr, result.stdout) if part).strip() or "test failed"
+        raw = _combine_stderr_before_stdout(result, "test failed")
         if iteration is not None:
             capture_rejected_attempt(workspace, iteration, raw)
         return build_test_failure_message(result.returncode, raw, workspace)

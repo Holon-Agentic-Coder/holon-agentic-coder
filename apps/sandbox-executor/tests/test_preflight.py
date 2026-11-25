@@ -425,7 +425,7 @@ def _run_main(argv: list[str]) -> int:
 
 @pytest.mark.parametrize(("status", "code"), [(PreflightStatus.OK, 0), (PreflightStatus.EXPIRED_KEY, 1)])
 def test_doctor_exit_codes_and_json(probe_env, capsys, status, code):
-    with patch("sandbox_executor.cli.run_preflight_probe", return_value=_result(status)) as probe:
+    with patch("sandbox_executor.cli.doctor.run_preflight_probe", return_value=_result(status)) as probe:
         assert (
             _run_main(
                 [
@@ -452,7 +452,7 @@ def test_doctor_exit_codes_and_json(probe_env, capsys, status, code):
 
 
 def test_doctor_exits_with_error_without_agent(probe_env, capsys):
-    with patch("sandbox_executor.cli.run_preflight_probe") as probe:
+    with patch("sandbox_executor.cli.doctor.run_preflight_probe") as probe:
         assert _run_main(["holon", "doctor"]) == 1
     probe.assert_not_called()
     assert "mandatory" in capsys.readouterr().err
@@ -461,7 +461,7 @@ def test_doctor_exits_with_error_without_agent(probe_env, capsys):
 def test_doctor_reports_harness_detection(probe_env, monkeypatch, capsys):
     monkeypatch.setenv("CLAUDECODE", "1")
     monkeypatch.setenv("HOLON_MODEL", "claude-opus-5-5")
-    with patch("sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.OK)) as probe:
+    with patch("sandbox_executor.cli.doctor.run_preflight_probe", return_value=_result(PreflightStatus.OK)) as probe:
         assert _run_main(["holon", "doctor"]) == 0
     out = capsys.readouterr().out
     assert "claude-agent (source: harness, harness detection, marker CLAUDECODE)" in out
@@ -470,7 +470,7 @@ def test_doctor_reports_harness_detection(probe_env, monkeypatch, capsys):
 
 def test_doctor_unmapped_runner(probe_env, monkeypatch, capsys):
     monkeypatch.setenv("HOLON_AGENT", "foo-agent")
-    with patch("sandbox_executor.cli.run_preflight_probe") as probe:
+    with patch("sandbox_executor.cli.doctor.run_preflight_probe") as probe:
         assert _run_main(["holon", "doctor"]) == 1
     probe.assert_not_called()
     assert "HOLON_AGENT" in capsys.readouterr().err
@@ -485,7 +485,7 @@ def test_plan_and_execute_abort_before_container_on_failed_probe(probe_env, monk
     monkeypatch.setenv("HOLON_MODEL", "gemini-3.8-flash-medium")
     with (
         patch(
-            "sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.QUOTA_EXHAUSTED)
+            "sandbox_executor.cli.preflight.run_preflight_probe", return_value=_result(PreflightStatus.QUOTA_EXHAUSTED)
         ) as probe,
         patch("sandbox_executor.launcher.containers.run_docker_container") as docker,
     ):
@@ -516,7 +516,7 @@ def test_skip_preflight_bypasses_probe(probe_env, monkeypatch, bypass):
     else:
         monkeypatch.setenv("HOLON_SKIP_PREFLIGHT", "1")
     with (
-        patch("sandbox_executor.cli.run_preflight_probe") as probe,
+        patch("sandbox_executor.cli.preflight.run_preflight_probe") as probe,
         patch("sandbox_executor.launcher.containers.run_docker_container", return_value=0) as docker,
     ):
         assert _run_main(argv) == 0
@@ -542,7 +542,7 @@ def test_cli_prints_harness_and_skipped_preflight_info_on_stderr(probe_env, monk
     monkeypatch.setenv("CLAUDECODE", "1")
     monkeypatch.setenv("HOLON_MODEL", "claude-opus-5-5")
     with (
-        patch("sandbox_executor.cli.run_preflight_probe") as probe,
+        patch("sandbox_executor.cli.preflight.run_preflight_probe") as probe,
         patch("sandbox_executor.launcher.containers.run_docker_container", return_value=0),
     ):
         assert _run_main(["holon", "plan", "I-1/_", "--skip-preflight"]) == 0
@@ -560,7 +560,7 @@ def test_doctor_reports_each_decision_once(probe_env, monkeypatch, capsys, cli_l
     monkeypatch.setenv("CLAUDECODE", "1")
     monkeypatch.setenv("HOLON_MODEL", "claude-opus-5-5")
     argv = ["holon", "doctor", "--json"] if as_json else ["holon", "doctor"]
-    with patch("sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.OK)):
+    with patch("sandbox_executor.cli.doctor.run_preflight_probe", return_value=_result(PreflightStatus.OK)):
         assert _run_main(argv) == 0
     captured = capsys.readouterr()
     combined = captured.out + captured.err
@@ -583,7 +583,7 @@ def test_plan_uses_harness_runner_and_explicit_model(probe_env, monkeypatch, hos
     monkeypatch.setenv("CLAUDECODE", "1")
     monkeypatch.setenv("HOLON_MODEL", "claude-opus-5-5")
     with (
-        patch("sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.OK)),
+        patch("sandbox_executor.cli.preflight.run_preflight_probe", return_value=_result(PreflightStatus.OK)),
         patch("sandbox_executor.launcher.containers.run_docker_container", return_value=0) as docker,
     ):
         assert _run_main(["holon", "plan", "I-1/_"]) == 0
@@ -695,7 +695,7 @@ def test_quota_exhausted_probe_aborts_flow_before_stage_one(flow_repo, monkeypat
 
     with (
         patch(
-            "sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.QUOTA_EXHAUSTED)
+            "sandbox_executor.cli.preflight.run_preflight_probe", return_value=_result(PreflightStatus.QUOTA_EXHAUSTED)
         ) as probe,
         patch("sandbox_executor.flow.pipeline.run_intent_stage") as intent_stage,
         patch("sandbox_executor.cli.run_flow_pipeline") as pipeline,
@@ -729,7 +729,7 @@ def test_dry_run_flow_skips_probe(flow_repo, monkeypatch):
     monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
     monkeypatch.setenv("HOLON_MODEL", "gemini-3.8-flash-medium")
     with (
-        patch("sandbox_executor.cli.run_preflight_probe") as probe,
+        patch("sandbox_executor.cli.preflight.run_preflight_probe") as probe,
         patch("sandbox_executor.cli.run_flow_pipeline", return_value={}) as pipeline,
         patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY),
     ):
@@ -742,7 +742,7 @@ def test_dry_run_flow_skips_probe(flow_repo, monkeypatch):
 def test_flow_explicit_runner_provenance_is_unchanged(flow_repo):
     repo, intent_file = flow_repo
     with (
-        patch("sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.OK)) as probe,
+        patch("sandbox_executor.cli.preflight.run_preflight_probe", return_value=_result(PreflightStatus.OK)) as probe,
         patch("sandbox_executor.cli.run_flow_pipeline", return_value={}) as pipeline,
         patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY),
     ):
@@ -802,7 +802,7 @@ def test_resume_with_new_runner_resolves_its_default_model(  # noqa: PLR0913
     monkeypatch.delenv("HOLON_MODEL", raising=False)
     checkpoint = _write_checkpoint(repo, "plan")
     with (
-        patch("sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.OK)) as probe,
+        patch("sandbox_executor.cli.preflight.run_preflight_probe", return_value=_result(PreflightStatus.OK)) as probe,
         patch("sandbox_executor.cli.run_flow_pipeline", return_value={}) as pipeline,
         patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY),
     ):
@@ -828,7 +828,7 @@ def test_resume_probes_only_when_an_agent_stage_remains(flow_repo, stage, probed
     checkpoint = _write_checkpoint(repo, stage)
     with (
         patch(
-            "sandbox_executor.cli.run_preflight_probe", return_value=_result(PreflightStatus.QUOTA_EXHAUSTED)
+            "sandbox_executor.cli.preflight.run_preflight_probe", return_value=_result(PreflightStatus.QUOTA_EXHAUSTED)
         ) as probe,
         patch("sandbox_executor.cli.run_flow_pipeline", return_value={}) as pipeline,
         patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY),

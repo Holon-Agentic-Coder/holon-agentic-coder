@@ -144,7 +144,7 @@ def test_stage4_host_integrity_dirty_merge_blocks_approval(tmp_path: Path, monke
 
     with (
         patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
         patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github),
         patch(
             "sandbox_executor.flow.review.ensemble.resolve_review_target",
@@ -182,7 +182,7 @@ def test_stage4_host_integrity_failed_ci_blocks_approval(tmp_path: Path, monkeyp
 
     with (
         patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
         patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github),
         patch(
             "sandbox_executor.flow.review.ensemble.resolve_review_target",
@@ -215,7 +215,7 @@ def test_stage4_canonical_ledger_records_verified_results(tmp_path: Path, monkey
 
     with (
         patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
         patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github),
         patch(
             "sandbox_executor.flow.review.ensemble.resolve_review_target",
@@ -311,6 +311,7 @@ def test_every_stage4_dispatch_reviews_the_flow_worktree_in_place(tmp_path: Path
     root chown init container, no volume teardown).
     """
     from sandbox_executor.flow import run_review_loop
+    from sandbox_executor.flow.target_sync_result import SyncResult
 
     monkeypatch.delenv("HOLON_IN_SANDBOX", raising=False)
     monkeypatch.delenv("HOLON_ROLE", raising=False)
@@ -327,6 +328,11 @@ def test_every_stage4_dispatch_reviews_the_flow_worktree_in_place(tmp_path: Path
             patch("sandbox_executor.flow.review.resolver.push_commit") as host_push,
             # The ledger commits run git by design; tests/flow/review/test_ledger_commit.py covers them with real git.
             patch("sandbox_executor.flow.review.loop._commit_pending_ledger_rows", return_value=None),
+            # So does target sync; tests/flow/review/test_sync_points.py covers it with real git.
+            patch(
+                "sandbox_executor.flow.review.sync_points.sync_review_head",
+                return_value=SyncResult("unchanged", "", "", ""),
+            ),
             # So does the approval fingerprint; tests/test_approval_fingerprint.py covers it with real git.
             patch("sandbox_executor.flow.review.loop.approval_fingerprint_of", return_value=None),
         ):

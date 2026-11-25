@@ -489,3 +489,24 @@ def test_redact_agent_secrets_masks_literal_env_values(monkeypatch: pytest.Monke
 def test_holon_agent_settings_stays_out_of_the_command_echo_names() -> None:
     assert "HOLON_AGENT_SETTINGS" in redaction.DEFAULT_ENV_LITERAL_NAMES
     assert "HOLON_AGENT_SETTINGS" not in COMMAND_ECHO_ENV_NAMES
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "-c https://alice:{a}@host --api-key={b}",
+        "--foo password:{a} --token={b}",
+        "--foo https://alice:{a}@host --token",
+    ],
+)
+def test_redact_command_single_arg_with_secret_flag_suffix_does_not_leak_prefix(template: str) -> None:
+    """A compound single argument whose prefix before `=` ends with a secret-flag suffix is still redacted."""
+    secret_a = make_probe("a")
+    secret_b = make_probe("b")
+    arg = template.format(a=secret_a, b=secret_b)
+
+    for output in (redact_command([arg]), " ".join(redaction.redact_args([arg]))):
+        assert_no_fragment(output, secret_a)
+        if "{b}" in template:
+            assert_no_fragment(output, secret_b)
+        assert REDACTION_MARKER in output

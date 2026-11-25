@@ -412,18 +412,18 @@ def test_ceilings_are_read_from_the_committed_workflows() -> None:
         ("make.yml", "build"): 300,
         ("test-hygiene.yml", "hygiene"): 300,
         ("test-integration.yml", "integration"): 300,
-        ("test-stress.yml", "workspace-survival"): 600,
-        ("test-stress.yml", "Workspace survival"): 600,
-        ("test-unit.yml", "unit"): 600,
+        ("test-stress.yml", "workspace-survival"): 900,
+        ("test-stress.yml", "Workspace survival"): 900,
+        ("test-unit.yml", "unit"): 900,
         ("ci-durations.yml", "report"): 600,
     }
     assert {key: ceilings.get(key) for key in expected} == expected
-    assert ceiling_for(point(1, 1.0), ceilings) == 600
+    assert ceiling_for(point(1, 1.0), ceilings) == 900
     assert (
         ceiling_for(
             point(1, 1.0, job="Workspace survival (ubuntu-latest)", workflow_path="x/test-stress.yml"), ceilings
         )
-        == 600
+        == 900
     )
     assert ceiling_for(point(1, 1.0, job="lint"), ceilings) is None
 
@@ -519,12 +519,12 @@ def test_the_cli_writes_the_json_the_html_and_the_summary(tmp_path: Path, monkey
     assert data["schema_version"] == 1 and data["since"] == "2026-10-21" and data["days"] == 30
     assert data["run_count"] == 8
     latest = next(row for row in data["rows"] if row["run_id"] == 106)
-    assert latest["duration_seconds"] == 300.0 and latest["baseline_median"] == 100.0 and latest["ceiling"] == 600
+    assert latest["duration_seconds"] == 300.0 and latest["baseline_median"] == 100.0 and latest["ceiling"] == 900
     fields = {k: v for k, v in latest.items() if k not in ("is_rerun", "job_key", "baseline_median", "ceiling")}
     assert JobDuration(**fields).run_url.endswith("/actions/runs/106/job/1006")
     assert (tmp_path / "out" / "ci-durations.html").read_text(encoding="utf-8").startswith("<!doctype html>")
     summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
-    assert "| Test - Unit / unit | ubuntu-latest | 300 s | 100 s | +200 s | 3.00x | 600 s |" in summary
+    assert "| Test - Unit / unit | ubuntu-latest | 300 s | 100 s | +200 s | 3.00x | 900 s |" in summary
     assert all(url.startswith(API) for url in opener.urls)
 
 

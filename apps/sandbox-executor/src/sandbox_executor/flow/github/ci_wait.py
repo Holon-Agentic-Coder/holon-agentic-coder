@@ -15,7 +15,7 @@ from typing import Any
 from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS
 from sandbox_executor.flow.context import FlowContext
 
-CI_WAIT_POLL_CEILING_SECONDS = 120.0
+CI_WAIT_POLL_CEILING_SECONDS = 15.0
 
 
 def next_poll_interval(current: float, ceiling: float = CI_WAIT_POLL_CEILING_SECONDS) -> float:
@@ -139,6 +139,8 @@ def wait_for_pending_ci(
     start = policy.clock()
     deadline = start + max(0.0, policy.budget_seconds)
     interval = policy.poll_interval if policy.poll_interval > 0 else CI_REGISTRATION_POLL_SECONDS
+    if policy.ceiling > 0:
+        interval = min(interval, policy.ceiling)
     exhausted = False
     tracking = ci_status.get("pending", 0) > 0
     if tracking:

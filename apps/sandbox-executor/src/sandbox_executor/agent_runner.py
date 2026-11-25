@@ -170,10 +170,14 @@ INTENT_CREATOR_ROLE = "intent-creator"
 PLANNER_ROLE = "planner"
 REVIEW_LOOP_ROLE = "review-loop"
 EXECUTOR_ROLE = "executor"
+CONFLICT_RESOLVER_ROLE = "conflict-resolver"
 
 #: Every role entrypoint works in place on the bind-mounted host worktree and never touches the remote: the host
 #: fetches the base before the container starts and pushes the committed branch after it returns.
-HOST_WORKTREE_ROLES: frozenset[str] = frozenset({INTENT_CREATOR_ROLE, PLANNER_ROLE, REVIEW_LOOP_ROLE, EXECUTOR_ROLE})
+#: The conflict resolver sees the host's in-progress target merge (``MERGE_HEAD`` and the unmerged index) in place.
+HOST_WORKTREE_ROLES: frozenset[str] = frozenset(
+    {INTENT_CREATOR_ROLE, PLANNER_ROLE, REVIEW_LOOP_ROLE, EXECUTOR_ROLE, CONFLICT_RESOLVER_ROLE}
+)
 
 #: Host environment variables that earlier releases forwarded and no container reads any more; a stale value is dropped,
 #: never forwarded and never an error.

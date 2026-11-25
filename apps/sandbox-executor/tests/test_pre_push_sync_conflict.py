@@ -15,7 +15,7 @@ from sandbox_executor.entrypoint.sync_conflict import (
     superseding_failure_row,
     sync_conflict_paths,
 )
-from sandbox_executor.flow import FlowContext, FlowStage, StageStatus
+from sandbox_executor.flow import FlowContext, FlowStage
 from sandbox_executor.flow.stages.review import run_review_stage
 from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
 
@@ -161,7 +161,7 @@ def stage_context(tmp_path: Path) -> FlowContext:
     )
 
 
-def test_stage_reports_a_sync_conflict_as_resumable_and_review_accepts_the_branch(tmp_path: Path) -> None:
+def test_stage_resolves_a_sync_conflict_via_target_sync_or_fails_closed(tmp_path: Path) -> None:
     context = stage_context(tmp_path)
     context.execution_branch = EXEC_BRANCH
     row = {"status": SYNC_CONFLICT_STATUS, "conflicted_paths": ["code.py"]}
@@ -169,11 +169,11 @@ def test_stage_reports_a_sync_conflict_as_resumable_and_review_accepts_the_branc
 
     result = sync_conflict_result(context, "2026-01-01T00:00:00Z", row, payload)
 
-    assert result is not None
-    assert result.status == StageStatus.SUCCESS
-    assert result.payload["execution_branch"] == EXEC_BRANCH
-    assert result.payload["conflicted_paths"] == ["code.py"]
-    assert context.stage_results["execute"] is result
+    assert result is None
+    assert row["status"] == "success"
+    assert payload["status"] == "success"
+    assert payload["sync_conflict_resolved"] is True
+    assert payload["conflicted_paths"] == ["code.py"]
     review = run_review_stage(context)
     assert review.stage == FlowStage.REVIEW
     assert "Cannot run Review stage" not in (review.error or "")

@@ -1,7 +1,3 @@
-"""Git ref helpers for the flow engine: branch fetches, child-branch discovery, ledger readers and the
-execution refs and effective diff that Stage 4 reviews.
-"""
-
 from __future__ import annotations
 
 import json
@@ -22,6 +18,15 @@ from sandbox_executor.review_target import ReviewTargetError, is_pr_reference, r
 
 logger = logging.getLogger(__name__)
 
+ORIGIN_REMOTE = "origin"
+ORIGIN_REF_PREFIX = f"refs/remotes/{ORIGIN_REMOTE}/"
+LOCAL_HEAD_REF_PREFIX = "refs/heads/"
+GIT_REMOTE_TIMEOUT_SECONDS = 300
+SHORT_SHA_LOG_LENGTH = 12
+LEDGER_DIR_PREFIX = "holon-knowledge/ledger/"
+BRANCH_TIP_SUFFIX = "/_"
+EXECUTION_BRANCH_MARKER = "/E-"
+DEFAULT_LEDGER_REVISION = 1
 
 EXECUTOR_GIT_ENV: dict[str, str] = {
     "GIT_AUTHOR_NAME": "Holon Executor Agent",
@@ -32,21 +37,16 @@ EXECUTOR_GIT_ENV: dict[str, str] = {
 
 
 def _fetch_branch_prefix_error(repo_dir: str, prefix: str) -> str | None:
-    """Fetch every origin branch at or beneath '<prefix>/' into refs/remotes/origin/.
-
-    Returns:
-        str | None: None on success, otherwise a secret-redacted description of the fetch failure.
-    """
-    return _fetch_refspecs_error(repo_dir, [f"+refs/heads/{prefix}/*:refs/remotes/origin/{prefix}/*"])
+    return _fetch_refspecs_error(repo_dir, [f"+{LOCAL_HEAD_REF_PREFIX}{prefix}/*:{ORIGIN_REF_PREFIX}{prefix}/*"])
 
 
-def _fetch_refspecs_error(repo_dir: str, refspecs: list[str], remote: str = "origin") -> str | None:
-    """Fetch the given refspecs from the worktree's remote (``origin`` by default) in one command.
-
-    Returns:
-        str | None: None on success, otherwise a secret-redacted description of the fetch failure.
-    """
-    res = run_git(["fetch", "--no-tags", remote, *refspecs], cwd=repo_dir, check=False, timeout=300)
+def _fetch_refspecs_error(repo_dir: str, refspecs: list[str], remote: str = ORIGIN_REMOTE) -> str | None:
+    res = run_git(
+        ["fetch", "--no-tags", remote, *refspecs],
+        cwd=repo_dir,
+        check=False,
+        timeout=GIT_REMOTE_TIMEOUT_SECONDS,
+    )
     if res.returncode == 0:
         return None
     stderr = res.stderr.strip() if isinstance(res.stderr, str) else ""
@@ -54,14 +54,12 @@ def _fetch_refspecs_error(repo_dir: str, refspecs: list[str], remote: str = "ori
 
 
 def _fetch_branch_prefix(repo_dir: str, prefix: str) -> bool:
-    """Fetch every origin branch at or beneath '<prefix>/' into refs/remotes/origin/; True on success."""
     return _fetch_branch_prefix_error(repo_dir, prefix) is None
 
 
 def _resolve_branch_ref(repo_dir: str, branch: str, prefer_remote: bool = True) -> str | None:
-    """Return a fully qualified ref for a branch name (origin tracking ref or local head), if it exists."""
-    remote_ref = f"refs/remotes/origin/{branch}"
-    local_ref = f"refs/heads/{branch}"
+    remote_ref = f"{ORIGIN_REF_PREFIX}{branch}"
+    local_ref = f"{LOCAL_HEAD_REF_PREFIX}{branch}"
     candidates = (remote_ref, local_ref) if prefer_remote else (local_ref, remote_ref)
     for ref in candidates:
         res = run_git(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=repo_dir, check=False)
@@ -70,90 +68,94 @@ def _resolve_branch_ref(repo_dir: str, branch: str, prefer_remote: bool = True) 
     return None
 
 
-def _resolve_review_commit(repo_dir: str, review_target: str, fetch: bool = True) -> str:
-    """Return the short SHA of the commit a review loop evaluates.
+def _resolve_non_head_review_ref(repo_dir: str, target: str, fetch: bool) -> str | None:
+    if is_pr_reference(target):
+        try:
+            return resolve_review_target(repo_dir, target).head_sha
+        except ReviewTargetError as exc:
+            logger.debug("Could not resolve the PR head for %s: %s", target, exc)
+            return "HEAD"
+    if fetch:
+        run_git(
+            [
+                "fetch",
+                "--no-tags",
+                ORIGIN_REMOTE,
+                f"+{LOCAL_HEAD_REF_PREFIX}{target}:{ORIGIN_REF_PREFIX}{target}",
+            ],
+            cwd=repo_dir,
+            check=False,
+            timeout=GIT_REMOTE_TIMEOUT_SECONDS,
+        )
+    return _resolve_branch_ref(repo_dir, target, prefer_remote=True)
 
-    The flow no longer leaves the operator's checkout on the execution branch, so the commit comes from
-    the review target, never from an unrelated 'HEAD': a branch is fetched from origin and its tip used
-    (the local branch only when origin cannot be read), and a PR number or URL resolves to the PR head
-    through gh. Only a 'HEAD' target, or a PR whose head gh cannot report, reads the checkout. With
-    fetch=False (dry runs, or a role container where the host fetched) the origin tracking ref is used as it is.
 
-    Returns:
-        str: The short commit SHA, or the target name itself when a branch target does not resolve.
-    """
-    clean = review_target.strip()
-    rev = "HEAD"
-    if clean and clean != "HEAD":
-        if is_pr_reference(clean):
-            try:
-                rev = resolve_review_target(repo_dir, clean).head_sha
-            except ReviewTargetError as exc:
-                logger.debug("Could not resolve the PR head for %s: %s", clean, exc)
-        else:
-            if fetch:
-                run_git(
-                    ["fetch", "--no-tags", "origin", f"+refs/heads/{clean}:refs/remotes/origin/{clean}"],
-                    cwd=repo_dir,
-                    check=False,
-                    timeout=300,
-                )
-            ref = _resolve_branch_ref(repo_dir, clean, prefer_remote=True)
-            if ref is None:
-                return clean
-            rev = ref
+def _short_commit_sha(repo_dir: str, rev: str) -> str:
     proc = run_git(["rev-parse", "--short", "--verify", f"{rev}^{{commit}}"], cwd=repo_dir, check=False)
-    out = proc.stdout.strip() if proc.returncode == 0 and isinstance(proc.stdout, str) else ""
-    return out or (clean if clean and clean != "HEAD" else "HEAD")
+    return proc.stdout.strip() if proc.returncode == 0 and isinstance(proc.stdout, str) else ""
+
+
+def _resolve_review_commit(repo_dir: str, review_target: str, fetch: bool = True) -> str:
+    clean_target = review_target.strip()
+    is_explicit_target = bool(clean_target) and clean_target != "HEAD"
+    rev = "HEAD"
+    if is_explicit_target:
+        resolved_ref = _resolve_non_head_review_ref(repo_dir, clean_target, fetch)
+        if resolved_ref is None:
+            return clean_target
+        rev = resolved_ref
+    short_sha = _short_commit_sha(repo_dir, rev)
+    return short_sha or (clean_target if is_explicit_target else "HEAD")
 
 
 def _origin_has_branch(repo_dir: str, branch: str) -> bool:
-    """Return True when the fetched origin tracking ref for a branch exists."""
     res = run_git(
-        ["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}^{{commit}}"], cwd=repo_dir, check=False
+        ["rev-parse", "--verify", "--quiet", f"{ORIGIN_REF_PREFIX}{branch}^{{commit}}"],
+        cwd=repo_dir,
+        check=False,
     )
     return res.returncode == 0
 
 
-def fast_forward_local_branch(context: FlowContext, branch: str, target_sha: str) -> bool:
-    """Create or fast-forward the local branch to target_sha; never move it off unpushed local commits.
+def _checked_out_branch(repo_dir: str) -> str:
+    head = run_git(["symbolic-ref", "--short", "-q", "HEAD"], cwd=repo_dir, check=False)
+    return head.stdout.strip() if head.returncode == 0 and isinstance(head.stdout, str) else ""
 
-    A local branch whose tip is not an ancestor of target_sha (ahead of or diverged from origin) is
-    left untouched and reported. Returns True when the local branch now points at target_sha.
-    """
+
+def _is_ancestor_commit(repo_dir: str, ancestor_sha: str, descendant_sha: str) -> bool:
+    result = run_git(["merge-base", "--is-ancestor", ancestor_sha, descendant_sha], cwd=repo_dir, check=False)
+    return result.returncode == 0
+
+
+def fast_forward_local_branch(context: FlowContext, branch: str, target_sha: str) -> bool:
     repo_dir = context.target_worktree
-    local = run_git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=repo_dir, check=False)
+    local = run_git(
+        ["rev-parse", "--verify", "--quiet", f"{LOCAL_HEAD_REF_PREFIX}{branch}"],
+        cwd=repo_dir,
+        check=False,
+    )
     local_sha = local.stdout.strip() if local.returncode == 0 and isinstance(local.stdout, str) else ""
     if local_sha == target_sha:
-        # A role committed on this branch in the worktree and the host pushed it; it may well be checked out.
         return True
-    if local_sha:
-        ancestor = run_git(["merge-base", "--is-ancestor", local_sha, target_sha], cwd=repo_dir, check=False)
-        if ancestor.returncode != 0:
-            context.log(
-                f"Warning: local branch '{branch}' has diverged from origin; it was not fast-forwarded "
-                f"to {target_sha[:12]}."
-            )
-            return False
-    head = run_git(["symbolic-ref", "--short", "-q", "HEAD"], cwd=repo_dir, check=False)
-    if head.returncode == 0 and head.stdout.strip() == branch:
-        # The role left the worktree on this branch: advance the checkout with it, as git refuses to move that ref.
-        res = run_git(["merge", "--ff-only", "--quiet", target_sha], cwd=repo_dir, check=False)
+    if local_sha and not _is_ancestor_commit(repo_dir, local_sha, target_sha):
+        context.log(
+            f"Warning: local branch '{branch}' has diverged from origin; it was not fast-forwarded "
+            f"to {target_sha[:SHORT_SHA_LOG_LENGTH]}."
+        )
+        return False
+    if _checked_out_branch(repo_dir) == branch:
+        update_result = run_git(["merge", "--ff-only", "--quiet", target_sha], cwd=repo_dir, check=False)
     else:
-        res = run_git(["branch", "-f", "--no-track", branch, target_sha], cwd=repo_dir, check=False)
-    if res.returncode != 0:
-        context.log(f"Warning: could not fast-forward local branch '{branch}' to {target_sha[:12]}.")
+        update_result = run_git(["branch", "-f", "--no-track", branch, target_sha], cwd=repo_dir, check=False)
+    if update_result.returncode != 0:
+        context.log(f"Warning: could not fast-forward local branch '{branch}' to {target_sha[:SHORT_SHA_LOG_LENGTH]}.")
         return False
     return True
 
 
 def _track_local_branch(context: FlowContext, branch: str) -> None:
-    """Fast-forward the local branch to the fetched origin branch so later stages can name it directly.
-
-    A local branch carrying commits origin does not have is left alone (with a warning) rather than reset.
-    """
     remote = run_git(
-        ["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}^{{commit}}"],
+        ["rev-parse", "--verify", "--quiet", f"{ORIGIN_REF_PREFIX}{branch}^{{commit}}"],
         cwd=context.target_worktree,
         check=False,
     )
@@ -165,33 +167,25 @@ def _track_local_branch(context: FlowContext, branch: str) -> None:
 
 
 def _list_child_branches(repo_dir: str, parent_prefix: str, marker: str) -> set[str]:
-    """Return fetched origin branches named '<parent_prefix>/<marker>-<timestamp>-.../_'."""
-    pattern = re.compile(rf"^{re.escape(parent_prefix)}/{re.escape(marker)}-\d+-[^/]+/_$")
+    pattern = re.compile(rf"^{re.escape(parent_prefix)}/{re.escape(marker)}-\d+-[^/]+{re.escape(BRANCH_TIP_SUFFIX)}$")
     res = run_git(
-        ["for-each-ref", "--format=%(refname)", f"refs/remotes/origin/{parent_prefix}/"],
+        ["for-each-ref", "--format=%(refname)", f"{ORIGIN_REF_PREFIX}{parent_prefix}/"],
         cwd=repo_dir,
         check=False,
     )
     stdout = res.stdout if isinstance(res.stdout, str) else ""
-    names = (line.strip().removeprefix("refs/remotes/origin/") for line in stdout.splitlines())
+    names = (line.strip().removeprefix(ORIGIN_REF_PREFIX) for line in stdout.splitlines())
     return {name for name in names if pattern.match(name)}
 
 
 def _snapshot_child_branches(repo_dir: str, parent_prefix: str, marker: str) -> set[str] | None:
-    """Fetch origin beneath a parent prefix and return the child branches that exist before dispatch.
-
-    Returns:
-        set[str] | None: Branch names present on origin, or None when origin could not be fetched (the
-        snapshot would then miss branches that already exist remotely, so callers must not dispatch).
-    """
     if not _fetch_branch_prefix(repo_dir, parent_prefix):
         return None
     return _list_child_branches(repo_dir, parent_prefix, marker)
 
 
 def _matches_dispatch_suffix(branch: str, preferred_suffix: str) -> bool:
-    """True when the branch carries the dispatched runner/model suffix, with or without a same-second variant."""
-    bare = branch.removesuffix("/_")
+    bare = branch.removesuffix(BRANCH_TIP_SUFFIX)
     return bare.endswith(preferred_suffix) or re.sub(r"-\d+$", "", bare).endswith(preferred_suffix)
 
 
@@ -202,25 +196,14 @@ def _discover_child_branch(
     before: set[str],
     preferred_suffix: str,
 ) -> tuple[str | None, str | None]:
-    """Find the branch a role container pushed beneath a parent prefix during dispatch.
-
-    Only branches absent from the pre-dispatch snapshot ('before') are candidates, so the result does
-    not depend on the container clock and never adopts a stale run or a sibling that already existed.
-    A candidate must end with preferred_suffix (the runner and model that were dispatched). Exactly one
-    candidate is adopted; anything else is reported instead of guessed.
-
-    Returns:
-        tuple[str | None, str | None]: (branch, None) on success, (None, None) when no new branch
-        appeared, or (None, message) when the new branches cannot be attributed to this dispatch.
-    """
-    new = sorted(_list_child_branches(repo_dir, parent_prefix, marker) - before)
-    if not new:
+    new_branches = sorted(_list_child_branches(repo_dir, parent_prefix, marker) - before)
+    if not new_branches:
         return None, None
-    matching = [b for b in new if _matches_dispatch_suffix(b, preferred_suffix)]
+    matching = [branch for branch in new_branches if _matches_dispatch_suffix(branch, preferred_suffix)]
     if not matching:
         return None, (
             f"new {marker}-branches under {parent_prefix} do not match the dispatched runner/model "
-            f"('{preferred_suffix.lstrip('-')}'): {', '.join(new)}; refusing to adopt another run's branch"
+            f"('{preferred_suffix.lstrip('-')}'): {', '.join(new_branches)}; refusing to adopt another run's branch"
         )
     if len(matching) > 1:
         return None, (
@@ -231,7 +214,6 @@ def _discover_child_branch(
 
 
 def _git_show_text(repo_dir: str, ref: str, path: str) -> str | None:
-    """Return a file's content at a ref, or None when it does not exist there."""
     res = run_git(["show", f"{ref}:{path}"], cwd=repo_dir, check=False)
     if res.returncode != 0 or not isinstance(res.stdout, str):
         return None
@@ -239,8 +221,7 @@ def _git_show_text(repo_dir: str, ref: str, path: str) -> str | None:
 
 
 def _read_ledger_rows(repo_dir: str, ref: str, ledger_name: str) -> list[dict[str, Any]]:
-    """Parse a holon-knowledge/ledger/*.jsonl file at a ref, skipping unparseable lines."""
-    content = _git_show_text(repo_dir, ref, f"holon-knowledge/ledger/{ledger_name}") or ""
+    content = _git_show_text(repo_dir, ref, f"{LEDGER_DIR_PREFIX}{ledger_name}") or ""
     rows: list[dict[str, Any]] = []
     for line in content.splitlines():
         if not line.strip():
@@ -254,89 +235,92 @@ def _read_ledger_rows(repo_dir: str, ref: str, ledger_name: str) -> list[dict[st
     return rows
 
 
+def _parse_ledger_revision(row: dict[str, Any]) -> int:
+    try:
+        return int(row.get("ledger_revision") or DEFAULT_LEDGER_REVISION)
+    except (TypeError, ValueError):
+        return DEFAULT_LEDGER_REVISION
+
+
 def _latest_execution_summary(rows: list[dict[str, Any]], execution_id: str, branch: str = "") -> dict[str, Any] | None:
-    """Return an execution's authoritative summary row (keyed on ``branch``'s plan when given): newest revision."""
-    best: tuple[int, int] | None = None
-    chosen: dict[str, Any] | None = None
+    best_rank: tuple[int, int] | None = None
+    chosen_row: dict[str, Any] | None = None
     for idx, row in enumerate(rows):
         if row.get("entry_type") != "summary" or not is_row_of_execution(row, execution_id, branch):
             continue
-        try:
-            revision = int(row.get("ledger_revision") or 1)
-        except (TypeError, ValueError):
-            revision = 1
-        key = (revision, idx)
-        if best is None or key > best:
-            best, chosen = key, row
-    return chosen
+        rank = (_parse_ledger_revision(row), idx)
+        if best_rank is None or rank > best_rank:
+            best_rank, chosen_row = rank, row
+    return chosen_row
 
 
 def _append_superseding_execution_row(context: FlowContext, exec_branch: str, row: dict[str, Any]) -> str | None:
-    """Append a superseding executions.jsonl row on the execution branch and push it (see ``_append_ledger_row``)."""
     message = f"execute: record {row.get('status') or 'superseding'} row for {row.get('execution_id')}"
     return _append_ledger_row(context, exec_branch, "executions.jsonl", row, message)
 
 
-def _append_ledger_row(context: FlowContext, branch: str, ledger: str, row: dict[str, Any], msg: str) -> str | None:
-    """Append ``row`` to holon-knowledge/ledger/<ledger> on ``branch``, commit it with ``msg`` and push that branch.
+def _ledger_unique_id_keys(ledger: str) -> tuple[str, str]:
+    if ledger == "plans.jsonl":
+        return "plan_id", "intent_branch"
+    return "execution_id", "plan_branch"
 
-    Works in a temporary detached worktree on origin/<branch> (the operator's checkout is never disturbed); earlier rows
-    are left untouched and the ledger's unique-id check runs before the commit. origin/<branch> and the local branch
-    are then fast-forwarded. Returns None on success, otherwise a secret-redacted description of what failed.
-    """
-    repo_dir, ledger_rel = context.target_worktree, f"holon-knowledge/ledger/{ledger}"
+
+def _best_effort_sync_local_refs(context: FlowContext, branch: str, pushed_sha: str) -> None:
+    _sync_local_execution_refs(context, branch, pushed_sha)
+
+
+def _append_ledger_row(context: FlowContext, branch: str, ledger: str, row: dict[str, Any], msg: str) -> str | None:
+    repo_dir = context.target_worktree
+    ledger_rel = f"{LEDGER_DIR_PREFIX}{ledger}"
     try:
-        with _ledger_worktree(repo_dir, f"refs/remotes/origin/{branch}", run_git) as worktree:
+        with _ledger_worktree(repo_dir, f"{ORIGIN_REF_PREFIX}{branch}", run_git) as worktree:
             ledger_path = os.path.join(worktree, ledger_rel)
             os.makedirs(os.path.dirname(ledger_path), exist_ok=True)
-            with atomic_ledger_append(ledger_path) as f:
-                f.write(json.dumps(row) + "\n")
-            ids = ("plan_id", "intent_branch") if ledger == "plans.jsonl" else ("execution_id", "plan_branch")
-            validate_ledger_file_unique_ids(ledger_path, id_key=ids[0], parent_key=ids[1])
+            with atomic_ledger_append(ledger_path) as handle:
+                handle.write(json.dumps(row) + "\n")
+            id_key, parent_key = _ledger_unique_id_keys(ledger)
+            validate_ledger_file_unique_ids(ledger_path, id_key=id_key, parent_key=parent_key)
             run_git(["add", ledger_rel], cwd=worktree)
             commit_env = {**EXECUTOR_GIT_ENV, **os.environ, "DOCKER_CLI_HINTS": "false"}
             run_git(["commit", "-m", msg], cwd=worktree, env=commit_env)
             pushed_sha = run_git(["rev-parse", "HEAD"], cwd=worktree).stdout.strip()
-            run_git(["push", "origin", f"HEAD:refs/heads/{branch}"], cwd=worktree, timeout=300)
+            run_git(
+                ["push", ORIGIN_REMOTE, f"HEAD:{LOCAL_HEAD_REF_PREFIX}{branch}"],
+                cwd=worktree,
+                timeout=GIT_REMOTE_TIMEOUT_SECONDS,
+            )
     except LedgerRewriteError:
         raise
     except (RuntimeError, TimeoutError, OSError, ValueError) as exc:
         return redact_agent_secrets(str(exc))
-    # The row is on origin now: aligning local refs is best-effort and never reported as a failed write.
-    _sync_local_execution_refs(context, branch, pushed_sha)
+    _best_effort_sync_local_refs(context, branch, pushed_sha)
     return None
 
 
 def _sync_local_execution_refs(context: FlowContext, exec_branch: str, pushed_sha: str) -> None:
-    """Fast-forward origin/<branch> and the local branch to a commit just pushed to origin.
-
-    Keeps local readers (``holon calibrate``, ``git log``) on the same ledger state as origin. A local
-    branch that has diverged from the pushed commit is left untouched and reported instead.
-    """
     repo_dir = context.target_worktree
-    remote_ref = f"refs/remotes/origin/{exec_branch}"
+    remote_ref = f"{ORIGIN_REF_PREFIX}{exec_branch}"
     if run_git(["update-ref", remote_ref, pushed_sha], cwd=repo_dir, check=False).returncode != 0:
-        context.log(f"Warning: could not update '{remote_ref}' to the pushed commit {pushed_sha[:12]}.")
+        context.log(
+            f"Warning: could not update '{remote_ref}' to the pushed commit {pushed_sha[:SHORT_SHA_LOG_LENGTH]}."
+        )
     fast_forward_local_branch(context, exec_branch, pushed_sha)
 
 
 def _execution_parent_plan_branch(execution_branch: str) -> str | None:
-    """Derive '<intent>/P-.../_' from '<intent>/P-.../E-.../_', or None for non-execution targets."""
     clean = execution_branch.strip()
-    if "/E-" not in clean:
+    if EXECUTION_BRANCH_MARKER not in clean:
         return None
-    return clean.split("/E-", 1)[0] + "/_"
+    return clean.split(EXECUTION_BRANCH_MARKER, 1)[0] + BRANCH_TIP_SUFFIX
 
 
 def _has_origin_remote(repo_dir: str) -> bool:
-    """Return True when the repository has an 'origin' remote configured."""
-    return run_git(["remote", "get-url", "origin"], cwd=repo_dir, check=False).returncode == 0
+    return run_git(["remote", "get-url", ORIGIN_REMOTE], cwd=repo_dir, check=False).returncode == 0
 
 
 def _unfetched_branch_message(repo_dir: str, branches: list[str], role: str = "") -> str | None:
-    """Name the first branch whose origin tracking ref is missing (the host fetches before dispatch)."""
     for branch in branches:
-        ref = f"refs/remotes/origin/{branch}"
+        ref = f"{ORIGIN_REF_PREFIX}{branch}"
         if run_git(["rev-parse", "--verify", "--quiet", ref], cwd=repo_dir, check=False).returncode != 0:
             label = f"{role} '{branch}'" if role else f"'{branch}'"
             return f"{label} is not fetched from origin; the host must fetch it before dispatch"
@@ -344,53 +328,54 @@ def _unfetched_branch_message(repo_dir: str, branches: list[str], role: str = ""
 
 
 def _origin_refs_error(repo_dir: str, plan_branch: str, execution_branch: str) -> str | None:
-    """Fetch both branches on the host, or only check the host-fetched refs in a mounted role container."""
     branches = [plan_branch, execution_branch]
     if workspace_mounted():
         return _unfetched_branch_message(repo_dir, branches)
     fetch_error = _fetch_refspecs_error(
-        repo_dir, [f"+refs/heads/{branch}:refs/remotes/origin/{branch}" for branch in branches]
+        repo_dir,
+        [f"+{LOCAL_HEAD_REF_PREFIX}{branch}:{ORIGIN_REF_PREFIX}{branch}" for branch in branches],
     )
     if fetch_error:
         return f"fetching '{plan_branch}' and '{execution_branch}' from origin failed: {fetch_error}"
     return None
 
 
-def _execution_effective_diff(
-    repo_dir: str, execution_branch: str, target_branch: str = "main"
-) -> tuple[bool | None, str]:
-    """Check whether an execution branch changes anything relative to its parent plan branch.
-
-    The PR is opened from origin, so with an 'origin' remote both branches are fetched first and the
-    freshly fetched origin tracking refs are compared (as ``_resolve_review_commit`` does): stale or
-    unpushed local branches never decide the outcome, and a failed fetch (including a branch that was
-    never pushed) is reported as unverifiable. Only a repository without an 'origin' remote falls back
-    to its local branches, and the returned detail says so. An execution whose ledger records the integration of
-    its decomposed plan branch is compared with its merge base on ``target_branch`` instead (combined_base.py).
-
-    Returns:
-        tuple[bool | None, str]: (True, detail) when it does or the target is not an execution
-        branch, (False, summary) for an empty execution, and (None, reason) when it cannot be
-        verified (callers must then refuse to open a PR).
-    """
-    plan_branch = _execution_parent_plan_branch(execution_branch)
-    if plan_branch is None:
-        return True, "not an execution branch"
+def _resolve_effective_diff_refs(
+    repo_dir: str, plan_branch: str, execution_branch: str
+) -> tuple[str | None, str | None, str, str | None]:
     if _has_origin_remote(repo_dir):
         origin_error = _origin_refs_error(repo_dir, plan_branch, execution_branch)
         if origin_error:
-            return None, origin_error
-        plan_ref = f"refs/remotes/origin/{plan_branch}"
-        exec_ref = f"refs/remotes/origin/{execution_branch}"
-        source = "origin"
-    else:
-        plan_ref = _resolve_branch_ref(repo_dir, plan_branch, prefer_remote=False)
-        exec_ref = _resolve_branch_ref(repo_dir, execution_branch, prefer_remote=False)
-        if not plan_ref or not exec_ref:
-            return None, f"no 'origin' remote and cannot resolve '{plan_branch}' and '{execution_branch}' locally"
-        source = "local branches (no 'origin' remote)"
+            return None, None, ORIGIN_REMOTE, origin_error
+        return (
+            f"{ORIGIN_REF_PREFIX}{plan_branch}",
+            f"{ORIGIN_REF_PREFIX}{execution_branch}",
+            ORIGIN_REMOTE,
+            None,
+        )
+    plan_ref = _resolve_branch_ref(repo_dir, plan_branch, prefer_remote=False)
+    exec_ref = _resolve_branch_ref(repo_dir, execution_branch, prefer_remote=False)
+    if not plan_ref or not exec_ref:
+        return (
+            None,
+            None,
+            "",
+            f"no '{ORIGIN_REMOTE}' remote and cannot resolve '{plan_branch}' and '{execution_branch}' locally",
+        )
+    return plan_ref, exec_ref, f"local branches (no '{ORIGIN_REMOTE}' remote)", None
+
+
+def _execution_effective_diff(
+    repo_dir: str, execution_branch: str, target_branch: str = "main"
+) -> tuple[bool | None, str]:
+    plan_branch = _execution_parent_plan_branch(execution_branch)
+    if plan_branch is None:
+        return True, "not an execution branch"
+    plan_ref, exec_ref, source, ref_error = _resolve_effective_diff_refs(repo_dir, plan_branch, execution_branch)
+    if ref_error or not plan_ref or not exec_ref:
+        return None, ref_error or f"cannot resolve '{plan_branch}' and '{execution_branch}'"
     if _integrated_plan_recorded(_read_ledger_rows(repo_dir, exec_ref, "executions.jsonl"), plan_branch):
-        mounted = workspace_mounted() if source == "origin" else None
+        mounted = workspace_mounted() if source == ORIGIN_REMOTE else None
         return _combined_diff_verdict(repo_dir, (execution_branch, exec_ref), target_branch, mounted, source)
     try:
         changed = changed_paths(repo_dir, plan_ref, exec_ref)

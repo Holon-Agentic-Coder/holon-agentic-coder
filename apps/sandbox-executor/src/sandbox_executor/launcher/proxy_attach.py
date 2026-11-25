@@ -1,5 +1,3 @@
-"""Attaching a role container to a proxy the user already runs (env opt-in or flow attach)."""
-
 import logging
 import os
 
@@ -9,17 +7,23 @@ from sandbox_executor.redaction import trusted_url_authority
 
 logger = logging.getLogger(__name__)
 
+_LOOPBACK_HOST = "127.0.0.1"
+_LOCAL_GATEWAY_HOSTS = ("host.docker.internal", "172.17.0.1", "localhost")
+_UNTRUSTED_PROXY_TARGET_LABEL = "the HOLON_PROXY_URL target"
+
+
+def _probe_host_for_gateway(host: str) -> str:
+    return _LOOPBACK_HOST if host in _LOCAL_GATEWAY_HOSTS else host
+
+
+def _format_redacted_target(host: str, port: int, *, trusted: bool) -> str:
+    return f"{host}:{port}" if trusted else _UNTRUSTED_PROXY_TARGET_LABEL
+
 
 def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
-    """Attach the sandbox to an already-running proxy (``HOLON_PROXY_URL`` or host gateway).
-
-    Used for the ``HOLON_TOKEN_REDUCE`` opt-in path and the flow's attach to a detected proxy: the proxy is owned
-    by the user, so this run neither starts nor tears it down. An unreachable proxy degrades to direct egress.
-    """
     proxy_url = os.getenv("HOLON_PROXY_URL") or proxy_paths._proxy_gateway_url()
     host_port = proxy_paths._proxy_host_port(proxy_url)
     if host_port is None:
-        # Never echo the value: an unparseable URL has no reliable userinfo boundary to mask.
         logger.warning(
             "holon-coherence proxy probe failed: HOLON_PROXY_URL is not a valid proxy URL; ignoring it. "
             "Proceeding with DIRECT egress fallback."
@@ -30,15 +34,11 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
         )
         return [], {}
 
-    # Probe before generating: an unreachable proxy must not leave a fresh CA behind on a host that
-    # is about to run with direct egress.
     ready = False
-    probe_host = "127.0.0.1" if host_port[0] in ("host.docker.internal", "172.17.0.1", "localhost") else host_port[0]
-    # Messages show the target only when its host was validated after the userinfo was removed;
-    # otherwise the parsed host and port may be part of a credential, so only the variable is named.
+    probe_host = _probe_host_for_gateway(host_port[0])
     trusted = trusted_url_authority(proxy_url) is not None
-    probe_target = f"{probe_host}:{host_port[1]}" if trusted else "the HOLON_PROXY_URL target"
-    proxy_target = f"{host_port[0]}:{host_port[1]}" if trusted else "the HOLON_PROXY_URL target"
+    probe_target = _format_redacted_target(probe_host, host_port[1], trusted=trusted)
+    proxy_target = _format_redacted_target(host_port[0], host_port[1], trusted=trusted)
     try:
         ready = proxy_readiness.wait_for_proxy(probe_host, host_port[1], timeout=PROXY_ATTACH_TIMEOUT_SECONDS)
     except (OSError, TimeoutError) as exc:
@@ -69,6 +69,4 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
 
     ca_cert_path, _ = root_ca.generate_root_ca()
 
-    # No gateway --add-host here: run_docker_container adds it once for every agent container, and emitting it from
-    # both places produced a duplicate flag whenever an externally attached proxy was in use.
     return proxy_paths._ca_mount_args(ca_cert_path), proxy_paths._build_proxy_envs(ca_cert_path, proxy_url)

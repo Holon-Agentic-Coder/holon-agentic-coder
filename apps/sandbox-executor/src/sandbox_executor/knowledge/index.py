@@ -1,5 +1,3 @@
-"""Durable SQLite indexing engine with FTS5 and inverted labels; the byte-offset sync lives in ``ledger_sync``."""
-
 from __future__ import annotations
 
 import logging
@@ -23,15 +21,12 @@ DEFAULT_GLOBAL_DB_PATH = os.path.expanduser("~/.holon/index/action_index.db")
 
 
 class ActionIndexDatabase:
-    """Manages dual-tier SQLite action knowledge index."""
-
     def __init__(self, db_path: str | None = None, global_db_path: str | None = None) -> None:
         self.db_path = db_path or DEFAULT_PROJECT_DB_PATH
         self.global_db_path = global_db_path or DEFAULT_GLOBAL_DB_PATH
         self._init_db(self.db_path)
 
     def _init_db(self, path: str) -> None:
-        """Initialise schema and tables with WAL mode enabled."""
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         conn = connect_wal(path)
         try:
@@ -169,11 +164,9 @@ class ActionIndexDatabase:
             conn.close()
 
     def get_connection(self) -> sqlite3.Connection:
-        """Return an active connection to the project SQLite database."""
         conn = connect_wal(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
     def sync_ledger(self, ledger_path: str) -> int:
-        """Incrementally synchronise a ledger file into this index database."""
         return sync_ledger_incremental(self.db_path, ledger_path)

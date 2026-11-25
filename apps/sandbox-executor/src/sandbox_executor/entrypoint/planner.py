@@ -395,8 +395,16 @@ def main():  # noqa: C901, PLR0912, PLR0915
     entropy_budget = resolve_entropy_budget({}, intent_data)
 
     # Transient re-plan feedback from the flow (HOLON_REPLAN_FEEDBACK). It reaches the agent through the prompt and the
-    # temporary intent file only; it is never written to any ledger.
-    replan_feedback = os.getenv(ENV_REPLAN_FEEDBACK, "").strip()
+    # temporary intent file only; it is never written to any ledger. Any target-merge notice is excluded from the
+    # intent file's replan_feedback field so only real re-plan feedback is recorded there.
+    raw_feedback = os.getenv(ENV_REPLAN_FEEDBACK, "").strip()
+    if "## Target branch merged" in raw_feedback:
+        head_part, tail_part = raw_feedback.split("## Target branch merged", 1)
+        replan_feedback = head_part.strip()
+        merge_notice = f"## Target branch merged{tail_part}".strip()
+    else:
+        replan_feedback = raw_feedback
+        merge_notice = ""
 
     # Prepare prompt using template
     template_path = os.path.join(repo_dir, "holon-config/prompts/planner.template.md")
@@ -449,6 +457,8 @@ Include metrics in this format:
 
             if replan_feedback:
                 f.write(build_replan_paragraph(replan_feedback, entropy_budget))
+            if merge_notice:
+                f.write(f"\n\n{merge_notice}\n")
 
         with open(intent_file, "w") as f:
             json.dump({**intent_data, "replan_feedback": replan_feedback} if replan_feedback else intent_data, f)

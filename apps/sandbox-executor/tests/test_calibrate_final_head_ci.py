@@ -183,7 +183,7 @@ def _run_stage(tmp_path: Path, record: dict) -> object:
     ok = SimpleNamespace(returncode=0, stdout="", stderr="")
     with (
         patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=report),
         patch("sandbox_executor.flow.stages.calibrate.run_git", return_value=ok),
         patch("sandbox_executor.flow.calibrate_sync.run_git", return_value=ok),
@@ -247,15 +247,16 @@ def test_pr_head_never_matching_pushed_head_is_unknown(tmp_path: Path) -> None:
     assert fakes.probes == 0
 
 
-def test_failure_does_not_end_the_wait_while_other_checks_are_pending(tmp_path: Path) -> None:
+def test_failure_ends_the_wait_early_while_other_checks_are_pending(tmp_path: Path) -> None:
     fakes = Fakes(
         _status([_check("lint", "fail"), _check("unit", "pending")]),
         _status([_check("lint", "fail"), _check("unit", "fail")]),
     )
     record = _run(tmp_path, fakes)
     assert record["state"] == "failed"
-    assert record["failed_checks"] == ["lint", "unit"]
-    assert fakes.sleeps
+    assert record["failed_checks"] == ["lint"]
+    assert fakes.sleeps == []
+    assert fakes.probes == 1
 
 
 # --- the merged-head CI gate runs before any calibration commit is pushed --------------------------------------------
@@ -307,7 +308,7 @@ def _run_gated_stage(tmp_path: Path, head: str, conclusion: str) -> tuple[FlowCo
             functools.partial(stage5_merged_head_gate, seams=seams),
         ),
         patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=report),
         patch("sandbox_executor.flow.stages.calibrate.run_git", return_value=ok),
         patch("sandbox_executor.flow.calibrate_sync.run_git", return_value=ok),
@@ -382,3 +383,60 @@ def test_a_fingerprint_carried_merged_head_is_not_eligible_for_the_automatic_tim
     # ci_final_head stays bookkeeping-only: a merge of main is not a bookkeeping move, even when the approval carried.
     assert ci_final_head._eligible_run_ids(carried, record, ci_status) is None
     assert ci_final_head._eligible_run_ids(bookkeeping, record, ci_status) == ["77"]  # The positive control.
+
+
+# --- 15-second poll ceiling, fail-early, and timing-rerun pending guard ---------------------------------------------
+
+
+def test_final_head_ci_caps_poll_interval_at_15s_and_fails_early(tmp_path: Path) -> None:
+    pending = _status([_check("unit", "pending")])
+    passed = _status([_check("unit", "pass")])
+    fakes_cap = Fakes(pending, pending, pending, passed)
+    rec_cap = _run(tmp_path, fakes_cap)
+    assert rec_cap["state"] == "success"
+    assert fakes_cap.sleeps == [15.0, 15.0, 15.0]
+
+    mixed = _status([_check("lint", "fail"), _check("unit", "pending")])
+    both_failed = _status([_check("lint", "fail"), _check("unit", "fail")])
+    fakes_initial = Fakes(mixed, both_failed)
+    rec_initial = _run(tmp_path, fakes_initial)
+    assert rec_initial["state"] == "failed"
+    assert rec_initial["failed_checks"] == ["lint"]
+    assert fakes_initial.sleeps == []
+    assert fakes_initial.probes == 1
+
+    fakes_later = Fakes(_status([_check("lint", "pending"), _check("unit", "pending")]), mixed, both_failed)
+    rec_later = _run(tmp_path, fakes_later)
+    assert rec_later["state"] == "failed"
+    assert rec_later["failed_checks"] == ["lint"]
+    assert fakes_later.sleeps == [15.0]
+    assert fakes_later.probes == 2
+
+
+def test_timing_gate_rerun_is_ineligible_while_sibling_checks_are_pending(tmp_path: Path) -> None:
+    """Fail-early exit with a pending sibling check must not dispatch an automatic timing-gate rerun."""
+    record = {"failed_checks": ["unit"], "failed_details": [{"name": "unit", "timing_gate": True}]}
+    bookkeeping = _carried_timing_check(tmp_path, ["holon-knowledge/ledger/executions.jsonl"])
+    pending_status = _status([_check("unit", "fail"), _check("lint", "pending")])
+    settled_status = _status([_check("unit", "fail"), _check("lint", "pass")])
+
+    assert ci_final_head._eligible_run_ids(bookkeeping, record, pending_status) is None
+    assert ci_final_head._eligible_run_ids(bookkeeping, record, settled_status) == ["42"]
+
+    dispatched: list[str] = []
+    fakes = Fakes(pending_status, steps={"unit": [GATE]})
+    seams = FinalHeadSeams(
+        policy=CiWaitPolicy(600.0, clock=lambda: fakes.now, sleep=fakes.sleep),
+        probe=fakes.probe,
+        detail_lookup=lambda c: _detail(c["name"], fakes.steps.get(c["name"])),
+        registration_timeout=0,
+        pushed_head=lambda: None,
+        pr_head=lambda: "b" * 40,
+        approved_head=lambda: "a" * 40,
+        changed_paths=lambda _a, _h: ["holon-knowledge/ledger/executions.jsonl"],
+        rerun_dispatcher=lambda run_id: dispatched.append(run_id) or True,
+    )
+    out = check_final_head_ci(_ctx(tmp_path), str(tmp_path), BRANCH, seams)
+    assert out["state"] == "failed"
+    assert "timing_rerun" not in out
+    assert dispatched == []

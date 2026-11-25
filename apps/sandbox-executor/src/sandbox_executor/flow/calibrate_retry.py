@@ -167,6 +167,7 @@ def call_with_retries(
     log_fn: Callable[[str], None],
     retry_safe: Callable[[], bool],
     env: Mapping[str, str] | None = None,
+    before_retry: Callable[[int], None] | None = None,
 ) -> Callable[..., Any]:
     """Wrap ``calibrate`` (``run_calibrate``'s keyword signature) in the bounded retry policy of this module.
 
@@ -184,5 +185,7 @@ def call_with_retries(
                 raise
             except Exception as exc:
                 time.sleep(state.record(exc))
+                if before_retry is not None:
+                    before_retry(len(state.causes))
 
     return run

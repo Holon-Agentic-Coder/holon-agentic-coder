@@ -1,11 +1,5 @@
-"""The documented keys of the layered configuration: one table for the README, ``.env.example`` and the tests.
-
-Data only. Whether a key is secret is decided by ``config_env.is_secret_key``, never restated here.
-"""
-
 from __future__ import annotations
 
-# (key, built-in default, purpose) for every key an operator may set in ~/.holon/.env or <repo>/.env.
 DOCUMENTED_KEYS: tuple[tuple[str, str, str], ...] = (
     (
         "HOLON_AGENT",
@@ -93,8 +87,6 @@ DOCUMENTED_KEYS: tuple[tuple[str, str, str], ...] = (
     ),
 )
 
-# Keys the host sets for a role container, or a maintainer sets for one run; a layer file never needs them, and the
-# reserved ones among them (see ``config_env.RESERVED_KEYS``) are refused there.
 HOST_SET_KEYS: tuple[str, ...] = (
     "HOLON_ROLE",
     "HOLON_CONFIG_RESOLVED",

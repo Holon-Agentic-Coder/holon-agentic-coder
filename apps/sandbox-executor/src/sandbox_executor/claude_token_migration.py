@@ -1,12 +1,3 @@
-"""One-time migration of the plaintext claude token file into the OS secret store, and the pre-flight wording.
-
-Holon used to keep the claude credential in ``~/.holon/secrets/claude-oauth-token``. This is the only code that reads
-that file, and only to import it: the token is stored through ``claude_keychain`` and the file is deleted once a
-read-back from the store returned the identical token. Every doubt keeps the file. A token-file reference that names
-the file is ignored by the configuration layer (``config_env_secrets``, through ``is_legacy_token_file``), so a kept
-file is never read as the credential. No message holds the token, a part of it or any tool output.
-"""
-
 from __future__ import annotations
 
 import enum
@@ -24,44 +15,30 @@ _STALE_REFERENCE_NOTE = "Remove any HOLON_AGENT_OAUTH_TOKEN_FILE line that named
 
 
 def legacy_token_file_path() -> str:
-    """Return the target-native path of the retired plaintext token file under the current home."""
     return os.path.join(os.path.expanduser("~"), ".holon", "secrets", "claude-oauth-token")
 
 
 def is_legacy_token_file(path: str) -> bool:
-    """Return True when ``path`` names the retired plaintext token file, directly or through symbolic links."""
     return os.path.realpath(path) == os.path.realpath(legacy_token_file_path())
 
 
 class MigrationStatus(enum.Enum):
-    """What the one-time migration did."""
-
-    NOT_NEEDED = "not_needed"  # there is no plaintext file
-    MIGRATED = "migrated"  # the store holds the token and the file is deleted
-    KEPT = "kept"  # the file still exists
+    NOT_NEEDED = "not_needed"
+    MIGRATED = "migrated"
+    KEPT = "kept"
 
 
 @dataclass(frozen=True)
 class MigrationOutcome:
-    """The migration result; ``message`` is one line for the operator, empty for ``NOT_NEEDED``."""
-
     status: MigrationStatus
     message: str = ""
 
 
 def _store_command_text() -> str:
-    """The operator's store one-liner for the current platform, or both one-liners on an unsupported platform."""
     return claude_keychain.store_command() or claude_keychain.store_commands_text()
 
 
 def _kept(reason: str, delete_by_hand: bool = False) -> MigrationOutcome:
-    """The outcome for a file that was not imported.
-
-    Args:
-        reason: Why the file was not imported; it never holds the token.
-        delete_by_hand: True when no later import can remove the file (it cannot be imported, or the store holds
-            another credential), so the line ends with the manual delete that stops it repeating on every pre-flight.
-    """
     remedy = f"To store a credential by hand: {_store_command_text()}"
     if delete_by_hand:
         remedy = (
@@ -76,7 +53,6 @@ def _kept(reason: str, delete_by_hand: bool = False) -> MigrationOutcome:
 
 
 def _delete_imported_file(path: str, already_stored: bool) -> MigrationOutcome:
-    """Delete the plaintext file once the store provably holds its token; the secrets directory stays."""
     store = f"{claude_keychain.store_name()} ({_ENTRY})"
     try:
         os.remove(path)
@@ -96,7 +72,6 @@ def _delete_imported_file(path: str, already_stored: bool) -> MigrationOutcome:
 
 
 def _importable_token(path: str) -> tuple[str | None, str]:
-    """Return the file's token, or None with the reason the file cannot be imported."""
     if os.path.islink(path) or not os.path.isfile(path):
         return None, "it is not a regular file"
     token, _warning = read_token_file(path)
@@ -108,19 +83,15 @@ def _importable_token(path: str) -> tuple[str | None, str]:
 
 
 def _ensure_stored(token: str) -> tuple[str, bool]:
-    """Make the store hold ``token`` without ever overwriting another entry.
-
-    Returns:
-        ``(reason, already_stored)``: the reason is empty only when the store provably holds the identical token.
-    """
     lookup = claude_keychain.lookup_token()
-    store = claude_keychain.store_name()
+    store_label = claude_keychain.store_name()
     if lookup.status is LookupStatus.UNAVAILABLE:
         return "no usable secret store was found", False
     if lookup.status is LookupStatus.FOUND:
-        different = f"{store} already holds a different claude credential, which was kept"
-        return ("" if lookup.token == token else different), True
-    return ("" if claude_keychain.store_token(token) else f"the write to {store} could not be verified"), False
+        different_credential_reason = f"{store_label} already holds a different claude credential, which was kept"
+        return ("" if lookup.token == token else different_credential_reason), True
+    write_verified = claude_keychain.store_token(token)
+    return ("" if write_verified else f"the write to {store_label} could not be verified"), False
 
 
 def _migrate(path: str) -> MigrationOutcome:
@@ -131,24 +102,12 @@ def _migrate(path: str) -> MigrationOutcome:
         return _kept(reason, delete_by_hand=True)
     reason, already_stored = _ensure_stored(token)
     if reason:
-        # A refusal with an entry in the store means the store holds another credential, which no import replaces.
-        return _kept(reason, delete_by_hand=already_stored)
+        store_holds_existing_credential = already_stored
+        return _kept(reason, delete_by_hand=store_holds_existing_credential)
     return _delete_imported_file(path, already_stored)
 
 
 def migrate_legacy_token_file() -> MigrationOutcome:
-    """Import the plaintext token file into the OS secret store once, and delete it only after a verified store.
-
-    Returns:
-        ``NOT_NEEDED`` when there is no file (no platform tool is started), ``MIGRATED`` when the store holds the
-        file's token and the file is deleted, ``KEPT`` in every other case: the file is unreadable or holds a
-        character the store command cannot carry, there is no usable store, the store holds a different credential
-        (never overwritten), the write could not be verified by a read-back, or the delete failed.
-
-    Side effects:
-        May write one entry to the OS secret store and delete the plaintext file. Prints the outcome's message, when
-        there is one, as one line on standard error; it never contains the token.
-    """
     outcome = _migrate(legacy_token_file_path())
     if outcome.message:
         print(outcome.message, file=sys.stderr)
@@ -156,31 +115,25 @@ def migrate_legacy_token_file() -> MigrationOutcome:
 
 
 def claude_missing_credential_message(lookup: KeychainLookup | None = None) -> str:
-    """The pre-flight output for "no claude credential": the cause, the legacy file's state and the remedy.
-
-    Args:
-        lookup: The keychain answer the caller's credential resolution already got; without it the store is asked.
-    """
     if lookup is None:
         lookup = claude_keychain.lookup_token()
     if lookup.status is LookupStatus.UNAVAILABLE:
         cause = "no usable OS secret store was found (tool missing, keychain locked or no secret service running)"
     else:
         cause = f"{claude_keychain.store_name()} has no entry for {_ENTRY}"
-    legacy = ""
+    legacy_file_note = ""
     if os.path.lexists(legacy_token_file_path()):
-        legacy = (
+        legacy_file_note = (
             f" The plaintext file {LEGACY_TOKEN_FILE_DISPLAY} was not imported, was left untouched and is no longer"
             " read."
         )
     return (
         f"No claude credential was found: {cause}, and neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set."
-        f"{legacy} Run 'claude setup-token' to obtain a token, then store it with: {_store_command_text()}"
+        f"{legacy_file_note} Run 'claude setup-token' to obtain a token, then store it with: {_store_command_text()}"
     )
 
 
 def claude_not_logged_in_hint() -> str:
-    """The pre-flight remediation hint for claude: the keychain first, then the explicit variables, then a session."""
     return (
         "No claude credential reached the container. Run 'claude setup-token' and store the token in the OS keychain "
         f"({_store_command_text()}), or set CLAUDE_CODE_OAUTH_TOKEN for a subscription token (sk-ant-oat...), or set "

@@ -348,9 +348,9 @@ def network_guard_fixture(monkeypatch: pytest.MonkeyPatch, gh_write_guard: list[
 #: Listed here rather than marked in place so the long CLI test modules do not grow.
 _FEATURE_WORKTREE_CWD_TESTS = frozenset(
     {
-        ("test_cli.py", "TestHolonFlowCLI"),
-        ("test_cli.py", "test_review_loop_handler_masks_a_quoted_password_head"),
-        ("test_cli.py", "test_calibrate_handler_masks_a_quoted_password_head"),
+        ("cli/test_flow_cli.py", "TestHolonFlowCLI"),
+        ("cli/test_flow_cli.py", "test_review_loop_handler_masks_a_quoted_password_head"),
+        ("cli/test_flow_cli.py", "test_calibrate_handler_masks_a_quoted_password_head"),
         ("test_calibration.py", "TestCLICalibrateCommand"),
         ("test_review_loop.py", "TestCLIDispatchReviewLoop"),
         ("flow/test_pipeline.py", "TestFlowCLI.test_cli_flow_dry_run_dispatch"),

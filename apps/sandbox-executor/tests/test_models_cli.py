@@ -308,7 +308,7 @@ def test_doctor_shows_canonical_model_and_alias_in_text_and_json(capsys: pytest.
         output_excerpt="OK",
         hint="",
     )
-    with patch("sandbox_executor.cli.run_preflight_probe", return_value=ok_probe) as probe:
+    with patch("sandbox_executor.cli.doctor.run_preflight_probe", return_value=ok_probe) as probe:
         with pytest.raises(SystemExit) as exc_info:
             cli.main(["doctor", "--agent", "claude", "--model", "fable"])
         assert exc_info.value.code == 0
@@ -317,7 +317,7 @@ def test_doctor_shows_canonical_model_and_alias_in_text_and_json(capsys: pytest.
     assert "Model resolved to claude-fable-5-2" in text_out
     assert "fable" in text_out
 
-    with patch("sandbox_executor.cli.run_preflight_probe", return_value=ok_probe) as probe:
+    with patch("sandbox_executor.cli.doctor.run_preflight_probe", return_value=ok_probe) as probe:
         with pytest.raises(SystemExit) as exc_info:
             cli.main(["doctor", "--agent", "claude", "--model", "fable", "--json"])
         assert exc_info.value.code == 0

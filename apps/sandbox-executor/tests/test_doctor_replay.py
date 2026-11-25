@@ -2,13 +2,13 @@
 
 The redaction matrix (``tests/test_url_credential_redaction.py``) computes the configuration section of ``holon
 doctor`` once per case and replays it for the other doctor runs of that case. The first identity test here runs the
-matrix's own ``_doctor`` without that replay and compares what the real ``cli._configuration_section`` returns in each
-of its eight call contexts. If production makes the section depend on the host configuration, the fetcher or
+matrix's own ``_doctor`` without that replay and compares what the real ``cli_doctor._configuration_section`` returns
+in each of its eight call contexts. If production makes the section depend on the host configuration, the fetcher or
 ``--json``, it fails, and the replay must be removed from the matrix.
 
-The matrix also runs the environment report (``cli.report_budgets_and_envelope``) only once for the two doctor runs of
-one block of a case and replays its text and exit code for the second one. The second identity test runs ``_doctor``
-without that replay and compares everything the three real reports of each block do (the direct one and those of the
+The matrix also runs the environment report (``cli_doctor.report_budgets_and_envelope``) only once for the two doctor
+runs of one block of a case and replays its text and exit code for the second one. The second identity test runs
+``_doctor`` without that replay and compares everything the three real reports of each block do (the direct one and
 two doctor runs): the text, the exit code, the log lines, the gateway probes and any other output. If production
 makes the report depend on how often it ran or on who called it, it fails, and that replay must be removed.
 
@@ -33,6 +33,7 @@ import sys
 
 import pytest
 from sandbox_executor import cli, config_env, local_llm
+from sandbox_executor.cli import doctor as cli_doctor
 
 from tests import seeded_secrets
 from tests import test_url_credential_redaction as redaction_matrix
@@ -95,7 +96,7 @@ def test_sample_covers_every_prefix_both_userinfo_forms_and_six_shapes():
 
 
 def test_configuration_section_is_identical_in_all_eight_doctor_contexts_of_a_case(monkeypatch, empty_environment):
-    real = cli._configuration_section
+    real = cli_doctor._configuration_section
     calls: list[tuple[tuple, tuple[bool, bool]]] = []
 
     def recording(args):
@@ -105,7 +106,7 @@ def test_configuration_section_is_identical_in_all_eight_doctor_contexts_of_a_ca
 
     # The matrix's own `_doctor`, with the replay switched off, so every one of its doctor runs computes the section.
     monkeypatch.setattr(redaction_matrix, "replayed_configuration_section", contextlib.nullcontext)
-    monkeypatch.setattr(cli, "_configuration_section", recording)
+    monkeypatch.setattr(cli_doctor, "_configuration_section", recording)
     differing: list[str] = []
     for case_id, value in _sampled_values():
         calls.clear()
@@ -124,14 +125,14 @@ def test_configuration_section_is_identical_in_all_eight_doctor_contexts_of_a_ca
 
 
 def test_matrix_doctor_computes_the_section_once_per_case(monkeypatch, empty_environment):
-    real = cli._configuration_section
+    real = cli_doctor._configuration_section
     computed: list[argparse.Namespace] = []
 
     def counting(args):
         computed.append(args)
         return real(args)
 
-    monkeypatch.setattr(cli, "_configuration_section", counting)
+    monkeypatch.setattr(cli_doctor, "_configuration_section", counting)
 
     redaction_matrix._doctor("http://alice:FGJQVZFGJQVZ@localhost:8081/v1")
     redaction_matrix._doctor("http://alice:ZVQJGFZVQJGF@localhost:8081/v1")
@@ -148,7 +149,7 @@ def counted_section(monkeypatch):
         calls.append((os.environ.get("HOLON_LOCAL_BASE_URL"), args.agent, args.model))
         return {"settings": [{"key": "HOLON_LOCAL_BASE_URL", "shadowed": []}], "call": len(calls)}, ["heading"]
 
-    monkeypatch.setattr(cli, "_configuration_section", section)
+    monkeypatch.setattr(cli_doctor, "_configuration_section", section)
     return calls
 
 
@@ -158,15 +159,15 @@ def test_replay_computes_once_per_environment_agent_and_model(counted_section, m
     other_model = argparse.Namespace(agent=DOCTOR_ARGS.agent, model="m")
 
     with replayed_configuration_section():
-        first = [cli._configuration_section(DOCTOR_ARGS) for _ in range(3)]
+        first = [cli_doctor._configuration_section(DOCTOR_ARGS) for _ in range(3)]
         monkeypatch.setenv("HOLON_LOCAL_BASE_URL", "two")
-        second = [cli._configuration_section(DOCTOR_ARGS) for _ in range(2)]
+        second = [cli_doctor._configuration_section(DOCTOR_ARGS) for _ in range(2)]
         monkeypatch.setenv("HOLON_UNRELATED", "x")
-        cli._configuration_section(DOCTOR_ARGS)
-        cli._configuration_section(other_agent)
-        cli._configuration_section(other_model)
+        cli_doctor._configuration_section(DOCTOR_ARGS)
+        cli_doctor._configuration_section(other_agent)
+        cli_doctor._configuration_section(other_model)
         monkeypatch.delenv("HOLON_UNRELATED")
-        again = cli._configuration_section(DOCTOR_ARGS)
+        again = cli_doctor._configuration_section(DOCTOR_ARGS)
 
     assert counted_section == [
         ("one", DOCTOR_ARGS.agent, DOCTOR_ARGS.model),
@@ -183,19 +184,19 @@ def test_replay_computes_once_per_environment_agent_and_model(counted_section, m
 def test_each_context_starts_with_an_empty_store(counted_section):
     for _case in range(3):
         with replayed_configuration_section():
-            cli._configuration_section(DOCTOR_ARGS)
-            cli._configuration_section(DOCTOR_ARGS)
+            cli_doctor._configuration_section(DOCTOR_ARGS)
+            cli_doctor._configuration_section(DOCTOR_ARGS)
 
     assert len(counted_section) == 3
 
 
 def test_a_caller_that_mutates_its_result_does_not_change_the_next_callers(counted_section):
     with replayed_configuration_section():
-        payload, lines = cli._configuration_section(DOCTOR_ARGS)
+        payload, lines = cli_doctor._configuration_section(DOCTOR_ARGS)
         payload["settings"][0]["shadowed"].append("mutated")
         payload["leak"] = True
         lines.append("mutated")
-        next_payload, next_lines = cli._configuration_section(DOCTOR_ARGS)
+        next_payload, next_lines = cli_doctor._configuration_section(DOCTOR_ARGS)
 
     assert next_payload == {"settings": [{"key": "HOLON_LOCAL_BASE_URL", "shadowed": []}], "call": 1}
     assert next_lines == ["heading"]
@@ -206,26 +207,26 @@ def test_a_remembered_resolution_is_never_replayed(counted_section):
     config_env.remember(config_env.load_effective_config())
 
     with replayed_configuration_section():
-        results = [cli._configuration_section(DOCTOR_ARGS) for _ in range(3)]
+        results = [cli_doctor._configuration_section(DOCTOR_ARGS) for _ in range(3)]
 
     assert len(counted_section) == 3
     assert [payload["call"] for payload, _lines in results] == [1, 2, 3]
 
 
 def test_the_original_function_is_back_after_the_context(counted_section):
-    original = cli._configuration_section
+    original = cli_doctor._configuration_section
 
     with replayed_configuration_section():
-        assert cli._configuration_section is not original
+        assert cli_doctor._configuration_section is not original
     with pytest.raises(RuntimeError, match="inside"), replayed_configuration_section():
         raise RuntimeError("inside")
 
-    assert cli._configuration_section is original
+    assert cli_doctor._configuration_section is original
 
 
 def _recorded_environment_reports(monkeypatch) -> list[tuple[tuple, tuple]]:
     """Record ``(context, everything observable)`` of every real environment report; the replay is off in both users."""
-    real, real_fetchers = cli.report_budgets_and_envelope, redaction_matrix._fetchers
+    real, real_fetchers = cli_doctor.report_budgets_and_envelope, redaction_matrix._fetchers
     reports: list[tuple[tuple, tuple]] = []
     probes: list[tuple[str, float]] = []
 
@@ -260,7 +261,7 @@ def _recorded_environment_reports(monkeypatch) -> list[tuple[tuple, tuple]]:
     # One recording fetcher per fetcher of a block, so the three calls of the block share it as they do in the matrix.
     monkeypatch.setattr(redaction_matrix, "_fetchers", lambda seen: tuple(map(probe_recording, real_fetchers(seen))))
     monkeypatch.setattr(redaction_matrix, "_empty_health", probe_recording(redaction_matrix._empty_health))
-    monkeypatch.setattr(cli, "report_budgets_and_envelope", recording)
+    monkeypatch.setattr(cli_doctor, "report_budgets_and_envelope", recording)
     return reports
 
 
@@ -333,14 +334,14 @@ def test_environment_replay_changes_only_how_often_the_matrix_sees_a_text(
 
 
 def test_matrix_doctor_runs_the_environment_report_twice_per_block(monkeypatch, empty_environment):
-    real = cli.report_budgets_and_envelope
+    real = cli_doctor.report_budgets_and_envelope
     ran: list[tuple[bool, bool]] = []
 
     def counting(fetch=None, out=None):
         ran.append((local_llm.host_models_json() is None, out is None))
         return real(fetch=fetch, out=out)
 
-    monkeypatch.setattr(cli, "report_budgets_and_envelope", counting)
+    monkeypatch.setattr(cli_doctor, "report_budgets_and_envelope", counting)
 
     redaction_matrix._doctor("http://alice:FGJQVZFGJQVZ@localhost:8081/v1")
     redaction_matrix._doctor("http://alice:ZVQJGFZVQJGF@localhost:8081/v1")
@@ -360,7 +361,7 @@ def counted_report(monkeypatch):
         print(f"report {len(runs)}", file=out or sys.stdout)
         return len(runs)
 
-    monkeypatch.setattr(cli, "report_budgets_and_envelope", report)
+    monkeypatch.setattr(cli_doctor, "report_budgets_and_envelope", report)
     return runs
 
 
@@ -373,14 +374,14 @@ def test_environment_replay_runs_once_per_environment_host_configuration_and_fet
 
     monkeypatch.setenv("HOLON_LOCAL_BASE_URL", "one")
     with replayed_environment_report():
-        first = [cli.report_budgets_and_envelope(fetch=fetch, out=io.StringIO()) for _ in range(3)]
-        cli.report_budgets_and_envelope(fetch=other_fetch, out=io.StringIO())
+        first = [cli_doctor.report_budgets_and_envelope(fetch=fetch, out=io.StringIO()) for _ in range(3)]
+        cli_doctor.report_budgets_and_envelope(fetch=other_fetch, out=io.StringIO())
         monkeypatch.setenv("HOLON_LOCAL_BASE_URL", "two")
-        cli.report_budgets_and_envelope(fetch=fetch, out=io.StringIO())
+        cli_doctor.report_budgets_and_envelope(fetch=fetch, out=io.StringIO())
         with monkeypatch.context() as other_host_configuration:
             other_host_configuration.setattr(local_llm, "host_models_json", lambda: {"providers": {}})
-            cli.report_budgets_and_envelope(fetch=fetch, out=io.StringIO())
-        again = cli.report_budgets_and_envelope(fetch=fetch, out=io.StringIO())
+            cli_doctor.report_budgets_and_envelope(fetch=fetch, out=io.StringIO())
+        again = cli_doctor.report_budgets_and_envelope(fetch=fetch, out=io.StringIO())
 
     assert counted_report == [("one", fetch), ("one", other_fetch), ("two", fetch), ("two", fetch)]
     assert first == [1, 1, 1]
@@ -389,9 +390,9 @@ def test_environment_replay_runs_once_per_environment_host_configuration_and_fet
 
 def test_a_report_without_a_stream_of_its_own_is_never_replayed(counted_report, capsys):
     with replayed_environment_report():
-        on_stdout = [cli.report_budgets_and_envelope() for _ in range(2)]
-        with_a_stream = cli.report_budgets_and_envelope(out=io.StringIO())
-        on_stdout.append(cli.report_budgets_and_envelope())
+        on_stdout = [cli_doctor.report_budgets_and_envelope() for _ in range(2)]
+        with_a_stream = cli_doctor.report_budgets_and_envelope(out=io.StringIO())
+        on_stdout.append(cli_doctor.report_budgets_and_envelope())
 
     assert on_stdout == [1, 2, 4], "every call on stdout runs the report"
     assert with_a_stream == 3, "and a call with a stream is not answered from a call on stdout"
@@ -402,7 +403,7 @@ def test_every_caller_with_a_stream_gets_the_report_text_on_it_and_the_exit_code
     streams = [io.StringIO(), io.StringIO(), io.StringIO()]
 
     with replayed_environment_report():
-        codes = [cli.report_budgets_and_envelope(out=stream) for stream in streams]
+        codes = [cli_doctor.report_budgets_and_envelope(out=stream) for stream in streams]
 
     assert codes == [1, 1, 1]
     assert len(counted_report) == 1
@@ -411,18 +412,18 @@ def test_every_caller_with_a_stream_gets_the_report_text_on_it_and_the_exit_code
 
 
 def test_each_environment_replay_context_starts_empty_and_restores_the_report(counted_report):
-    original = cli.report_budgets_and_envelope
+    original = cli_doctor.report_budgets_and_envelope
 
     for _block in range(3):
         with replayed_environment_report():
-            assert cli.report_budgets_and_envelope is not original
-            cli.report_budgets_and_envelope(out=io.StringIO())
-            cli.report_budgets_and_envelope(out=io.StringIO())
+            assert cli_doctor.report_budgets_and_envelope is not original
+            cli_doctor.report_budgets_and_envelope(out=io.StringIO())
+            cli_doctor.report_budgets_and_envelope(out=io.StringIO())
     with pytest.raises(RuntimeError, match="inside"), replayed_environment_report():
         raise RuntimeError("inside")
 
     assert len(counted_report) == 3
-    assert cli.report_budgets_and_envelope is original
+    assert cli_doctor.report_budgets_and_envelope is original
 
 
 # Every 37th case of the invalid-value matrix: 37 shares no factor with its eight slots, so the slots rotate.
@@ -461,7 +462,7 @@ def test_invalid_value_sample_covers_every_slot_with_every_prefix_userinfo_form_
 def test_configuration_section_is_identical_in_the_text_and_the_json_run_of_an_invalid_value_case(
     monkeypatch, invalid_value_process, tmp_path
 ):
-    real = cli._configuration_section
+    real = cli_doctor._configuration_section
     calls: list[tuple[tuple, bool]] = []
 
     def recording(args):
@@ -471,7 +472,7 @@ def test_configuration_section_is_identical_in_the_text_and_the_json_run_of_an_i
 
     # The matrix's own `_invalid_value_doctor`, with the replay switched off, so both doctor runs compute the section.
     monkeypatch.setattr(redaction_matrix, "replayed_configuration_section", contextlib.nullcontext)
-    monkeypatch.setattr(cli, "_configuration_section", recording)
+    monkeypatch.setattr(cli_doctor, "_configuration_section", recording)
     differing: list[str] = []
     for case in _sampled_invalid_value_cases():
         calls.clear()
@@ -530,7 +531,7 @@ def test_replays_change_only_how_often_the_invalid_value_matrix_sees_a_text(
 def test_invalid_value_doctor_computes_the_section_and_the_report_once_per_case(
     monkeypatch, invalid_value_process, tmp_path
 ):
-    real_section, real_report = cli._configuration_section, cli.report_budgets_and_envelope
+    real_section, real_report = cli_doctor._configuration_section, cli_doctor.report_budgets_and_envelope
     computed: list[str] = []
 
     def counting_section(args):
@@ -541,8 +542,8 @@ def test_invalid_value_doctor_computes_the_section_and_the_report_once_per_case(
         computed.append("report")
         return real_report(fetch=fetch, out=out)
 
-    monkeypatch.setattr(cli, "_configuration_section", counting_section)
-    monkeypatch.setattr(cli, "report_budgets_and_envelope", counting_report)
+    monkeypatch.setattr(cli_doctor, "_configuration_section", counting_section)
+    monkeypatch.setattr(cli_doctor, "report_budgets_and_envelope", counting_report)
 
     for case in _sampled_invalid_value_cases()[:2]:
         _invalid_value_doctor(case, str(tmp_path))

@@ -3,10 +3,20 @@
 import os
 import sys
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TextIO
 
 from sandbox_executor import local_llm
 from sandbox_executor.launcher.messages import redact_cli_error
+
+
+@dataclass(frozen=True)
+class _GatewayReportContext:
+    host_config: dict | None
+    config: dict
+    envelopes: list[local_llm.ModelEnvelope]
+    env: Mapping[str, str]
+    allow_list: set[str]
 
 
 def _doctor_section_failed(section: str, exc: BaseException) -> str:
@@ -74,7 +84,8 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
         code = 1
 
     try:
-        _report_gateways(host_config, config, envelopes, env, allow_list, fetch, out)
+        ctx = _GatewayReportContext(host_config, config, envelopes, env, allow_list)
+        _report_gateways(ctx, fetch, out)
     except Exception as exc:
         print(_doctor_section_failed("gateway probe", exc), file=out)
         code = 1
@@ -88,24 +99,20 @@ def _report_budgets(env: Mapping[str, str], out: TextIO) -> None:
         print(line, file=out)
 
 
-def _report_gateways(  # noqa: PLR0913
-    host_config: dict | None,
-    config: dict,
-    envelopes: list[local_llm.ModelEnvelope],
-    env: Mapping[str, str],
-    allow_list: set[str],
+def _report_gateways(
+    ctx: _GatewayReportContext,
     fetch: local_llm.Fetcher | None,
     out: TextIO,
 ) -> None:
     probed = False
     # One probe and one line per distinct server; limits are compared only with the models that server serves.
-    for base_url, providers in local_llm.host_gateways(host_config, config, env, allow_list):
-        health = local_llm.probe_gateway_health(base_url, fetch=fetch, allow_list=allow_list)
+    for base_url, providers in local_llm.host_gateways(ctx.host_config, ctx.config, ctx.env, ctx.allow_list):
+        health = local_llm.probe_gateway_health(base_url, fetch=fetch, allow_list=ctx.allow_list)
         if health is None:
             continue
         probed = True
         print(f"gateway={health.url} {health.cache_line()}", file=out)
-        served = [envelope for envelope in envelopes if envelope.provider in providers]
+        served = [envelope for envelope in ctx.envelopes if envelope.provider in providers]
         if health.max_output_tokens is not None:
             for envelope in served:
                 if envelope.max_tokens > health.max_output_tokens:

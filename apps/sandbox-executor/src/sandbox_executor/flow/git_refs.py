@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 ORIGIN_REMOTE = "origin"
 ORIGIN_REF_PREFIX = f"refs/remotes/{ORIGIN_REMOTE}/"
 LOCAL_HEAD_REF_PREFIX = "refs/heads/"
-GIT_FETCH_TIMEOUT_SECONDS = 300
+GIT_REMOTE_TIMEOUT_SECONDS = 300
 SHORT_SHA_LOG_LENGTH = 12
 LEDGER_DIR_PREFIX = "holon-knowledge/ledger/"
 BRANCH_TIP_SUFFIX = "/_"
@@ -45,7 +45,7 @@ def _fetch_refspecs_error(repo_dir: str, refspecs: list[str], remote: str = ORIG
         ["fetch", "--no-tags", remote, *refspecs],
         cwd=repo_dir,
         check=False,
-        timeout=GIT_FETCH_TIMEOUT_SECONDS,
+        timeout=GIT_REMOTE_TIMEOUT_SECONDS,
     )
     if res.returncode == 0:
         return None
@@ -85,7 +85,7 @@ def _resolve_non_head_review_ref(repo_dir: str, target: str, fetch: bool) -> str
             ],
             cwd=repo_dir,
             check=False,
-            timeout=GIT_FETCH_TIMEOUT_SECONDS,
+            timeout=GIT_REMOTE_TIMEOUT_SECONDS,
         )
     return _resolve_branch_ref(repo_dir, target, prefer_remote=True)
 
@@ -287,7 +287,7 @@ def _append_ledger_row(context: FlowContext, branch: str, ledger: str, row: dict
             run_git(
                 ["push", ORIGIN_REMOTE, f"HEAD:{LOCAL_HEAD_REF_PREFIX}{branch}"],
                 cwd=worktree,
-                timeout=GIT_FETCH_TIMEOUT_SECONDS,
+                timeout=GIT_REMOTE_TIMEOUT_SECONDS,
             )
     except LedgerRewriteError:
         raise

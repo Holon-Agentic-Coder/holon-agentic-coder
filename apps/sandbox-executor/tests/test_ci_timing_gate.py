@@ -548,7 +548,7 @@ def test_unit_workflow_compares_with_main_per_runner_os() -> None:
     assert '--min-delta "${{ matrix.timing-min-delta }}"' in content
 
     # Label-proof absolute ceiling, the override label forwarded, and baselines keyed per workflow/job/OS.
-    assert "--ceiling 600" in content
+    assert "--ceiling 900" in content
     assert "timing-regression-accepted" in content
     assert "name: ci-timing-test-unit-unit-${{ matrix.os }}" in content
     assert "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" in content

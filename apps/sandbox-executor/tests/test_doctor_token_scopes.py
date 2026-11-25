@@ -96,7 +96,7 @@ def test_json_doctor_lists_the_workflow_warning(monkeypatch, capsys):
         hint="",
     )
     args = argparse.Namespace(agent="antigravity-agent", model="gemini-3.8-flash-medium", json=True, timeout=None)
-    with patch("sandbox_executor.cli.run_preflight_probe", return_value=probe):
+    with patch("sandbox_executor.cli.doctor.run_preflight_probe", return_value=probe):
         cli.run_doctor(args, fetch=lambda url, timeout: b"{}")
     environment = json.loads(capsys.readouterr().out)["environment"]
     assert "github_token=oauth source=gh scopes=repo" in environment["lines"]

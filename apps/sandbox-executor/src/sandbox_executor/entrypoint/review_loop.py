@@ -788,6 +788,12 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         default=None,
         help="Target worktree directory override.",
     )
+    parser.add_argument(
+        "--review-paths",
+        action="append",
+        default=None,
+        help="Comma-separated or repeated repository paths to scope a conflict-resolution re-review.",
+    )
 
     args = parser.parse_args()
     if args.iteration < 1:
@@ -848,6 +854,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         except Exception as exc:
             logger.debug("Non-fatal error reading plans ledger: %s", exc)
 
+    review_scope_paths = [p.strip() for raw in (args.review_paths or []) for p in raw.split(",") if p.strip()]
     context = FlowContext(
         repo_dir=repo_dir,
         intent_data=intent_data,
@@ -860,6 +867,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         max_review_iterations=args.max_iterations,
         token_reduce=args.token_reduce or args.mitm_web,
         mitm_web=args.mitm_web,
+        review_scope_paths=review_scope_paths,
     )
 
     # A reviewer turn runs in the mounted worktree; the guard names and repairs one that leaves HEAD off the branch.

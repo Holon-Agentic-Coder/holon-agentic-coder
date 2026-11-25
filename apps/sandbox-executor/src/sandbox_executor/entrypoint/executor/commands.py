@@ -1,10 +1,3 @@
-"""Command running for the executor: the sanitised git environment, ``run_cmd`` and the repository adapter.
-
-``run_cmd`` and ``_get_local_safe_directories`` are patch seams: callers here reach them through the package facade
-(``sandbox_executor.entrypoint.executor``) at call time, so a test that patches either name on the package also changes
-the behaviour of every helper in this package.
-"""
-
 import os
 import re
 import subprocess
@@ -17,6 +10,11 @@ from sandbox_executor.git import GitRepository
 from sandbox_executor.redaction import redact_agent_secrets, redact_command_args
 
 _MAX_PRINT_LEN: int = 5000
+_MAX_PRINT_ARG_LEN: int = 250
+_TRUTHY_FLAG_VALUES: tuple[str, ...] = ("1", "true", "yes", "on")
+_ACTION_PROVENANCE_KEYS: frozenset[str] = frozenset(
+    {"action_origin", "review_severity", "review_iteration", "review_finding_ids"}
+)
 _CLEAN_GIT_ENV_VARS: tuple[str, ...] = (
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -27,20 +25,16 @@ _CLEAN_GIT_ENV_VARS: tuple[str, ...] = (
 
 
 def _get_clean_git_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
-    """Returns a clean environment dictionary with leaked git variables removed."""
     return {k: v for k, v in (os.environ if base_env is None else base_env).items() if k not in _CLEAN_GIT_ENV_VARS}
 
 
 def is_action_logging_enabled(intent_data: dict[str, Any] | None = None) -> bool:
-    """Determine if discrete action logging should be recorded to executions.jsonl."""
     flag = os.getenv("HOLON_ACTION_LOGGING") or os.getenv("HOLON_RECORD_ACTIONS")
     if flag is not None:
-        return flag.lower() in ("1", "true", "yes", "on")
+        return flag.lower() in _TRUTHY_FLAG_VALUES
     if os.getenv("HOLON_ACTION_ORIGIN") or os.getenv("HOLON_REVIEW_SEVERITY"):
         return True
-    if intent_data and (
-        intent_data.keys() & {"action_origin", "review_severity", "review_iteration", "review_finding_ids"}
-    ):
+    if intent_data and (intent_data.keys() & _ACTION_PROVENANCE_KEYS):
         return True
     return "PYTEST_CURRENT_TEST" not in os.environ
 
@@ -49,15 +43,18 @@ _FALLBACK_SAFE_DIRECTORIES: set[str] = set()
 
 
 def _get_local_safe_directories(repo_dir: str) -> list[str]:
-    """Retrieve safe.directory entries registered in the repository's local git config via git plumbing.
-
-    Paths are returned as stripped strings.
-    """
     cmd = ["git", "-c", f"safe.directory={repo_dir}", "config", "--local", "--get-all", "safe.directory"]
     res = subprocess.run(cmd, cwd=repo_dir, capture_output=True, text=True)
     if res.returncode == 0:
         return [line.strip() for line in res.stdout.splitlines() if line.strip()]
     return []
+
+
+def _inject_safe_directory_if_needed(cmd_args: list[str], cwd: str | None) -> list[str]:
+    has_safe_dir = any(arg == "safe.directory" or arg.startswith("safe.directory=") for arg in cmd_args)
+    if cwd and _is_safe_directory(cwd) and not has_safe_dir and len(cmd_args) > 1:
+        return [cmd_args[0], "-c", f"safe.directory={cwd}", *cmd_args[1:]]
+    return cmd_args
 
 
 def run_cmd(
@@ -66,13 +63,8 @@ def run_cmd(
     check: bool = True,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Runs a command and returns the CompletedProcess.
-
-    NOTE: The returned CompletedProcess contains raw, unredacted stdout/stderr.
-    Callers must apply `redact_text` before printing or logging these fields.
-    """
     redacted_args = redact_command_args(args)
-    print_args = [arg[:250] + "..." if len(arg) > 250 else arg for arg in redacted_args]
+    print_args = [arg[:_MAX_PRINT_ARG_LEN] + "..." if len(arg) > _MAX_PRINT_ARG_LEN else arg for arg in redacted_args]
     cmd_str = " ".join(print_args)
     if len(cmd_str) > _MAX_PRINT_LEN:
         cmd_str = cmd_str[: _MAX_PRINT_LEN - 3] + "..."
@@ -82,10 +74,7 @@ def run_cmd(
     cmd_args = list(args)
     if cmd_args and cmd_args[0] == "git":
         cmd_env = _get_clean_git_env(env)
-        # If configured as safe in local config, or if falling back, inject safe.directory per-invocation
-        has_safe_dir = any(arg == "safe.directory" or arg.startswith("safe.directory=") for arg in cmd_args)
-        if cwd and _is_safe_directory(cwd) and not has_safe_dir and len(cmd_args) > 1:
-            cmd_args = [cmd_args[0], "-c", f"safe.directory={cwd}", *cmd_args[1:]]
+        cmd_args = _inject_safe_directory_if_needed(cmd_args, cwd)
 
     result = subprocess.run(cmd_args, cwd=cwd, capture_output=True, text=True, env=cmd_env)
     if result.returncode != 0 and check:
@@ -100,7 +89,6 @@ def run_cmd(
 
 
 def _is_safe_directory(cwd: str) -> bool:
-    """Whether ``cwd`` is a fallback safe directory or registered (or wildcarded) in the local safe.directory config."""
     norm_cwd = os.path.realpath(cwd)
     if norm_cwd in _FALLBACK_SAFE_DIRECTORIES:
         return True
@@ -108,7 +96,6 @@ def _is_safe_directory(cwd: str) -> bool:
 
 
 def _clip_for_print(text: str) -> str:
-    """Keep the head and tail of ``text`` when it is longer than ``_MAX_PRINT_LEN``, joined by a truncation line."""
     if len(text) <= _MAX_PRINT_LEN:
         return text
     half_print = _MAX_PRINT_LEN // 2
@@ -116,12 +103,10 @@ def _clip_for_print(text: str) -> str:
 
 
 def _get_repo(repo_dir: str) -> GitRepository:
-    """Return a GitRepository adapter bound to repo_dir and the executor run_cmd runner."""
     return GitRepository(repo_dir, runner=executor_facade.run_cmd)
 
 
 def _entrypoint_git_runner(repo_dir: str) -> Callable[[list[str]], str]:
-    """Adapt run_cmd (sandbox safe.directory and clean git environment) to the git.py runner interface."""
     repo = _get_repo(repo_dir)
 
     def _run(args: list[str]) -> str:

@@ -1,5 +1,3 @@
-"""Public package API for sandbox_executor.ledger, re-exporting all records, locks, queries, and reconciliation."""
-
 from __future__ import annotations
 
 from sandbox_executor.ledger.lock import (

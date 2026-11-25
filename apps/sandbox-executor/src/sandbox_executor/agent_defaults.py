@@ -1,20 +1,3 @@
-"""Single source of truth for the default agent runner and model.
-
-Holon used to hard-code ``antigravity-agent`` and a model literal at every call site, and the literals drifted apart.
-This module resolves both with a documented precedence and logs every decision together with its source:
-
-* Agent runner: explicit ``--agent``, then ``HOLON_AGENT``, then the harness agent detected from the runtime
-  environment; raises :class:`MissingAgentRunnerError` if none is supplied.
-* Model: explicit ``--model``, then ``HOLON_MODEL``; raises :class:`MissingModelError` if none is supplied.
-
-Harness detection is disabled inside a Holon sandbox (``HOLON_ROLE`` or ``HOLON_IN_SANDBOX`` set), because there it
-would pick up the container's own agent rather than the operator's harness. It also ignores credential variables such
-as ``AGY_USER_TOKEN`` and ``GOOGLE_API_KEY``, which the container dispatcher exports and which say nothing about which
-agent process is running.
-
-The module is side-effect free apart from logging; ``environ`` is injectable so tests never touch ``os.environ``.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -26,11 +9,8 @@ from sandbox_executor.claude_credential import resolve_claude_credential
 
 logger = logging.getLogger(__name__)
 
-# Historical fallback identifier preserved for backfilling and default model lookup.
 FALLBACK_AGENT = "antigravity-agent"
 
-# Fixed values for back-filling provenance on historical records (old checkpoints, ledger rows without agent/model).
-# These describe what produced those records, so they must never follow runtime detection or the current defaults.
 LEGACY_DEFAULT_AGENT = "antigravity-agent"
 LEGACY_DEFAULT_MODEL = "gemini-3.8-flash-medium"
 
@@ -42,20 +22,12 @@ AGENT_IMAGE_MAPPING: dict[str, str] = {
     "opencode": "holon/agent-opencode",
 }
 
-# Agent tickers, declared beside the runner definitions: exactly three uppercase letters per runner that may run a
-# flow. A ticker is never reassigned or reused, and there is no fallback: a runner without one (codex,
-# opencode) is rejected by 'holon doctor' and when an intent is opened, before any branch is created. The ticker
-# appears only in plan and execution names; ledger rows keep the full agent and model.
 AGENT_TICKERS: dict[str, str] = {
     "claude": "CLA",
     "antigravity": "ANA",
     "pi": "PIA",
 }
 
-# Default model per normalised runner id. The antigravity entry is the label carried by every successful agy run in the
-# ledger (agy accepts it together with ``--effort``); the old ``gemini-3.5-flash`` default is rejected by current agy.
-# The other entries are best-effort and can be overridden with ``--model`` or ``HOLON_MODEL``; ``holon doctor``
-# reports a rejected model before any work starts.
 DEFAULT_MODELS: dict[str, str] = {
     "antigravity": "gemini-3.8-flash-medium",
     "claude": "claude-opus-5-5",
@@ -64,19 +36,19 @@ DEFAULT_MODELS: dict[str, str] = {
     "opencode": "anthropic/claude-opus-5-5",
 }
 
+_VALID_EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high")
+_DEFAULT_SECRET_BUNDLE_PATH = "/run/secrets/holon_auth.json"
+_RUNNER_API_KEY_ENV_VARS: dict[str, tuple[str, ...]] = {
+    "antigravity": ("AGY_USER_TOKEN", "GOOGLE_API_KEY", "GEMINI_API_KEY"),
+    "pi": ("PI_API_KEY",),
+    "codex": ("OPENAI_API_KEY", "CODEX_API_KEY"),
+    "opencode": ("OPENCODE_API_KEY",),
+}
+_LOCAL_LLM_TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
+
 
 @dataclass(frozen=True)
 class ModelCapability:
-    """Capability specification for a supported runner model.
-
-    Attributes:
-        runner: Canonical runner name (e.g. ``antigravity-agent``, ``claude-agent``).
-        canonical_model: Primary canonical model name (e.g. ``gemini-3.8-flash-medium``).
-        aliases: List of recognised model aliases.
-        effort_levels: List of supported effort settings (e.g. ``['low', 'medium', 'high']``).
-        fallback_tier: Tier classification string (e.g. ``Primary (Cloud/CLI)``).
-    """
-
     runner: str
     canonical_model: str
     aliases: list[str]
@@ -85,29 +57,27 @@ class ModelCapability:
 
 
 RUNNER_CAPABILITIES: tuple[ModelCapability, ...] = (
-    # Antigravity Runner
     ModelCapability(
         runner="antigravity-agent",
         canonical_model="gemini-3.8-flash",
         aliases=["flash"],
-        effort_levels=["low", "medium", "high"],
+        effort_levels=list(_VALID_EFFORT_LEVELS),
         fallback_tier="Primary (Cloud/CLI)",
     ),
     ModelCapability(
         runner="antigravity-agent",
         canonical_model="gemini-3.8-flash-medium",
         aliases=["flash-medium"],
-        effort_levels=["low", "medium", "high"],
+        effort_levels=list(_VALID_EFFORT_LEVELS),
         fallback_tier="Primary (Cloud/CLI)",
     ),
     ModelCapability(
         runner="antigravity-agent",
         canonical_model="gemini-3.8-flash-high",
         aliases=["flash-high"],
-        effort_levels=["low", "medium", "high"],
+        effort_levels=list(_VALID_EFFORT_LEVELS),
         fallback_tier="Primary (Cloud/CLI)",
     ),
-    # Claude Runner
     ModelCapability(
         runner="claude-agent",
         canonical_model="claude-fable-5-2",
@@ -136,7 +106,6 @@ RUNNER_CAPABILITIES: tuple[ModelCapability, ...] = (
         effort_levels=[],
         fallback_tier="Primary (Cloud/CLI)",
     ),
-    # Pi Runner
     ModelCapability(
         runner="pi-agent",
         canonical_model="claude-opus-5-5",
@@ -151,7 +120,6 @@ RUNNER_CAPABILITIES: tuple[ModelCapability, ...] = (
         effort_levels=[],
         fallback_tier="Secondary (Cloud/CLI)",
     ),
-    # Codex Runner
     ModelCapability(
         runner="codex-agent",
         canonical_model="gpt-5-codex",
@@ -159,7 +127,6 @@ RUNNER_CAPABILITIES: tuple[ModelCapability, ...] = (
         effort_levels=[],
         fallback_tier="Secondary (Cloud/CLI)",
     ),
-    # OpenCode Runner
     ModelCapability(
         runner="opencode-agent",
         canonical_model="anthropic/claude-opus-5-5",
@@ -167,7 +134,6 @@ RUNNER_CAPABILITIES: tuple[ModelCapability, ...] = (
         effort_levels=[],
         fallback_tier="Secondary (Cloud/CLI)",
     ),
-    # Host-local Runner
     ModelCapability(
         runner="local-model",
         canonical_model="local-model",
@@ -178,8 +144,13 @@ RUNNER_CAPABILITIES: tuple[ModelCapability, ...] = (
 )
 
 
+def _capability_matches_model(capability: ModelCapability, model_lower: str) -> bool:
+    return model_lower == capability.canonical_model.lower() or model_lower in (
+        alias.lower() for alias in capability.aliases
+    )
+
+
 def get_model_capabilities(agent: str | None = None) -> list[ModelCapability]:
-    """Retrieve supported model capability records, optionally filtered by agent runner."""
     if agent is None:
         return list(RUNNER_CAPABILITIES)
     norm = normalise_agent_id(agent)
@@ -191,7 +162,6 @@ def get_model_capabilities(agent: str | None = None) -> list[ModelCapability]:
 
 
 def get_available_models_for_runner(agent: str) -> list[str]:
-    """Return the list of canonical model names supported by the specified runner."""
     seen: set[str] = set()
     models: list[str] = []
     for cap in get_model_capabilities(agent):
@@ -202,35 +172,34 @@ def get_available_models_for_runner(agent: str) -> list[str]:
 
 
 def is_valid_model_for_runner(agent: str, model: str) -> bool:
-    """Check whether a given model identifier or alias is recognised for the runner."""
     norm_runner = normalise_agent_id(agent)
     matching_caps = get_model_capabilities(agent)
     if not matching_caps:
         return True
     m_lower = model.strip().lower()
     for cap in matching_caps:
-        if m_lower == cap.canonical_model.lower() or m_lower in [a.lower() for a in cap.aliases]:
+        if _capability_matches_model(cap, m_lower):
             return True
-        if norm_runner == "antigravity":
-            for eff in ("low", "medium", "high"):
-                if m_lower == f"{cap.canonical_model.lower()}-{eff}":
-                    return True
+        if norm_runner == "antigravity" and any(
+            m_lower == f"{cap.canonical_model.lower()}-{eff}" for eff in _VALID_EFFORT_LEVELS
+        ):
+            return True
     return False
 
 
 def _coordinate_gemini_effort(canonical: str, effort: str | None) -> tuple[str, str | None]:
-    effort_suffixes = ("-low", "-medium", "-high")
     eff = effort.strip().lower() if effort and effort.strip() else None
 
     inferred_effort = None
     base = canonical
-    for suffix in effort_suffixes:
+    for level in _VALID_EFFORT_LEVELS:
+        suffix = f"-{level}"
         if canonical.endswith(suffix):
-            inferred_effort = suffix[1:]
+            inferred_effort = level
             base = canonical[: -len(suffix)]
             break
 
-    if eff in ("low", "medium", "high"):
+    if eff in _VALID_EFFORT_LEVELS:
         return f"{base}-{eff}", eff
     if inferred_effort:
         return canonical, inferred_effort
@@ -238,21 +207,11 @@ def _coordinate_gemini_effort(canonical: str, effort: str | None) -> tuple[str, 
 
 
 def normalise_model_and_effort(agent: str, model: str | None, effort: str | None = None) -> tuple[str, str | None]:
-    """Coordinate canonical model name and effort parameters without collision.
-
-    Args:
-        agent: Runner name.
-        model: Model name, alias, or None to fall back to default model.
-        effort: Optional effort setting ('low', 'medium', 'high').
-
-    Returns:
-        A tuple of ``(canonical_model, coordinated_effort)``.
-    """
     raw_model = (model or "").strip() or default_model_for(agent)
+    raw_lower = raw_model.lower()
     canonical = raw_model
     for cap in get_model_capabilities(agent):
-        aliases = [a.lower() for a in cap.aliases]
-        if raw_model.lower() == cap.canonical_model.lower() or raw_model.lower() in aliases:
+        if _capability_matches_model(cap, raw_lower):
             canonical = cap.canonical_model
             break
 
@@ -263,20 +222,14 @@ def normalise_model_and_effort(agent: str, model: str | None, effort: str | None
 
 
 def _detect_api_key_present(norm: str, env: Mapping[str, str]) -> bool:
-    bundle_path = env.get("HOLON_SECRET_BUNDLE_PATH") or "/run/secrets/holon_auth.json"
+    bundle_path = env.get("HOLON_SECRET_BUNDLE_PATH") or _DEFAULT_SECRET_BUNDLE_PATH
     if norm != "claude" and (os.path.isfile(bundle_path) or _is_set(env.get("HOLON_AGENT_KEY"))):
         return True
 
     if norm == "claude":
         return resolve_claude_credential(env) is not None
 
-    runner_env_keys: dict[str, tuple[str, ...]] = {
-        "antigravity": ("AGY_USER_TOKEN", "GOOGLE_API_KEY", "GEMINI_API_KEY"),
-        "pi": ("PI_API_KEY",),
-        "codex": ("OPENAI_API_KEY", "CODEX_API_KEY"),
-        "opencode": ("OPENCODE_API_KEY",),
-    }
-    return any(_is_set(env.get(k)) for k in runner_env_keys.get(norm, ()))
+    return any(_is_set(env.get(k)) for k in _RUNNER_API_KEY_ENV_VARS.get(norm, ()))
 
 
 def _detect_session_dir_present(norm: str) -> bool:
@@ -316,20 +269,10 @@ def _detect_harness_marker_present(norm: str, env: Mapping[str, str]) -> bool:
 def _detect_local_gateway_present(norm: str, env: Mapping[str, str]) -> bool:
     if norm in ("local", "local-model"):
         return True
-    return norm == "pi" and env.get("HOLON_LOCAL_LLM", "").strip().lower() in ("1", "true", "yes", "on")
+    return norm == "pi" and env.get("HOLON_LOCAL_LLM", "").strip().lower() in _LOCAL_LLM_TRUTHY_VALUES
 
 
 def detect_runner_auth_status(agent: str, environ: Mapping[str, str] | None = None) -> str:
-    """Safely detect authentication or session presence for an agent runner without leaking secrets.
-
-    Args:
-        agent: Runner name.
-        environ: Environment mapping to inspect (defaults to ``os.environ``).
-
-    Returns:
-        Descriptive status: 'Detected (session directory)', 'Detected (API key)',
-        'Detected (harness marker)', 'Detected (local gateway)', or 'Missing / Not detected'.
-    """
     env = _env(environ)
     norm = normalise_agent_id(agent)
 
@@ -345,11 +288,8 @@ def detect_runner_auth_status(agent: str, environ: Mapping[str, str] | None = No
     return "Missing / Not detected"
 
 
-# Variables whose presence means "running inside a Holon sandbox"; harness detection is off when any is set.
 SANDBOX_GUARD_VARS: tuple[str, ...] = ("HOLON_ROLE", "HOLON_IN_SANDBOX")
 
-# Ordered harness markers: (runner id, variable name or prefix, match kind). The tuple order is the tie-break when
-# several harnesses are detected at once.
 HARNESS_MARKERS: tuple[tuple[str, str, str], ...] = (
     ("pi", "PI_CODING_AGENT", "exact"),
     ("claude", "CLAUDECODE", "exact"),
@@ -361,8 +301,6 @@ HARNESS_MARKERS: tuple[tuple[str, str, str], ...] = (
     ("antigravity", "ANTIGRAVITY_", "prefix"),
 )
 
-# Variables that never count as harness markers even when they match a prefix: they are credentials or user
-# configuration, which can be exported in a shell profile without the agent running.
 NON_MARKER_VARS: frozenset[str] = frozenset(
     {
         "AGY_USER_TOKEN",
@@ -379,50 +317,32 @@ _FALSY_VALUES = frozenset({"", "0", "false", "no", "off"})
 
 
 class UnmappedAgentRunnerError(ValueError):
-    """Raised when the resolved agent runner has no container image in :data:`AGENT_IMAGE_MAPPING`."""
+    pass
 
 
 class MissingAgentRunnerError(ValueError):
-    """Raised when no agent runner could be resolved and no fallback default is in effect.
-
-    The caller must supply ``--agent`` or set ``HOLON_AGENT``, or run from a recognised agent harness.
-    """
+    pass
 
 
 class MissingModelError(ValueError):
-    """Raised when no model could be resolved and no fallback default is in effect.
-
-    The caller must supply ``--model`` or set ``HOLON_MODEL``.
-    """
+    pass
 
 
 @dataclass(frozen=True)
 class Resolution:
-    """Outcome of a default resolution.
-
-    Attributes:
-        value: The resolved value (canonical ``{id}-agent`` for runners, the model name for models).
-        source: Which tier supplied it: ``flag``, ``env``, ``harness``, ``fallback`` or ``table``; ``holon flow``
-            also uses ``checkpoint`` for a value kept from a resumed checkpoint.
-        reason: Human-readable explanation suitable for logs, for example the matching marker.
-    """
-
     value: str
     source: str
     reason: str
 
     def describe(self, kind: str) -> str:
-        """Return a one-line log message such as ``Agent runner resolved to x (source: env, HOLON_AGENT)``."""
         return f"{kind} resolved to {self.value} (source: {self.source}, {self.reason})"
 
 
 def normalise_agent_id(name: str) -> str:
-    """Normalise a runner name to its registry id (``pi-agent``, ``agent-pi`` and ``Pi`` all give ``pi``)."""
     return name.strip().lower().replace("-agent", "").replace("agent-", "")
 
 
 def canonical_agent_name(name: str) -> str:
-    """Return the canonical ``{id}-agent`` form recorded in ledger rows and plan ids."""
     return f"{normalise_agent_id(name)}-agent"
 
 
@@ -438,43 +358,28 @@ def _is_marker_name(name: str) -> bool:
     return name not in NON_MARKER_VARS and not name.endswith(_CREDENTIAL_SUFFIXES)
 
 
+def _matching_marker_names(env: Mapping[str, str], marker: str, match_kind: str) -> list[str]:
+    if match_kind == "exact":
+        return [marker] if marker in env else []
+    return sorted(name for name in env if name.startswith(marker))
+
+
 def harness_detection_disabled(environ: Mapping[str, str] | None = None) -> bool:
-    """Return True when running inside a Holon sandbox, where harness detection must not apply."""
     env = _env(environ)
     return any(_is_set(env.get(var)) for var in SANDBOX_GUARD_VARS)
 
 
 def detected_harness_markers(environ: Mapping[str, str] | None = None) -> list[tuple[str, str]]:
-    """List every ``(runner id, variable)`` harness marker present, in tie-break order.
-
-    Does not apply the sandbox guard; use :func:`detect_harness_agent` for the decision.
-    """
     env = _env(environ)
     found: list[tuple[str, str]] = []
     for runner_id, marker, kind in HARNESS_MARKERS:
-        if kind == "exact":
-            names = [marker] if marker in env else []
-        else:
-            names = sorted(name for name in env if name.startswith(marker))
-        for name in names:
+        for name in _matching_marker_names(env, marker, kind):
             if _is_marker_name(name) and _is_set(env.get(name)) and (runner_id, name) not in found:
                 found.append((runner_id, name))
     return found
 
 
 def detect_harness_agent(environ: Mapping[str, str] | None = None) -> tuple[str, str] | None:
-    """Detect the agent harness Holon was launched from.
-
-    Args:
-        environ: Environment mapping to inspect (defaults to ``os.environ``).
-
-    Returns:
-        ``(canonical runner name, marker variable)`` for the first match in :data:`HARNESS_MARKERS` order, or None when
-        no marker is present or detection is disabled by the sandbox guard.
-
-    Side effects:
-        Logs the ignored markers when several harnesses are detected.
-    """
     if harness_detection_disabled(environ):
         return None
     markers = detected_harness_markers(environ)
@@ -504,24 +409,6 @@ def _require_mapped(name: str, origin: str) -> None:
 def resolve_agent_runner(
     explicit: str | None, environ: Mapping[str, str] | None = None, *, log: bool = True
 ) -> Resolution:
-    """Resolve the agent runner: explicit flag, then ``HOLON_AGENT``, then harness detection.
-
-    Args:
-        explicit: Value of ``--agent`` (None or empty when not given).
-        environ: Environment mapping to inspect (defaults to ``os.environ``).
-        log: False when the caller reports the decision itself (``holon doctor``), so it is not also logged.
-
-    Returns:
-        A :class:`Resolution` whose value is the canonical ``{id}-agent`` name.
-
-    Raises:
-        MissingAgentRunnerError: If no agent runner was provided, configured, or detected.
-        UnmappedAgentRunnerError: If the selected runner has no entry in :data:`AGENT_IMAGE_MAPPING`; the message lists
-            the supported runners and names the flag or variable that supplied the value.
-
-    Side effects:
-        Logs the decision at INFO level unless ``log`` is False.
-    """
     env = _env(environ)
     if explicit and explicit.strip():
         _require_mapped(explicit, "--agent")
@@ -547,8 +434,32 @@ def resolve_agent_runner(
 
 
 def default_model_for(agent: str) -> str:
-    """Return the table default model for a runner name, or the antigravity default for an unknown runner."""
     return DEFAULT_MODELS.get(normalise_agent_id(agent), DEFAULT_MODELS[normalise_agent_id(FALLBACK_AGENT)])
+
+
+def _format_available_models_hint(agent: str) -> str:
+    norm_agent = normalise_agent_id(agent)
+    available_models = get_available_models_for_runner(agent)
+    models_list = ", ".join(available_models)
+    available_str = f" Supported models for {canonical_agent_name(agent)}: {models_list}." if available_models else ""
+    hint_str = f" Run 'holon models --agent {norm_agent}' to inspect supported models and effort levels."
+    return f"{available_str}{hint_str}"
+
+
+def _build_explicit_model_resolution(
+    agent: str,
+    model_name: str,
+    source: str,
+    source_label: str,
+    *,
+    validate: bool,
+) -> Resolution:
+    if validate and not is_valid_model_for_runner(agent, model_name):
+        hint = _format_available_models_hint(agent)
+        raise MissingModelError(f"Unrecognised model '{model_name}' for {canonical_agent_name(agent)}.{hint}")
+    canonical, _ = normalise_model_and_effort(agent, model_name)
+    reason = f"{source_label} (alias '{model_name}')" if canonical != model_name else source_label
+    return Resolution(canonical, source, reason)
 
 
 def resolve_model(
@@ -559,54 +470,19 @@ def resolve_model(
     log: bool = True,
     validate: bool = False,
 ) -> Resolution:
-    """Resolve the model: explicit flag, then ``HOLON_MODEL``; raises :class:`MissingModelError` if omitted.
-
-    Args:
-        agent: Resolved runner name (any form accepted by :func:`normalise_agent_id`).
-        explicit: Value of ``--model`` (None or empty when not given).
-        environ: Environment mapping to inspect (defaults to ``os.environ``).
-        log: False when the caller reports the decision itself (``holon doctor``), so it is not also logged.
-        validate: True to validate that the model is recognised for this runner.
-
-    Returns:
-        A :class:`Resolution` holding the model name.
-
-    Raises:
-        MissingModelError: If neither ``--model`` nor ``HOLON_MODEL`` was provided, or if validation fails.
-
-    Side effects:
-        Logs the decision at INFO level unless ``log`` is False.
-    """
     env = _env(environ)
-    norm_agent = normalise_agent_id(agent)
-    available_models = get_available_models_for_runner(agent)
-    models_list = ", ".join(available_models)
-    available_str = f" Supported models for {canonical_agent_name(agent)}: {models_list}." if available_models else ""
-    hint_str = f" Run 'holon models --agent {norm_agent}' to inspect supported models and effort levels."
-
     if explicit and explicit.strip():
-        model_name = explicit.strip()
-        if validate and not is_valid_model_for_runner(agent, model_name):
-            raise MissingModelError(
-                f"Unrecognised model '{model_name}' for {canonical_agent_name(agent)}.{available_str}{hint_str}"
-            )
-        canonical, _ = normalise_model_and_effort(agent, model_name)
-        reason = f"--model (alias '{model_name}')" if canonical != model_name else "--model"
-        resolution = Resolution(canonical, "flag", reason)
+        resolution = _build_explicit_model_resolution(agent, explicit.strip(), "flag", "--model", validate=validate)
     elif (env.get("HOLON_MODEL") or "").strip():
-        model_name = env["HOLON_MODEL"].strip()
-        if validate and not is_valid_model_for_runner(agent, model_name):
-            raise MissingModelError(
-                f"Unrecognised model '{model_name}' for {canonical_agent_name(agent)}.{available_str}{hint_str}"
-            )
-        canonical, _ = normalise_model_and_effort(agent, model_name)
-        reason = f"HOLON_MODEL (alias '{model_name}')" if canonical != model_name else "HOLON_MODEL"
-        resolution = Resolution(canonical, "env", reason)
+        resolution = _build_explicit_model_resolution(
+            agent, env["HOLON_MODEL"].strip(), "env", "HOLON_MODEL", validate=validate
+        )
     else:
+        hint = _format_available_models_hint(agent)
         raise MissingModelError(
             "Model is mandatory: no --model or HOLON_MODEL provided. "
             f"Provide --model or set HOLON_MODEL (e.g. {default_model_for(agent)} for {canonical_agent_name(agent)})."
-            f"{available_str}{hint_str}"
+            f"{hint}"
         )
     if log:
         logger.info(resolution.describe("Model"))
@@ -614,10 +490,5 @@ def resolve_model(
 
 
 def image_for_agent(agent: str) -> str:
-    """Return the container image for a runner name.
-
-    Raises:
-        UnmappedAgentRunnerError: If the runner has no mapped image.
-    """
     _require_mapped(agent, "the agent runner")
     return AGENT_IMAGE_MAPPING[normalise_agent_id(agent)]

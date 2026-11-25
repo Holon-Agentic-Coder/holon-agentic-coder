@@ -80,7 +80,7 @@ def _run_stage(worktree: Path, loop) -> tuple[FlowContext, Any, list[list[str]]]
 
     with (
         patch(f"{STAGE}.run_git", side_effect=recording_git),
-        patch(f"{STAGE}.check_and_resolve_stage_conflicts"),
+        patch(f"{STAGE}.at_stage_boundary", return_value=None),
         patch(f"{STAGE}._run_engine_review_loop", side_effect=loop),
     ):
         try:

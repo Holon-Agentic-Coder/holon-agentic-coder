@@ -38,7 +38,6 @@ import functools
 import json
 import logging
 import os
-import re
 import shutil
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -49,9 +48,16 @@ from typing import Any
 from sandbox_executor.agent_runner import AgentRunner, get_runner
 from sandbox_executor.artefacts import ArtefactSection, ArtefactSpec
 from sandbox_executor.budgets import Budgets, StageTimer, load_budgets
-from sandbox_executor.git import EMPTY_DIFF_EXCLUDES, run_git
 from sandbox_executor.redaction import redact_agent_secrets, redact_command_args
 from sandbox_executor.review_failure import OnceSleeper, log_failed_turn, missing_report_reason, retry_wait
+from sandbox_executor.review_request import (
+    _PLACEHOLDER,
+    ReviewRequest,
+    _missing_inputs,
+    _placeholder_values,
+    build_scoped_diff,
+    format_scoped_body,
+)
 from sandbox_executor.review_target import ReviewTarget
 from sandbox_executor.scaffold import REVIEW_LOOP_TEMPLATE
 from sandbox_executor.turns import AuthoringOutcome, TurnRunner, run_turn, supervise_authoring_turn
@@ -125,24 +131,6 @@ def format_agent_cmd_for_display(cmd: Sequence[str]) -> str:
 
 _TRAILER_KEYS = frozenset({"verdict", *SEVERITIES, "findings"})
 _FINDING_KEYS = frozenset({"severity", "file", "line", "summary"})
-# Reviewer turns are single passes, so the loop-level placeholders get neutral text.
-_SINGLE_PASS = "n/a (single reviewer turn)"
-_PLACEHOLDER_NAMES = (
-    "repo_dir",
-    "target",
-    "target_branch",
-    "ensemble_size",
-    "max_iterations",
-    "iteration",
-    "pr_title",
-    "pr_description",
-    "change_description",
-    "diff",
-    "change_diff",
-    "sha",
-)
-# One pass over the template, so text substituted in (a diff that contains ``{diff}``) is never expanded again.
-_PLACEHOLDER = re.compile(r"\{(" + "|".join(_PLACEHOLDER_NAMES) + r")\}")
 
 REVIEW_REPORT_SPEC = ArtefactSpec(
     name="review report",
@@ -215,46 +203,22 @@ class ParsedTrailer:
     findings: tuple[ReviewFinding, ...] = ()
 
 
-@dataclass(frozen=True)
-class ReviewRequest:
-    """What every reviewer is asked to judge; nothing in it comes from another reviewer."""
-
-    repo_dir: str
-    head_sha: str
-    base_ref: str
-    pr_title: str
-    pr_body: str
-    diff_text: str
-    iteration: int
-
-
 def build_review_request(  # noqa: PLR0913
-    target: ReviewTarget, base_ref: str, iteration: int, pr_title: str, pr_body: str, repo_dir: str
+    target: ReviewTarget,
+    base_ref: str,
+    iteration: int,
+    pr_title: str,
+    pr_body: str,
+    repo_dir: str,
+    *,
+    review_paths: Sequence[str] | None = None,
 ) -> ReviewRequest:
-    """Build the request every reviewer judges: the real diff between ``base_ref`` and the resolved head SHA.
-
-    The diff excludes the ledgers, plans and execution notes, as the empty-diff guard does. PR title and body come
-    from the resolved target when it carries them, else from the caller.
-
-    Raises:
-        RuntimeError: If the head SHA is missing or ``git diff`` fails or times out (the iteration then fails closed).
-    """
+    """Build the request every reviewer judges: the real diff between ``base_ref`` and the resolved head SHA."""
     if not target.head_sha:
         raise RuntimeError(f"'{target.head_branch}' has no resolved head commit to review")
-    pathspec = ["--", ".", *(f":(exclude){prefix}" for prefix in EMPTY_DIFF_EXCLUDES)]
-    try:
-        proc = run_git(["diff", f"{base_ref}...{target.head_sha}", *pathspec], cwd=repo_dir, check=True, timeout=120)
-    except TimeoutError as exc:
-        raise RuntimeError(f"git diff timed out: {redact_agent_secrets(str(exc))}") from exc
-    return ReviewRequest(
-        repo_dir=repo_dir,
-        head_sha=target.head_sha,
-        base_ref=base_ref,
-        pr_title=target.title or pr_title,
-        pr_body=target.body or pr_body,
-        diff_text=proc.stdout or "",
-        iteration=iteration,
-    )
+    diff_text, scoped = build_scoped_diff(repo_dir, base_ref, target.head_sha, review_paths=review_paths)
+    body = format_scoped_body(target.body or pr_body, scoped)
+    return ReviewRequest(repo_dir, target.head_sha, base_ref, target.title or pr_title, body, diff_text, iteration)
 
 
 @dataclass(frozen=True)
@@ -472,34 +436,6 @@ def build_reviewer_prompt(template_text: str, request: ReviewRequest, report_rel
     values = _placeholder_values(request)
     body = _PLACEHOLDER.sub(lambda match: values[match.group(1)], template_text)
     return f"{body.rstrip()}\n\n{_missing_inputs(template_text, request)}{reviewer_contract(report_rel)}"
-
-
-def _placeholder_values(request: ReviewRequest) -> dict[str, str]:
-    """Value for each allow-listed template placeholder."""
-    return {
-        "repo_dir": request.repo_dir,
-        "target": request.head_sha,
-        "target_branch": request.base_ref,
-        "ensemble_size": _SINGLE_PASS,
-        "max_iterations": _SINGLE_PASS,
-        "iteration": str(request.iteration),
-        "pr_title": request.pr_title,
-        "pr_description": request.pr_body,
-        "change_description": request.pr_body,
-        "diff": request.diff_text,
-        "change_diff": request.diff_text,
-        "sha": request.head_sha,
-    }
-
-
-def _missing_inputs(template_text: str, request: ReviewRequest) -> str:
-    """The change description and diff, for templates that do not already include them."""
-    parts = []
-    if "{pr_description}" not in template_text and "{change_description}" not in template_text:
-        parts.append(f"Change description:\n\n```markdown\n{request.pr_body}\n```\n\n")
-    if "{diff}" not in template_text and "{change_diff}" not in template_text:
-        parts.append(f"Change diff:\n\n```diff\n{request.diff_text}\n```\n\n")
-    return "".join(parts)
 
 
 _REVIEWER_PROHIBITIONS = (

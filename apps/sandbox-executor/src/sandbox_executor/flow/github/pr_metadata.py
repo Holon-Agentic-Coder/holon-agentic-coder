@@ -1,5 +1,3 @@
-"""I/O-free semantic PR metadata: a Conventional Commits title and a structured markdown body from intent data."""
-
 from __future__ import annotations
 
 import re
@@ -39,7 +37,6 @@ def _conventional_prefix(intent_data: dict[str, Any]) -> str:
 
 
 def _scope(intent_data: dict[str, Any]) -> str:
-    """Primary label, else the first slug component, else ``core``; sanitised to ``[a-zA-Z0-9_-]``."""
     scope = ""
     labels = intent_data.get("labels")
     if isinstance(labels, list) and labels:
@@ -52,7 +49,6 @@ def _scope(intent_data: dict[str, Any]) -> str:
 
 
 def _raw_title(intent_data: dict[str, Any]) -> str:
-    """First line of the title (or description, goal), without an existing conventional commit prefix."""
     raw_title = str(
         intent_data.get("title") or intent_data.get("description") or intent_data.get("goal") or "Update components"
     ).strip()
@@ -81,7 +77,6 @@ def _summary_lines(desc: Any, goal: Any) -> list[str]:
 
 
 def _goal_bullets(goal: Any) -> list[str] | None:
-    """The cleaned bullet lines of a list-shaped goal, or None when the goal has no bullet lines."""
     candidates = [
         line.strip().lstrip("-* ").strip()
         for line in str(goal).strip().splitlines()
@@ -133,19 +128,6 @@ def generate_semantic_pr_metadata(
     intent_data: dict[str, Any],
     plan_metadata: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
-    """Generate a conventional commit PR title and structured markdown description.
-
-    Transforms intent data and optional plan metadata into Conventional Commits
-    title format (e.g. 'feat(scope): title') and a structured markdown PR body
-    containing Summary, Key Changes, References, and Plan & Validation Metadata.
-
-    Args:
-        intent_data: Dictionary containing intent fields (category, slug, title, description, goal, references, labels).
-        plan_metadata: Optional dictionary containing plan fields (plan_id, ev, agent, model).
-
-    Returns:
-        tuple[str, str]: (pr_title, pr_body)
-    """
     raw_title = _raw_title(intent_data)
     title = _title(_conventional_prefix(intent_data), _scope(intent_data), raw_title)
     goal = intent_data.get("goal")

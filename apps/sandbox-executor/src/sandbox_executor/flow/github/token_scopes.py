@@ -1,14 +1,3 @@
-"""The GitHub token the flow hands to the sandbox: where it comes from, what kind it is and which OAuth scopes it has.
-
-Pushing a commit that changes ``.github/workflows/**`` needs the ``workflow`` scope. A classic or ``gh`` OAuth token
-lists its scopes in the ``X-OAuth-Scopes`` header of any API response, so one ``GET /user`` tells them apart. A
-fine-grained, app or user-to-server token's permissions are per repository or per app, not OAuth scopes, so its
-scopes are reported as unverifiable rather than missing (as is an empty scopes header from any token that is not a
-classic or OAuth one), and a network or HTTP failure is unverifiable too.
-
-The token value never leaves this module's functions: reports and messages carry only its type label and source.
-"""
-
 from __future__ import annotations
 
 import urllib.request
@@ -25,6 +14,12 @@ USER_API_URL = "https://api.github.com/user"
 REFRESH_COMMAND = "gh auth refresh -h github.com -s workflow"
 LOGIN_COMMAND = "gh auth login -h github.com -s workflow"
 DEFAULT_TIMEOUT = 10.0
+
+_GITHUB_ACCEPT_HEADER = "application/vnd.github+json"
+_GITHUB_USER_AGENT = "holon"
+_OAUTH_SCOPES_HEADER = "x-oauth-scopes"
+_HTTP_OK = 200
+_MAX_REASON_CHARS = 200
 _WORKFLOW_PROBES = (".github/workflows/ci.yml", ".github/workflows/ci.yaml")
 _MAX_NAMED_PATHS = 5
 _TOKEN_TYPES = (
@@ -37,14 +32,11 @@ _TOKEN_TYPES = (
 _UNVERIFIABLE_TYPES = frozenset({"fine-grained", "app", "user-to-server"})
 _SCOPED_TYPES = frozenset({"classic", "oauth"})
 
-#: GETs a URL with headers and a timeout; returns the HTTP status and the response headers.
 ScopeFetcher = Callable[[str, Mapping[str, str], float], tuple[int, Mapping[str, str]]]
 
 
 @dataclass(frozen=True)
 class TokenScopeReport:
-    """What is known about the token, never the token: ``scopes`` is None when they cannot be verified."""
-
     token_type: str
     source: str
     scopes: tuple[str, ...] | None
@@ -59,7 +51,6 @@ class TokenScopeReport:
         return self.scopes is not None and WORKFLOW_SCOPE in self.scopes
 
     def format_line(self) -> str:
-        """The value-free report line, e.g. ``github_token=classic source=gh scopes=repo,workflow``."""
         if self.token_type == "none":
             return "github_token=none (set GITHUB_TOKEN or run gh auth login)"
         scopes = "unverifiable" if self.scopes is None else (",".join(self.scopes) or "none")
@@ -67,7 +58,6 @@ class TokenScopeReport:
 
 
 def token_type(token: str) -> str:
-    """The token's kind from its documented prefix only (``classic``, ``fine-grained``, ...), else ``unknown``."""
     return next((label for prefix, label in _TOKEN_TYPES if token.startswith(prefix)), "unknown")
 
 
@@ -77,28 +67,38 @@ def _urllib_fetch(url: str, headers: Mapping[str, str], timeout: float) -> tuple
         return response.status, dict(response.headers.items())
 
 
+def _redact_scope_request_error(exc: Exception, token: str) -> str:
+    reason = redact_agent_secrets(f"the scope request failed ({type(exc).__name__}: {exc})")
+    return reason.replace(token, "***")[:_MAX_REASON_CHARS]
+
+
+def _parse_oauth_scopes_header(header_value: str) -> tuple[str, ...]:
+    return tuple(scope.strip() for scope in header_value.split(",") if scope.strip())
+
+
 def fetch_scopes(
     token: str, fetch: ScopeFetcher | None = None, timeout: float = DEFAULT_TIMEOUT
 ) -> tuple[tuple[str, ...] | None, str]:
-    """The token's ``X-OAuth-Scopes`` and a reason; None scopes (with the redacted reason) when they are unknown."""
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "User-Agent": "holon"}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": _GITHUB_ACCEPT_HEADER,
+        "User-Agent": _GITHUB_USER_AGENT,
+    }
     try:
         status, response_headers = (fetch or _urllib_fetch)(USER_API_URL, headers, timeout)
-    except Exception as exc:  # A failed request only makes the scopes unverifiable.
-        reason = redact_agent_secrets(f"the scope request failed ({type(exc).__name__}: {exc})")
-        return None, reason.replace(token, "***")[:200]
-    if status != 200:
+    except Exception as exc:
+        return None, _redact_scope_request_error(exc, token)
+    if status != _HTTP_OK:
         return None, f"the scope request returned HTTP {status}"
     lowered = {key.lower(): value for key, value in response_headers.items()}
-    if "x-oauth-scopes" not in lowered:
+    if _OAUTH_SCOPES_HEADER not in lowered:
         return None, "the response carries no X-OAuth-Scopes header"
-    return tuple(s.strip() for s in lowered["x-oauth-scopes"].split(",") if s.strip()), ""
+    return _parse_oauth_scopes_header(lowered[_OAUTH_SCOPES_HEADER]), ""
 
 
 def scope_report(
     environ: Mapping[str, str] | None = None, run: CommandRunner | None = None, fetch: ScopeFetcher | None = None
 ) -> TokenScopeReport:
-    """Resolve the token and report its type, source and scopes (one request for a classic or OAuth token)."""
     token, source = resolve_github_token(environ, run)
     if token is None:
         return TokenScopeReport("none", source, None, "no GitHub token found")
@@ -112,7 +112,6 @@ def scope_report(
 
 
 def touches_workflows(paths: Iterable[str]) -> list[str]:
-    """The declared paths or globs that are, or may match, a file under ``.github/workflows/``."""
     found: list[str] = []
     for raw in paths:
         path = normalise_touch_path(raw)
@@ -125,7 +124,6 @@ def touches_workflows(paths: Iterable[str]) -> list[str]:
 
 
 def workflow_scope_error(report: TokenScopeReport, workflow_paths: list[str]) -> str | None:
-    """Why the token cannot push the workflow paths, naming the fix; None when it can or cannot be verified."""
     if not workflow_paths:
         return None
     named = ", ".join(workflow_paths[:_MAX_NAMED_PATHS]) + (" ..." if len(workflow_paths) > _MAX_NAMED_PATHS else "")
@@ -142,7 +140,6 @@ def workflow_scope_error(report: TokenScopeReport, workflow_paths: list[str]) ->
 
 
 def doctor_lines(report: TokenScopeReport | None = None) -> list[str]:
-    """``holon doctor``'s token lines: the value-free report, then a warning when workflow pushes may be refused."""
     report = scope_report() if report is None else report
     lines = [report.format_line()]
     if report.token_type == "none":

@@ -24,7 +24,7 @@ from sandbox_executor.flow.child_progress import child_checkpoint_path, next_chi
 from sandbox_executor.flow.github.merge import MergeResult
 from sandbox_executor.flow.stages.children import _build_child_intent, resume_children
 
-from tests.flow.decomposition_fakes import decomposed_flow, halted_review
+from tests.flow.decomposition_fakes import ChildReviews, decomposed_flow, halted_review
 from tests.flow.helpers import SUB_INTENT_LIST, BudgetRoleAgents, _budget_context, _git
 
 
@@ -43,16 +43,10 @@ def _plan_file(execution_branch: str) -> str:
     return f"src/{plan_id.replace('-', '_')}.py"
 
 
-def test_children_nest_under_the_plan_branch_and_run_one_after_another(flow_repos, tmp_path):
-    host, origin = flow_repos
-    ctx, _agents = _decomposed_context(host, origin, tmp_path)
-
-    with decomposed_flow(origin, tmp_path) as reviews:
-        results = PipelineEngine(ctx).run()
-
-    execute = results["execute"]
-    assert execute.status == StageStatus.SUCCESS
-    plan = ctx.plan_branch
+def _assert_children_nest_under_the_plan_branch_and_ran_one_after_another(
+    origin: Path, plan: str, reviews: ChildReviews, execute: StageResult
+) -> None:
+    """Goals 8 b to 8 d on ``origin`` after a decomposed run whose two children merged into ``plan``."""
     first, second = execute.payload["children_progress"]
     original_plan_tip = _git(origin, "rev-parse", f"refs/heads/{plan}^1^1")
     # (b) Each child is cut from the plan branch tip of its time and its PR targets the plan branch.
@@ -171,12 +165,18 @@ def test_a_resume_continues_the_failed_child_without_dispatching_anything_again(
     assert resumed["review"].status == StageStatus.HALTED_FOR_HUMAN
 
 
-def test_a_resume_after_a_crash_mid_child_merges_a_reviewed_child_without_rerunning_it(flow_repos, tmp_path):
+def test_children_nest_under_the_plan_branch_in_order_and_a_resume_after_a_crash_mid_child_reruns_none(
+    flow_repos, tmp_path
+):
     host, origin = flow_repos
     ctx, agents = _decomposed_context(host, origin, tmp_path)
 
     with decomposed_flow(origin, tmp_path) as reviews:
-        assert PipelineEngine(ctx).run()["execute"].status == StageStatus.SUCCESS
+        finished = PipelineEngine(ctx).run()["execute"]
+        assert finished.status == StageStatus.SUCCESS
+        _assert_children_nest_under_the_plan_branch_and_ran_one_after_another(
+            origin, ctx.plan_branch, reviews, finished
+        )
         # Model a crash after the second child's review but before its merge was recorded.
         checkpoint = load_checkpoint(get_default_checkpoint_path(str(host), "budget-test"))
         context = checkpoint.context

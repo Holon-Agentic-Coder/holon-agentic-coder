@@ -1395,7 +1395,7 @@ def test_stage4_on_the_host_fails_closed_when_container_dispatch_fails(tmp_path,
         patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=stubs.github),
         patch("sandbox_executor.flow.review.loop.run_ensemble", ensemble),
         patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
         patch(
             "sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=1, stdout="", stderr="")
         ),
@@ -1421,7 +1421,7 @@ def test_stage4_threads_the_flow_ensemble_size_and_reports_reviewer_objections(t
         _LoopStubs(),
         patch("sandbox_executor.flow.review.loop.run_ensemble", ensemble),
         patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
     ):
         result = run_review_stage(ctx)
 
@@ -1442,7 +1442,7 @@ def test_stage4_reports_an_incomplete_ensemble_rather_than_failed_tests(tmp_path
         _LoopStubs(),
         patch("sandbox_executor.flow.review.loop.run_ensemble", ensemble),
         patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
-        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
     ):
         result = run_review_stage(ctx)
 

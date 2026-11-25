@@ -263,7 +263,7 @@ def test_a_stage_4_exit_by_raise_commits_the_rows_the_loop_recorded(tmp_path):
 
     with (
         patch("sandbox_executor.flow.stages.review._run_engine_review_loop", recording_then_raising),
-        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
         pytest.raises(RuntimeError, match="review loop crashed"),
     ):
         run_review_stage(ctx)

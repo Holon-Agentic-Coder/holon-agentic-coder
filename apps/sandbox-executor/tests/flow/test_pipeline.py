@@ -442,7 +442,7 @@ class TestFlowStages:
         )
         with (
             patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
-            patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
             patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=error),
             patch("sandbox_executor.flow.stages.calibrate.record_calibration_action") as mock_record,
             patch_lookup_sites(
@@ -474,7 +474,7 @@ class TestFlowStages:
         mock_report.to_dict.return_value = {"calibrated_branch": mock_report.calibrated_branch}
         with (
             patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
-            patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
             patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=mock_report),
             patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", return_value={"state": "success"}),
             patch("sandbox_executor.flow.calibrate_sync.run_git") as mock_git,

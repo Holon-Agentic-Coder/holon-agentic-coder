@@ -5,6 +5,7 @@ Temporary files and a fake docker only; the fake credential never reaches the ar
 """
 
 import argparse
+import importlib
 import json
 import os
 import pathlib
@@ -14,6 +15,7 @@ from unittest.mock import patch
 
 import pytest
 from sandbox_executor import cli, config_env
+from sandbox_executor.cli import doctor as cli_doctor
 from sandbox_executor.launcher import container_env
 from sandbox_executor.preflight import PreflightResult, PreflightStatus
 
@@ -53,7 +55,8 @@ def _probe() -> PreflightResult:
 
 
 def test_main_resolves_once_and_fills_the_process_environment(token_layers, capsys):
-    with patch.object(cli, "build_parser", side_effect=SystemExit(0)), pytest.raises(SystemExit):
+    cli_main_mod = importlib.import_module("sandbox_executor.cli.main")
+    with patch.object(cli_main_mod, "build_parser", side_effect=SystemExit(0)), pytest.raises(SystemExit):
         cli.main(["doctor"])
     assert os.environ["HOLON_X"] == "3"
     assert os.environ["HOLON_AGENT_OAUTH_TOKEN"] == token_layers
@@ -136,7 +139,7 @@ def test_probe_uses_the_same_env_file_route(token_layers):
 
 def _doctor(as_json: bool, capsys) -> tuple[int, str]:
     args = argparse.Namespace(agent="pi", model="claude-opus-5-5", json=as_json, timeout=None)
-    with patch.object(cli, "run_preflight_probe", return_value=_probe()):
+    with patch.object(cli_doctor, "run_preflight_probe", return_value=_probe()):
         code = cli.run_doctor(args)
     captured = capsys.readouterr()
     return code, captured.out + captured.err

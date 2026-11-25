@@ -30,6 +30,7 @@ from collections.abc import Callable, Iterator
 from unittest.mock import MagicMock, patch
 
 from sandbox_executor import budget_limits, budgets, cli, local_llm
+from sandbox_executor.cli import doctor as cli_doctor
 from sandbox_executor.preflight import PreflightResult, PreflightStatus
 
 from tests import seeded_secrets
@@ -293,7 +294,7 @@ def _run_doctor(ws: _Workspace, as_json: bool, fetch: Callable[[str, float], byt
     with (
         _captured_logs() as logs,
         patch.dict(os.environ, ws.env, clear=True),
-        patch.object(cli, "run_preflight_probe", return_value=_probe()),
+        patch.object(cli_doctor, "run_preflight_probe", return_value=_probe()),
         contextlib.redirect_stdout(out),
         contextlib.redirect_stderr(err),
     ):

@@ -1,5 +1,3 @@
-"""Execute command module for running Executor to implement a plan branch."""
-
 from __future__ import annotations
 
 import argparse
@@ -19,10 +17,10 @@ from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 from sandbox_executor.flow import _read_ledger_rows
 
 ORDER = 30
+_DEFAULT_TARGET_BRANCH = "main"
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register the execute subcommand parser."""
     parser = subparsers.add_parser("execute", help="Run Sandbox Executor to execute code changes for a plan.")
     parser.add_argument("plan_branch", help="Target plan branch name")
     add_runner_options(parser)
@@ -33,42 +31,43 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
 
 def execution_worktree(plan_branch: str, target_worktree: str | None) -> str:
-    """Return the host worktree the executor container works in, with the plan branch fetched into it on the host.
-
-    A worktree with the default branch checked out only selects the repository: the plan's flow-<slug> sibling is
-    provisioned off it (or reused), so the container never clones or fetches to prepare its checkout.
-
-    Raises:
-        RuntimeError: If the flow worktree cannot be provisioned or the plan branch cannot be fetched.
-    """
-    worktree = target_worktree or os.getcwd()
-    # Worktrees share remote-tracking refs, so fetching here also serves a flow worktree provisioned below.
-    git_flow.fetch_origin_branch(worktree, plan_branch)
-    git_flow.fetch_origin_branch(worktree, target_branch(worktree, plan_branch))
-    if git_flow.is_default_branch_worktree(worktree, git_flow.repository_default_branch(worktree)):
-        worktree = git_flow.ensure_flow_worktree_off_default(worktree, _intent_slug(worktree, plan_branch), None)
-    return worktree
+    shared_ref_worktree = target_worktree or os.getcwd()
+    git_flow.fetch_origin_branch(shared_ref_worktree, plan_branch)
+    git_flow.fetch_origin_branch(shared_ref_worktree, target_branch(shared_ref_worktree, plan_branch))
+    if git_flow.is_default_branch_worktree(
+        shared_ref_worktree, git_flow.repository_default_branch(shared_ref_worktree)
+    ):
+        return git_flow.ensure_flow_worktree_off_default(
+            shared_ref_worktree, _intent_slug(shared_ref_worktree, plan_branch), None
+        )
+    return shared_ref_worktree
 
 
 def _intent_row(worktree: str, plan_branch: str) -> dict:
-    """The plan's intent ledger row, read from the fetched plan branch (empty when it has none)."""
     intent = plan_branch.split("/", 1)[0]
     rows = _read_ledger_rows(worktree, f"origin/{plan_branch}", "intents.jsonl")
     return next((row for row in reversed(rows) if str(row.get("branch") or "").removesuffix("/_") == intent), {})
 
 
 def _intent_slug(worktree: str, plan_branch: str) -> str:
-    """The slug holon flow named the plan's flow-<slug> worktree after: the intent ledger row's, else the branch's."""
     return str(_intent_row(worktree, plan_branch).get("slug") or slug_of_branch(plan_branch))
 
 
 def target_branch(worktree: str, plan_branch: str) -> str:
-    """The branch the intent targets, which the executor synchronises with before it commits."""
-    return str(_intent_row(worktree, plan_branch).get("target_branch") or "main")
+    return str(_intent_row(worktree, plan_branch).get("target_branch") or _DEFAULT_TARGET_BRANCH)
+
+
+def _push_branch_preserving_failure_exit(worktree: str, dispatch_exit_code: int) -> int:
+    try:
+        push_checked_out_branch(worktree)
+    except RuntimeError as exc:
+        if dispatch_exit_code == 0:
+            print(f"Error: {cli.redact_cli_error(exc)}", file=sys.stderr)
+            return 1
+    return dispatch_exit_code
 
 
 def run(args: argparse.Namespace) -> int | None:
-    """Execute the execute command."""
     common_kwargs = prepare_role_execution(args)
     if common_kwargs is None:
         return None
@@ -84,14 +83,7 @@ def run(args: argparse.Namespace) -> int | None:
         [args.plan_branch, args.agent, args.model],
         **common_kwargs,
     )
-    # Failed runs push too, so partial work on the execution branch stays resumable from origin; the exit code is kept.
-    try:
-        push_checked_out_branch(common_kwargs["target_worktree"])
-    except RuntimeError as exc:
-        # After a failed dispatch there may be no execution branch to push; that must not bury the run's own error.
-        if exit_code == 0:
-            print(f"Error: {cli.redact_cli_error(exc)}", file=sys.stderr)
-            exit_code = 1
+    exit_code = _push_branch_preserving_failure_exit(common_kwargs["target_worktree"], exit_code)
     if exit_code == OVER_BUDGET_EXIT_CODE:
         print(
             f"Error: plan {args.plan_branch} is over its entropy budget and was not executed (exit code "

@@ -1,8 +1,3 @@
-"""Workspace helpers of the executor entrypoint: the mounted host worktree and the resume of a failed execution.
-
-Each helper takes the caller's GitRepository, so the git commands run through the executor's own runner.
-"""
-
 from __future__ import annotations
 
 import os
@@ -17,32 +12,22 @@ from sandbox_executor.entrypoint.partial_resume import (
 )
 from sandbox_executor.git import GitRepository
 
-# A resumable execution branch name (validated before it reaches a refspec) and a full commit sha.
 _PARTIAL_BRANCH_RE = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/E-\d+-[A-Za-z0-9._-]+/_$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+_WALK_IGNORED_DIRS = (".git", ".venv", "node_modules")
 
 
 def workspace_mounted() -> bool:
-    """True when the workspace is the host worktree bind-mounted at the sandbox mountpoint."""
     return os.getenv("HOLON_TARGET_WORKTREE") == SANDBOX_WORKSPACE_MOUNT
 
 
 def start_branch_from_host_fetch(repo: GitRepository, repo_dir: str, base_branch: str, new_branch: str) -> None:
-    """Create ``new_branch`` in the mounted host worktree at the tip of ``base_branch``, which the host fetched.
-
-    The authoring roles (intent creator and planner) commit on the branch it creates; the host pushes it afterwards.
-    No git command here touches the remote.
-
-    Raises:
-        RuntimeError: If the workspace is not the mounted host worktree, or fails ``validate_mounted_workspace``.
-    """
     if not workspace_mounted():
         raise RuntimeError("the host worktree is not mounted at the sandbox workspace; this role never clones")
     base_tip = validate_mounted_workspace(repo, repo_dir, base_branch)
     repo.run(["checkout", "-B", new_branch, base_tip])
 
 
-# Ledgers and execution notes are engine-owned: an interrupted run leaves them dirty and salvage never commits them.
 ENGINE_OWNED_LEDGER_PATHS = (
     "holon-knowledge/ledger/intents.jsonl",
     "holon-knowledge/ledger/plans.jsonl",
@@ -54,7 +39,6 @@ _ENGINE_OWNED_EXCLUDES = (
     f":(exclude){ENGINE_OWNED_NOTES_GLOB}",
 )
 
-# Proxy sidecar scratch patterns (wire logs, cache dirs and SQLite databases) never belong in Stage 3 commits.
 _SCRATCH_DIR_NAMES = frozenset({"mitm_wire_logs", "wire_logs", "wire-logs", "cache", "proxy-cache", "to" + "do"})
 _SCRATCH_FILE_RE = re.compile(
     r"(?:^|/)(?:wire_log[^/]*\.(?:json|jsonl|log)|[^/]*\.(?:db|sqlite|sqlite3)(?:-(?:shm|wal|journal))?)$",
@@ -63,7 +47,6 @@ _SCRATCH_FILE_RE = re.compile(
 
 
 def is_sidecar_scratch_path(path: str) -> bool:
-    """Return True when a repository-relative path is a proxy sidecar wire-log, cache directory or database file."""
     clean = path.strip().removeprefix("./").strip("/")
     if not clean:
         return False
@@ -74,7 +57,6 @@ def is_sidecar_scratch_path(path: str) -> bool:
 
 
 def split_sidecar_scratch_paths(paths: list[str]) -> tuple[list[str], list[str]]:
-    """Split repository-relative paths into ``(kept_paths, skipped_scratch_paths)``."""
     kept: list[str] = []
     skipped: list[str] = []
     for path in paths:
@@ -83,18 +65,16 @@ def split_sidecar_scratch_paths(paths: list[str]) -> tuple[list[str], list[str]]
 
 
 def format_skipped_scratch_message(skipped: list[str]) -> str:
-    """Format a clear log line naming every skipped sidecar scratch path."""
     joined = ", ".join(dict.fromkeys(skipped))
     return f"Skipping sidecar scratch path(s) from Stage 3 commit: {joined}"
 
 
 def find_worktree_sidecar_scratch(repo_dir: str) -> list[str]:
-    """Scan ``repo_dir`` on disk for sidecar scratch files without running a git subprocess."""
     found: list[str] = []
     if not repo_dir or not os.path.isdir(repo_dir):
         return found
     for root, dirs, files in os.walk(repo_dir):
-        dirs[:] = [d for d in dirs if d not in (".git", ".venv", "node_modules")]
+        dirs[:] = [d for d in dirs if d not in _WALK_IGNORED_DIRS]
         rel_root = os.path.relpath(root, repo_dir)
         rel_prefix = "" if rel_root == "." else f"{rel_root.replace(os.sep, '/')}/"
         for fname in sorted(files):
@@ -105,7 +85,6 @@ def find_worktree_sidecar_scratch(repo_dir: str) -> list[str]:
 
 
 def unstage_sidecar_scratch(repo: GitRepository) -> list[str]:
-    """Detect any sidecar scratch files in ``repo.repo_dir`` and unstage them from the index if present."""
     candidates = find_worktree_sidecar_scratch(repo.repo_dir)
     if not candidates:
         return []
@@ -114,19 +93,6 @@ def unstage_sidecar_scratch(repo: GitRepository) -> list[str]:
 
 
 def validate_mounted_workspace(repo: GitRepository, repo_dir: str, plan_branch: str) -> str:
-    """Validate the host worktree mounted at repo_dir and return the tip of ``plan_branch`` the host fetched into it.
-
-    Every role entrypoint uses this for its base branch (the target branch for the intent creator, the intent branch
-    for the planner, the plan branch for the executor).
-
-    The container never clones, fetches, resets or cleans the mount. HEAD must be a readable commit, the worktree must
-    carry no uncommitted changes outside the engine-owned ledgers and notes (an earlier crashed run's edits stay on the
-    host for the operator, and are never swept into this execution), and the plan branch must already resolve locally,
-    because the host fetches it before dispatch.
-
-    Raises:
-        RuntimeError: If any of these checks fails.
-    """
     repo.run(["config", "--global", "--add", "safe.directory", repo_dir], check=False)
     if repo.rev_parse("HEAD^{commit}", verify=True).returncode != 0:
         raise RuntimeError(f"mounted workspace at '{repo_dir}' has no readable HEAD commit")
@@ -146,10 +112,6 @@ def validate_mounted_workspace(repo: GitRepository, repo_dir: str, plan_branch: 
 
 
 def _resume_refusal(partial_branch: str, plan_branch_prefix: str) -> str | None:
-    """Return why a failed execution branch cannot be resumed, or None when it can be.
-
-    The host already fetched the branch before dispatch; the container never fetches.
-    """
     shaped = _PARTIAL_BRANCH_RE.match(partial_branch) and ".." not in partial_branch
     if not shaped or not partial_branch.startswith(f"{plan_branch_prefix}/E-"):
         return f"'{partial_branch}' is not an execution branch of this plan"
@@ -159,13 +121,6 @@ def _resume_refusal(partial_branch: str, plan_branch_prefix: str) -> str | None:
 def resolve_partial_head(
     repo: GitRepository, partial_branch: str, plan_tip: str | None, plan_branch_prefix: str
 ) -> ResumeStart:
-    """Return where to resume (``head`` None: the plan tip) and the reason, read from the failed branch's own ledger.
-
-    The partial head must be recorded on the branch's latest summary row of a failed execution and must be partial
-    work of this plan branch (``plan_lineage_refusal``: it descends from the plan tip, or from an earlier tip the plan
-    branch left only by ledger commits); otherwise the caller starts from the plan tip and logs the reason. The
-    branch tip is preferred when it descends from that head (``resume_from_branch_tip``).
-    """
     if not plan_tip:
         return ResumeStart(None, "the plan tip is unknown")
     refusal = _resume_refusal(partial_branch, plan_branch_prefix)
@@ -190,7 +145,6 @@ def resolve_partial_head(
 
 
 def continuation_note(partial_branch: str, partial_head: str) -> str:
-    """Prompt note telling the agent it continues the partial work of a failed execution."""
     return (
         f"Continuation: the working tree already holds partial work from the failed execution {partial_branch} "
         f"(commit {partial_head}); its execution notes stay on that branch. Review the existing commits and the "

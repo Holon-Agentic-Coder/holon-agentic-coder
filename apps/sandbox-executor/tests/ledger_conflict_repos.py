@@ -57,3 +57,45 @@ def refuse_test_runs(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("sandbox_executor.flow.review.local_tests.run_measurement", refuse)
     monkeypatch.setattr("sandbox_executor.entrypoint.test_measurement.run_test_task", refuse)
+
+
+FLOW_BRANCH = "I-1-x/P-2-y/E-3-z/_"
+
+
+def build_flow_repos(tmp_path: Path, base_files: dict[str, str] | None = None) -> tuple[Path, Path]:
+    """A bare ``origin`` with ``main`` and a clone checked out on ``FLOW_BRANCH``, both at one shared base commit."""
+    origin, work = tmp_path / "origin.git", tmp_path / "work"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    _git(tmp_path, "clone", "-q", str(origin), str(work))
+    for rel, text in (base_files or {"README.md": "base\n"}).items():
+        path = work / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "base")
+    _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    _git(work, "checkout", "-q", "-b", FLOW_BRANCH)
+    _git(work, "push", "-q", "origin", f"HEAD:refs/heads/{FLOW_BRANCH}")
+    _git(work, "fetch", "-q", "origin")
+    return origin, work
+
+
+def commit_on(work: Path, branch: str, files: dict[str, str | None], message: str) -> str:
+    """Commit ``files`` (``None`` deletes a path) on ``branch``, push it and return to the checked-out branch."""
+    current = _git(work, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch != current:
+        _git(work, "checkout", "-q", "-B", branch, f"origin/{branch}")
+    for rel, text in files.items():
+        if text is None:
+            _git(work, "rm", "-q", rel)
+            continue
+        path = work / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        _git(work, "add", rel)
+    _git(work, "commit", "-q", "-m", message)
+    sha = _git(work, "rev-parse", "HEAD")
+    _git(work, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
+    if branch != current:
+        _git(work, "checkout", "-q", current)
+    return sha

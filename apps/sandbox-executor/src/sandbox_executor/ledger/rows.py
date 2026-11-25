@@ -1,5 +1,3 @@
-"""Action and summary records, identifier builders, and append operations for the execution ledger."""
-
 from __future__ import annotations
 
 import contextlib
@@ -33,11 +31,69 @@ _REPEAT_CHECKED_ID_KEYS: frozenset[str] = frozenset({"plan_id"})
 
 OPTIONAL_OMITTED_FIELDS: tuple[str, ...] = ("stage", "budget_name", "budget_seconds", "elapsed_seconds")
 
+_ACTION_ID_HEX_LEN = 8
+_DISAMBIGUATOR_HEX_LEN = 8
+_MAX_SANITIZED_LEN = 64
+_DEFAULT_ACTION_ORIGIN = "initial_implementation"
+
+_ACTION_KNOWN_KEYS: frozenset[str] = frozenset(
+    {
+        "action_id",
+        "execution_id",
+        "action",
+        "category",
+        "target",
+        "outcome",
+        "entry_type",
+        "parent_action_id",
+        "event_type",
+        "labels",
+        "error_context",
+        "mistake_category",
+        "action_origin",
+        "review_severity",
+        "review_iteration",
+        "review_finding_ids",
+        "review_disposition",
+        "rejection_reason",
+        "introduced_by_action_id",
+        "created_at",
+        *OPTIONAL_OMITTED_FIELDS,
+    }
+)
+
+_SUMMARY_KNOWN_KEYS: frozenset[str] = frozenset(
+    {
+        "execution_id",
+        "plan_branch",
+        "agent",
+        "model",
+        "status",
+        "entry_type",
+        "agent_version",
+        "summary",
+        "created_at",
+        "agent_output_truncated",
+        "agent_output_bytes",
+        "ledger_revision",
+        "sub_intents",
+        "execution_file",
+    }
+)
+
+_COMMIT_TRAILER_PATTERN = re.compile(
+    r"^(action-origin|review-severity|review-iteration|review-finding-ids|review-disposition|rejection-reason|introduced-by-action-id|consulted-knowledge-ids):\s*(.+)$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _split_csv_labels(raw: str) -> list[str]:
+    return [lbl.strip() for lbl in raw.split(",") if lbl.strip()]
+
 
 def generate_action_id(prefix: str = "ACT") -> str:
-    """Generate a unique action identifier."""
     ts = int(time.time())
-    suffix = uuid.uuid4().hex[:8]
+    suffix = uuid.uuid4().hex[:_ACTION_ID_HEX_LEN]
     return f"{prefix}-{ts}-{suffix}"
 
 
@@ -45,29 +101,22 @@ _disambiguator_counter = itertools.count()
 
 
 def _sanitize_string(name: str, fallback: str = "unknown") -> str:
-    """Sanitise an identifier component for safe use in branch names and filenames."""
-    s = re.sub(r"\s+", "-", name.replace("/", "_"))
-    s = re.sub(r"[^a-zA-Z0-9_.-]", "", s)
-    s = re.sub(r"-+", "-", s)
-    s = re.sub(r"\.+", ".", s)
-    s = s[:64].strip(".-")
-    return s or fallback
+    sanitized = re.sub(r"\s+", "-", name.replace("/", "_"))
+    sanitized = re.sub(r"[^a-zA-Z0-9_.-]", "", sanitized)
+    sanitized = re.sub(r"-+", "-", sanitized)
+    sanitized = re.sub(r"\.+", ".", sanitized)
+    sanitized = sanitized[:_MAX_SANITIZED_LEN].strip(".-")
+    return sanitized or fallback
 
 
 def _sanitize_model_name(model_name: str) -> str:
-    """Sanitise a model name so it is safe for use in git branch names and filenames."""
     return _sanitize_string(model_name, fallback="unknown-model")
 
 
 def build_stage_disambiguator(parent_ref: str) -> str:
-    """Generate a deterministic 8-character lowercase hex disambiguator.
-
-    Derived from the parent branch/intent, high-resolution nanosecond timestamp,
-    and process ID.
-    """
     clean_ref = parent_ref.removesuffix("/_").rstrip("/")
     seed = f"{clean_ref}:{time.time_ns()}:{time.perf_counter_ns()}:{os.getpid()}:{next(_disambiguator_counter)}"
-    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:_DISAMBIGUATOR_HEX_LEN]
 
 
 def build_plan_id(
@@ -77,10 +126,6 @@ def build_plan_id(
     model: str,
     taken: Iterable[str] = (),
 ) -> str:
-    """Build the plan id ``P-{plan_seq}-{ticker}-{model code}`` (no hex); a name in ``taken`` gets a free variant.
-
-    Raises MissingTickerError, StageIdCollisionError or RefTooLongError (room is kept for an execution segment).
-    """
     plan_id = distinct_stage_id(stage_id("P", plan_seq, agent, model), set(taken))
     ensure_stage_segment_fits(parent_branch, plan_id, extra=len(plan_id) + 1)
     return plan_id
@@ -93,10 +138,6 @@ def build_execution_id(
     model: str,
     taken: Iterable[str] = (),
 ) -> str:
-    """Build the execution id ``E-{exec_seq}-{ticker}-{model code}`` (no hex); a name in ``taken`` gets a free variant.
-
-    Raises MissingTickerError, StageIdCollisionError or RefTooLongError, as ``build_plan_id`` does.
-    """
     exec_id = distinct_stage_id(stage_id("E", exec_seq, agent, model), set(taken))
     ensure_stage_segment_fits(parent_branch, exec_id)
     return exec_id
@@ -104,8 +145,6 @@ def build_execution_id(
 
 @dataclass
 class ActionRecord:
-    """Standardised discrete action record for the execution ledger."""
-
     action_id: str
     execution_id: str
     action: str
@@ -118,7 +157,7 @@ class ActionRecord:
     labels: list[str] = field(default_factory=list)
     error_context: str | None = None
     mistake_category: str | None = None
-    action_origin: str = "initial_implementation"
+    action_origin: str = _DEFAULT_ACTION_ORIGIN
     review_severity: str | None = None
     review_iteration: int | None = None
     review_finding_ids: list[str] | None = None
@@ -148,7 +187,6 @@ class ActionRecord:
             )
 
     def validate(self) -> None:
-        """Validate constraints and enum values for action record."""
         if not self.action_id:
             raise ValueError("action_id must not be empty")
         if not self.execution_id:
@@ -162,7 +200,6 @@ class ActionRecord:
             raise ValueError(f"review_iteration must be a positive integer >= 1, got {self.review_iteration}")
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert record to dictionary, validating constraints."""
         self.validate()
         data = asdict(self)
         data["entry_type"] = "action"
@@ -173,42 +210,16 @@ class ActionRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ActionRecord:
-        """Construct ActionRecord from dictionary."""
-        known_keys = {
-            "action_id",
-            "execution_id",
-            "action",
-            "category",
-            "target",
-            "outcome",
-            "entry_type",
-            "parent_action_id",
-            "event_type",
-            "labels",
-            "error_context",
-            "mistake_category",
-            "action_origin",
-            "review_severity",
-            "review_iteration",
-            "review_finding_ids",
-            "review_disposition",
-            "rejection_reason",
-            "introduced_by_action_id",
-            "created_at",
-            *OPTIONAL_OMITTED_FIELDS,
-        }
-        filtered = {k: v for k, v in data.items() if k in known_keys}
+        filtered = {k: v for k, v in data.items() if k in _ACTION_KNOWN_KEYS}
         if "entry_type" in filtered and filtered["entry_type"] != "action":
             filtered["entry_type"] = "action"
         if "labels" in filtered and isinstance(filtered["labels"], str):
-            filtered["labels"] = [lbl.strip() for lbl in filtered["labels"].split(",") if lbl.strip()]
+            filtered["labels"] = _split_csv_labels(filtered["labels"])
         return cls(**filtered)
 
 
 @dataclass
 class SummaryRecord:
-    """Standardised summary record for plan executions."""
-
     execution_id: str
     plan_branch: str
     agent: str
@@ -225,7 +236,6 @@ class SummaryRecord:
     execution_file: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert record to dictionary."""
         data = asdict(self)
         data["entry_type"] = "summary"
         if data.get("sub_intents") is None:
@@ -236,51 +246,19 @@ class SummaryRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SummaryRecord:
-        """Construct SummaryRecord from dictionary."""
-        known_keys = {
-            "execution_id",
-            "plan_branch",
-            "agent",
-            "model",
-            "status",
-            "entry_type",
-            "agent_version",
-            "summary",
-            "created_at",
-            "agent_output_truncated",
-            "agent_output_bytes",
-            "ledger_revision",
-            "sub_intents",
-            "execution_file",
-        }
-        filtered = {k: v for k, v in data.items() if k in known_keys}
+        filtered = {k: v for k, v in data.items() if k in _SUMMARY_KNOWN_KEYS}
         if "entry_type" in filtered and filtered["entry_type"] != "summary":
             filtered["entry_type"] = "summary"
         return cls(**filtered)
 
 
 def _prepare_shape_preserving_action(record: dict[str, Any]) -> dict[str, Any]:
-    """Validate an action dictionary while keeping its key order and any extra keys.
-
-    Only the minimum normalisation is applied: ``entry_type`` is forced to ``"action"``
-    (keeping its existing position when present), and ``action_id`` / ``action_origin``
-    are filled in only when absent. Unknown keys are retained verbatim.
-
-    Args:
-        record: Action record dictionary to validate.
-
-    Returns:
-        A shallow copy of the record, ready to serialise.
-
-    Raises:
-        ValueError: If the record is missing required fields or carries invalid enum values.
-    """
     copy_rec = dict(record)
     copy_rec["entry_type"] = "action"
     if not copy_rec.get("action_id"):
         copy_rec["action_id"] = generate_action_id()
     if "action_origin" not in copy_rec:
-        copy_rec["action_origin"] = "initial_implementation"
+        copy_rec["action_origin"] = _DEFAULT_ACTION_ORIGIN
     try:
         ActionRecord.from_dict(copy_rec).validate()
     except TypeError as exc:
@@ -294,22 +272,6 @@ def append_action_record(
     *,
     preserve_shape: bool = False,
 ) -> dict[str, Any]:
-    """Append a discrete action record to the execution ledger under LedgerLock.
-
-    Args:
-        ledger_path: Path to the executions.jsonl ledger file.
-        record: ActionRecord or dictionary with action fields.
-        preserve_shape: When True and ``record`` is a dictionary, validate it against
-            ``ActionRecord`` but serialise it verbatim, keeping key order and extra keys
-            (for example calibration metrics). Defaults to False, which normalises the
-            record through ``ActionRecord.to_dict()``.
-
-    Returns:
-        The written action record dictionary.
-
-    Raises:
-        ValueError: If the record fails validation. Nothing is written in that case.
-    """
     if isinstance(record, ActionRecord):
         data = record.to_dict()
     elif preserve_shape:
@@ -321,9 +283,9 @@ def append_action_record(
         if "entry_type" not in copy_rec or copy_rec["entry_type"] != "action":
             copy_rec["entry_type"] = "action"
         if "action_origin" not in copy_rec:
-            copy_rec["action_origin"] = "initial_implementation"
+            copy_rec["action_origin"] = _DEFAULT_ACTION_ORIGIN
         if "labels" in copy_rec and isinstance(copy_rec["labels"], str):
-            copy_rec["labels"] = [lbl.strip() for lbl in copy_rec["labels"].split(",") if lbl.strip()]
+            copy_rec["labels"] = _split_csv_labels(copy_rec["labels"])
         data = ActionRecord.from_dict(copy_rec).to_dict()
 
     line = json.dumps(data) + "\n"
@@ -340,11 +302,6 @@ def _report_ledger_failure(
     exc: BaseException,
     log_fn: Callable[[str], None] | None,
 ) -> None:
-    """Log a ledger append failure at WARNING level and mirror it to an operator log.
-
-    The exception text is passed through the canonical credential redactor first, so a
-    secret carried in the failure detail never reaches the log.
-    """
     from sandbox_executor.redaction import redact_agent_secrets
 
     detail = redact_agent_secrets(str(exc))
@@ -363,28 +320,6 @@ def try_append_action_record(
     preserve_shape: bool = True,
     log_fn: Callable[[str], None] | None = None,
 ) -> dict[str, Any] | None:
-    """Append an action record under LedgerLock, reporting rather than raising on failure.
-
-    Every string in the record (including ``error_context``) is passed through the canonical
-    ``CredentialRedactor`` before validation and serialisation, so credentials carried in
-    failure detail never reach ``executions.jsonl``. Key order is preserved.
-
-    A failed append is never silent: it is logged at WARNING level with the label, record
-    identifier, ledger path and exception detail, and mirrored to ``log_fn`` when supplied.
-    No alternative ledger file is ever written. A ``LedgerRewriteError`` is never reported:
-    it propagates so a rewritten ledger always fails closed.
-
-    Args:
-        ledger_path: Path to the executions.jsonl ledger file.
-        record: ActionRecord or dictionary with action fields.
-        label: Short description of the writer, used in the warning message.
-        preserve_shape: Passed through to ``append_action_record``. Defaults to True so
-            existing record shapes stay byte-compatible.
-        log_fn: Optional callable (for example ``FlowContext.log``) that receives the warning.
-
-    Returns:
-        The written record dictionary, or None if the append failed.
-    """
     from sandbox_executor.knowledge.records import CredentialRedactor
 
     record_id = record.action_id if isinstance(record, ActionRecord) else str(record.get("action_id") or "?")
@@ -408,21 +343,6 @@ def try_append_ledger_line(
     label: str,
     log_fn: Callable[[str], None] | None = None,
 ) -> bool:
-    """Append an arbitrary JSON ledger row verbatim under LedgerLock, reporting failures.
-
-    Intended for summary, intent and plan rows whose shape must stay unchanged. Follows the
-    same fail-loud contract as ``try_append_action_record``, so a ``LedgerRewriteError``
-    propagates rather than being reported.
-
-    Args:
-        ledger_path: Path to the JSONL ledger file.
-        record: Row to serialise with ``json.dumps``.
-        label: Short description of the writer, used in the warning message.
-        log_fn: Optional callable (for example ``FlowContext.log``) that receives the warning.
-
-    Returns:
-        True if the row was written, False otherwise.
-    """
     try:
         line = json.dumps(record) + "\n"
         with atomic_ledger_append(ledger_path) as f:
@@ -437,15 +357,6 @@ def try_append_ledger_line(
 
 
 def append_summary_record(ledger_path: str, record: SummaryRecord | dict[str, Any]) -> dict[str, Any]:
-    """Append a summary record to the execution ledger under LedgerLock.
-
-    Args:
-        ledger_path: Path to the executions.jsonl ledger file.
-        record: SummaryRecord or dictionary with summary fields.
-
-    Returns:
-        The written summary record dictionary.
-    """
     from sandbox_executor.ledger.query import validate_ledger_file_unique_ids
 
     if isinstance(record, SummaryRecord):
@@ -493,7 +404,7 @@ def _handle_trailer(key: str, val: str, trailers: dict[str, Any]) -> None:
         _handle_review_trailer(key, val, trailers)
     elif key == "action-origin":
         clean_val = val.lower()
-        trailers["action_origin"] = clean_val if clean_val in VALID_ORIGINS else "initial_implementation"
+        trailers["action_origin"] = clean_val if clean_val in VALID_ORIGINS else _DEFAULT_ACTION_ORIGIN
     elif key == "consulted-knowledge-ids":
         parts = [p.strip() for p in re.split(r"[,;\s]+", val) if p.strip()]
         trailers["consulted_knowledge_ids"] = parts if parts else None
@@ -503,19 +414,8 @@ def _handle_trailer(key: str, val: str, trailers: dict[str, Any]) -> None:
 
 
 def parse_commit_trailers(commit_message: str) -> dict[str, Any]:
-    """Parse standardised action provenance trailers from commit message.
-
-    Trailers parsed (case-insensitive):
-    - Action-Origin: initial_implementation, pr_review, ci_fix, calibration, operator
-    - Review-Severity: critical, important, nit
-    - Review-Iteration: integer
-    - Review-Finding-Ids: comma or space separated string
-
-    Returns:
-        Dictionary containing extracted metadata fields with default fallbacks.
-    """
     trailers: dict[str, Any] = {
-        "action_origin": "initial_implementation",
+        "action_origin": _DEFAULT_ACTION_ORIGIN,
         "review_severity": None,
         "review_iteration": None,
         "review_finding_ids": None,
@@ -527,18 +427,13 @@ def parse_commit_trailers(commit_message: str) -> dict[str, Any]:
     if not commit_message:
         return trailers
 
-    pattern = re.compile(
-        r"^(action-origin|review-severity|review-iteration|review-finding-ids|review-disposition|rejection-reason|introduced-by-action-id|consulted-knowledge-ids):\s*(.+)$",
-        re.MULTILINE | re.IGNORECASE,
-    )
-    for match in pattern.finditer(commit_message):
+    for match in _COMMIT_TRAILER_PATTERN.finditer(commit_message):
         _handle_trailer(match.group(1).lower(), match.group(2).strip(), trailers)
 
     return trailers
 
 
 def extract_action_provenance_from_commit(repo_dir: str = ".", commit_ref: str = "HEAD") -> dict[str, Any]:
-    """Extract action provenance metadata from git commit trailers."""
     try:
         proc = subprocess.run(
             ["git", "-C", repo_dir, "log", "-1", "--pretty=%B", commit_ref],
@@ -555,8 +450,6 @@ def extract_action_provenance_from_commit(repo_dir: str = ".", commit_ref: str =
 
 @dataclass(frozen=True, kw_only=True)
 class CommitTrailers:
-    """The optional trailers ``format_commit_trailers`` renders; an unknown or misspelt one raises TypeError."""
-
     review_severity: str | None = None
     review_iteration: int | None = None
     review_finding_ids: list[str] | None = None
@@ -566,11 +459,7 @@ class CommitTrailers:
     consulted_knowledge_ids: list[str] | None = None
 
 
-def format_commit_trailers(action_origin: str = "initial_implementation", **trailers: Any) -> str:
-    """Format structured commit trailers block for git commit messages.
-
-    ``trailers`` are the keyword fields of ``CommitTrailers``; any other keyword raises TypeError.
-    """
+def format_commit_trailers(action_origin: str = _DEFAULT_ACTION_ORIGIN, **trailers: Any) -> str:
     spec = CommitTrailers(**trailers)
     lines: list[str] = [f"Action-Origin: {action_origin}"]
     if spec.review_severity:

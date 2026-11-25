@@ -191,8 +191,8 @@ def _settled_status(check: _FinalHeadCheck) -> tuple[dict[str, Any], dict[str, A
         ci_status = probe()
     if ci_status.get("source") != "github_cli" or ci_status.get("pending", 0) <= 0:
         return ci_status, None
-    # A failed check must not end the wait while others are pending: they may fail too, or hide a real test failure.
-    ci_status, waited = wait_for_pending_ci(context, probe, ci_status, policy, stop_on_failure=False)
+    # Any failed check ends the wait early rather than idling on remaining pending checks.
+    ci_status, waited = wait_for_pending_ci(context, probe, ci_status, policy)
     return ci_status, waited.as_record()
 
 
@@ -257,7 +257,7 @@ def _resolve_final_head(check: _FinalHeadCheck) -> str | None:
 
 def _eligible_run_ids(check: _FinalHeadCheck, record: dict[str, Any], ci_status: dict[str, Any]) -> list[str] | None:
     """Run ids eligible for the one automatic rerun, or None; every undecidable input is ineligible (fail-closed)."""
-    if not _timing_gate_only(record["failed_details"]):
+    if ci_status.get("pending", 0) > 0 or not _timing_gate_only(record["failed_details"]):
         return None
     approved = (check.seams.approved_head or (lambda: approved_head_of(check.context)))()
     if not approved:

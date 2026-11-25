@@ -87,7 +87,7 @@ def _pull_request_files_via_api(run_gh: merge.GhRunner, number: int, repo_dir: s
     return _parse_slurped_pr_files(result.stdout or "", command)
 
 
-def pull_request_changed_files(run_gh: merge.GhRunner, number: int, repo_dir: str) -> tuple[str, ...] | str:
+def _pull_request_changed_files(run_gh: merge.GhRunner, number: int, repo_dir: str) -> tuple[str, ...] | str:
     """Return normalised non-metadata changed paths for PR ``number``, or a fail-closed error message string."""
     result = run_gh(["pr", "diff", str(number), "--color", "never"], repo_dir)
     if result.returncode == 0:

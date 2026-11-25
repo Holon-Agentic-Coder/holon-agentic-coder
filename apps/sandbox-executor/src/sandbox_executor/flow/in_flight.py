@@ -26,7 +26,7 @@ from typing import Any
 from sandbox_executor.flow.admission_state import BLOCKED_BY_LOCAL_FLOW, BLOCKED_BY_PULL_REQUEST, AdmissionRecord
 from sandbox_executor.flow.git_refs import _read_ledger_rows, _resolve_branch_ref
 from sandbox_executor.flow.github import merge
-from sandbox_executor.flow.pr_changed_files import pull_request_changed_files
+from sandbox_executor.flow.pr_changed_files import _pull_request_changed_files
 from sandbox_executor.flow.worktree_checkpoints import WorktreeCheckpoint, worktree_checkpoints
 from sandbox_executor.git import run_git
 from sandbox_executor.plan_paths import is_row_of_plan
@@ -121,7 +121,7 @@ def _gh_json(run_gh: merge.GhRunner, args: list[str], repo_dir: str) -> list[dic
 
 
 def _pull_request_diff(run_gh: merge.GhRunner, number: int, repo_dir: str) -> tuple[str, ...] | AdmissionUnavailable:
-    changed = pull_request_changed_files(run_gh, number, repo_dir)
+    changed = _pull_request_changed_files(run_gh, number, repo_dir)
     return AdmissionUnavailable(changed) if isinstance(changed, str) else changed
 
 

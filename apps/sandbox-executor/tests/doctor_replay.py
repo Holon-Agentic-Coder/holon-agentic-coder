@@ -36,7 +36,8 @@ from collections.abc import Iterator
 from typing import Any, TextIO
 from unittest.mock import patch
 
-from sandbox_executor import cli, config_env, local_llm
+from sandbox_executor import config_env, local_llm
+from sandbox_executor.cli import doctor as cli_doctor
 
 
 def _environment() -> tuple[tuple[str, str], ...]:
@@ -46,7 +47,7 @@ def _environment() -> tuple[tuple[str, str], ...]:
 @contextlib.contextmanager
 def replayed_configuration_section() -> Iterator[None]:
     """Within the context, compute ``cli._configuration_section`` once per environment, agent and model."""
-    real = cli._configuration_section
+    real = cli_doctor._configuration_section
     store: dict[tuple[Any, ...], bytes] = {}
 
     def replaying(args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
@@ -59,7 +60,7 @@ def replayed_configuration_section() -> Iterator[None]:
         # Unpickling the stored bytes builds new objects for every caller, as a deep copy does, in less time.
         return pickle.loads(store[key])
 
-    with patch.object(cli, "_configuration_section", replaying):
+    with patch.object(cli_doctor, "_configuration_section", replaying):
         yield
 
 
@@ -73,7 +74,7 @@ def replayed_environment_report() -> Iterator[None]:
     exit code. The host configuration stand-in and the fetcher are part of the key as objects, so a block that
     installs another stand-in or passes another fetcher runs the report again.
     """
-    real = cli.report_budgets_and_envelope
+    real = cli_doctor.report_budgets_and_envelope
     store: dict[tuple[Any, ...], tuple[str, int]] = {}
 
     def replaying(fetch: local_llm.Fetcher | None = None, out: TextIO | None = None) -> int:
@@ -88,5 +89,5 @@ def replayed_environment_report() -> Iterator[None]:
         out.write(text)
         return code
 
-    with patch.object(cli, "report_budgets_and_envelope", replaying):
+    with patch.object(cli_doctor, "report_budgets_and_envelope", replaying):
         yield

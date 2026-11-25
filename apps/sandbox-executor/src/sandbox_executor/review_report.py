@@ -1,21 +1,3 @@
-"""The Stage 4 review consensus report, rendered only from real reviewer results.
-
-Every line of the report comes from data the review actually produced: the :class:`ReviewerResult` objects returned
-by :func:`~sandbox_executor.review_ensemble.run_ensemble`, the optional reviewer data block each reviewer writes just
-before its trailer, the ensemble verdict, the mergeability and CI probes, and the resolved target. Nothing is derived
-from a constant: there are no generated reviewer votes, no persona matrix, no fixed verified assertions and no
-boiler-plate findings. The posted shape is the "Posted review shape" block of
-``holon-config/prompts/review_loop.template.md``.
-
-The reviewer's vote comes only from the strict trailer. The data block (roles, finding ids and recommendations,
-evidenced verified claims) is parsed tolerantly: a missing, malformed or misaligned block yields no roles and no
-claims for that reviewer, never invented ones, and a FAILED reviewer contributes nothing but its breakdown line.
-
-Reviewer text is untrusted: it is redacted, collapsed to one line, stripped of backticks and angle brackets, bounded
-and, in table cells, pipe-escaped before it reaches the posted comment. Failure reasons are already redacted and
-bounded by :meth:`ReviewerResult.failed` and are redacted once more here as defence in depth.
-"""
-
 from __future__ import annotations
 
 import dataclasses
@@ -99,12 +81,17 @@ _PR_URL_NUMBER = re.compile(r"/pull/(\d+)")
 _HEX_SHA = re.compile(r"[0-9a-fA-F]+")
 _MARKDOWN_LINK = re.compile(r"\[(?P<text>[^\]]*)\]\((?P<url>[^)]*)\)")
 _SHORT_SHA_CHARS = 8
+_MAX_DISPOSITION_ID_CHARS = 40
+_MAX_COMMIT_SHA_CHARS = 40
+_MAX_ACTION_ID_CHARS = 64
+_MAX_SOURCE_CHARS = 40
+_MAX_VERDICT_CHARS = 40
+_MAX_AGENT_MODEL_CHARS = 80
+_DEFAULT_FINDING_ID = "FIND-1"
 
 
 @dataclass(frozen=True)
 class RoleReview:
-    """One activated role: its name, ``PASS`` or ``CHANGES``, and a short review."""
-
     role: str
     verdict: str
     review: str
@@ -112,8 +99,6 @@ class RoleReview:
 
 @dataclass(frozen=True)
 class FindingRow:
-    """One finding row; ``reviewers`` lists the index of every reviewer that raised it."""
-
     id: str
     severity: str
     path: str
@@ -124,7 +109,6 @@ class FindingRow:
 
 
 def ci_failure_finding(iteration: int, failing_names: Sequence[str]) -> FindingRow:
-    """The ``FIND-CI-<iteration>`` finding the review loop hands the resolver when CI failed in ``iteration``."""
     names = f": {', '.join(failing_names)}" if failing_names else ""
     return FindingRow(
         id=f"FIND-CI-{iteration:03d}",
@@ -139,16 +123,12 @@ def ci_failure_finding(iteration: int, failing_names: Sequence[str]) -> FindingR
 
 @dataclass(frozen=True)
 class VerifiedClaim:
-    """A claim a reviewer checked, with the file, module or test that evidences it."""
-
     claim: str
     evidence: str
 
 
 @dataclass(frozen=True)
 class ReviewerDetail:
-    """What one reviewer's report supplied beyond its vote; empty for a FAILED reviewer."""
-
     index: int
     roles: tuple[RoleReview, ...] = ()
     findings: tuple[FindingRow, ...] = ()
@@ -157,8 +137,6 @@ class ReviewerDetail:
 
 @dataclass(frozen=True)
 class FindingDisposition:
-    """One adjudicated finding disposition from a resolver pass or convergence guard."""
-
     id: str
     severity: str
     path: str
@@ -169,14 +147,11 @@ class FindingDisposition:
     rejection_reason: str | None = None
     commit_sha: str | None = None
     introduced_by_action_id: str | None = None
-    # What the resolver checked: a ``path:line`` or a test; required to reject an important or critical finding.
     evidence: str | None = None
 
 
 @dataclass(frozen=True)
 class ReviewData:
-    """The merged review data of the deciding iteration, as the report renders it."""
-
     roles: tuple[RoleReview, ...] = ()
     findings: tuple[FindingRow, ...] = ()
     verified: tuple[VerifiedClaim, ...] = ()
@@ -184,28 +159,29 @@ class ReviewData:
 
 
 def _inline(text: Any, limit: int) -> str:
-    """Make untrusted reviewer text safe for one markdown line: redacted, single-line, no code or HTML, bounded."""
     clean = " ".join(redact_agent_secrets(str(text or "")).split())
     clean = clean.replace("`", "'").replace("<", "&lt;").replace(">", "&gt;")
     return clean if len(clean) <= limit else clean[: limit - 3] + "..."
 
 
 def _words(text: str, limit: int = MAX_REVIEW_WORDS) -> str:
-    """Cut ``text`` to ``limit`` words, marking the cut with an ellipsis."""
     words = text.split()
     return text if len(words) <= limit else " ".join(words[:limit]) + "..."
 
 
 def _cell(text: str) -> str:
-    """Escape a pipe so already-inlined text cannot add a table column."""
     return text.replace("|", "\\|")
 
 
-# --- Reviewer data seam --------------------------------------------------------------------------------------------
+def _positive_line_number(raw_line: Any) -> int | None:
+    return raw_line if isinstance(raw_line, int) and not isinstance(raw_line, bool) and raw_line >= 1 else None
+
+
+def _is_verified_evidence_path(evidence: str) -> bool:
+    return bool(_EVIDENCE.fullmatch(evidence)) and ("/" in evidence or "." in evidence)
 
 
 def _block_payload(report_text: str | None) -> dict[str, Any]:
-    """The JSON object of the data block that sits immediately before the trailer, else an empty dict."""
     text = report_text or ""
     cut = text.rfind(TRAILER_OPEN)
     head = (text[:cut] if cut >= 0 else text).rstrip()
@@ -223,12 +199,10 @@ def _block_payload(report_text: str | None) -> dict[str, Any]:
 
 
 def _entries(raw: Any) -> list[dict[str, Any]]:
-    """The object entries of a block list, bounded; anything else is dropped."""
     return [item for item in raw[:MAX_BLOCK_ENTRIES] if isinstance(item, dict)] if isinstance(raw, list) else []
 
 
 def _parse_roles(raw: Any) -> tuple[RoleReview, ...]:
-    """Well-typed role entries with a name and a ``PASS`` or ``CHANGES`` verdict."""
     roles = []
     for item in _entries(raw):
         role = _inline(item.get("role"), MAX_ROLE_CHARS)
@@ -239,28 +213,21 @@ def _parse_roles(raw: Any) -> tuple[RoleReview, ...]:
 
 
 def _parse_verified(raw: Any) -> tuple[VerifiedClaim, ...]:
-    """Claims whose evidence is a file, module or test path; a claim without evidence is dropped."""
     claims = []
     for item in _entries(raw):
         claim = _inline(item.get("claim"), MAX_SUMMARY_CHARS)
         evidence = _inline(item.get("evidence"), MAX_PATH_CHARS)
-        if claim and _EVIDENCE.fullmatch(evidence) and ("/" in evidence or "." in evidence):
+        if claim and _is_verified_evidence_path(evidence):
             claims.append(VerifiedClaim(claim, evidence))
     return tuple(claims)
 
 
 def _finding_id(extra: Mapping[str, Any], index: int, number: int) -> str:
-    """The block's id when it is a short token, else ``R{index}-F{number}``."""
     ident = str(extra.get("id") or "").strip()
     return ident if _ID_TOKEN.fullmatch(ident) else f"R{index}-F{number}"
 
 
 def _pair_findings(result: ReviewerResult, raw: Any) -> tuple[FindingRow, ...]:
-    """The trailer's findings, paired by position with the block's ids and recommendations.
-
-    The trailer is authoritative: no row exists without a trailer finding. A block list of a different length cannot be
-    aligned, so it is ignored and every row gets a generated id and ``not supplied``.
-    """
     block = raw if isinstance(raw, list) and len(raw) == len(result.findings) else [{}] * len(result.findings)
     rows = []
     for number, (finding, extra) in enumerate(zip(result.findings, block, strict=True), start=1):
@@ -280,7 +247,6 @@ def _pair_findings(result: ReviewerResult, raw: Any) -> tuple[FindingRow, ...]:
 
 
 def parse_reviewer_detail(result: ReviewerResult) -> ReviewerDetail:
-    """Roles, finding rows and evidenced claims from one reviewer; a FAILED reviewer contributes nothing."""
     if result.status is not ReviewerStatus.COMPLETED:
         return ReviewerDetail(result.index)
     payload = _block_payload(result.report_text)
@@ -293,7 +259,6 @@ def parse_reviewer_detail(result: ReviewerResult) -> ReviewerDetail:
 
 
 def _merge_roles(roles: Iterable[RoleReview]) -> tuple[RoleReview, ...]:
-    """One role per case-insensitive name, first-seen order; CHANGES wins and keeps the review that caused it."""
     merged: dict[str, RoleReview] = {}
     for role in roles:
         seen = merged.get(role.role.lower())
@@ -307,11 +272,6 @@ def _merge_roles(roles: Iterable[RoleReview]) -> tuple[RoleReview, ...]:
 
 
 def _merge_findings(rows: Iterable[FindingRow]) -> tuple[FindingRow, ...]:
-    """One row per severity, path, line and summary, naming every reviewer that raised it.
-
-    The summary is part of the key so distinct findings at the same location stay distinct rows and the rendered
-    counts reconcile with the reviewer trailers; only the same finding raised by several reviewers merges.
-    """
     merged: dict[tuple[str, str, int | None, str], FindingRow] = {}
     for row in rows:
         key = (row.severity, row.path, row.line, row.summary)
@@ -326,11 +286,6 @@ def _merge_findings(rows: Iterable[FindingRow]) -> tuple[FindingRow, ...]:
 
 
 def _unique_ids(rows: tuple[FindingRow, ...]) -> tuple[FindingRow, ...]:
-    """Disambiguate block-supplied ids that collide across distinct rows.
-
-    Two reviewers can independently supply the same id (say ``F-1``) for different findings; the first row keeps it and
-    every later colliding row falls back to a generated ``R{reviewer}-F{n}`` id that no other row carries.
-    """
     taken = {row.id for row in rows}
     assigned: set[str] = set()
     unique = []
@@ -345,7 +300,6 @@ def _unique_ids(rows: tuple[FindingRow, ...]) -> tuple[FindingRow, ...]:
 
 
 def collect_review_data(reviewers: Sequence[ReviewerResult]) -> ReviewData:
-    """Merge the data of every completed reviewer; FAILED reviewers add no role, finding or claim."""
     details = [parse_reviewer_detail(result) for result in reviewers]
     return ReviewData(
         roles=_merge_roles(role for detail in details for role in detail.roles),
@@ -355,7 +309,6 @@ def collect_review_data(reviewers: Sequence[ReviewerResult]) -> ReviewData:
 
 
 def reviewer_detail_payload(result: ReviewerResult) -> dict[str, Any]:
-    """The reviewer's parsed, sanitised data block as JSON-safe data, for transport out of the review container."""
     detail = parse_reviewer_detail(result)
     return {
         "roles": [dataclasses.asdict(role) for role in detail.roles],
@@ -365,7 +318,6 @@ def reviewer_detail_payload(result: ReviewerResult) -> dict[str, Any]:
 
 
 def with_reviewer_detail(result: ReviewerResult, payload: Any) -> ReviewerResult:
-    """Re-attach a transported data block to a deserialised result; it is parsed and sanitised again on use."""
     if result.status is not ReviewerStatus.COMPLETED or not isinstance(payload, Mapping):
         return result
     try:
@@ -376,11 +328,10 @@ def with_reviewer_detail(result: ReviewerResult, payload: Any) -> ReviewerResult
 
 
 def finding_signature(severity: Any, path: Any, line: Any, summary: Any) -> tuple[str, str, int | None, str]:
-    """Normalised signature key for matching findings across iterations."""
     sev = str(severity or "nit").strip().lower()
     norm_sev = sev if sev in SEVERITIES else "nit"
     norm_path = _inline(path, MAX_PATH_CHARS)
-    norm_line = line if isinstance(line, int) and not isinstance(line, bool) and line >= 1 else None
+    norm_line = _positive_line_number(line)
     norm_summary = _inline(summary, MAX_SUMMARY_CHARS)
     return (norm_sev, norm_path, norm_line, norm_summary)
 
@@ -390,7 +341,6 @@ def serialize_finding_for_resolver(
     *,
     introduced_by_action_id: str | None = None,
 ) -> dict[str, Any]:
-    """Serialise one merged finding row for the resolver result-file transport."""
     payload: dict[str, Any] = {
         "id": row.id,
         "severity": row.severity,
@@ -407,7 +357,6 @@ def serialize_finding_for_resolver(
 
 
 def serialize_finding_disposition(item: FindingDisposition) -> dict[str, Any]:
-    """Serialise a :class:`FindingDisposition` to a JSON-safe dictionary."""
     data: dict[str, Any] = {
         "id": item.id,
         "severity": item.severity,
@@ -428,11 +377,6 @@ def serialize_finding_disposition(item: FindingDisposition) -> dict[str, Any]:
 
 
 def _normalise_rejection_reason(raw_reason: Any) -> str:
-    """Validate and normalise a one-line rejection reason; an unknown or missing one is ``unspecified``.
-
-    ``unspecified`` is only a marker: ``settle_rejection`` refuses it, so the finding stays open. It used to default to
-    ``out of scope``, which made a skipped or failed adjudication read as a deliberate rejection.
-    """
     clean = _inline(raw_reason, MAX_REASON_CHARS)
     low = clean.lower()
     for allowed in VALID_REJECTION_REASONS:
@@ -441,12 +385,16 @@ def _normalise_rejection_reason(raw_reason: Any) -> str:
     return UNSPECIFIED_REASON
 
 
+def _authoritative_finding_severity(entry: Mapping[str, Any], fallback: FindingRow | None) -> str:
+    raw_severity = str((fallback.severity if fallback else None) or entry.get("severity") or "nit").strip().lower()
+    return raw_severity if raw_severity in SEVERITIES else (fallback.severity if fallback else "nit")
+
+
 def deserialize_finding_dispositions(
     raw: Any,
     expected_findings: Sequence[FindingRow] = (),
     action_ids: Mapping[str, str] | None = None,
 ) -> tuple[FindingDisposition, ...]:
-    """Deserialise resolver dispositions and ensure every expected finding has exactly one disposition."""
     lookup = dict(action_ids or {})
     by_id: dict[str, Mapping[str, Any]] = {}
     ordered_raw: list[Mapping[str, Any]] = []
@@ -475,14 +423,13 @@ def _disposition_from_mapping(
     fallback: FindingRow | None,
     action_ids: Mapping[str, str],
 ) -> FindingDisposition:
-    """Construct one validated :class:`FindingDisposition` from raw mapping and optional fallback row."""
-    ident = _inline(entry.get("id") or (fallback.id if fallback else "FIND-1"), 40) or "FIND-1"
-    # The reviewed finding's severity is authoritative: a resolver cannot downgrade it to escape the evidence rule.
-    raw_sev = str((fallback.severity if fallback else None) or entry.get("severity") or "nit").strip().lower()
-    severity = raw_sev if raw_sev in SEVERITIES else (fallback.severity if fallback else "nit")
+    ident = (
+        _inline(entry.get("id") or (fallback.id if fallback else _DEFAULT_FINDING_ID), _MAX_DISPOSITION_ID_CHARS)
+        or _DEFAULT_FINDING_ID
+    )
+    severity = _authoritative_finding_severity(entry, fallback)
     path = _inline(entry.get("path") or entry.get("file") or (fallback.path if fallback else ""), MAX_PATH_CHARS)
-    raw_line = entry.get("line", fallback.line if fallback else None)
-    line = raw_line if isinstance(raw_line, int) and not isinstance(raw_line, bool) and raw_line >= 1 else None
+    line = _positive_line_number(entry.get("line", fallback.line if fallback else None))
     summary = _inline(entry.get("summary") or (fallback.summary if fallback else ""), MAX_SUMMARY_CHARS)
     recommendation = (
         _inline(entry.get("recommendation") or (fallback.recommendation if fallback else ""), MAX_SUMMARY_CHARS)
@@ -495,8 +442,10 @@ def _disposition_from_mapping(
     if disposition == "rejected":
         reason = _normalise_rejection_reason(entry.get("rejection_reason") or entry.get("reason"))
         disposition, reason, evidence = settle_rejection(severity, reason, evidence)
-    commit_sha = _inline(entry.get("commit_sha") or "", 40) or None
-    intro_id = _inline(entry.get("introduced_by_action_id") or action_ids.get(ident) or "", 64) or None
+    commit_sha = _inline(entry.get("commit_sha") or "", _MAX_COMMIT_SHA_CHARS) or None
+    intro_id = (
+        _inline(entry.get("introduced_by_action_id") or action_ids.get(ident) or "", _MAX_ACTION_ID_CHARS) or None
+    )
     return FindingDisposition(
         id=ident,
         severity=severity,
@@ -513,7 +462,6 @@ def _disposition_from_mapping(
 
 
 def render_dispositions_section(dispositions: Sequence[FindingDisposition]) -> list[str]:
-    """Render a markdown table summarising adjudicated finding dispositions."""
     if not dispositions:
         return []
     lines = [
@@ -536,7 +484,6 @@ def review_data_summary(
     data: ReviewData,
     dispositions: Sequence[FindingDisposition] = (),
 ) -> dict[str, Any]:
-    """A JSON-safe summary for the loop result: role names and verdicts, finding ids, severities and reviewers."""
     summary: dict[str, Any] = {
         "roles": [{"role": role.role, "verdict": role.verdict} for role in data.roles],
         "findings": [
@@ -549,16 +496,11 @@ def review_data_summary(
     return summary
 
 
-# --- Probe wording -------------------------------------------------------------------------------------------------
-
-
 def _is_approved(consensus_data: Mapping[str, Any]) -> bool:
-    """APPROVED follows the ensemble verdict alone; no flag or status can promote any other value."""
     return str(consensus_data.get("ensemble_verdict") or "") == str(ConsensusVerdict.APPROVED)
 
 
 def _mergeability_word(consensus_data: Mapping[str, Any]) -> str:
-    """CLEAN, DIRTY, CONFLICTING or MISSING_REF from the probe; anything else was not measured."""
     probe = consensus_data.get("mergeability") or {}
     state = str(probe.get("merge_state_status") or "").upper()
     if consensus_data.get("mergeability_note") or state == "MISSING_REF":
@@ -571,12 +513,10 @@ def _mergeability_word(consensus_data: Mapping[str, Any]) -> str:
 
 
 def _ci_measured(ci_status: Mapping[str, Any]) -> bool:
-    """False for an unmeasured probe, a missing probe or a probe with no checks."""
     return ci_status.get("measured") is not False and int(ci_status.get("total") or 0) > 0
 
 
 def _ci_state(ci_status: Mapping[str, Any]) -> str:
-    """One word for the evaluation paragraph."""
     if not _ci_measured(ci_status):
         return "unmeasured"
     if int(ci_status.get("failed") or 0):
@@ -585,8 +525,11 @@ def _ci_state(ci_status: Mapping[str, Any]) -> str:
 
 
 def _ci_summary(ci_status: Mapping[str, Any]) -> str:
-    """The CI part of the Checks line; an unmeasured probe is reported as such, never as a pass."""
-    source = f" (source: {_inline(str(ci_status['test_source']), 40)})" if ci_status.get("test_source") else ""
+    source = (
+        f" (source: {_inline(str(ci_status['test_source']), _MAX_SOURCE_CHARS)})"
+        if ci_status.get("test_source")
+        else ""
+    )
     if not _ci_measured(ci_status):
         return f"CI unmeasured{source}"
     return (
@@ -595,11 +538,7 @@ def _ci_summary(ci_status: Mapping[str, Any]) -> str:
     )
 
 
-# --- Target ---------------------------------------------------------------------------------------------------------
-
-
 def resolve_report_title(intent_data: Mapping[str, Any] | None, target: ReviewTarget | None, raw_target: str) -> str:
-    """Return the intent title, else its slug, else the PR title, else ``PR #<n>`` or the branch; no fixed phrase."""
     intent = intent_data or {}
     for candidate in (intent.get("title"), intent.get("slug"), target.title if target else None):
         if str(candidate or "").strip():
@@ -611,7 +550,6 @@ def resolve_report_title(intent_data: Mapping[str, Any] | None, target: ReviewTa
 
 
 def _git_output(repo_dir: str, args: list[str]) -> str:
-    """Stripped stdout of a read-only git command, or an empty string when it fails."""
     if not os.path.isdir(os.path.join(repo_dir, ".git")):
         return ""
     try:
@@ -622,7 +560,6 @@ def _git_output(repo_dir: str, args: list[str]) -> str:
 
 
 def _target_commit(repo_dir: str, consensus_data: Mapping[str, Any]) -> str:
-    """The reviewed commit from the consensus data, else the checkout's HEAD; a hex SHA is shortened to 8 characters."""
     commit = str(consensus_data.get("target_commit") or "").strip()
     if commit and commit != "HEAD":
         return commit[:_SHORT_SHA_CHARS] if _HEX_SHA.fullmatch(commit) else commit
@@ -630,7 +567,6 @@ def _target_commit(repo_dir: str, consensus_data: Mapping[str, Any]) -> str:
 
 
 def _repo_name(repo_dir: str, consensus_data: Mapping[str, Any]) -> str:
-    """The GitHub ``owner/name`` from the consensus data or the origin remote, else an empty string."""
     name = str(consensus_data.get("repo_name") or "").strip()
     if name:
         return name
@@ -639,7 +575,6 @@ def _repo_name(repo_dir: str, consensus_data: Mapping[str, Any]) -> str:
 
 
 def _pr_link(repo_dir: str, target: str, consensus_data: Mapping[str, Any]) -> str:
-    """A markdown link to the PR (or the branch) under review; plain text when no repository name resolves."""
     repo_name = _repo_name(repo_dir, consensus_data)
     pr_number = consensus_data.get("pr_number")
     pr_url = consensus_data.get("pr_url")
@@ -659,11 +594,7 @@ def _pr_link(repo_dir: str, target: str, consensus_data: Mapping[str, Any]) -> s
     return f"`{target or 'unknown'}`"
 
 
-# --- Sections -------------------------------------------------------------------------------------------------------
-
-
 def _clean_approval(result: ReviewerResult) -> bool:
-    """True for a reviewer that completed with an ``APPROVED`` verdict and zero open findings."""
     return (
         result.status is ReviewerStatus.COMPLETED
         and result.verdict is ReviewerVerdict.APPROVED
@@ -673,16 +604,10 @@ def _clean_approval(result: ReviewerResult) -> bool:
 
 
 def _approvals(reviewers: Sequence[ReviewerResult]) -> int:
-    """The number of reviewers that completed with an ``APPROVED`` verdict and zero open findings."""
     return sum(1 for r in reviewers if _clean_approval(r))
 
 
 def report_approves(consensus_data: Mapping[str, Any], reviewers: Sequence[ReviewerResult]) -> bool:
-    """APPROVED only for an APPROVED ensemble verdict, every reviewer clean and no activated role at ``CHANGES``.
-
-    A defence in depth: an upstream regression that hands over an APPROVED verdict with a dissenting reviewer or role
-    still renders, and posts, as changes requested.
-    """
     roles = collect_review_data(reviewers).roles
     return (
         _is_approved(consensus_data)
@@ -693,7 +618,6 @@ def report_approves(consensus_data: Mapping[str, Any], reviewers: Sequence[Revie
 
 
 def _heading(consensus_data: Mapping[str, Any], approved: bool, approvals: int, configured: int) -> str:
-    """The verdict heading: :func:`report_approves` decides the word, the clean approvals the fraction."""
     if approved:
         return f"## ✅ Ensemble Consensus Review — APPROVED ({approvals}/{configured})"
     iteration = consensus_data.get("iterations", 1)
@@ -702,18 +626,11 @@ def _heading(consensus_data: Mapping[str, Any], approved: bool, approvals: int, 
 
 
 def _severity_counts(findings: Sequence[FindingRow]) -> str:
-    """``{c} critical, {i} important and {n} nit findings`` over the merged rows."""
     counts = [sum(1 for row in findings if row.severity == name) for name in SEVERITIES]
     return f"{counts[0]} critical, {counts[1]} important and {counts[2]} nit findings"
 
 
 def _evaluation_subject(link: str, target: str, title: str) -> str:
-    """Name the reviewed target once: a clean title labels the link, and a link that repeats the ref is dropped.
-
-    ``link`` is :func:`_pr_link`'s output. A title that differs from the ref and from the link text becomes the link
-    text (``[slug](url)``); otherwise the link stands alone, unless its URL already carries the ref, in which case the
-    ref is shown once as a code span. Without a URL the title is shown alone, in backticks.
-    """
     match = _MARKDOWN_LINK.fullmatch(link)
     if not match:
         return f"`{title or target or 'unknown'}`"
@@ -725,7 +642,6 @@ def _evaluation_subject(link: str, target: str, title: str) -> str:
 
 
 def _evaluation(repo_dir: str, target: str, consensus_data: Mapping[str, Any], data: ReviewData, title: str) -> str:
-    """The evaluation paragraph: title, commit, base branch, finding counts, CI state and mergeability."""
     mergeability = _mergeability_word(consensus_data)
     ci = _ci_state(consensus_data.get("ci_checks") or {})
     wait = consensus_data.get("ci_wait") or {}
@@ -742,7 +658,6 @@ def _evaluation(repo_dir: str, target: str, consensus_data: Mapping[str, Any], d
 
 
 def _role_section(roles: Sequence[RoleReview]) -> list[str]:
-    """The role table, one row per role a reviewer declared activated; no rows are invented."""
     if not roles:
         return ["**Role reviews:** No reviewer reported an activated role."]
     lines = ["**Role reviews:**", "", "| Role (activated) | Verdict | Review |", "| --- | --- | --- |"]
@@ -751,14 +666,12 @@ def _role_section(roles: Sequence[RoleReview]) -> list[str]:
 
 
 def _verified_section(verified: Sequence[VerifiedClaim]) -> list[str]:
-    """The Verified bullets, each naming its evidence; no bullet without an evidenced claim."""
     if not verified:
         return ["**Verified:** No reviewer supplied an evidenced claim."]
     return ["**Verified:**", "", *(f"- {claim.claim} — `{claim.evidence}`" for claim in verified)]
 
 
 def _flagged_by(reviewers: Sequence[int]) -> str:
-    """``[Flagged by Reviewer 1 & 2] `` for a finding several reviewers raised, else nothing."""
     if len(reviewers) < 2:
         return ""
     names = [str(index) for index in reviewers]
@@ -766,7 +679,6 @@ def _flagged_by(reviewers: Sequence[int]) -> str:
 
 
 def _findings_section(findings: Sequence[FindingRow]) -> list[str]:
-    """The findings table; with no reviewer finding, one sentence pointing at the checks."""
     if not findings:
         return ["No reviewer reported a finding; the verdict follows from the reviewers and checks below."]
     lines = [
@@ -782,11 +694,16 @@ def _findings_section(findings: Sequence[FindingRow]) -> list[str]:
     return lines
 
 
-def _approval_stamp(repo_dir: str, consensus_data: Mapping[str, Any]) -> str:
-    """The line naming the head an approval covers, its change fingerprint and the CI result at that commit.
+def _report_body_sections(data: ReviewData, approved: bool) -> list[str]:
+    if not approved:
+        return _findings_section(data.findings)
+    verified_section = _verified_section(data.verified)
+    if data.findings:
+        return [*verified_section, "", *_findings_section(data.findings)]
+    return verified_section
 
-    A carried-over approval names the head it was carried to (the one posted on) and the head the reviewers saw.
-    """
+
+def _approval_stamp(repo_dir: str, consensus_data: Mapping[str, Any]) -> str:
     carried_to = str(consensus_data.get("carried_to") or "").strip()
     return approval_stamp(
         carried_to or _target_commit(repo_dir, consensus_data),
@@ -797,14 +714,14 @@ def _approval_stamp(repo_dir: str, consensus_data: Mapping[str, Any]) -> str:
 
 
 def _checks_line(consensus_data: Mapping[str, Any]) -> str:
-    """One Checks line: the mergeability word and the CI counts (or ``CI unmeasured``)."""
     ci_summary = _ci_summary(consensus_data.get("ci_checks") or {})
     return f"**Checks:** Mergeability {_mergeability_word(consensus_data)} · {ci_summary}"
 
 
 def render_reviewer_line(result: ReviewerResult) -> str:
-    """One breakdown line per reviewer: index, agent and model, and verdict with counts or ``FAILED`` and the reason."""
-    head = f"- **Reviewer {result.index}** (`{_inline(result.agent, 80)} / {_inline(result.model, 80)}`)"
+    agent = _inline(result.agent, _MAX_AGENT_MODEL_CHARS)
+    model = _inline(result.model, _MAX_AGENT_MODEL_CHARS)
+    head = f"- **Reviewer {result.index}** (`{agent} / {model}`)"
     if result.status is not ReviewerStatus.COMPLETED:
         return f"{head}: `FAILED` ({_inline(result.failure_reason or 'unknown failure', MAX_REASON_CHARS)})"
     counts = result.counts
@@ -812,10 +729,9 @@ def render_reviewer_line(result: ReviewerResult) -> str:
 
 
 def _breakdown(reviewers: Sequence[ReviewerResult], consensus_data: Mapping[str, Any], configured: int) -> list[str]:
-    """Every reviewer's line, the consensus verdict and the reviewed-by line."""
-    verdict = _inline(consensus_data.get("ensemble_verdict") or "NONE", 40)
-    agent = _inline(consensus_data.get("agent") or "unknown", 80)
-    model = _inline(consensus_data.get("model") or "unknown", 80)
+    verdict = _inline(consensus_data.get("ensemble_verdict") or "NONE", _MAX_VERDICT_CHARS)
+    agent = _inline(consensus_data.get("agent") or "unknown", _MAX_AGENT_MODEL_CHARS)
+    model = _inline(consensus_data.get("model") or "unknown", _MAX_AGENT_MODEL_CHARS)
     return [
         "### 🗳️ Ensemble Review Breakdown",
         "",
@@ -833,27 +749,12 @@ def build_review_consensus_report(
     reviewers: Sequence[ReviewerResult] = (),
     title: str | None = None,
 ) -> str:
-    """Render the posted consensus review from real reviewer results, probe data and the resolved title.
-
-    Args:
-        repo_dir: Repository the review ran in (for the PR link and the commit fallback).
-        target: PR number, PR URL or branch under review.
-        consensus_data: Consensus diagnostics from ``run_review_loop()`` (verdict, CI, mergeability, iteration).
-        reviewers: The reviewer results of the deciding iteration, in order.
-        title: The resolved report title; when omitted, the intent title or the target is used.
-
-    Returns:
-        The markdown body in the template's "Posted review shape", without the on-disk trailer.
-    """
     clean_target = str(target or "").strip()
     data = collect_review_data(reviewers)
     configured = int(consensus_data.get("ensemble_size") or len(reviewers))
     report_title = title or resolve_report_title(consensus_data.get("intent_data"), None, clean_target)
-    # Open findings are always listed; an approved report has none, so it shows its Verified list.
-    body = _findings_section(data.findings)
     approved = report_approves(consensus_data, reviewers)
-    if approved:
-        body = _verified_section(data.verified) + (["", *body] if data.findings else [])
+    body = _report_body_sections(data, approved)
     lines = [
         _heading(consensus_data, approved, _approvals(reviewers), configured),
         "",
@@ -876,16 +777,11 @@ def build_review_consensus_report(
 build_pr_review_consensus_report = build_review_consensus_report
 
 
-# --- On-disk report ------------------------------------------------------------------------------------------------
-
-
 def _ci_word(ci_status: Mapping[str, Any]) -> str:
-    """PASS, FAIL, PENDING or SKIPPED (unmeasured) for the on-disk trailer."""
     return {"passing": "PASS", "failing": "FAIL", "pending": "PENDING"}.get(_ci_state(ci_status), "SKIPPED")
 
 
 def render_on_disk_trailer(consensus_data: Mapping[str, Any], review_data: ReviewData, report_path: str) -> str:
-    """The machine-readable trailer for on-disk reports only; it is never part of a posted body."""
     verdict = str(consensus_data.get("ensemble_verdict") or "")
     known = (str(ConsensusVerdict.APPROVED), str(ConsensusVerdict.CHANGES_REQUESTED))
     counts = {name: sum(1 for row in review_data.findings if row.severity == name) for name in SEVERITIES}
@@ -903,6 +799,5 @@ def render_on_disk_trailer(consensus_data: Mapping[str, Any], review_data: Revie
 def build_on_disk_review_report(
     posted_body: str, consensus_data: Mapping[str, Any], reviewers: Sequence[ReviewerResult], report_path: str
 ) -> str:
-    """A posted body from :func:`build_review_consensus_report` followed by the on-disk trailer as its final lines."""
     trailer = render_on_disk_trailer(consensus_data, collect_review_data(reviewers), report_path)
     return f"{posted_body.rstrip()}\n\n{trailer}\n"

@@ -1,5 +1,3 @@
-"""Intent command module for initialising intent branches."""
-
 from __future__ import annotations
 
 import argparse
@@ -16,10 +14,13 @@ from sandbox_executor.cli.options import (
 )
 
 ORDER = 10
+_DEFAULT_TARGET_BRANCH = "main"
+_FALLBACK_BRANCH_NAME = "intent"
+_SLUG_NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]+")
+_LEADING_INTENT_PREFIX_RE = re.compile(r"^I-\d+-")
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register the intent subcommand parser."""
     parser = subparsers.add_parser("intent", help="Run Intent Creator to initialise a new intent branch.")
     parser.add_argument("intent_file", help="Path to local intent JSON/YAML file (e.g. intents/my-task.json)")
     add_target_worktree_option(parser, default=None)
@@ -28,7 +29,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
 
 def _payload(intent_file: str) -> dict[str, Any]:
-    """The intent payload, or an empty one when it cannot be read (the dispatch then reports the file)."""
     try:
         with open(intent_file, encoding="utf-8") as f:
             loaded = json.load(f)
@@ -38,19 +38,19 @@ def _payload(intent_file: str) -> dict[str, Any]:
 
 
 def _flow_slug(payload: dict[str, Any]) -> str:
-    """The slug the intent's flow-<slug> worktree is named after, from its slug or its branch."""
     slug = str(payload.get("slug") or "")
-    return re.sub(r"[^A-Za-z0-9]+", "-", slug).strip("-").lower() or re.sub(
-        r"^I-\d+-", "", str(payload.get("branch") or "intent").removesuffix("/_")
-    )
+    sanitised_slug = _SLUG_NON_ALNUM_RE.sub("-", slug).strip("-").lower()
+    if sanitised_slug:
+        return sanitised_slug
+    branch = str(payload.get("branch") or _FALLBACK_BRANCH_NAME).removesuffix("/_")
+    return _LEADING_INTENT_PREFIX_RE.sub("", branch)
 
 
 def run(args: argparse.Namespace) -> int | None:
-    """Execute the intent command: fetch the target branch on the host, run the container, push the new branch."""
     payload = _payload(args.intent_file)
     try:
         worktree = prepare_worktree(
-            str(payload.get("target_branch") or "main"), args.target_worktree, _flow_slug(payload)
+            str(payload.get("target_branch") or _DEFAULT_TARGET_BRANCH), args.target_worktree, _flow_slug(payload)
         )
     except (RuntimeError, ValueError) as exc:
         print(f"Error: {cli.redact_cli_error(exc)}", file=sys.stderr)

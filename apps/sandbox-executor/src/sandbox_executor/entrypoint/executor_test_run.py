@@ -1,5 +1,3 @@
-"""Stage 3 test measurement: run the project's tests after the agent turn and describe them for the summary row."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -7,10 +5,10 @@ from typing import Any
 from sandbox_executor.entrypoint.test_measurement import TestMeasurement, run_test_task
 
 TEST_SOURCE_STAGE_3 = "stage_3"
+_MAX_LOGGED_STRAY_PATHS = 5
 
 
 def measurement_fields(measurement: TestMeasurement) -> dict[str, Any]:
-    """The optional ``executions.jsonl`` summary-row keys for a measurement (old readers ignore them)."""
     fields: dict[str, Any] = {
         "test_pass_rate": measurement.rate,
         "tests_passed": measurement.passed,
@@ -30,10 +28,6 @@ def _changed_paths(repo: Any) -> set[str]:
 
 
 def measure_executor_tests(workspace: str, repo: Any, exec_status: str) -> dict[str, Any]:
-    """Run the tests in ``workspace`` when the execution succeeded and return the summary-row fields.
-
-    Returns no fields for any other status. Logs one redacted line and any stray changes.
-    """
     if exec_status != "success":
         return {}
     before = _changed_paths(repo)
@@ -47,5 +41,6 @@ def measure_executor_tests(workspace: str, repo: Any, exec_status: str) -> dict[
             f"{measurement.errored} errored); exit code {measurement.exit_code}"
         )
     if stray:
-        print(f"Warning: the test run changed {len(stray)} path(s) in the worktree: {'; '.join(stray[:5])}")
+        logged_paths = "; ".join(stray[:_MAX_LOGGED_STRAY_PATHS])
+        print(f"Warning: the test run changed {len(stray)} path(s) in the worktree: {logged_paths}")
     return measurement_fields(measurement)

@@ -1,9 +1,3 @@
-"""What the authoring turn leaves behind: its action provenance, its action record and its bounded output.
-
-``append_action_record`` and ``prepare_agent_output_block`` are patch seams, read through the package facade at call
-time.
-"""
-
 import os
 import sys
 
@@ -19,23 +13,23 @@ from sandbox_executor.ledger import (
 )
 from sandbox_executor.redaction import redact_agent_secrets, redact_then_truncate
 
+_DEFAULT_ACTION_ORIGIN = "initial_implementation"
+_ERROR_CONTEXT_MAX_CHARS = 500
+
+
+def _combine_output_streams(stdout: str, stderr: str) -> str:
+    if stdout and stderr:
+        return f"{stdout}\n{stderr}" if not stdout.endswith("\n") else f"{stdout}{stderr}"
+    return stdout or stderr
+
 
 class AgentOutputSteps:
-    """The `ExecutionRun` steps that follow the authoring turn: provenance, the agent action record and the output.
-
-    Relies on these `ExecutionRun` attributes: ``intent_data``, ``repo_dir``, ``agent_result``, ``args``,
-    ``ledger_dir``, ``executions_ledger``, ``exec_id`` and ``exec_status``; sets ``action_origin``,
-    ``review_severity``, ``review_iteration``, ``review_finding_ids``, ``agent_output_text``,
-    ``agent_output_truncated`` and ``agent_output_bytes``.
-    """
-
     def _resolve_action_provenance(self) -> None:
-        """Resolve the action origin and review provenance: environment, then intent row, else HEAD's trailers."""
         intent_data = self.intent_data
         self.action_origin = (
             os.getenv("HOLON_ACTION_ORIGIN")
             or (intent_data.get("action_origin") or intent_data.get("origin") if intent_data else None)
-            or "initial_implementation"
+            or _DEFAULT_ACTION_ORIGIN
         )
         self.review_severity = os.getenv("HOLON_REVIEW_SEVERITY") or (
             intent_data.get("review_severity") if intent_data else None
@@ -47,9 +41,9 @@ class AgentOutputSteps:
             os.getenv("HOLON_REVIEW_FINDING_IDS") or (intent_data.get("review_finding_ids") if intent_data else None)
         )
 
-        if self.action_origin == "initial_implementation":
+        if self.action_origin == _DEFAULT_ACTION_ORIGIN:
             extracted_prov = extract_action_provenance_from_commit(repo_dir=self.repo_dir, commit_ref="HEAD")
-            if extracted_prov.get("action_origin") != "initial_implementation":
+            if extracted_prov.get("action_origin") != _DEFAULT_ACTION_ORIGIN:
                 self.action_origin = extracted_prov["action_origin"]
                 self.review_severity = extracted_prov.get("review_severity") or self.review_severity
                 self.review_iteration = (
@@ -58,7 +52,6 @@ class AgentOutputSteps:
                 self.review_finding_ids = extracted_prov.get("review_finding_ids") or self.review_finding_ids
 
     def _record_agent_action(self) -> None:
-        """Append the ``command_execution`` action record of the agent run, when action logging is on."""
         if not is_action_logging_enabled(self.intent_data):
             return
         res = self.agent_result
@@ -76,7 +69,9 @@ class AgentOutputSteps:
                     labels=["agent", agent_name, "execution"],
                     target=f"{agent_name}:{model_name}",
                     outcome="success" if self.exec_status == "success" else "failure",
-                    error_context=(redact_then_truncate(res.stderr, 500) if res.returncode != 0 else None),
+                    error_context=(
+                        redact_then_truncate(res.stderr, _ERROR_CONTEXT_MAX_CHARS) if res.returncode != 0 else None
+                    ),
                     action_origin=self.action_origin,
                     review_severity=self.review_severity,
                     review_iteration=self.review_iteration,
@@ -85,19 +80,10 @@ class AgentOutputSteps:
             )
 
     def _capture_agent_output(self) -> None:
-        """Keep the implementation turn's combined output, redacted and byte-bounded; a failure keeps nothing."""
         res = self.agent_result
         try:
-            stdout = res.stdout or ""
-            stderr = res.stderr or ""
-            if stdout and stderr:
-                combined = f"{stdout}\n{stderr}" if not stdout.endswith("\n") else f"{stdout}{stderr}"
-            else:
-                combined = stdout or stderr
-
+            combined = _combine_output_streams(res.stdout or "", res.stderr or "")
             max_bytes = get_agent_log_byte_budget()
-            # Sweep, bound on a line boundary, redact, then refit: see prepare_agent_output_block
-            # for why that order and that final refit are both required.
             self.agent_output_text, self.agent_output_truncated, _dropped = executor_facade.prepare_agent_output_block(
                 combined, max_bytes
             )

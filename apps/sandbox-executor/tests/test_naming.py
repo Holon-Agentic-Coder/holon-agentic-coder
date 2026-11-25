@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 from sandbox_executor import cli, naming
 from sandbox_executor.agent_defaults import AGENT_TICKERS
+from sandbox_executor.cli import doctor as cli_doctor
 from sandbox_executor.flow.context import FlowContext, StageStatus
 from sandbox_executor.flow.stages.intent import run_intent_stage
 from sandbox_executor.naming import (
@@ -184,8 +185,8 @@ def test_doctor_rejects_a_runner_without_a_ticker():
     args = argparse.Namespace(agent="codex", model="gpt-5-codex", json=False, timeout=1, target_worktree=".")
     err = io.StringIO()
     with (
-        patch.object(cli, "report_budgets_and_envelope", return_value=0),
-        patch.object(cli, "run_preflight_probe", side_effect=AssertionError("probe must not run")),
+        patch.object(cli_doctor, "report_budgets_and_envelope", return_value=0),
+        patch.object(cli_doctor, "run_preflight_probe", side_effect=AssertionError("probe must not run")),
         patch("sys.stderr", err),
     ):
         code = cli.run_doctor(args)

@@ -167,6 +167,8 @@ class FlowContext:
     review_iterations_done: int = 0
     # Stage 4 findings a halted pass left without a disposition; a resume sends them to the resolver first.
     carried_review_findings: list[dict[str, Any]] = field(default_factory=list)
+    # Scoped paths for Stage 4 re-review after an agent-resolved target merge; empty means full PR diff.
+    review_scope_paths: list[str] = field(default_factory=list)
     # Whether a merged-head CI failure may still restart Stage 4 (False at the restart cap). Never checkpointed.
     merged_head_restart_allowed: bool = field(default=True, repr=False, compare=False)
     # Role-agent dispatcher for Stages 1-3; None means launcher.role_dispatch.dispatch_role_agent. Never checkpointed.
@@ -223,6 +225,7 @@ class FlowContext:
             "replan_attempts": self.replan_attempts,
             "review_iterations_done": self.review_iterations_done,
             "carried_review_findings": self.carried_review_findings,
+            "review_scope_paths": self.review_scope_paths,
             "stage_results": {k: v.to_dict() for k, v in self.stage_results.items()},
             "logs": self.logs,
         }
@@ -264,6 +267,7 @@ class FlowContext:
             replan_attempts=int(data.get("replan_attempts") or 0),
             review_iterations_done=int(data.get("review_iterations_done") or 0),
             carried_review_findings=list(data.get("carried_review_findings") or []),
+            review_scope_paths=list(data.get("review_scope_paths") or []),
             stage_results=parsed_results,
             logs=data.get("logs", []),
         )

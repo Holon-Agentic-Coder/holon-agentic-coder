@@ -1,14 +1,3 @@
-"""Parse, normalise, match and score the planner's touch set (the ``## Touch Set`` plan section).
-
-The planner records the parsed set on its ``plans.jsonl`` row (``touch_set``), and Stage 5 calibration scores it
-against the execution diff (precision and recall). Stage 3 admission compares it with in-flight flows
-through :mod:`touch_set_overlap` and enforcement checks the execution diff against it (``out_of_set_files``).
-Format: one backticked repository-relative POSIX path or glob per top-level bullet, a trailing ``/`` for a whole
-directory, ``*`` within one path segment and ``**`` across directories, and an optional ``symbols: a, b`` suffix that is
-stored but never scored. Metadata paths (``git.is_metadata_path``) are dropped.
-Pure logic with no I/O, kept outside the flow package so the planner entrypoint and calibration import it directly.
-"""
-
 from __future__ import annotations
 
 import functools
@@ -26,8 +15,8 @@ _BACKTICK_RE = re.compile(r"`([^`]+)`")
 _SYMBOLS_RE = re.compile(r"symbols\s*:\s*(?P<names>.*)$", re.IGNORECASE)
 _BRACE_RENAME_RE = re.compile(r"\{[^{}]* => ([^{}]*)\}")
 _PLACEHOLDER_WORDS = frozenset({"none", "n/a", "na", "nil", "no", "not"})
-# Wrapping quotes, brackets and code or emphasis markers stripped before the placeholder test, so _none_ is skipped.
 _PLACEHOLDER_WRAPPERS = "()[]{}<>\"'`*_~\u2018\u2019\u201c\u201d"
+_PLACEHOLDER_PUNCTUATION = ".,;:"
 _GLOB_CHARS = ("*", "?", "[")
 _GLOB_TOKEN_RE = re.compile(r"\*\*/|\*\*|\*|\?|\[[^\]/]+\]|[^*?\[]+|\[")
 _GLOB_TOKENS = {"**/": "(?:.*/)?", "**": ".*", "*": "[^/]*", "?": "[^/]"}
@@ -35,13 +24,10 @@ _GLOB_TOKENS = {"**/": "(?:.*/)?", "**": ".*", "*": "[^/]*", "?": "[^/]"}
 
 @dataclass(frozen=True)
 class TouchSetEntry:
-    """One declared path, directory (trailing ``/``) or glob, with optional symbols for large modules."""
-
     path: str
     symbols: tuple[str, ...] = ()
 
     def to_row(self) -> dict[str, Any]:
-        """Ledger shape: ``path`` plus ``symbols`` only when some were declared."""
         row: dict[str, Any] = {"path": self.path}
         if self.symbols:
             row["symbols"] = list(self.symbols)
@@ -50,17 +36,13 @@ class TouchSetEntry:
 
 @dataclass(frozen=True)
 class TouchSet:
-    """The ordered, de-duplicated entries a plan declares it will touch."""
-
     entries: tuple[TouchSetEntry, ...] = ()
 
     def to_row(self) -> list[dict[str, Any]]:
-        """Ledger shape of the ``touch_set`` field on a ``plans.jsonl`` row."""
         return [entry.to_row() for entry in self.entries]
 
     @classmethod
     def from_row(cls, value: Any) -> TouchSet | None:
-        """Rebuild from a ledger value; ``None`` for a missing field or an unknown shape (never raises)."""
         if not isinstance(value, list):
             return None
         entries: list[TouchSetEntry] = []
@@ -84,7 +66,6 @@ def _entry_from_row_item(item: Any) -> TouchSetEntry | None:
 
 
 def normalise_touch_path(path: str) -> str:
-    """Strip whitespace and backticks, drop a leading ``./`` or ``/``, keep a rename's target (``a/{b => c}/d`` too)."""
     clean = _BRACE_RENAME_RE.sub(r"\1", path.strip().strip("`").strip().replace("\\", "/")).replace("//", "/")
     if " => " in clean:
         clean = clean.split(" => ")[-1].strip().rstrip("}").strip()
@@ -94,7 +75,6 @@ def normalise_touch_path(path: str) -> str:
 
 
 def _fenced_lines(lines: list[str]) -> set[int]:
-    """Indexes of the lines inside fenced code blocks (the fence lines included), so headings there are ignored."""
     fenced: set[int] = set()
     fence: str | None = None
     for index, line in enumerate(lines):
@@ -111,7 +91,6 @@ def _fenced_lines(lines: list[str]) -> set[int]:
 
 
 def _section_items(plan_markdown: str) -> list[str] | None:
-    """Bodies of the top-level list items under ``## Touch Set``, or ``None`` when the heading is absent."""
     lines = plan_markdown.splitlines()
     fenced = _fenced_lines(lines)
     start = next(
@@ -137,7 +116,6 @@ def _section_items(plan_markdown: str) -> list[str] | None:
 
 
 def _entry_from_item(body: str) -> TouchSetEntry | None:
-    """Parse one item body into an entry; ``None`` for an empty body."""
     backticked = _BACKTICK_RE.search(body)
     if backticked:
         raw, rest = backticked.group(1), body[backticked.end() :]
@@ -155,12 +133,14 @@ def _entry_from_item(body: str) -> TouchSetEntry | None:
 
 
 def _is_placeholder(body: str) -> bool:
-    words = body.strip(_PLACEHOLDER_WRAPPERS).split()
-    return bool(words) and words[0].strip(_PLACEHOLDER_WRAPPERS + ".,;:").lower() in _PLACEHOLDER_WORDS
+    stripped_words = body.strip(_PLACEHOLDER_WRAPPERS).split()
+    if not stripped_words:
+        return False
+    first_word = stripped_words[0].strip(_PLACEHOLDER_WRAPPERS + _PLACEHOLDER_PUNCTUATION).lower()
+    return first_word in _PLACEHOLDER_WORDS
 
 
 def parse_touch_set_section(plan_markdown: str) -> TouchSet | None:
-    """Parse the ``## Touch Set`` section; ``None`` when absent. Placeholder items such as ``none`` are skipped."""
     items = _section_items(plan_markdown)
     if items is None:
         return None
@@ -176,28 +156,33 @@ def parse_touch_set_section(plan_markdown: str) -> TouchSet | None:
 
 
 def _class_body(body: str) -> str:
-    """Escape only the characters special inside a regex class, so ranges such as ``a-c`` keep working."""
     return re.sub(r"([\\\[\]^&~|])", r"\\\1", body)
 
 
+def _compile_char_class(chars: str, *, negated: bool) -> str:
+    prefix = "^" if negated else ""
+    candidate_class = f"[{prefix}{_class_body(chars)}]"
+    try:
+        re.compile(candidate_class)
+    except re.error:
+        return f"[{prefix}{re.escape(chars)}]"
+    return candidate_class
+
+
 def _glob_literal_or_class(token: str) -> str:
-    if len(token) > 2 and token.startswith("[") and token.endswith("]"):
-        body = token[1:-1]
-        negate, chars = (True, body[1:]) if body.startswith("!") else (False, body)
-        if not chars:  # an empty class such as [!] matches its characters literally
-            return re.escape(token)
-        regex_class = f"[{'^' if negate else ''}{_class_body(chars)}]"
-        try:
-            re.compile(regex_class)
-        except re.error:  # a reversed range such as [c-a]: match its characters literally instead
-            return f"[{'^' if negate else ''}{re.escape(chars)}]"
-        return regex_class
-    return re.escape(token)
+    is_bracket_class = len(token) > 2 and token.startswith("[") and token.endswith("]")
+    if not is_bracket_class:
+        return re.escape(token)
+    body = token[1:-1]
+    negated = body.startswith("!")
+    class_chars = body[1:] if negated else body
+    if not class_chars:
+        return re.escape(token)
+    return _compile_char_class(class_chars, negated=negated)
 
 
 @functools.lru_cache(maxsize=256)
 def _glob_regex(pattern: str) -> re.Pattern[str]:
-    """Translate a glob where ``*`` and ``?`` stay within one segment and ``**/`` spans zero or more directories."""
     parts: list[str] = []
     for token in _GLOB_TOKEN_RE.findall(pattern):
         parts.append(_GLOB_TOKENS.get(token) or _glob_literal_or_class(token))
@@ -205,35 +190,31 @@ def _glob_regex(pattern: str) -> re.Pattern[str]:
 
 
 def entry_matches(entry: TouchSetEntry, path: str) -> bool:
-    """Whether a changed repository path falls under a declared entry (directory prefix, glob or exact path)."""
-    clean = normalise_touch_path(path)
-    if clean == entry.path:  # a literal path such as app/[id]/page.tsx must match itself
+    normalised_path = normalise_touch_path(path)
+    if normalised_path == entry.path:
         return True
-    is_dir = entry.path.endswith("/")
-    if any(char in entry.path for char in _GLOB_CHARS):
-        # A directory glob such as apps/*/tests/ covers everything below each matching directory.
-        return _glob_regex(f"{entry.path}**" if is_dir else entry.path).match(clean) is not None
-    if is_dir:
-        return clean.startswith(entry.path)
-    return clean == entry.path
+    is_directory_entry = entry.path.endswith("/")
+    has_glob_syntax = any(char in entry.path for char in _GLOB_CHARS)
+    if has_glob_syntax:
+        match_pattern = f"{entry.path}**" if is_directory_entry else entry.path
+        return _glob_regex(match_pattern).match(normalised_path) is not None
+    if is_directory_entry:
+        return normalised_path.startswith(entry.path)
+    return False
 
 
 def is_literal_entry(entry: TouchSetEntry) -> bool:
-    """Whether an entry names one file: no trailing ``/``, ``*`` or ``?`` (``app/[id]/page.tsx`` reads as a path)."""
     return not entry.path.endswith("/") and "*" not in entry.path and "?" not in entry.path
 
 
 @dataclass(frozen=True)
 class TouchSetScore:
-    """Touch-set accuracy against a diff; precision or recall is ``None`` when its denominator is zero."""
-
     precision: float | None
     recall: float | None
     unpredicted_paths: tuple[str, ...] = ()
     unused_entries: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        """Calibration report shape."""
         return {
             "precision": self.precision,
             "recall": self.recall,
@@ -243,12 +224,10 @@ class TouchSetScore:
 
 
 def code_paths(paths: list[str]) -> list[str]:
-    """Normalised, de-duplicated paths with metadata (``git.is_metadata_path``) dropped, in their first order."""
     return list(dict.fromkeys(p for p in map(normalise_touch_path, paths) if p and not is_metadata_path(p)))
 
 
 def score_touch_set(touch_set: TouchSet, changed_paths: list[str]) -> TouchSetScore:
-    """Precision: declared entries matching some changed file. Recall: changed non-metadata files covered."""
     paths = code_paths(changed_paths)
     used = [entry for entry in touch_set.entries if any(entry_matches(entry, path) for path in paths)]
     unpredicted = [path for path in paths if not any(entry_matches(entry, path) for entry in touch_set.entries)]
@@ -262,5 +241,4 @@ def score_touch_set(touch_set: TouchSet, changed_paths: list[str]) -> TouchSetSc
 
 
 def out_of_set_files(touch_set: TouchSet, changed_paths: list[str]) -> list[str]:
-    """The normalised non-metadata changed paths that no declared entry matches (the enforcement violations)."""
     return [p for p in code_paths(changed_paths) if not any(entry_matches(entry, p) for entry in touch_set.entries)]

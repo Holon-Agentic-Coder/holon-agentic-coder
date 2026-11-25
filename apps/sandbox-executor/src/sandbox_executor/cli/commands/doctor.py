@@ -1,5 +1,3 @@
-"""Doctor command module for environment and agent readiness checks."""
-
 from __future__ import annotations
 
 import argparse
@@ -11,7 +9,6 @@ ORDER = 80
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register the doctor subcommand parser."""
     parser = subparsers.add_parser(
         "doctor",
         help=(
@@ -36,5 +33,4 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
 
 def run(args: argparse.Namespace) -> int:
-    """Execute the doctor command."""
     return cli.run_doctor(args)

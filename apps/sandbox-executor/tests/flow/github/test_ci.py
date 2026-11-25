@@ -214,7 +214,7 @@ class TestUnmeasuredTestsStopEarly:
         }
         with (
             patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
-            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
             patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
         ):
             res = run_review_stage(ctx)
@@ -233,7 +233,7 @@ class TestUnmeasuredTestsStopEarly:
         }
         with (
             patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
-            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
             patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
         ):
             res = run_review_stage(ctx)
@@ -260,7 +260,7 @@ class TestUnmeasuredTestsStopEarly:
         with (
             patch("shutil.which", return_value="/usr/bin/gh"),
             patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
-            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(has_diff, detail)),
             patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github),
             patch("sandbox_executor.flow.stage_conflicts.check_pr_mergeability", return_value={"is_dirty": False}),
@@ -308,7 +308,7 @@ class TestUnmeasuredTestsStopEarly:
         with (
             patch("shutil.which", return_value="/usr/bin/gh"),
             patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
-            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
             patch("sandbox_executor.flow._execution_effective_diff", return_value=(None, "fetch failed")),
             patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github),
             patch("sandbox_executor.flow.review.loop.GitHubAdapter", return_value=github),

@@ -1,7 +1,3 @@
-"""Asymmetric promotion engine: deterministic failure veto ladder and
-statistical Beta-Wilson success advisories.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -27,8 +23,10 @@ from sandbox_executor.knowledge.promotion_rules import (
 
 logger = logging.getLogger(__name__)
 
-# Standard z-score for 95% two-sided normal confidence interval
 WILSON_Z_95 = 1.95996398454
+_FINGERPRINT_HEX_LENGTH = 16
+_MIN_BETA_PARAM = 0.1
+_NO_DECAY_WEIGHT = 1.0
 
 
 def compute_context_fingerprint(
@@ -38,7 +36,6 @@ def compute_context_fingerprint(
     error_type: str = "",
     file_extensions: list[str] | None = None,
 ) -> str:
-    """Compute deterministic SHA256 context fingerprint from normalized execution attributes."""
     norm_target = target.strip().lower()
     norm_tool = tool.strip().lower()
     norm_cmd = command_prefix.strip().lower()
@@ -47,13 +44,11 @@ def compute_context_fingerprint(
     ext_str = ",".join(clean_exts)
 
     raw = f"{norm_target}|{norm_tool}|{norm_cmd}|{norm_err}|{ext_str}".encode()
-    return hashlib.sha256(raw).hexdigest()[:16]
+    return hashlib.sha256(raw).hexdigest()[:_FINGERPRINT_HEX_LENGTH]
 
 
 @dataclass
 class ContextFingerprint:
-    """Helper wrapper holding components of a context fingerprint."""
-
     target: str = ""
     tool: str = ""
     command_prefix: str = ""
@@ -62,7 +57,6 @@ class ContextFingerprint:
 
     @property
     def fingerprint(self) -> str:
-        """Calculate fingerprint hash."""
         return compute_context_fingerprint(
             self.target,
             self.tool,
@@ -78,13 +72,8 @@ def compute_beta_posterior(
     prior_alpha: float = 1.0,
     prior_beta: float = 1.0,
 ) -> tuple[float, float, float]:
-    """Calculate Beta(alpha, beta) posterior mean and parameter updates from trials.
-
-    Returns:
-        (alpha_post, beta_post, posterior_mean)
-    """
-    alpha_post = max(0.1, prior_alpha + successes)
-    beta_post = max(0.1, prior_beta + failures)
+    alpha_post = max(_MIN_BETA_PARAM, prior_alpha + successes)
+    beta_post = max(_MIN_BETA_PARAM, prior_beta + failures)
     posterior_mean = alpha_post / (alpha_post + beta_post)
     return alpha_post, beta_post, posterior_mean
 
@@ -94,11 +83,6 @@ def compute_wilson_score_interval(
     failures: int,
     z: float = WILSON_Z_95,
 ) -> tuple[float, float]:
-    """Calculate the Wilson score 95% confidence interval for a binomial proportion.
-
-    Returns:
-        (lower_bound, upper_bound) strictly clamped within [0.0, 1.0].
-    """
     n = successes + failures
     if n <= 0:
         return 0.0, 1.0
@@ -115,15 +99,13 @@ def compute_wilson_score_interval(
 
 @dataclass
 class PromotionEvaluation:
-    """Structured evaluation of an action's success evidence or failure veto status."""
-
     signature_hash: str
     context_fingerprint: str
     success_count: int
     failure_count: int
     total_trials: int
-    failure_ladder_state: str  # none, observed, repeated, contested, proven-fail
-    success_ladder_state: str  # none, observed, repeated, likely-success, proven-success
+    failure_ladder_state: str
+    success_ladder_state: str
     posterior_mean: float
     wilson_lower: float
     wilson_upper: float
@@ -133,7 +115,6 @@ class PromotionEvaluation:
     advisory_text: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert evaluation to dictionary."""
         return {
             "signature_hash": self.signature_hash,
             "context_fingerprint": self.context_fingerprint,
@@ -159,10 +140,6 @@ def format_non_imperative_advisory(
     wilson_lower: float,
     ladder_state: str,
 ) -> str:
-    """Format non-imperative advisory guidance for success patterns.
-
-    INVARIANT: Never emit imperative text ('do this', 'must', 'veto') for successes.
-    """
     pct = (successes / total_trials * 100.0) if total_trials > 0 else 0.0
     return (
         f"Advisory ({ladder_state}): Historical executions matching this context pattern "
@@ -173,7 +150,6 @@ def format_non_imperative_advisory(
 
 
 def _empty_evaluation(signature_hash: str) -> PromotionEvaluation:
-    """Return the evaluation of a signature with no recorded trials."""
     return PromotionEvaluation(
         signature_hash=signature_hash,
         context_fingerprint="",
@@ -187,7 +163,7 @@ def _empty_evaluation(signature_hash: str) -> PromotionEvaluation:
         wilson_upper=1.0,
         has_active_veto=False,
         is_shadow_veto=True,
-        veto_decay_weight=1.0,
+        veto_decay_weight=_NO_DECAY_WEIGHT,
         advisory_text=None,
     )
 
@@ -219,8 +195,6 @@ def _fetch_active_veto(cur: sqlite3.Cursor, context_fp: str) -> sqlite3.Row | No
 
 @dataclass(frozen=True)
 class _VetoSubject:
-    """The signature a veto decision is about: its identity, evidence, failure ladder state and enforcement mode."""
-
     signature_hash: str
     context_fp: str
     evidence: LadderEvidence
@@ -229,7 +203,6 @@ class _VetoSubject:
 
 
 def _lift_veto(conn: sqlite3.Connection, context_fp: str) -> None:
-    """Mark the veto on ``context_fp`` lifted: contrary success evidence was recorded."""
     with conn:
         conn.execute(
             """
@@ -242,7 +215,6 @@ def _lift_veto(conn: sqlite3.Connection, context_fp: str) -> None:
 
 
 def _upsert_veto(conn: sqlite3.Connection, subject: _VetoSubject, decay: float, is_shadow: bool) -> None:
-    """Create or refresh the active veto for the subject's context fingerprint."""
     with conn:
         conn.execute(
             """
@@ -273,18 +245,15 @@ def _upsert_veto(conn: sqlite3.Connection, subject: _VetoSubject, decay: float, 
 def _apply_veto_policy(
     conn: sqlite3.Connection, cur: sqlite3.Cursor, subject: _VetoSubject
 ) -> tuple[bool, bool, float]:
-    """Lift, raise or skip the subject's veto; return ``(has_active_veto, is_shadow, decay_weight)``.
-
-    Any success lifts an existing veto; otherwise a failure ladder state in ``VETO_STATES`` raises or refreshes one.
-    """
     is_shadow = not subject.enforce_veto
     veto_row = _fetch_active_veto(cur, subject.context_fp)
-    if subject.evidence.successes > 0 and veto_row:
+    has_contrary_success = subject.evidence.successes > 0
+    if has_contrary_success and veto_row:
         _lift_veto(conn, subject.context_fp)
-        return False, is_shadow, 1.0
+        return False, is_shadow, _NO_DECAY_WEIGHT
     if subject.failure_ladder not in VETO_STATES:
-        return False, is_shadow, 1.0
-    decay = veto_decay_weight(veto_row["updated_at"]) if veto_row else 1.0
+        return False, is_shadow, _NO_DECAY_WEIGHT
+    decay = veto_decay_weight(veto_row["updated_at"]) if veto_row else _NO_DECAY_WEIGHT
     _upsert_veto(conn, subject, decay, is_shadow)
     return True, is_shadow, decay
 
@@ -292,7 +261,6 @@ def _apply_veto_policy(
 def _success_advisory(
     cur: sqlite3.Cursor, context_fp: str, evidence: LadderEvidence, success_ladder: str
 ) -> str | None:
-    """Return the non-imperative advisory for a success ladder state in ``ADVISORY_STATES``, else None."""
     if success_ladder not in ADVISORY_STATES:
         return None
     cur.execute(
@@ -316,7 +284,6 @@ def evaluate_action_promotion(
     index_db: ActionIndexDatabase | None = None,
     enforce_veto: bool = False,
 ) -> PromotionEvaluation:
-    """Evaluate asymmetric promotion: deterministic failure veto vs statistical success evidence."""
     db = index_db or ActionIndexDatabase(DEFAULT_PROJECT_DB_PATH)
     conn = db.get_connection()
 

@@ -30,22 +30,38 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # A push that changes only plans/, executions/ and holon-knowledge/ skips the steps below; see
+      # "Bookkeeping-Only Push Gate" in .github/workflows/README.md.
+      - name: Bookkeeping gate
+        id: bookkeeping
+        uses: ./.github/actions/bookkeeping-gate
+        with:
+          job-name: build
+          os: ${{ matrix.os }}
+
       - name: CI Timing Gate (Start)
         uses: ./.github/actions/ci-timing-gate
         with:
           phase: start
 
       - name: Print uname -m
+        if: steps.bookkeeping.outputs.skip != 'true'
         run: uname -m
 
       - name: Run make help
+        if: steps.bookkeeping.outputs.skip != 'true'
         run: make help
 
       - name: Run make
+        if: steps.bookkeeping.outputs.skip != 'true'
         run: make
 
       - name: CI Timing Gate (Check <= 5 min)
-        if: always()
+        if: always() && steps.bookkeeping.outputs.skip != 'true'
         uses: ./.github/actions/ci-timing-gate
         with:
           phase: check
+
+      - name: Full run completed
+        if: steps.bookkeeping.outputs.skip != 'true'
+        run: echo "Every step of the full run passed."

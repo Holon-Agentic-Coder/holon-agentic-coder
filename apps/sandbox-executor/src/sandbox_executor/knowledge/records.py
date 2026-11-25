@@ -1,5 +1,3 @@
-"""Action outcome logging state machine, credential redactor, and late verdict reconciliation."""
-
 from __future__ import annotations
 
 import json
@@ -18,10 +16,23 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_ACTIONS_LEDGER = "holon-knowledge/ledger/executions.jsonl"
 
+_OPENAI_API_KEY_PATTERN = re.compile(r"\b(sk-[a-zA-Z0-9_\-]{20,})\b")
+_ANTHROPIC_API_KEY_PATTERN = re.compile(r"\b(sk-ant-[a-zA-Z0-9_\-]{20,})\b")
+_GOOGLE_AI_API_KEY_PATTERN = re.compile(r"\b(AIza[0-9A-Za-z\-_]{30,40})\b")
+_GITHUB_PAT_PATTERN = re.compile(r"\b(ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82})\b")
+_BEARER_TOKEN_PATTERN = re.compile(r"(?i)\b(Bearer\s+)[a-zA-Z0-9_\-\.]{15,}")
+_PRIVATE_KEY_BLOCK_PATTERN = re.compile(r"-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----")
+_SENSITIVE_URL_PARAM_PATTERN = re.compile(
+    r"([?&](?:token|api_key|access_token|secret|password|auth|bearer)[^=]*=)[^\s&]+",
+    re.IGNORECASE,
+)
+_GENERIC_SECRET_ASSIGNMENT_PATTERN = re.compile(
+    r'(["\']?(?:api_key|token|access_token|secret|password)["\']?\s*[:=]\s*["\'])([^"\'\s]{8,})(["\'])',
+    re.IGNORECASE,
+)
+
 
 class Verdict(StrEnum):
-    """Discrete verdicts for action outcomes in Holon."""
-
     ATTEMPTED = "attempted"
     SUCCESS = "success"
     FAILURE = "failure"
@@ -33,7 +44,6 @@ class Verdict(StrEnum):
 
     @classmethod
     def from_str(cls, val: str | Verdict) -> Verdict:
-        """Parse string to Verdict enum case-insensitively."""
         if isinstance(val, Verdict):
             return val
         clean = str(val).strip().lower()
@@ -74,7 +84,6 @@ VALID_VERDICT_TRANSITIONS: dict[Verdict, set[Verdict]] = {
 
 
 def validate_verdict_transition(old_verdict: Verdict | str, new_verdict: Verdict | str) -> None:
-    """Validate that transitioning from old_verdict to new_verdict is legal."""
     v_old = Verdict.from_str(old_verdict)
     v_new = Verdict.from_str(new_verdict)
     if v_new not in VALID_VERDICT_TRANSITIONS.get(v_old, set()):
@@ -82,47 +91,19 @@ def validate_verdict_transition(old_verdict: Verdict | str, new_verdict: Verdict
 
 
 class CredentialRedactor:
-    """Multi-pattern secret and API key redactor to prevent credential leaks into the ledger."""
-
     _PATTERNS: ClassVar[list[tuple[re.Pattern, str]]] = [
-        # OpenAI API Keys
-        (re.compile(r"\b(sk-[a-zA-Z0-9_\-]{20,})\b"), "[REDACTED_SECRET]"),
-        # Anthropic API Keys
-        (re.compile(r"\b(sk-ant-[a-zA-Z0-9_\-]{20,})\b"), "[REDACTED_SECRET]"),
-        # Google AI / Gemini API Keys
-        (re.compile(r"\b(AIza[0-9A-Za-z\-_]{30,40})\b"), "[REDACTED_SECRET]"),
-        # GitHub Personal Access Tokens (Classic and Fine-Grained)
-        (re.compile(r"\b(ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82})\b"), "[REDACTED_SECRET]"),
-        # Generic Bearer Tokens
-        (re.compile(r"(?i)\b(Bearer\s+)[a-zA-Z0-9_\-\.]{15,}"), r"\1[REDACTED_SECRET]"),
-        # Private Keys
-        (
-            re.compile(r"-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]+?-----END [A-Z ]+PRIVATE KEY-----"),
-            "[REDACTED_PRIVATE_KEY]",
-        ),
-        # Sensitive URL Parameters
-        (
-            re.compile(r"([?&](?:token|api_key|access_token|secret|password|auth|bearer)[^=]*=)[^\s&]+", re.IGNORECASE),
-            r"\1[REDACTED_SECRET]",
-        ),
-        # Generic token or secret assignment
-        (
-            re.compile(
-                r'(["\']?(?:api_key|token|access_token|secret|password)["\']?\s*[:=]\s*["\'])([^"\'\s]{8,})(["\'])',
-                re.IGNORECASE,
-            ),
-            r"\1[REDACTED_SECRET]\3",
-        ),
+        (_OPENAI_API_KEY_PATTERN, "[REDACTED_SECRET]"),
+        (_ANTHROPIC_API_KEY_PATTERN, "[REDACTED_SECRET]"),
+        (_GOOGLE_AI_API_KEY_PATTERN, "[REDACTED_SECRET]"),
+        (_GITHUB_PAT_PATTERN, "[REDACTED_SECRET]"),
+        (_BEARER_TOKEN_PATTERN, r"\1[REDACTED_SECRET]"),
+        (_PRIVATE_KEY_BLOCK_PATTERN, "[REDACTED_PRIVATE_KEY]"),
+        (_SENSITIVE_URL_PARAM_PATTERN, r"\1[REDACTED_SECRET]"),
+        (_GENERIC_SECRET_ASSIGNMENT_PATTERN, r"\1[REDACTED_SECRET]\3"),
     ]
 
     @classmethod
     def redact_text(cls, text: str) -> str:
-        """Apply all credential redaction regexes to a string, then the shared token-anchored sweep.
-
-        The chained :func:`~sandbox_executor.redaction.redact_credential_shapes` closes the shapes the older patterns
-        miss (``gho_``/``ghu_``/``ghs_``/``ghr_``, ``ghp_`` of any length, short ``sk-ant-`` keys, URL userinfo and the
-        literal values of the environment credentials) without capping the input.
-        """
         if not text:
             return text
         result = text
@@ -132,7 +113,6 @@ class CredentialRedactor:
 
     @classmethod
     def redact_structure(cls, data: Any) -> Any:
-        """Recursively redact dictionary or list structures."""
         if isinstance(data, str):
             return cls.redact_text(data)
         if isinstance(data, dict):
@@ -142,13 +122,19 @@ class CredentialRedactor:
         return data
 
 
+def _sync_index_best_effort(target_db: str, ledger_path: str) -> None:
+    try:
+        sync_ledger_incremental(target_db, ledger_path)
+    except Exception as e:
+        logger.debug("Failed incremental sync during append_action_event: %s", e)
+
+
 def append_action_event(
     record: dict[str, Any],
     ledger_path: str = DEFAULT_ACTIONS_LEDGER,
     db_path: str | None = None,
     project_db_path: str | None = None,
 ) -> dict[str, Any]:
-    """Scrub credentials and append discrete action event to actions.jsonl with atomic locking."""
     rec = dict(record)
 
     if "action_id" not in rec or not rec["action_id"]:
@@ -162,18 +148,13 @@ def append_action_event(
     if "created_at" not in rec or not rec["created_at"]:
         rec["created_at"] = datetime.now(UTC).isoformat()
 
-    # Redact credentials before serialising to disk
     redacted_rec = CredentialRedactor.redact_structure(rec)
 
     with atomic_ledger_append(ledger_path) as f:
         f.write(json.dumps(redacted_rec) + "\n")
 
-    # Incrementally update index
     target_db = project_db_path or db_path or DEFAULT_PROJECT_DB_PATH
-    try:
-        sync_ledger_incremental(target_db, ledger_path)
-    except Exception as e:
-        logger.debug("Failed incremental sync during append_action_event: %s", e)
+    _sync_index_best_effort(target_db, ledger_path)
 
     return redacted_rec
 
@@ -186,7 +167,6 @@ def reconcile_records(  # noqa: C901, PLR0912, PLR0913
     reason: str | None = None,
     db_path: str | None = None,
 ) -> dict[str, Any]:
-    """Reconcile pending actions by attaching terminal verdicts or expiring stale unknown records."""
     if not os.path.exists(ledger_path):
         return {"reconciled": 0, "expired": 0, "total_scanned": 0}
 
@@ -206,7 +186,6 @@ def reconcile_records(  # noqa: C901, PLR0912, PLR0913
     now = datetime.now(UTC)
     cutoff = now - timedelta(days=max_age_days)
 
-    # 1. Reconcile explicit target action ID
     if target_action_id and verdict:
         target_verdict = Verdict.from_str(verdict)
         matched_target = None
@@ -219,7 +198,7 @@ def reconcile_records(  # noqa: C901, PLR0912, PLR0913
             curr_verdict = Verdict.from_str(matched_target.get("verdict", Verdict.UNKNOWN.value))
             validate_verdict_transition(curr_verdict, target_verdict)
 
-        event = {
+        reconciliation_event = {
             "action_id": generate_action_id(),
             "parent_action_id": target_action_id,
             "event_type": "reconciliation",
@@ -228,18 +207,17 @@ def reconcile_records(  # noqa: C901, PLR0912, PLR0913
             "reason": reason or f"Reconciled verdict to {target_verdict.value}",
             "created_at": now.isoformat(),
         }
-        append_action_event(event, ledger_path=ledger_path, db_path=db_path)
+        append_action_event(reconciliation_event, ledger_path=ledger_path, db_path=db_path)
         reconciled_count += 1
 
-    # 2. Expire actions with 'unknown' status older than max_age_days
     for r in scanned_records:
-        r_verdict = str(r.get("verdict") or "").lower()
-        if r_verdict != Verdict.UNKNOWN.value:
+        record_verdict = str(r.get("verdict") or "").lower()
+        if record_verdict != Verdict.UNKNOWN.value:
             continue
 
-        r_id = r.get("action_id")
+        record_action_id = r.get("action_id")
         created_at_str = r.get("created_at")
-        if not r_id or not created_at_str:
+        if not record_action_id or not created_at_str:
             continue
 
         try:
@@ -252,7 +230,7 @@ def reconcile_records(  # noqa: C901, PLR0912, PLR0913
         if created_dt < cutoff:
             expire_event = {
                 "action_id": generate_action_id(),
-                "parent_action_id": r_id,
+                "parent_action_id": record_action_id,
                 "event_type": "ttl_expiration",
                 "verdict": Verdict.UNRESOLVED.value,
                 "outcome": Verdict.UNRESOLVED.value,

@@ -124,8 +124,11 @@ class TestStageTargetsIgnoreOperatorHead:
         ctx = self._run_stages_1_to_3(host, origin, tmp_path)
         loop_res = {"consensus": {"approved": True}, "mergeability": {}, "halted_for_human": False, "approved": True}
 
+        from sandbox_executor.flow.context import FlowStage
+        from sandbox_executor.flow.target_sync_result import SyncBoundary
+
         with (
-            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts") as mock_probe,
+            patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None) as mock_probe,
             patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res) as mock_loop,
         ):
             res = run_review_stage(ctx)
@@ -133,7 +136,7 @@ class TestStageTargetsIgnoreOperatorHead:
         assert res.status == StageStatus.APPROVED
         # Stage 4 ledger rows and Stage 5 calibration run in the execution branch's working tree.
         assert _git(host, "rev-parse", "--abbrev-ref", "HEAD") == ctx.execution_branch
-        assert mock_probe.call_args.kwargs["branch"] == ctx.execution_branch
+        mock_probe.assert_called_once_with(ctx, FlowStage.REVIEW, SyncBoundary.STAGE_START)
         assert mock_loop.call_args.kwargs["target"] == ctx.execution_branch
 
     def test_review_stage_fails_when_execution_branch_cannot_be_checked_out(self, flow_repos, tmp_path):
@@ -199,18 +202,27 @@ class TestStageTargetsIgnoreOperatorHead:
         assert _git(repo, "status", "--porcelain") == ""
 
     def test_stage_conflict_probes_name_each_stage_branch(self, flow_repos, tmp_path):
+        from sandbox_executor.flow.target_sync_hooks import active_flow_branch, at_stage_boundary
+        from sandbox_executor.flow.target_sync_result import SyncBoundary
+
         host, origin = flow_repos
         ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin))
+        branches: dict[str, str] = {}
+
+        def _record_boundary(context, stage, boundary):
+            if boundary is SyncBoundary.STAGE_START:
+                branches[stage.value] = active_flow_branch(context, stage)
+            return at_stage_boundary(context, stage, boundary)
+
         with patch_lookup_sites(
-            "sandbox_executor.flow.stages.execute.check_and_resolve_stage_conflicts",
-            "sandbox_executor.flow.stages.intent.check_and_resolve_stage_conflicts",
-            "sandbox_executor.flow.stages.plan.check_and_resolve_stage_conflicts",
-            wraps=check_and_resolve_stage_conflicts,
-        ) as probe:
+            "sandbox_executor.flow.stages.execute.at_stage_boundary",
+            "sandbox_executor.flow.stages.intent.at_stage_boundary",
+            "sandbox_executor.flow.stages.plan.at_stage_boundary",
+            side_effect=_record_boundary,
+        ):
             results = PipelineEngine(ctx).run()
         assert results["execute"].status == StageStatus.SUCCESS
-        branches = {c.kwargs["stage_name"]: c.kwargs.get("branch", "HEAD") for c in probe.call_args_list}
-        assert branches == {"intent": None, "plan": ctx.intent_branch, "execute": ctx.plan_branch}
+        assert branches == {"intent": ctx.intent_branch, "plan": ctx.intent_branch, "execute": ctx.plan_branch}
 
     def test_intent_temp_file_is_world_readable_for_the_container_user(self, flow_repos, tmp_path):
         host, origin = flow_repos

@@ -1,5 +1,3 @@
-"""Calibrate command module: run Stage 5 (calibration, reconciliation, promotion) on an execution branch."""
-
 from __future__ import annotations
 
 import argparse
@@ -21,7 +19,6 @@ ORDER = 50
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register the calibrate subcommand parser."""
     parser = subparsers.add_parser(
         "calibrate",
         help=(
@@ -63,13 +60,11 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
 
 def _run_stage5(args: argparse.Namespace) -> Stage5Outcome:
-    """Run the shared Stage 5 core on the execution branch; calibration failures propagate."""
     context = standalone_context(args.execution_branch, args.target_worktree, no_commit=args.skip_commit)
     report_only = bool(getattr(args, "report_only", False))
     verdict = None if report_only else resolve_execution_verdict(args.target_worktree, args.execution_branch)
 
-    def calibrate(**kwargs: Any) -> CalibrationReport:
-        # cli.run_calibrate read at call time, no flow log_fn; the command prints the combined JSON itself.
+    def invoke_cli_calibrate_without_json(**kwargs: Any) -> CalibrationReport:
         return cli.run_calibrate(
             execution_branch=kwargs["execution_branch"],
             target_worktree=kwargs["target_worktree"],
@@ -77,11 +72,16 @@ def _run_stage5(args: argparse.Namespace) -> Stage5Outcome:
             skip_commit=kwargs["skip_commit"],
         )
 
-    return run_stage5(context, dataclasses.replace(stage5_steps(), calibrate=calibrate), verdict, report_only)
+    steps = dataclasses.replace(stage5_steps(), calibrate=invoke_cli_calibrate_without_json)
+    return run_stage5(context, steps, verdict, report_only)
+
+
+def _run_stage5_redirecting_stdout_to_stderr(args: argparse.Namespace) -> Stage5Outcome:
+    with contextlib.redirect_stdout(sys.stderr):
+        return _run_stage5(args)
 
 
 def _print_outcome(outcome: Stage5Outcome) -> None:
-    """Print the Stage 5 summary lines after the calibration report lines."""
     if outcome.report_only:
         print("Report only: Stage 5 reconciliation and knowledge/wisdom promotion were skipped (--report-only).")
         return
@@ -91,16 +91,13 @@ def _print_outcome(outcome: Stage5Outcome) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
-    """Execute the calibrate command."""
     try:
         if not default_branch_worktree_allowed(args.target_worktree, "holon calibrate"):
             return 1
         if not args.json:
             _print_outcome(_run_stage5(args))
             return 0
-        # Everything run_calibrate prints goes to stderr, so stdout carries exactly one JSON document.
-        with contextlib.redirect_stdout(sys.stderr):
-            outcome = _run_stage5(args)
+        outcome = _run_stage5_redirecting_stdout_to_stderr(args)
         print(json.dumps({**outcome.report_dict, "stage5": outcome.to_json_dict()}, indent=2))
         return 0
     except Exception as e:

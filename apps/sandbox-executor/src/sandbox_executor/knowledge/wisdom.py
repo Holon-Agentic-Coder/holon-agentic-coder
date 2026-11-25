@@ -1,5 +1,3 @@
-"""Knowledge Base (KB) and Wisdom Base (WB) persistence and promotion engine."""
-
 from __future__ import annotations
 
 import glob
@@ -25,7 +23,6 @@ _INDEX_FIELDS: dict[str, tuple[str, ...]] = {
 
 
 def _index_entry(path: str) -> dict[str, Any] | None:
-    """Build the derived index entry of one KB or WB entry file, or None when it is unusable."""
     try:
         with open(path, encoding="utf-8") as f:
             envelope = json.load(f)
@@ -44,17 +41,6 @@ def _index_entry(path: str) -> dict[str, Any] | None:
 
 
 def load_index(subfolder: str) -> list[dict[str, Any]]:
-    """Derive the index of one KB or WB subfolder from its entry files.
-
-    Args:
-        subfolder: Directory holding ``KB-*.json`` or ``WB-*.json`` entry files (not searched recursively).
-
-    Returns:
-        One entry per entry file, sorted by ``created_ts`` then id. KB entries carry ``kb_id``, ``file``,
-        ``kb_type``, ``status``, ``created_ts`` and ``tags``; WB entries carry ``wb_id``, ``file``, ``wb_type``,
-        ``status`` and ``created_ts``. A missing directory yields ``[]``. Unreadable, non-object or id-less
-        files are logged and skipped; ``index.json`` and other non-entry files are never read.
-    """
     if not os.path.isdir(subfolder):
         return []
     paths = sorted(glob.glob(os.path.join(subfolder, "KB-*.json")) + glob.glob(os.path.join(subfolder, "WB-*.json")))
@@ -63,12 +49,6 @@ def load_index(subfolder: str) -> list[dict[str, Any]]:
 
 
 def persist_kb_fact(fact_data: dict[str, Any], kb_dir: str = DEFAULT_KB_DIR) -> str:
-    """Validate and persist descriptive fact or pattern to holon-knowledge/kb/.
-
-    Treats pre-existing fact files on disk as immutable append-only records and returns the
-    existing path immediately without modifying the file. The entry file is the only file written;
-    ``load_index`` derives the subfolder index from the entry files.
-    """
     data = dict(fact_data)
     kb_type = str(data.get("kb_type") or "pattern").lower()
     kb_id = str(data.get("kb_id") or f"KB-{kb_type}-{data.get('context_fingerprint', 'item')[:8]}")
@@ -108,12 +88,6 @@ def persist_kb_fact(fact_data: dict[str, Any], kb_dir: str = DEFAULT_KB_DIR) -> 
 
 
 def persist_wb_rule(rule_data: dict[str, Any], wb_dir: str = DEFAULT_WB_DIR) -> str:
-    """Validate and persist prescriptive rule or invariant to holon-knowledge/wisdom/.
-
-    Treats pre-existing rule files on disk as immutable append-only records and returns the
-    existing path immediately without modifying the file. The entry file is the only file written;
-    ``load_index`` derives the subfolder index from the entry files.
-    """
     data = dict(rule_data)
     wb_type = str(data.get("wb_type") or "heuristic").lower()
     wb_id = str(data.get("wb_id") or f"WB-{wb_type}-{data.get('context_fingerprint', 'rule')[:8]}")
@@ -149,18 +123,6 @@ def persist_wb_rule(rule_data: dict[str, Any], wb_dir: str = DEFAULT_WB_DIR) -> 
 
 
 def _already_promoted(conn: Any, sig: Any, kb_dir: str, wb_dir: str) -> bool:
-    """Return True when the candidate's terminal promotion artefacts already exist.
-
-    A failure mode is terminal only while the fingerprint has no success, its KB file exists and the index
-    already holds its proven-fail (or operator-lifted) veto row: evaluation is the only writer of
-    ``active_vetoes``, so a fresh index or a still-escalating veto is evaluated again, and a later success
-    is evaluated so the veto is lifted. A proven-fail veto whose ``reproduction_count`` lags the signature's
-    ``failure_count`` is evaluated again so later reproductions reach the veto row; the veto row is shared by
-    every signature of the fingerprint, so it is current once it holds at least this signature's count and
-    sibling signatures do not overwrite each other's count on every pass. A success candidate is
-    terminal once both its pattern and its heuristic exist, so a pattern-only candidate stays eligible to
-    ascend to a heuristic.
-    """
     context_fingerprint = sig["context_fingerprint"]
     fp8 = context_fingerprint[:8]
     if sig["success_count"] == 0 and os.path.exists(os.path.join(kb_dir, "failure_modes", f"KB-failure-{fp8}.json")):
@@ -178,13 +140,25 @@ def _already_promoted(conn: Any, sig: Any, kb_dir: str, wb_dir: str) -> bool:
     return os.path.exists(pattern_path) and os.path.exists(heuristic_path)
 
 
+def _fetch_recent_context_records(cur: Any, context_fingerprint: str) -> list[Any]:
+    cur.execute(
+        """
+        SELECT action, target, category, error_context, record_id
+        FROM action_records
+        WHERE context_fingerprint = ?
+        ORDER BY created_at DESC LIMIT 5;
+        """,
+        (context_fingerprint,),
+    )
+    return cur.fetchall()
+
+
 def _promote_failure_candidate(
     eval_res: Any,
     records: list[Any],
     kb_dir: str,
     dry_run: bool,
 ) -> dict[str, Any] | None:
-    """Evaluate and promote a candidate failure mode; return None when its file already exists."""
     if eval_res.failure_ladder_state not in ("repeated", "proven-fail"):
         return None
     kb_id = f"KB-failure-{eval_res.context_fingerprint[:8]}"
@@ -217,6 +191,24 @@ def _promote_failure_candidate(
     return item
 
 
+def _build_wisdom_heuristic_item(eval_res: Any, kb_id: str, wb_id: str, sample_tgt: str) -> dict[str, Any]:
+    return {
+        "wb_id": wb_id,
+        "wb_type": "heuristic",
+        "context_fingerprint": eval_res.context_fingerprint,
+        "ascension_evidence": {
+            "project_count": 1,
+            "total_executions": eval_res.total_trials,
+            "wilson_lower": eval_res.wilson_lower,
+            "provenance": [{"kb_id": kb_id}],
+        },
+        "payload": {
+            "name": f"Universal heuristic: {sample_tgt}",
+            "advisory": eval_res.advisory_text,
+        },
+    }
+
+
 def _promote_success_candidate(
     eval_res: Any,
     records: list[Any],
@@ -224,7 +216,6 @@ def _promote_success_candidate(
     wb_dir: str,
     dry_run: bool,
 ) -> list[dict[str, Any]]:
-    """Evaluate and promote candidate success patterns and wisdom heuristics not yet on disk."""
     if eval_res.success_ladder_state not in ("likely-success", "proven-success"):
         return []
 
@@ -257,25 +248,11 @@ def _promote_success_candidate(
             item["persisted_path"] = persist_kb_fact(item, kb_dir=kb_dir)
         items.append(item)
 
-    # Proven-success also ascends to Wisdom Base heuristic; provenance names the pattern even when it already existed
     wb_id = f"WB-heuristic-{eval_res.context_fingerprint[:8]}"
     heuristic_exists = os.path.exists(os.path.join(wb_dir, "heuristics", f"{wb_id}.json"))
-    if eval_res.success_ladder_state == "proven-success" and not heuristic_exists:
-        wb_item = {
-            "wb_id": wb_id,
-            "wb_type": "heuristic",
-            "context_fingerprint": eval_res.context_fingerprint,
-            "ascension_evidence": {
-                "project_count": 1,
-                "total_executions": eval_res.total_trials,
-                "wilson_lower": eval_res.wilson_lower,
-                "provenance": [{"kb_id": item["kb_id"]}],
-            },
-            "payload": {
-                "name": f"Universal heuristic: {sample_tgt}",
-                "advisory": eval_res.advisory_text,
-            },
-        }
+    should_ascend_to_wisdom_heuristic = eval_res.success_ladder_state == "proven-success" and not heuristic_exists
+    if should_ascend_to_wisdom_heuristic:
+        wb_item = _build_wisdom_heuristic_item(eval_res, item["kb_id"], wb_id, sample_tgt)
         if not dry_run:
             wb_item["persisted_path"] = persist_wb_rule(wb_item, wb_dir=wb_dir)
         items.append(wb_item)
@@ -290,18 +267,11 @@ def promote_pending_candidates(
     min_trials: int = 2,
     dry_run: bool = False,
 ) -> list[dict[str, Any]]:
-    """Scan action signatures and promote qualified patterns to KB and WB.
-
-    Returns only the items this call newly promoted (in a dry run, the items it would newly write), so a
-    second call against an unchanged index returns ``[]``. Candidates whose terminal artefacts already
-    exist are skipped before evaluation. A recorded failure mode is terminal once its veto row is proven-fail
-    (or lifted) and until the fingerprint records a success, which is still evaluated so its veto is lifted.
-    """
     db = index_db or ActionIndexDatabase(DEFAULT_PROJECT_DB_PATH)
     conn = db.get_connection()
 
     promoted_items: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
+    seen_promoted_ids: set[str] = set()
 
     try:
         cur = conn.cursor()
@@ -321,31 +291,19 @@ def promote_pending_candidates(
                 continue
             sig_hash = sig["signature_hash"]
             eval_res = evaluate_action_promotion(sig_hash, index_db=db)
+            records = _fetch_recent_context_records(cur, sig["context_fingerprint"])
 
-            # Look up a sample action record for context
-            cur.execute(
-                """
-                SELECT action, target, category, error_context, record_id
-                FROM action_records
-                WHERE context_fingerprint = ?
-                ORDER BY created_at DESC LIMIT 5;
-                """,
-                (sig["context_fingerprint"],),
-            )
-            records = cur.fetchall()
-
-            # Sibling signatures share a fingerprint's ids; a dry run writes nothing, so drop repeats here
             failure_item = _promote_failure_candidate(eval_res, records, kb_dir, dry_run)
-            if failure_item and failure_item["kb_id"] in seen_ids:
+            if failure_item and failure_item["kb_id"] in seen_promoted_ids:
                 failure_item = None
             if failure_item:
-                seen_ids.add(failure_item["kb_id"])
+                seen_promoted_ids.add(failure_item["kb_id"])
                 promoted_items.append(failure_item)
             else:
                 for item in _promote_success_candidate(eval_res, records, kb_dir, wb_dir, dry_run):
                     item_id = str(item.get("kb_id") or item.get("wb_id"))
-                    if item_id not in seen_ids:
-                        seen_ids.add(item_id)
+                    if item_id not in seen_promoted_ids:
+                        seen_promoted_ids.add(item_id)
                         promoted_items.append(item)
 
         return promoted_items
@@ -354,7 +312,6 @@ def promote_pending_candidates(
 
 
 def list_vetoes(index_db: ActionIndexDatabase | None = None) -> list[dict[str, Any]]:
-    """List active, shadow, and lifted veto records in the index."""
     db = index_db or ActionIndexDatabase(DEFAULT_PROJECT_DB_PATH)
     conn = db.get_connection()
     try:
@@ -378,7 +335,6 @@ def lift_veto(
     context_fingerprint: str = "",
     reason: str = "Operator override",
 ) -> bool:
-    """Manually lift an active or shadowed veto for a given context fingerprint."""
     db = index_db or ActionIndexDatabase(DEFAULT_PROJECT_DB_PATH)
     conn = db.get_connection()
     try:

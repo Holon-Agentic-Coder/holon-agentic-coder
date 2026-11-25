@@ -1,6 +1,7 @@
 """Tests for the proactive stage conflict check and the review loop agent identity."""
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -18,12 +19,12 @@ from sandbox_executor.flow.stage_conflict_resolution import (
 )
 from sandbox_executor.flow.stage_conflicts import (
     ConflictDetection,
-    _merge_tree_conflict_paths,
     _parse_porcelain_unmerged,
     detect_stage_conflicts,
 )
 
 from tests.flow.lookup_patch import patch_lookup_sites
+from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
 
 
 class TestProactiveConflictAndReviewLoop:
@@ -72,7 +73,7 @@ class TestProactiveConflictAndReviewLoop:
             mock_status.stdout = "UU src/main.py\n"
             mock_git.return_value = mock_status
 
-            with pytest.raises(ConflictResolutionError, match="Unresolvable merge conflict"):
+            with pytest.raises(ConflictResolutionError, match="Unresolvable code conflicts"):
                 check_and_resolve_stage_conflicts(str(tmp_path), target_branch="main", stage_name="test")
 
 
@@ -116,12 +117,15 @@ class TestDetectStageConflicts:
         ledger = tmp_path / LEDGER
         ledger.parent.mkdir(parents=True)
         ledger.write_text('<<<<<<< HEAD\n{"a": 1}\n=======\n{"b": 2}\n>>>>>>> main\n', encoding="utf-8")
-        merge_tree = f"CONFLICT (content): Merge conflict in src/a.py\nCONFLICT (content): Merge conflict in {LEDGER}\n"
+        merge_tree = f"0123abcd\0src/a.py\0{LEDGER}\0\0" + "1\0src/a.py\0CONFLICT (content): Merge in keep.md\0"
         with (
             patch(
                 "sandbox_executor.flow.stage_conflicts.run_git",
-                side_effect=[_git_proc(""), _git_proc(returncode=0), _git_proc(merge_tree)],
-            ) as git,
+                side_effect=[_git_proc(""), _git_proc(returncode=0)],
+            ),
+            patch(
+                "sandbox_executor.flow.target_probe.run_git", return_value=_git_proc(merge_tree, returncode=1)
+            ) as merge_tree_git,
             patch(
                 "sandbox_executor.flow.stage_conflicts.check_pr_mergeability",
                 return_value={"mergeable": "CONFLICTING"},
@@ -129,18 +133,28 @@ class TestDetectStageConflicts:
             patch("sandbox_executor.flow.stage_conflicts._resolve_branch_ref", return_value="refs/heads/feature"),
         ):
             detection = detect_stage_conflicts(str(tmp_path), "main", "feature")
-        assert git.call_args_list[2].args[0] == ["merge-tree", "refs/heads/feature", "origin/main"]
+        assert merge_tree_git.call_args.args[0] == [
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "-z",
+            "refs/heads/feature",
+            "origin/main",
+        ]
         assert detection.conflicting_files == ["src/a.py", LEDGER]
         assert detection.probed_files == frozenset({"src/a.py", LEDGER})
 
-    def test_merge_tree_parser_keeps_path_words_of_conflict_lines_only(self):
-        output = (
-            "CONFLICT (content): Merge conflict in src/a.py\n"
-            "  base 100644 abc README.md\n"
-            "changed in both\n"
-            "changed in both docs/x.md, 'src/a.py'\n"
-        )
-        assert _merge_tree_conflict_paths(output) == ["src/a.py", "docs/x.md"]
+    def test_a_failed_merge_tree_probe_reports_no_paths(self, tmp_path: Path):
+        with (
+            patch("sandbox_executor.flow.stage_conflicts.run_git", side_effect=[_git_proc(""), _git_proc()]),
+            patch("sandbox_executor.flow.target_probe.run_git", return_value=_git_proc(returncode=128)),
+            patch(
+                "sandbox_executor.flow.stage_conflicts.check_pr_mergeability",
+                return_value={"mergeable": "CONFLICTING"},
+            ),
+        ):
+            detection = detect_stage_conflicts(str(tmp_path), "main", "HEAD")
+        assert detection.conflicting_files == []
 
 
 class TestClassifyAndResolveConflicts:
@@ -186,3 +200,24 @@ class TestClassifyAndResolveConflicts:
         ):
             check_and_resolve_stage_conflicts(str(tmp_path), stage_name="plan")
         assert str(raised.value) == f"Unresolvable merge conflicts detected in stage 'plan': b.py, {LEDGER}, a.py"
+
+
+class TestMechanicalClassesInTheWrapper:
+    """The wrapper resolves the ``conflict_classes`` mechanical classes on a real unmerged checkout."""
+
+    def test_a_kb_timestamp_only_unmerged_file_is_resolved(self, tmp_path: Path):
+        def entry(updated_at: str) -> str:
+            return json.dumps({"title": "t", "updated_at": updated_at}, indent=2) + "\n"
+
+        kb = "holon-knowledge/kb/entry.json"
+        _, work = build_flow_repos(tmp_path, {kb: entry("1")})
+        commit_on(work, "main", {kb: entry("3")}, "target")
+        commit_on(work, FLOW_BRANCH, {kb: entry("2")}, "flow")
+        subprocess.run(["git", "merge", "--no-ff", "--no-commit", "origin/main"], cwd=work, capture_output=True)
+
+        result = check_and_resolve_stage_conflicts(str(work), stage_name="execute", branch=None)
+
+        assert result["status"] == "resolved"
+        assert result["resolved_paths"] == [{"path": kb, "class": "kb_timestamp_only"}]
+        assert result["resolved_ledgers"] == []
+        assert (work / kb).read_text(encoding="utf-8") == entry("3")

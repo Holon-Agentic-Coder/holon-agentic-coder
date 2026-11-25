@@ -1,10 +1,9 @@
-"""Models command module to list supported models, aliases, and effort levels across runners."""
-
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from collections.abc import Sequence
 from typing import Any
 
 from sandbox_executor.agent_defaults import (
@@ -24,6 +23,11 @@ def _valid_runner_ids() -> set[str]:
         valid.add(cap.runner)
     valid.add("local")
     return valid
+
+
+def _detect_auth_status_per_runner(capabilities: Sequence[Any]) -> dict[str, str]:
+    unique_runners = dict.fromkeys(cap.runner for cap in capabilities)
+    return {runner: detect_runner_auth_status(runner) for runner in unique_runners}
 
 
 def _format_table(rows: list[dict[str, str]]) -> str:
@@ -48,7 +52,6 @@ def _format_table(rows: list[dict[str, str]]) -> str:
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register the models subcommand parser."""
     parser = subparsers.add_parser(
         "models",
         aliases=["list-models"],
@@ -69,7 +72,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
 
 def run(args: argparse.Namespace) -> int:
-    """Execute the models command."""
     agent_filter = args.agent.strip() if args.agent and args.agent.strip() else None
 
     if agent_filter:
@@ -84,10 +86,7 @@ def run(args: argparse.Namespace) -> int:
             return 1
 
     capabilities = get_model_capabilities(agent_filter)
-    # One detection per runner, not per model row: for claude each detection may start an OS keychain lookup.
-    auth_statuses = {
-        runner: detect_runner_auth_status(runner) for runner in dict.fromkeys(cap.runner for cap in capabilities)
-    }
+    auth_statuses = _detect_auth_status_per_runner(capabilities)
 
     if args.json:
         records: list[dict[str, Any]] = [

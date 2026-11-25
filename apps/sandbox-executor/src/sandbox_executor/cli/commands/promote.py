@@ -1,5 +1,3 @@
-"""Promote command module for evaluating and promoting knowledge candidates."""
-
 from __future__ import annotations
 
 import argparse
@@ -9,10 +7,12 @@ from sandbox_executor import cli
 from sandbox_executor.cli.options import add_target_worktree_option
 
 ORDER = 130
+_ACTION_INDEX_DB_RELATIVE_PATH = "holon-knowledge/.index/action_index.db"
+_KB_RELATIVE_PATH = "holon-knowledge/kb"
+_WB_RELATIVE_PATH = "holon-knowledge/wisdom"
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register the promote subcommand parser."""
     parser = subparsers.add_parser(
         "promote",
         help="Evaluate and promote qualified knowledge to KB and WB.",
@@ -38,13 +38,12 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
 
 def run(args: argparse.Namespace) -> int:
-    """Execute the promote command."""
-    db_path = os.path.join(args.target_worktree, "holon-knowledge/.index/action_index.db")
+    db_path = os.path.join(args.target_worktree, _ACTION_INDEX_DB_RELATIVE_PATH)
     db = cli.ActionIndexDatabase(db_path=db_path)
     promoted = cli.promote_pending_candidates(
         index_db=db,
-        kb_dir=os.path.join(args.target_worktree, "holon-knowledge/kb"),
-        wb_dir=os.path.join(args.target_worktree, "holon-knowledge/wisdom"),
+        kb_dir=os.path.join(args.target_worktree, _KB_RELATIVE_PATH),
+        wb_dir=os.path.join(args.target_worktree, _WB_RELATIVE_PATH),
         min_trials=args.min_trials,
         dry_run=args.dry_run,
     )

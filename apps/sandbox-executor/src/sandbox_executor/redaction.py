@@ -384,6 +384,9 @@ def redact_text(text: str) -> str:
     return s
 
 
+_FLAG_TOKEN_RE = re.compile(r"^-{1,2}[a-z0-9_-]+$")
+
+
 def _is_secret_flag(flag: str) -> bool:
     """Check whether a command-line flag identifies a sensitive credential.
 
@@ -395,7 +398,7 @@ def _is_secret_flag(flag: str) -> bool:
     """
     flag_lowered = flag.lower()
     return flag_lowered in SECRET_FLAGS or (
-        flag_lowered.startswith("-")
+        bool(_FLAG_TOKEN_RE.match(flag_lowered))
         and any(flag_lowered.endswith(sfx) for sfx in ("-token", "_token", "-secret", "_secret", "-key", "_key"))
     )
 

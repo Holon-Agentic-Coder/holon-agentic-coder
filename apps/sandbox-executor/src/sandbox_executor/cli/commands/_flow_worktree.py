@@ -1,13 +1,3 @@
-"""Target worktree resolution for ``holon flow``: provisioning, the default-branch redirect and checkpoint refusal.
-
-The run's target worktree is resolved before preflight, before the flow context is built and before any stage runs:
-
-- A working tree with the intent's base branch checked out (normally ``main``) selects the repository and the base
-  branch only; the run happens in its ``flow-<slug>`` sibling, branched off ``origin/<base>`` (reused when present).
-- A checkpoint whose recorded target is such a worktree is refused, naming the ``flow-<slug>`` worktree to use.
-- A working tree on any other branch is used as it is; bare and absent targets are auto-provisioned.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -34,6 +24,9 @@ from sandbox_executor.git_flow import (
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_BASE_BRANCH = "origin/main"
+_FALLBACK_SLUG = "task"
+_SLUG_SANITISE_PATTERN = re.compile(r"[^a-zA-Z0-9_\-]+")
 _CHECKPOINT_TARGET_HINT = ", or pass --target-worktree to resume against a different attached worktree"
 
 TARGET_WORKTREE_HELP: str = (
@@ -48,7 +41,6 @@ def _extract_flow_slug(
     context: Any | None,
     intent_data: dict[str, Any],
 ) -> str:
-    """Extract or derive a sanitised slug identifier for flow worktree naming."""
     slug: str | None = None
     if intent_data and isinstance(intent_data, dict):
         slug = intent_data.get("slug")
@@ -58,15 +50,14 @@ def _extract_flow_slug(
             slug = context.intent_data.get("slug")
     if not slug and getattr(args, "intent_file", None):
         stem = os.path.splitext(os.path.basename(args.intent_file))[0]
-        slug = re.sub(r"[^a-zA-Z0-9_\-]+", "-", stem).strip("-")
+        slug = _SLUG_SANITISE_PATTERN.sub("-", stem).strip("-")
     if not slug:
         repo_base = os.path.basename(os.path.abspath(getattr(args, "target_worktree", ".") or "."))
-        slug = re.sub(r"[^a-zA-Z0-9_\-]+", "-", repo_base).strip("-") or "task"
+        slug = _SLUG_SANITISE_PATTERN.sub("-", repo_base).strip("-") or _FALLBACK_SLUG
     return slug
 
 
 def _flow_target_branch(intent_data: dict[str, Any], context: Any | None) -> str:
-    """Return the base branch a newly provisioned flow worktree branches from (default: 'origin/main')."""
     if intent_data and isinstance(intent_data, dict) and intent_data.get("target_branch"):
         return str(intent_data["target_branch"])
     if (
@@ -76,15 +67,10 @@ def _flow_target_branch(intent_data: dict[str, Any], context: Any | None) -> str
         and context.intent_data.get("target_branch")
     ):
         return str(context.intent_data["target_branch"])
-    return "origin/main"
+    return _DEFAULT_BASE_BRANCH
 
 
 def _effective_flow_target(args: argparse.Namespace, context: Any | None) -> tuple[str, bool]:
-    """Return the target worktree the run will use and whether it was restored from a checkpoint.
-
-    Mirrors ``_update_flow_context``: an explicit --target-worktree other than '.' wins, otherwise a checkpoint
-    resume keeps the checkpoint's recorded target_worktree.
-    """
     explicit = getattr(args, "target_worktree", None)
     if explicit and explicit != ".":
         return explicit, False
@@ -94,7 +80,6 @@ def _effective_flow_target(args: argparse.Namespace, context: Any | None) -> tup
 
 
 def _nearest_existing_parent(path: str) -> str:
-    """Return the closest existing ancestor directory of path."""
     current = os.path.dirname(os.path.abspath(path))
     while not os.path.exists(current) and os.path.dirname(current) != current:
         current = os.path.dirname(current)
@@ -102,23 +87,17 @@ def _nearest_existing_parent(path: str) -> str:
 
 
 def _should_provision(target_worktree: str, from_checkpoint: bool, slug: str) -> bool:
-    """Return True for the auto-provisioned cases: a bare clone, or an absent CLI target that is safe to provision.
-
-    A plain non-git directory is never provisioned, because the base repository lookup would otherwise fall back to
-    the current working directory's repository. For the same reason an absent CLI target is provisioned only when it
-    is the derived ``flow-<slug>`` path or its nearest existing parent lies inside a git repository, so a deleted or
-    mistyped path fails fast instead. An absent checkpoint target is not re-provisioned either, so that a removed run
-    worktree is reported rather than silently replaced.
-    """
     if is_bare_repository(target_worktree):
         return True
     if from_checkpoint or os.path.exists(target_worktree):
         return False
     derived_path, _ = derive_worktree_layout(target_worktree, slug)
-    if derived_path == os.path.normpath(os.path.realpath(target_worktree)):
+    is_derived_flow_worktree = derived_path == os.path.normpath(os.path.realpath(target_worktree))
+    if is_derived_flow_worktree:
         return True
     parent = _nearest_existing_parent(target_worktree)
-    return is_working_tree(parent) or is_bare_repository(parent)
+    parent_is_git_repo = is_working_tree(parent) or is_bare_repository(parent)
+    return parent_is_git_repo
 
 
 def _provision_flow_worktree(
@@ -128,12 +107,6 @@ def _provision_flow_worktree(
     target_worktree: str,
     from_checkpoint: bool,
 ) -> tuple[str, str]:
-    """Auto-provision or attach a flow worktree.
-
-    Returns:
-        tuple[str, str]: The worktree path and an empty hint, or target_worktree and a hint naming the redacted
-            provisioning error when provisioning fails.
-    """
     slug = _extract_flow_slug(args, context, intent_data)
     try:
         worktree_path = ensure_worktree(
@@ -156,14 +129,6 @@ def _ensure_attached_worktree(
     context: Any | None,
     intent_data: dict[str, Any],
 ) -> bool:
-    """Ensure the run's target worktree is an attached, non-bare git working tree before any stage runs.
-
-    A bare or absent target is auto-provisioned as before (a checkpoint-restored target only when bare). Any other
-    target that is not a working tree, or one provisioning could not fix, prints an actionable error and exits 1.
-
-    Returns:
-        bool: True when the target is usable, False after the failure exit (for a patched ``sys.exit``).
-    """
     target_worktree, from_checkpoint = _effective_flow_target(args, context)
     if is_working_tree(target_worktree):
         return True
@@ -195,13 +160,6 @@ def _refuse_default_branch_checkpoint(
     intent_data: dict[str, Any],
     target_worktree: str,
 ) -> bool:
-    """Refuse a checkpoint resume whose recorded target worktree has the base branch checked out.
-
-    The flow-<slug> path is derived read-only; nothing is created. Always exits 1.
-
-    Returns:
-        bool: False after the failure exit (for a patched ``sys.exit``).
-    """
     base = normalise_base_branch(_flow_target_branch(intent_data, context))
     flow_worktree, _ = flow_worktree_layout(target_worktree, _extract_flow_slug(args, context, intent_data))
     problem = default_branch_worktree_problem(
@@ -225,16 +183,6 @@ def ensure_flow_worktree(
     context: Any | None,
     intent_data: dict[str, Any],
 ) -> bool:
-    """Resolve the run's target worktree before preflight, context construction and any stage.
-
-    A checkpoint target with the intent's base branch checked out is refused. A CLI target with it checked out is
-    accepted here and redirected to its flow-<slug> sibling by :func:`redirect_default_branch_target` after the
-    pre-flight probe. Any other target goes through the attached-worktree check and the existing auto-provisioning
-    of bare and absent targets.
-
-    Returns:
-        bool: True when the target is usable, False after a failure exit (for a patched ``sys.exit``).
-    """
     target_worktree, from_checkpoint = _effective_flow_target(args, context)
     if is_default_branch_worktree(target_worktree, _flow_target_branch(intent_data, context)):
         if from_checkpoint:
@@ -248,15 +196,6 @@ def redirect_default_branch_target(
     context: Any | None,
     intent_data: dict[str, Any],
 ) -> bool:
-    """Run the flow in the flow-<slug> sibling of a default-branch CLI target worktree, never in the target itself.
-
-    Called after the pre-flight probe and before the flow context is built, so a refused probe creates no branch and
-    every stage, the checkpoint and the run summary see the flow worktree. Any other target is left as it is.
-
-    Returns:
-        bool: True when the target needs no redirect or once ``args.target_worktree`` (and a resumed context's
-            ``target_worktree``) name the flow worktree, False after the failure exit (for a patched ``sys.exit``).
-    """
     target_worktree, from_checkpoint = _effective_flow_target(args, context)
     base = normalise_base_branch(_flow_target_branch(intent_data, context))
     if from_checkpoint or not is_default_branch_worktree(target_worktree, base):

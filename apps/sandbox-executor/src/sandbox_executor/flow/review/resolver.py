@@ -20,8 +20,10 @@ from sandbox_executor.agent_defaults import FALLBACK_AGENT
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.dispatch import _dispatch_role
 from sandbox_executor.flow.host_remote import push_commit, remote_error
+from sandbox_executor.flow.review.adjudication import _lookup_introducing_action_id
 from sandbox_executor.flow.review.ensemble import _ENGINE_PASSES_PER_DISPATCH
 from sandbox_executor.flow.review.records import _bounded_error_context, record_review_action
+from sandbox_executor.flow.review.sync_points import finalize_resolver_turn
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.module_budget_guard import budget_push_refusal
 from sandbox_executor.redaction import redact_agent_secrets
@@ -94,9 +96,7 @@ def _dispatch_review_resolver(
         os.fchmod(fd, 0o666)
     finally:
         os.close(fd)
-
-    findings = resolver_input.findings
-    lookup = dict(resolver_input.action_ids or {})
+    findings, lookup = resolver_input.findings, dict(resolver_input.action_ids or {})
     input_payload = {
         "iteration": iteration,
         "target": target.raw,
@@ -107,7 +107,6 @@ def _dispatch_review_resolver(
         ],
         "rejected_findings": [serialize_finding_disposition(item) for item in resolver_input.rejected_findings],
     }
-
     target_ref = target.raw or target.head_branch or "HEAD"
     container_args = [
         target_ref,
@@ -181,15 +180,9 @@ def _has_ledger_reason(context: FlowContext, disp: FindingDisposition) -> bool:
     return True
 
 
-def _lookup_introducing_action_id(row: FindingRow, action_ids: Mapping[str, str]) -> str | None:
-    """Find the ACT-FIND action_id that first introduced ``row``."""
-    sig_key = str(finding_signature(row.severity, row.path, row.line, row.summary))
-    return action_ids.get(row.id) or action_ids.get(sig_key)
-
-
 @dataclass
 class DispositionRecorder:
-    """Helper to record finding dispositions into executions.jsonl."""
+    """Record finding dispositions into executions.jsonl."""
 
     context: FlowContext
     exec_file: str
@@ -200,10 +193,7 @@ class DispositionRecorder:
     effective_dry_run: bool = False
 
     def record(self, iteration: int, dispositions: Sequence[FindingDisposition]) -> int:
-        """Append one ACT-RES row per newly finalised finding disposition.
-
-        Returns count of suppressed rows in dry run.
-        """
+        """Append one ACT-RES row per newly finalised finding disposition; return dry-run suppressed count."""
         suppressed = 0
         for disp in dispositions:
             sig = finding_signature(disp.severity, disp.path, disp.line, disp.summary)
@@ -250,22 +240,27 @@ class DispositionRecorder:
         return suppressed
 
 
-def _invoke_resolver_pass(
+def _run_resolver_pass(
     context: FlowContext,
     target: ReviewTarget,
     iteration: int,
     resolver_input: ResolverInput,
     run_resolver_fn: Callable[..., Any] | None,
 ) -> ResolverOutcome:
-    """Invoke the injected resolver seam or dispatch the resolver role container."""
-    findings = resolver_input.findings
-    action_ids = resolver_input.action_ids
-    rejected_findings = resolver_input.rejected_findings
+    """Execute one resolver pass (injected seam or container dispatch) without post-turn target sync."""
+    findings, action_ids, rejected_findings = (
+        resolver_input.findings,
+        resolver_input.action_ids,
+        resolver_input.rejected_findings,
+    )
     lookup = {
-        **action_ids,
-        **{row.id: _lookup_introducing_action_id(row, action_ids) or "" for row in findings},
+        k: v
+        for k, v in {
+            **action_ids,
+            **{r.id: _lookup_introducing_action_id(r, action_ids) or "" for r in findings},
+        }.items()
+        if v
     }
-    lookup = {k: v for k, v in lookup.items() if v}
     resolved_input = dataclasses.replace(resolver_input, action_ids=lookup)
     if run_resolver_fn is None:
         return _dispatch_review_resolver(context, target, iteration, resolved_input)
@@ -280,11 +275,8 @@ def _invoke_resolver_pass(
     except TypeError:
         raw = run_resolver_fn(list(findings), iteration)
     except Exception as exc:
-        return ResolverOutcome(
-            head_sha=target.head_sha,
-            pushed=False,
-            error=f"Resolver failed: {redact_agent_secrets(str(exc))}",
-        )
+        err = f"Resolver failed: {redact_agent_secrets(str(exc))}"
+        return ResolverOutcome(head_sha=target.head_sha, pushed=False, error=err)
     if isinstance(raw, ResolverOutcome):
         decided = () if raw.error else raw.dispositions
         dispositions = deserialize_finding_dispositions(
@@ -317,3 +309,11 @@ def _invoke_resolver_pass(
         return ResolverOutcome(dispositions=dispositions, head_sha=new_sha, pushed=pushed)
     dispositions = deserialize_finding_dispositions([], findings, lookup)
     return ResolverOutcome(dispositions=dispositions, head_sha=target.head_sha, pushed=False)
+
+
+def _invoke_resolver_pass(
+    context: FlowContext, target: ReviewTarget, iteration: int, resolver_input: ResolverInput, run_resolver_fn: Any
+) -> ResolverOutcome:
+    """Invoke the resolver pass and run post-turn target sync once the resolver completes."""
+    outcome = _run_resolver_pass(context, target, iteration, resolver_input, run_resolver_fn)
+    return finalize_resolver_turn(context, target, iteration, outcome)

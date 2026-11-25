@@ -34,38 +34,54 @@ jobs:
           # Full history, so the module budget check finds the merge base with origin/main.
           fetch-depth: 0
 
+      # A push that changes only plans/, executions/ and holon-knowledge/ skips the steps below; see
+      # "Bookkeeping-Only Push Gate" in .github/workflows/README.md.
+      - name: Bookkeeping gate
+        id: bookkeeping
+        uses: ./.github/actions/bookkeeping-gate
+        with:
+          job-name: hygiene
+          os: ${{ matrix.os }}
+
       - name: CI Timing Gate (Start)
         uses: ./.github/actions/ci-timing-gate
         with:
           phase: start
 
       - name: Install uv
+        if: steps.bookkeeping.outputs.skip != 'true'
         uses: astral-sh/setup-uv@v8.3.0
         with:
           python-version: "3.13"
           enable-cache: true
 
       - name: Check uv.lock is up to date
+        if: steps.bookkeeping.outputs.skip != 'true'
         run: |
           uv lock --check
           git diff --exit-code uv.lock
 
       - name: Check sandbox-executor uv.lock is up to date
+        if: steps.bookkeeping.outputs.skip != 'true'
         working-directory: apps/sandbox-executor
         run: |
           uv lock --check
           git diff --exit-code uv.lock
 
       - name: Install dependencies
+        if: steps.bookkeeping.outputs.skip != 'true'
         run: uv sync --locked
 
       - name: Lint with Ruff
+        if: steps.bookkeeping.outputs.skip != 'true'
         run: uv run ruff check .
 
       - name: Check formatting with Ruff
+        if: steps.bookkeeping.outputs.skip != 'true'
         run: uv run ruff format --check .
 
       - name: Check module budgets
+        if: steps.bookkeeping.outputs.skip != 'true'
         env:
           # The budget configuration is frozen: only the maintainer's module-budget-change label authorises a change.
           MODULE_BUDGET_CHANGE_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'module-budget-change') }}
@@ -78,19 +94,34 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Check JSON and JSONL files (bookkeeping-only push)
+        if: steps.bookkeeping.outputs.skip == 'true'
+        run: make lint-json
+
+      - name: Check markdown formatting (bookkeeping-only push)
+        if: steps.bookkeeping.outputs.skip == 'true'
+        run: make lint-md
+
       - name: Install system linters
+        if: steps.bookkeeping.outputs.skip != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y shellcheck
 
       - name: Run Makefile lint
+        if: steps.bookkeeping.outputs.skip != 'true'
         run: make lint
 
       - name: Test clean task
+        if: steps.bookkeeping.outputs.skip != 'true'
         run: uv run task clean
 
       - name: CI Timing Gate (Check <= 5 min)
-        if: always()
+        if: always() && steps.bookkeeping.outputs.skip != 'true'
         uses: ./.github/actions/ci-timing-gate
         with:
           phase: check
+
+      - name: Full run completed
+        if: steps.bookkeeping.outputs.skip != 'true'
+        run: echo "Every step of the full run passed."

@@ -93,7 +93,7 @@ class TestStage4TestEvidence:
         loop_res = {"consensus": {"approved": False}, "mergeability": {"is_dirty": False}}
         with (
             patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
-            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
             patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
         ):
             res = run_review_stage(ctx)
@@ -111,7 +111,7 @@ class TestStage4TestEvidence:
         }
         with (
             patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
-            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
             patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
             patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
         ):
@@ -134,7 +134,7 @@ class TestStage4TestEvidence:
         }
         with (
             patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
-            patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+            patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
             patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
         ):
             res = run_review_stage(ctx)
@@ -153,7 +153,7 @@ def test_the_review_stage_builds_one_adapter_and_hands_it_to_the_loop(tmp_path):
     github = FakeGitHub()
     with (
         patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
-        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
         patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
         patch("sandbox_executor.flow.stages.review.GitHubAdapter", return_value=github) as adapter,
         patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res) as loop,

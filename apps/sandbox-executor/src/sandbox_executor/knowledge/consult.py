@@ -11,6 +11,7 @@ from typing import Any
 
 from sandbox_executor.knowledge.consult_filters import ConsultQuery, build_where, clean_labels, row_to_record
 from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, ActionIndexDatabase
+from sandbox_executor.ledger.fragments import iter_fragment_files
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ class ConsultEngine:
         self.ledgers = auto_sync_ledgers if auto_sync_ledgers is not None else list(DEFAULT_LEDGERS)
 
     def _sync_if_needed(self) -> None:
-        for ledger_path in self.ledgers:
+        for ledger_path in [path for ledger in self.ledgers for path in (ledger, *iter_fragment_files(ledger))]:
             try:
                 self.db.sync_ledger(ledger_path)
             except Exception as e:

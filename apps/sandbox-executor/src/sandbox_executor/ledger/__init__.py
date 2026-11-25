@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from sandbox_executor.ledger.fragments import PENDING_DIR_REL
 from sandbox_executor.ledger.lock import (
     LedgerLock,
     LedgerRewriteError,
@@ -9,6 +10,14 @@ from sandbox_executor.ledger.lock import (
     atomic_ledger_append,
     suppress_ledger_failures,
 )
+from sandbox_executor.ledger.merged import (
+    merged_jsonl_text,
+    read_merged_rows,
+    read_merged_rows_at_ref,
+    read_merged_text,
+    with_ref_fragments,
+)
+from sandbox_executor.ledger.order import parse_created_at
 from sandbox_executor.ledger.query import (
     LedgerQuery,
     _describe_id_owner,
@@ -75,6 +84,7 @@ from sandbox_executor.ledger.rows import (
 __all__ = [
     "LEDGER_REL_PATHS",
     "OPTIONAL_OMITTED_FIELDS",
+    "PENDING_DIR_REL",
     "VALID_CATEGORIES",
     "VALID_DISPOSITIONS",
     "VALID_ENTRY_TYPES",
@@ -123,8 +133,13 @@ __all__ = [
     "format_commit_trailers",
     "format_query_results_table",
     "generate_action_id",
+    "merged_jsonl_text",
     "parse_commit_trailers",
+    "parse_created_at",
     "query_ledger",
+    "read_merged_rows",
+    "read_merged_rows_at_ref",
+    "read_merged_text",
     "reconcile_jsonl_ledger_conflict",
     "reconcile_ledger_content",
     "reconcile_ledger_file",
@@ -136,4 +151,5 @@ __all__ = [
     "validate_ledger_file_unique_ids",
     "validate_ledger_unique_ids",
     "validate_stage_ledger",
+    "with_ref_fragments",
 ]

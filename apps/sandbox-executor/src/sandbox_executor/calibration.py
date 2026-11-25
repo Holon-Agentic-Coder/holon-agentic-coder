@@ -46,7 +46,7 @@ from sandbox_executor.calibration_self_check import CalibrationSelfCheckError as
 from sandbox_executor.calibration_touch_set import touch_set_metrics, touch_set_report_lines
 from sandbox_executor.git import METADATA_PATH_PREFIXES as METADATA_PATH_PREFIXES
 from sandbox_executor.git import is_metadata_path, run_git
-from sandbox_executor.ledger import generate_action_id, try_append_action_record
+from sandbox_executor.ledger import generate_action_id, read_merged_text, try_append_action_record, with_ref_fragments
 from sandbox_executor.plan_paths import (
     calibration_report_for_branch,
     legacy_calibration_report_rel,
@@ -751,14 +751,15 @@ def parse_actual_metrics(  # noqa: C901, PLR0912, PLR0915
     target_ref = execution_branch if execution_branch else "HEAD"
 
     # 1. Search holon-knowledge/ledger/executions.jsonl via git show first, then fallback to disk
-    jsonl_content = read_git_file(target_ref, LEDGER_EXECUTIONS_REL, target_worktree)
+    canonical_content = read_git_file(target_ref, LEDGER_EXECUTIONS_REL, target_worktree)
+    jsonl_content = with_ref_fragments(canonical_content, target_worktree, target_ref, "executions.jsonl")
     records = parse_summary_records(jsonl_content) if jsonl_content else []
     matching = [r for r in records if is_matching_record(r, execution_id, plan_branch)]
     if not matching:
-        executions_jsonl = os.path.join(target_worktree, LEDGER_EXECUTIONS_REL)
-        if os.path.exists(executions_jsonl):
-            with contextlib.suppress(Exception), open(executions_jsonl, encoding="utf-8") as f:
-                disk_records = parse_summary_records(f.read())
+        disk_content = read_merged_text(os.path.join(target_worktree, LEDGER_EXECUTIONS_REL))
+        if disk_content is not None:
+            with contextlib.suppress(Exception):
+                disk_records = parse_summary_records(disk_content)
                 disk_matching = [r for r in disk_records if is_matching_record(r, execution_id, plan_branch)]
                 if disk_matching:
                     records = disk_records

@@ -14,10 +14,6 @@ HOLON_OAUTH_TOKEN_ENV = "HOLON_AGENT_OAUTH_TOKEN"
 OAUTH_TOKEN_PREFIX = "sk-ant-oat"
 
 _GROUP_OR_OTHER_MODE_MASK = 0o077
-_NON_OAUTH_LAYERED_TOKEN_WARNING = (
-    "Warning: HOLON_AGENT_OAUTH_TOKEN is not a subscription OAuth token; it is forwarded as "
-    "CLAUDE_CODE_OAUTH_TOKEN all the same. Set ANTHROPIC_API_KEY for an API key instead."
-)
 _WARNED_FORMAT: set[str] = set()
 
 
@@ -88,7 +84,11 @@ def _warn_if_not_oauth(value: str) -> None:
     if value.startswith(OAUTH_TOKEN_PREFIX) or HOLON_OAUTH_TOKEN_ENV in _WARNED_FORMAT:
         return
     _WARNED_FORMAT.add(HOLON_OAUTH_TOKEN_ENV)
-    print(_NON_OAUTH_LAYERED_TOKEN_WARNING, file=sys.stderr)
+    print(
+        "Warning: HOLON_AGENT_OAUTH_TOKEN is not a subscription OAuth token; it is forwarded as "
+        "CLAUDE_CODE_OAUTH_TOKEN all the same. Set ANTHROPIC_API_KEY for an API key instead.",
+        file=sys.stderr,
+    )
 
 
 def pin_claude_credential(env_to_forward: MutableMapping[str, str], agent_id: str) -> None:

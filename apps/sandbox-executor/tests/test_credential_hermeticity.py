@@ -25,9 +25,10 @@ _CREDENTIAL_TESTS = (
 
 def test_probe_sees_no_ambient_credential():
     """Runs only in the child suite: the fixture must have removed every planted variable."""
-    names = [name for name in os.environ.get(PROBE_NAME_VAR, "").split(",") if name]
-    if not names:
+    raw = os.environ.get(PROBE_NAME_VAR)
+    if not raw:
         pytest.skip("only meaningful inside the guard's child pytest")
+    names = [name for name in raw.split(",") if name]
     leaked = [name for name in names if name in os.environ]
     assert not leaked, f"{leaked} leaked into the test environment"
 
@@ -39,7 +40,8 @@ def test_fixture_clears_every_credential_name_the_code_reads():
 
 
 @pytest.mark.skipif(os.environ.get(CHILD_SUITE_SENTINEL) == "1", reason="child suite must not recurse")
-def test_credential_tests_pass_with_variable_set_in_real_environment(tmp_path):
+def test_credential_tests_pass_with_variables_set_in_real_environment(tmp_path):
+    """Plant every credential variable at once in one child pytest process instead of spawning one process per name."""
     planted = dict.fromkeys(CREDENTIAL_ENV_NAMES, DUMMY_VALUE)
     env = {
         **os.environ,
@@ -55,7 +57,7 @@ def test_credential_tests_pass_with_variable_set_in_real_environment(tmp_path):
         env=env, cwd=REPO_ROOT, capture_output=True, text=True, timeout=CHILD_TIMEOUT_SECONDS, check=False,
     )  # fmt: skip
     assert result.returncode == 0, (
-        f"Credential variables {list(CREDENTIAL_ENV_NAMES)} set in the environment broke the credential tests; "
+        f"Credential variables {sorted(CREDENTIAL_ENV_NAMES)} set in the environment broke the credential tests; "
         f"clear them in `no_ambient_credentials` (tests/conftest.py, list in tests/credential_env.py).\n"
         f"{result.stdout[-2000:]}"
     )

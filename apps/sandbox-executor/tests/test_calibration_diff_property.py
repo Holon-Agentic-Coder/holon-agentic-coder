@@ -41,14 +41,13 @@ def git(repo: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
 
 
-def commit(repo: Path, files: dict[str, str], message: str) -> str:
+def commit(repo: Path, files: dict[str, str], message: str) -> None:
     for rel, text in files.items():
         path = repo / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
     git(repo, "add", "--", *files)
     git(repo, "commit", "-qm", message)
-    return git(repo, "rev-parse", "HEAD")
 
 
 _FLOW_TEMPLATE: Path | None = None
@@ -56,18 +55,19 @@ _FLOW_TEMPLATE: Path | None = None
 
 def _flow_template() -> Path:
     global _FLOW_TEMPLATE
-    if _FLOW_TEMPLATE is not None and _FLOW_TEMPLATE.exists():
-        return _FLOW_TEMPLATE
-    repo = Path(tempfile.mkdtemp(prefix="holon-cal-diff-tpl-"))
-    atexit.register(shutil.rmtree, repo, True)
-    git(repo, "init", "-q", "-b", "main")
-    commit(repo, {"base.txt": "base\n"}, "base")
-    git(repo, "checkout", "-qb", INTENT)
-    git(repo, "checkout", "-qb", PLAN)
-    commit(repo, {"plans/I-1-prop/P-2-prop.md": "# Plan\n"}, "plan")
-    git(repo, "checkout", "-qb", EXEC)
-    _FLOW_TEMPLATE = repo
-    return repo
+    if _FLOW_TEMPLATE is None:
+        tmp = tempfile.TemporaryDirectory(prefix="holon-cal-diff-template-")
+        atexit.register(tmp.cleanup)
+        repo = Path(tmp.name) / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "main")
+        commit(repo, {"base.txt": "base\n"}, "base")
+        git(repo, "checkout", "-qb", INTENT)
+        git(repo, "checkout", "-qb", PLAN)
+        commit(repo, {"plans/I-1-prop/P-2-prop.md": "# Plan\n"}, "plan")
+        git(repo, "checkout", "-qb", EXEC)
+        _FLOW_TEMPLATE = repo
+    return _FLOW_TEMPLATE
 
 
 def make_flow(repo: Path) -> None:
@@ -95,7 +95,7 @@ steps = st.lists(st.tuples(st.booleans(), file_sets), min_size=1, max_size=6).fi
 )
 
 
-@settings(max_examples=15, deadline=None, database=None, suppress_health_check=[HealthCheck.too_slow])
+@settings(max_examples=25, deadline=None, database=None, suppress_health_check=[HealthCheck.too_slow])
 @given(flow_steps=steps, unmerged_main=st.booleans())
 def test_counted_files_are_exactly_the_pr_files(flow_steps: list[tuple[bool, list[int]]], unmerged_main: bool) -> None:
     with tempfile.TemporaryDirectory() as tmp:

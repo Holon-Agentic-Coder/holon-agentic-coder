@@ -4,8 +4,8 @@ A report that contradicts its own inputs would silently skew every later plan's 
 before any branch, file or commit is touched and raises ``CalibrationSelfCheckError`` naming each violated condition:
 
 - ``drag_without_failure``: bug drag above 0 with no unresolved, non-infrastructure execution failure row.
-- ``counted_target_only_file``: a counted path was changed on the target branch since the plan branch but by none of
-  the PR's own (non-merge) commits.
+- ``counted_target_only_file``: a counted path was changed on the target branch since the plan branch, and the PR's
+  side (its own commits or the edits of its merges) leaves it identical to the merge base.
 - ``evaluated_ledger_only``: the evaluated SHA is one of Stage 5's own calibration (report or ledger-only) commits.
 - ``evaluated_not_approved``: the review approved a head the evaluated SHA neither is nor reaches through
   metadata-only commits (ledger rows recorded after the approval) or merges (the conflict gate's merge of the target).
@@ -110,11 +110,14 @@ def _git_lines(repo_dir: str, args: list[str]) -> list[str] | None:
 
 
 def target_only_paths(repo_dir: str, plan_rev: str, merge_base_sha: str, head_sha: str) -> frozenset[str]:
-    """Paths the target branch changed since the plan branch (``plan...merge-base``) that the PR's own non-merge
-    commits (``merge-base..head``) never touch; empty when git cannot tell."""
+    """Paths the target branch changed since the plan branch (``plan...merge-base``) that the PR's side leaves
+    identical to the merge base (``merge-base...head``); empty when git cannot tell.
+
+    The PR's own paths include edits made inside merge commits, such as a conflict merge adapting a file the target
+    added, so they match the three-dot diff the counted paths come from.
+    """
     on_target = _git_lines(repo_dir, ["diff", "--name-only", f"{plan_rev}...{merge_base_sha}", "--"])
-    own_range = f"{merge_base_sha}..{head_sha}"
-    own = _git_lines(repo_dir, ["log", "--no-merges", "--name-only", "--format=", own_range, "--"])
+    own = _git_lines(repo_dir, ["diff", "--name-only", f"{merge_base_sha}...{head_sha}", "--"])
     if on_target is None or own is None:
         return frozenset()
     return frozenset(on_target) - frozenset(own)

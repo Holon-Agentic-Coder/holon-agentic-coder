@@ -1,13 +1,3 @@
-"""Pre-flight readiness probe for agent runners (``holon doctor``).
-
-The probe sends one minimal prompt through the selected runner inside its normal container, with the same session
-mounts, gateway host entries and network isolation as a real run, then classifies the outcome. ``holon plan``,
-``holon execute`` and ``holon flow`` run it before they create a branch, push, save a checkpoint or append a ledger
-row, so a quota, login or key problem is reported up front instead of after setup work has started.
-
-The probe never runs git, never writes under the repository and never writes to any ledger.
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -32,24 +22,26 @@ from sandbox_executor.claude_credential import pin_claude_credential, resolve_cl
 logger = logging.getLogger(__name__)
 
 PROBE_PROMPT = "Reply with the single word OK."
-# The expected answer to PROBE_PROMPT, on a line of its own (optionally followed by punctuation).
 _EXPECTED_REPLY_RE = re.compile(r"^\s*OK[.!]?\s*$", re.MULTILINE | re.IGNORECASE)
 DEFAULT_TIMEOUT_SECONDS = 60.0
 TIMEOUT_ENV_VAR = "HOLON_PREFLIGHT_TIMEOUT"
-# Bound on the `docker rm -f` cleanup after a probe timeout, so a hung daemon cannot stall the probe indefinitely.
 CLEANUP_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_RETRY_DELAY_SECONDS = 2.0
 SKIP_ENV_VAR = "HOLON_SKIP_PREFLIGHT"
 _EXCERPT_CHARS = 800
 _TRUTHY_ENV_VALUES = ("1", "true", "yes", "on")
-# Clear deterministic model errors that fail immediately instead of retrying transient UNKNOWN outcomes.
+_OSS_MODE_TRUTHY_VALUES = ("true", "1")
+_MIN_REDACTED_SECRET_LENGTH = 4
+_REDACTION_PLACEHOLDER = "***REDACTED***"
+_DOCKER_RUN_ENV_FILE_INSERT_INDEX = 2
+_PROBE_CONTAINER_PREFIX = "holon-preflight-"
+_PROBE_CONTAINER_ID_LENGTH = 12
 _MODEL_ERROR_RE = re.compile(
     r"invalid[\s_-]+model|unknown[\s_-]+model|unsupported[\s_-]+model|no\s+such\s+model"
     r"|model[\s_-]+not[\s_-]+found|model\b[^\n]{0,80}\b(?:not\s+found|does\s+not\s+exist)",
     re.IGNORECASE,
 )
-# Variables whose values are masked in a probe excerpt. HOLON_AGENT_SETTINGS can carry CLAUDE_CODE_OAUTH_TOKEN.
 _SENSITIVE_ENV_VARS = (
     "HOLON_AGENT_KEY",
     "HOLON_AGENT_SETTINGS",
@@ -59,13 +51,10 @@ _SENSITIVE_ENV_VARS = (
     "ANTHROPIC_API_KEY",
     "HOLON_AGENT_OAUTH_TOKEN",
 )
-# Bare Anthropic API keys and OAuth tokens (sk-ant-...), which the generic sweep does not recognise on their own.
 _ANTHROPIC_TOKEN_RE = re.compile(r"sk-ant-[A-Za-z0-9_\-]+")
 
 
 class PreflightStatus(enum.StrEnum):
-    """Classified outcome of a readiness probe."""
-
     OK = "ok"
     QUOTA_EXHAUSTED = "quota_exhausted"
     NOT_LOGGED_IN = "not_logged_in"
@@ -73,21 +62,15 @@ class PreflightStatus(enum.StrEnum):
     UNKNOWN = "unknown"
 
 
+_DECISIVE_TIMEOUT_STATUSES = (
+    PreflightStatus.QUOTA_EXHAUSTED,
+    PreflightStatus.NOT_LOGGED_IN,
+    PreflightStatus.EXPIRED_KEY,
+)
+
+
 @dataclass(frozen=True)
 class PreflightResult:
-    """Result of one readiness probe.
-
-    Attributes:
-        status: Classified outcome.
-        agent: Runner name that was probed.
-        model: Model name that was probed.
-        image: Container image used.
-        exit_code: Container exit code, or None when the probe did not run to completion.
-        output_excerpt: Redacted tail of the combined stdout/stderr.
-        hint: Remediation advice for the operator.
-        skipped: True when the probe was deliberately not run (the status is then ``ok``).
-    """
-
     status: PreflightStatus
     agent: str
     model: str
@@ -99,17 +82,14 @@ class PreflightResult:
 
     @property
     def ok(self) -> bool:
-        """True when the runner is ready (or the probe was skipped)."""
         return self.status is PreflightStatus.OK
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-serialisable dictionary."""
         data = asdict(self)
         data["status"] = self.status.value
         return data
 
     def format_report(self) -> str:
-        """Return a multi-line human-readable diagnosis."""
         lines = [
             f"Pre-flight {self.agent} ({self.model}) via {self.image}: {self.status.value.upper()}",
         ]
@@ -123,9 +103,6 @@ class PreflightResult:
         return "\n".join(lines)
 
 
-# Ordered classification table: the first matching status wins. Bare status codes and the bare word "expired" are
-# matched only in an error context, so incidental output (a request id containing 429, "cache expired") does not match.
-# A probe that exits 0 with the expected reply is ok before this table is consulted.
 _PATTERNS: tuple[tuple[PreflightStatus, re.Pattern[str]], ...] = (
     (
         PreflightStatus.QUOTA_EXHAUSTED,
@@ -181,18 +158,6 @@ _HINTS: dict[PreflightStatus, str] = {
 
 
 def classify_probe_output(exit_code: int | None, output: str) -> PreflightStatus:
-    """Classify a probe's exit code and combined output.
-
-    Args:
-        exit_code: Container exit code (None when the probe did not complete).
-        output: Combined stdout and stderr.
-
-    Returns:
-        ``ok`` for exit code 0 when the output carries the expected ``OK`` reply, whatever else the runner logged.
-        Otherwise the first matching failure status in table order (runners such as agy report quota errors with exit
-        code 0, so the table also applies to a successful exit that lacks the reply); ``ok`` for exit code 0 with
-        non-empty output and no failure pattern; ``unknown`` otherwise.
-    """
     text = output or ""
     if exit_code == 0 and _EXPECTED_REPLY_RE.search(text):
         return PreflightStatus.OK
@@ -205,18 +170,15 @@ def classify_probe_output(exit_code: int | None, output: str) -> PreflightStatus
 
 
 def matching_statuses(text: str) -> set[PreflightStatus]:
-    """Return every failure status whose pattern matches ``text``."""
     return {status for status, pattern in _PATTERNS if pattern.search(text)}
 
 
 def preflight_skipped_by_env(environ: Mapping[str, str] | None = None) -> bool:
-    """Return True when ``HOLON_SKIP_PREFLIGHT`` is truthy."""
     env = os.environ if environ is None else environ
     return str(env.get(SKIP_ENV_VAR, "")).strip().lower() in _TRUTHY_ENV_VALUES
 
 
 def resolve_timeout(explicit: float | None = None, environ: Mapping[str, str] | None = None) -> float:
-    """Return the probe timeout: explicit value, then ``HOLON_PREFLIGHT_TIMEOUT``, then 60 seconds."""
     if explicit is not None and explicit > 0:
         return float(explicit)
     env = os.environ if environ is None else environ
@@ -228,36 +190,23 @@ def resolve_timeout(explicit: float | None = None, environ: Mapping[str, str] | 
 
 
 def redact_output(text: str) -> str:
-    """Mask credential values and token-shaped strings in probe output.
-
-    The probe-specific sweeps (the values of ``_SENSITIVE_ENV_VARS``, including HOLON_AGENT_SETTINGS, and any
-    ``sk-ant-`` token of any length) run first; the result then goes through the canonical
-    ``redaction.redact_agent_secrets`` (key-name patterns, provider token prefixes, default env literals), so this
-    is never weaker than either.
-    """
     from sandbox_executor.redaction import redact_agent_secrets
 
     redacted = text or ""
     for var in _SENSITIVE_ENV_VARS:
         value = os.getenv(var)
-        if value and len(value) >= 4:
-            redacted = redacted.replace(value, "***REDACTED***")
-    redacted = _ANTHROPIC_TOKEN_RE.sub("***REDACTED***", redacted)
+        if value and len(value) >= _MIN_REDACTED_SECRET_LENGTH:
+            redacted = redacted.replace(value, _REDACTION_PLACEHOLDER)
+    redacted = _ANTHROPIC_TOKEN_RE.sub(_REDACTION_PLACEHOLDER, redacted)
     return redact_agent_secrets(redacted)
 
 
 def _import_legacy_claude_token(agent_id: str) -> None:
-    """Run the one-time import of the plaintext claude token file into the OS keychain; other runners have none."""
     if agent_id == "claude":
         claude_token_migration.migrate_legacy_token_file()
 
 
 def _missing_credential_output(agent: str, agent_id: str, session_mounts: list[str]) -> str | None:
-    """Return the output for "no credential could reach the container", or None when one could.
-
-    Mirrors the in-container validators and changes nothing on the host. For claude the OS keychain is asked at most
-    once: the answer that found no credential also words the output.
-    """
     if session_mounts:
         return None
     if agent_id == "claude":
@@ -265,50 +214,34 @@ def _missing_credential_output(agent: str, agent_id: str, session_mounts: list[s
         return None if resolved else claude_token_migration.claude_missing_credential_message(lookup)
     if os.getenv("HOLON_AGENT_KEY"):
         return None
-    if agent_id == "codex" and os.getenv("HOLON_AGENT_OSS_MODE", "").lower() in ("true", "1"):
+    if agent_id == "codex" and os.getenv("HOLON_AGENT_OSS_MODE", "").lower() in _OSS_MODE_TRUTHY_VALUES:
         return None
     return f"No HOLON_AGENT_KEY is set and no session credentials for '{agent}' were found to mount."
 
 
-def build_probe_docker_cmd(
-    agent: str, model: str, image: str, container_name: str, session_mounts: list[str]
-) -> tuple[list[str], dict[str, str]]:
-    """Build the ``docker run`` argv for the probe, with every credential kept off it.
+def _new_probe_container_name() -> str:
+    return f"{_PROBE_CONTAINER_PREFIX}{uuid.uuid4().hex[:_PROBE_CONTAINER_ID_LENGTH]}"
 
-    The container keeps its normal entrypoint with no ``HOLON_ROLE``, so the dispatcher maps ``HOLON_AGENT_KEY`` onto
-    the vendor variables and then executes the runner binary directly. The mounts, gateway host entries and network
-    isolation come from the same helpers ``run_docker_container`` uses, and so does the env-file routing rule
-    (``env_files.is_env_file_item``): every ``HOLON_*`` value and any other credential-bearing value are returned
-    separately, never as ``-e KEY=VALUE`` items that ``ps`` and ``/proc/<pid>/cmdline`` can read. A ``HOLON_*`` value
-    no env-file line can carry is named by a bare ``-e NAME`` and set in the docker client env by the caller.
 
-    Args:
-        agent: Runner name.
-        model: Model name.
-        image: Container image.
-        container_name: Name given to the container so a timed-out probe can be removed.
-        session_mounts: Output of ``get_agent_session_mounts`` for this runner.
-
-    Returns:
-        The docker argv, free of credential values, and the variables kept off it (empty when there are none): the
-        caller hands the ``env_files.is_passthrough_env_item`` ones over in the docker client env and the rest with
-        ``env_files.write_env_file`` and ``--env-file``.
-    """
-    from sandbox_executor.agent_runner import RETIRED_ENV_VARS, runners
+def _collect_forwarded_holon_env(agent_id: str) -> dict[str, str]:
+    from sandbox_executor.agent_runner import RETIRED_ENV_VARS
     from sandbox_executor.config_env import RESOLVED_MARKER
-    from sandbox_executor.launcher import env_files, mounts, proxy_paths
 
-    agent_id = normalise_agent_id(agent)
-    cmd = ["docker", "run", "--rm", "-i", "--name", container_name]
-    env: dict[str, str] = {
+    forwarded: dict[str, str] = {
         key: value
         for key, value in os.environ.items()
         if key.startswith("HOLON_") and key != "HOLON_ROLE" and key not in RETIRED_ENV_VARS
     }
-    pin_claude_credential(env, agent_id)
-    env["HOLON_AGENT_ID"] = agent_id
-    env[RESOLVED_MARKER] = "1"
-    env[SKIP_ENV_VAR] = "1"
+    pin_claude_credential(forwarded, agent_id)
+    forwarded["HOLON_AGENT_ID"] = agent_id
+    forwarded[RESOLVED_MARKER] = "1"
+    forwarded[SKIP_ENV_VAR] = "1"
+    return forwarded
+
+
+def _append_docker_env_args(cmd: list[str], env: Mapping[str, str]) -> dict[str, str]:
+    from sandbox_executor.launcher import env_files
+
     secret_env: dict[str, str] = {}
     for key, value in sorted(env.items()):
         if env_files.is_passthrough_env_item(key, value):
@@ -318,6 +251,27 @@ def build_probe_docker_cmd(
             secret_env[key] = value
         else:
             cmd.extend(["-e", f"{key}={value}"])
+    return secret_env
+
+
+def _split_secret_env(secret_env: Mapping[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+    from sandbox_executor.launcher import env_files
+
+    passthrough_env = {key: value for key, value in secret_env.items() if env_files.is_passthrough_env_item(key, value)}
+    file_env = {key: value for key, value in secret_env.items() if key not in passthrough_env}
+    return passthrough_env, file_env
+
+
+def build_probe_docker_cmd(
+    agent: str, model: str, image: str, container_name: str, session_mounts: list[str]
+) -> tuple[list[str], dict[str, str]]:
+    from sandbox_executor.agent_runner import runners
+    from sandbox_executor.launcher import mounts, proxy_paths
+
+    agent_id = normalise_agent_id(agent)
+    cmd = ["docker", "run", "--rm", "-i", "--name", container_name]
+    env = _collect_forwarded_holon_env(agent_id)
+    secret_env = _append_docker_env_args(cmd, env)
     cmd.extend(proxy_paths._gateway_host_args())
     cmd.extend(session_mounts)
     cmd.extend(mounts.build_network_isolation_args())
@@ -327,22 +281,6 @@ def build_probe_docker_cmd(
 
 
 def _reference_secret_args(runner_cmd: list[str], secret_env: Mapping[str, str]) -> list[str]:
-    """Keep env-mapped credential flag values (``claude --settings``) off the host argv.
-
-    The runner argv is composed on the host, so a flag the runner fills from a variable (for example
-    ``--settings`` from ``HOLON_AGENT_SETTINGS``) would carry the credential itself. Each argument equal to a value
-    in ``secret_env`` is replaced by a shell reference to that variable, and the command runs through ``sh -c``,
-    which expands the reference inside the container from its ``--env-file`` or bare ``-e NAME`` copy. The runner
-    binary itself is fixed by the runner, never filled from a variable, so it stays literal even when it equals a
-    forwarded value (``claude`` and ``HOLON_AGENT_ID``).
-
-    Args:
-        runner_cmd: The runner argv from ``compose_cmd``.
-        secret_env: The variables kept off the docker argv.
-
-    Returns:
-        ``runner_cmd`` unchanged when no argument is a secret value, otherwise an equivalent ``sh -c`` argv.
-    """
     by_value = {value: key for key, value in sorted(secret_env.items()) if value}
     binary, *args = runner_cmd
     if not any(arg in by_value for arg in args):
@@ -381,26 +319,6 @@ def run_preflight_probe(  # noqa: PLR0911
     runner_fn: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
 ) -> PreflightResult:
-    """Probe a runner with one minimal prompt inside its container.
-
-    Args:
-        agent: Resolved runner name (for example ``antigravity-agent``).
-        model: Resolved model name.
-        timeout: Seconds before the probe is abandoned (defaults via :func:`resolve_timeout`).
-        runner_fn: Replacement for ``subprocess.run``, for tests.
-        max_attempts: Maximum probe attempts for transient ``unknown`` outcomes (defaults to
-            ``DEFAULT_MAX_ATTEMPTS``).
-
-    Returns:
-        A :class:`PreflightResult`; never raises for probe failures.
-
-    Side effects:
-        Runs ``docker run`` up to ``max_attempts`` times (retrying only on transient ``unknown`` outcomes).
-        Credentials reach the container through a 0600 ``--env-file`` under ``~/.holon/tmp/env-files``, removed once
-        the probe returns, times out or fails. On timeout the probe container is removed with ``docker rm -f``.
-        Nothing is written to the repository or the ledgers. For claude, a legacy plaintext token file is imported into
-        the OS keychain and deleted.
-    """
     run = runner_fn or subprocess.run
     agent_id = normalise_agent_id(agent)
     image = AGENT_IMAGE_MAPPING.get(agent_id, f"holon/agent-{agent_id}")
@@ -438,7 +356,6 @@ def run_preflight_probe(  # noqa: PLR0911
             image,
             output="The runner's session directory is missing (see the message above).",
         )
-    # The import runs here, with or without a mounted session, so the credential check below stays read-only.
     _import_legacy_claude_token(agent_id)
     missing_credential = _missing_credential_output(agent, agent_id, session_mounts)
     if missing_credential is not None:
@@ -451,11 +368,10 @@ def run_preflight_probe(  # noqa: PLR0911
             hint=claude_token_migration.claude_not_logged_in_hint() if agent_id == "claude" else None,
         )
 
-    container_name = f"holon-preflight-{uuid.uuid4().hex[:12]}"
+    container_name = _new_probe_container_name()
     docker_cmd, secret_env = build_probe_docker_cmd(agent, model, image, container_name, session_mounts)
 
-    passthrough_env = {key: value for key, value in secret_env.items() if env_files.is_passthrough_env_item(key, value)}
-    file_env = {key: value for key, value in secret_env.items() if key not in passthrough_env}
+    passthrough_env, file_env = _split_secret_env(secret_env)
     if passthrough_env:
         run = functools.partial(run, env={**os.environ, **passthrough_env})
     env_file: str | None = None
@@ -465,8 +381,7 @@ def run_preflight_probe(  # noqa: PLR0911
             env_file = env_files.write_env_file(file_env)
         except (ValueError, OSError) as exc:
             return _result(PreflightStatus.UNKNOWN, agent, model, image, output=str(exc))
-        # Right after `docker run`, as in run_docker_container; docker reads the file on the client side.
-        docker_cmd[2:2] = ["--env-file", env_file]
+        docker_cmd[_DOCKER_RUN_ENV_FILE_INSERT_INDEX:_DOCKER_RUN_ENV_FILE_INSERT_INDEX] = ["--env-file", env_file]
     target = _ProbeTarget(agent=agent, model=model, image=image, limit=limit)
     try:
         return _run_probe_with_retries(run, docker_cmd, target, max_attempts)
@@ -478,8 +393,6 @@ def run_preflight_probe(  # noqa: PLR0911
 
 @dataclass(frozen=True)
 class _ProbeTarget:
-    """Immutable metadata and timeout budget for a pre-flight probe execution."""
-
     agent: str
     model: str
     image: str
@@ -487,12 +400,10 @@ class _ProbeTarget:
 
 
 def _is_retryable_unknown(result: PreflightResult) -> bool:
-    """Return True only when ``result`` is a transient UNKNOWN that should be retried."""
     return result.status is PreflightStatus.UNKNOWN and _MODEL_ERROR_RE.search(result.output_excerpt) is None
 
 
 def _with_container_name(docker_cmd: list[str], container_name: str) -> list[str]:
-    """Return a copy of ``docker_cmd`` with its ``--name`` argument set to ``container_name``."""
     updated = list(docker_cmd)
     name_index = updated.index("--name") + 1
     updated[name_index] = container_name
@@ -505,10 +416,9 @@ def _run_probe_with_retries(
     target: _ProbeTarget,
     max_attempts: int,
 ) -> PreflightResult:
-    """Run the probe with bounded retries on transient UNKNOWN outcomes."""
     attempts = max(1, max_attempts)
     for attempt in range(1, attempts):
-        container_name = f"holon-preflight-{uuid.uuid4().hex[:12]}"
+        container_name = _new_probe_container_name()
         attempt_cmd = _with_container_name(docker_cmd, container_name)
         result = _run_probe(run, attempt_cmd, container_name, target)
         if not _is_retryable_unknown(result):
@@ -523,17 +433,14 @@ def _run_probe_with_retries(
         )
         if DEFAULT_RETRY_DELAY_SECONDS > 0:
             time.sleep(DEFAULT_RETRY_DELAY_SECONDS)
-    container_name = f"holon-preflight-{uuid.uuid4().hex[:12]}"
+    container_name = _new_probe_container_name()
     return _run_probe(run, _with_container_name(docker_cmd, container_name), container_name, target)
 
 
-def _handle_probe_timeout(
+def _remove_timed_out_container(
     run: Callable[..., subprocess.CompletedProcess[str]],
     container_name: str,
-    target: _ProbeTarget,
-    exc: subprocess.TimeoutExpired,
-) -> PreflightResult:
-    """Clean up a timed-out probe container and classify any captured partial output."""
+) -> None:
     try:
         run(
             ["docker", "rm", "-f", container_name],
@@ -544,6 +451,15 @@ def _handle_probe_timeout(
         )
     except (subprocess.TimeoutExpired, OSError) as cleanup_exc:
         logger.warning("Could not remove pre-flight container %s: %s", container_name, cleanup_exc)
+
+
+def _handle_probe_timeout(
+    run: Callable[..., subprocess.CompletedProcess[str]],
+    container_name: str,
+    target: _ProbeTarget,
+    exc: subprocess.TimeoutExpired,
+) -> PreflightResult:
+    _remove_timed_out_container(run, container_name)
 
     partial = _combine_streams(exc.stdout, exc.stderr)
     if _EXPECTED_REPLY_RE.search(partial):
@@ -565,7 +481,7 @@ def _handle_probe_timeout(
         )
 
     classified = classify_probe_output(None, partial)
-    if classified in (PreflightStatus.QUOTA_EXHAUSTED, PreflightStatus.NOT_LOGGED_IN, PreflightStatus.EXPIRED_KEY):
+    if classified in _DECISIVE_TIMEOUT_STATUSES:
         return _result(classified, target.agent, target.model, target.image, exit_code=None, output=partial)
 
     if partial.strip():
@@ -602,7 +518,6 @@ def _run_probe(
     container_name: str,
     target: _ProbeTarget,
 ) -> PreflightResult:
-    """Run the probe container and classify the outcome; on timeout remove the container."""
     try:
         proc = run(
             docker_cmd, capture_output=True, text=True, timeout=target.limit, check=False, stdin=subprocess.DEVNULL
@@ -618,7 +533,6 @@ def _run_probe(
 
 
 def _combine_streams(stdout: Any, stderr: Any) -> str:
-    """Combine stdout and stderr, joining non-empty streams with a newline when stdout lacks one."""
     out = _decode(stdout)
     err = _decode(stderr)
     if out and err and not out.endswith("\n"):

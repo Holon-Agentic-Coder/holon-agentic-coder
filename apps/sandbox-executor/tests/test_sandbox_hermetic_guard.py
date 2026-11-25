@@ -42,9 +42,16 @@ from tests.hermetic_fixtures import (
     UV,
     describe_index_changes,
     knowledge_index_snapshot,
-    pytest_suite_command,
     simulated_container_env,
     uv_available,
+)
+from tests.stress_support import (
+    canary_violations,
+    child_context,
+    child_env,
+    child_suite_command,
+    run_child,
+    seed_canary_workspace,
 )
 
 #: Sentinel set in the child environment so a child run can never recurse back into this guard.
@@ -85,37 +92,24 @@ class TestSandboxHermeticGuard(unittest.TestCase):
 
     @pytest.mark.stress
     def test_canary_workspace_survives_entrypoint_tests(self):
-        with tempfile.TemporaryDirectory() as sim_home:
-            sim_sandbox_workspace = os.path.join(sim_home, ".holon-sandbox", "workspace")
-            os.makedirs(sim_sandbox_workspace, exist_ok=True)
-
-            canary_marker = os.path.join(sim_sandbox_workspace, "canary.txt")
-            canary_content = "canary-alive-guard-marker-2026"
-            with open(canary_marker, "w") as f:
-                f.write(canary_content)
-
-            # Create dummy repo files inside the simulated workspace
-            dummy_repo_file = os.path.join(sim_sandbox_workspace, "important_code.py")
-            with open(dummy_repo_file, "w") as f:
-                f.write("# important code\n")
-
-            dummy_git_dir = os.path.join(sim_sandbox_workspace, ".git")
-            os.makedirs(dummy_git_dir, exist_ok=True)
+        # The context gives this test its own HOME, workspace, TMPDIR and pytest --basetemp, so it can
+        # run concurrently with the workspace-survival stress test (see tests/stress_support.py).
+        with child_context("canary") as context:
+            seed = seed_canary_workspace(context)
 
             # Snapshot the checkout's knowledge index before the child run.
             index_before = knowledge_index_snapshot(REPO_ROOT)
 
             # Run the whole suite through the sanctioned runner and the unit job's selection, from
             # the repository root so the child inherits the root pytest configuration.
-            cmd = pytest_suite_command()
-            res = subprocess.run(
+            cmd = child_suite_command(context)
+            res = run_child(
                 cmd,
+                label=context.label,
                 cwd=REPO_ROOT,
-                env=simulated_container_env(sim_home, CHILD_ENV_VAR),
-                capture_output=True,
-                text=True,
+                env=child_env(context, CHILD_ENV_VAR),
                 timeout=CHILD_TIMEOUT_SECONDS,
-            )
+            ).completed
             self.assertEqual(
                 res.returncode,
                 0,
@@ -124,42 +118,9 @@ class TestSandboxHermeticGuard(unittest.TestCase):
                 f"Stdout:\n{res.stdout}\nStderr:\n{res.stderr}",
             )
 
-            # Assert the checkout's knowledge index was not touched by the child run.
-            index_after = knowledge_index_snapshot(REPO_ROOT)
-            index_changes = describe_index_changes(index_before, index_after)
-            self.assertEqual(
-                index_changes,
-                [],
-                "A test in the child suite wrote the checkout's holon-knowledge/.index/: " + ", ".join(index_changes),
-            )
-
-            # Assert canary workspace still exists
-            self.assertTrue(
-                os.path.exists(sim_sandbox_workspace),
-                "Simulated sandbox workspace was deleted during entrypoint test runs!",
-            )
-
-            # Assert canary marker file is intact
-            self.assertTrue(
-                os.path.exists(canary_marker),
-                "Canary marker file was deleted during entrypoint test runs!",
-            )
-            with open(canary_marker) as f:
-                self.assertEqual(
-                    f.read(),
-                    canary_content,
-                    "Canary marker content was modified during entrypoint test runs!",
-                )
-
-            # Assert other workspace files remain intact
-            self.assertTrue(
-                os.path.exists(dummy_repo_file),
-                "Dummy workspace file was deleted during entrypoint test runs!",
-            )
-            self.assertTrue(
-                os.path.exists(dummy_git_dir),
-                "Dummy .git directory was deleted during entrypoint test runs!",
-            )
+            # The checkout's knowledge index, the workspace, its canary marker, the dummy repository
+            # file and the dummy .git must all be untouched by the child run.
+            self.assertEqual(canary_violations(context, seed, REPO_ROOT, index_before), [])
 
     def test_negative_control_canary_is_actually_live(self):
         """Prove the simulated workspace is the path an unpatched cleanup really destroys.

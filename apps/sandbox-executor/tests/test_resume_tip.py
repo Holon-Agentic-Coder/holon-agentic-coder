@@ -285,7 +285,7 @@ def run_stage_with(repo: Path, executor_commits: Any) -> FlowContext:
         return 1
 
     with (
-        patch("sandbox_executor.flow.stages.execute.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.execute.at_stage_boundary", return_value=None),
         patch("sandbox_executor.flow.stages.execute.fetch_base"),
         patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None),
         patch("sandbox_executor.flow.stages.execute._dispatch_role", side_effect=dispatch),

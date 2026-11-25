@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 from sandbox_executor.flow import reconcile_jsonl_ledger_conflict
-from sandbox_executor.flow.review import conflict_gate
+from sandbox_executor.flow.review import conflict_gate, conflict_merge
 from sandbox_executor.ledger.order import _order_appended_rows
 
 from tests.flow.helpers import _git
@@ -62,7 +62,7 @@ def test_ledger_only_conflict_merges_with_the_target_prefix_and_created_at_tail(
     origin, work = repos
     target_bytes = _git(work, "show", f"refs/remotes/origin/main:{LEDGER}") + "\n"
 
-    outcome = conflict_gate._merge_and_push(str(work), BRANCH, "main")
+    outcome = conflict_merge._merge_and_push(str(work), BRANCH, "main")
 
     assert (outcome.merged, outcome.ledger_only, outcome.conflicting_paths) == (True, True, (LEDGER,))
     merged = _git(origin, "show", f"refs/heads/{BRANCH}:{LEDGER}") + "\n"
@@ -84,7 +84,7 @@ def test_code_conflict_aborts_the_merge_and_is_reported(repos, no_test_run):
     _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
     before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
 
-    outcome = conflict_gate._merge_and_push(str(work), BRANCH, "main")
+    outcome = conflict_merge._merge_and_push(str(work), BRANCH, "main")
 
     assert outcome.merged is False
     assert "src/shared.py" in outcome.conflicting_paths

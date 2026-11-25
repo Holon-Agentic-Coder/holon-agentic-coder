@@ -20,8 +20,9 @@ from sandbox_executor.flow.review.loop import _reviewers_objected, _run_engine_r
 from sandbox_executor.flow.review.proxy_env import review_proxy_env
 from sandbox_executor.flow.review.records import render_reviewer_summary_line
 from sandbox_executor.flow.review.verdict import not_approved_verdicts, render_final_verdicts
-from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.review_outcome import ReviewOutcomeContext, build_review_stage_outcome
+from sandbox_executor.flow.target_sync_hooks import at_stage_boundary
+from sandbox_executor.flow.target_sync_result import SyncBoundary
 from sandbox_executor.flow.test_evidence import _test_results_package
 from sandbox_executor.git import run_git
 from sandbox_executor.git_revisions import qualify_branch_revision, revision_args
@@ -99,10 +100,8 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
                 f"before the review loop: {checkout_err}",
             )
         on_branch.append(context.execution_branch)
-        target_branch = context.intent_data.get("target_branch", "main")
-        check_and_resolve_stage_conflicts(
-            repo_dir, target_branch=target_branch, stage_name="review", branch=context.execution_branch
-        )
+        if sync_failure := at_stage_boundary(context, FlowStage.REVIEW, SyncBoundary.STAGE_START):
+            return sync_failure
 
     exec_result = context.stage_results.get("execute")
 

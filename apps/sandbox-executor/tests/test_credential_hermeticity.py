@@ -24,11 +24,13 @@ _CREDENTIAL_TESTS = (
 
 
 def test_probe_sees_no_ambient_credential():
-    """Runs only in the child suite: the fixture must have removed the planted variable."""
-    name = os.environ.get(PROBE_NAME_VAR)
-    if not name:
+    """Runs only in the child suite: the fixture must have removed every planted variable."""
+    raw = os.environ.get(PROBE_NAME_VAR)
+    if not raw:
         pytest.skip("only meaningful inside the guard's child pytest")
-    assert name not in os.environ, f"{name} leaked into the test environment"
+    names = [name for name in raw.split(",") if name]
+    leaked = [name for name in names if name in os.environ]
+    assert not leaked, f"{leaked} leaked into the test environment"
 
 
 def test_fixture_clears_every_credential_name_the_code_reads():
@@ -38,9 +40,15 @@ def test_fixture_clears_every_credential_name_the_code_reads():
 
 
 @pytest.mark.skipif(os.environ.get(CHILD_SUITE_SENTINEL) == "1", reason="child suite must not recurse")
-@pytest.mark.parametrize("name", CREDENTIAL_ENV_NAMES)
-def test_credential_tests_pass_with_variable_set_in_real_environment(name, tmp_path):
-    env = {**os.environ, name: DUMMY_VALUE, PROBE_NAME_VAR: name, CHILD_SUITE_SENTINEL: "1"}
+def test_credential_tests_pass_with_variables_set_in_real_environment(tmp_path):
+    """Plant every credential variable at once in one child pytest process instead of spawning one process per name."""
+    planted = dict.fromkeys(CREDENTIAL_ENV_NAMES, DUMMY_VALUE)
+    env = {
+        **os.environ,
+        **planted,
+        PROBE_NAME_VAR: ",".join(CREDENTIAL_ENV_NAMES),
+        CHILD_SUITE_SENTINEL: "1",
+    }
     selection = [str(_TESTS_DIR / node) for node in _CREDENTIAL_TESTS]
     selection.append(f"{__file__}::test_probe_sees_no_ambient_credential")
     result = subprocess.run(
@@ -49,7 +57,7 @@ def test_credential_tests_pass_with_variable_set_in_real_environment(name, tmp_p
         env=env, cwd=REPO_ROOT, capture_output=True, text=True, timeout=CHILD_TIMEOUT_SECONDS, check=False,
     )  # fmt: skip
     assert result.returncode == 0, (
-        f"{name} set in the environment broke the credential tests; clear it in "
-        f"`no_ambient_credentials` (tests/conftest.py, list in tests/credential_env.py).\n"
+        f"Credential variables {sorted(CREDENTIAL_ENV_NAMES)} set in the environment broke the credential tests; "
+        f"clear them in `no_ambient_credentials` (tests/conftest.py, list in tests/credential_env.py).\n"
         f"{result.stdout[-2000:]}"
     )

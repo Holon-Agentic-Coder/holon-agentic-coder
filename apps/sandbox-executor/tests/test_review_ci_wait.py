@@ -121,12 +121,14 @@ def _run_loop(tmp_path: Path, monkeypatch, probes: list[dict], fake: FakeTime, p
 
 
 def test_pending_checks_that_settle_reach_consensus_without_charging_the_iteration(tmp_path, monkeypatch):
-    # A one-minute iteration budget: the 15 + 30 + 60 s wait would breach it under the old behaviour.
+    # A one-minute iteration budget: five 15 s polls (75 s) would breach it under the old behaviour.
     monkeypatch.setenv(ENV_STAGE_BUDGET_MINUTES["review_iteration"], "1")
     fake = FakeTime()
-    res = _run_loop(tmp_path, monkeypatch, [PENDING, PENDING, PENDING, PENDING, PASSED], fake, ci_wait_budget=600.0)
+    res = _run_loop(
+        tmp_path, monkeypatch, [PENDING, PENDING, PENDING, PENDING, PENDING, PASSED], fake, ci_wait_budget=600.0
+    )
 
-    assert fake.sleeps == [15.0, 30.0, 60.0, 120.0]
+    assert fake.sleeps == [15.0, 15.0, 15.0, 15.0, 15.0]
     assert res["consensus"]["approved"] is True
     assert res["consensus"]["iterations"] == 1
     assert res["budget_breach"] is None
@@ -164,19 +166,37 @@ def test_budget_already_spent_is_not_waited_out_again():
 
 
 def test_back_off_grows_to_its_ceiling_and_no_further():
-    fake = FakeTime()
-    context = MagicMock()
-    probe = MagicMock(return_value=dict(PENDING))
-    policy = CiWaitPolicy(500.0, 15.0, CI_WAIT_POLL_CEILING_SECONDS, clock=fake.clock, sleep=fake.sleep)
-    status, result = wait_for_pending_ci(context, probe, dict(PENDING), policy)
+    assert CI_WAIT_POLL_CEILING_SECONDS == 15.0
+    fake_small = FakeTime()
+    policy_small = CiWaitPolicy(50.0, 3.0, CI_WAIT_POLL_CEILING_SECONDS, clock=fake_small.clock, sleep=fake_small.sleep)
+    status, result = wait_for_pending_ci(
+        MagicMock(), MagicMock(return_value=dict(PENDING)), dict(PENDING), policy_small
+    )
 
-    assert fake.sleeps == [15.0, 30.0, 60.0, 120.0, 120.0, 120.0, 35.0]
+    assert fake_small.sleeps == [3.0, 6.0, 12.0, 15.0, 14.0]
     assert result.exhausted is True
-    assert result.waited_seconds == 500.0
+    assert result.waited_seconds == 50.0
     assert status["pending"] == 1
-    assert next_poll_interval(120.0) == 120.0
+
+    fake_default = FakeTime()
+    policy_default = CiWaitPolicy(
+        50.0, 15.0, CI_WAIT_POLL_CEILING_SECONDS, clock=fake_default.clock, sleep=fake_default.sleep
+    )
+    wait_for_pending_ci(MagicMock(), MagicMock(return_value=dict(PENDING)), dict(PENDING), policy_default)
+    assert fake_default.sleeps == [15.0, 15.0, 15.0, 5.0]
+
+    fake_clamped = FakeTime()
+    policy_clamped = CiWaitPolicy(
+        35.0, 30.0, CI_WAIT_POLL_CEILING_SECONDS, clock=fake_clamped.clock, sleep=fake_clamped.sleep
+    )
+    wait_for_pending_ci(MagicMock(), MagicMock(return_value=dict(PENDING)), dict(PENDING), policy_clamped)
+    assert fake_clamped.sleeps == [15.0, 15.0, 5.0]
+
+    assert next_poll_interval(5.0) == 10.0
+    assert next_poll_interval(10.0) == 15.0
+    assert next_poll_interval(15.0) == 15.0
+    assert next_poll_interval(120.0) == 15.0
     assert next_poll_interval(500.0, 120.0) == 120.0
-    assert next_poll_interval(15.0) == 30.0
 
 
 def test_wait_ends_as_soon_as_nothing_is_pending():
@@ -185,7 +205,7 @@ def test_wait_ends_as_soon_as_nothing_is_pending():
     policy = CiWaitPolicy(1800.0, 15.0, clock=fake.clock, sleep=fake.sleep)
     status, result = wait_for_pending_ci(MagicMock(), probe, dict(PENDING), policy)
 
-    assert fake.sleeps == [15.0, 30.0]
+    assert fake.sleeps == [15.0, 15.0]
     assert status["all_passed"] is True
     assert result.exhausted is False
 
@@ -441,7 +461,7 @@ def test_wait_logs_a_start_line_each_finished_check_and_one_summary_but_nothing_
         "[Review Loop] CI check 'lint' finished: pass (2 pending).",
         "[Review Loop] CI check 'unit' finished: pass (0 pending).",
         "[Review Loop] CI check 'docs' finished: skipping (0 pending).",
-        "[Review Loop] CI wait settled after 105s: 2 passed, 0 failed, 1 other.",
+        "[Review Loop] CI wait settled after 45s: 2 passed, 0 failed, 1 other.",
     ]
     assert not any("Waiting for" in line for line in context.lines)
 
@@ -485,7 +505,7 @@ def test_wait_without_check_names_logs_the_pending_count_change():
     assert context.lines[1:] == [
         "[Review Loop] CI checks pending: 2 -> 1.",
         "[Review Loop] CI checks pending: 1 -> 0.",
-        "[Review Loop] CI wait settled after 45s: 2 passed, 0 failed, 0 other.",
+        "[Review Loop] CI wait settled after 30s: 2 passed, 0 failed, 0 other.",
     ]
 
 
@@ -903,3 +923,41 @@ def test_objecting_fast_path_skips_local_tests_on_missing_ref(tmp_path, monkeypa
     assert "FIND-REF-001" in res["findings"]
     assert "FIND-CI-001" not in res["findings"]
     assert not any("test results not measured" in log for log in ctx.logs)
+
+
+# --- 15-second poll ceiling and fail-early in review-loop CI wait ----------------------------------------------------
+
+
+def test_review_loop_fails_early_on_failed_check_while_others_pending(tmp_path, monkeypatch):
+    """Review-loop wait stops immediately when any check fails, even if other checks are still pending."""
+    fake = FakeTime()
+    mixed = _probe(("lint", "fail"), ("macos-tests", "pending"))
+    res = _run_loop(tmp_path, monkeypatch, [PENDING, mixed, PASSED], fake, ci_wait_budget=600.0)
+
+    assert fake.sleeps == [15.0]
+    assert res["consensus"]["approved"] is False
+    assert any(finding.startswith("FIND-CI") for finding in res["findings"])
+    assert res["ci_checks"]["failed"] == 1
+    assert res["ci_checks"]["pending"] == 1
+
+
+def test_settle_pending_ci_caps_polls_at_15s_and_exits_early_on_failure():
+    fake = FakeTime()
+    probes = [dict(PENDING), dict(PENDING), dict(PENDING), dict(PASSED)]
+    policy = CiWaitPolicy(600.0, clock=fake.clock, sleep=fake.sleep)
+    status, waited = settle_pending_ci(MagicMock(), MagicMock(side_effect=probes), dict(PENDING), policy, spent=False)
+
+    assert status["all_passed"] is True
+    assert waited is not None and waited.exhausted is False
+    assert fake.sleeps == [15.0, 15.0, 15.0, 15.0]
+
+    fake_early = FakeTime()
+    mixed = _probe(("lint", "fail"), ("unit", "pending"))
+    probe_early = MagicMock(return_value=dict(PASSED))
+    policy_early = CiWaitPolicy(600.0, clock=fake_early.clock, sleep=fake_early.sleep)
+    status_early, waited_early = settle_pending_ci(MagicMock(), probe_early, mixed, policy_early, spent=False)
+
+    assert status_early["failed"] == 1
+    assert waited_early is not None and waited_early.exhausted is False
+    assert fake_early.sleeps == []
+    assert probe_early.call_count == 0

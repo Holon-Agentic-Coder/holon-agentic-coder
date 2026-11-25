@@ -1,5 +1,3 @@
-"""Init command module for scaffolding project configuration."""
-
 from __future__ import annotations
 
 import argparse
@@ -10,7 +8,6 @@ ORDER = 40
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register the init subcommand parser."""
     parser = subparsers.add_parser(
         "init",
         help=(
@@ -39,7 +36,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
 
 def run(args: argparse.Namespace) -> int:
-    """Execute the init command."""
     return cli.init_project(
         target_dir=args.target_dir,
         template=args.template,

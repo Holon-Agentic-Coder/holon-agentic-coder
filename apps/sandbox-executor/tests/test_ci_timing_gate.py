@@ -1,15 +1,16 @@
-"""Unit tests for scripts/ci_timing_gate.py, using fake clocks, fetchers and openers only (never the network)."""
+"""Unit tests for scripts/ci_timing_gate.py, using fake clocks, fetchers and openers only (never the network).
+
+The record format has its own module (``test_ci_timing_record.py``) and so has compare mode on test time
+(``test_ci_timing_compare.py``); the fakes they share are in ``ci_timing_fixtures.py``.
+"""
 
 from __future__ import annotations
 
 import http.client
-import io
 import json
 import re
 import time
-import urllib.error
 import urllib.request
-import zipfile
 import zlib
 from pathlib import Path
 
@@ -21,72 +22,35 @@ from scripts.ci_timing_gate import (
     Thresholds,
     TimingRecord,
     artefact_name,
+    build_parser,
     evaluate,
     exceeds_relative,
     fetch_baseline,
-    format_report,
     main,
     parse_junit,
-    per_test_report,
+    read_junit,
     rolling_median,
     safe_fetch,
-    top_offenders,
+)
+from tests.ci_timing_fixtures import (
+    artefact,
+    clear_github_environment,
+    failing_fetcher,
+    fake_fetcher,
+    fixed_clock,
+    gate_args,
+    record,
+    write_junit,
+    zipped,
 )
 
 DEFAULTS = Thresholds()
-START = 1_000_000.0
-
-
-def record(duration: float, tests: dict[str, float] | None = None) -> TimingRecord:
-    """Build a baseline record for the unit job."""
-    return TimingRecord(job="unit", os="ubuntu-latest", workflow="test-unit", duration=duration, tests=tests or {})
-
-
-def fixed_clock(duration: float):
-    """Return a clock that reads ``duration`` seconds after ``START``."""
-    return lambda: START + duration
-
-
-def fake_fetcher(records: list[TimingRecord]):
-    """Return a fetcher that serves ``records`` and remembers what it was asked for."""
-    calls: list[tuple[str, str, int]] = []
-
-    def fetch(repo: str, name: str, runs: int) -> list[TimingRecord]:
-        calls.append((repo, name, runs))
-        return records[:runs]
-
-    fetch.calls = calls  # type: ignore[attr-defined]
-    return fetch
-
-
-def failing_fetcher(repo: str, name: str, runs: int) -> list[TimingRecord]:
-    """A fetcher whose request always fails."""
-    raise urllib.error.URLError("network unreachable")
-
-
-def gate_args(mode: str, *extra: str) -> list[str]:
-    """Return the command line the unit workflow uses, plus ``extra`` flags."""
-    return [
-        mode,
-        "--workflow",
-        "test-unit",
-        "--job",
-        "unit",
-        "--os",
-        "ubuntu-latest",
-        "--start",
-        str(START),
-        "--repo",
-        "owner/repo",
-        *extra,
-    ]
 
 
 @pytest.fixture(autouse=True)
 def no_step_summary(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the job summary and run metadata out of every test unless a test sets them."""
-    for name in ("GITHUB_STEP_SUMMARY", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_TOKEN"):
-        monkeypatch.delenv(name, raising=False)
+    clear_github_environment(monkeypatch)
 
 
 # Rolling median and the relative check
@@ -177,49 +141,6 @@ def test_main_override_flag_passes_relative_regression(capsys: pytest.CaptureFix
 # Per-test top-offender report
 
 
-def test_top_offenders_needs_both_growth_thresholds() -> None:
-    baseline = [{"a": 10.0, "b": 2.0, "c": 20.0, "d": 10.0}]
-    current = {"a": 16.0, "b": 6.0, "c": 26.0, "d": 15.0}
-    # a: +60 % and +6 s; b: +200 % but only +4 s; c: +6 s but only +30 %; d: +50 % exactly, not more.
-    assert [row.test_id for row in top_offenders(current, baseline)] == ["a"]
-
-
-def test_top_offenders_sorted_by_growth_limited_and_ignores_new_tests() -> None:
-    baseline = [{f"t{i}": 10.0 for i in range(12)}, {f"t{i}": 12.0 for i in range(12)}]
-    current = {f"t{i}": 30.0 + i for i in range(12)}
-    current["new_test"] = 500.0
-    rows = top_offenders(current, baseline)
-    assert len(rows) == 10
-    assert rows[0].test_id == "t11"
-    assert rows[0].baseline == 11.0
-    assert rows[0].growth == 30.0
-    assert "new_test" not in {row.test_id for row in rows}
-    assert [row.growth for row in rows] == sorted((row.growth for row in rows), reverse=True)
-
-
-def test_format_report_with_and_without_rows() -> None:
-    assert "no test grew" in format_report([])[0]
-    lines = format_report(top_offenders({"m::slow": 30.0}, [{"m::slow": 10.0}]))
-    assert "| `m::slow` | 10.0 | 30.0 | +20.0 |" in lines
-
-
-def test_per_test_report_skipped_without_baseline_times() -> None:
-    assert per_test_report({"m::slow": 30.0}, []) == [
-        "Per-test report: skipped, no baseline records with per-test times yet."
-    ]
-    assert "skipped" in per_test_report({"m::slow": 30.0}, [{}, {}])[0]
-    assert "no test grew" in per_test_report({"m::slow": 10.0}, [{"m::slow": 10.0}])[0]
-
-
-def write_junit(path: Path, cases: dict[str, float]) -> None:
-    """Write a minimal JUnit report with ``classname::name`` cases."""
-    body = "".join(
-        f'<testcase classname="{test_id.split("::")[0]}" name="{test_id.split("::")[1]}" time="{t}"/>'
-        for test_id, t in cases.items()
-    )
-    path.write_text(f'<testsuites><testsuite name="pytest">{body}</testsuite></testsuites>')
-
-
 def test_report_does_not_fail_on_its_own(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     junit = tmp_path / "unit-report.xml"
     write_junit(junit, {"tests.m::slow": 60.0})
@@ -269,26 +190,61 @@ def test_parse_junit_nested_missing_time_and_duplicate_names(tmp_path: Path) -> 
     }
 
 
+# Test time: the suite time of the JUnit report, or the sum of its test case times
+
+
+def test_read_junit_prefers_the_suite_time_over_the_sum(tmp_path: Path) -> None:
+    report = tmp_path / "report.xml"
+    write_junit(report, {"tests.m::a": 30.0, "tests.m::b": 50.0}, suite_time=41.5)
+    assert read_junit(str(report)) == ({"tests.m::a": 30.0, "tests.m::b": 50.0}, 41.5, "suite")
+    assert parse_junit(str(report)) == {"tests.m::a": 30.0, "tests.m::b": 50.0}
+
+
+def test_read_junit_sums_the_test_cases_without_a_suite_time(tmp_path: Path) -> None:
+    report = tmp_path / "report.xml"
+    write_junit(report, {"tests.m::a": 30.0, "tests.m::b": 50.0})
+    assert read_junit(str(report)) == ({"tests.m::a": 30.0, "tests.m::b": 50.0}, 80.0, "sum")
+
+
+@pytest.mark.parametrize("suite_time", ["0", "0.000", "", "-3", "nan", "inf", "fast", "1e3"])
+def test_read_junit_ignores_a_suite_time_that_is_not_a_positive_decimal(tmp_path: Path, suite_time: str) -> None:
+    report = tmp_path / "report.xml"
+    report.write_text(f"<testsuite time='{suite_time}'><testcase classname='m' name='a' time='2.5'/></testsuite>")
+    assert read_junit(str(report)) == ({"m::a": 2.5}, 2.5, "sum")
+
+
+def test_read_junit_sums_top_level_suites_and_never_counts_nested_ones_twice(tmp_path: Path) -> None:
+    report = tmp_path / "report.xml"
+    report.write_text(
+        "<testsuites>"
+        "<testsuite name='first' time='10.5'><testsuite name='inner' time='9.0'>"
+        "<testcase classname='m' name='a' time='4.0'/></testsuite></testsuite>"
+        "<testsuite name='second' time='20.25'><testcase classname='m' name='b' time='7.0'/></testsuite>"
+        "</testsuites>"
+    )
+    assert read_junit(str(report)) == ({"m::a": 4.0, "m::b": 7.0}, 30.75, "suite")
+    # One top-level suite without a time: the suite time is incomplete, so the test cases are summed instead.
+    report.write_text(report.read_text().replace(" time='20.25'", ""))
+    assert read_junit(str(report)) == ({"m::a": 4.0, "m::b": 7.0}, 11.0, "sum")
+
+
+def test_read_junit_takes_a_testsuite_root_as_the_top_level_suite(tmp_path: Path) -> None:
+    report = tmp_path / "report.xml"
+    report.write_text(
+        "<testsuite time='12.0'><testsuite time='99.0'><testcase classname='m' name='a'/></testsuite></testsuite>"
+    )
+    assert read_junit(str(report)) == ({"m::a": 0.0}, 12.0, "suite")
+
+
+def test_read_junit_without_test_cases_or_suite_time_has_no_test_time(tmp_path: Path) -> None:
+    report = tmp_path / "report.xml"
+    report.write_text("<testsuites><testsuite name='pytest'/></testsuites>")
+    assert read_junit(str(report)) == ({}, None, "")
+    report.write_text("<testsuites/>")
+    assert read_junit(str(report)) == ({}, None, "")
+
+
 # Baseline fetch through a fake opener
-
-
-def zipped(rec: TimingRecord) -> bytes:
-    """Return an in-memory artefact archive holding ``rec`` as record.json."""
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr("record.json", json.dumps(rec.to_json()))
-    return buffer.getvalue()
-
-
-def artefact(index: int, branch: str = "main", expired: bool = False, head_repo: int = 1) -> dict[str, object]:
-    """Return one artefact listing entry; ``head_repo`` other than 1 marks a run from a fork."""
-    return {
-        "id": index,
-        "expired": expired,
-        "created_at": f"2026-10-{index:02d}T00:00:00Z",
-        "archive_download_url": f"https://api.github.com/download/{index}",
-        "workflow_run": {"head_branch": branch, "repository_id": 1, "head_repository_id": head_repo},
-    }
 
 
 def test_fetch_baseline_filters_limits_and_keeps_token_unredirected() -> None:
@@ -412,6 +368,36 @@ def test_compare_without_repo_is_cold_start(capsys: pytest.CaptureFixture[str]) 
     assert main(args, clock=fixed_clock(300.0), fetcher=fetch) == 0
     assert fetch.calls == []  # type: ignore[attr-defined]
     assert "::notice::Cold start" in capsys.readouterr().out
+
+
+def test_parser_accepts_the_unit_workflow_command_with_every_flag_unchanged() -> None:
+    """Every flag of the gate command in test-unit.yml keeps its name and its meaning."""
+    repo_root = Path(__file__).resolve().parents[3]
+    content = (repo_root / ".github" / "workflows" / "test-unit.yml").read_text(encoding="utf-8")
+    start = content.index("python3 scripts/ci_timing_gate.py")
+    command = content[start : content.index("- name:", start)]
+    flags = ["--workflow", "--job", "--os", "--start", "--runs", "--tolerance", "--min-delta", "--ceiling"]
+    flags += ["--junit", "--repo", "--output", "--override-label-present"]
+    assert re.findall(r"--[a-z-]+", command) == flags
+
+    values = ["test-unit", "unit", "macos-latest", "1795524851", "5", "0.5", "150", "600"]
+    values += ["unit-report.xml", "owner/repo", "ci-timing/record.json", "true"]
+    argv = ["compare", *(part for pair in zip(flags, values, strict=True) for part in pair)]
+    assert vars(build_parser().parse_args(argv)) == {
+        "mode": "compare",
+        "workflow": "test-unit",
+        "job": "unit",
+        "os_name": "macos-latest",
+        "start": 1795524851.0,
+        "runs": 5,
+        "tolerance": 0.5,
+        "min_delta": 150.0,
+        "ceiling": 600.0,
+        "junit": "unit-report.xml",
+        "repo": "owner/repo",
+        "output": "ci-timing/record.json",
+        "override_label_present": "true",
+    }
 
 
 # Replay of the real main durations cited in the intent: job wall clock (started_at to completed_at, from the GitHub

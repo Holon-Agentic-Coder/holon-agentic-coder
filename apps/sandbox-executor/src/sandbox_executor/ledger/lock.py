@@ -1,5 +1,3 @@
-"""LedgerLock and atomic append primitives ensuring append-only persistence invariants."""
-
 from __future__ import annotations
 
 import contextlib
@@ -20,18 +18,14 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+_UNSUPPORTED_FLOCK_ERRNOS = (errno.ENOSYS, getattr(errno, "EOPNOTSUPP", 45))
+_RETRYABLE_FLOCK_ERRNOS = (errno.EAGAIN, errno.EWOULDBLOCK)
+_BACKOFF_MULTIPLIER = 2
+_JITTER_MIN = 0.5
+_JITTER_MAX = 1.5
+
 
 class LedgerLock:
-    """Reusable advisory file locking context manager for ledger mutation safety.
-
-    Guarantees atomic append semantics across concurrent processes and threads
-    using POSIX advisory locking (fcntl.flock with LOCK_EX | LOCK_NB) with bounded
-    exponential backoff, randomised jitter, and configurable timeout.
-
-    Flushes and fsyncs the file descriptor on lock release, ensuring durability.
-    Gracefully falls back on platforms or filesystems without flock support.
-    """
-
     def __init__(
         self,
         filepath: str,
@@ -47,15 +41,54 @@ class LedgerLock:
         self._fd: int | None = None
         self._locked: bool = False
 
+    @staticmethod
+    def _supports_posix_flock() -> bool:
+        return sys.platform != "win32" and fcntl is not None and hasattr(fcntl, "flock")
+
+    def _sleep_with_backoff(self, delay: float) -> float:
+        jitter = random.uniform(_JITTER_MIN, _JITTER_MAX)
+        sleep_time = min(delay * jitter, self.max_delay)
+        time.sleep(sleep_time)
+        return min(delay * _BACKOFF_MULTIPLIER, self.max_delay)
+
+    def _acquire_exclusive_lock(self, fd: int) -> None:
+        start_time = time.monotonic()
+        delay = self.initial_delay
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._locked = True
+                return
+            except (BlockingIOError, OSError) as exc:
+                if isinstance(exc, OSError) and exc.errno in _UNSUPPORTED_FLOCK_ERRNOS:
+                    logger.warning(
+                        "Advisory file locking not supported on filesystem for %s; "
+                        "falling back to uncoordinated append",
+                        self.filepath,
+                    )
+                    return
+                if (
+                    isinstance(exc, OSError)
+                    and exc.errno not in _RETRYABLE_FLOCK_ERRNOS
+                    and not isinstance(exc, BlockingIOError)
+                ):
+                    if self._file is not None:
+                        self._file.close()
+                    raise
+                if (time.monotonic() - start_time) >= self.timeout:
+                    if self._file is not None:
+                        self._file.close()
+                    raise TimeoutError(f"Timed out waiting for exclusive lock on ledger file: {self.filepath}") from exc
+                delay = self._sleep_with_backoff(delay)
+
     def __enter__(self) -> TextIO:
         dirname = os.path.dirname(os.path.abspath(self.filepath))
         if dirname:
             os.makedirs(dirname, exist_ok=True)
 
-        use_posix_lock = sys.platform != "win32" and fcntl is not None and hasattr(fcntl, "flock")
         self._file = open(self.filepath, "a", encoding="utf-8")
 
-        if not use_posix_lock:
+        if not self._supports_posix_flock():
             logger.warning(
                 "Advisory file locking (fcntl.flock) unavailable on platform %s; "
                 "falling back to uncoordinated append for %s",
@@ -72,36 +105,7 @@ class LedgerLock:
         if not isinstance(self._fd, int):
             return self._file
 
-        start_time = time.monotonic()
-        delay = self.initial_delay
-        while True:
-            try:
-                fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                self._locked = True
-                break
-            except (BlockingIOError, OSError) as e:
-                if isinstance(e, OSError) and e.errno in (errno.ENOSYS, getattr(errno, "EOPNOTSUPP", 45)):
-                    logger.warning(
-                        "Advisory file locking not supported on filesystem for %s; "
-                        "falling back to uncoordinated append",
-                        self.filepath,
-                    )
-                    break
-                if (
-                    isinstance(e, OSError)
-                    and e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK)
-                    and not isinstance(e, BlockingIOError)
-                ):
-                    self._file.close()
-                    raise
-                if (time.monotonic() - start_time) >= self.timeout:
-                    self._file.close()
-                    raise TimeoutError(f"Timed out waiting for exclusive lock on ledger file: {self.filepath}") from e
-                jitter = random.uniform(0.5, 1.5)
-                sleep_time = min(delay * jitter, self.max_delay)
-                time.sleep(sleep_time)
-                delay = min(delay * 2, self.max_delay)
-
+        self._acquire_exclusive_lock(self._fd)
         return self._file
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
@@ -120,11 +124,10 @@ class LedgerLock:
 
 
 class LedgerRewriteError(RuntimeError):
-    """Raised when a ledger write changed bytes that were already in the file instead of only appending."""
+    pass
 
 
 def _read_ledger_bytes(path: str) -> bytes:
-    """Return the bytes of a ledger file, treating a missing file as empty."""
     try:
         with open(path, "rb") as f:
             return f.read()
@@ -133,21 +136,11 @@ def _read_ledger_bytes(path: str) -> bytes:
 
 
 def _first_divergence(before: bytes, after: bytes) -> int:
-    """Return the offset of the first byte at which ``after`` stops matching ``before``."""
     limit = min(len(before), len(after))
     return next((i for i in range(limit) if before[i] != after[i]), limit)
 
 
 def assert_ledger_prefix(path: str, before: bytes) -> None:
-    """Fail closed unless the ledger's pre-write bytes are a byte prefix of its current bytes.
-
-    Args:
-        path: Path to the ledger file.
-        before: Bytes of the ledger captured before the write.
-
-    Raises:
-        LedgerRewriteError: When the write rewrote, reordered or truncated existing bytes.
-    """
     after = _read_ledger_bytes(path)
     if not after.startswith(before):
         offset = _first_divergence(before, after)
@@ -161,11 +154,6 @@ def atomic_ledger_append(
     initial_delay: float = 0.02,
     max_delay: float = 0.5,
 ) -> Iterator[TextIO]:
-    """Atomic context manager for appending records to a ledger file with advisory locking.
-
-    The bytes present when the lock is taken must remain a byte prefix of the file once the caller's block has
-    written; otherwise ``LedgerRewriteError`` is raised.
-    """
     with LedgerLock(
         filepath=filepath,
         timeout=timeout,
@@ -180,11 +168,6 @@ def atomic_ledger_append(
 
 @contextlib.contextmanager
 def suppress_ledger_failures() -> Iterator[None]:
-    """Suppress a failed best-effort ledger write, except ``LedgerRewriteError``, which always propagates.
-
-    Use it in place of ``contextlib.suppress(Exception)`` around a ledger write, so a rewritten ledger stops the stage
-    instead of being committed and pushed.
-    """
     try:
         yield
     except LedgerRewriteError:

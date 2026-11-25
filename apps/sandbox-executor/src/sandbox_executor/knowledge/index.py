@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+from collections.abc import Callable
+from typing import Any
 
 from sandbox_executor.knowledge.ledger_sync import compute_signature_hash, connect_wal, sync_ledger_incremental
 
@@ -168,5 +170,5 @@ class ActionIndexDatabase:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def sync_ledger(self, ledger_path: str) -> int:
-        return sync_ledger_incremental(self.db_path, ledger_path)
+    def sync_ledger(self, ledger_path: str, skip_row: Callable[[dict[str, Any]], bool] | None = None) -> int:
+        return sync_ledger_incremental(self.db_path, ledger_path, skip_row)

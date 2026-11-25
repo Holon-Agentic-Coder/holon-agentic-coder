@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from sandbox_executor.cli.commands import execute as execute_command
 from sandbox_executor.flow.git_refs import _read_ledger_rows
+from sandbox_executor.knowledge import ActionIndexDatabase, ConsultEngine
 from sandbox_executor.ledger import query_ledger, read_merged_rows, read_merged_rows_at_ref, read_merged_text
 from sandbox_executor.ledger.fragments import fragment_path, iter_fragment_files, ledger_name_of, root_intent_id
 
@@ -87,6 +88,23 @@ def test_action_rows_are_identified_by_action_id(tmp_path: Path) -> None:
     canonical = _write(tmp_path, f"{LEDGER_REL}/executions.jsonl", [action | {"outcome": "success"}])
     _write(tmp_path, f"{LEDGER_REL}/pending/executions/I-1-a.jsonl", [action | {"outcome": "failure"}])
     assert [row["outcome"] for row in read_merged_rows(str(canonical))] == ["success"]
+
+
+def test_consult_indexes_a_canonical_action_once_with_the_canonical_payload(tmp_path: Path) -> None:
+    action = {"entry_type": "action", "action_id": "ACT-1", "action": "Wire cache", "context_fingerprint": "fp"}
+    canonical = _write(tmp_path, f"{LEDGER_REL}/executions.jsonl", [action | {"verdict": "success"}])
+    _write(tmp_path, f"{LEDGER_REL}/pending/executions/I-1-a.jsonl", [action | {"verdict": "failure"}])
+    _write(tmp_path, f"{LEDGER_REL}/pending/executions/I-2-b.jsonl", [{**action, "action_id": "ACT-2"}])
+    db = ActionIndexDatabase(db_path=str(tmp_path / "index.db"))
+    result = ConsultEngine(db=db, auto_sync_ledgers=[str(canonical)]).consult_records(query_text="cache")
+    indexed = sorted((r["action_id"], r["verdict"]) for r in result.records)
+    assert indexed == [("ACT-1", "success"), ("ACT-2", "unknown")]
+    conn = db.get_connection()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM action_records_fts").fetchone()[0] == 2
+        assert conn.execute("SELECT SUM(failure_count) FROM action_signatures").fetchone()[0] == 0
+    finally:
+        conn.close()
 
 
 def test_canonical_duplicates_are_never_collapsed(tmp_path: Path) -> None:

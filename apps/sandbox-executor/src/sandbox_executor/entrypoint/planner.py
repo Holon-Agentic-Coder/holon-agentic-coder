@@ -374,7 +374,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
     intent_data = None
 
     def warn(line_no: int, e: Exception) -> None:
-        print(f"Warning: skipping invalid JSON in {intents_file_path} at line {line_no}: {e}")
+        print(f"Warning: skipping unreadable row in {intents_file_path} at line {line_no}: {e}")
 
     for data in read_merged_rows(intents_file_path, on_bad_line=warn):
         # Match branch name prefix (e.g. branch == "I-timestamp-slug")

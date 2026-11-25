@@ -89,6 +89,17 @@ def read_merged_rows(canonical_path: str, on_bad_line: BadLineHandler | None = N
     return merge_rows(ledger_name_of(canonical_path) or "", canonical_rows, fragments)
 
 
+def fragment_sync_plan(canonical_path: str) -> list[tuple[str, Callable[[Row], bool]]]:
+    ledger_name = ledger_name_of(canonical_path) or ""
+    seen = {row_identity(ledger_name, row) for row in parse_jsonl_rows(_read_text(canonical_path) or "")}
+    plan: list[tuple[str, Callable[[Row], bool]]] = []
+    for path in iter_fragment_files(canonical_path):
+        known = frozenset(seen)
+        plan.append((path, lambda row, known=known: row_identity(ledger_name, row) in known))
+        seen.update(row_identity(ledger_name, row) for row in parse_jsonl_rows(_read_text(path) or ""))
+    return plan
+
+
 def read_merged_text(canonical_path: str) -> str | None:
     canonical_text = _read_text(canonical_path)
     fragments = _fragment_texts(canonical_path)

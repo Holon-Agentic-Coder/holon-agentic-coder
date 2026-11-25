@@ -5,7 +5,7 @@ import json
 import os
 import sqlite3
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -267,7 +267,9 @@ def persist_watermark(conn: sqlite3.Connection, ledger_path: str, mtime: float, 
     )
 
 
-def sync_ledger_incremental(db_path: str, ledger_path: str) -> int:
+def sync_ledger_incremental(
+    db_path: str, ledger_path: str, skip_row: Callable[[dict[str, Any]], bool] | None = None
+) -> int:
     if not os.path.exists(ledger_path):
         return 0
 
@@ -280,6 +282,8 @@ def sync_ledger_incremental(db_path: str, ledger_path: str) -> int:
             return 0
 
         parsed_rows, new_byte_offset = read_new_rows(ledger_path, resume_offset(stat, watermark))
+        if skip_row is not None:
+            parsed_rows = [parsed for parsed in parsed_rows if not skip_row(parsed[2])]
         batch = build_row_batch(parsed_rows)
         with conn:
             write_row_batch(conn, batch)

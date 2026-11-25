@@ -778,6 +778,7 @@ def supervise_authoring_turn(  # noqa: PLR0913
     env: Mapping[str, str] | None = None,
     stdin_file: str | None = None,
     prompt_file: str | None = None,
+    on_turn_boundary: Callable[[int], str | None] | None = None,
 ) -> AuthoringOutcome:
     """Run an authoring turn and at most one follow-up, then report whether a budget failure must be recorded.
 
@@ -820,7 +821,9 @@ def supervise_authoring_turn(  # noqa: PLR0913
         return result
 
     def run_follow_up(instruction: str) -> TurnResult:
-        return turn(f"{context}\n\n{instruction}" if context else instruction)
+        notice = (on_turn_boundary(len(outcome.turns)) or "").strip() if on_turn_boundary is not None else ""
+        full_instruction = f"{instruction}\n\n{notice}" if notice else instruction
+        return turn(f"{context}\n\n{full_instruction}" if context else full_instruction)
 
     first = turn(prompt)
     report = validate_artefact(artefact_path, spec)

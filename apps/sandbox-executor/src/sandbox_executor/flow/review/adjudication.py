@@ -106,3 +106,9 @@ def _augment_pr_text_with_rejected(
         loc = item.path if item.line is None else f"{item.path}:{item.line}"
         lines.append(f"- `{item.id}` ({item.severity}, `{loc}`): {item.summary} — rejected: `{item.rejection_reason}`")
     return pr_text[0], "\n".join(lines).strip()
+
+
+def _lookup_introducing_action_id(row: FindingRow, action_ids: Mapping[str, str]) -> str | None:
+    """Find the ACT-FIND action_id that first introduced ``row``."""
+    sig_key = str(finding_signature(row.severity, row.path, row.line, row.summary))
+    return action_ids.get(row.id) or action_ids.get(sig_key)

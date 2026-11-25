@@ -62,12 +62,13 @@ jobs:
         # selection under a simulated container HOME and is kept out of the unit matrix for runtime.
         # The two stress tests run concurrently (-n auto --dist worksteal), each with its own HOME,
         # workspace, TMPDIR and pytest --basetemp (tests/stress_support.py);
-        # tests/test_stress_support.py proves the two share none of them.
+        # tests/test_stress_support.py proves the two share none of them. -rP prints the captured
+        # output of passing tests, so each child's stress-child timing line reaches the job log.
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           uv sync --locked
-          time uv run pytest -n auto --dist worksteal -v -l --tb=short -m stress --junitxml=stress-report.xml
+          time uv run pytest -n auto --dist worksteal -v -l -rP --tb=short -m stress --junitxml=stress-report.xml
 
       - name: Assert the stress suite really ran
         if: steps.bookkeeping.outputs.skip != 'true'

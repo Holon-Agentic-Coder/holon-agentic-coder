@@ -1,5 +1,3 @@
-"""Plan command module for running Planner to generate a plan branch from an intent."""
-
 from __future__ import annotations
 
 import argparse
@@ -19,7 +17,6 @@ ORDER = 20
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register the plan subcommand parser."""
     parser = subparsers.add_parser("plan", help="Run Plan Generator to create a detailed markdown plan branch.")
     parser.add_argument("intent_branch", help="Target intent branch name (e.g. I-1784983150-build-execution/_)")
     add_runner_options(parser)
@@ -30,7 +27,6 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
 
 
 def run(args: argparse.Namespace) -> int | None:
-    """Execute the plan command."""
     common_kwargs = prepare_role_execution(args)
     if common_kwargs is None:
         return None

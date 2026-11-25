@@ -89,7 +89,7 @@ def fake_calibrate(**kwargs: object) -> SimpleNamespace:
 def run_stage(repos: SimpleNamespace, **kwargs: bool):
     ctx = FlowContext(target_worktree=str(repos.host), execution_branch=EXEC, agent="a", model="m", **kwargs)
     with (
-        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=fake_calibrate),
         patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", return_value={"state": "success"}),
     ):
@@ -160,7 +160,7 @@ def test_flow_ending_at_a_failed_review_restores_the_starting_branch(repos: Simp
 
     engine = PipelineEngine(ctx, from_stage="review")
     with (
-        patch("sandbox_executor.flow.stages.review.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
         patch.object(engine, "execute_stage", side_effect=lambda stage: review_then_fail(ctx)),
         patch("sandbox_executor.flow.pipeline.pre_run_guard_error", return_value=None),
         patch.object(engine, "save_checkpoint"),

@@ -1,26 +1,14 @@
 """Carry an approval across a mechanical target-branch merge when the PR's own change is unchanged.
 
-The conflict gate merges ``origin/<target>`` into a conflicting approved head A (cleanly, or resolving ledger-only
-conflicts) and pushes the merge B. When B's PR-own change fingerprint
-(:mod:`sandbox_executor.flow.review.approval_fingerprint`) equals the one recorded with the approval, the merge added
-nothing to the change the reviewers approved, so the approval is kept instead of re-earned: the carry-over is logged
-with both SHAs and the fingerprint and recorded as one appended ``ACT-CARRY`` ledger row (no row is edited).
-
-The carry-over removes a review re-run, never a CI wait. ``target_commit`` stays A, the SHA the reviewers saw, and the
-consensus gains ``carried_from`` (A) and ``carried_to`` (B); its ``ci_checks`` and ``mergeability`` become "not
-measured", so the stamp never shows A's green CI or clean probe for B. Stage 5's merged-head gate therefore still sees
-a moved head, waits for every check on B, and withdraws the consensus and restarts Stage 4 when one fails. A code
-conflict, a different fingerprint or an approval without a fingerprint (a legacy checkpoint) keeps the gate's block.
-
-Stage 5 uses the same helpers: its conflict gate records a carry-over row for a merge it made, and its merged-head
-gate (:func:`merged_head_coverage`) annotates the CI wait on a carried head, or withdraws the consensus when the PR-own
-change differs from the approved one, so Stage 4 reviews it again.
+When a mechanical merge B has the same PR-own change fingerprint as approved head A, the approval is kept and recorded
+as one appended ``ACT-CARRY`` row while Stage 5 still waits for CI on B. Agent-resolved merges never carry over and
+instead record ``context.review_scope_paths`` so Stage 4 re-reviews the resolved paths.
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -49,9 +37,16 @@ class CarryOver:
 
 
 def decide_carry_over(
-    repo_dir: str, consensus_data: Mapping[str, Any], merged_head: str, target_branch: str
+    repo_dir: str,
+    consensus_data: Mapping[str, Any],
+    merged_head: str,
+    target_branch: str,
+    *,
+    mechanical_only: bool = True,
 ) -> CarryOver | None:
-    """The carry-over when ``merged_head`` has the approval's recorded fingerprint, else None."""
+    """The carry-over when a mechanical-only ``merged_head`` has the approval's recorded fingerprint, else None."""
+    if not mechanical_only:
+        return None
     recorded = str(consensus_data.get("approval_fingerprint") or "")
     approved = str(consensus_data.get("target_commit") or "").strip()
     if not (recorded and approved and merged_head):
@@ -126,10 +121,21 @@ def _review_consensus(context: FlowContext) -> dict[str, Any]:
     return dict((review.payload.get("consensus") if review else None) or {})
 
 
-def record_stage5_carry_over(context: FlowContext, target_branch: str, merged_head: str) -> CarryOver | None:
-    """After Stage 5's conflict gate merged the target: log and record the carry-over when the change is unchanged."""
+def record_stage5_carry_over(
+    context: FlowContext,
+    target_branch: str,
+    merged_head: str,
+    *,
+    mechanical_only: bool = True,
+    rereview_scope: Sequence[str] = (),
+) -> CarryOver | None:
+    """After Stage 5's conflict gate merged the target: carry over mechanical merges, else record re-review scope."""
     from sandbox_executor.flow.review.records import record_review_action  # Lazy: records imports review_report.
 
+    if not mechanical_only:
+        if rereview_scope:
+            context.review_scope_paths = list(rereview_scope)
+        return None
     consensus = _review_consensus(context)
     if not consensus.get("approved"):
         return None
@@ -164,6 +170,10 @@ def merged_head_coverage(context: FlowContext, approved: str, head: str) -> tupl
     on ``head``); ``CHANGED`` gives a failed record that withdraws the consensus so Stage 4 reviews the change again;
     anything else gives an empty annotation (today's CI wait).
     """
+    if getattr(context, "review_scope_paths", None):
+        reason = f"agent-resolved merge requires scoped re-review of: {', '.join(context.review_scope_paths)}"
+        context.log(f"Merged-head CI gate: head {head} is not covered by the approval of {approved}: {reason}.")
+        return CHANGED, {**gate_record(FAILED, head, [], [], reason), "withdrawal_reason": reason}
     coverage = _coverage(context, head)
     if coverage.how == SAME_FINGERPRINT:
         context.log(

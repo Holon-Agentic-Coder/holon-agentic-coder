@@ -1,36 +1,29 @@
-"""The strict ``KEY=VALUE`` parser of a layered-configuration file (see ``config_env``).
-
-Comments, blank lines and optional single or double quotes are understood; quoted text is taken literally, an
-unquoted value ends at an inline `` #`` comment. A shell ``export`` prefix is not part of the subset and is rejected.
-Nothing is expanded and nothing is executed. A malformed line is skipped with a warning naming the file and line
-number, never the line text.
-"""
-
 from __future__ import annotations
 
 import re
 
 from sandbox_executor.config_env_model import ParsedLayer
 
+_UTF8_BOM = "\ufeff"
 _KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _INLINE_COMMENT_RE = re.compile(r"\s#")
 
 
 def _unquote(raw: str) -> str:
-    if raw[:1] in ("'", '"'):
-        end = raw.find(raw[0], 1)
-        if end == -1:
+    quote_char = raw[:1]
+    if quote_char in ("'", '"'):
+        closing_index = raw.find(quote_char, 1)
+        if closing_index == -1:
             raise ValueError("unmatched quote")
-        rest = raw[end + 1 :].strip()
-        if rest and not rest.startswith("#"):
+        trailing_text = raw[closing_index + 1 :].strip()
+        if trailing_text and not trailing_text.startswith("#"):
             raise ValueError("text after the closing quote")
-        return raw[1:end]
-    comment = _INLINE_COMMENT_RE.search(raw)
-    return (raw[: comment.start()] if comment else raw).rstrip()
+        return raw[1:closing_index]
+    inline_comment = _INLINE_COMMENT_RE.search(raw)
+    return (raw[: inline_comment.start()] if inline_comment else raw).rstrip()
 
 
 def _parse_line(line: str) -> tuple[str, str] | None:
-    """Return ``(key, value)``, or None for a blank or comment line; ValueError carries a value-free reason."""
     stripped = line.strip()
     if not stripped or stripped.startswith("#"):
         return None
@@ -46,10 +39,9 @@ def _parse_line(line: str) -> tuple[str, str] | None:
 
 
 def parse_env_text(text: str, origin: str) -> ParsedLayer:
-    """Parse a layer file's text; malformed lines are skipped with a warning naming ``origin`` and the line number."""
     values: dict[str, str] = {}
     warnings: list[str] = []
-    for number, line in enumerate(text.removeprefix("﻿").splitlines(), start=1):
+    for number, line in enumerate(text.removeprefix(_UTF8_BOM).splitlines(), start=1):
         try:
             parsed = _parse_line(line)
         except ValueError as exc:

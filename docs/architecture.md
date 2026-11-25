@@ -557,6 +557,29 @@ Rules that keep the package healthy:
   `tests/flow/test_patch_targets.py` rejects package-level patch targets. The only exception is a name that a caller
   outside the package imports from `sandbox_executor.flow` inside a function body.
 
+### CLI module map
+
+The host CLI lives in the `sandbox_executor.cli` package (`apps/sandbox-executor/src/sandbox_executor/cli/`). Each
+implementation module stays within 200 lines:
+
+| Module                      | Responsibility                                                                                   |
+| --------------------------- | ------------------------------------------------------------------------------------------------ |
+| `cli/__init__.py`           | Pure re-export facade and `__all__` (zero `def`/`class` definitions) preserving package imports. |
+| `cli/__main__.py`           | `python -m sandbox_executor.cli` module entrypoint delegating to `cli.main.main`.                |
+| `cli/main.py`               | Top-level `build_parser`, `resolve_layered_configuration`, and `main` CLI dispatch entrypoint.   |
+| `cli/logging.py`            | `PACKAGE_LOGGER_NAME`, `_CurrentStderrHandler`, and idempotent `configure_cli_logging`.          |
+| `cli/preflight.py`          | Runner/model resolution (`resolve_runner_and_model`), `flow_dispatches_agent`, `preflight_gate`. |
+| `cli/doctor.py`             | `run_doctor` readiness report and `_configuration_section` layered settings summary.             |
+| `cli/doctor_env.py`         | `report_budgets_and_envelope`, budget reporting, and local-LLM gateway health probing.           |
+| `cli/options.py`            | Shared argparse option builders (`add_runner_options`, `add_preflight_option`, worktree/proxy).  |
+| `cli/antigravity_mounts.py` | Thin compatibility re-export of `antigravity_session_mounts` from `sandbox_executor.launcher`.   |
+| `cli/pi_mounts.py`          | Thin compatibility re-export of `get_pi_mounts` from `sandbox_executor.launcher`.                |
+| `cli/commands/`             | Discovered subcommand modules (`intent`, `plan`, `execute`, `flow`, `doctor`, `review`, etc.).   |
+
+`cli/__init__.py` holds only re-exports and `__all__`; `apps/sandbox-executor/tests/cli/test_patch_targets.py` enforces
+that tests patch submodule-local symbols on their owning `sandbox_executor.cli.<module>` rather than on
+`sandbox_executor.cli`.
+
 #### Module line budgets
 
 The settings live in `holon-config/hygiene/module_budgets.json`, with exactly three keys:

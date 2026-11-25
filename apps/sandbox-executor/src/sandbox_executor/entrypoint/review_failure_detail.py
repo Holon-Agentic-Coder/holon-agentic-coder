@@ -1,9 +1,3 @@
-"""Failure detail of a failed pre-push test run: named failed tests, a summary-first excerpt and the full output file.
-
-The full output is redacted once, before extraction, truncation and writing, so a secret cut at a boundary cannot
-slip past the redaction patterns. The file lives under the git-ignored ``.holon/`` directory of the workspace.
-"""
-
 import contextlib
 import os
 import re
@@ -20,19 +14,20 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _FAILED_LINE = re.compile(r"^(?:\[gw\d+\]\s*)?(?:FAILED|ERROR)\s+(.+?)(?:\s+-\s.*)?$")
 
 
+def _is_pytest_node_id(candidate: str) -> bool:
+    return "::" in candidate or ".py" in candidate
+
+
 def failed_test_ids(output: str) -> list[str]:
-    """Return the distinct failed node ids named by ``FAILED``/``ERROR`` summary lines, in order of appearance."""
     ids: dict[str, None] = {}
     for line in _ANSI.sub("", output).splitlines():
         match = _FAILED_LINE.match(line.strip())
-        # A node id contains "::" or names a .py file; this rejects captured log lines such as "ERROR something".
-        if match and ("::" in match.group(1) or ".py" in match.group(1)):
+        if match and _is_pytest_node_id(match.group(1)):
             ids.setdefault(match.group(1).rstrip(":"), None)
     return list(ids)
 
 
 def names_block(ids: list[str]) -> str:
-    """Format ``failed: a, b (+K more)``, capped by count and characters; empty when there are no ids."""
     shown: list[str] = []
     used = 0
     for test_id in ids[:MAX_NAMED_FAILURES]:
@@ -47,7 +42,6 @@ def names_block(ids: list[str]) -> str:
 
 
 def write_full_output(workspace: str, step: str, text: str) -> str | None:
-    """Write ``text`` to a fixed per-step file under ``.holon/``; return its workspace-relative path or None."""
     relative = os.path.join(VERIFICATION_DIR, f"{step}.log")
     try:
         os.makedirs(os.path.join(workspace, VERIFICATION_DIR), exist_ok=True)
@@ -59,13 +53,11 @@ def write_full_output(workspace: str, step: str, text: str) -> str | None:
 
 
 def clear_full_output(workspace: str, step: str) -> None:
-    """Remove a stale per-step output file left by an earlier failed run."""
     with contextlib.suppress(OSError):
         os.remove(os.path.join(workspace, VERIFICATION_DIR, f"{step}.log"))
 
 
 def build_test_failure_message(returncode: int, raw_output: str, workspace: str, step: str = "test") -> str:
-    """Build ``Resolver pre-push <step> failed (exit code N); failed: ...; full output: <path>: <excerpt>``."""
     text = CredentialRedactor.redact_text(raw_output)
     path = write_full_output(workspace, step, text)
     parts = [f"Resolver pre-push {step} failed (exit code {returncode})"]
@@ -77,14 +69,13 @@ def build_test_failure_message(returncode: int, raw_output: str, workspace: str,
     return prefix + summary_excerpt(text, max(MESSAGE_MAX_CHARS - len(prefix), 0))
 
 
-def with_short_summary(env: dict[str, str]) -> dict[str, str]:
-    """Return ``env`` with ``-rfE`` appended to ``PYTEST_ADDOPTS`` unless ``-r`` already reports both.
+def _reports_failures_and_errors(flag_chars: set[str]) -> bool:
+    return "A" in flag_chars or {"f", "E"} <= flag_chars or {"a", "E"} <= flag_chars
 
-    ``-rfE`` keeps pytest's default ``E`` (collection and fixture errors) that a bare ``-rf`` would drop.
-    """
+
+def with_short_summary(env: dict[str, str]) -> dict[str, str]:
     addopts = env.get("PYTEST_ADDOPTS", "")
     for match in re.finditer(r"(?:^|\s)-r([A-Za-z]*)", addopts):
-        chars = set(match.group(1))
-        if "A" in chars or {"f", "E"} <= chars or {"a", "E"} <= chars:
+        if _reports_failures_and_errors(set(match.group(1))):
             return env
     return {**env, "PYTEST_ADDOPTS": f"{addopts} -rfE".strip()}

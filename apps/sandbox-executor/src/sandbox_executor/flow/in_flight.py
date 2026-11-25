@@ -4,8 +4,9 @@ A flow is in flight when it has an open pull request whose head is a flow execut
 or a checkpoint in another git worktree whose stage is execute or review, whose plan branch still resolves and whose
 Stage 3 admission state is not ``blocked`` (a refused flow waits; it blocks no one). Each carries the reference a
 ``blocked_by`` entry names and what admission compares: a pull request only its changed files (its ``gh pr diff``
-patch, rename sources included), never its planned touch set; a local flow its declared touch set (its plan branch's
-newest ``plans.jsonl`` row, from refs).
+patch, or paginated REST ``pulls/{number}/files`` when ``gh pr diff`` hits GitHub's HTTP 406 diff ceiling, rename
+sources included), never its planned touch set; a local flow its declared touch set (its plan branch's newest
+``plans.jsonl`` row, from refs).
 This run's root intent and children are excluded; a local flow with an open pull request is listed once, so it stays
 in flight whatever its checkpoint says. :func:`local_blocked_waiters` lists the blocked ones.
 
@@ -25,13 +26,13 @@ from typing import Any
 from sandbox_executor.flow.admission_state import BLOCKED_BY_LOCAL_FLOW, BLOCKED_BY_PULL_REQUEST, AdmissionRecord
 from sandbox_executor.flow.git_refs import _read_ledger_rows, _resolve_branch_ref
 from sandbox_executor.flow.github import merge
+from sandbox_executor.flow.pr_changed_files import pull_request_changed_files
 from sandbox_executor.flow.worktree_checkpoints import WorktreeCheckpoint, worktree_checkpoints
-from sandbox_executor.git import is_metadata_path, run_git
+from sandbox_executor.git import run_git
 from sandbox_executor.plan_paths import is_row_of_plan
-from sandbox_executor.pr_patch_paths import patch_paths
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.ref_names import INTENT_SUFFIX
-from sandbox_executor.touch_set import TouchSet, normalise_touch_path
+from sandbox_executor.touch_set import TouchSet
 
 #: Runs ``git <args>`` in a directory and returns the completed process (``check=False`` semantics).
 GitRunner = Callable[[list[str], str], subprocess.CompletedProcess[str]]
@@ -120,11 +121,8 @@ def _gh_json(run_gh: merge.GhRunner, args: list[str], repo_dir: str) -> list[dic
 
 
 def _pull_request_diff(run_gh: merge.GhRunner, number: int, repo_dir: str) -> tuple[str, ...] | AdmissionUnavailable:
-    result = run_gh(["pr", "diff", str(number), "--color", "never"], repo_dir)
-    if result.returncode != 0:
-        return command_failure(f"gh pr diff {number}", result)
-    paths = (normalise_touch_path(path) for path in patch_paths(result.stdout or ""))
-    return tuple(dict.fromkeys(path for path in paths if path and not is_metadata_path(path)))
+    changed = pull_request_changed_files(run_gh, number, repo_dir)
+    return AdmissionUnavailable(changed) if isinstance(changed, str) else changed
 
 
 def open_flow_pull_requests(

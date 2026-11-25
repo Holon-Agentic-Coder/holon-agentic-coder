@@ -1,10 +1,3 @@
-"""I/O-free consensus review posting decisions.
-
-Which ``gh pr review`` flag to submit, how a failed submission is classified (the HTTP 422 author self-approval
-restriction or anything else), and every outcome text and dict returned by
-:func:`sandbox_executor.flow.github.review_post.post_pr_review_consensus`. This module spawns nothing.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,13 +5,21 @@ from typing import Any
 
 GH_UNAVAILABLE_MESSAGE = "GitHub CLI ('gh') is not available in PATH; skipping review consensus posting."
 
+_APPROVE_FLAG = "--approve"
+_COMMENT_FLAG = "--comment"
 _SELF_APPROVAL_MARKERS = ("422", "Can not approve your own pull request", "PullRequestReviewAuthorError")
+_OFFICIAL_REVIEW_SUBMITTED_MESSAGE = "Official review submitted."
+_FALLBACK_REVIEW_SUBMITTED_MESSAGE = "Fallback review comment submitted."
+_DISCUSSION_COMMENT_POSTED_MESSAGE = "Discussion comment posted successfully."
+_COMMENT_SKIPPED_REVIEW_POSTED_MESSAGE = (
+    "Discussion comment not attempted: the official review submission posted the report."
+)
+_COMMENT_SKIPPED_NO_TARGET_MESSAGE = "Discussion comment not attempted: no posting target was resolved."
+_CONSENSUS_POSTED_ONCE_MESSAGE = "Review consensus posted once to GitHub."
 
 
 @dataclass(frozen=True)
 class ReviewAttempt:
-    """Outcome of the official ``gh pr review`` submission, including the 422 self-approval fallback."""
-
     attempted: bool
     flag: str
     success: bool
@@ -28,54 +29,44 @@ class ReviewAttempt:
 
 @dataclass(frozen=True)
 class CommentAttempt:
-    """Outcome of the last-resort ``gh pr comment`` discussion comment."""
-
     attempted: bool
     success: bool
     output: str
 
 
 def review_flag(approved: bool) -> str:
-    """Return the ``gh pr review`` flag: ``--approve`` only for an approving report, otherwise ``--comment``."""
-    return "--approve" if approved else "--comment"
+    return _APPROVE_FLAG if approved else _COMMENT_FLAG
 
 
 def is_self_approval_rejection(stderr: str) -> bool:
-    """True when ``gh pr review --approve`` stderr shows GitHub's HTTP 422 author self-approval restriction."""
     return any(marker in stderr for marker in _SELF_APPROVAL_MARKERS)
 
 
 def review_submitted_output(stdout: str | None, *, fallback: bool = False) -> str:
-    """Output text of a successful official review (or of the 422 fallback review comment)."""
-    default = "Fallback review comment submitted." if fallback else "Official review submitted."
+    default = _FALLBACK_REVIEW_SUBMITTED_MESSAGE if fallback else _OFFICIAL_REVIEW_SUBMITTED_MESSAGE
     return (stdout or "").strip() or default
 
 
 def review_failed_output(returncode: int, stderr: str | None, stdout: str | None, *, fallback: bool = False) -> str:
-    """Output text of a failed official review (or of a failed 422 fallback review comment)."""
     label = "Fallback review comment failed" if fallback else "Official review submission failed"
     return f"{label} (exit code {returncode}): {stderr or stdout or ''}".strip()
 
 
 def comment_not_attempted_output(review_attempted: bool) -> str:
-    """Output text when no discussion comment is posted: the review posted the report, or there was no target."""
     if review_attempted:
-        return "Discussion comment not attempted: the official review submission posted the report."
-    return "Discussion comment not attempted: no posting target was resolved."
+        return _COMMENT_SKIPPED_REVIEW_POSTED_MESSAGE
+    return _COMMENT_SKIPPED_NO_TARGET_MESSAGE
 
 
 def comment_posted_output(stdout: str | None) -> str:
-    """Output text of a successful ``gh pr comment``."""
-    return (stdout or "").strip() or "Discussion comment posted successfully."
+    return (stdout or "").strip() or _DISCUSSION_COMMENT_POSTED_MESSAGE
 
 
 def comment_failed_output(returncode: int, stderr: str | None, stdout: str | None) -> str:
-    """Output text of a failed ``gh pr comment``."""
     return f"gh pr comment failed (exit code {returncode}): {stderr or stdout or ''}".strip()
 
 
 def gh_unavailable_outcome(target: str, approved: bool) -> dict[str, Any]:
-    """Return the posting outcome when ``gh`` is not on PATH: nothing attempted, nothing posted."""
     return {
         "target": target,
         "gh_available": False,
@@ -93,13 +84,12 @@ def gh_unavailable_outcome(target: str, approved: bool) -> dict[str, Any]:
 
 
 def posting_outcome(target: str, review: ReviewAttempt, comment: CommentAttempt) -> dict[str, Any]:
-    """Return the posting outcome once ``gh`` ran; ``dual_posted`` records that the report was posted exactly once."""
     posted_once = review.success or comment.success
     return {
         "target": target,
         "gh_available": True,
         "diagnostics": (
-            "Review consensus posted once to GitHub."
+            _CONSENSUS_POSTED_ONCE_MESSAGE
             if posted_once
             else f"Review posting failed: review={review.success}, comment={comment.success}."
         ),

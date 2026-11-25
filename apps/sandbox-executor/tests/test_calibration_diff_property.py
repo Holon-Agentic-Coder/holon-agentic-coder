@@ -54,20 +54,20 @@ _FLOW_TEMPLATE: Path | None = None
 
 
 def _flow_template() -> Path:
-    """Create the base flow repository once per worker process and reuse it via copytree."""
     global _FLOW_TEMPLATE
-    if _FLOW_TEMPLATE is not None and _FLOW_TEMPLATE.exists():
-        return _FLOW_TEMPLATE
-    repo = Path(tempfile.mkdtemp(prefix="holon-cal-diff-template-"))
-    atexit.register(shutil.rmtree, repo, True)
-    git(repo, "init", "-q", "-b", "main")
-    commit(repo, {"base.txt": "base\n"}, "base")
-    git(repo, "checkout", "-qb", INTENT)
-    git(repo, "checkout", "-qb", PLAN)
-    commit(repo, {"plans/I-1-prop/P-2-prop.md": "# Plan\n"}, "plan")
-    git(repo, "checkout", "-qb", EXEC)
-    _FLOW_TEMPLATE = repo
-    return repo
+    if _FLOW_TEMPLATE is None:
+        tmp = tempfile.TemporaryDirectory(prefix="holon-cal-diff-template-")
+        atexit.register(tmp.cleanup)
+        repo = Path(tmp.name) / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "main")
+        commit(repo, {"base.txt": "base\n"}, "base")
+        git(repo, "checkout", "-qb", INTENT)
+        git(repo, "checkout", "-qb", PLAN)
+        commit(repo, {"plans/I-1-prop/P-2-prop.md": "# Plan\n"}, "plan")
+        git(repo, "checkout", "-qb", EXEC)
+        _FLOW_TEMPLATE = repo
+    return _FLOW_TEMPLATE
 
 
 def make_flow(repo: Path) -> None:

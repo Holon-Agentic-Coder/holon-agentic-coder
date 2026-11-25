@@ -254,8 +254,6 @@ def _mask_url_userinfo(text: str) -> str:
     Returns:
         The text with each matched userinfo replaced by `REDACTION_MARKER`.
     """
-    if "@" not in text:
-        return text
     for start_re in (_URL_AUTHORITY_START_RE, _URL_VAR_PREFIX_RE):
         out: list[str] = []
         pos = 0
@@ -312,41 +310,6 @@ COMMAND_ECHO_ENV_NAMES: tuple[str, ...] = (*_CREDENTIAL_ENV_NAMES, "HOLON_MITM_W
 TRUNCATION_MARKER = "..."
 
 
-_QUERY_PARAM_SECRET_RE = re.compile(
-    r"([?&](?:token|api_key|access_token|secret|password|auth|bearer|auth_code|code|client_secret|db_password|credential|credentials|key(?=[=_-])|pwd|passwd)[^=\s&]*=)[^\s&]+",
-    re.IGNORECASE,
-)
-_KEY_VALUE_SECRET_RE = re.compile(
-    r'(["\']?)('
-    r"(?<![a-zA-Z0-9_-])key\b"
-    r"|\b[a-zA-Z0-9_-]*(?:api|secret|private|public|signing|encryption|auth|access|session|consumer|client|master|token)[_-]key\b"
-    r"|\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|passwd|pwd|client_secret|db_password|credential|credentials|auth|bearer|_pat|-pat|\bpat|auth_token|auth_code|apikey)\b"
-    r")\1"
-    r"(?:"
-    r"([ \t]*(:[ \t]*|=)[ \t]*)"
-    r'(?:(["\'])(.*?)\5|([^&\s\'"{}\[\],]+))'
-    r"|"
-    r"([ \t]*:[ \t]*\n\s*)"
-    r'(?:(?:(["\'])([^"\'\r\n]*)\9|([^&\s\'"{}\[\],:]+))(?=[ \t]*(?:,|\n|$)))'
-    r")",
-    re.IGNORECASE,
-)
-_BEARER_SECRET_RE = re.compile(r"(Bearer\s+)[^\s]+", re.IGNORECASE)
-_FLAG_LIKE_RE = re.compile(r"^-{1,2}[a-zA-Z0-9_-]+$")
-
-
-def _replace_secret(match: re.Match) -> str:
-    q_key = match.group(1) or ""
-    key = match.group(2)
-    if match.group(3) is not None:
-        sep = match.group(3)
-        q_val = match.group(5) or ""
-    else:
-        sep = match.group(8)
-        q_val = match.group(9) or ""
-    return f"{q_key}{key}{q_key}{sep}{q_val}*******{q_val}"
-
-
 def redact_text(text: str) -> str:
     """Mask credentials and sensitive tokens in text with asterisks.
 
@@ -382,12 +345,40 @@ def redact_text(text: str) -> str:
         text = head + "\n... (truncated) ...\n" + tail
     s = _mask_url_userinfo(text)
     # Redact sensitive URL query parameters including auth_code and code
-    if "=" in s and ("?" in s or "&" in s):
-        s = _QUERY_PARAM_SECRET_RE.sub(r"\1*******", s)
-    if ":" in s or "=" in s:
-        s = _KEY_VALUE_SECRET_RE.sub(_replace_secret, s)
-    if "bearer" in s.lower():
-        s = _BEARER_SECRET_RE.sub(r"\1*******", s)
+    s = re.sub(
+        r"([?&](?:token|api_key|access_token|secret|password|auth|bearer|auth_code|code|client_secret|db_password|credential|credentials|key(?=[=_-])|pwd|passwd)[^=\s&]*=)[^\s&]+",
+        r"\1*******",
+        s,
+        flags=re.IGNORECASE,
+    )
+    pattern = (
+        r'(["\']?)('
+        r"(?<![a-zA-Z0-9_-])key\b"
+        r"|\b[a-zA-Z0-9_-]*(?:api|secret|private|public|signing|encryption|auth|access|session|consumer|client|master|token)[_-]key\b"
+        r"|\b[a-zA-Z0-9_-]*(?:token|access_token|secret|password|passwd|pwd|client_secret|db_password|credential|credentials|auth|bearer|_pat|-pat|\bpat|auth_token|auth_code|apikey)\b"
+        r")\1"
+        r"(?:"
+        r"([ \t]*(:[ \t]*|=)[ \t]*)"
+        r'(?:(["\'])(.*?)\5|([^&\s\'"{}\[\],]+))'
+        r"|"
+        r"([ \t]*:[ \t]*\n\s*)"
+        r'(?:(?:(["\'])([^"\'\r\n]*)\9|([^&\s\'"{}\[\],:]+))(?=[ \t]*(?:,|\n|$)))'
+        r")"
+    )
+
+    def _replace_secret(match: re.Match) -> str:
+        q_key = match.group(1) or ""
+        key = match.group(2)
+        if match.group(3) is not None:
+            sep = match.group(3)
+            q_val = match.group(5) or ""
+        else:
+            sep = match.group(8)
+            q_val = match.group(9) or ""
+        return f"{q_key}{key}{q_key}{sep}{q_val}*******{q_val}"
+
+    s = re.sub(pattern, _replace_secret, s, flags=re.IGNORECASE)
+    s = re.sub(r"(Bearer\s+)[^\s]+", r"\1*******", s, flags=re.IGNORECASE)
     return s
 
 
@@ -425,7 +416,7 @@ def redact_args(args: list[str]) -> list[str]:
             # LIMITATION: If a secret value happens to look like a flag (starts with -),
             # it will NOT be masked. This is a deliberate trade-off to avoid over-masking
             # when a flag like --verbose follows --token in the args list.
-            if is_secret or _FLAG_LIKE_RE.match(s_arg):
+            if is_secret or re.match(r"^-{1,2}[a-zA-Z0-9_-]+$", s_arg):
                 mask_next = False
             else:
                 redacted.append("*******")
@@ -628,10 +619,7 @@ def redact_command(argv: Sequence[str]) -> str:
     Returns:
         A single space-joined line that is safe to print or log. The input is not modified.
     """
-    redacted_args = redact_command_args(argv)
-    s = " ".join(redacted_args)
-    if len(redacted_args) <= 1:
-        return s
+    s = " ".join(redact_command_args(argv))
     # Swept again over the joined line, so a value that spans an argument boundary is caught (for
     # example `password:` and its value passed as two arguments).
     s = redact_text(s)

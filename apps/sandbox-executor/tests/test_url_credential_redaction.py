@@ -41,6 +41,7 @@ from sandbox_executor import cli, local_llm
 from sandbox_executor.launcher import env_files, proxy_readiness, root_ca
 
 from tests import seeded_secrets
+from tests.doctor_replay import replayed_configuration_section, replayed_environment_report
 
 FRAGMENT_LEN = 4
 _LETTERS = "FGJQVZ"
@@ -212,21 +213,27 @@ def _doctor(value: str) -> list[str]:
     )
     env = {"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_BASE_URL": value, "HOLON_LOCAL_MODELS": "m1"}
     texts: list[str] = []
-    for host_config in (None, _host_config(value)):
-        for fetch in _fetchers(texts):
-            with (
-                # Plain stand-ins, not MagicMocks: building a mock per call dominated this matrix's runtime.
-                patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
-                patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
-                _captured(env) as out,
-            ):
-                cli.report_budgets_and_envelope(fetch=fetch)
-                for as_json in (False, True):
-                    doctor_args = argparse.Namespace(
-                        agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None
-                    )
-                    cli.run_doctor(doctor_args, fetch=fetch)
-            texts.extend(out)
+    # The eight doctor runs of one case differ only in host configuration, fetcher and `--json`; the configuration
+    # section reads none of them (proved in test_doctor_replay.py), so it is computed once per case and replayed.
+    with replayed_configuration_section():
+        for host_config in (None, _host_config(value)):
+            for fetch in _fetchers(texts):
+                with (
+                    # Plain stand-ins, not MagicMocks: building a mock per call dominated this matrix's runtime.
+                    patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
+                    patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
+                    _captured(env) as out,
+                    # The two doctor runs of one block have the same host configuration and fetcher: the environment
+                    # report runs for the first one and its text and code are replayed for the second.
+                    replayed_environment_report(),
+                ):
+                    cli.report_budgets_and_envelope(fetch=fetch)
+                    for as_json in (False, True):
+                        doctor_args = argparse.Namespace(
+                            agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None
+                        )
+                        cli.run_doctor(doctor_args, fetch=fetch)
+                texts.extend(out)
     return texts
 
 
@@ -608,85 +615,88 @@ _LOCAL_ENV = {
 }
 
 
-INVALID_VALUE_SLOTS: tuple[tuple[str, str], ...] = (
-    *(("env", name) for name in INVALID_VALUE_ENV),
-    *(("host", field) for field in INVALID_VALUE_HOST_FIELDS),
-)
-
-
-def _invalid_value_cases(
-    rng: random.Random, kind: str, slot: str
-) -> Iterator[tuple[str, dict[str, str], dict | None, str]]:
-    """Yield `(case_id, env, host_config, credential)`: every credential shape in one invalid-value slot."""
+def _invalid_value_cases(rng: random.Random) -> Iterator[tuple[str, dict[str, str], dict | None, str]]:
+    """Yield `(case_id, env, host_config, credential)`: every credential shape in every invalid-value slot."""
     for case_id, value, credential in matrix(rng):
         if not case_id.endswith("/ipv4/path"):
             continue
-        if kind == "env":
-            yield f"env:{slot}/{case_id}", {**_LOCAL_ENV, slot: value}, None, credential
-        else:
-            entry = {"id": "m", "contextWindow": 65536, slot: value}
+        for name in INVALID_VALUE_ENV:
+            yield f"env:{name}/{case_id}", {**_LOCAL_ENV, name: value}, None, credential
+        for field in INVALID_VALUE_HOST_FIELDS:
+            entry = {"id": "m", "contextWindow": 65536, field: value}
             host_config = {"providers": {"vmlx": {"baseUrl": "http://localhost:8081/v1", "models": [entry]}}}
-            yield f"host:{slot}/{case_id}", dict(_LOCAL_ENV), host_config, credential
+            yield f"host:{field}/{case_id}", dict(_LOCAL_ENV), host_config, credential
 
 
-@pytest.mark.parametrize(
-    ("kind", "slot"),
-    INVALID_VALUE_SLOTS,
-    ids=[f"{kind}-{slot}" for kind, slot in INVALID_VALUE_SLOTS],
-)
-def test_credential_in_invalid_envelope_value_never_echoed(kind, slot, monkeypatch, tmp_path):
+def _empty_health(url: str, timeout: float) -> bytes:
+    """The gateway fetcher of every invalid-value case: one object, so the three reports of a case share it."""
+    return b"{}"
+
+
+def _isolate_invalid_value_process(monkeypatch) -> None:
+    """The process state every invalid-value case starts from: a docker stand-in, no mounts, an empty environment."""
+    _patch_docker_host(monkeypatch)
+    for name in list(os.environ):
+        monkeypatch.delenv(name)
+
+
+@contextlib.contextmanager
+def _invalid_value_case(
+    case_id: str, env: dict[str, str], host_config: dict | None, credential: str, home: str
+) -> Iterator[tuple[list[str], _DockerRecorder]]:
+    """Run one invalid-value case under the isolated `home`; yields the captured texts and the docker recorder."""
+    from sandbox_executor.preflight import PreflightResult, PreflightStatus
+
+    probe = PreflightResult(
+        status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
+    )
+    docker = _DockerRecorder()
+    # Each temp name is first drawn sharing a run with the credential, so the masking under the isolated HOME is
+    # what keeps a forwarded run from reading as a leak, not the luck of a random name.
+    colliding = _colliding_temp_names(credential, seeded_secrets.generator(f"url-redaction:temp-names:{case_id}"))
+    with (
+        patch.object(tempfile, "_get_candidate_names", colliding),
+        patch.object(local_llm, "host_models_json", lambda *_a, **_k: host_config),
+        patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
+        patch.object(subprocess, "run", docker),
+        _captured({**env, "HOME": home}) as out,
+    ):
+        yield out, docker
+
+
+def _invalid_value_doctor(out: list[str]) -> list[int]:
+    """The environment section on a stream of its own, then the unified report as text and as `--json`: the codes."""
+    # All three reports see one environment, host configuration and fetcher, and both configuration sections one
+    # agent and model, so each is computed once and replayed. Proved for this function in test_doctor_replay.py.
+    with replayed_configuration_section(), replayed_environment_report():
+        env_out = io.StringIO()
+        codes = [cli.report_budgets_and_envelope(fetch=_empty_health, out=env_out)]
+        out.append(env_out.getvalue())
+        for as_json in (False, True):
+            doctor_args = argparse.Namespace(
+                agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None
+            )
+            codes.append(cli.run_doctor(doctor_args, fetch=_empty_health))
+    return codes
+
+
+def test_credential_in_invalid_envelope_value_never_echoed(monkeypatch, tmp_path):
     """Doctor (environment section, text and `--json`) and the run path withhold an invalid value.
 
     The isolated `HOME` is `tmp_path`, and the pi-agent session dir is created under it; its parent `pytest-<N>` and the
     temp name can share a 4-character run with the credential, so what keeps the `HOME` path from reading as a fragment
     is that the whole pi-agent mount path is masked, not the choice of `tmp_path` basename.
     """
-    from sandbox_executor.preflight import PreflightResult, PreflightStatus
-
-    probe = PreflightResult(
-        status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
-    )
-    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
-    monkeypatch.setattr("sandbox_executor.launcher.mounts.get_agent_session_mounts", lambda agent_id: [])
-    monkeypatch.setattr(cli.git_flow, "sandbox_worktree_mounts", lambda *args, **kwargs: [])
-    monkeypatch.setattr(
-        "sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs", lambda **kwargs: ([], {})
-    )
-    for name in list(os.environ):
-        monkeypatch.delenv(name)
+    _isolate_invalid_value_process(monkeypatch)
     failures: list[str] = []
     collided: list[str] = []
-    # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variable to the
-    # container unchanged: through the env-file, so neither the argv nor the echo may hold a fragment of it.
-    rejected = "TIMEOUT" not in slot and "BUDGET" not in slot
-    cases = list(
-        _invalid_value_cases(seeded_secrets.generator(f"url-redaction:invalid-envelope:{kind}:{slot}"), kind, slot)
-    )
+    cases = list(_invalid_value_cases(seeded_secrets.generator("url-redaction:invalid-envelope")))
     for case_id, env, host_config, credential in cases:
-        docker = _DockerRecorder()
-        # Each temp name is first drawn sharing a run with the credential, so the masking under the isolated HOME is
-        # what keeps a forwarded run from reading as a leak, not the luck of a random name.
-        colliding = _colliding_temp_names(credential, seeded_secrets.generator(f"url-redaction:temp-names:{case_id}"))
-        with (
-            patch.object(tempfile, "_get_candidate_names", colliding),
-            patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
-            patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
-            patch.object(subprocess, "run", docker),
-            _captured({**env, "HOME": str(tmp_path)}) as out,
-        ):
-            env_out = io.StringIO()
-            codes = [cli.report_budgets_and_envelope(fetch=lambda url, timeout: b"{}", out=env_out)]
-            out.append(env_out.getvalue())
-            for as_json in (False, True):
-                doctor_args = argparse.Namespace(
-                    agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None
-                )
-                codes.append(
-                    cli.run_doctor(
-                        doctor_args,
-                        fetch=lambda url, timeout: b"{}",
-                    )
-                )
+        # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variable to the
+        # container unchanged: through the env-file, so neither the argv nor the echo may hold a fragment of it.
+        rejected = "TIMEOUT" not in case_id and "BUDGET" not in case_id
+        with _invalid_value_case(case_id, env, host_config, credential, str(tmp_path)) as (out, docker):
+            codes = _invalid_value_doctor(out)
             codes.append(cli.run_docker_container("planner", "img", [], agent_id="pi"))
         if _leaks(_without_fixture_paths(out, docker.argv, str(tmp_path)), credential):
             failures.append(case_id)
@@ -697,12 +707,13 @@ def test_credential_in_invalid_envelope_value_never_echoed(kind, slot, monkeypat
             failures.extend(f"{case_id}:{where}" for where in forwarded)
             if _leaks(out, credential) and _leaks([" ".join(docker.argv)], credential):
                 collided.append(case_id)
-    assert len(cases) == MATRIX_SIZE // (len(HOSTS) * len(SUFFIXES))
+    assert len(cases) == (len(INVALID_VALUE_ENV) + len(INVALID_VALUE_HOST_FIELDS)) * MATRIX_SIZE // (
+        len(HOSTS) * len(SUFFIXES)
+    )
     assert not failures, (
         f"{len(failures)}/{len(cases)} invalid-value cases failed, e.g. {failures[:5]} {seeded_secrets.seed_note()}"
     )
-    if not rejected:
-        assert collided, "no forwarded run drew a temp name sharing a run with its credential"
+    assert collided, "no forwarded run drew a temp name sharing a run with its credential"
 
 
 def _colliding_temp_names(credential: str, rng: random.Random) -> Callable[[], Iterator[str]]:

@@ -1,0 +1,31 @@
+name: "Bookkeeping Gate"
+description: "Decides whether a CI job may skip its expensive steps because the push changed only bookkeeping files"
+inputs:
+  job-name:
+    description: "The job's base name as the jobs API shows it, without the matrix part (for example 'unit')"
+    required: true
+  os:
+    description: "The runner label of a matrix job (for example 'ubuntu-latest'); empty for a job without a matrix"
+    required: false
+    default: ""
+outputs:
+  skip:
+    description: "'true' when the job may skip its expensive steps; 'false' in every other case, errors included"
+    value: ${{ steps.decide.outputs.skip }}
+runs:
+  using: "composite"
+  steps:
+    - name: Bookkeeping gate (decide)
+      id: decide
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        GATE_JOB_NAME: ${{ inputs.job-name }}
+        GATE_JOB_OS: ${{ inputs.os }}
+      run: |
+        # The script returns 0 for every decision. Anything else (no python3, a broken checkout) runs the full job.
+        if ! python3 -m scripts.ci_bookkeeping_gate --job-name "${GATE_JOB_NAME}" --os "${GATE_JOB_OS}"; then
+          echo "::warning::The bookkeeping gate could not decide; the full job runs."
+          echo "skip=false" >> "${GITHUB_OUTPUT}"
+        fi

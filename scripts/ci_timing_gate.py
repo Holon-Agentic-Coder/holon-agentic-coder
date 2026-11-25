@@ -4,16 +4,33 @@
 Every CI job takes a timestamp in its first step and calls this script in its last steps.
 
 - ``record`` mode (pushes to ``main`` and manual dispatches) writes the job's wall-clock duration, job name, runner OS
-  and, for test jobs, pytest's per-test durations from a JUnit XML report to a JSON record. The workflow uploads that
-  record as an artefact named ``ci-timing-<workflow>-<job>-<os>`` once the job has succeeded on ``main``.
+  and, for test jobs, the test time and pytest's per-test durations from a JUnit XML report to a JSON record. The
+  workflow uploads that record as an artefact named ``ci-timing-<workflow>-<job>-<os>`` once the job has succeeded on
+  ``main``.
 - ``compare`` mode (pull requests) fetches the last N records for the same artefact name from successful ``main`` runs
   and fails the job only when its duration exceeds the baseline median by more than the relative tolerance AND by more
-  than the minimum absolute delta. Test jobs also print the tests whose time grew the most; that report never fails a
-  job on its own.
+  than the minimum absolute delta. Test jobs also print the tests whose time grew the most (the per-test report of
+  ``scripts/ci_timing_noise.py``); that report never fails a job on its own.
+
+A job with a JUnit report is judged on its test time, not on wall clock, so runner start-up, checkout and dependency
+install do not count: the report's suite time ("suite test time"), or the sum of its test case times when it has none
+("summed test time"). The record stores it in the optional keys ``test_seconds`` and ``test_seconds_source`` (``suite``
+or ``sum``) next to the seven original keys; a record without them still loads. The two kinds differ by a factor of 2
+to 4 under ``pytest -n auto`` and are never compared with each other: when a baseline record lacks the run's kind of
+test time, the relative check falls back to wall clock for that run and the verdict line says so.
 
 Both modes fail above an absolute ceiling, which no label can override. While fewer than N baseline records exist (cold
 start) the relative check is skipped with a notice. The ``timing-regression-accepted`` pull-request label turns a
 relative failure into a visible warning.
+
+In ``compare`` mode a breached limit of a test job is judged again with the per-test times (``rejudge`` in
+``scripts/ci_timing_noise.py``). The breach is runner variance only when the slowdown is spread across the suite and
+the median per-test ratio accounts for it, that is the judged value divided by that ratio is back inside the limit:
+the job then passes with a warning that prints the evidence, also above the ceiling. A slowdown concentrated in
+specific tests fails and names them with their times before and after. A slowdown the ratio does not account for, or
+one without enough per-test data, leaves the breach standing and the line says why. A value above the ceiling is held
+to the relative check as well: when the ratio accounts for the ceiling breach only, the relative verdict is the outcome,
+a failure that the label can accept.
 
 Defaults (N = 5, tolerance 50 %, minimum delta 120 s, ceiling 600 s) were calibrated against real ``main`` runs; the
 workflows spell every threshold out as a flag, so any change is a committed edit to a workflow file.
@@ -39,19 +56,23 @@ import zlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
+try:
+    from scripts import ci_timing_noise as noise
+    from scripts.ci_timing_noise import Breach, Verdict
+except ImportError:  # run as a script file: only scripts/ itself is on sys.path
+    import ci_timing_noise as noise
+    from ci_timing_noise import Breach, Verdict
+
 OVERRIDE_LABEL = "timing-regression-accepted"
 API_ROOT = "https://api.github.com"
 RECORD_FILE = "record.json"
 REQUEST_TIMEOUT_SECONDS = 30
 BASELINE_BRANCH = "main"
-REPORT_LIMIT = 10
-REPORT_GROWTH = 0.5
-REPORT_MIN_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
 class TimingRecord:
-    """One job's measured duration, plus per-test durations for test jobs."""
+    """One job's measured duration, plus per-test durations and the test time (with its kind) for test jobs."""
 
     job: str
     os: str
@@ -60,10 +81,12 @@ class TimingRecord:
     commit: str = ""
     run_id: str = ""
     tests: dict[str, float] = field(default_factory=dict)
+    test_seconds: float | None = None
+    test_seconds_source: str = ""
 
     def to_json(self) -> dict[str, object]:
-        """Return the record as a JSON-serialisable mapping."""
-        return {
+        """Return the record as a JSON-serialisable mapping; the test time keys appear only when it was measured."""
+        data: dict[str, object] = {
             "job": self.job,
             "os": self.os,
             "workflow": self.workflow,
@@ -72,6 +95,9 @@ class TimingRecord:
             "run_id": self.run_id,
             "tests": dict(self.tests),
         }
+        if self.test_seconds is not None:
+            data.update(test_seconds=self.test_seconds, test_seconds_source=self.test_seconds_source)
+        return data
 
     @classmethod
     def from_json(cls, data: dict[str, object]) -> TimingRecord:
@@ -79,6 +105,7 @@ class TimingRecord:
         tests = data.get("tests") or {}
         if not isinstance(tests, dict):
             raise ValueError("record 'tests' is not a mapping")
+        test_seconds = data.get("test_seconds")
         return cls(
             job=str(data["job"]),
             os=str(data["os"]),
@@ -87,7 +114,15 @@ class TimingRecord:
             commit=str(data.get("commit", "")),
             run_id=str(data.get("run_id", "")),
             tests={str(k): float(v) for k, v in tests.items()},
+            test_seconds=None if test_seconds is None else float(test_seconds),
+            test_seconds_source=str(data.get("test_seconds_source") or ""),
         )
+
+    def judged(self) -> tuple[float, str]:
+        """Return the value the ceiling applies to and its kind: test time when measured, otherwise wall clock."""
+        if self.test_seconds is None:
+            return self.duration, ""
+        return self.test_seconds, self.test_seconds_source
 
 
 @dataclass(frozen=True)
@@ -101,25 +136,13 @@ class Thresholds:
 
 
 @dataclass(frozen=True)
-class Verdict:
-    """The gate's decision and the message lines that explain it."""
+class Judged:
+    """What a compare run is judged on; a kind is ``suite`` or ``sum`` for test time and empty for job wall clock."""
 
-    passed: bool
-    lines: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class Offender:
-    """A test whose time grew beyond the report thresholds."""
-
-    test_id: str
-    baseline: float
-    current: float
-
-    @property
-    def growth(self) -> float:
-        """Return the absolute growth in seconds."""
-        return self.current - self.baseline
+    ceiling_seconds: float
+    ceiling_kind: str = ""
+    relative_kind: str = ""
+    note: str = ""  # a clause for the verdict line when the relative check fell back to wall clock
 
 
 def artefact_name(workflow: str, job: str, os_name: str) -> str:
@@ -127,17 +150,30 @@ def artefact_name(workflow: str, job: str, os_name: str) -> str:
     return f"ci-timing-{workflow}-{job}-{os_name}"
 
 
-def parse_junit(path: str) -> dict[str, float]:
-    """Map ``classname::name`` to seconds for every ``testcase`` in a JUnit XML report.
+def read_junit(path: str) -> tuple[dict[str, float], float | None, str]:
+    """Return the per-test times, the test time and its kind from one parse of a JUnit XML report.
 
-    A missing or empty ``time`` attribute counts as zero; repeated ids keep the largest time.
+    Per-test times map ``classname::name`` to seconds for every ``testcase``: a missing or empty ``time`` attribute
+    counts as zero and repeated ids keep the largest time. Test time is the summed ``time`` of the top-level suites
+    (kind ``suite``; nested suites are ignored) when each has a plain decimal one above zero, otherwise the sum of the
+    per-test times (kind ``sum``); a report with neither has no test time.
     """
+    root = ET.parse(path).getroot()
     times: dict[str, float] = {}
-    for case in ET.parse(path).getroot().iter("testcase"):
+    for case in root.iter("testcase"):
         test_id = f"{case.get('classname', '')}::{case.get('name', '')}"
         seconds = float(case.get("time") or 0)
         times[test_id] = max(seconds, times.get(test_id, 0.0))
-    return times
+    top_level = [root] if root.tag == "testsuite" else root.findall("testsuite")
+    suites = [suite.get("time") or "" for suite in top_level]
+    if suites and all(text.replace(".", "", 1).isdecimal() and float(text) > 0 for text in suites):
+        return times, sum(float(text) for text in suites), "suite"
+    return (times, sum(times.values()), "sum") if times else (times, None, "")
+
+
+def parse_junit(path: str) -> dict[str, float]:
+    """Map ``classname::name`` to seconds for every ``testcase`` in a JUnit XML report (see ``read_junit``)."""
+    return read_junit(path)[0]
 
 
 def rolling_median(values: Sequence[float]) -> float | None:
@@ -154,94 +190,48 @@ def exceeds_relative(duration: float, median: float, thresholds: Thresholds) -> 
     return over_tolerance and over_delta
 
 
-def top_offenders(
-    current: dict[str, float],
-    baselines: Sequence[dict[str, float]],
-    limit: int = REPORT_LIMIT,
-    growth: float = REPORT_GROWTH,
-    min_seconds: float = REPORT_MIN_SECONDS,
-) -> list[Offender]:
-    """Return the tests whose time grew by more than ``growth`` and ``min_seconds`` against their baseline median.
-
-    Tests absent from every baseline record are ignored. Rows are sorted by absolute growth, largest first.
-    """
-    rows: list[Offender] = []
-    for test_id, seconds in current.items():
-        median = rolling_median([b[test_id] for b in baselines if test_id in b])
-        if median is None:
-            continue
-        if seconds > median * (1 + growth) and seconds - median > min_seconds:
-            rows.append(Offender(test_id, median, seconds))
-    rows.sort(key=lambda row: (-row.growth, row.test_id))
-    return rows[:limit]
-
-
-def format_report(rows: Sequence[Offender]) -> list[str]:
-    """Render the per-test report as markdown lines."""
-    if not rows:
-        return ["Per-test report: no test grew by more than 50 % and 5 s against its baseline median."]
-    lines = [
-        f"Per-test report: top {len(rows)} tests that grew by more than 50 % and 5 s against their baseline median.",
-        "",
-        "| test | baseline median (s) | current (s) | growth (s) |",
-        "| ---- | ------------------- | ----------- | ---------- |",
-    ]
-    for row in rows:
-        lines.append(f"| `{row.test_id}` | {row.baseline:.1f} | {row.current:.1f} | +{row.growth:.1f} |")
-    return lines
-
-
-def per_test_report(current: dict[str, float], baselines: Sequence[dict[str, float]]) -> list[str]:
-    """Render the per-test report, or say it was skipped when no baseline record carries per-test times."""
-    if not any(baselines):
-        return ["Per-test report: skipped, no baseline records with per-test times yet."]
-    return format_report(top_offenders(current, baselines))
-
-
-def check_ceiling(duration: float, thresholds: Thresholds) -> Verdict | None:
-    """Return a failing verdict when ``duration`` is above the ceiling, otherwise ``None``."""
+def check_ceiling(duration: float, thresholds: Thresholds, kind: str = "") -> Verdict | None:
+    """Return a failing verdict when ``duration``, a value of measure ``kind``, is above the ceiling, else ``None``."""
     if duration <= thresholds.ceiling:
         return None
-    return Verdict(
-        False,
-        (
-            f"::error::Job took {duration:.0f} s, above the {thresholds.ceiling:.0f} s ceiling. The ceiling cannot be "
-            f"overridden by the '{OVERRIDE_LABEL}' label; it changes only through a committed edit to the --ceiling "
-            "flag in the workflow file.",
-        ),
-    )
+    words = noise.over_ceiling(noise.took(duration, kind), thresholds.ceiling)
+    return Verdict(False, (noise.ceiling_error(words, OVERRIDE_LABEL),), Breach(words, duration, thresholds.ceiling))
 
 
-def evaluate(duration: float, baselines: Sequence[float], thresholds: Thresholds, override: bool) -> Verdict:
-    """Apply the decision rules in order: ceiling, cold start, relative check, label override."""
-    ceiling = check_ceiling(duration, thresholds)
-    if ceiling is not None:
-        return ceiling
+def evaluate(
+    duration: float,
+    baselines: Sequence[float],
+    thresholds: Thresholds,
+    override: bool,
+    judged: Judged | None = None,
+) -> Verdict:
+    """Apply the decision rules in order: ceiling, cold start, relative check, label override.
+
+    ``duration`` and ``baselines`` are job wall clock, and so is the ceiling value, unless ``judged`` says otherwise.
+    The ceiling is held against no baseline record, so its line never carries the wall-clock fallback note. A relative
+    breach records the value above which the check fails: the larger of its two thresholds over the median.
+
+    A ceiling breach decides the verdict whatever the relative check says. When the relative check is breached too,
+    its verdict is kept beneath the ceiling one, so that forgiving the ceiling as runner variance leaves it standing.
+    """
+    judged = judged or Judged(duration)
+    ceiling = check_ceiling(judged.ceiling_seconds, thresholds, judged.ceiling_kind)
     if len(baselines) < thresholds.runs:
-        return Verdict(
-            True,
-            (
-                f"::notice::Cold start: {len(baselines)} of {thresholds.runs} main baseline records found, so the "
-                f"relative check is skipped; only the {thresholds.ceiling:.0f} s ceiling applies "
-                f"(job took {duration:.0f} s).",
-            ),
-        )
+        took = noise.took(judged.ceiling_seconds, judged.ceiling_kind)
+        notice = noise.cold_start_notice(len(baselines), thresholds.runs, thresholds.ceiling, took)
+        return ceiling or Verdict(True, (notice,))
     median = float(statistics.median(baselines[: thresholds.runs]))
-    limits = (
-        f"job took {duration:.0f} s against a baseline median of {median:.0f} s over {thresholds.runs} main runs "
-        f"(tolerance {thresholds.tolerance:.0%}, minimum delta {thresholds.min_delta:.0f} s)"
-    )
+    took = noise.took(duration, judged.relative_kind)
+    limits = noise.against_baseline(took, median, thresholds.runs, thresholds.tolerance, thresholds.min_delta)
+    limits += judged.note
     if not exceeds_relative(duration, median, thresholds):
-        return Verdict(True, (f"Timing gate passed: {limits}.",))
-    if override:
-        return Verdict(True, (f"::warning::Timing regression accepted by the '{OVERRIDE_LABEL}' label: {limits}.",))
-    return Verdict(
-        False,
-        (
-            f"::error::Timing regression: {limits}. Speed the job up, or add the '{OVERRIDE_LABEL}' label to accept "
-            "a deliberate slow-down.",
-        ),
-    )
+        return ceiling or Verdict(True, (f"Timing gate passed: {limits}.",))
+    breach = Breach(limits, duration, max(median * (1 + thresholds.tolerance), median + thresholds.min_delta))
+    words = noise.accepted_warning if override else noise.regression_error
+    relative = Verdict(override, (words(limits, OVERRIDE_LABEL),), breach)
+    if ceiling is None:
+        return relative
+    return Verdict(False, ceiling.lines, ceiling.breach, relative)
 
 
 def build_request(url: str, token: str) -> urllib.request.Request:
@@ -340,19 +330,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def load_tests(path: str) -> tuple[dict[str, float], list[str]]:
-    """Parse the JUnit report at ``path``; a missing or broken report yields no tests and a warning."""
+def load_tests(path: str) -> tuple[tuple[dict[str, float], float | None, str], list[str]]:
+    """Read the JUnit report at ``path``; a missing or broken report yields no tests, no test time and a warning."""
     if not path:
-        return {}, []
+        return ({}, None, ""), []
     try:
-        return parse_junit(path), []
+        return read_junit(path), []
     except (OSError, ET.ParseError, ValueError) as exc:
-        return {}, [f"::warning::Could not read the JUnit report {path} ({exc}); per-test data is skipped."]
+        warning = f"::warning::Could not read the JUnit report {path} ({exc}); per-test data is skipped."
+        return ({}, None, ""), [warning]
 
 
 def measure(args: argparse.Namespace, clock: Callable[[], float]) -> tuple[TimingRecord, list[str]]:
     """Build the current job's record and any warnings raised while reading its JUnit report."""
-    tests, warnings = load_tests(args.junit)
+    (tests, test_seconds, source), warnings = load_tests(args.junit)
     record = TimingRecord(
         job=args.job,
         os=args.os_name,
@@ -361,6 +352,8 @@ def measure(args: argparse.Namespace, clock: Callable[[], float]) -> tuple[Timin
         commit=os.environ.get("GITHUB_SHA", ""),
         run_id=os.environ.get("GITHUB_RUN_ID", ""),
         tests=tests,
+        test_seconds=None if test_seconds is None else round(test_seconds, 1),
+        test_seconds_source=source,
     )
     if args.output:
         os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
@@ -375,14 +368,32 @@ def thresholds_from(args: argparse.Namespace) -> Thresholds:
 
 
 def run_record(args: argparse.Namespace, clock: Callable[[], float]) -> Verdict:
-    """Write the record for this job and enforce the ceiling."""
+    """Write the record for this job and enforce the ceiling on its test time, or on wall clock without one."""
     record, warnings = measure(args, clock)
     summary = (
         f"Recorded {artefact_name(record.workflow, record.job, record.os)}: {record.duration:.0f} s, "
         f"{len(record.tests)} tests."
     )
-    verdict = check_ceiling(record.duration, thresholds_from(args)) or Verdict(True, ())
+    seconds, kind = record.judged()
+    if kind:
+        summary += f" The {noise.took(seconds, kind)}."
+    verdict = check_ceiling(seconds, thresholds_from(args), kind) or Verdict(True, ())
     return Verdict(verdict.passed, (*warnings, summary, *verdict.lines))
+
+
+def judged_values(record: TimingRecord, window: Sequence[TimingRecord]) -> tuple[float, list[float], Judged]:
+    """Choose what a compare run is judged on: the relative value, its baseline values and the ``Judged`` words.
+
+    The ceiling takes the run's test time when it has one. The relative check takes test time only when every record of
+    the baseline ``window`` carries the same kind of it; otherwise it falls back to wall clock, with a note in the
+    verdict line when the run has test time.
+    """
+    seconds, kind = record.judged()
+    lacking = sum(1 for baseline in window if baseline.judged()[1] != kind)
+    if not lacking:
+        return seconds, [baseline.judged()[0] for baseline in window], Judged(seconds, kind, kind)
+    note = noise.fallback_note(lacking, len(window), kind) if kind else ""
+    return record.duration, [baseline.duration for baseline in window], Judged(seconds, kind, note=note)
 
 
 def write_step_summary(lines: Sequence[str]) -> None:
@@ -399,7 +410,7 @@ def run_compare(
     clock: Callable[[], float],
     fetcher: Callable[[str, str, int], list[TimingRecord]],
 ) -> Verdict:
-    """Compare this job with its ``main`` baseline and return the verdict, with the per-test report after its lines."""
+    """Compare this job with ``main``; a test job has a breach judged again and gets the per-test report."""
     record, warnings = measure(args, clock)
     thresholds = thresholds_from(args)
     name = artefact_name(record.workflow, record.job, record.os)
@@ -407,14 +418,13 @@ def run_compare(
         baselines, fetch_warnings = safe_fetch(lambda: fetcher(args.repo, name, thresholds.runs))
     else:
         baselines, fetch_warnings = [], ["::warning::No --repo given, so no baseline was fetched."]
-    verdict = evaluate(
-        record.duration,
-        [b.duration for b in baselines],
-        thresholds,
-        args.override_label_present == "true",
-    )
-    report = per_test_report(record.tests, [b.tests for b in baselines]) if args.junit else []
-    write_step_summary([f"### Timing gate: {name}", "", *(line.split("::")[-1] for line in verdict.lines), "", *report])
+    duration, values, judged = judged_values(record, baselines[: thresholds.runs])
+    verdict = evaluate(duration, values, thresholds, args.override_label_present == "true", judged)
+    report: list[str] = []
+    if args.junit:
+        history = [baseline.tests for baseline in baselines]
+        verdict, report = noise.rejudge(verdict, record.tests, history), noise.per_test_report(record.tests, history)
+    write_step_summary([f"### Timing gate: {name}", "", *map(noise.without_command, verdict.lines), "", *report])
     return Verdict(verdict.passed, (*warnings, *fetch_warnings, *verdict.lines, *report))
 
 

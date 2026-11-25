@@ -43,10 +43,6 @@ GITHUB_CREDENTIAL_PATTERN_NAMES: tuple[str, ...] = (
     "GitHub Fine-Grained PAT",
     "URL-embedded GitHub credential",
 )
-_GITHUB_CREDENTIAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
-    (name, pat) for name, pat in CREDENTIAL_PATTERNS if name in GITHUB_CREDENTIAL_PATTERN_NAMES
-)
-_GITHUB_CREDENTIAL_ANY_RE = re.compile("|".join(f"(?:{pat.pattern})" for _, pat in _GITHUB_CREDENTIAL_PATTERNS))
 
 # Patterns representing non-production test / mock placeholders that should not trigger false positives
 FALSE_POSITIVE_INDICATORS = [
@@ -195,6 +191,17 @@ def check_file_credentials(file_path: str) -> list[str]:
     return violations
 
 
+_GITHUB_CREDENTIAL_MARKERS: tuple[str, ...] = (
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "x-access-token:",
+)
+
+
 def find_github_credentials(files: Sequence[str]) -> list[tuple[str, int, str]]:
     """Scan files for GitHub token shapes, with no path or placeholder exemptions.
 
@@ -210,6 +217,7 @@ def find_github_credentials(files: Sequence[str]) -> list[tuple[str, int, str]]:
         One `(path, line_number, pattern_name)` entry per match. The matched value is deliberately
         never returned, so a caller cannot print the credential it found.
     """
+    patterns = [(name, pat) for name, pat in CREDENTIAL_PATTERNS if name in GITHUB_CREDENTIAL_PATTERN_NAMES]
     findings: list[tuple[str, int, str]] = []
     for file_path in files:
         try:
@@ -217,12 +225,10 @@ def find_github_credentials(files: Sequence[str]) -> list[tuple[str, int, str]]:
                 continue
             with open(file_path, encoding="utf-8", errors="ignore") as f:
                 content = f.read()
-            if not _GITHUB_CREDENTIAL_ANY_RE.search(content):
+            if not any(marker in content for marker in _GITHUB_CREDENTIAL_MARKERS):
                 continue
             for line_no, line in enumerate(content.splitlines(), start=1):
-                findings.extend(
-                    (file_path, line_no, name) for name, pat in _GITHUB_CREDENTIAL_PATTERNS if pat.search(line)
-                )
+                findings.extend((file_path, line_no, name) for name, pat in patterns if pat.search(line))
         except OSError:
             continue
     return findings

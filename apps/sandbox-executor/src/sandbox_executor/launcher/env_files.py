@@ -1,5 +1,3 @@
-"""Owner-only credential env-files handed to `docker run --env-file`, so no secret travels on the argv."""
-
 import contextlib
 import logging
 import os
@@ -10,33 +8,27 @@ from sandbox_executor.redaction import carries_url_password, is_secret_env_name,
 
 logger = logging.getLogger(__name__)
 
-# Credential env-files live in an owner-only directory, apart from ~/.holon/tmp itself, which also
-# holds directories that are bind-mounted into the container.
 ENV_FILE_PREFIX = "holon-env-"
 _ENV_FILE_STALE_SECONDS = 24 * 60 * 60
+_OWNER_ONLY_DIR_MODE = 0o700
+_GROUP_AND_OTHER_PERMS_MASK = 0o077
+_OWNER_ONLY_FILE_MODE = 0o600
+_HOLON_ENV_PREFIX = "HOLON_"
+
+
+def _contains_line_break(value: str) -> bool:
+    return "\n" in value or "\r" in value
 
 
 def env_file_dir() -> str:
-    """Return the directory for temporary credential env-files, creating it owner-only (0700).
-
-    Returns:
-        The absolute path of `~/.holon/tmp/env-files`. Looser permission bits on an existing
-        directory are tightened back to 0700.
-    """
     path = os.path.expanduser(os.path.join("~", ".holon", "tmp", "env-files"))
-    os.makedirs(path, mode=0o700, exist_ok=True)
-    if os.stat(path).st_mode & 0o077:
-        os.chmod(path, 0o700)
+    os.makedirs(path, mode=_OWNER_ONLY_DIR_MODE, exist_ok=True)
+    if os.stat(path).st_mode & _GROUP_AND_OTHER_PERMS_MASK:
+        os.chmod(path, _OWNER_ONLY_DIR_MODE)
     return path
 
 
 def sweep_stale_env_files(directory: str, max_age_seconds: float = _ENV_FILE_STALE_SECONDS) -> None:
-    """Best-effort removal of credential env-files left behind by a killed run.
-
-    Args:
-        directory: The env-file directory to sweep.
-        max_age_seconds: Files whose modification time is older than this are removed.
-    """
     cutoff = time.time() - max_age_seconds
     try:
         entries = os.listdir(directory)
@@ -55,26 +47,12 @@ def sweep_stale_env_files(directory: str, max_age_seconds: float = _ENV_FILE_STA
 
 
 def write_env_file(env: dict[str, str]) -> str:
-    """Write credential variables to a new 0600 docker `--env-file`, one `KEY=VALUE` line each.
-
-    Docker reads the file on the client side and applies no quoting, so a value containing a line
-    break would be cut short or smuggle in a second variable; such values are rejected.
-
-    Args:
-        env: The variables to write, which are emitted in sorted key order.
-
-    Returns:
-        The path of the new file. The caller owns it and must remove it.
-
-    Raises:
-        ValueError: If a value contains a line break. The message names the key, never the value.
-    """
     for key, value in env.items():
-        if "\n" in value or "\r" in value:
+        if _contains_line_break(value):
             raise ValueError(f"the value of {key} contains a line break and cannot be passed to the container")
     fd, path = tempfile.mkstemp(prefix=ENV_FILE_PREFIX, dir=env_file_dir())
     try:
-        os.fchmod(fd, 0o600)
+        os.fchmod(fd, _OWNER_ONLY_FILE_MODE)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.writelines(f"{key}={value}\n" for key, value in sorted(env.items()))
     except BaseException:
@@ -85,59 +63,22 @@ def write_env_file(env: dict[str, str]) -> str:
 
 
 def is_secret_env_item(key: str, value: str) -> bool:
-    """Decide whether a container variable must travel in the 0600 `--env-file`, not on the argv.
-
-    Args:
-        key: The variable name.
-        value: The variable value.
-
-    Returns:
-        True for a credential-bearing name, a `KEY=VALUE` item the command redactor would mask, or a
-        value with a URL password (a proxy URL in any scheme, or none), whatever its name.
-    """
     item = f"{key}={value}"
     return is_secret_env_name(key) or redact_command([item]) != item or carries_url_password(value)
 
 
 def is_env_file_item(key: str, value: str) -> bool:
-    """Decide whether a forwarded container variable travels in the 0600 `--env-file` rather than on the argv.
-
-    Every `HOLON_*` value a docker env-file can carry goes there whatever its name or shape, so no setting fed a
-    credential reaches `ps`, /proc/<pid>/cmdline or the `Executing:` echo. A `HOLON_*` value the env-file cannot
-    carry (a line break or a non-UTF-8 byte) is a passthrough item instead (see `is_passthrough_env_item`). Any
-    other name keeps the credential rule of `is_secret_env_item`.
-
-    Args:
-        key: The variable name.
-        value: The variable value.
-
-    Returns:
-        True when the item must be handed over through the `--env-file`.
-    """
-    if key.startswith("HOLON_"):
+    if key.startswith(_HOLON_ENV_PREFIX):
         return _fits_env_file(value)
     return is_secret_env_item(key, value)
 
 
 def is_passthrough_env_item(key: str, value: str) -> bool:
-    """Tell whether a `HOLON_*` value goes on the argv as a bare `-e NAME`, its value set in the docker client env.
-
-    Docker copies a bare `-e NAME` from its own environment, so a value no env-file line can carry still never
-    appears on the argv or in the `Executing:` echo.
-
-    Args:
-        key: The variable name.
-        value: The variable value.
-
-    Returns:
-        True for a `HOLON_*` value with a line break or a non-UTF-8 byte.
-    """
-    return key.startswith("HOLON_") and not _fits_env_file(value)
+    return key.startswith(_HOLON_ENV_PREFIX) and not _fits_env_file(value)
 
 
 def _fits_env_file(value: str) -> bool:
-    """Tell whether a docker env-file line can carry ``value`` verbatim: no line break and valid UTF-8."""
-    if "\n" in value or "\r" in value:
+    if _contains_line_break(value):
         return False
     try:
         value.encode("utf-8")

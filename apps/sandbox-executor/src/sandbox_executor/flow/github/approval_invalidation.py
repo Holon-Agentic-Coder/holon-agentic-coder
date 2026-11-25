@@ -1,10 +1,3 @@
-"""The one follow-up comment that says a consensus approval no longer stands because CI is red on a later head.
-
-The comment is posted once per failing head: a hidden marker holding the failing SHA is checked against the PR's
-existing comments first, and a PR whose comments cannot be listed gets no comment. It never approves or merges. The
-module also provides the comment read and edit adapters the stale-calibration warning reuses.
-"""
-
 from __future__ import annotations
 
 import json
@@ -27,11 +20,16 @@ UPDATE_COMMENT_MUTATION = (
     "mutation($id: ID!, $body: String!) { updateIssueComment(input: {id: $id, body: $body}) { issueComment { id } } }"
 )
 
+_INVALIDATION_HEADING = "## ⚠️ Ensemble Consensus Approval no longer stands"
+_RERUN_FAILED_AGAIN_NOTICE = "The failed job was automatically rerun once and failed again."
+_HUMAN_DECISION_FOOTER = (
+    "A job that exceeds its time limit is a failed check. This pull request is not verified as ready to merge; "
+    "a human decides."
+)
+
 
 @dataclass(frozen=True)
 class CommentRecord:
-    """One PR comment: its GraphQL node id (empty when unknown) and its body."""
-
     id: str
     body: str
 
@@ -43,7 +41,6 @@ CommentEditor = Callable[[str, str], bool]
 
 
 def invalidation_marker(failing_head: str) -> str:
-    """The hidden marker that keys the comment on the full failing SHA."""
     return f"{MARKER_PREFIX}{failing_head} -->"
 
 
@@ -52,33 +49,27 @@ def _check_line(detail: Mapping[str, Any]) -> str:
     return f"- {describe_failure(detail)}" + (f"; failed step: {steps}" if steps else "")
 
 
+def _rerun_notice_lines(timing_rerun: Mapping[str, Any] | None) -> list[str]:
+    return [_RERUN_FAILED_AGAIN_NOTICE, ""] if timing_rerun and timing_rerun.get("attempted") else []
+
+
 def render_invalidation(
     approved_head: str | None,
     failing_head: str,
     details: list[Mapping[str, Any]],
     timing_rerun: Mapping[str, Any] | None = None,
 ) -> str:
-    """The comment body: both heads, each failing check and, for a timing gate, its duration against the limit.
-
-    When the one automatic timing-gate rerun was attempted (so the head failed twice), one line says so.
-    """
     covered = f"`{short_sha(approved_head)}`" if approved_head else "an earlier commit"
     marker = invalidation_marker(failing_head)
-    rerun_lines = (
-        ["The failed job was automatically rerun once and failed again.", ""]
-        if timing_rerun and timing_rerun.get("attempted")
-        else []
-    )
     lines = [
-        "## ⚠️ Ensemble Consensus Approval no longer stands",
+        _INVALIDATION_HEADING,
         "",
         f"The consensus approval covered {covered}. CI is now failing on head `{short_sha(failing_head)}`:",
         "",
         *(_check_line(d) for d in details),
         "",
-        *rerun_lines,
-        "A job that exceeds its time limit is a failed check. This pull request is not verified as ready to merge; "
-        "a human decides.",
+        *_rerun_notice_lines(timing_rerun),
+        _HUMAN_DECISION_FOOTER,
     ]
     text = CredentialRedactor.redact_text("\n".join(lines))[: MAX_COMMENT_CHARS - len(marker) - 2]
     return f"{text}\n\n{marker}"
@@ -89,7 +80,6 @@ def _gh_env(proxy_env: Mapping[str, str] | None) -> dict[str, str]:
 
 
 def _run_gh(argv: list[str], repo_dir: str, env: Mapping[str, str]) -> subprocess.CompletedProcess[str] | None:
-    """Run one ``gh`` command in ``repo_dir`` with the shared capture and timeout settings; None when it cannot run."""
     try:
         timeout = STEP_LOOKUP_TIMEOUT_SECONDS
         return subprocess.run(argv, cwd=repo_dir, capture_output=True, text=True, check=False, timeout=timeout, env=env)
@@ -98,7 +88,6 @@ def _run_gh(argv: list[str], repo_dir: str, env: Mapping[str, str]) -> subproces
 
 
 def gh_comment_records(repo_dir: str, proxy_env: Mapping[str, str] | None = None) -> CommentRecordLister:
-    """A lister of the comments (GraphQL node id and body) of a PR through ``gh pr view``; None when unreadable."""
     env = _gh_env(proxy_env)
 
     def records(pr_number: str) -> list[CommentRecord] | None:
@@ -115,7 +104,6 @@ def gh_comment_records(repo_dir: str, proxy_env: Mapping[str, str] | None = None
 
 
 def gh_comment_lister(repo_dir: str, proxy_env: Mapping[str, str] | None = None) -> CommentLister:
-    """A lister of the comment bodies of a PR through ``gh pr view``; None when they cannot be read."""
     records = gh_comment_records(repo_dir, proxy_env)
 
     def lister(pr_number: str) -> list[str] | None:
@@ -126,7 +114,6 @@ def gh_comment_lister(repo_dir: str, proxy_env: Mapping[str, str] | None = None)
 
 
 def gh_comment_poster(repo_dir: str, proxy_env: Mapping[str, str] | None = None) -> CommentPoster:
-    """A poster of one PR comment through ``gh pr comment``; False when it fails."""
     env = _gh_env(proxy_env)
 
     def poster(pr_number: str, body: str) -> bool:
@@ -137,7 +124,6 @@ def gh_comment_poster(repo_dir: str, proxy_env: Mapping[str, str] | None = None)
 
 
 def gh_comment_editor(repo_dir: str, proxy_env: Mapping[str, str] | None = None) -> CommentEditor:
-    """An editor of one PR comment by node id through GraphQL ``updateIssueComment``; False when it fails."""
     env = _gh_env(proxy_env)
 
     def editor(comment_id: str, body: str) -> bool:
@@ -152,7 +138,6 @@ def gh_comment_editor(repo_dir: str, proxy_env: Mapping[str, str] | None = None)
 
 
 def approval_pr_number(context: FlowContext) -> str | None:
-    """The PR number of the approval Stage 4 posted, or None when no approval was posted."""
     review = context.stage_results.get("review")
     payload = review.payload if review else {}
     consensus, posting = payload.get("consensus") or {}, payload.get("posting") or {}
@@ -169,7 +154,6 @@ def invalidate_approval(
     lister: CommentLister | None = None,
     poster: CommentPoster | None = None,
 ) -> dict[str, Any]:
-    """Post the once-per-head comment for a red head (an unverified head posts none); ``{"posted", "reason"}``."""
     failing = str(reverified.get("final_head") or "")
     pr_number = approval_pr_number(context)
     if context.dry_run or context.skip_push:

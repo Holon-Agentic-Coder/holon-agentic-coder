@@ -1,5 +1,3 @@
-"""Multi-label retrieval engine for holon consult with token bounding and session deduplication."""
-
 from __future__ import annotations
 
 import json
@@ -22,11 +20,19 @@ DEFAULT_LEDGERS = [
     "holon-knowledge/ledger/plans.jsonl",
 ]
 
+_CHARS_PER_TOKEN_ESTIMATE = 4.0
+_MAX_CONSULT_TOP_K = 6
+_CACHE_HIT_LATENCY_MS_THRESHOLD = 5.0
+_RECORD_ID_DISPLAY_WIDTH = 14
+_FINGERPRINT_DISPLAY_WIDTH = 12
+_CREATED_AT_DISPLAY_WIDTH = 19
+_ACTION_DISPLAY_MAX_WIDTH = 35
+_TARGET_DISPLAY_MAX_WIDTH = 25
+_ELLIPSIS = "..."
+
 
 @dataclass
 class ConsultResult:
-    """Encapsulates retrieved action knowledge records with telemetry metadata."""
-
     records: list[dict[str, Any]]
     total_matched: int
     latency_ms: float
@@ -35,7 +41,6 @@ class ConsultResult:
     consulted_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert result to dictionary representation."""
         return {
             "records": self.records,
             "total_matched": self.total_matched,
@@ -47,16 +52,13 @@ class ConsultResult:
 
 
 def estimate_record_tokens(record: dict[str, Any]) -> int:
-    """Estimate token count for a record payload using character heuristic (~4 chars/token)."""
     raw_str = record.get("payload_json")
     if not raw_str:
         raw_str = json.dumps(record)
-    return max(1, math.ceil(len(raw_str) / 4.0))
+    return max(1, math.ceil(len(raw_str) / _CHARS_PER_TOKEN_ESTIMATE))
 
 
 class ConsultEngine:
-    """Executes multi-label queries with sub-15ms warm index latency and budget bounding."""
-
     def __init__(
         self,
         db: ActionIndexDatabase | None = None,
@@ -71,7 +73,6 @@ class ConsultEngine:
         self.ledgers = auto_sync_ledgers if auto_sync_ledgers is not None else list(DEFAULT_LEDGERS)
 
     def _sync_if_needed(self) -> None:
-        """Incrementally sync registered ledgers if file mtimes have updated."""
         for ledger_path in self.ledgers:
             try:
                 self.db.sync_ledger(ledger_path)
@@ -79,16 +80,6 @@ class ConsultEngine:
                 logger.debug("Failed incremental sync for %s: %s", ledger_path, e)
 
     def consult_records(self, **filters: Any) -> ConsultResult:
-        """Consult knowledge records matching conjunctive, disjunctive, negated labels, and text query.
-
-        Args:
-            **filters: Keyword filters, the fields of ``ConsultQuery``: ``all_labels``, ``any_labels``,
-                ``not_labels``, ``query_text``, ``top_k`` (default 6, capped at 6), ``max_tokens`` (default 1200)
-                and ``session_seen_ids``.
-
-        Raises:
-            TypeError: When a filter is not a ``ConsultQuery`` field.
-        """
         query = ConsultQuery(**filters)
         self._sync_if_needed()
         start_time = time.perf_counter()
@@ -115,7 +106,6 @@ class ConsultEngine:
 
 
 def _fetch_matches(conn: sqlite3.Connection, query: ConsultQuery) -> list[sqlite3.Row]:
-    """Return every record matching the query, newest first."""
     where_sql, params = build_where(query)
     query_sql = f"""
         SELECT ar.record_id, ar.action_id, ar.execution_id, ar.action, ar.category,
@@ -132,8 +122,6 @@ def _fetch_matches(conn: sqlite3.Connection, query: ConsultQuery) -> list[sqlite
 
 @dataclass
 class _BudgetAllocation:
-    """The records admitted within the top-k and token budgets."""
-
     records: list[dict[str, Any]] = field(default_factory=list)
     consulted_ids: list[str] = field(default_factory=list)
     tokens_injected: int = 0
@@ -141,11 +129,10 @@ class _BudgetAllocation:
 
 
 def _allocate_within_budget(rows: list[sqlite3.Row], top_k: int, max_tokens: int) -> _BudgetAllocation:
-    """Admit rows in order until ``min(top_k, 6)`` records or the token budget; the first record always fits."""
     allocation = _BudgetAllocation()
-    eff_top_k = min(top_k, 6)
+    effective_top_k = min(top_k, _MAX_CONSULT_TOP_K)
     for row in rows:
-        if len(allocation.records) >= eff_top_k:
+        if len(allocation.records) >= effective_top_k:
             allocation.truncated = True
             break
 
@@ -164,7 +151,6 @@ def _allocate_within_budget(rows: list[sqlite3.Row], top_k: int, max_tokens: int
 def _record_telemetry(
     conn: sqlite3.Connection, query_labels: str, elapsed_ms: float, matched: int, tokens_injected: int
 ) -> None:
-    """Record one consult in ``consult_telemetry``; a failure is logged and never fails the consult."""
     try:
         with conn:
             conn.execute(
@@ -179,15 +165,20 @@ def _record_telemetry(
                     elapsed_ms,
                     matched,
                     tokens_injected,
-                    1 if elapsed_ms < 5.0 else 0,
+                    1 if elapsed_ms < _CACHE_HIT_LATENCY_MS_THRESHOLD else 0,
                 ),
             )
     except Exception as e:
         logger.debug("Failed to record consult telemetry: %s", e)
 
 
+def _truncate_cell(value: str, max_width: int) -> str:
+    if len(value) > max_width:
+        return value[: max_width - len(_ELLIPSIS)] + _ELLIPSIS
+    return value
+
+
 def format_consult_results_table(result: ConsultResult) -> str:
-    """Format consult results into an ANSI/ASCII summary table."""
     if not result.records:
         return f"No records found (matched: 0, latency: {result.latency_ms:.2f}ms)."
 
@@ -195,19 +186,14 @@ def format_consult_results_table(result: ConsultResult) -> str:
     rows: list[list[str]] = []
 
     for r in result.records:
-        rid = str(r.get("record_id") or "")[:14]
-        vrd = str(r.get("verdict") or r.get("outcome") or "-")
-        act = str(r.get("action") or "-")
-        tgt = str(r.get("target") or "-")
-        fp = str(r.get("context_fingerprint") or "-")[:12]
-        cat = str(r.get("created_at") or "")[:19]
+        record_id = str(r.get("record_id") or "")[:_RECORD_ID_DISPLAY_WIDTH]
+        verdict = str(r.get("verdict") or r.get("outcome") or "-")
+        action = _truncate_cell(str(r.get("action") or "-"), _ACTION_DISPLAY_MAX_WIDTH)
+        target = _truncate_cell(str(r.get("target") or "-"), _TARGET_DISPLAY_MAX_WIDTH)
+        fingerprint = str(r.get("context_fingerprint") or "-")[:_FINGERPRINT_DISPLAY_WIDTH]
+        created_at = str(r.get("created_at") or "")[:_CREATED_AT_DISPLAY_WIDTH]
 
-        if len(act) > 35:
-            act = act[:32] + "..."
-        if len(tgt) > 25:
-            tgt = tgt[:22] + "..."
-
-        rows.append([rid, vrd, act, tgt, fp, cat])
+        rows.append([record_id, verdict, action, target, fingerprint, created_at])
 
     col_widths = [len(h) for h in headers]
     for row in rows:

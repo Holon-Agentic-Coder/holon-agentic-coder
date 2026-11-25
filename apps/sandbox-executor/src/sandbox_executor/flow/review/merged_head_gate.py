@@ -94,6 +94,8 @@ def _poll_head(context: FlowContext, repo_dir: str, head_sha: str, seams: Merged
     registration = policy.clock() + resolve_ci_registration_timeout(seams.registration_timeout)
     deadline = registration + max(0.0, policy.budget_seconds)
     interval = policy.poll_interval if policy.poll_interval > 0 else CI_REGISTRATION_POLL_SECONDS
+    if policy.ceiling > 0:
+        interval = min(interval, policy.ceiling)
     while True:
         probed = probe(head_sha)
         checks = probed or []

@@ -21,7 +21,9 @@ def _run_decomposed(host: Path, origin: Path, tmp_path: Path):
     return ctx, results, reviews
 
 
-def test_the_parent_execution_branch_carries_every_record_and_stage_4_halts_at_main(flow_repos, tmp_path):
+def test_the_parent_execution_branch_carries_every_record_stage_4_halts_at_main_and_a_resume_integrates_nothing(
+    flow_repos, tmp_path
+):
     host, origin = flow_repos
     ctx, results, reviews = _run_decomposed(host, origin, tmp_path)
 
@@ -62,6 +64,14 @@ def test_the_parent_execution_branch_carries_every_record_and_stage_4_halts_at_m
     assert any("Pipeline safely halted for human intervention at stage 'review'" in line for line in ctx.logs)
     assert reviews.gh.prs[reviews.reviewed[-1]["number"]]["state"] == "OPEN"
 
+    # Integration is idempotent on a resume: the head stays where it is and no second superseding row is written.
+    head_before = _git(origin, "rev-parse", exec_ref)
+    again = integrate_children(ctx, "2026-11-09T00:00:00Z", dict(execute.payload))
+    assert again.status == StageStatus.SUCCESS
+    assert _git(origin, "rev-parse", exec_ref) == head_before
+    rows = _ledger_rows(origin, exec_ref, "executions.jsonl")
+    assert sum(bool(r.get("integrated")) for r in rows) == 1
+
 
 def test_the_parent_execution_branch_completes_with_approved_stage_4_at_main(flow_repos, tmp_path):
     host, origin = flow_repos
@@ -79,20 +89,6 @@ def test_the_parent_execution_branch_completes_with_approved_stage_4_at_main(flo
         for line in ctx.logs
     )
     assert reviews.gh.prs[reviews.reviewed[-1]["number"]]["state"] == "OPEN"
-
-
-def test_integration_is_idempotent_on_a_resume(flow_repos, tmp_path):
-    host, origin = flow_repos
-    ctx, results, _reviews = _run_decomposed(host, origin, tmp_path)
-    exec_ref = f"refs/heads/{ctx.execution_branch}"
-    head_before = _git(origin, "rev-parse", exec_ref)
-
-    again = integrate_children(ctx, "2026-11-09T00:00:00Z", dict(results["execute"].payload))
-
-    assert again.status == StageStatus.SUCCESS
-    assert _git(origin, "rev-parse", exec_ref) == head_before
-    rows = _ledger_rows(origin, exec_ref, "executions.jsonl")
-    assert sum(bool(r.get("integrated")) for r in rows) == 1
 
 
 def test_a_failed_integration_merge_fails_stage_3_with_the_reason(tmp_path):

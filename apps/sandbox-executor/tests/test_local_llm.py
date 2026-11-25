@@ -4,6 +4,8 @@ Covers the authority rewrite decision table, the generated container-side agent 
 the keyless validation path for local providers.
 """
 
+import contextlib
+import http.server
 import io
 import json
 import os
@@ -20,6 +22,7 @@ from sandbox_executor.launcher import proxy_paths, root_ca, sidecar
 
 from tests.env_file_capture import DockerEnvFileRecorder
 from tests.leak_assertions import assert_no_fragment, make_probe
+from tests.loopback_http import serve_on_loopback
 
 
 class TestRewriteAuthority(unittest.TestCase):
@@ -1114,9 +1117,6 @@ class TestGatewayHealth(unittest.TestCase):
             local_llm._default_fetch("file:///etc/hosts", 1.0)
 
     def test_default_fetch_caps_the_response_read(self):
-        import http.server
-        import threading
-
         size = local_llm.HEALTH_MAX_BYTES * 3
 
         class Flood(http.server.BaseHTTPRequestHandler):
@@ -1124,26 +1124,21 @@ class TestGatewayHealth(unittest.TestCase):
                 self.send_response(200)
                 self.send_header("Content-Length", str(size))
                 self.end_headers()
-                self.wfile.write(b"x" * size)
+                # The client stops reading at the cap and hangs up, so the rest of the write may fail.
+                with contextlib.suppress(OSError):
+                    self.wfile.write(b"x" * size)
 
             def log_message(self, *args):
                 pass
 
-        server = http.server.HTTPServer(("127.0.0.1", 0), Flood)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
+        port = serve_on_loopback(self, Flood)
         with self.assertRaises(ValueError):
-            local_llm._default_fetch(f"http://127.0.0.1:{server.server_port}/health", 2.0)
-        health = local_llm.probe_gateway_health(f"http://127.0.0.1:{server.server_port}/v1")
+            local_llm._default_fetch(f"http://127.0.0.1:{port}/health", 2.0)
+        health = local_llm.probe_gateway_health(f"http://127.0.0.1:{port}/v1")
         self.assertEqual(health.prefill_cache, "unknown")
         self.assertIn("exceeds", health.error)
 
     def test_default_fetch_refuses_redirects(self):
-        import http.server
-        import threading
-
         class Redirector(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
                 self.send_response(302)
@@ -1153,12 +1148,8 @@ class TestGatewayHealth(unittest.TestCase):
             def log_message(self, *args):
                 pass
 
-        server = http.server.HTTPServer(("127.0.0.1", 0), Redirector)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        health = local_llm.probe_gateway_health(f"http://127.0.0.1:{server.server_port}/v1")
+        port = serve_on_loopback(self, Redirector)
+        health = local_llm.probe_gateway_health(f"http://127.0.0.1:{port}/v1")
         self.assertEqual(health.prefill_cache, "unknown")
         self.assertIn("redirect refused", health.error)
 

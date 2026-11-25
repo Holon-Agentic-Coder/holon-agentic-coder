@@ -1,0 +1,33 @@
+{
+  "kb_id": "KB-pattern-dd1ab35f",
+  "kb_type": "pattern",
+  "version": "1.0",
+  "created_ts": "2026-11-25T03:37:54.519334+00:00",
+  "updated_ts": "2026-11-25T03:37:54.519334+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-1795543661-86a5d118",
+      "ACT-1795541399-59262ea6",
+      "ACT-1795540110-f2c17323",
+      "ACT-1795536702-286e34d1",
+      "ACT-1795533767-a5446d87"
+    ],
+    "success_count": 12,
+    "failure_count": 0,
+    "wilson_lower": 0.7575059933447693,
+    "posterior_mean": 0.9285714285714286,
+    "ladder_state": "likely-success"
+  },
+  "tags": [
+    "code",
+    "proven"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Proven approach for antigravity-agent:gemini-4-neon",
+    "description": "Advisory (likely-success): Historical executions matching this context pattern succeeded in 12/12 (100.0%) trials (Wilson 95% lower bound: 0.76). Consider evaluating proven approach: 'Executed agent antigravity-agent with model gemini-4-neon'.",
+    "action": "Executed agent antigravity-agent with model gemini-4-neon"
+  }
+}

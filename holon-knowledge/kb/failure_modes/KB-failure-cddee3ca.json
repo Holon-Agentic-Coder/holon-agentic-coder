@@ -1,0 +1,28 @@
+{
+  "kb_id": "KB-failure-cddee3ca",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-24T23:08:39.181313+00:00",
+  "updated_ts": "2026-11-24T23:08:39.181313+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "REV-1795555436-5f84682c-antigravity-agent"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795551241-config-env-self-doc/P-1795551260-ANA-G4N/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop halted without consensus after 2 iteration(s): resolver failed: Resolver turn failed: Resolver agent exited with code 3 (resolver exit code 1); output tail: \u2026nish.\nI checked `config_env_report.py`, `cli/__init__.py`, and `redaction.py` after the cumulative profile showed `redact_command` taking 33.3s of the 61.2s run across 458k calls. `_configuration_section` currently computes `setting_rows` twice per `run_doctor` call, and `redact_text` re-looks up uncompiled regexes and recreates `_replace_secret` on every call. Waiting for the `tottime` profile to finish to see the exact inner hot spots.\n\nroot agent idle; waiting for 1 background task(s) to finish\nerror: There was a network issue connecting to the server, please try again. (response may be truncated)\nAGY_ERROR: {\"short_error\":\"agent executor error: generating and executing: request failed: Post \\\"https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse\\\": dial tcp: lookup daily-cloudcode-pa.googleapis.com on 192.168.65.7:53: no such host\",\"status\":\"UNKNOWN\",\"error_code\":2,\"code_kind\":\"grpc\",\"retryable\":true,\"error_id\":\"503d7a6d-a3a8-45de-9564-29eb04118f97-61\"}; final verdicts: Reviewer 1 APPROVED (0/0/0); Reviewer 2 APPROVED (0/0/0); Reviewer 3 APPROVED (0/0/0)",
+    "symptoms": []
+  }
+}

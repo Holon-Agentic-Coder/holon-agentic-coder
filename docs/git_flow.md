@@ -988,10 +988,10 @@ def auto_resolve_conflict(sub_intent, deciding_branch):
 
 ### 9.2 Reactive Intent (If Auto-Resolution Fails)
 
-The reactive intent is decided during the sub-intent's execution, so it nests under that execution (section 2.2): its
-`deciding_branch` and `target_branch` are both that execution branch, which it is cut from and merges back into
-automatically. Like Example 3 in [Examples](examples.md), this illustrates the general rule only; the plan-decided split
-stays the practice.
+Target-sync code conflicts first go to the [conflict-resolver role](conflict_resolver_role.md). The reactive intent is
+decided during the sub-intent's execution, so it nests under that execution (section 2.2): its `deciding_branch` and
+`target_branch` are both that execution branch, which it is cut from and merges back into automatically. Like Example 3
+in [Examples](examples.md), this illustrates the general rule only; the plan-decided split stays the practice.
 
 ```python
 import time

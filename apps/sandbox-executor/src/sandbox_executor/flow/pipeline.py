@@ -25,6 +25,7 @@ from sandbox_executor.flow.checkpoint import save_checkpoint
 from sandbox_executor.flow.child_progress import has_recorded_decomposition
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure
+from sandbox_executor.flow.end_of_flow_sync import finish_flow
 from sandbox_executor.flow.resume_guard import _resume_context_error
 from sandbox_executor.flow.review_restart import approval_stands, calibrate_with_review_restart
 from sandbox_executor.flow.stage_status import REVIEW_BOUNDARY_STATUSES
@@ -40,6 +41,7 @@ from sandbox_executor.flow.stages.touch_set_guard import (
     touch_set_replan_exhausted,
     touch_set_replan_feedback,
 )
+from sandbox_executor.flow.target_sync_hooks import at_flow_start, at_turn_boundary
 from sandbox_executor.flow_guard import pre_run_guard_error
 from sandbox_executor.git_flow import target_worktree_problem
 from sandbox_executor.ledger import validate_stage_ledger
@@ -99,19 +101,9 @@ class PipelineEngine:
     def timed_execute_stage(self, stage: FlowStage) -> StageResult:
         """Run a stage under its wall-clock ceiling and attach elapsed and budget to the result.
 
-        Stages run in-process, so the ceiling is enforced when the stage returns: a stage that ran past its budget is
-        marked failed with the budget that fired, which stops the pipeline before the next stage. The review and
-        calibration stages are exempt from that downgrade: the review loop already enforces the per-iteration budget
-        itself and a review that reached consensus has posted its approval (failing it afterwards would skip the
-        pre-merge calibration), and calibration is the last stage, whose calibrated branch is already pushed. For
-        those an overrun is only logged and recorded as ``budget_overrun`` in the payload. The ACT-BUDGET ledger action
-        is written only by the in-container turn supervisor, never here, so a failure is not recorded twice.
-
-        While the stage runs, its timer is the active host stage timer (:func:`budgets.active_stage_timer`), so every
-        role container started through ``cli.run_docker_container`` during the stage receives the remaining time minus
-        a safety margin as ``HOLON_STAGE_BUDGET_SECONDS`` and stops before this ceiling. The review stage is excluded:
-        its ceiling is one review-iteration budget per iteration, which is only known afterwards, so a stage-wide
-        remainder would be wrong from the second iteration on (the review loop dispatches no role container).
+        Stages run in-process, so the ceiling is enforced on return; REVIEW and CALIBRATE are exempt from post-hoc
+        downgrade and record ``budget_overrun`` instead. While a non-review stage runs, its timer is the active host
+        stage timer (:func:`budgets.active_stage_timer`) so role containers receive ``HOLON_STAGE_BUDGET_SECONDS``.
         """
         timer = StageTimer(stage.value, self.stage_budget_seconds(stage), clock=self.clock)
         if timer.unlimited:
@@ -168,7 +160,7 @@ class PipelineEngine:
         return rerun_calibration(self.context, result, run_calibrate_stage)
 
     def _run_stage_once(self, stage: FlowStage) -> StageResult:
-        """Enter ``stage`` and run it under its budget; a Stage 5 result also passes the head-move rerun trigger."""
+        """Enter ``stage`` and run it under its budget, rerunning Stage 5 if the head moved during its CI wait."""
         self.before_stage(stage)
         return self._rerun_if_calibrate(stage, self.timed_execute_stage(stage))
 
@@ -204,11 +196,7 @@ class PipelineEngine:
                 return _skipped_by_flag(FlowStage.CALIBRATE)
             return run_calibrate_stage(self.context)
         else:
-            return StageResult(
-                stage=stage,
-                status=StageStatus.FAILED,
-                error=f"Unsupported stage '{stage}'",
-            )
+            return StageResult(stage=stage, status=StageStatus.FAILED, error=f"Unsupported stage '{stage}'")
 
     def after_stage(self, stage: FlowStage, result: StageResult) -> None:
         """Lifecycle hook invoked after executing a stage."""
@@ -227,11 +215,7 @@ class PipelineEngine:
         """Handle unexpected exceptions during stage execution."""
         err_msg = redact_agent_secrets(f"Unhandled exception in stage '{stage.value}': {error}")
         self.context.log(err_msg)
-        res = StageResult(
-            stage=stage,
-            status=StageStatus.FAILED,
-            error=err_msg,
-        )
+        res = StageResult(stage=stage, status=StageStatus.FAILED, error=err_msg)
         self.context.stage_results[stage.value] = res
         return res
 
@@ -287,18 +271,19 @@ class PipelineEngine:
         """
         while _replan_requested(result) and self.context.replan_attempts < MAX_REPLAN_ATTEMPTS:
             self.context.replan_attempts += 1
-            self.context.intent_data["replan_feedback"] = self._replan_feedback(result)
+            feedback = self._replan_feedback(result)
             self.context.plan_branch = None
-            self.before_stage(FlowStage.PLAN)
+            if (turn_err := at_turn_boundary(self.context, FlowStage.PLAN, self.context.replan_attempts)) is not None:
+                return turn_err
+            self.context.intent_data["replan_feedback"] = feedback
             try:
-                plan_result = self.timed_execute_stage(FlowStage.PLAN)
+                plan_result = self._run_stage_once(FlowStage.PLAN)
             finally:
                 self.context.intent_data.pop("replan_feedback", None)
             self._record_stage(FlowStage.PLAN, plan_result)
             if plan_result.status != StageStatus.SUCCESS:
                 return plan_result
-            self.before_stage(FlowStage.EXECUTE)
-            result = self.timed_execute_stage(FlowStage.EXECUTE)
+            result = self._run_stage_once(FlowStage.EXECUTE)
             self._record_stage(FlowStage.EXECUTE, result)
 
         error = self._replan_exhausted_error(result)
@@ -317,31 +302,34 @@ class PipelineEngine:
         finally:
             restore_starting_branch(self.context)
 
+    def _start_index(self) -> int:
+        if not self.from_stage:
+            return 0
+        try:
+            return self.STAGE_ORDER.index(self.from_stage)
+        except ValueError:
+            valid = [s.value for s in self.STAGE_ORDER]
+            raise ValueError(f"Invalid resumption stage '{self.from_stage}'. Must be one of: {valid}") from None
+
     def _run_stages(self) -> dict[str, StageResult]:
         """Execute the configured pipeline stages sequentially."""
-        start_idx = 0
-        if self.from_stage:
-            try:
-                start_idx = self.STAGE_ORDER.index(self.from_stage)
-            except ValueError:
-                valid = [s.value for s in self.STAGE_ORDER]
-                raise ValueError(f"Invalid resumption stage '{self.from_stage}'. Must be one of: {valid}") from None
-
+        start_idx = self._start_index()
         # A --from-stage execute or --checkpoint resume at Stage 3 (cli.py sets from_stage from the checkpoint).
         self._resume_partial_pending = self.from_stage == FlowStage.EXECUTE
+        first_stage = self.STAGE_ORDER[start_idx]
         self.context.log(
-            f"Pipeline run initiated from stage: {self.STAGE_ORDER[start_idx].value.upper()} "
+            f"Pipeline run initiated from stage: {first_stage.value.upper()} "
             f"(dry_run={self.context.dry_run}, auto_calibrate={self.context.auto_calibrate})"
         )
-
-        # Reject an invalid run before any stage runs or a checkpoint is written, so a non-dry resume never half-runs
-        # Stage 4 or Stage 5 and a resume missing its start stage's branch leaves the checkpoint as it was.
         guard_error = pre_run_guard_error(self.context, self.worktree_validator) or _resume_context_error(
             self.context, self.from_stage, self.checkpoint_path
         )
         if guard_error is not None:
-            first_stage = self.STAGE_ORDER[start_idx]
             _stage_failure(self.context, first_stage, datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), guard_error)
+            self.context.log(f"Pipeline halted due to failure in stage '{first_stage.value}'.")
+            return self.context.stage_results
+        if (start_failure := at_flow_start(self.context, first_stage)) is not None:
+            self._record_stage(first_stage, start_failure)
             self.context.log(f"Pipeline halted due to failure in stage '{first_stage.value}'.")
             return self.context.stage_results
 
@@ -370,6 +358,9 @@ class PipelineEngine:
             if result.status in REVIEW_BOUNDARY_STATUSES:
                 self._handle_review_boundary(stage, result)
                 break
+            rev = self.context.stage_results.get(FlowStage.REVIEW.value)
+            if stage == FlowStage.CALIBRATE and result.status == StageStatus.SUCCESS and rev is not None:
+                self._finalize_approved_flow(stage, rev)
 
         return self.context.stage_results
 
@@ -377,13 +368,23 @@ class PipelineEngine:
         """Handle calibrate dispatch and logging when Stage 4 ends at the consensus boundary."""
         if stage == FlowStage.REVIEW:
             self._calibrate_after_consensus_halt()
+        cal = self.context.stage_results.get(FlowStage.CALIBRATE.value)
+        if approval_stands(self.context, result) and (cal is None or cal.status != StageStatus.FAILED):
+            self._finalize_approved_flow(stage)
+        elif not approval_stands(self.context, result):
+            halt = f"safely halted for human intervention at stage '{stage.value}'. Halting execution without merging."
+            self.context.log(f"Pipeline {halt}")
 
-        verb = (
-            f"finished at the merge boundary: review approved, PR ready for maintainer merge (stage '{stage.value}')."
-            if approval_stands(self.context, result)  # not after a merged-head CI failure withdrew it
-            else f"safely halted for human intervention at stage '{stage.value}'. Halting execution without merging."
-        )
-        self.context.log(f"Pipeline {verb}")
+    def _finalize_approved_flow(self, stage: FlowStage, review: StageResult | None = None) -> None:
+        if review is not None and not approval_stands(self.context, review):
+            return
+        end_sync = finish_flow(self.context, self._run_stage_once, self._record_stage)
+        if end_sync.blocked or not end_sync.clean:
+            self._record_stage(FlowStage.CALIBRATE, end_sync.failure_result(self.context))
+            self.context.log(f"Pipeline blocked at end-of-flow sync: {end_sync.reason}")
+            return
+        done = f"review approved, PR ready for maintainer merge (stage '{stage.value}'); completed successfully."
+        self.context.log(f"Pipeline finished at the merge boundary: {done}")
 
     def _calibrate_after_consensus_halt(self) -> None:
         """Run Stage 5 (or record it as skipped by --skip-calibrate) after Stage 4 ended at the consensus boundary."""

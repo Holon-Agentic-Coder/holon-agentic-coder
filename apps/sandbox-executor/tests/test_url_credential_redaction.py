@@ -38,6 +38,7 @@ from urllib.parse import urlsplit
 
 import pytest
 from sandbox_executor import cli, local_llm
+from sandbox_executor.cli import doctor as cli_doctor
 from sandbox_executor.launcher import env_files, proxy_readiness, root_ca
 
 from tests import seeded_secrets
@@ -221,13 +222,13 @@ def _doctor(value: str) -> list[str]:
                 with (
                     # Plain stand-ins, not MagicMocks: building a mock per call dominated this matrix's runtime.
                     patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
-                    patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
+                    patch.object(cli_doctor, "run_preflight_probe", lambda *_a, **_k: probe),
                     _captured(env) as out,
                     # The two doctor runs of one block have the same host configuration and fetcher: the environment
                     # report runs for the first one and its text and code are replayed for the second.
                     replayed_environment_report(),
                 ):
-                    cli.report_budgets_and_envelope(fetch=fetch)
+                    cli_doctor.report_budgets_and_envelope(fetch=fetch)
                     for as_json in (False, True):
                         doctor_args = argparse.Namespace(
                             agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None
@@ -657,7 +658,7 @@ def _invalid_value_case(
     with (
         patch.object(tempfile, "_get_candidate_names", colliding),
         patch.object(local_llm, "host_models_json", lambda *_a, **_k: host_config),
-        patch.object(cli, "run_preflight_probe", lambda *_a, **_k: probe),
+        patch.object(cli_doctor, "run_preflight_probe", lambda *_a, **_k: probe),
         patch.object(subprocess, "run", docker),
         _captured({**env, "HOME": home}) as out,
     ):
@@ -670,7 +671,7 @@ def _invalid_value_doctor(out: list[str]) -> list[int]:
     # agent and model, so each is computed once and replayed. Proved for this function in test_doctor_replay.py.
     with replayed_configuration_section(), replayed_environment_report():
         env_out = io.StringIO()
-        codes = [cli.report_budgets_and_envelope(fetch=_empty_health, out=env_out)]
+        codes = [cli_doctor.report_budgets_and_envelope(fetch=_empty_health, out=env_out)]
         out.append(env_out.getvalue())
         for as_json in (False, True):
             doctor_args = argparse.Namespace(
@@ -933,7 +934,7 @@ def test_doctor_survives_unparseable_base_url(slot, monkeypatch):  # noqa: C901,
         texts: list[str] = []
         with (
             patch.object(local_llm, "host_models_json", return_value=host_config),
-            patch.object(cli, "run_preflight_probe", return_value=probe),
+            patch.object(cli_doctor, "run_preflight_probe", return_value=probe),
             _captured(env) as out,
         ):
             try:

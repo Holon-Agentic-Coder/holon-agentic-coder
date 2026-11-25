@@ -1,10 +1,3 @@
-"""Settings that start Claude Code with commit and pull request attribution disabled.
-
-The maintainer's rule is that no commit carries an attribution trailer. The payload is delivered through the runner's
-existing ``--settings`` route (``HOLON_AGENT_SETTINGS``); the user's own settings files are never edited and no
-permission flag is involved.
-"""
-
 import atexit
 import contextlib
 import json
@@ -27,15 +20,6 @@ def attribution_off_settings(
     *,
     default_env: Mapping[str, str] | None = None,
 ) -> str:
-    """Return the ``--settings`` value: ``existing`` (inline JSON or a readable file path) with attribution disabled.
-
-    An unset value yields the attribution-off payload (plus any ``default_env`` entries) as inline JSON. An unparsable
-    or unreadable value falls back to the payload alone after one warning that never includes the value, as it may carry
-    a credential. When ``default_env`` is supplied, each key not already present in the settings' ``env`` dictionary is
-    added without dropping or overwriting operator-supplied keys. A file is read, never written; its merged contents go
-    to a private (0600) temp file removed at exit and the temp path is returned, so file-based contents never reach the
-    process list.
-    """
     merged = dict(ATTRIBUTION_OFF)
     from_file = False
     if existing:
@@ -44,22 +28,29 @@ def attribution_off_settings(
             logger.warning("HOLON_AGENT_SETTINGS is not a JSON object or readable file; using attribution-off only.")
         else:
             merged = {**base, **ATTRIBUTION_OFF}
-            from_file = not existing.lstrip().startswith("{")
+            from_file = not _is_inline_json(existing)
     if default_env:
-        existing_env = merged.get("env")
-        env_dict: dict[str, Any] = dict(existing_env) if isinstance(existing_env, dict) else {}
-        for key, val in default_env.items():
-            env_dict.setdefault(key, val)
-        merged["env"] = env_dict
+        _merge_default_env(merged, default_env)
     text = json.dumps(merged)
     return _private_temp_file(text) if from_file else text
+
+
+def _is_inline_json(value: str) -> bool:
+    return value.lstrip().startswith("{")
+
+
+def _merge_default_env(merged: dict[str, Any], default_env: Mapping[str, str]) -> None:
+    existing_env = merged.get("env")
+    env_dict: dict[str, Any] = dict(existing_env) if isinstance(existing_env, dict) else {}
+    for key, val in default_env.items():
+        env_dict.setdefault(key, val)
+    merged["env"] = env_dict
 
 
 _TEMP_FILES: dict[str, str] = {}
 
 
 def _private_temp_file(text: str) -> str:
-    """Return a private temp file holding ``text``; identical contents reuse one file for the process lifetime."""
     cached = _TEMP_FILES.get(text)
     if cached and os.path.exists(cached):
         return cached
@@ -78,7 +69,7 @@ def _remove_quietly(path: str) -> None:
 
 def _load_settings(value: str) -> dict[str, Any] | None:
     text = value
-    if not value.lstrip().startswith("{") and os.path.isfile(value):
+    if not _is_inline_json(value) and os.path.isfile(value):
         try:
             with open(value, encoding="utf-8") as handle:
                 text = handle.read()

@@ -26,6 +26,7 @@ from tests.hermetic_fixtures import (
     CHILD_SUITE_SENTINEL,
     KNOWLEDGE_INDEX_SUBDIR,
     REPO_ROOT,
+    TESTS_DIR,
     UV,
     knowledge_index_snapshot,
     uv_available,
@@ -219,3 +220,13 @@ def test_child_suite_command_carries_the_context_basetemp() -> None:
         cmd = child_suite_command(context)
     assert cmd[cmd.index("--basetemp") + 1] == context.basetemp
     assert cmd[:4] == [UV, "run", "--no-sync", "pytest"]
+
+
+def test_child_suite_command_targets_replace_the_suite_directory() -> None:
+    with child_context("canary") as context:
+        whole = child_suite_command(context)
+        narrowed = child_suite_command(context, targets=["a/test_x.py", "a/test_y.py"])
+    assert TESTS_DIR in whole
+    assert TESTS_DIR not in narrowed
+    assert {"a/test_x.py", "a/test_y.py"} <= set(narrowed)
+    assert narrowed[narrowed.index("-m") + 1] == whole[whole.index("-m") + 1]

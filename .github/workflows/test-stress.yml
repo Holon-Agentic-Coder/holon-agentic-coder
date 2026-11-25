@@ -60,6 +60,10 @@ jobs:
         # workspace, which pushed executor.py into its destructive git re-initialisation. Also runs
         # the hermetic canary guard (test_sandbox_hermetic_guard.py), which re-runs the whole unit
         # selection under a simulated container HOME and is kept out of the unit matrix for runtime.
+        # The canary's child runs only the test modules selected by the rule in
+        # tests/stress_selection.py (modules that resolve HOME or the workspace, delete directories, or
+        # directly reference a module that does); the survival child still runs the whole unit
+        # selection under the same HOME layout, so indirect reach is caught there.
         # The two stress tests run concurrently (-n auto --dist worksteal), each with its own HOME,
         # workspace, TMPDIR and pytest --basetemp (tests/stress_support.py);
         # tests/test_stress_support.py proves the two share none of them. -rP prints the captured

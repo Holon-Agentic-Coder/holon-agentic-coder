@@ -1,12 +1,15 @@
-"""Canary guard test simulating container conditions to prove the whole suite stays hermetic.
+"""Canary guard test simulating container conditions to prove the suite stays hermetic.
 
-Scope note: this guard runs the *entire* ``apps/sandbox-executor/tests`` directory, not a curated
-module list. The workspace-deletion defect was suite-wide -- an unguarded test could resolve the live
-workspace and delete it -- so a single-module or few-module canary cannot establish that the
-hazard is gone. A list of "the modules we remember" silently rots as the suite grows, which is
-exactly how the original guard ended up excluding ``test_agent_runner.py``, the one module that
-exercises the real ``cleanup_repo_dir``/``_rmtree``. Running the directory also covers any new
-test file the moment it is added.
+Scope note: the workspace-deletion defect was suite-wide -- an unguarded test could resolve the live
+workspace and delete it -- so a list of "the modules we remember" cannot establish that the hazard is
+gone; it silently rots as the suite grows, which is exactly how the original guard ended up excluding
+``test_agent_runner.py``, the one module that exercises the real ``cleanup_repo_dir``/``_rmtree``.
+This guard's child therefore runs a selection *computed* by a stated rule
+(``tests/stress_selection.py``): every test module that resolves ``HOME`` or the workspace, deletes
+directories, or directly references a production or helper module that does. A new module is covered
+the moment it matches. The rest of the suite is not left unchecked: the workspace-survival stress test
+(``test_workspace_survival_stress.py``) re-runs the whole unit selection under the same simulated
+``HOME`` and workspace layout, so a test reaching the workspace by an indirect route still trips it.
 
 The child suite is launched with ``uv run pytest`` -- the repository's only sanctioned test runner
 -- so it inherits the root pytest configuration and the unit job's marker selection. Launching it
@@ -14,9 +17,9 @@ with ``python -m unittest`` bypasses both: ``unittest`` has no concept of pytest
 re-runs the ``integration_test``-marked Docker image tests that the unit job never builds, and the
 guard then fails for an environment reason that has nothing to do with hermeticity.
 
-Where it runs: the canary re-runs the whole unit selection in a child process, so it roughly doubles
-the unit job's wall time. It is therefore marked ``stress`` and runs only in the ``Workspace
-survival`` job (``.github/workflows/test-stress.yml``, ``-m stress``), which also fails if it was
+Where it runs: the canary re-runs about half of the unit selection in a child process, which would
+add a large share of the unit job's wall time. It is therefore marked ``stress`` and runs only in the
+``Workspace survival`` job (``.github/workflows/test-stress.yml``, ``-m stress``), which also fails if it was
 skipped. The negative control below is a single short subprocess and stays in the unit job. The
 child's own selection (``not integration_test and not stress``) excludes the canary, and the
 ``HOLON_HERMETIC_GUARD_CHILD`` sentinel skips it in any child run, so it cannot recurse.
@@ -45,6 +48,7 @@ from tests.hermetic_fixtures import (
     simulated_container_env,
     uv_available,
 )
+from tests.stress_selection import canary_selection
 from tests.stress_support import (
     canary_violations,
     child_context,
@@ -57,8 +61,8 @@ from tests.stress_support import (
 #: Sentinel set in the child environment so a child run can never recurse back into this guard.
 CHILD_ENV_VAR = "HOLON_HERMETIC_GUARD_CHILD"
 
-#: Generous ceiling: the child runs the whole non-integration suite, which itself nests the
-#: negative-control harness.
+#: Generous ceiling: the child runs the canary selection of the non-integration suite, which itself
+#: nests the negative-control harness.
 CHILD_TIMEOUT_SECONDS = 1800
 
 
@@ -100,9 +104,10 @@ class TestSandboxHermeticGuard(unittest.TestCase):
             # Snapshot the checkout's knowledge index before the child run.
             index_before = knowledge_index_snapshot(REPO_ROOT)
 
-            # Run the whole suite through the sanctioned runner and the unit job's selection, from
-            # the repository root so the child inherits the root pytest configuration.
-            cmd = child_suite_command(context)
+            # Run the canary selection (tests/stress_selection.py) through the sanctioned runner and
+            # the unit job's marker selection, from the repository root so the child inherits the
+            # root pytest configuration.
+            cmd = child_suite_command(context, targets=canary_selection(REPO_ROOT, TESTS_DIR))
             res = run_child(
                 cmd,
                 label=context.label,

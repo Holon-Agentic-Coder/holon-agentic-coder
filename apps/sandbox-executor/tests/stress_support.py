@@ -1,13 +1,13 @@
 """Child-run orchestration and post-run checks shared by the two stress tests.
 
-The workspace-survival test (``test_workspace_survival_stress.py``) and the hermetic canary guard
-(``test_sandbox_hermetic_guard.py``) each re-run the whole unit selection in a child process. The
-``Workspace survival`` job runs them concurrently (``-n auto --dist worksteal`` on the outer
-command), so each test gets its own :class:`ChildContext`: a private root holding the simulated
-``HOME`` (and with it the workspace) and, as a sibling of that ``HOME``, the child's ``TMPDIR`` and
-pytest ``--basetemp``. Nothing is shared between the two children: not the workspace, not ``HOME``,
-and not the temporary root, so pytest's numbered-directory cleanup in one child can never reach the
-other's directories. ``test_stress_support.py`` proves it.
+The workspace-survival test (``test_workspace_survival_stress.py``) re-runs the whole unit selection
+in a child process, and the hermetic canary guard (``test_sandbox_hermetic_guard.py``) re-runs the
+part of it chosen by the rule in ``stress_selection.py``. The ``Workspace survival`` job runs them
+concurrently (``-n auto --dist worksteal`` on the outer command), so each test gets its own
+:class:`ChildContext`: a private root holding the simulated ``HOME`` (and with it the workspace) and,
+as a sibling of that ``HOME``, the child's ``TMPDIR`` and pytest ``--basetemp``. Nothing is shared
+between the two children: not the workspace, not ``HOME``, and not the temporary root, so pytest's
+numbered-directory cleanup in one child can never reach the other's directories. ``test_stress_support.py`` proves it.
 
 The post-run checks are functions returning human-readable violations rather than inline
 assertions, so the negative controls in ``test_stress_support.py`` can show that each guard still
@@ -33,7 +33,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
 from tests.hermetic_fixtures import (
@@ -107,9 +107,14 @@ def child_env(context: ChildContext, sentinel_var: str) -> dict[str, str]:
     return env
 
 
-def child_suite_command(context: ChildContext, *extra_args: str) -> list[str]:
-    """Return the sanctioned child suite command with pytest's temporary tree private to ``context``."""
-    return pytest_suite_command("--basetemp", context.basetemp, *extra_args)
+def child_suite_command(context: ChildContext, *extra_args: str, targets: Sequence[str] | None = None) -> list[str]:
+    """Return the sanctioned child suite command with pytest's temporary tree private to ``context``.
+
+    ``targets`` narrows the run to specific test files; by default the whole suite directory runs.
+    """
+    if targets is None:
+        return pytest_suite_command("--basetemp", context.basetemp, *extra_args)
+    return pytest_suite_command("--basetemp", context.basetemp, *extra_args, targets=targets)
 
 
 @dataclass(frozen=True)

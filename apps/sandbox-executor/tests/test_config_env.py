@@ -573,3 +573,25 @@ def test_report_shows_only_plain_values(key, value, display):
     (row,) = config_env_report.setting_rows(config)
     assert row["display"] == display
     assert row["value"] == (value if display == value else None)
+
+
+def test_report_redaction_cache_uses_digests_and_respects_env_changes(monkeypatch):
+    config_env_report._REDACTION_CACHE.clear()
+    secret = "sec-" + make_probe("c")[:12]
+    config = config_env.resolve({"HOLON_MODEL": secret}, {}, {}, defaults={})
+
+    monkeypatch.setenv("GITHUB_TOKEN", secret)
+    (withheld_row,) = config_env_report.setting_rows(config)
+    assert withheld_row["value"] is None
+    assert withheld_row["display"] == "set (user; value withheld)"
+
+    monkeypatch.delenv("GITHUB_TOKEN")
+    (shown_row,) = config_env_report.setting_rows(config)
+    assert shown_row["value"] == secret
+    assert shown_row["display"] == secret
+
+    assert len(config_env_report._REDACTION_CACHE) == 2
+    for digest, safe in config_env_report._REDACTION_CACHE.items():
+        assert isinstance(digest, bytes) and len(digest) == 32
+        assert isinstance(safe, bool)
+        assert secret.encode("utf-8") not in digest

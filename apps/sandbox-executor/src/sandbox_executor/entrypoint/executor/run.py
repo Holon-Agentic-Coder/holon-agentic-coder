@@ -278,6 +278,9 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
         )
         if self.args.partial_branch and self.partial_head:
             base_prompt = f"{base_prompt}\n\n{continuation_note(self.args.partial_branch, self.partial_head)}"
+        merged_notice = os.environ.pop("HOLON_REPLAN_FEEDBACK", "").strip()
+        if merged_notice and "## Target branch merged" in merged_notice:
+            base_prompt = f"{base_prompt}\n\n{merged_notice}"
         full_prompt = f"{base_prompt}\n\n{execution_write_protocol(self.notes_rel)}"
 
         budgets = load_budgets(os.environ)

@@ -339,10 +339,11 @@ def _report_flow_summary(context: Any, result_dict: dict[str, Any], json_output:
         print(line)
     if decomposition_lines:
         print()
-    _report_review_outcome(context.stage_results.get("review"))
+    has_failure = any(res.status == StageStatus.FAILED for res in context.stage_results.values())
+    _report_review_outcome(context.stage_results.get("review"), has_failure=has_failure)
 
 
-def _report_review_outcome(review_res: StageResult | None) -> None:
+def _report_review_outcome(review_res: StageResult | None, *, has_failure: bool = False) -> None:
     if not review_res:
         return
     raw_consensus = review_res.payload.get("consensus")
@@ -350,10 +351,11 @@ def _report_review_outcome(review_res: StageResult | None) -> None:
     is_halt = review_res.status == StageStatus.HALTED_FOR_HUMAN or bool(review_res.payload.get("halted_for_human"))
     is_approved = review_res.status == StageStatus.APPROVED or (is_halt and bool(consensus.get("approved")))
     if is_approved:
-        print(
-            "[REVIEW APPROVED] Review Loop reached consensus approval; "
-            "the PR is ready for the maintainer to merge (the flow never merges to main).\n"
-        )
+        if not has_failure:
+            print(
+                "[REVIEW APPROVED] Review Loop reached consensus approval; "
+                "the PR is ready for the maintainer to merge (the flow never merges to main).\n"
+            )
     elif is_halt:
         print("[SAFETY HALT] Pipeline safely halted for human review (autonomous merge prohibited).")
         cmd = review_res.payload.get("human_approval_command")

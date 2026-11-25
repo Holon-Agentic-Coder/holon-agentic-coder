@@ -1,5 +1,3 @@
-"""Zero-PR safety guards and host-local LLM environment validation for ``holon flow`` E2E runs."""
-
 from __future__ import annotations
 
 import json
@@ -30,38 +28,44 @@ from sandbox_executor.local_llm import (
     ModelEnvelope,
 )
 
+_SKIP_REVIEW_CLI_FLAG = "--skip-review"
+_SKIP_REVIEW_OPTION_KEY = "skip_review"
+_GITHUB_REMOTE_SCHEMES = frozenset({"https", "http", "ssh", "git"})
+_GITHUB_HOST = "github.com"
+_GITHUB_SCP_REMOTE_RE = re.compile(r"^(?:[^/@:\s]+@)?github\.com:[^\s]+$", re.IGNORECASE)
+_PR_LIST_JSON_FIELDS = "number,headRefName,baseRefName,state"
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+_LOCAL_COMPLETIONS_API = "openai-completions"
+_LOCAL_API_KEY = "holon-local"
+_DEFAULT_LOCAL_PROVIDER = "local"
+
 
 def assert_no_skip_review_flag(
     cli_args: Sequence[str] = (),
     options: Mapping[str, Any] | None = None,
 ) -> None:
-    """Raise :class:`ZeroPRGuardViolationError` if ``--skip-review`` or ``skip_review`` is present."""
     for arg in cli_args:
         token = str(arg).strip()
-        if token == "--skip-review" or token.startswith("--skip-review="):
+        if token == _SKIP_REVIEW_CLI_FLAG or token.startswith(f"{_SKIP_REVIEW_CLI_FLAG}="):
             raise ZeroPRGuardViolationError(
                 "--skip-review was removed from 'holon flow' to protect the Stage 4 consensus boundary; "
                 "E2E runs must halt at the Stage 4 pre-PR boundary via E2EPipelineEngine instead."
             )
-    if options and "skip_review" in options:
+    if options and _SKIP_REVIEW_OPTION_KEY in options:
         raise ZeroPRGuardViolationError(
             "'skip_review' is forbidden in E2E flow options; use E2EPipelineEngine to halt before PR creation."
         )
 
 
-_GITHUB_SCP_REMOTE_RE = re.compile(r"^(?:[^/@:\s]+@)?github\.com:[^\s]+$", re.IGNORECASE)
-
-
 def _is_github_remote_url(url: str) -> bool:
-    """Return True when ``url`` points at ``github.com`` over HTTP(S), SSH, or Git protocol."""
     cleaned = url.strip()
     if not cleaned:
         return False
     if "://" in cleaned:
         parsed = urlsplit(cleaned)
-        if parsed.scheme.lower() not in ("https", "http", "ssh", "git"):
+        if parsed.scheme.lower() not in _GITHUB_REMOTE_SCHEMES:
             return False
-        return (parsed.hostname or "").lower() == "github.com"
+        return (parsed.hostname or "").lower() == _GITHUB_HOST
     return bool(_GITHUB_SCP_REMOTE_RE.match(cleaned))
 
 
@@ -121,6 +125,39 @@ def _close_stray_pr(
     return False, f"#{pr_number} ({detail})"
 
 
+def _inspect_and_close_stray_prs(
+    pr_items: Sequence[Mapping[str, Any]],
+    validated_prefix: str,
+    worktree_branch: str | None,
+    repo_dir: str,
+    runner: GhRunnerCallable,
+) -> tuple[list[int], list[int], list[str], list[str]]:
+    matching_numbers: list[int] = []
+    closed_numbers: list[int] = []
+    close_failures: list[str] = []
+    matching_details: list[str] = []
+
+    for item in pr_items:
+        head_ref = str(item.get("headRefName") or "")
+        base_ref = str(item.get("baseRefName") or "")
+        head_matches = is_ref_within_intent_prefix(head_ref, validated_prefix, worktree_branch=worktree_branch)
+        base_matches = is_ref_within_intent_prefix(base_ref, validated_prefix, worktree_branch=worktree_branch)
+        raw_pr_number = item.get("number")
+        if not (head_matches or base_matches) or not isinstance(raw_pr_number, int) or isinstance(raw_pr_number, bool):
+            continue
+        matching_numbers.append(raw_pr_number)
+        pr_state = str(item.get("state") or "OPEN").upper()
+        matching_details.append(f"#{raw_pr_number} (head={head_ref!r}, base={base_ref!r}, state={pr_state})")
+        if pr_state == "OPEN":
+            closed, error_detail = _close_stray_pr(runner, repo_dir, raw_pr_number, validated_prefix)
+            if closed:
+                closed_numbers.append(raw_pr_number)
+            else:
+                close_failures.append(error_detail)
+
+    return matching_numbers, closed_numbers, close_failures, matching_details
+
+
 def enforce_zero_pr_guard(
     repo_dir: str,
     intent_prefix: str,
@@ -128,13 +165,12 @@ def enforce_zero_pr_guard(
     worktree_branch: str | None = None,
     gh_runner: GhRunnerCallable | None = None,
 ) -> ZeroPRCheckResult:
-    """Assert that zero pull requests reference branches under ``intent_prefix``."""
     validated_prefix = validate_e2e_intent_prefix(intent_prefix)
     runner = gh_runner if gh_runner is not None else _default_gh_runner(repo_dir)
     if runner is None:
         return ZeroPRCheckResult(intent_prefix=validated_prefix, passed=True)
 
-    list_args = ["pr", "list", "--state", "all", "--json", "number,headRefName,baseRefName,state"]
+    list_args = ["pr", "list", "--state", "all", "--json", _PR_LIST_JSON_FIELDS]
     list_proc = runner(list_args, cwd=repo_dir)
     if list_proc.returncode != 0:
         detail = (list_proc.stderr or list_proc.stdout or "").strip() or f"exit code {list_proc.returncode}"
@@ -142,29 +178,13 @@ def enforce_zero_pr_guard(
             f"Zero-PR guard could not inspect pull requests for {validated_prefix!r}: gh pr list failed ({detail})."
         )
 
-    matching_numbers: list[int] = []
-    closed_numbers: list[int] = []
-    close_failures: list[str] = []
-    matching_details: list[str] = []
-
-    for item in _parse_pr_list_items(list_proc.stdout):
-        head_ref = str(item.get("headRefName") or "")
-        base_ref = str(item.get("baseRefName") or "")
-        head_matches = is_ref_within_intent_prefix(head_ref, validated_prefix, worktree_branch=worktree_branch)
-        base_matches = is_ref_within_intent_prefix(base_ref, validated_prefix, worktree_branch=worktree_branch)
-        raw_num = item.get("number")
-        if not (head_matches or base_matches) or not isinstance(raw_num, int) or isinstance(raw_num, bool):
-            continue
-        matching_numbers.append(raw_num)
-        state = str(item.get("state") or "OPEN").upper()
-        matching_details.append(f"#{raw_num} (head={head_ref!r}, base={base_ref!r}, state={state})")
-        if state == "OPEN":
-            closed, err_detail = _close_stray_pr(runner, repo_dir, raw_num, validated_prefix)
-            if closed:
-                closed_numbers.append(raw_num)
-            else:
-                close_failures.append(err_detail)
-
+    matching_numbers, closed_numbers, close_failures, matching_details = _inspect_and_close_stray_prs(
+        _parse_pr_list_items(list_proc.stdout),
+        validated_prefix,
+        worktree_branch,
+        repo_dir,
+        runner,
+    )
     if matching_numbers:
         failure_suffix = f"; close failure(s): {', '.join(close_failures)}" if close_failures else ""
         raise ZeroPRGuardViolationError(
@@ -175,23 +195,21 @@ def enforce_zero_pr_guard(
 
 
 def _validate_rewritten_base_url(base_url: str, allow_list: Iterable[str]) -> str:
-    """Rewrite ``base_url`` against ``allow_list`` and fail closed if it is not gateway-reachable."""
-    rewritten = local_llm.rewrite_authority(base_url, allow_list)
-    auth = local_llm._authority(rewritten)
-    if auth is None:
+    rewritten_url = local_llm.rewrite_authority(base_url, allow_list)
+    authority = local_llm._authority(rewritten_url)
+    if authority is None:
         raise LocalLLMConfigError(f"The configured {ENV_LOCAL_BASE_URL} is not a valid URL; ignoring it.")
-    if auth[0] != local_llm.GATEWAY_HOST:
+    if authority[0] != local_llm.GATEWAY_HOST:
         shown = local_llm.shown_authority(base_url)
         target = f"host {shown}" if shown else "host withheld: no unambiguous userinfo boundary"
         raise LocalLLMConfigError(
             f"The configured {ENV_LOCAL_BASE_URL} ({target}) is neither a loopback address nor in "
             f"{ENV_HOST_LOCAL_HOSTS}."
         )
-    return rewritten
+    return rewritten_url
 
 
 def _synthesised_host_config_from_env(env: Mapping[str, str], allow_list: Iterable[str]) -> dict[str, Any]:
-    """Build a minimal host config dictionary from an explicit ``env`` mapping without ``os.environ`` fallback."""
     local_llm.check_text_settings(env)
     base_url = env.get(ENV_LOCAL_BASE_URL, "").strip()
     if not base_url:
@@ -201,42 +219,42 @@ def _synthesised_host_config_from_env(env: Mapping[str, str], allow_list: Iterab
     model_ids = [item.strip() for item in env.get(ENV_LOCAL_MODELS, "").split(",") if item.strip()]
     if not model_ids:
         raise LocalLLMConfigError(f"{ENV_LOCAL_BASE_URL} is set but no model ids were declared in {ENV_LOCAL_MODELS}.")
-    rewritten = _validate_rewritten_base_url(base_url, allow_list)
-    provider = env.get(ENV_LOCAL_PROVIDER, "").strip() or env.get(ENV_AGENT_PROVIDER, "").strip() or "local"
+    rewritten_url = _validate_rewritten_base_url(base_url, allow_list)
+    provider = (
+        env.get(ENV_LOCAL_PROVIDER, "").strip() or env.get(ENV_AGENT_PROVIDER, "").strip() or _DEFAULT_LOCAL_PROVIDER
+    )
     return {
         "providers": {
             provider: {
-                "baseUrl": rewritten,
-                "api": "openai-completions",
-                "apiKey": "holon-local",
-                "models": [{"id": mid} for mid in model_ids],
+                "baseUrl": rewritten_url,
+                "api": _LOCAL_COMPLETIONS_API,
+                "apiKey": _LOCAL_API_KEY,
+                "models": [{"id": model_id} for model_id in model_ids],
             }
         }
     }
 
 
 def _allow_list_from_env(env: Mapping[str, str]) -> set[str]:
-    """Normalise ``HOLON_HOST_LOCAL_HOSTS`` from ``env`` using the same scheme/path stripping as ``local_llm``."""
-    raw = env.get(ENV_HOST_LOCAL_HOSTS, "")
-    if not local_llm.is_utf8_text(raw):
+    raw_hosts = env.get(ENV_HOST_LOCAL_HOSTS, "")
+    if not local_llm.is_utf8_text(raw_hosts):
         raise LocalLLMConfigError(
             f"{ENV_HOST_LOCAL_HOSTS} is not valid UTF-8 text (a lone surrogate or a non-UTF-8 byte); value withheld."
         )
-    allow: set[str] = set()
-    for entry in raw.split(","):
+    allowed_hosts: set[str] = set()
+    for entry in raw_hosts.split(","):
         cleaned = re.sub(r"^https?://", "", entry.strip().lower()).split("/")[0].strip()
         if cleaned:
-            allow.add(cleaned)
-    return allow
+            allowed_hosts.add(cleaned)
+    return allowed_hosts
 
 
 def validate_e2e_local_llm_env(
     env: Mapping[str, str] | None = None,
 ) -> tuple[bool, str, list[ModelEnvelope]]:
-    """Verify whether host-local LLM mode is requested and validly configured for an opt-in E2E run."""
     effective_env = os.environ if env is None else env
     raw_mode = effective_env.get(ENV_LOCAL_MODE, "").strip().lower()
-    if raw_mode not in ("1", "true", "yes", "on"):
+    if raw_mode not in _TRUTHY_ENV_VALUES:
         return (
             False,
             (
@@ -246,13 +264,15 @@ def validate_e2e_local_llm_env(
             ),
             [],
         )
-    allow = local_llm.host_local_allow_list() if env is None else _allow_list_from_env(effective_env)
-    host_cfg = local_llm.host_models_json() if env is None else _synthesised_host_config_from_env(effective_env, allow)
-    _config, envelopes = local_llm.build_envelope_config(host_cfg, allow, env=effective_env)
+    allowed_hosts = local_llm.host_local_allow_list() if env is None else _allow_list_from_env(effective_env)
+    host_config = (
+        local_llm.host_models_json() if env is None else _synthesised_host_config_from_env(effective_env, allowed_hosts)
+    )
+    _config, envelopes = local_llm.build_envelope_config(host_config, allowed_hosts, env=effective_env)
     if not envelopes:
         raise LocalLLMConfigError(
             f"{ENV_LOCAL_MODE}=1 is enabled but no model entries were resolved from "
             f"host models.json or {ENV_LOCAL_MODELS}."
         )
-    summary = "; ".join(f"{env_item.envelope_line()} {env_item.reasoning_line()}" for env_item in envelopes)
+    summary = "; ".join(f"{envelope.envelope_line()} {envelope.reasoning_line()}" for envelope in envelopes)
     return True, summary, envelopes

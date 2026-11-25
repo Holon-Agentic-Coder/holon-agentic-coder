@@ -1,10 +1,3 @@
-"""Byte-offset incremental sync of a JSONL ledger into the action knowledge index.
-
-The sync runs as named steps: read the watermark, read the new rows from the last byte offset, index each row, then
-write the row batch and persist the new watermark in one transaction, so a failed write never advances the watermark.
-This module is a leaf: it imports nothing from ``knowledge/index.py``, which re-exports its public names.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -18,59 +11,57 @@ from datetime import UTC, datetime
 from typing import Any
 
 _FAILURE_VERDICTS = ("failure", "failed")
+_SQLITE_CONNECT_TIMEOUT_SECONDS = 5.0
+_SQLITE_BUSY_TIMEOUT_MS = 5000
+_FINGERPRINT_HEX_LENGTH = 16
 
 
 def compute_signature_hash(context_fingerprint: str, action_origin: str = "initial_implementation") -> str:
-    """Compute deterministic SHA256 signature hash from context fingerprint and origin."""
     payload = f"{context_fingerprint}:{action_origin}".encode()
     return hashlib.sha256(payload).hexdigest()
 
 
 def connect_wal(path: str) -> sqlite3.Connection:
-    """Open a SQLite connection to ``path`` in WAL mode with the index's standard pragmas."""
-    conn = sqlite3.connect(path, timeout=5.0)
+    conn = sqlite3.connect(path, timeout=_SQLITE_CONNECT_TIMEOUT_SECONDS)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
-    conn.execute("PRAGMA busy_timeout=5000;")
+    conn.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS};")
     return conn
 
 
 def _derive_context_fingerprint(data: dict[str, Any]) -> str:
-    """Compute fallback context fingerprint from record dictionary."""
     if data.get("context_fingerprint"):
         return str(data["context_fingerprint"])
     target = str(data.get("target") or data.get("plan_branch") or data.get("branch") or "")
     action = str(data.get("action") or data.get("slug") or data.get("summary") or "")
     error = str(data.get("error_context") or "")
     raw = f"{target}|{action}|{error}".encode()
-    return hashlib.sha256(raw).hexdigest()[:16]
+    return hashlib.sha256(raw).hexdigest()[:_FINGERPRINT_HEX_LENGTH]
 
 
 @dataclass(frozen=True)
 class SyncWatermark:
-    """How far a ledger has been synced: its mtime and byte size at the last sync."""
-
     mtime: float
     byte_offset: int
 
 
+_INITIAL_SYNC_WATERMARK = SyncWatermark(0.0, 0)
+
+
 def read_watermark(conn: sqlite3.Connection, ledger_path: str) -> SyncWatermark:
-    """Return the stored watermark for ``ledger_path``, or ``(0.0, 0)`` when it was never synced."""
     row = conn.execute(
         "SELECT last_mtime, last_byte_offset FROM ledger_sync_state WHERE ledger_path = ?",
         (ledger_path,),
     ).fetchone()
-    return SyncWatermark(row[0], row[1]) if row else SyncWatermark(0.0, 0)
+    return SyncWatermark(row[0], row[1]) if row else _INITIAL_SYNC_WATERMARK
 
 
 def ledger_unchanged(stat: os.stat_result, watermark: SyncWatermark) -> bool:
-    """Whether the ledger is unchanged since the watermark: no newer mtime and the same size."""
     return stat.st_mtime <= watermark.mtime and stat.st_size == watermark.byte_offset
 
 
 def resume_offset(stat: os.stat_result, watermark: SyncWatermark) -> int:
-    """Return the byte offset to resume reading from; a ledger that shrank is re-read from the start."""
     return 0 if stat.st_size < watermark.byte_offset else watermark.byte_offset
 
 
@@ -78,10 +69,6 @@ ParsedRow = tuple[int, str, dict[str, Any]]
 
 
 def read_new_rows(ledger_path: str, offset: int) -> tuple[list[ParsedRow], int]:
-    """Read ``(line_offset, line, data)`` for each JSON row from ``offset`` on, and the new end offset.
-
-    Blank lines and lines that fail to decode are skipped.
-    """
     rows: list[ParsedRow] = []
     with open(ledger_path, encoding="utf-8") as f:
         f.seek(offset)
@@ -110,7 +97,6 @@ def _parse_record_labels(raw_labels: Any) -> list[str]:
 
 
 def _signature_delta_kind(verdict: str, outcome: str) -> str | None:
-    """Return ``success``, ``failure`` or None: which signature counter a row with this verdict/outcome bumps."""
     if verdict == "success" or outcome == "success":
         return "success"
     if verdict in _FAILURE_VERDICTS or outcome in _FAILURE_VERDICTS:
@@ -120,8 +106,6 @@ def _signature_delta_kind(verdict: str, outcome: str) -> str | None:
 
 @dataclass(frozen=True)
 class IndexedRow:
-    """One ledger row mapped to its index rows: the record, its FTS row, its labels and its signature evidence."""
-
     record: tuple[Any, ...]
     fts: tuple[str, str, str, str, str]
     labels: list[tuple[str, str]]
@@ -133,7 +117,6 @@ class IndexedRow:
 
 
 def index_row(line_offset: int, line_str: str, data: dict[str, Any]) -> IndexedRow:
-    """Map one decoded ledger row to the index rows it produces."""
     record_id = str(
         data.get("record_id")
         or data.get("action_id")
@@ -181,7 +164,6 @@ def index_row(line_offset: int, line_str: str, data: dict[str, Any]) -> IndexedR
 
 
 def accumulate_signatures(rows: Iterable[IndexedRow]) -> dict[str, dict[str, Any]]:
-    """Sum success/failure deltas per signature, keeping each signature's first-seen ``last_seen_ts``."""
     signatures: dict[str, dict[str, Any]] = {}
     for row in rows:
         if row.signature_hash not in signatures:
@@ -199,8 +181,6 @@ def accumulate_signatures(rows: Iterable[IndexedRow]) -> dict[str, dict[str, Any
 
 @dataclass
 class RowBatch:
-    """Everything one sync writes: record, FTS and label rows plus the per-signature deltas."""
-
     records: list[tuple[Any, ...]] = field(default_factory=list)
     fts: list[tuple[str, str, str, str, str]] = field(default_factory=list)
     labels: list[tuple[str, str]] = field(default_factory=list)
@@ -208,7 +188,6 @@ class RowBatch:
 
 
 def build_row_batch(parsed_rows: Iterable[ParsedRow]) -> RowBatch:
-    """Index every parsed row and collect the results into one batch."""
     indexed = [index_row(line_offset, line_str, data) for line_offset, line_str, data in parsed_rows]
     return RowBatch(
         records=[row.record for row in indexed],
@@ -219,7 +198,6 @@ def build_row_batch(parsed_rows: Iterable[ParsedRow]) -> RowBatch:
 
 
 def write_row_batch(conn: sqlite3.Connection, batch: RowBatch) -> None:
-    """Insert the batch's records, FTS rows and labels, and upsert its signature counters."""
     if batch.records:
         conn.executemany(
             """
@@ -274,7 +252,6 @@ def write_row_batch(conn: sqlite3.Connection, batch: RowBatch) -> None:
 
 
 def persist_watermark(conn: sqlite3.Connection, ledger_path: str, mtime: float, offset: int) -> None:
-    """Record that ``ledger_path`` is synced up to ``offset`` as of ``mtime``."""
     now_iso = datetime.now(UTC).isoformat()
     conn.execute(
         """
@@ -291,10 +268,6 @@ def persist_watermark(conn: sqlite3.Connection, ledger_path: str, mtime: float, 
 
 
 def sync_ledger_incremental(db_path: str, ledger_path: str) -> int:
-    """Incrementally read new JSONL rows from ledger_path seeking from last byte offset.
-
-    Returns the count of newly ingested rows.
-    """
     if not os.path.exists(ledger_path):
         return 0
 

@@ -1,22 +1,3 @@
-"""The ``openssl`` calls behind the host Root CA: probing the binary, generating, validating and checking expiry.
-
-``launcher.root_ca`` owns the cache lifecycle and calls these helpers through this module's attributes.
-
-Actual behaviour:
-
-* ``openssl`` is probed with :func:`shutil.which` before anything is written. When it is
-  missing, a :class:`RuntimeError` carrying an actionable install hint is raised.
-* The certificate is generated with ``openssl req -x509`` under a 60 second timeout.
-  ``subprocess.CalledProcessError`` and ``subprocess.TimeoutExpired`` are translated into
-  :class:`RuntimeError` including the captured stderr.
-* The generated certificate carries explicit CA extensions (``basicConstraints=critical,CA:TRUE``
-  and ``keyUsage=critical,keyCertSign,cRLSign``). A CA certificate without ``keyUsage`` is refused
-  as a trust anchor by several TLS stacks (BoringSSL/Node, Go, OpenSSL in strict ``purpose``
-  modes), which would break the whole trust bootstrap.
-* ``openssl x509 -noout`` returns 0 for an *expired* certificate, so expiry is checked separately
-  with ``openssl x509 -checkend``.
-"""
-
 from __future__ import annotations
 
 import os
@@ -24,14 +5,11 @@ import shutil
 import subprocess
 
 _OPENSSL_TIMEOUT_SECONDS = 60
-
-#: Lifetime of a freshly generated Root CA, in days. Bounded on purpose: together with the renewal
-#: window in ``launcher.root_ca`` it guarantees a cached CA is rotated instead of being silently
-#: reused forever.
 _CA_VALIDITY_DAYS = 397
+_CHECKEND_VALID_EXIT_CODE = 0
+_CHECKEND_EXPIRING_EXIT_CODE = 1
+_OWNER_ONLY_KEY_MODE = 0o600
 
-#: Explicit CA extensions. ``keyUsage`` is mandatory in practice: without it several TLS stacks
-#: refuse the certificate as a trust anchor even though it is a perfectly valid CA.
 _CA_EXTENSIONS = (
     "-addext",
     "basicConstraints=critical,CA:TRUE",
@@ -47,7 +25,6 @@ _OPENSSL_INSTALL_HINT = (
 
 
 def _openssl_binary() -> str:
-    """Return the absolute path of the ``openssl`` binary or raise with an install hint."""
     openssl_path = shutil.which("openssl")
     if openssl_path is None:
         raise RuntimeError(
@@ -57,7 +34,6 @@ def _openssl_binary() -> str:
 
 
 def _run_openssl(*args: str) -> subprocess.CompletedProcess[str]:
-    """Run ``openssl`` with captured output and no implicit raising."""
     openssl_path = shutil.which("openssl") or "openssl"
     try:
         return subprocess.run(
@@ -72,11 +48,6 @@ def _run_openssl(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _assert_valid_cert(ca_cert_path: str) -> None:
-    """Assert that ``ca_cert_path`` is a parseable X.509 certificate.
-
-    Raises:
-        RuntimeError: If ``openssl`` cannot parse the artifact (or times out doing so).
-    """
     result = _run_openssl("x509", "-in", ca_cert_path, "-noout")
 
     if result.returncode != 0:
@@ -88,20 +59,11 @@ def _assert_valid_cert(ca_cert_path: str) -> None:
 
 
 def _expires_within(ca_cert_path: str, window_seconds: int) -> bool:
-    """True when ``ca_cert_path`` expires within ``window_seconds``.
-
-    ``openssl x509 -noout`` exits 0 for an expired certificate, so expiry needs its own probe:
-    ``-checkend`` exits 0 when the certificate stays valid beyond the window and 1 when it does
-    not. Any other exit status is an openssl-level failure and is reported, not swallowed.
-
-    Raises:
-        RuntimeError: If ``openssl`` cannot evaluate the expiry of the artifact.
-    """
     result = _run_openssl("x509", "-in", ca_cert_path, "-noout", "-checkend", str(window_seconds))
 
-    if result.returncode == 0:
+    if result.returncode == _CHECKEND_VALID_EXIT_CODE:
         return False
-    if result.returncode == 1:
+    if result.returncode == _CHECKEND_EXPIRING_EXIT_CODE:
         return True
 
     raise RuntimeError(
@@ -111,12 +73,13 @@ def _expires_within(ca_cert_path: str, window_seconds: int) -> bool:
     )
 
 
-def _generate(openssl_path: str, ca_cert_path: str, ca_key_path: str, cert_dir: str) -> None:
-    """Run ``openssl req -x509`` to create a fresh CA pair, translating failures into RuntimeError."""
-    # Pre-create the key file with 0o600 so the private key is never world-readable, even briefly,
-    # regardless of the caller's umask.
-    key_fd = os.open(ca_key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+def _precreate_owner_only_key_file(ca_key_path: str) -> None:
+    key_fd = os.open(ca_key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _OWNER_ONLY_KEY_MODE)
     os.close(key_fd)
+
+
+def _generate(openssl_path: str, ca_cert_path: str, ca_key_path: str, cert_dir: str) -> None:
+    _precreate_owner_only_key_file(ca_key_path)
 
     try:
         subprocess.run(

@@ -64,6 +64,8 @@ class TestTurnExecutionEnvironment(unittest.TestCase):
             popen_factory=mock_factory,
             clock=lambda: 0.0,
             sleeper=lambda _: None,
+            tool_sampler=None,
+            child_lister=None,
         )
 
         self.assertEqual(result.returncode, 0)
@@ -91,6 +93,8 @@ class TestTurnExecutionEnvironment(unittest.TestCase):
             popen_factory=mock_factory,
             clock=lambda: 0.0,
             sleeper=lambda _: None,
+            tool_sampler=None,
+            child_lister=None,
         )
 
         self.assertEqual(result.returncode, 0)

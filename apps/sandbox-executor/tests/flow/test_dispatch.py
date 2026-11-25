@@ -22,6 +22,7 @@ from sandbox_executor.flow import (
     run_plan_stage,
     save_checkpoint,
 )
+from sandbox_executor.flow.dispatch import _recorded_test_fields
 from sandbox_executor.launcher.coherence import FlowProxyChoice
 
 from tests.flow.github.fake_github import FakeGitHub
@@ -74,9 +75,7 @@ class TestFlowRoleDispatch:
         assert len(_ledger_rows(host, f"origin/{ctx.execution_branch}", "intents.jsonl")) == 1
         assert _git(host, "status", "--porcelain", "--untracked-files=no") == ""
 
-    @pytest.mark.parametrize(
-        ("recorded", "expected"), [(0.75, 0.75), (1, 1.0), (0.0, 0.0), ("1.0", None), (True, None)]
-    )
+    @pytest.mark.parametrize(("recorded", "expected"), [(0.75, 0.75), (True, None)], ids=["measured", "malformed"])
     def test_stage3_carries_container_recorded_test_pass_rate(self, flow_repos, tmp_path, recorded, expected):
         host, origin = flow_repos
         agents = FakeRoleAgents(tmp_path, origin, recorded_test_pass_rate=recorded)
@@ -87,6 +86,14 @@ class TestFlowRoleDispatch:
 
         assert results["execute"].status == StageStatus.SUCCESS
         assert results["execute"].payload["test_pass_rate"] == expected
+
+    @pytest.mark.parametrize(
+        ("recorded", "expected"), [(0.75, 0.75), (1, 1.0), (0.0, 0.0), ("1.0", None), (True, None)]
+    )
+    def test_stage3_validates_the_recorded_test_pass_rate_of_the_summary_row(self, recorded, expected):
+        # The fields Stage 3 copies from the container's summary row into its payload, as the run above carries them.
+        carried = _recorded_test_fields({"test_pass_rate": recorded})["test_pass_rate"]
+        assert (carried, type(carried)) == (expected, type(expected))
 
     def test_stage1_intent_dispatch_carries_resolved_payload(self, flow_repos, tmp_path):
         host, origin = flow_repos

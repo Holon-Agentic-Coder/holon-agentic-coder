@@ -86,18 +86,19 @@ def plan_metrics(repo_dir: str, plan_content: str, plan_row: dict[str, Any]) -> 
 
 
 @contextlib.contextmanager
-def replan_feedback_env(feedback: str) -> Iterator[None]:
-    """Set the replan feedback for the planner dispatch when non-empty, and restore the previous value afterwards.
+def replan_feedback_env(feedback: str, target_merged_notice: str = "") -> Iterator[None]:
+    """Set the replan feedback (and optional target-merge notice) for dispatch when non-empty, then restore.
 
-    Forwarded into the planner container like every HOLON_* variable; never written to a ledger.
+    Forwarded into the container through ``HOLON_REPLAN_FEEDBACK``; never written to a ledger.
     """
+    combined = "\n\n".join(part for part in (feedback, target_merged_notice) if part)
     previous = os.environ.get(ENV_REPLAN_FEEDBACK)
-    if feedback:
-        os.environ[ENV_REPLAN_FEEDBACK] = feedback
+    if combined:
+        os.environ[ENV_REPLAN_FEEDBACK] = combined
     try:
         yield
     finally:
-        if feedback:
+        if combined:
             if previous is None:
                 os.environ.pop(ENV_REPLAN_FEEDBACK, None)
             else:

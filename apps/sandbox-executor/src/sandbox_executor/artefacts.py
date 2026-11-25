@@ -1,63 +1,55 @@
-"""Validation of the artefacts authoring agents write incrementally.
-
-Planner and executor agents are asked to create their artefact (``plans/P-*.md`` or ``executions/E-*.md``) with their
-file-write tool straight away and extend it section by section, instead of emitting everything in one final stdout
-message. The file on disk is therefore the source of truth: a truncated final message (``stopReason: length``, exit
-code 1) costs nothing as long as the file is complete.
-
-This module decides what "complete" means. An :class:`ArtefactSpec` lists the required headings, a size floor and the
-metric rows that must parse as numbers; :func:`validate_artefact` measures a file against it, and
-:func:`build_reprompt` produces the single targeted follow-up prompt that names only what is missing.
-"""
-
 import os
 import re
 from dataclasses import dataclass, field
 
-# A metrics row is ``| name | number |``; anything non-numeric in the value cell is skipped.
 _METRIC_ROW = re.compile(r"\|\s*([a-zA-Z_0-9]+)\s*\|\s*([0-9\.\-]+)\s*\|")
 
 
 def _find_heading(lines: list[str], pattern: str) -> int | None:
-    """Index of the first line whose stripped text matches ``pattern`` case-insensitively, or None.
-
-    Shared by the section check and :func:`parse_section_metrics`, so a heading the validator accepts is always the
-    heading the metrics are read from.
-    """
     regex = re.compile(pattern, re.IGNORECASE)
     return next((index for index, line in enumerate(lines) if regex.match(line.strip())), None)
 
 
+def _strip_metric_suffix(name: str, suffixes: tuple[str, ...]) -> str:
+    for suffix in suffixes:
+        if name.endswith(suffix):
+            return name[: -len(suffix)].strip()
+    return name.strip()
+
+
+def _extract_section_lines(lines: list[str], heading: str) -> list[str]:
+    start = _find_heading(lines, heading)
+    if start is None:
+        return lines
+    section: list[str] = []
+    for line in lines[start + 1 :]:
+        if line.startswith("## "):
+            break
+        section.append(line)
+    return section
+
+
 @dataclass(frozen=True)
 class ArtefactSection:
-    """A required section: a human-readable label for re-prompts and the heading pattern that satisfies it."""
-
     label: str
     pattern: str
 
     def present_in(self, content: str) -> bool:
-        """True when a heading matching :attr:`pattern` starts any line (case-insensitive, leading spaces ignored)."""
         return _find_heading(content.splitlines(), self.pattern) is not None
 
 
 @dataclass(frozen=True)
 class ArtefactSpec:
-    """Structural and numeric requirements for an authored artefact."""
-
     name: str
     sections: tuple[ArtefactSection, ...]
     size_floor: int
     required_metrics: tuple[str, ...] = ()
-    # Suffixes stripped from metric names before matching, so ``p_success_pred`` satisfies ``p_success``.
     metric_suffixes: tuple[str, ...] = ("_pred",)
-    # Heading of the section whose rows are the artefact's metrics (see :func:`parse_section_metrics`).
     metrics_section: str | None = None
 
 
 @dataclass
 class ArtefactReport:
-    """Result of measuring one file against an :class:`ArtefactSpec`."""
-
     path: str
     spec: ArtefactSpec
     exists: bool = False
@@ -68,26 +60,21 @@ class ArtefactReport:
 
     @property
     def size_ok(self) -> bool:
-        """True when the file reaches the spec's size floor."""
         return self.exists and self.size >= self.spec.size_floor
 
     @property
     def metrics_ok(self) -> bool:
-        """True when every required metric parsed as a number from the spec's metrics section."""
         return self.exists and not self.missing_metrics
 
     @property
     def usable(self) -> bool:
-        """True when the artefact can be committed: it exists, exceeds the size floor and its metrics parse."""
         return self.size_ok and self.metrics_ok
 
     @property
     def complete(self) -> bool:
-        """True when the artefact is usable and every required section is present."""
         return self.usable and not self.missing_sections
 
     def missing_labels(self) -> list[str]:
-        """Everything a follow-up turn must add, in spec order: sections first, then metric rows."""
         labels = list(self.missing_sections)
         if self.missing_metrics:
             labels.append("metrics table rows: " + ", ".join(self.missing_metrics))
@@ -96,7 +83,6 @@ class ArtefactReport:
         return labels
 
     def describe(self) -> str:
-        """One-line summary for logs."""
         if not self.exists:
             return f"{self.spec.name} artefact {self.path} does not exist"
         state = "complete" if self.complete else "usable" if self.usable else "invalid"
@@ -106,62 +92,34 @@ class ArtefactReport:
 
 
 def parse_metrics(content: str, suffixes: tuple[str, ...] = ("_pred",)) -> dict[str, float]:
-    """Parse every ``| name | number |`` row in ``content``, stripping the given suffixes from names.
-
-    Later rows overwrite earlier ones with the same name; use :func:`parse_section_metrics` when only one section (such
-    as a plan's overall table) should count.
-    """
     metrics: dict[str, float] = {}
     for line in content.splitlines():
         match = _METRIC_ROW.search(line)
         if not match:
             continue
-        name = match.group(1).strip()
+        raw_name = match.group(1).strip()
         try:
             value = float(match.group(2).strip())
         except ValueError:
-            # Ignore malformed numeric values and continue parsing other metric rows.
             continue
-        for suffix in suffixes:
-            if name.endswith(suffix):
-                name = name[: -len(suffix)]
-                break
-        metrics[name.strip()] = value
+        metrics[_strip_metric_suffix(raw_name, suffixes)] = value
     return metrics
 
 
 def parse_section_metrics(
     content: str, heading: str | None, suffixes: tuple[str, ...] = ("_pred",)
 ) -> dict[str, float]:
-    """Parse the metric rows of the section headed by ``heading`` (a regex matched case-insensitively per line).
-
-    This is the single metrics parser for authored artefacts: :func:`validate_artefact` uses it to gate a file and the
-    planner (and ``holon flow``, through ``planner.parse_metrics``) uses the same result for the ``plans.jsonl`` row, so
-    the gate and the ledger can never read different numbers from one document. When the heading is present, only the
-    rows up to the next ``## `` heading count, wherever the section sits, so per-step tables before or after it cannot
-    stand in for the overall values (PR #91). When it is absent (or ``heading`` is None), every row in the document
-    counts and the last matching row wins, which is PR #91's fallback.
-    """
     lines = content.splitlines()
     if heading is not None:
-        start = _find_heading(lines, heading)
-        if start is not None:
-            section: list[str] = []
-            for line in lines[start + 1 :]:
-                if line.startswith("## "):
-                    break
-                section.append(line)
-            lines = section
+        lines = _extract_section_lines(lines, heading)
     return parse_metrics("\n".join(lines), suffixes)
 
 
 def plan_metrics(content: str) -> dict[str, float]:
-    """Plan-level predicted metrics: the ``## Overall Plan Metrics`` rows, parsed exactly as :data:`PLAN_SPEC` does."""
     return parse_section_metrics(content, PLAN_SPEC.metrics_section, PLAN_SPEC.metric_suffixes)
 
 
 def validate_artefact(path: str, spec: ArtefactSpec) -> ArtefactReport:
-    """Measure the file at ``path`` against ``spec``; never raises for a missing or unreadable file."""
     report = ArtefactReport(path=path, spec=spec)
     if not os.path.isfile(path):
         report.missing_sections = [section.label for section in spec.sections]
@@ -183,14 +141,6 @@ def validate_artefact(path: str, spec: ArtefactSpec) -> ArtefactReport:
 
 
 def build_reprompt(missing: list[str], path: str, *, partial: bool = False, modify_code: bool = True) -> str:
-    """Prompt for the single follow-up turn, listing only what is missing from the artefact at ``path``.
-
-    Args:
-        missing: Labels from :meth:`ArtefactReport.missing_labels`.
-        path: Repository-relative artefact path the agent must extend.
-        partial: True after a budget breach, when the previous turn was cut off mid-write.
-        modify_code: False for the executor, whose follow-up must only touch its notes.
-    """
     lines = []
     if partial:
         lines.append(
@@ -209,7 +159,6 @@ def build_reprompt(missing: list[str], path: str, *, partial: bool = False, modi
 
 
 PLAN_METRICS = ("p_success", "entropy", "impact", "cost", "learning_value", "ev")
-# The planner recomputes EV from the five inputs with the config-driven formula, so an ``ev_pred`` row is optional.
 PLAN_REQUIRED_METRICS = tuple(name for name in PLAN_METRICS if name != "ev")
 
 PLAN_METRICS_HEADING = r"^##\s+Overall Plan Metrics\b"
@@ -250,7 +199,6 @@ EXECUTION_SPEC = ArtefactSpec(
 
 
 def plan_write_protocol(path: str) -> str:
-    """Closing instruction for planner prompts: write the plan file incrementally, keep the reply short."""
     return (
         "WRITE PROTOCOL (mandatory): create the plan file "
         f"`{path}` with your file-write tool now, before any long analysis. Write the header and the "
@@ -262,7 +210,6 @@ def plan_write_protocol(path: str) -> str:
 
 
 def execution_write_protocol(path: str) -> str:
-    """Closing instruction for executor prompts: create the execution notes first and extend them per step."""
     return (
         "WRITE PROTOCOL (mandatory): before changing any code, create the execution notes file "
         f"`{path}` with your file-write tool. Start it with a '# Execution Record: ...' title, a '## Summary' "

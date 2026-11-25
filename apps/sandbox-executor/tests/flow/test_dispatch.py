@@ -788,7 +788,7 @@ class TestFlowDispatchMergeInteractions:
         order.dispatch.return_value = 1  # stop the flow at Stage 1; only the dispatch arguments matter here
 
         with (
-            patch("sandbox_executor.cli.run_preflight_probe", order.probe),
+            patch("sandbox_executor.cli.preflight.run_preflight_probe", order.probe),
             patch("sandbox_executor.launcher.role_dispatch.dispatch_role_agent", order.dispatch),
             patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY),
             patch("sys.argv", ["holon", "flow", str(intent_file), "--target-worktree", str(host)]),

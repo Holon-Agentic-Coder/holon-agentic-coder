@@ -1,9 +1,3 @@
-"""Promotion ladder rule tables and veto decay: pure functions of a signature's evidence, no database access.
-
-Each ladder is an ordered first-match table, so rule order is part of the contract (``proven-success`` must be tried
-before ``likely-success``). ``tests/test_promotion_rules.py`` pins both tables against the original ``if/elif`` chains.
-"""
-
 from __future__ import annotations
 
 import math
@@ -14,8 +8,6 @@ from datetime import UTC, datetime
 
 @dataclass(frozen=True)
 class LadderEvidence:
-    """The counts a ladder classifies: successes, failures and the Wilson 95% lower bound."""
-
     successes: int
     failures: int
     wilson_lower: float
@@ -23,13 +15,10 @@ class LadderEvidence:
 
 @dataclass(frozen=True)
 class LadderRule:
-    """One ladder rung: the state a signature takes when ``applies`` holds for its evidence."""
-
     state: str
     applies: Callable[[LadderEvidence], bool]
 
 
-# Failure veto ladder: deterministic, driven by uncontested failure counts.
 FAILURE_LADDER_RULES: tuple[LadderRule, ...] = (
     LadderRule("none", lambda e: e.failures == 0),
     LadderRule("observed", lambda e: e.failures == 1 and e.successes == 0),
@@ -39,7 +28,6 @@ FAILURE_LADDER_RULES: tuple[LadderRule, ...] = (
 )
 FAILURE_LADDER_DEFAULT = "observed"
 
-# Success evidence ladder: statistical, gated on the Wilson lower bound.
 SUCCESS_LADDER_RULES: tuple[LadderRule, ...] = (
     LadderRule("none", lambda e: e.successes == 0),
     LadderRule("observed", lambda e: e.successes == 1),
@@ -49,33 +37,27 @@ SUCCESS_LADDER_RULES: tuple[LadderRule, ...] = (
 )
 SUCCESS_LADDER_DEFAULT = "observed"
 
-# Failure ladder states that raise (or refresh) an active veto.
 VETO_STATES = frozenset({"repeated", "proven-fail"})
-# Success ladder states that warrant a non-imperative advisory.
 ADVISORY_STATES = frozenset({"repeated", "likely-success", "proven-success"})
 
-# Exponential decay rate per hour, a half-life of about 7 days.
 _VETO_DECAY_PER_HOUR = 0.00412
+_VETO_DECAY_MIN_WEIGHT = 0.01
+_VETO_DECAY_DEFAULT_WEIGHT = 1.0
+_SECONDS_PER_HOUR = 3600.0
 
 
 def classify(rules: tuple[LadderRule, ...], evidence: LadderEvidence, default: str) -> str:
-    """Return the state of the first rule that applies to ``evidence``, or ``default`` when none does."""
     return next((rule.state for rule in rules if rule.applies(evidence)), default)
 
 
 def veto_decay_weight(updated_at: str | None, now: datetime | None = None) -> float:
-    """Return the decay weight of a veto last updated at ``updated_at`` (ISO text; naive is read as UTC).
-
-    The weight halves about every 7 days with a floor of 0.01; it is 1.0 without a timestamp or when it cannot be
-    parsed.
-    """
     if not updated_at:
-        return 1.0
+        return _VETO_DECAY_DEFAULT_WEIGHT
     try:
         last_up = datetime.fromisoformat(updated_at)
         if last_up.tzinfo is None:
             last_up = last_up.replace(tzinfo=UTC)
-        age_hours = ((now or datetime.now(UTC)) - last_up).total_seconds() / 3600.0
-        return max(0.01, math.exp(-_VETO_DECAY_PER_HOUR * age_hours))
+        age_hours = ((now or datetime.now(UTC)) - last_up).total_seconds() / _SECONDS_PER_HOUR
+        return max(_VETO_DECAY_MIN_WEIGHT, math.exp(-_VETO_DECAY_PER_HOUR * age_hours))
     except Exception:
-        return 1.0
+        return _VETO_DECAY_DEFAULT_WEIGHT

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, in_flight
+from sandbox_executor.flow.admission import check_admission
 from sandbox_executor.flow.checkpoint import save_checkpoint
 from sandbox_executor.flow.in_flight import (
     MAX_OPEN_PULL_REQUESTS,
@@ -20,7 +23,9 @@ from sandbox_executor.flow.in_flight import (
 )
 from sandbox_executor.touch_set import TouchSet, TouchSetEntry
 
-from tests.flow.helpers import OTHER_HEAD, OTHER_PLAN, FakeGh, _git, make_plan_branch
+from tests.flow.helpers import OTHER_HEAD, OTHER_PLAN, FakeGh, _git, make_plan_branch, no_worktrees, seed_base_files
+
+OWN_PLAN = "I-100-own/P-101-cccccccc-claude-agent-claude-opus-5-5/_"
 
 OWN_HEAD = "I-100-own/P-101-cccccccc-claude-agent-claude-opus-5-5/E-102-dddddddd-claude-agent-claude-opus-5-5/_"
 CHILD_PLAN = "I-100-own--1-child/P-103-eeeeeeee-claude-agent-claude-opus-5-5/_"
@@ -217,3 +222,199 @@ def test_a_blocked_flow_with_an_open_pull_request_stays_in_flight(flow_repos, tm
     flows = discover_in_flight_flows(str(host), OWN_HEAD, gh)
     assert not isinstance(flows, AdmissionUnavailable)
     assert [(flow.kind, flow.number, flow.head) for flow in flows] == [("pull_request", 7, OTHER_HEAD)]
+
+
+DIFF_TOO_LARGE_STDERR = "gh: PullRequest.diff too_large: sorry, this diff is taking too long to generate (HTTP 406)"
+
+
+class _FallbackGh:
+    """Local GhRunner test double supporting per-PR ``gh pr diff`` and ``gh api --paginate --slurp`` responses."""
+
+    def __init__(
+        self,
+        prs: list[dict[str, Any]],
+        diff_responses: dict[int, tuple[int, str, str]],
+        api_responses: dict[int, tuple[int, Any, str]] | None = None,
+    ) -> None:
+        self.prs = prs
+        self.diff_responses = diff_responses
+        self.api_responses = api_responses or {}
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+        self.calls.append(list(args))
+        if args[:2] == ["pr", "list"]:
+            return subprocess.CompletedProcess(["gh", *args], 0, json.dumps(self.prs), "")
+        if args[:2] == ["pr", "diff"]:
+            code, out, err = self.diff_responses[int(args[2])]
+            return subprocess.CompletedProcess(["gh", *args], code, out, err)
+        if args[:1] == ["api"]:
+            number = int(args[-1].split("/")[-2])
+            code, payload, err = self.api_responses[number]
+            stdout = payload if isinstance(payload, str) else json.dumps(payload)
+            return subprocess.CompletedProcess(["gh", *args], code, stdout, err)
+        raise AssertionError(f"unexpected gh invocation: {args}")
+
+
+def test_diff_http_406_too_large_falls_back_to_paginated_rest_api(flow_repos):
+    host, _origin = flow_repos
+    gh = _FallbackGh(
+        prs=[{"number": 7, "headRefName": OTHER_HEAD, "baseRefName": "main"}],
+        diff_responses={7: (1, "", DIFF_TOO_LARGE_STDERR)},
+        api_responses={7: (0, [[{"filename": "src/a.py"}, {"filename": "src/b.py"}]], "")},
+    )
+    flows = open_flow_pull_requests(str(host), "I-100-own", gh)
+    assert not isinstance(flows, AdmissionUnavailable)
+    assert [flow.changed_files for flow in flows] == [("src/a.py", "src/b.py")]
+    assert gh.calls[1:] == [
+        ["pr", "diff", "7", "--color", "never"],
+        ["api", "--paginate", "--slurp", "repos/{owner}/{repo}/pulls/7/files"],
+    ]
+
+
+def test_fallback_merges_paginated_pages_normalises_and_deduplicates_in_order(flow_repos):
+    host, _origin = flow_repos
+    pages = [
+        [{"filename": "./src/a.py"}, {"filename": r"src\b.py"}],
+        [{"filename": "src/a.py"}, {"filename": "src/c.py"}],
+        [{"filename": "./src/b.py"}, {"filename": "src/d.py"}],
+    ]
+    gh = _FallbackGh(
+        prs=[{"number": 7, "headRefName": OTHER_HEAD}],
+        diff_responses={7: (1, "", DIFF_TOO_LARGE_STDERR)},
+        api_responses={7: (0, pages, "")},
+    )
+    flows = open_flow_pull_requests(str(host), "I-100-own", gh)
+    assert not isinstance(flows, AdmissionUnavailable)
+    assert flows[0].changed_files == ("src/a.py", "src/b.py", "src/c.py", "src/d.py")
+
+
+def test_fallback_includes_rename_previous_filename_and_filters_metadata(flow_repos):
+    host, _origin = flow_repos
+    pages = [
+        [
+            {"filename": "./src/new_name.py", "previous_filename": r"src\old_name.py"},
+            {"filename": "plans/P-201.md", "previous_filename": "plans/P-200.md"},
+            {"filename": "src/from_meta.py", "previous_filename": "holon-knowledge/ledger/plans.jsonl"},
+            {"filename": "holon-knowledge/ledger/executions.jsonl", "previous_filename": "src/to_meta.py"},
+        ]
+    ]
+    gh = _FallbackGh(
+        prs=[{"number": 7, "headRefName": OTHER_HEAD}],
+        diff_responses={7: (1, "", DIFF_TOO_LARGE_STDERR)},
+        api_responses={7: (0, pages, "")},
+    )
+    flows = open_flow_pull_requests(str(host), "I-100-own", gh)
+    assert not isinstance(flows, AdmissionUnavailable)
+    assert flows[0].changed_files == ("src/new_name.py", "src/old_name.py", "src/from_meta.py", "src/to_meta.py")
+
+
+@pytest.mark.parametrize("empty_pages", [[], [[]]])
+def test_fallback_empty_slurped_pages_returns_empty_tuple(flow_repos, empty_pages):
+    host, _origin = flow_repos
+    gh = _FallbackGh(
+        prs=[{"number": 7, "headRefName": OTHER_HEAD}],
+        diff_responses={7: (1, "", DIFF_TOO_LARGE_STDERR)},
+        api_responses={7: (0, empty_pages, "")},
+    )
+    flows = open_flow_pull_requests(str(host), "I-100-own", gh)
+    assert not isinstance(flows, AdmissionUnavailable)
+    assert flows[0].changed_files == ()
+
+
+@pytest.mark.parametrize("stderr", ["HTTP 502 Bad Gateway", "HTTP 404 Not Found", "PR #406 failed: HTTP 500"])
+def test_non_406_diff_errors_fail_closed_without_calling_api(flow_repos, stderr):
+    host, _origin = flow_repos
+    gh = _FallbackGh(
+        prs=[{"number": 7, "headRefName": OTHER_HEAD}],
+        diff_responses={7: (1, "", stderr)},
+    )
+    result = open_flow_pull_requests(str(host), "I-100-own", gh)
+    assert isinstance(result, AdmissionUnavailable)
+    assert "gh pr diff 7" in result.reason
+    assert not any(call[:1] == ["api"] for call in gh.calls)
+
+
+def test_fallback_api_failure_fails_closed_and_redacts_secrets(flow_repos):
+    host, _origin = flow_repos
+    secret = "ghp_" + "a" * 36
+    gh = _FallbackGh(
+        prs=[{"number": 7, "headRefName": OTHER_HEAD}],
+        diff_responses={7: (1, "", DIFF_TOO_LARGE_STDERR)},
+        api_responses={7: (1, "", f"HTTP 500 token={secret}")},
+    )
+    result = open_flow_pull_requests(str(host), "I-100-own", gh)
+    assert isinstance(result, AdmissionUnavailable)
+    assert "gh api repos/{owner}/{repo}/pulls/7/files" in result.reason
+    assert secret not in result.reason
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "",
+        "   \n",
+        "{bad",
+        {"message": "Not Found"},
+        [{"filename": "src/a.py"}],
+        [["src/a.py"]],
+        [[{"status": "modified"}]],
+        [[{"filename": ""}]],
+        [[{"filename": 123}]],
+        [[{"filename": "src/a.py", "previous_filename": 42}]],
+    ],
+)
+def test_fallback_malformed_or_unexpected_json_fails_closed(flow_repos, payload):
+    host, _origin = flow_repos
+    gh = _FallbackGh(
+        prs=[{"number": 7, "headRefName": OTHER_HEAD}],
+        diff_responses={7: (1, "", DIFF_TOO_LARGE_STDERR)},
+        api_responses={7: (0, payload, "")},
+    )
+    result = open_flow_pull_requests(str(host), "I-100-own", gh)
+    assert isinstance(result, AdmissionUnavailable)
+
+
+@pytest.mark.parametrize(
+    ("plan_branch", "touch_path", "expected_overlap"),
+    [
+        (OWN_PLAN, "src/page2.py", ("src/page2.py",)),
+        ("I-100-own/P-102-cccccccc-claude-agent-claude-opus-5-5/_", "src/old_name.py", ("src/old_name.py",)),
+        ("I-100-own/P-103-cccccccc-claude-agent-claude-opus-5-5/_", "src/disjoint.py", ()),
+    ],
+)
+def test_stage3_admission_overlap_refusal_and_disjoint_admit_via_406_fallback(
+    flow_repos, plan_branch, touch_path, expected_overlap
+):
+    host, _origin = flow_repos
+    seed_base_files(host, ["src/page2.py", "src/old_name.py", "src/disjoint.py"])
+    make_plan_branch(host, plan_branch, [{"path": touch_path}])
+    gh = _FallbackGh(
+        prs=[{"number": 7, "headRefName": OTHER_HEAD, "baseRefName": "main"}],
+        diff_responses={7: (1, "", DIFF_TOO_LARGE_STDERR)},
+        api_responses={
+            7: (
+                0,
+                [
+                    [{"filename": "src/new_name.py", "previous_filename": "src/old_name.py"}],
+                    [{"filename": "src/page2.py"}],
+                ],
+                "",
+            )
+        },
+    )
+    context = FlowContext(
+        target_worktree=str(host), plan_branch=plan_branch, intent_branch="I-100-own/_", token_reduce=False
+    )
+    decision = check_admission(context, gh, no_worktrees)
+    if expected_overlap:
+        assert not decision.admitted
+        assert decision.reason is None
+        assert [(c.label, c.files) for c in decision.conflicts] == [
+            (f"pull request #7 (branch {OTHER_HEAD})", expected_overlap)
+        ]
+        assert [entry.files for entry in decision.blocked_by] == [expected_overlap]
+    else:
+        assert decision.admitted
+        assert decision.conflicts == ()
+        assert decision.blocked_by == ()

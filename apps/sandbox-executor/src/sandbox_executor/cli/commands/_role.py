@@ -1,5 +1,3 @@
-"""Shared role agent preparation and dispatch helper for plan and execute commands."""
-
 from __future__ import annotations
 
 import argparse
@@ -10,15 +8,6 @@ from sandbox_executor import cli
 
 
 def prepare_role_execution(args: argparse.Namespace) -> dict[str, Any] | None:
-    """Resolve runner and model and run pre-flight gate for role commands.
-
-    Args:
-        args: Command arguments namespace.
-
-    Returns:
-        dict[str, Any] | None: Common keyword arguments for dispatch_role_agent,
-            or None if pre-flight gate failed or runner could not be resolved.
-    """
     try:
         agent_res, model_res = cli.resolve_runner_and_model(args.agent, args.model)
     except (cli.UnmappedAgentRunnerError, cli.MissingAgentRunnerError, cli.MissingModelError) as exc:

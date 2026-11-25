@@ -209,3 +209,56 @@ def test_run_calibrate_passes_a_consistent_report(flow_repo: Path) -> None:
     assert report.evaluated_commit_sha == head
     assert report.diff_base == "target_merge_base"
     assert report.changed_paths == ["src/own.py"]
+
+
+@pytest.fixture
+def adapted_merge_repo(tmp_path: Path) -> Path:
+    """As ``flow_repo``, but main adds a file that the execution branch's merge commit itself adapts."""
+    git(tmp_path, "init", "-q", "-b", "main")
+    commit(tmp_path, "base", {"base.txt": "base\n"})
+    git(tmp_path, "checkout", "-qb", PLAN)
+    commit(tmp_path, "plan", {"plans/I-1-sc/P-2-sc.md": "# Plan\n"})
+    git(tmp_path, "checkout", "-qb", EXEC)
+    commit(tmp_path, "pr one", {"src/own.py": "one\n"})
+    git(tmp_path, "checkout", "-q", "main")
+    commit(tmp_path, "main adds", {"main/added.py": "first\nsecond\n"})
+    git(tmp_path, "checkout", "-q", EXEC)
+    git(tmp_path, "merge", "-q", "--no-ff", "--no-commit", "main")
+    (tmp_path / "main/added.py").write_text("first\nadapted\n", encoding="utf-8")
+    git(tmp_path, "add", "--", "main/added.py")
+    git(tmp_path, "commit", "-qm", "merge main, adapting main/added.py")
+    ledger = json.dumps(_row(EXEC_ID, "success", 1)) + "\n"
+    commit(tmp_path, "ledger", {"holon-knowledge/ledger/executions.jsonl": ledger})
+    git(tmp_path, "update-ref", "refs/remotes/origin/main", "refs/heads/main")
+    # The adaptation lives inside the two-parent merge commit, not in a later commit
+    assert len(git(tmp_path, "rev-list", "--parents", "-n1", "HEAD~1").split()) == 3
+    assert "main/added.py" in git(tmp_path, "diff-tree", "--cc", "--name-only", "HEAD~1").splitlines()
+    return tmp_path
+
+
+def test_merge_commit_adapting_a_target_added_file_is_the_pr_own(adapted_merge_repo: Path) -> None:
+    repo = adapted_merge_repo
+    merge_base = git(repo, "merge-base", "main", EXEC)
+    head = git(repo, "rev-parse", EXEC)
+    assert "main/added.py" not in target_only_paths(str(repo), f"refs/heads/{PLAN}", merge_base, head)
+    git(repo, "checkout", "-q", "main")
+    report = run_calibrate(EXEC, target_worktree=str(repo), skip_commit=True, approved_head=head)
+    assert "main/added.py" in report.changed_paths
+    assert "src/own.py" in report.changed_paths
+
+
+def test_file_changed_only_on_target_is_still_target_only(flow_repo: Path) -> None:
+    merge_base = git(flow_repo, "merge-base", "main", EXEC)
+    paths = target_only_paths(str(flow_repo), f"refs/heads/{PLAN}", merge_base, git(flow_repo, "rev-parse", EXEC))
+    assert "main/other.py" in paths
+    inputs = dataclasses.replace(CONSISTENT, counted_paths=("src/own.py", "main/other.py"), target_only_paths=paths)
+    assert self_check_report(inputs) == ["counted_target_only_file"]
+
+
+def test_clean_merge_without_adaptation_reports_no_violation(flow_repo: Path) -> None:
+    merge_base = git(flow_repo, "merge-base", "main", EXEC)
+    head = git(flow_repo, "rev-parse", EXEC)
+    paths = target_only_paths(str(flow_repo), f"refs/heads/{PLAN}", merge_base, head)
+    counted = tuple(git(flow_repo, "diff", "--name-only", f"{merge_base}...{head}").splitlines())
+    assert paths.isdisjoint(counted)
+    assert self_check_report(dataclasses.replace(CONSISTENT, counted_paths=counted, target_only_paths=paths)) == []

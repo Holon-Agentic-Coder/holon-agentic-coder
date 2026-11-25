@@ -17,6 +17,14 @@ An outer xdist worker's identity (``PYTEST_XDIST_WORKER`` and friends, ``PYTEST_
 removed from the child environment, so the child controller never believes it is itself a worker.
 ``PYTEST_XDIST_AUTO_NUM_WORKERS`` is deliberately kept: it is a setting, not an identity, and lets a
 caller choose the child's ``-n auto`` worker count.
+
+Worker count under concurrency: xdist's ``-n auto`` counts *physical* cores through ``psutil``, so
+on the 4-vCPU ``ubuntu-latest`` runner each child started only 2 workers. The child suite is
+subprocess- and IO-bound, and measured on 4 pinned CPUs with both children running concurrently,
+4 workers per child beat 2 by 21 % (3 beat 2 by 14 %; see execution ``E-1795573757-CLA-CO5.5``).
+So when the stress test itself runs in an outer xdist worker and the caller has not chosen a
+count, :func:`child_env` sets ``PYTEST_XDIST_AUTO_NUM_WORKERS`` to the CPUs this process may use
+(``os.process_cpu_count()``, which honours CPU affinity).
 """
 
 import contextlib
@@ -37,7 +45,9 @@ from tests.hermetic_fixtures import (
 
 #: Environment keys a child must never inherit from an outer pytest-xdist worker.
 _XDIST_IDENTITY_PREFIX = "PYTEST_XDIST_"
-_XDIST_KEPT_SETTINGS = frozenset({"PYTEST_XDIST_AUTO_NUM_WORKERS"})
+_XDIST_AUTO_NUM_WORKERS = "PYTEST_XDIST_AUTO_NUM_WORKERS"
+_XDIST_KEPT_SETTINGS = frozenset({_XDIST_AUTO_NUM_WORKERS})
+_XDIST_WORKER = "PYTEST_XDIST_WORKER"
 _PYTEST_CURRENT_TEST = "PYTEST_CURRENT_TEST"
 
 #: Content of the canary marker the hermetic guard seeds into its simulated workspace.
@@ -88,6 +98,8 @@ def child_env(context: ChildContext, sentinel_var: str) -> dict[str, str]:
     env = simulated_container_env(context.home, sentinel_var)
     for name in ("TMPDIR", "TMP", "TEMP"):
         env[name] = context.tmpdir
+    if _XDIST_WORKER in env and _XDIST_AUTO_NUM_WORKERS not in env:
+        env[_XDIST_AUTO_NUM_WORKERS] = str(os.process_cpu_count() or 1)
     for name in list(env):
         if name.startswith(_XDIST_IDENTITY_PREFIX) and name not in _XDIST_KEPT_SETTINGS:
             del env[name]

@@ -188,8 +188,20 @@ def test_child_env_pins_home_and_temporary_root_and_drops_outer_xdist_identity(
         assert env[SENTINEL] == env[CHILD_SUITE_SENTINEL] == "1"
         assert "PYTEST_CURRENT_TEST" not in env
         assert sorted(key for key in env if key.startswith("PYTEST_XDIST_")) == ["PYTEST_XDIST_AUTO_NUM_WORKERS"]
+        assert env["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "3"
     assert envs["survival"][1]["HOME"] != envs["canary"][1]["HOME"]
     assert envs["survival"][1]["TMPDIR"] != envs["canary"][1]["TMPDIR"]
+
+
+def test_child_env_gives_each_concurrent_child_every_usable_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PYTEST_XDIST_AUTO_NUM_WORKERS", raising=False)
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw1")
+    with child_context("canary") as context:
+        under_outer_worker = child_env(context, SENTINEL)
+        monkeypatch.delenv("PYTEST_XDIST_WORKER")
+        standalone = child_env(context, SENTINEL)
+    assert under_outer_worker["PYTEST_XDIST_AUTO_NUM_WORKERS"] == str(os.process_cpu_count())
+    assert "PYTEST_XDIST_AUTO_NUM_WORKERS" not in standalone
 
 
 def test_child_suite_command_carries_the_context_basetemp() -> None:

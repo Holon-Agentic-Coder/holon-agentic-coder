@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -29,6 +28,13 @@ from sandbox_executor.flow.calibrate_sync import (
     restore_starting_branch,
     sync_execution_ref,
 )
+from sandbox_executor.flow.calibrate_target_sync import (
+    _CalibrateRestartRequired,
+    _leave_calibrated_branch,
+    _retry_safe,
+    make_calibrate_retry_sync,
+    sync_before_calibration,
+)
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.ci_final_head import check_final_head_ci, format_final_head_ci, not_pushed_record
@@ -38,7 +44,6 @@ from sandbox_executor.flow.review.conflict_gate import _stage5_conflict_gate
 from sandbox_executor.flow.review.records import _bounded_error_context
 from sandbox_executor.flow.review_restart import stage5_merged_head_gate
 from sandbox_executor.flow.stage5 import Stage5Steps, run_stage5
-from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.flow.stages.review import _checkout_execution_branch
 from sandbox_executor.git import run_git
 from sandbox_executor.knowledge import promote_pending_candidates, reconcile_records
@@ -125,39 +130,13 @@ def _report_rel(context: FlowContext) -> str:
     return calibration_report_for_branch(execution_branch) or legacy_calibration_report_rel(plan_id)
 
 
-def _retry_safe(context: FlowContext) -> Callable[[], bool]:
-    """Whether a failed calibration attempt left a clean state to retry from: no change to the report path and no
-    new commit on the /calibrated branch since the first attempt started."""
-    repo_dir = context.target_worktree
-    calibrated_ref = f"refs/heads/{calibration_branch(str(context.execution_branch))}"
-
-    def calibrated_tip() -> str:
-        res = run_git(["rev-parse", "--verify", "--quiet", calibrated_ref], cwd=repo_dir, check=False)
-        return res.stdout.strip() if res.returncode == 0 else ""
-
-    start_tip = "" if context.dry_run else calibrated_tip()
-
-    def safe() -> bool:
-        if context.dry_run:
-            return True
-        status = run_git(["status", "--porcelain", "--", _report_rel(context)], cwd=repo_dir, check=False)
-        return status.returncode == 0 and not status.stdout.strip() and calibrated_tip() == start_tip
-
-    return safe
-
-
 def _fail_calibration(context: FlowContext, start_time: str, calibrated_created: bool, exc: Exception) -> StageResult:
     """FAILED for a calibration that raised with no retries left: no report, commit, push, reconciliation or
     promotion; an empty /calibrated branch is discarded, a real run appends the failure ACT-CAL row (left
     uncommitted for a ``--from-stage calibrate`` resume to commit), and the checkpoint stays at CALIBRATE."""
-    execution_branch = str(context.execution_branch)
-    repo_dir = context.target_worktree
+    execution_branch, repo_dir = str(context.execution_branch), context.target_worktree
     calibrated = calibration_branch(execution_branch)
-    head = run_git(["symbolic-ref", "--short", "-q", "HEAD"], cwd=repo_dir, check=False)
-    if head.stdout.strip() == calibrated:
-        res = run_git(["checkout", execution_branch], cwd=repo_dir, check=False)
-        if res.returncode != 0:
-            context.log(f"Warning: could not leave '{calibrated}': {redact_agent_secrets(res.stderr.strip())}")
+    _leave_calibrated_branch(context)
     discard_empty_calibrated_branch(context, calibrated_created)
     exists = run_git(["rev-parse", "--verify", "--quiet", f"refs/heads/{calibrated}"], cwd=repo_dir, check=False)
     context.calibrated_branch = None
@@ -196,16 +175,14 @@ def _prepare_execution_branch(context: FlowContext, start_time: str) -> tuple[St
             f"before calibration: {checkout_err}"
         )
         return _stage_failure(context, FlowStage.CALIBRATE, start_time, failure), None, False
+    if sync_failure := sync_before_calibration(context, start_time):
+        return sync_failure, None, False
     try:
         start_sha = sync_execution_ref(context)
         calibrated_created = prepare_calibrated_branch(context, start_sha)
     except CalibrationSyncError as e:
         failure = f"Calibrate stage failed: {e}"
         return _stage_failure(context, FlowStage.CALIBRATE, start_time, failure, calibrated_head=None), None, False
-    target_branch = context.intent_data.get("target_branch", "main")
-    check_and_resolve_stage_conflicts(
-        context.target_worktree, target_branch=target_branch, stage_name="calibrate", branch=context.execution_branch
-    )
     return None, start_sha, calibrated_created
 
 
@@ -263,15 +240,17 @@ def _publish_and_supersede(
     return True, _supersede_stale_warning(context, evaluated_sha)
 
 
-def _calibrate_execution_branch(context: FlowContext, merged_head_ci: dict[str, Any] | None = None) -> StageResult:
-    """Execute Stage 5: Post-Execution Calibration.
+def _log_calibration_complete(context: FlowContext, calibrated_head: str | None) -> None:
+    if context.calibrated_branch:
+        covering = f" covering execution head {calibrated_head[:12]}" if calibrated_head else ""
+        msg = f"Stage 5 completed: Calibration analysis generated on branch '{context.calibrated_branch}'{covering}."
+        context.log(msg)
+    else:
+        context.log("Stage 5 completed: Calibration analysis generated in working tree (uncommitted).")
 
-    Runs the shared Stage 5 core (``flow.stage5.run_stage5``) on the execution branch: the calibration report, the
-    execution reconciliation and the knowledge/wisdom promotion, each committed on the /calibrated branch. Then
-    publishes the /calibrated branch and checks the final head's CI. ``merged_head_ci`` is the record of the CI Stage 5
-    relied on before calibrating (see :func:`sandbox_executor.flow.review_restart.stage5_merged_head_gate`).
-    Operates unattended: applies conservative calibrated updates automatically.
-    """
+
+def _calibrate_execution_branch(context: FlowContext, merged_head_ci: dict[str, Any] | None = None) -> StageResult:
+    """Execute Stage 5: Post-Execution Calibration on the execution branch and check final-head CI."""
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 5: Post-Execution Calibration")
 
@@ -291,14 +270,26 @@ def _calibrate_execution_branch(context: FlowContext, merged_head_ci: dict[str, 
     exec_status = context.stage_results.get("execute")
     verdict = "success" if exec_status and exec_status.status == StageStatus.SUCCESS else "failure"
 
-    steps = stage5_steps()
-    steps = dataclasses.replace(
-        steps, calibrate=call_with_retries(steps.calibrate, log_fn=context.log, retry_safe=_retry_safe(context))
+    steps, retry_tip = stage5_steps(), [""]
+
+    def _on_head_updated(new_sha: str) -> None:
+        nonlocal start_sha
+        start_sha = retry_tip[0] = new_sha
+
+    retry = call_with_retries(
+        steps.calibrate,
+        log_fn=context.log,
+        retry_safe=_retry_safe(context, _report_rel(context), retry_tip),
+        before_retry=make_calibrate_retry_sync(context, on_head_updated=_on_head_updated),
     )
+    steps = dataclasses.replace(steps, calibrate=retry)
     try:
         outcome = run_stage5(context, steps, verdict)
     except LedgerRewriteError:
         raise
+    except _CalibrateRestartRequired as e:
+        discard_empty_calibrated_branch(context, calibrated_created)
+        return e.result
     except (CalibrationFormatError, CalibrationSelfCheckError) as e:
         return _fail_closed(context, start_time, calibrated_created, e)
     except Exception as e:
@@ -319,13 +310,7 @@ def _calibrate_execution_branch(context: FlowContext, merged_head_ci: dict[str, 
     # A report that never reached origin does not cover the head: only claim it when published or no push was due.
     published = pushed or context.skip_push or not publish_attempted
     calibrated_head = start_sha if published else None
-    if context.calibrated_branch:
-        covering = f" covering execution head {calibrated_head[:12]}" if calibrated_head else ""
-        context.log(
-            f"Stage 5 completed: Calibration analysis generated on branch '{context.calibrated_branch}'{covering}."
-        )
-    else:
-        context.log("Stage 5 completed: Calibration analysis generated in working tree (uncommitted).")
+    _log_calibration_complete(context, calibrated_head)
     blocked = reverified["verdict"] == RED  # deliberate: pending/unmeasured stays SUCCESS, logged in ci_verdict
     result = StageResult(
         stage=FlowStage.CALIBRATE,

@@ -105,7 +105,7 @@ def run_flow(repo: SimpleNamespace) -> StageResult:
     ctx = FlowContext(target_worktree=str(repo.host), execution_branch=EXEC, agent="a", model="m", skip_push=True)
     ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, start_time="t")
     with (
-        patch("sandbox_executor.flow.stages.calibrate.check_and_resolve_stage_conflicts"),
+        patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", return_value={"state": "success"}),
     ):
         return run_calibrate_stage(ctx)

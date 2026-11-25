@@ -124,10 +124,11 @@ Every reader of a canonical ledger reads the logical ledger: the canonical file 
   - executions: `action_id` when present, otherwise
     `(plan_branch, execution_id, entry_type, ledger_revision, created_at)`;
   - any other row: its whole JSON object.
-- **Instant ordering.** Canonical rows keep their file order. Each fragment row is placed after the last canonical row
-  whose `created_at` instant is not later than its own. `Z`, `+00:00` and other offsets compare as UTC instants, and a
-  naive timestamp is UTC. On a tie the canonical row comes first, then the fragment rows in input order. Fragment rows
-  without a parseable `created_at` come last.
+- **Instant ordering.** Canonical rows keep their file order. Each fragment row is placed after the longest canonical
+  prefix whose latest `created_at` instant is not later than its own, so a canonical file written out of order places it
+  before the first canonical row that pushes that running maximum past it. `Z`, `+00:00` and other offsets compare as
+  UTC instants, and a naive timestamp is UTC. On a tie the canonical row comes first, then the fragment rows in input
+  order. Fragment rows without a parseable `created_at` come last.
 - **No fragments, no change.** Without fragment files a reader returns exactly the canonical rows (or the raw canonical
   text for text-based parsers), in file order, skipping blank and malformed lines as before. A path outside
   `holon-knowledge/ledger/` (for example a scratch ledger in `/tmp`) never reads fragments.

@@ -1,9 +1,3 @@
-"""Read-only Stage 3 check for attribution trailers in the execution branch's own commits.
-
-History is never rewritten: the check only runs ``git log`` and reports. ``HOLON_ATTRIBUTION_STRICT`` turns the
-report into a failure.
-"""
-
 import os
 import re
 import sys
@@ -22,14 +16,11 @@ ATTRIBUTION_PATTERN = re.compile(
 
 @dataclass(frozen=True)
 class AttributionFinding:
-    """One attribution trailer: the short sha of the commit and the offending line."""
-
     sha: str
     trailer: str
 
 
 def find_attribution_trailers(base_ref: str, git_runner: Callable[[list[str]], str]) -> list[AttributionFinding]:
-    """Return trailers in the non-merge commits of ``base_ref..HEAD``; any git error or empty range yields none."""
     fmt = f"{_RECORD_SEP}%h{_FIELD_SEP}%B"
     try:
         out = git_runner(["log", "--no-merges", f"--format={fmt}", f"{base_ref}..HEAD"])
@@ -43,7 +34,6 @@ def find_attribution_trailers(base_ref: str, git_runner: Callable[[list[str]], s
 
 
 def format_attribution_report(findings: list[AttributionFinding]) -> str:
-    """Return a human report of the findings, or an empty string when there are none."""
     if not findings:
         return ""
     lines = [f"Attribution trailers found in {len(findings)} line(s) of the execution branch's own commits:"]
@@ -53,12 +43,10 @@ def format_attribution_report(findings: list[AttributionFinding]) -> str:
 
 
 def attribution_is_strict() -> bool:
-    """Return whether ``HOLON_ATTRIBUTION_STRICT`` asks for findings to fail the run rather than warn."""
     return os.getenv(STRICT_ENV, "").lower() in _TRUTHY
 
 
 def check_attribution(base_ref: str | None, git_runner: Callable[[list[str]], str]) -> tuple[bool, str]:
-    """Return ``(ok, report)``: ``ok`` is false only when findings exist and strict mode is on."""
     if not base_ref:
         return True, ""
     report = format_attribution_report(find_attribution_trailers(base_ref, git_runner))
@@ -66,7 +54,6 @@ def check_attribution(base_ref: str | None, git_runner: Callable[[list[str]], st
 
 
 def attribution_allows_publish(base_ref: str | None, git_runner: Callable[[list[str]], str]) -> bool:
-    """Print any attribution report to stderr; false only when strict mode objects."""
     from sandbox_executor.redaction import redact_text
 
     ok, report = check_attribution(base_ref, git_runner)

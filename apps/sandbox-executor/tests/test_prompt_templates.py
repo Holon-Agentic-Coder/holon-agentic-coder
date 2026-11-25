@@ -34,6 +34,9 @@ PLANNER_KEYS = {
 REVIEW_TEMPLATE_PATH = REPO_ROOT / "holon-config" / "prompts" / "review_loop.template.md"
 MARKDOWN_TEMPLATE = REVIEW_TEMPLATE_PATH.read_text(encoding="utf-8")
 REVIEW_TEMPLATES = {"markdown": MARKDOWN_TEMPLATE, "scaffold": REVIEW_LOOP_TEMPLATE}
+CONFLICT_RESOLVER_PROMPT = (REPO_ROOT / "holon-config" / "prompts" / "conflict_resolver.template.md").read_text(
+    encoding="utf-8"
+)
 # The review prompt's line count before the posted-shape rewrite; the prompt must stay shorter.
 FORMER_REVIEW_PROMPT_LINES = 288
 # Lower-case loop invariants every review prompt must state.
@@ -162,8 +165,8 @@ def test_rendered_templates_carry_test_run_rule(render: Callable[[], str]) -> No
 
 @pytest.mark.parametrize(
     "render",
-    [rendered_planner, rendered_executor, lambda: MARKDOWN_TEMPLATE],
-    ids=["planner", "executor", "review_loop"],
+    [rendered_planner, rendered_executor, lambda: MARKDOWN_TEMPLATE, lambda: CONFLICT_RESOLVER_PROMPT],
+    ids=["planner", "executor", "review_loop", "conflict_resolver"],
 )
 def test_templates_require_foreground_test_and_lint_runs(render: Callable[[], str]) -> None:
     text = normalised(render())
@@ -390,3 +393,17 @@ def test_review_loop_template_states_each_operating_rule(rule: str) -> None:
     text = normalised(MARKDOWN_TEMPLATE)
     missing = [phrase for phrase in REVIEW_OPERATING_RULES[rule] if phrase not in text]
     assert missing == [], f"the {rule} rule is missing: {missing}"
+
+
+def test_conflict_resolver_template_carries_the_shared_rules_and_forbids_git_writes() -> None:
+    text = normalised(CONFLICT_RESOLVER_PROMPT)
+    phrases = (
+        *TEST_RUN_RULE_PHRASES,
+        *CODE_PLACEMENT_RULE_PHRASES,
+        "edit the conflicted files listed above",
+        "edit existing test files outside the list",
+    )
+    assert [phrase for phrase in phrases if phrase not in text] == []
+    for command in ("git add", "git commit", "git merge", "git checkout", "git reset", "git stash"):
+        assert f"`{command}`" in text
+    assert "cannot_decide: <reason>" in text

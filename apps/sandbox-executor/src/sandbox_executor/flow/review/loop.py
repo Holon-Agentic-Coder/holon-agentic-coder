@@ -85,6 +85,7 @@ from sandbox_executor.flow.review.resolver import (
     _invoke_resolver_pass,
     _lookup_introducing_action_id,
 )
+from sandbox_executor.flow.review.sync_points import sync_iteration_mergeability
 from sandbox_executor.flow.review.verdict import (
     _loop_status,
     consensus_blockers,
@@ -333,12 +334,12 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         context.log(f"[Review Loop] Starting review iteration {iteration}/{last_label} for target '{review_target}'.")
         iteration_timer = StageTimer("review", iteration_budget_seconds, clock=clock)
 
-        # 1. Mergeability inspection
-        last_mergeability = check_pr_mergeability(
-            repo_dir, review_target, target_branch=target_branch, proxy_env=proxy_env, github=github
+        # 1. Mergeability inspection and pre-iteration target sync
+        mp = functools.partial(check_pr_mergeability, repo_dir, review_target, target_branch, proxy_env, github=github)
+        resolved_target, last_mergeability, is_dirty, sync_err = sync_iteration_mergeability(
+            context, resolved_target, target_branch, iteration, mp
         )
-        is_dirty = bool(last_mergeability.get("is_dirty"))
-        # MISSING_REF means mergeability cannot be evaluated: neither clean nor a conflict.
+        infra_error = infra_error or sync_err
         missing_ref = last_mergeability.get("merge_state_status") == "MISSING_REF"
         mergeability_note = None
         if missing_ref:
@@ -351,7 +352,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
         # 2. Reviewer ensemble execution on the resolved head (a dry run never dispatches reviewers)
         reviewers, ensemble_verdict, container_verdict = [], None, None
-        if not effective_dry_run and resolved_target is not None:
+        if not effective_dry_run and resolved_target is not None and infra_error is None:
             iter_pr_text = _augment_pr_text_with_rejected(pr_text, tuple(rejected_history.values()))
             if run_ensemble_fn is not None or reviewers_sandboxed():
                 reviewers, infra_error = _ensemble_iteration(
@@ -519,7 +520,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             context.log(f"[Review Loop] Consensus blocked at iteration {iteration}: {carried_block}.")
             break
         if ensemble_verdict is ConsensusVerdict.APPROVED:
-            consensus_reached = True
+            consensus_reached, context.review_scope_paths = True, []
             context.log(f"[Review Loop] Consensus approval reached at iteration {iteration}.")
             break
         if iteration_breached:

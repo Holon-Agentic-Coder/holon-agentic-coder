@@ -14,7 +14,9 @@ class RowIdentity:
 
     Fragment syncs (``record=True``) persist the identity of every row they index; every sync of the
     same ``scope`` skips rows whose identity is already persisted, so a fragment row promoted into the
-    canonical ledger after it was indexed is not indexed a second time.
+    canonical ledger after it was indexed is not indexed a second time. Fragment syncs re-read their
+    file from the start, so a fragment deleted on promotion and recreated at the same path is indexed
+    in full; the persisted identities keep the re-read rows from being indexed again.
     """
 
     scope: str
@@ -49,6 +51,7 @@ def drop_known_rows(
     for parsed in parsed_rows:
         key = identity.of(parsed[2])
         if key not in known:
+            known.add(key)
             kept.append(parsed)
             kept_identities.append(key)
     return kept, kept_identities

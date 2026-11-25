@@ -284,7 +284,9 @@ def sync_ledger_incremental(
         if ledger_unchanged(stat, watermark):
             return 0
 
-        parsed_rows, new_byte_offset = read_new_rows(ledger_path, resume_offset(stat, watermark))
+        rereads_whole_file = identity is not None and identity.record
+        offset = 0 if rereads_whole_file else resume_offset(stat, watermark)
+        parsed_rows, new_byte_offset = read_new_rows(ledger_path, offset)
         if skip_row is not None:
             parsed_rows = [parsed for parsed in parsed_rows if not skip_row(parsed[2])]
         identities: list[str] = []

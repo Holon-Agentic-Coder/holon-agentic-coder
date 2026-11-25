@@ -283,3 +283,29 @@ def test_no_new_direct_ledger_reader_appears_outside_the_ledger_package() -> Non
                 readers.add((rel, node.name))
     unlisted = readers - _READ_OPEN_ALLOW_LIST
     assert not unlisted, f"read ledgers through sandbox_executor.ledger.read_merged_rows: {unlisted}"
+
+
+def test_a_row_repeated_within_one_fragment_is_indexed_once(tmp_path: Path) -> None:
+    action = {"entry_type": "action", "action_id": "ACT-1", "action": "Wire cache", "verdict": "success"}
+    canonical = _write(tmp_path, f"{LEDGER_REL}/executions.jsonl", [])
+    _write(tmp_path, f"{LEDGER_REL}/pending/executions/I-1-a.jsonl", [action, action])
+    db = ActionIndexDatabase(db_path=str(tmp_path / "index.db"))
+    ConsultEngine(db=db, auto_sync_ledgers=[str(canonical)]).consult_records(query_text="cache")
+    assert _index_counts(db) == (1, 1, 1)
+
+
+def test_a_fragment_recreated_larger_at_the_same_path_is_indexed_in_full(tmp_path: Path) -> None:
+    def action(action_id: str) -> dict:
+        return {"entry_type": "action", "action_id": action_id, "action": "Wire cache", "verdict": "success"}
+
+    canonical = _write(tmp_path, f"{LEDGER_REL}/executions.jsonl", [])
+    fragment = _write(tmp_path, f"{LEDGER_REL}/pending/executions/I-1-a.jsonl", [action("ACT-1")])
+    db = ActionIndexDatabase(db_path=str(tmp_path / "index.db"))
+    engine = ConsultEngine(db=db, auto_sync_ledgers=[str(canonical)])
+    engine.consult_records(query_text="cache")
+    canonical.write_text(_jsonl([action("ACT-1")]), encoding="utf-8")
+    fragment.unlink()
+    _write(tmp_path, f"{LEDGER_REL}/pending/executions/I-1-a.jsonl", [action("ACT-2"), action("ACT-3")])
+    result = engine.consult_records(query_text="cache")
+    assert sorted(r["action_id"] for r in result.records) == ["ACT-1", "ACT-2", "ACT-3"]
+    assert _index_counts(db) == (3, 3, 3)

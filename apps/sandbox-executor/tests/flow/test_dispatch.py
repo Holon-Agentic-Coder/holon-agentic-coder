@@ -39,6 +39,8 @@ from tests.flow.helpers import (
 from tests.flow.lookup_patch import patch_lookup_sites
 
 _NO_PROXY = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
+# A summary row without the key at all: the container recorded no test result.
+_ABSENT = object()
 
 
 class TestFlowRoleDispatch:
@@ -46,7 +48,9 @@ class TestFlowRoleDispatch:
 
     def test_pipeline_dispatches_intent_plan_execute_with_resolved_runner(self, flow_repos, tmp_path):
         host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin)
+        # The container records a measured pass rate, which Stage 3 carries; a missing or malformed value is reported
+        # as not measured, which the summary-row validation cases below prove without a pipeline run.
+        agents = FakeRoleAgents(tmp_path, origin, recorded_test_pass_rate=0.75)
         ctx = _dispatch_context(host, agents)
 
         with stage4_halts_at_consensus():
@@ -65,8 +69,7 @@ class TestFlowRoleDispatch:
         assert ctx.plan_branch.startswith(ctx.intent_branch.removesuffix("/_") + "/P-")
         assert ctx.execution_branch.startswith(ctx.plan_branch.removesuffix("/_") + "/E-")
         assert results["execute"].payload["changed_files"] == 1
-        # The container recorded no test result, so Stage 3 reports it as not measured rather than passed.
-        assert results["execute"].payload["test_pass_rate"] is None
+        assert results["execute"].payload["test_pass_rate"] == 0.75
 
         # The flow authored nothing: every ledger row on origin came from a (simulated) container.
         exec_rows = _ledger_rows(host, f"origin/{ctx.execution_branch}", "executions.jsonl")
@@ -75,24 +78,15 @@ class TestFlowRoleDispatch:
         assert len(_ledger_rows(host, f"origin/{ctx.execution_branch}", "intents.jsonl")) == 1
         assert _git(host, "status", "--porcelain", "--untracked-files=no") == ""
 
-    @pytest.mark.parametrize(("recorded", "expected"), [(0.75, 0.75), (True, None)], ids=["measured", "malformed"])
-    def test_stage3_carries_container_recorded_test_pass_rate(self, flow_repos, tmp_path, recorded, expected):
-        host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin, recorded_test_pass_rate=recorded)
-        ctx = _dispatch_context(host, agents)
-
-        with stage4_halts_at_consensus():
-            results = PipelineEngine(ctx).run()
-
-        assert results["execute"].status == StageStatus.SUCCESS
-        assert results["execute"].payload["test_pass_rate"] == expected
-
     @pytest.mark.parametrize(
-        ("recorded", "expected"), [(0.75, 0.75), (1, 1.0), (0.0, 0.0), ("1.0", None), (True, None)]
+        ("recorded", "expected"),
+        [(0.75, 0.75), (1, 1.0), (0.0, 0.0), ("1.0", None), (True, None), pytest.param(_ABSENT, None, id="absent")],
     )
     def test_stage3_validates_the_recorded_test_pass_rate_of_the_summary_row(self, recorded, expected):
         # The fields Stage 3 copies from the container's summary row into its payload, as the run above carries them.
-        carried = _recorded_test_fields({"test_pass_rate": recorded})["test_pass_rate"]
+        # A container that recorded no test result is reported as not measured rather than passed.
+        row = {} if recorded is _ABSENT else {"test_pass_rate": recorded}
+        carried = _recorded_test_fields(row)["test_pass_rate"]
         assert (carried, type(carried)) == (expected, type(expected))
 
     def test_stage1_intent_dispatch_carries_resolved_payload(self, flow_repos, tmp_path):

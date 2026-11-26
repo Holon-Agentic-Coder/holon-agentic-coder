@@ -15,7 +15,6 @@ from sandbox_executor.flow import FlowContext, StageStatus, run_execute_stage, r
 from sandbox_executor.flow.stages import plan_decision
 from sandbox_executor.git import run_git
 
-from tests.flow.decomposition_fakes import decomposed_flow
 from tests.flow.helpers import SUB_INTENT_LIST, BudgetRoleAgents, _budget_context, _git, _ledger_rows
 
 PLANS_LEDGER = "holon-knowledge/ledger/plans.jsonl"
@@ -171,8 +170,8 @@ def _plan_rows_on_origin(host: Path, plan_branch: str) -> list[dict[str, Any]]:
 
 
 def _summary_on_origin(host: Path, execution_branch: str) -> dict[str, Any]:
-    # A decomposed execution also records superseding summary rows as its children merge; the first one is the row the
-    # executor wrote when it acted on the plan row's decision.
+    # An execution may also record superseding summary rows; the first one is the row the executor wrote when it acted
+    # on the plan row's decision.
     summaries = [
         row
         for row in _ledger_rows(host, f"refs/remotes/origin/{execution_branch}", "executions.jsonl")
@@ -183,7 +182,11 @@ def _summary_on_origin(host: Path, execution_branch: str) -> dict[str, Any]:
 
 
 class TestStage3ExecutesThePlanRowsDecision:
-    """Goal 8 (a) and (g): the plan row is the single record of the decision, and in-budget plans are unchanged."""
+    """Goal 8 (a) and (g): the plan row is the single record of the decision, and in-budget plans are unchanged.
+
+    The decomposed case runs the default decomposed scenario, so its assertions live in that scenario's single run:
+    test_children.py's ``test_children_nest_under_the_plan_branch_...``.
+    """
 
     # The Stage 3 payload keys of an executed plan before the decision moved to the plan row.
     EXECUTED_PAYLOAD_KEYS: ClassVar[set[str]] = {
@@ -202,39 +205,6 @@ class TestStage3ExecutesThePlanRowsDecision:
         "test_run_error",
         "test_source",
     }
-
-    def test_decomposed_plan_runs_the_children_the_plan_row_records(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")])
-        ctx = _budget_context(host, agents, 5.0)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
-        (plan_row,) = _plan_rows_on_origin(host, str(ctx.plan_branch))
-        parent_execution = {}
-
-        def spy(context, start_time, record, base_payload):
-            parent_execution.update(branch=context.execution_branch, record=record)
-            return run_decomposed(context, start_time, record, base_payload)
-
-        run_decomposed = flow_module._run_decomposed_plan
-        # The children run through their own consensus halt and merge into the plan branch.
-        with (
-            decomposed_flow(origin, tmp_path),
-            patch("sandbox_executor.flow.stages.execute._run_decomposed_plan", side_effect=spy),
-        ):
-            res = run_execute_stage(ctx)
-
-        assert res.status == StageStatus.SUCCESS, res.error
-        assert plan_row["decomposition_decision"] == "decomposed"
-        assert [c["slug"] for c in res.payload["children"]] == [i["slug"] for i in plan_row["sub_intents"]]
-        assert parent_execution["record"]["sub_intents"] == plan_row["sub_intents"]
-        assert parent_execution["record"]["plan_branch"] == ctx.plan_branch
-        summary = _summary_on_origin(host, parent_execution["branch"])
-        assert summary["status"] == "decomposed"
-        assert "sub_intents" not in summary
-        assert summary["plan_decision"]["sub_intent_count"] == len(plan_row["sub_intents"])
-        # The planner's row already recorded the decision, so the flow wrote no plan row.
-        assert len(_plan_rows_on_origin(host, str(ctx.plan_branch))) == 1
 
     def test_executor_disagreeing_with_the_plan_row_fails_without_children(self, flow_repos, tmp_path):
         host, origin = flow_repos

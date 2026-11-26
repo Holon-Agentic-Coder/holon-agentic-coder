@@ -43,6 +43,7 @@ from scripts.macos_relevance_rules import (
         "apps/sandbox-executor/tests/test_macos_relevance_git.py",
         "apps/sandbox-executor/build_all_images.sh",
         "tools/setup.bash",
+        "tools/profile.zsh",
         "holon",
         "Makefile",
         "apps/sandbox-executor/Dockerfile",

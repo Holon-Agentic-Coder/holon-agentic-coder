@@ -232,8 +232,8 @@ path is one of:
 - the gate itself and the CI gates it runs with: `scripts/macos_relevance*.py`, `scripts/ci_bookkeeping_gate.py`,
   `scripts/ci_bookkeeping_api.py`, `scripts/ci_bookkeeping_chain.py`, `scripts/ci_timing_gate.py` and
   `apps/sandbox-executor/tests/test_macos_relevance*.py`;
-- shell: `*.sh`, `*.bash`, `Makefile`, the repository launcher `holon`, and any Python or extension-less file whose
-  first line is a `#!` shebang naming `sh`, `bash` or `zsh`;
+- shell: `*.sh`, `*.bash`, `*.zsh`, `Makefile`, the repository launcher `holon`, and any Python or extension-less file
+  whose first line is a `#!` shebang naming `sh`, `bash` or `zsh`;
 - containers: `Dockerfile`, `Dockerfile.*`, `*.Dockerfile`, `docker-bake.hcl`;
 - launcher and keychain code: everything under `apps/sandbox-executor/src/sandbox_executor/launcher/`,
   `apps/sandbox-executor/src/sandbox_executor/entrypoint/` and `apps/sandbox-executor/entrypoint/`, and any file whose

@@ -309,3 +309,12 @@ def test_a_fragment_recreated_larger_at_the_same_path_is_indexed_in_full(tmp_pat
     result = engine.consult_records(query_text="cache")
     assert sorted(r["action_id"] for r in result.records) == ["ACT-1", "ACT-2", "ACT-3"]
     assert _index_counts(db) == (3, 3, 3)
+
+
+def test_repeated_canonical_rows_without_fragments_are_each_indexed(tmp_path: Path) -> None:
+    action = {"entry_type": "action", "action_id": "ACT-1", "action": "Wire cache", "verdict": "success"}
+    canonical = _write(tmp_path, f"{LEDGER_REL}/executions.jsonl", [action, action])
+    db = ActionIndexDatabase(db_path=str(tmp_path / "index.db"))
+    ConsultEngine(db=db, auto_sync_ledgers=[str(canonical)]).consult_records(query_text="cache")
+    _, fts, successes = _index_counts(db)
+    assert (fts, successes) == (2, 2)

@@ -1,4 +1,4 @@
-"""Report rendering and public surface of ``sandbox_executor.calibration``.
+"""Report rendering, report model, evaluated-SHA staleness and public surface of ``sandbox_executor.calibration``.
 
 The rendering golden (``fixtures/calibration_report_golden.txt``) was produced by the single-module ``calibration.py``
 before it became a package: every later change to the report renderer must keep the output byte-identical.
@@ -6,16 +6,23 @@ before it became a package: every later change to the report renderer must keep 
 
 from __future__ import annotations
 
+import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import sandbox_executor.calibration as calibration
 from sandbox_executor.calibration import (
     ActualMetrics,
+    CalibrationDeltas,
+    CalibrationReport,
     EntropyFactors,
     PredictedMetrics,
     compute_calibration_deltas,
     format_markdown_report,
+    is_calibration_stale,
+    parse_evaluated_commit_sha,
+    verify_calibration_freshness,
 )
 
 GOLDEN = Path(__file__).parent / "fixtures" / "calibration_report_golden.txt"
@@ -124,15 +131,6 @@ def test_format_markdown_report_matches_the_pre_split_golden() -> None:
     assert format_markdown_report(_golden_report_dict()) == GOLDEN.read_text(encoding="utf-8")
 
 
-def test_format_markdown_report_with_none_evaluated_commit_sha() -> None:
-    report_dict = _golden_report_dict()
-    report_dict["evaluated_commit_sha"] = None
-
-    md = format_markdown_report(report_dict)
-
-    assert "- **Evaluated Commit SHA:** N/A\n" in md
-
-
 def test_every_pre_split_public_name_is_still_importable() -> None:
     assert tuple(sorted(PUBLIC_NAMES)) == PUBLIC_NAMES
     missing = [name for name in PUBLIC_NAMES if not hasattr(calibration, name)]
@@ -190,3 +188,143 @@ def test_report_to_dict_keeps_the_pre_split_key_order() -> None:
     assert serialised["predicted"] == PredictedMetrics().to_dict()
     assert serialised["entropy_factors"]["ssa"] == {"predicted": 0.5, "observed": 0.4}
     assert serialised["accuracy_ratings"] is data["accuracy_ratings"]
+
+
+class TestReportFormatting(unittest.TestCase):
+    """Test markdown generation conforming to calibration schema."""
+
+    def test_format_markdown_report_structure(self):
+        pred = PredictedMetrics(p_success=0.98, entropy=1.20, impact=35.0, cost=4.0, learning_value=2.5, ev=31.19)
+        act = ActualMetrics(p_success=1.00, entropy=0.40, impact=35.0, cost=3.5, learning_value=2.5, ev=32.63)
+        deltas, ratings, biases = compute_calibration_deltas(pred, act)
+        ef = EntropyFactors()
+
+        report_dict = {
+            "plan_id": "P-1787051525",
+            "execution_id": "E-1787051559",
+            "intent_branch": "I-1787051498-executor-plan-calibration/_",
+            "agent_id": "antigravity-agent",
+            "model_name": "gemini-3.5-flash",
+            "timestamp": "2026-08-18T11:13:50.000Z",
+            "evaluated_commit_sha": "abcdef1234567890abcdef1234567890abcdef12",
+            "predicted": pred.to_dict(),
+            "actual": act.to_dict(),
+            "deltas": deltas.to_dict(),
+            "entropy_factors": ef.to_dict(),
+            "accuracy_ratings": ratings,
+            "bias_directions": biases,
+        }
+
+        md = format_markdown_report(report_dict)
+        self.assertIn("# Plan Calibration Report: P-1787051525", md)
+        self.assertIn("- **Execution ID:** `E-1787051559`", md)
+        self.assertNotIn("executions/E-", md)
+        self.assertIn("- **Evaluated Commit SHA:** `abcdef1234567890abcdef1234567890abcdef12`", md)
+        self.assertIn("## 1. Executive Calibration Summary", md)
+        self.assertIn("## 2. Mathematical Derivations & Calibration Errors", md)
+        self.assertIn("## 3. Entropy Factor Breakdown", md)
+        self.assertIn("## 4. Calibration Assessment", md)
+        self.assertIn("| **$P(\\text{success})$**", md)
+        self.assertIn("EV_{\\text{pred}}", md)
+        self.assertIn("EV_{\\text{actual}}", md)
+
+
+class TestEvaluatedCommitShaAndStaleness(unittest.TestCase):
+    """Test commit SHA extraction and staleness detection."""
+
+    def test_parse_evaluated_commit_sha(self):
+        sha = "fedcba9876543210fedcba9876543210fedcba98"
+        md_text = f"# Report\n\n- **Evaluated Commit SHA:** `{sha}`\n"
+        parsed = parse_evaluated_commit_sha(md_text)
+        self.assertEqual(parsed, sha)
+
+        # None/missing cases return None
+        na_text = "# Report\n\n- **Evaluated Commit SHA:** N/A\n"
+        self.assertIsNone(parse_evaluated_commit_sha(na_text))
+        empty_text = "# Report\n\n- **Evaluated Commit SHA:** ``\n"
+        self.assertIsNone(parse_evaluated_commit_sha(empty_text))
+
+    def test_calibration_report_evaluated_commit_sha_defaults_to_none(self):
+        pred = PredictedMetrics()
+        act = ActualMetrics()
+        deltas = CalibrationDeltas(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        ef = EntropyFactors()
+        report = CalibrationReport(
+            plan_id="P-1",
+            execution_id="E-1",
+            intent_branch="I-1",
+            plan_branch="P-1",
+            execution_branch="E-1",
+            calibrated_branch="C-1",
+            agent_id="test-agent",
+            agent_version="1.0",
+            model_name="model",
+            timestamp="2026-10-05T00:00:00.000Z",
+            predicted=pred,
+            actual=act,
+            deltas=deltas,
+            entropy_factors=ef,
+            accuracy_ratings={},
+            bias_directions={},
+            markdown_content="",
+        )
+        self.assertIsNone(report.evaluated_commit_sha)
+        self.assertIsNone(report.to_dict()["evaluated_commit_sha"])
+
+    def test_format_markdown_report_with_none_evaluated_commit_sha(self):
+        pred = PredictedMetrics()
+        act = ActualMetrics()
+        deltas, ratings, biases = compute_calibration_deltas(pred, act)
+        ef = EntropyFactors()
+        report_dict = {
+            "plan_id": "P-1",
+            "execution_id": "E-1",
+            "intent_branch": "I-1",
+            "agent_id": "test-agent",
+            "model_name": "model",
+            "timestamp": "2026-10-05T00:00:00.000Z",
+            "evaluated_commit_sha": None,
+            "predicted": pred.to_dict(),
+            "actual": act.to_dict(),
+            "deltas": deltas.to_dict(),
+            "entropy_factors": ef.to_dict(),
+            "accuracy_ratings": ratings,
+            "bias_directions": biases,
+        }
+        md = format_markdown_report(report_dict)
+        self.assertIn("- **Evaluated Commit SHA:** N/A", md)
+
+    def test_is_calibration_stale_detection(self):
+        eval_sha = "1111111111111111111111111111111111111111"
+        fresh_head = "1111111111111111111111111111111111111111"
+        stale_head = "2222222222222222222222222222222222222222"
+
+        report_md = f"# Report\n- **Evaluated Commit SHA:** `{eval_sha}`\n"
+
+        # Case 1: Fresh (SHA matches HEAD)
+        with patch(
+            "subprocess.run",
+            return_value=MagicMock(returncode=0, stdout=f"{fresh_head}\n"),
+        ):
+            is_stale, e_sha, h_sha = is_calibration_stale(report_md)
+            self.assertFalse(is_stale)
+            self.assertEqual(e_sha, eval_sha)
+            self.assertEqual(h_sha, fresh_head)
+            self.assertTrue(verify_calibration_freshness(report_md))
+
+        # Case 2: Stale (HEAD has advanced)
+        with patch(
+            "subprocess.run",
+            return_value=MagicMock(returncode=0, stdout=f"{stale_head}\n"),
+        ):
+            is_stale, e_sha, h_sha = is_calibration_stale(report_md)
+            self.assertTrue(is_stale)
+            self.assertEqual(e_sha, eval_sha)
+            self.assertEqual(h_sha, stale_head)
+            self.assertFalse(verify_calibration_freshness(report_md))
+
+    def test_is_calibration_stale_missing_sha(self):
+        report_md = "# Report without SHA\n- **Evaluation Timestamp:** 2026-10-04\n"
+        is_stale, _e_sha, h_sha = is_calibration_stale(report_md)
+        self.assertTrue(is_stale)
+        self.assertEqual(h_sha, "missing_evaluated_sha")

@@ -10,6 +10,12 @@ from typing import Any
 from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, ActionIndexDatabase
 from sandbox_executor.knowledge.promotion import evaluate_action_promotion
 from sandbox_executor.knowledge.promotion_rules import is_review_chatter_context
+from sandbox_executor.knowledge.stable_envelope import (
+    build_kb_envelope,
+    build_wb_envelope,
+    stable_advisory_text,
+    write_envelope_once,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,28 +70,7 @@ def persist_kb_fact(fact_data: dict[str, Any], kb_dir: str = DEFAULT_KB_DIR) -> 
     out_file = os.path.join(target_dir, f"{kb_id}.json")
     if os.path.exists(out_file):
         return out_file
-
-    os.makedirs(target_dir, exist_ok=True)
-    now_iso = datetime.now(UTC).isoformat()
-
-    envelope = {
-        "kb_id": kb_id,
-        "kb_type": kb_type,
-        "version": str(data.get("version") or "1.0"),
-        "created_ts": str(data.get("created_ts") or now_iso),
-        "updated_ts": now_iso,
-        "created_by": str(data.get("created_by") or "holon-promotion-engine"),
-        "status": str(data.get("status") or "active"),
-        "evidence": data.get("evidence", {}),
-        "tags": data.get("tags", []),
-        "human_approved": bool(data.get("human_approved", False)),
-        "payload": data.get("payload", {}),
-    }
-
-    with open(out_file, "w", encoding="utf-8") as f:
-        json.dump(envelope, f, indent=2)
-
-    return out_file
+    return write_envelope_once(out_file, build_kb_envelope(data, kb_id, kb_type))
 
 
 def persist_wb_rule(rule_data: dict[str, Any], wb_dir: str = DEFAULT_WB_DIR) -> str:
@@ -101,26 +86,7 @@ def persist_wb_rule(rule_data: dict[str, Any], wb_dir: str = DEFAULT_WB_DIR) -> 
     out_file = os.path.join(target_dir, f"{wb_id}.json")
     if os.path.exists(out_file):
         return out_file
-
-    os.makedirs(target_dir, exist_ok=True)
-    now_iso = datetime.now(UTC).isoformat()
-
-    envelope = {
-        "wb_id": wb_id,
-        "wb_type": wb_type,
-        "version": str(data.get("version") or "1.0"),
-        "created_ts": str(data.get("created_ts") or now_iso),
-        "scope": "global",
-        "status": str(data.get("status") or "active"),
-        "ascension_evidence": data.get("ascension_evidence", {}),
-        "human_approved": bool(data.get("human_approved", False)),
-        "payload": data.get("payload", {}),
-    }
-
-    with open(out_file, "w", encoding="utf-8") as f:
-        json.dump(envelope, f, indent=2)
-
-    return out_file
+    return write_envelope_once(out_file, build_wb_envelope(data, wb_id, wb_type))
 
 
 def _already_promoted(conn: Any, sig: Any, kb_dir: str, wb_dir: str) -> bool:
@@ -141,13 +107,13 @@ def _already_promoted(conn: Any, sig: Any, kb_dir: str, wb_dir: str) -> bool:
     return os.path.exists(pattern_path) and os.path.exists(heuristic_path)
 
 
-def _fetch_recent_context_records(cur: Any, context_fingerprint: str) -> list[Any]:
+def _fetch_sample_context_records(cur: Any, context_fingerprint: str) -> list[Any]:
     cur.execute(
         """
         SELECT action, target, category, error_context, record_id
         FROM action_records
         WHERE context_fingerprint = ?
-        ORDER BY created_at DESC LIMIT 5;
+        ORDER BY created_at ASC, record_id ASC LIMIT 5;
         """,
         (context_fingerprint,),
     )
@@ -181,7 +147,7 @@ def _promote_failure_candidate(
         "tags": [records[0]["category"] if records else "failure", "veto"],
         "payload": {
             "name": f"Failure mode in {sample_tgt}",
-            "description": (f"Reproduced failure across {eval_res.failure_count} executions with identical context."),
+            "description": stable_advisory_text("failure", sample_act),
             "action": sample_act,
             "symptoms": [records[0]["error_context"]] if records and records[0]["error_context"] else [],
         },
@@ -191,7 +157,9 @@ def _promote_failure_candidate(
     return item
 
 
-def _build_wisdom_heuristic_item(eval_res: Any, kb_id: str, wb_id: str, sample_tgt: str) -> dict[str, Any]:
+def _build_wisdom_heuristic_item(
+    eval_res: Any, kb_id: str, wb_id: str, sample_tgt: str, sample_act: str
+) -> dict[str, Any]:
     return {
         "wb_id": wb_id,
         "wb_type": "heuristic",
@@ -204,7 +172,7 @@ def _build_wisdom_heuristic_item(eval_res: Any, kb_id: str, wb_id: str, sample_t
         },
         "payload": {
             "name": f"Universal heuristic: {sample_tgt}",
-            "advisory": eval_res.advisory_text,
+            "advisory": stable_advisory_text("heuristic", sample_act),
         },
     }
 
@@ -239,7 +207,7 @@ def _promote_success_candidate(
         "tags": [records[0]["category"] if records else "pattern", "proven"],
         "payload": {
             "name": f"Proven approach for {sample_tgt}",
-            "description": eval_res.advisory_text or f"Succeeded in {eval_res.success_count} executions.",
+            "description": stable_advisory_text("pattern", sample_act),
             "action": sample_act,
         },
     }
@@ -252,7 +220,7 @@ def _promote_success_candidate(
     heuristic_exists = os.path.exists(os.path.join(wb_dir, "heuristics", f"{wb_id}.json"))
     should_ascend_to_wisdom_heuristic = eval_res.success_ladder_state == "proven-success" and not heuristic_exists
     if should_ascend_to_wisdom_heuristic:
-        wb_item = _build_wisdom_heuristic_item(eval_res, item["kb_id"], wb_id, sample_tgt)
+        wb_item = _build_wisdom_heuristic_item(eval_res, item["kb_id"], wb_id, sample_tgt, sample_act)
         if not dry_run:
             wb_item["persisted_path"] = persist_wb_rule(wb_item, wb_dir=wb_dir)
         items.append(wb_item)
@@ -290,7 +258,7 @@ def promote_pending_candidates(
             if _already_promoted(conn, sig, kb_dir, wb_dir):
                 continue
             eval_res = evaluate_action_promotion(sig["signature_hash"], index_db=db)
-            records = _fetch_recent_context_records(cur, sig["context_fingerprint"])
+            records = _fetch_sample_context_records(cur, sig["context_fingerprint"])
 
             chatter = is_review_chatter_context(cur, sig, eval_res.failure_ladder_state)
             failure_item = None if chatter else _promote_failure_candidate(eval_res, records, kb_dir, dry_run)

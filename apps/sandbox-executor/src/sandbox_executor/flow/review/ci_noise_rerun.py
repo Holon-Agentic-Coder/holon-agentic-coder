@@ -96,4 +96,8 @@ def _rerun_noise_once(
         f"{', '.join(last['run_ids'])} once; the diff approval stands."
     )
     _wait_for_rerun_start(inputs, {run.name for run in runs})
-    return inspect_ci(inputs, context)
+    after = inspect_ci(inputs, context)
+    if after.ci_green is False:  # Still red: the ledger records the hand-off to the resolver, as Stage 5 does.
+        _record_routing(context, head, cls, RESOLVE, _failed_runs_from_status(after.ci_status) or runs)
+        context.log(f"[Review Loop] CI noise on {short_sha(head)} still red after its rerun: sent to the resolver.")
+    return after

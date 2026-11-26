@@ -122,6 +122,8 @@ def test_noise_still_red_after_its_rerun_is_returned_red_and_the_budget_is_spent
     inputs = _inputs(ci)
     after = _rerun_noise_once(ctx, inputs, inspect_ci(inputs, ctx), HEAD)
     assert ci.reruns == ["11"] and after.ci_green is False and after.ci_finding
+    assert _last_routing(ctx) == {**(_last_routing(ctx) or {}), "classification": NOISE_TIMING, "decision": RESOLVE}
+    assert any("still red after its rerun" in line for line in ctx.logs)
     again = _rerun_noise_once(ctx, inputs, after, HEAD)
     assert ci.reruns == ["11"] and again is after
     assert _last_routing(ctx) == {**(_last_routing(ctx) or {}), "classification": NOISE_TIMING, "decision": RESOLVE}

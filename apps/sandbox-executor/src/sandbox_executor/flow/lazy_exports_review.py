@@ -12,6 +12,19 @@ REVIEW_LAZY_EXPORTS: dict[str, str] = {
         "merged_head_coverage record_stage5_carry_over"
     ),
     "sandbox_executor.flow.review.approval_coverage": "ApprovalCoverage approval_covers approved_fingerprint_of",
+    "sandbox_executor.flow.review.delta_review": (
+        "addressed_findings begin_review_pass current_decision decide_review_mode delta_state_of end_review_pass "
+        "record_addressed_findings set_current"
+    ),
+    "sandbox_executor.flow.review.delta_review_forwarding": (
+        "discard_forwarded_decision forward_scoped_decision load_forwarded_decision"
+    ),
+    "sandbox_executor.flow.review.delta_review_git": "DeltaRepo",
+    "sandbox_executor.flow.review.delta_review_limits": (
+        "resolve_scoped_review_context_bytes resolve_scoped_review_max_lines"
+    ),
+    "sandbox_executor.flow.review.delta_review_mode": "ReviewMode decision_from_dict",
+    "sandbox_executor.flow.review.delta_review_request": "build_delta_request scoped_review_request",
     "sandbox_executor.flow.review.approval_gates": (
         "DiffGate IterationGates PipelineGate approved diff_gate_holds diff_gate_of gates_summary mark_pipeline_red "
         "pipeline_gate_holds pipeline_gate_of pipeline_state_of record_diff_gate record_iteration_gates "

@@ -48,6 +48,7 @@ from sandbox_executor.entrypoint.review_verification import (
 )
 from sandbox_executor.entrypoint.uv_lock import LockfileMismatchError, check_lockfile, frozen_env
 from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.flow.review.delta_review_forwarding import load_forwarded_decision
 from sandbox_executor.flow.review.loop import run_review_loop
 from sandbox_executor.flow.review.records import _bounded_error_context
 from sandbox_executor.flow.review.verdict import review_loop_approved, review_summary_lines
@@ -122,6 +123,12 @@ def _run_git_cmd(
 
 def _log_stderr(message: str) -> None:
     print(message, file=sys.stderr)
+
+
+def _load_delta_request(context: FlowContext, repo_dir: str, rel_path: str | None) -> None:
+    """Load the host's scoped decision for this pass; an invalid one is ignored, so the pass is full."""
+    if rel_path and not load_forwarded_decision(context, repo_dir, rel_path):
+        _log_stderr(f"Ignoring --delta-request={rel_path}: not a valid scoped decision; reviewing in full.")
 
 
 class ReviewPreparationError(RuntimeError):
@@ -786,6 +793,11 @@ def main() -> None:  # noqa: C901, PLR0915
         default=None,
         help="Comma-separated or repeated repository paths to scope a conflict-resolution re-review.",
     )
+    parser.add_argument(
+        "--delta-request",
+        default=None,
+        help="Worktree-relative JSON file of the host's scoped delta-review decision for this pass.",
+    )
 
     args = parser.parse_args()
     if args.iteration < 1:
@@ -851,6 +863,7 @@ def main() -> None:  # noqa: C901, PLR0915
         mitm_web=args.mitm_web,
         review_scope_paths=review_scope_paths,
     )
+    _load_delta_request(context, repo_dir, args.delta_request)
 
     # A reviewer turn runs in the mounted worktree; the guard names and repairs one that leaves HEAD off the branch.
     with head_guard(

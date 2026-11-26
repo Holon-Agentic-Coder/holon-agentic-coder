@@ -62,8 +62,8 @@ consensus model and post one short consensus review built only from what the rev
    `mergeStateStatus`. On `CONFLICTING` or `DIRTY`, merge `{target_branch}` into the PR head first; never approve a
    conflicting head, and re-earn the approval on the merged head.
 2. **Ledger-only fast resolution**: when only `holon-knowledge/ledger/*.jsonl` files conflict, keep the
-   `{target_branch}` side as the untouched prefix, append the head-only rows after it in `created_at` order, commit the
-   merge, and do not rerun the test suite. Never move or rewrite an existing ledger row.
+   `{target_branch}` rows in place, insert each head-only row at its `created_at` slot among them, commit the merge, and
+   do not rerun the test suite. Never move or rewrite an existing ledger row.
 3. **Authentic data only**: reviews and scorecards use only authentic data from real runs, diffs and CI. Never use
    synthetic, invented or placeholder figures.
 4. **Test command**: run tests only via `uv run pytest`. Run tests and lint in the foreground and wait for the result in

@@ -380,7 +380,7 @@ REVIEW_OPERATING_RULES = {
     ),
     "ledger-only fast resolution": (
         "only `holon-knowledge/ledger/*.jsonl` files conflict",
-        "append the head-only rows after it in `created_at` order",
+        "insert each head-only row at its `created_at` slot among them",
         "do not rerun the test suite",
     ),
     "authentic data": ("only authentic data from real runs, diffs and ci", "never use synthetic"),

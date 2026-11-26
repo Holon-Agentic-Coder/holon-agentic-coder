@@ -181,7 +181,7 @@ def test_ledger_only_conflict_is_merged_and_pushed_but_the_approval_is_not_poste
     assert posting_res["conflict_gate"]["ledger_only"] is True
     assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") != before
     merged_rows = read_merged_rows_at_ref(str(origin), f"refs/heads/{BRANCH}", "executions.jsonl")
-    assert [r["execution_id"] for r in merged_rows[:4]] == ["E-base", "E-main", "E-early", "E-late"]
+    assert [r["execution_id"] for r in merged_rows[:4]] == ["E-base", "E-early", "E-main", "E-late"]
     assert merged_rows[-1]["action"] == "target_sync"
     message = _git(origin, "log", "-1", "--format=%B", f"refs/heads/{BRANCH}")
     assert "sync: merge target" in message
@@ -264,7 +264,7 @@ def test_a_conflict_merge_starts_from_a_clean_tree_with_pending_rows_committed_a
     assert _git(work, "rev-parse", "HEAD") == merged  # The local branch followed the pushed merge.
     assert _git(work, "status", "--porcelain") == ""
     ids = [json.loads(line)["execution_id"] for line in _git(origin, "show", f"{merged}:{LEDGER}").splitlines()]
-    assert ids[:5] == ["E-base", "E-main", "E-early", "E-late", "E-pending"]
+    assert ids[:5] == ["E-base", "E-early", "E-main", "E-late", "E-pending"]
 
 
 def _unpushable_rows_repos(tmp_path: Path) -> tuple[Path, Path]:

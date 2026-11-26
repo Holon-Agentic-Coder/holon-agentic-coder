@@ -112,9 +112,9 @@ def test_run_calibrate_commit_failure_warning_redacts_credentials(calibration_re
     caplog.set_level("WARNING", logger="sandbox_executor.calibration")
     sample_value = "ghp_" + "C" * 36
     with (
-        patch("sandbox_executor.calibration.format_calibration_report"),
+        patch("sandbox_executor.calibration.run.format_calibration_report"),
         patch(
-            "sandbox_executor.calibration.calibration_commit_env",
+            "sandbox_executor.calibration.run.calibration_commit_env",
             side_effect=RuntimeError(f"credential helper {sample_value}"),
         ),
         pytest.raises(CalibrationCommitError) as excinfo,
@@ -146,7 +146,7 @@ def test_run_calibrate_rejected_report_commit_raises(calibration_repo, capsys):
     repo, git = calibration_repo
     _install_rejecting_pre_commit_hook(repo, git)
     with (
-        patch("sandbox_executor.calibration.format_calibration_report"),
+        patch("sandbox_executor.calibration.run.format_calibration_report"),
         pytest.raises(CalibrationCommitError) as excinfo,
     ):
         run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
@@ -171,7 +171,7 @@ def test_cli_calibrate_rejected_report_commit_exits_non_zero(calibration_repo, c
     _install_rejecting_pre_commit_hook(repo, git)
     test_args = ["holon", "calibrate", _EXEC_BRANCH, "--target-worktree", str(repo)]
     with (
-        patch("sandbox_executor.calibration.format_calibration_report"),
+        patch("sandbox_executor.calibration.run.format_calibration_report"),
         patch.object(sys, "argv", test_args),
         pytest.raises(SystemExit) as excinfo,
     ):
@@ -186,7 +186,7 @@ def test_cli_calibrate_rejected_report_commit_exits_non_zero(calibration_repo, c
 
 def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
     repo, git = calibration_repo
-    with patch("sandbox_executor.calibration.format_calibration_report"):
+    with patch("sandbox_executor.calibration.run.format_calibration_report"):
         report = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
 
     ledger_rel = "holon-knowledge/ledger/executions.jsonl"
@@ -240,7 +240,7 @@ def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
 
 def test_run_calibrate_metrics_unaffected_by_act_cal_rows(calibration_repo):
     repo, _ = calibration_repo
-    with patch("sandbox_executor.calibration.format_calibration_report"):
+    with patch("sandbox_executor.calibration.run.format_calibration_report"):
         first = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
         second = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
         third = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
@@ -252,7 +252,7 @@ def test_run_calibrate_skip_commit_appends_nothing(calibration_repo):
     repo, _ = calibration_repo
     ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
     before, merged_before = ledger.read_bytes(), _merged_ledger_text(repo)
-    with patch("sandbox_executor.calibration.format_calibration_report"):
+    with patch("sandbox_executor.calibration.run.format_calibration_report"):
         run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
     assert ledger.read_bytes() == before
     assert _merged_ledger_text(repo) == merged_before
@@ -262,7 +262,7 @@ def test_run_calibrate_ledger_failure_warns_and_still_commits_report(calibration
     repo, git = calibration_repo
     caplog.set_level("WARNING")
     with (
-        patch("sandbox_executor.calibration.format_calibration_report"),
+        patch("sandbox_executor.calibration.run.format_calibration_report"),
         patch("sandbox_executor.ledger.LedgerLock.__enter__", side_effect=PermissionError("ledger denied")),
     ):
         run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
@@ -278,7 +278,7 @@ def test_run_calibrate_ledger_failure_reaches_operator_log_fn(calibration_repo):
     repo, git = calibration_repo
     logs: list[str] = []
     with (
-        patch("sandbox_executor.calibration.format_calibration_report"),
+        patch("sandbox_executor.calibration.run.format_calibration_report"),
         patch("sandbox_executor.ledger.LedgerLock.__enter__", side_effect=PermissionError("ledger denied")),
     ):
         run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False, log_fn=logs.append)
@@ -346,7 +346,7 @@ def test_stage5_dry_run_leaves_executions_ledger_unchanged(calibration_repo):
     repo, _ = calibration_repo
     ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
     before, merged_before = ledger.read_bytes(), _merged_ledger_text(repo)
-    with patch("sandbox_executor.calibration.format_calibration_report"):
+    with patch("sandbox_executor.calibration.run.format_calibration_report"):
         res = run_calibrate_stage(_stage5_context(repo, dry_run=True))
     assert res.status == StageStatus.SUCCESS
     assert ledger.read_bytes() == before
@@ -371,7 +371,7 @@ def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
         return real_run_git(args, *a, **kw)
 
     with (
-        patch("sandbox_executor.calibration.format_calibration_report"),
+        patch("sandbox_executor.calibration.run.format_calibration_report"),
         patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.review.run_git", side_effect=recording_run_git),
     ):
@@ -408,7 +408,7 @@ def test_stage5_commits_reconciliation_row_on_calibrated_branch(calibration_repo
     ledger_rel = "holon-knowledge/ledger/executions.jsonl"
     ctx = _stage5_context(repo, dry_run=False)
     with (
-        patch("sandbox_executor.calibration.format_calibration_report"),
+        patch("sandbox_executor.calibration.run.format_calibration_report"),
         patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
     ):
         res = run_calibrate_stage(ctx)
@@ -634,8 +634,10 @@ class TestFormatCalibrationReport:
 
         with (
             patch("sandbox_executor.calibration_format._run_prettier", side_effect=_FakePrettier(check_returncode=1)),
-            patch("sandbox_executor.calibration.run_git", side_effect=recording_run_git),
-            patch("sandbox_executor.calibration.record_calibration_action") as mock_record,
+            patch("sandbox_executor.calibration.refs.run_git", side_effect=recording_run_git),
+            patch("sandbox_executor.calibration.run.run_git", side_effect=recording_run_git),
+            patch("sandbox_executor.calibration.checkout.run_git", side_effect=recording_run_git),
+            patch("sandbox_executor.calibration.run.record_calibration_action") as mock_record,
             pytest.raises(CalibrationFormatError),
         ):
             run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)

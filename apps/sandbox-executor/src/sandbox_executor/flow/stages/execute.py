@@ -4,7 +4,6 @@ executions.
 
 from __future__ import annotations
 
-import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -33,7 +32,7 @@ from sandbox_executor.flow.git_refs import (
     _track_local_branch,
 )
 from sandbox_executor.flow.host_remote import fetch_base, publish_new_child_branches, remote_error
-from sandbox_executor.flow.partial_head import failed_partial_head
+from sandbox_executor.flow.partial_head import _newest_partial_head
 from sandbox_executor.flow.partial_salvage import salvage_for_resume
 from sandbox_executor.flow.plan_refresh import plan_refresh_stage_failure, refresh_payload
 from sandbox_executor.flow.stages.decomposition import _run_decomposed_plan, _sub_intent_depth_error
@@ -59,16 +58,8 @@ def _resumable_partial_branch(repo_dir: str, branches: set[str]) -> str | None:
     ``branches`` is the pre-dispatch snapshot of execution branches under the plan; each is read at
     ``refs/remotes/origin/<branch>``. The executor re-reads and verifies the partial head itself.
     """
-
-    def seq(branch: str) -> int:
-        match = re.search(r"/E-(\d+)-[^/]+/_$", branch)
-        return int(match.group(1)) if match else -1
-
-    for branch in sorted(branches, key=seq, reverse=True):
-        exec_id = branch.removesuffix("/_").rsplit("/", 1)[-1]
-        if failed_partial_head(repo_dir, f"refs/remotes/origin/{branch}", exec_id):
-            return branch
-    return None
+    newest = _newest_partial_head(repo_dir, branches)
+    return newest[0] if newest else None
 
 
 def _utc_now() -> str:

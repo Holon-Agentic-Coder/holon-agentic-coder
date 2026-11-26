@@ -30,13 +30,6 @@ def _git(repo: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout
 
 
-def _write(repo: Path, files: dict[str, str]) -> None:
-    for rel, text in files.items():
-        target = repo / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
-
-
 def _commit(repo: Path, message: str) -> None:
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", message)
@@ -48,7 +41,8 @@ def _make_repo(tmp_path: Path, overrides: dict[str, str] | None = None) -> Path:
     _git(repo, "init", "-b", "main", "-q")
     # One commit per file, so the setup itself adds no co-change pairs.
     for rel, text in {**_LAYOUT, **(overrides or {})}.items():
-        _write(repo, {rel: text})
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text, encoding="utf-8")
         _commit(repo, f"add {rel}")
     return repo
 
@@ -63,12 +57,9 @@ def _touch_together(repo: Path, paths: list[str], times: int) -> None:
         _commit(repo, f"co-change {round_number}")
 
 
-def _intent(scope: list[str], criteria: list[str] | None = None) -> DraftIntent:
-    return DraftIntent(scope=[ScopeEntry.parse(entry) for entry in scope], acceptance_criteria=criteria or [])
-
-
 def _check(repo: Path, scope: list[str], criteria: list[str] | None = None) -> IntentScopeReport:
-    return check_intent_scope(_intent(scope, criteria), str(repo))
+    intent = DraftIntent(scope=[ScopeEntry.parse(entry) for entry in scope], acceptance_criteria=criteria or [])
+    return check_intent_scope(intent, str(repo))
 
 
 def _proposed(report: IntentScopeReport) -> dict[str, str]:
@@ -112,17 +103,13 @@ def test_package_init_that_does_not_import_the_module_is_not_proposed(tmp_path: 
     assert _proposed(_check(repo, ["src/pkg/core.py", "tests/test_core.py"])) == {}
 
 
-def test_partner_changed_together_in_three_commits_is_proposed(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("times", "expected"), [(3, {"README.md": "co-changed 3x with src/pkg/util.py"}), (2, {})], ids=["three", "two"]
+)
+def test_partner_is_proposed_from_three_shared_commits(tmp_path: Path, times: int, expected: dict[str, str]) -> None:
     repo = _make_repo(tmp_path)
-    _touch_together(repo, ["src/pkg/util.py", "README.md"], times=3)
-    report = _check(repo, ["src/pkg/util.py"])
-    assert _proposed(report) == {"README.md": "co-changed 3x with src/pkg/util.py"}
-
-
-def test_partner_changed_together_in_two_commits_is_not_proposed(tmp_path: Path) -> None:
-    repo = _make_repo(tmp_path)
-    _touch_together(repo, ["src/pkg/util.py", "README.md"], times=2)
-    assert _proposed(_check(repo, ["src/pkg/util.py"])) == {}
+    _touch_together(repo, ["src/pkg/util.py", "README.md"], times=times)
+    assert _proposed(_check(repo, ["src/pkg/util.py"])) == expected
 
 
 def test_bookkeeping_partner_is_never_proposed(tmp_path: Path) -> None:

@@ -11,6 +11,7 @@ from sandbox_executor.flow.github.ci_wait import CiWaitPolicy
 from sandbox_executor.flow.review.ci_failure_routing import DEFECT, NOISE_TIMING, RESOLVE, _last_routing, _reruns_spent
 from sandbox_executor.flow.review.ci_inspection import CiInspectionInputs, inspect_ci
 from sandbox_executor.flow.review.ci_noise_rerun import _rerun_noise_once
+from sandbox_executor.flow.review.ci_outcome import describe_ci_outcome
 
 HEAD = "a" * 40
 LINK = "https://github.com/o/r/actions/runs/11/job/5"
@@ -155,6 +156,30 @@ def test_a_failed_dispatch_falls_back_to_the_resolver(tmp_path: Path) -> None:
     assert _rerun_noise_once(ctx, inputs, first, HEAD) is first
     assert (_last_routing(ctx) or {}).get("decision") == RESOLVE
     assert any("could not be dispatched" in line for line in ctx.logs)
+
+
+def test_a_partial_dispatch_failure_records_no_inspected_rerun(tmp_path: Path) -> None:
+    ctx, ci = _ctx(tmp_path), _Ci(GREEN)
+    second = {
+        "name": "lint",
+        "bucket": "fail",
+        "state": "FAILURE",
+        "link": "https://github.com/o/r/actions/runs/12/job/6",
+    }
+    two_red = {**RED, "failed": 2, "total": 2, "checks": [*RED["checks"], second]}
+    dispatched: list[str] = []
+
+    def rerun(run_id: str) -> bool:
+        dispatched.append(run_id)
+        return run_id == "11"
+
+    inputs = _inputs(ci, probe_ci=lambda: dict(two_red), rerun_failed=rerun)
+    first = inspect_ci(inputs, ctx)
+    assert _rerun_noise_once(ctx, inputs, first, HEAD) is first
+    assert dispatched == ["11", "12"] and _reruns_spent(ctx, HEAD, "11") == 1
+    last = _last_routing(ctx) or {}
+    assert last.get("decision") == RESOLVE and last.get("reruns") == 0
+    assert "still red after" not in describe_ci_outcome(two_red, None, False, routing=last)
 
 
 def test_the_rerun_start_wait_is_credited_to_the_iteration_timer(tmp_path: Path) -> None:

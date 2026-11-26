@@ -49,17 +49,15 @@ def _dispatch(inputs: CiInspectionInputs, run_id: str, whole_run: bool) -> bool:
         return False
 
 
-def _dispatch_all(context: FlowContext, inputs: CiInspectionInputs, head: str, runs: Sequence[_FailedRun]) -> bool:
-    """Dispatch one rerun per run id and count it against the budget; False when any dispatch failed."""
+def _dispatch_all(inputs: CiInspectionInputs, runs: Sequence[_FailedRun]) -> tuple[bool, list[str]]:
+    """Dispatch one rerun per run id: whether every dispatch succeeded, and the run ids that were dispatched."""
     dispatched = []
     for run_id in dict.fromkeys(run.run_id for run in runs if run.run_id):
         whole = all(run.conclusion in CANCELLED_CONCLUSIONS for run in runs if run.run_id == run_id)
         if not _dispatch(inputs, run_id, whole):
-            _note_rerun(context, head, dispatched)
-            return False
+            return False, dispatched
         dispatched.append(run_id)
-    _note_rerun(context, head, dispatched)
-    return True
+    return True, dispatched
 
 
 def _wait_for_rerun_start(inputs: CiInspectionInputs, names: set[str]) -> None:
@@ -83,12 +81,18 @@ def _rerun_noise_once(
     if not head or not runs:
         return ci
     cls = _classify_failure(runs, inputs.detail_lookup or gh_detail_lookup(inputs.repo_dir, inputs.proxy_env))
-    decision = _route_failure(context, head, cls, runs)
-    if decision == RERUN and not _dispatch_all(context, inputs, head, runs):
-        context.log(f"[Review Loop] CI noise rerun on {short_sha(head)} could not be dispatched; resolving instead.")
-        decision = RESOLVE
+    decision, dispatched = _route_failure(context, head, cls, runs), []
+    if decision == RERUN:
+        ok, dispatched = _dispatch_all(inputs, runs)
+        if ok:
+            _note_rerun(context, head, dispatched)
+        else:
+            context.log(f"[Review Loop] CI noise rerun on {short_sha(head)} could not be dispatched; resolving.")
+            decision = RESOLVE
     last = _record_routing(context, head, cls, decision, runs)
     if decision != RERUN:
+        # A partial dispatch is counted only after recording: ``reruns`` names only reruns that were inspected.
+        _note_rerun(context, head, dispatched)
         context.log(f"[Review Loop] CI failure on {short_sha(head)} classified {cls}: sent to the resolver.")
         return ci
     context.log(

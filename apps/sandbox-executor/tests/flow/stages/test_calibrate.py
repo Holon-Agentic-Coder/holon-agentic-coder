@@ -320,8 +320,8 @@ class TestStage5PromotedArtifactsCommit:
 
 def test_stage5_forwards_the_context_review_accounting_to_the_calibrate_step(tmp_path):
     """The calibrate step receives the counters of the flow's context; a context without them passes None."""
-    from sandbox_executor.flow.review.review_accounting import _count
     from sandbox_executor.flow.stage5 import Stage5Steps, run_stage5
+    from sandbox_executor.review_accounting import count_accounting
 
     seen: list[dict] = []
 
@@ -331,7 +331,7 @@ def test_stage5_forwards_the_context_review_accounting_to_the_calibrate_step(tmp
 
     steps = Stage5Steps(calibrate, MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock())
     counted = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-a/E-3-a/_")
-    _count(counted, "scoped_reviews")
+    count_accounting(counted, "scoped_reviews")
     run_stage5(counted, steps, None, report_only=True)
     run_stage5(FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-a/E-3-a/_"), steps, None, True)
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
 
 import pytest
 from sandbox_executor.calibration_review_churn import review_churn_report_lines
@@ -54,3 +56,13 @@ def test_partial_accounting_is_marked():
     lines = review_churn_report_lines({"review_accounting": {**ACCOUNTING, "partial": True}})
     assert lines[2] == "- **Review churn:** partial: counting began after a resume"
     assert "- **Full reviews:** `2`" in lines
+
+
+def test_the_calibration_report_imports_no_flow_module():
+    """``holon calibrate`` reads the accounting record without loading the flow package (no import cycle)."""
+    code = (
+        "import sys, sandbox_executor.calibration; "
+        "print(any(m.startswith('sandbox_executor.flow') for m in sys.modules))"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
+    assert out.strip() == "False"

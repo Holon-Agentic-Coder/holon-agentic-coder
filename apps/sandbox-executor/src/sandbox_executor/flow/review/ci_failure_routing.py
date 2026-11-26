@@ -25,8 +25,8 @@ from sandbox_executor.flow.github.ci_failure_detail import DetailLookup, parse_r
 from sandbox_executor.flow.github.ci_head_checks import CANCELLED_CONCLUSIONS, PASSING_CONCLUSIONS, PENDING_STATUSES
 from sandbox_executor.flow.review.approval_gates import RED, pipeline_gate_of, record_pipeline_gate
 from sandbox_executor.flow.review.ci_timing_finding import MAX_JOBS_DESCRIBED
-from sandbox_executor.flow.review.review_accounting import _count
 from sandbox_executor.ledger import generate_action_id
+from sandbox_executor.review_accounting import count_accounting
 
 NOISE_TIMING, NOISE_INFRA, NOISE_CANCELLED, DEFECT = "noise_timing", "noise_infra", "noise_cancelled", "defect"
 NOISE_CLASSES = frozenset({NOISE_TIMING, NOISE_INFRA, NOISE_CANCELLED})
@@ -120,7 +120,7 @@ def _note_rerun(context: FlowContext, head: str, run_ids: Iterable[str]) -> None
     spent = reruns.setdefault(head, {})
     for run_id in run_ids:
         spent[run_id] = _reruns_spent(context, head, run_id) + 1
-        _count(context, "pipeline_reruns", event=f"rerun:{head}:{run_id}")
+        count_accounting(context, "pipeline_reruns", event=f"rerun:{head}:{run_id}")
 
 
 def _route_failure(context: FlowContext, head: str, cls: str, runs: Sequence[_FailedRun]) -> str:
@@ -172,7 +172,7 @@ def _record_routing(
     last = {"head_sha": head, "classification": cls, "decision": decision, "run_ids": run_ids, "reruns": spent}
     _routing_state(context)["last"] = last
     if decision == RERUN and cls in NOISE_CLASSES:
-        _count(context, "non_defect_churn", "ci_noise", event=f"noise:{head}:{','.join(sorted(run_ids))}")
+        count_accounting(context, "non_defect_churn", "ci_noise", event=f"noise:{head}:{','.join(sorted(run_ids))}")
     _apply_last_classification(context, head)
     ledger_path = os.path.join(context.target_worktree, "holon-knowledge", "ledger", "executions.jsonl")
     row = record_review_action(context, ledger_path, _routing_row(context, last))

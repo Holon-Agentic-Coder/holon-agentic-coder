@@ -43,7 +43,7 @@ class CalibrateReview(TypedDict, total=False):
 
     ``approved_head`` is the commit the review approval covered (``approved_head_of``); None (the CLI) skips the
     self-check's approved-head condition. ``review_accounting`` is the flow's review accounting
-    (``flow.review.review_accounting``), rendered in the report's "Review Churn" section; None (the CLI, a legacy flow)
+    (:mod:`sandbox_executor.review_accounting`), rendered in the "Review Churn" section; None (the CLI, a legacy flow)
     renders "not recorded".
     """
 

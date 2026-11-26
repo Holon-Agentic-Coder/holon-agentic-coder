@@ -10,7 +10,7 @@ from sandbox_executor.flow import FlowContext
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy
 from sandbox_executor.flow.review import ci_inspection
 from sandbox_executor.flow.review.ci_inspection import CiInspectionInputs, inspect_ci
-from sandbox_executor.flow.review.review_accounting import _accounting_of
+from sandbox_executor.review_accounting import accounting_of
 
 GREEN = {"all_passed": True, "passed": 1, "failed": 0, "pending": 0, "total": 1, "source": "github_cli"}
 RED = {"all_passed": False, "passed": 0, "failed": 1, "pending": 0, "total": 1, "source": "github_cli"}
@@ -122,11 +122,11 @@ def test_a_settled_pipeline_counts_one_run_per_head_and_run_id(tmp_path):
     inspect_ci(_inputs(red, reviewer_objected=True), context)
     inspect_ci(_inputs(red), context)  # The same run inspected again (a resume or a rerun) is no new run.
     inspect_ci(_inputs(GREEN, is_dirty=True), context)  # No run id: counted by head and settled state.
-    assert _accounting_of(context)["pipeline_runs"] == 2
+    assert accounting_of(context)["pipeline_runs"] == 2
 
 
 def test_a_pending_or_local_status_is_no_pipeline_run(tmp_path):
     context = _ctx(tmp_path)
     inspect_ci(_inputs(PENDING, reviewer_objected=True), context)
     inspect_ci(_inputs({**GREEN, "source": "local_tests"}, is_dirty=True), context)
-    assert _accounting_of(context) is None
+    assert accounting_of(context) is None

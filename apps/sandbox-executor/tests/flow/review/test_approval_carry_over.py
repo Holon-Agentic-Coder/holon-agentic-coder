@@ -22,8 +22,8 @@ from sandbox_executor.flow.review.approval_carry_over import (
 )
 from sandbox_executor.flow.review.approval_coverage import BOOKKEEPING, UNKNOWN_CHANGE, approval_covers
 from sandbox_executor.flow.review.approval_fingerprint import fingerprints_match, is_bookkeeping_only_move
-from sandbox_executor.flow.review.review_accounting import _accounting_of
 from sandbox_executor.ledger import ActionRecord
+from sandbox_executor.review_accounting import accounting_of
 from sandbox_executor.review_report import _mergeability_word
 
 from tests.flow.helpers import _git
@@ -172,7 +172,7 @@ def test_a_bookkeeping_move_counts_bookkeeping_churn_once_per_head(approved_repo
     context = _covering_context(repo, target_commit=approved)
     approval_covers(context, str(repo), head)
     approval_covers(context, str(repo), head)
-    accounting = _accounting_of(context)
+    accounting = accounting_of(context)
     assert accounting is not None and accounting["non_defect_churn"]["bookkeeping"] == 1
     assert accounting["approval_carry_overs"] == 0
 
@@ -236,6 +236,6 @@ def test_a_carry_over_counts_once_across_stage4_and_stage5(merged_fingerprint, m
     context = _covering_context(tmp_path, target_commit=APPROVED)
     assert carry_approval_over(context, str(tmp_path / "executions.jsonl"), _consensus(), "feature", MERGED)
     assert record_stage5_carry_over(context, "main", MERGED) == CARRY
-    accounting = _accounting_of(context)
+    accounting = accounting_of(context)
     assert accounting is not None
     assert (accounting["approval_carry_overs"], accounting["non_defect_churn"]["target_merge"]) == (1, 1)

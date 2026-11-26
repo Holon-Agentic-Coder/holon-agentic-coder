@@ -177,13 +177,13 @@ def _approved_stage(ctx: FlowContext, loop_res: dict[str, Any]) -> StageResult:
 def test_the_review_stage_reports_the_counted_review_accounting(tmp_path):
     """Counts from the context reach the Stage 4 log, the payload and the flow summary lines."""
     from sandbox_executor.flow import review_summary_lines
-    from sandbox_executor.flow.review.review_accounting import _count, _count_carry_over
+    from sandbox_executor.review_accounting import count_accounting, count_carry_over
 
     ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-a-b/E-3-a-b/_", token_reduce=False)
     for key in ("full_reviews", "scoped_reviews", "scoped_reviews", "pipeline_runs", "pipeline_reruns"):
-        _count(ctx, key)
-    _count(ctx, "non_defect_churn", "ci_noise")
-    _count_carry_over(ctx, "a" * 40, "b" * 40)
+        count_accounting(ctx, key)
+    count_accounting(ctx, "non_defect_churn", "ci_noise")
+    count_carry_over(ctx, "a" * 40, "b" * 40)
     loop_res = {
         "consensus": {"approved": True, "status": "approved"},
         "mergeability": {"is_dirty": False},

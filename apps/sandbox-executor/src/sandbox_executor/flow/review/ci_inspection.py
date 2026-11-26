@@ -14,7 +14,7 @@ from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, CiWaitResult, set
 from sandbox_executor.flow.review.ci_evidence import _apply_guarded_test_evidence
 from sandbox_executor.flow.review.ci_outcome import gate_ci_flags
 from sandbox_executor.flow.review.delta_review import current_decision
-from sandbox_executor.flow.review.review_accounting import _count
+from sandbox_executor.review_accounting import count_accounting
 
 
 @dataclass(frozen=True)
@@ -81,7 +81,7 @@ def _count_settled_pipeline(context: FlowContext, review_target: str, ci_status:
     links = (check.get("link") for check in ci_status.get("checks") or [] if isinstance(check, dict))
     run_ids = sorted({run_id for run_id in map(parse_run_id, links) if run_id})
     runs = ",".join(run_ids) or ("passed" if ci_status.get("all_passed") else "failed")
-    _count(context, "pipeline_runs", event=f"run:{current_decision(context).head or review_target}:{runs}")
+    count_accounting(context, "pipeline_runs", event=f"run:{current_decision(context).head or review_target}:{runs}")
 
 
 def _kept_wait(ci_wait: CiWaitResult | None, ci_status: dict[str, Any]) -> CiWaitResult | None:

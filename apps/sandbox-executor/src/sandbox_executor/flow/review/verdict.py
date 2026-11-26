@@ -12,7 +12,7 @@ from typing import Any
 
 from sandbox_executor.flow.review.adjudication import Adjudication
 from sandbox_executor.flow.review.records import _reviewer_summary, render_reviewer_summary_line
-from sandbox_executor.flow.review.review_accounting import _accounting_of, _render_accounting_lines
+from sandbox_executor.review_accounting import accounting_of, render_accounting_lines
 from sandbox_executor.review_ensemble import (
     ConsensusVerdict,
     ReviewerResult,
@@ -135,7 +135,7 @@ def review_summary_lines(loop_res: dict[str, Any]) -> list[str]:
     not_approved = not_approved_verdicts(reviewers)
     if not_approved:
         lines.append(f"  Not approved   : {'; '.join(not_approved)}")
-    lines.extend(_render_accounting_lines(_accounting_of(loop_res)))
+    lines.extend(render_accounting_lines(accounting_of(loop_res)))
     review_data = loop_res.get("review_data") or {}
     roles = (
         ", ".join(f"{r.get('role')} ({r.get('verdict')})" for r in review_data.get("roles") or []) or "none reported"

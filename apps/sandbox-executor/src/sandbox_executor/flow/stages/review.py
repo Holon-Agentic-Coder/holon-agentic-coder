@@ -19,7 +19,6 @@ from sandbox_executor.flow.review.ledger_commit import _close_review_stage
 from sandbox_executor.flow.review.loop import _reviewers_objected, _run_engine_review_loop
 from sandbox_executor.flow.review.proxy_env import review_proxy_env
 from sandbox_executor.flow.review.records import render_reviewer_summary_line
-from sandbox_executor.flow.review.review_accounting import _accounting_of, _render_accounting_lines
 from sandbox_executor.flow.review.verdict import not_approved_verdicts, render_final_verdicts
 from sandbox_executor.flow.stages.review_outcome import ReviewOutcomeContext, build_review_stage_outcome
 from sandbox_executor.flow.target_sync_hooks import at_stage_boundary
@@ -29,6 +28,7 @@ from sandbox_executor.git import run_git
 from sandbox_executor.git_revisions import qualify_branch_revision, revision_args
 from sandbox_executor.knowledge import ConsultEngine
 from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.review_accounting import accounting_of, render_accounting_lines
 from sandbox_executor.review_ensemble import ConsensusVerdict
 from sandbox_executor.worktree_head import ReattachStatus, reattach_branch, restore_branch
 
@@ -157,7 +157,7 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
     # One adapter for the whole stage: every PR, CI, mergeability and posting call of the loop goes through it.
     github = GitHubAdapter(context.target_worktree, review_proxy_env(context))
     loop_res = _run_engine_review_loop(context, github=github)
-    for line in _render_accounting_lines(_accounting_of(loop_res)):
+    for line in render_accounting_lines(accounting_of(loop_res)):
         context.log(f"[Review Loop]{line}")
     # The payload reports the engine's configured budget, not the remaining passes of this run.
     consensus_info = {**loop_res.get("consensus", {}), "max_review_iterations": context.max_review_iterations}

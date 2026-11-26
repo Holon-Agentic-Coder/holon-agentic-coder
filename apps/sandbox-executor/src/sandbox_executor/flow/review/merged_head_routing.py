@@ -50,6 +50,7 @@ from sandbox_executor.flow.review.merged_head_gate import (
     format_merged_head_ci,
     gate_merged_head_ci,
 )
+from sandbox_executor.review_accounting import restart_review_passes
 from sandbox_executor.review_report import ci_failure_finding
 
 Decision = tuple[StageResult | None, dict[str, Any]]
@@ -121,8 +122,8 @@ def _scoped_restart(context: FlowContext, start: str, record: dict[str, Any], cl
     head, runs = str(record["head_sha"]), _failed_runs_from_record(record)
     mark_pipeline_red(context, head, failed_runs_of(record))
     routing = _record_routing(context, head, cls, RESOLVE, runs)
+    restart_review_passes(context)
     context.carried_review_findings = serialize_open([_ci_finding(cls, runs, seams, context)], {})
-    context.review_iterations_done = 0
     defect = {"head_sha": head, "classification": cls, "action_id": routing.get("action_id"), "merged_head_ci": record}
     review = context.stage_results.get(FlowStage.REVIEW.value)
     if review is not None:

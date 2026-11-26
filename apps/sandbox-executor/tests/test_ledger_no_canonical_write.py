@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import ast
 import json
+import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock
 
 from sandbox_executor.entrypoint.sync_conflict import record_sync_failure
-from sandbox_executor.knowledge import append_action_event, reconcile_records
+from sandbox_executor.knowledge import ActionIndexDatabase, append_action_event, reconcile_records
 from sandbox_executor.ledger import (
     ActionRecord,
     SummaryRecord,
@@ -148,3 +149,16 @@ def test_reconcile_scans_a_fragment_only_ledger(tmp_path: Path) -> None:
     result = reconcile_records(ledger_path=str(executions), db_path=str(tmp_path / "idx.db"))
 
     assert result["total_scanned"] == 1
+
+
+def test_append_action_event_indexes_its_fragment_row_without_consult(tmp_path: Path) -> None:
+    _seed_repo(tmp_path)
+    executions = tmp_path / LEDGER_REL / "executions.jsonl"
+    db_path = tmp_path / "idx.db"
+    ActionIndexDatabase(db_path=str(db_path))
+
+    append_action_event({"action_id": "ACT-9", "action": "x", "verdict": "success"}, str(executions), str(db_path))
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT verdict FROM action_records WHERE action_id = 'ACT-9'").fetchall()
+    assert rows == [("success",)]

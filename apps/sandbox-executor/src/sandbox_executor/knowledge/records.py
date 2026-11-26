@@ -7,7 +7,8 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, ClassVar
 
-from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, sync_ledger_incremental
+from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH
+from sandbox_executor.knowledge.ledger_fragment_sync import sync_ledger_and_fragments
 from sandbox_executor.ledger import atomic_ledger_append, generate_action_id, read_merged_text
 from sandbox_executor.ledger.order import utc_now_z
 from sandbox_executor.redaction import redact_credential_shapes
@@ -122,13 +123,6 @@ class CredentialRedactor:
         return data
 
 
-def _sync_index_best_effort(target_db: str, ledger_path: str) -> None:
-    try:
-        sync_ledger_incremental(target_db, ledger_path)
-    except Exception as e:
-        logger.debug("Failed incremental sync during append_action_event: %s", e)
-
-
 def append_action_event(
     record: dict[str, Any],
     ledger_path: str = DEFAULT_ACTIONS_LEDGER,
@@ -154,7 +148,7 @@ def append_action_event(
         f.write(json.dumps(redacted_rec) + "\n")
 
     target_db = project_db_path or db_path or DEFAULT_PROJECT_DB_PATH
-    _sync_index_best_effort(target_db, ledger_path)
+    sync_ledger_and_fragments(target_db, ledger_path)
 
     return redacted_rec
 

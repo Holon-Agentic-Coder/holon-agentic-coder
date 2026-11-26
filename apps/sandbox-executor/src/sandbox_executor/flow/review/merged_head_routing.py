@@ -6,7 +6,7 @@ carries ``withdrawal_reason``) or the diff gate does not hold on the merged head
 ``passed`` lets Stage 5 calibrate. A defect, or noise still red, restarts Stage 4 scoped: the CI finding is carried to
 the resolver, the diff approval stands, and the delta-review anchor moves to the merged head so the fix delta (no merge
 commit) is reviewed scoped. A scoped restart whose Stage 4 does not approve withdraws the consensus then. Anything
-unsettled still fails Stage 5 closed.
+unsettled still fails Stage 5 closed. Resuming a restart asked for before a checkpoint is :mod:`.merged_head_resume`.
 """
 
 from __future__ import annotations
@@ -43,18 +43,12 @@ from sandbox_executor.flow.review.ci_failure_routing import (
     _route_failure,
 )
 from sandbox_executor.flow.review.ci_timing_finding import timing_gate_finding
-from sandbox_executor.flow.review.consensus_withdrawal import (
-    WithdrawalSeams,
-    failed_runs_of,
-    withdraw_consensus,
-    withdrawn_consensus_of,
-)
+from sandbox_executor.flow.review.consensus_withdrawal import failed_runs_of, withdraw_consensus
 from sandbox_executor.flow.review.merged_head_gate import (
     MergedHeadSeams,
     _wait_for_rerun_start,
     format_merged_head_ci,
     gate_merged_head_ci,
-    skipped_record,
 )
 from sandbox_executor.review_report import ci_failure_finding
 
@@ -85,26 +79,27 @@ def _withdraw(context: FlowContext, start: str, record: dict[str, Any], seams: M
 
 def _rerun(
     context: FlowContext, head: str, cls: str, runs: Sequence[_FailedRun], seams: MergedHeadSeams
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[str]]:
     """Rerun each failed run once, record the routing as Stage 4 does and poll the head again.
 
-    The routing is recorded after the rerun is counted, so ``reruns`` means the same in both stages;
-    a failed dispatch keeps the head failed, and its scoped restart records the resolve routing.
+    The routing is recorded after the rerun is counted, so ``reruns`` means the same in both stages.
+    A failed dispatch keeps the head failed and returns the run ids it did dispatch, uncounted: its
+    scoped restart records the resolve routing first, as Stage 4 does, since those reruns were never inspected.
     """
     repo_dir = context.target_worktree
     dispatch = seams.rerun_dispatcher or gh_run_rerunner(repo_dir, seams.proxy_env)
     dispatched: list[str] = []
     for run_id in dict.fromkeys(run.run_id for run in runs if run.run_id):
         if not dispatch(run_id):
-            _note_rerun(context, head, dispatched)
-            return {"state": FAILED, "head_sha": head, "reason": f"the rerun of run {run_id} could not be dispatched"}
+            reason = f"the rerun of run {run_id} could not be dispatched"
+            return {"state": FAILED, "head_sha": head, "reason": reason}, dispatched
         dispatched.append(run_id)
     _note_rerun(context, head, dispatched)
     _record_routing(context, head, cls, RERUN, runs)
     _wait_for_rerun_start(context, head, {run.name for run in runs}, seams)
     retried = gate_merged_head_ci(context, repo_dir, head, seams)
     context.log(f"After the noise rerun: {format_merged_head_ci(retried)}")
-    return retried
+    return retried, []
 
 
 def _ci_finding(cls: str, runs: Sequence[_FailedRun], seams: MergedHeadSeams, context: FlowContext) -> Any:
@@ -159,41 +154,13 @@ def _route_merged_head_failure(
     context.log(
         f"CI noise ({CLASS_LABELS[cls]}) on merged head {short_sha(head)}: rerunning once; the diff approval stands."
     )
-    retried = {**record, **_rerun(context, head, cls, runs, seams)}
+    rerun, partial = _rerun(context, head, cls, runs, seams)
+    retried = {**record, **rerun}
     if retried["state"] == PASSED:
         record_pipeline_gate(context, PipelineGate(head, GREEN, source="merged_head"))
         return None, retried
     if retried["state"] == FAILED:
-        return _scoped_restart(context, start, retried, cls, seams), retried
+        restart = _scoped_restart(context, start, retried, cls, seams)
+        _note_rerun(context, head, partial)  # Counted after recording, as Stage 4 does.
+        return restart, retried
     return _refuse_calibration(context, start, retried), retried
-
-
-def _pending_scoped_restart(context: FlowContext) -> dict[str, Any] | None:
-    """The merged-head defect a scoped restart was asked for while Stage 4 has not run again, else None."""
-    review = context.stage_results.get(FlowStage.REVIEW.value)
-    defect = ((review.payload.get("consensus") if review else None) or {}).get("pipeline_defect")
-    return defect if isinstance(defect, dict) else None
-
-
-def _withdraw_after_rejected_restart(
-    context: FlowContext, record: dict[str, Any], seams: WithdrawalSeams | None = None
-) -> dict[str, Any]:
-    """Withdraw the consensus when the scoped review of a CI-defect fix did not approve."""
-    context.log(f"The scoped review of the CI fix on {short_sha(record.get('head_sha'))} did not approve.")
-    return withdraw_consensus(context, record, seams, context.merged_head_restart_allowed)
-
-
-def _resumed_restart(context: FlowContext, start: str) -> Decision | None:
-    """On resume, the Stage 5 restart a withdrawn consensus or a pending scoped restart asks for, else None."""
-    withdrawn, defect = withdrawn_consensus_of(context), _pending_scoped_restart(context)
-    if context.dry_run or context.skip_push or not (withdrawn or defect):
-        return None
-    if withdrawn:
-        record = {**skipped_record(withdrawn.get("merged_head"), "consensus withdrawn"), "state": FAILED}
-        context.log("Calibrate stage: the Stage 4 approval was withdrawn; Stage 4 must approve the new head first.")
-        payload = {"review_restart": True, "merged_head_ci": record, "consensus_withdrawal": withdrawn}
-    else:
-        record = defect.get("merged_head_ci") or skipped_record(defect.get("head_sha"), "CI defect")
-        context.log("Calibrate stage: CI found a defect on the merged head; Stage 4 must approve the fix first.")
-        payload = {"review_restart": True, "scoped_restart": True, "merged_head_ci": record, "ci_routing": defect}
-    return StageResult(FlowStage.CALIBRATE, StageStatus.SKIPPED, start, start, payload=payload), record

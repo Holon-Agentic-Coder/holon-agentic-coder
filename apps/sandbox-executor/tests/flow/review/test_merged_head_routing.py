@@ -13,7 +13,8 @@ from sandbox_executor.flow.review.ci_failure_routing import _reruns_spent
 from sandbox_executor.flow.review.consensus_withdrawal import WithdrawalSeams, withdrawn_consensus_of
 from sandbox_executor.flow.review.delta_review import delta_state_of
 from sandbox_executor.flow.review.merged_head_gate import MergedHeadSeams
-from sandbox_executor.flow.review.merged_head_routing import _pending_scoped_restart, _route_merged_head_failure
+from sandbox_executor.flow.review.merged_head_resume import _pending_scoped_restart
+from sandbox_executor.flow.review.merged_head_routing import _route_merged_head_failure
 from sandbox_executor.flow.review_restart import stage5_merged_head_gate
 from sandbox_executor.ledger import read_merged_rows
 
@@ -151,6 +152,19 @@ def test_the_rerun_budget_survives_a_checkpoint_round_trip(tmp_path: Path) -> No
     assert _reruns_spent(restored, MERGED, "11") == 1
     stopped, _ = _route_merged_head_failure(restored, START, _red(), Fakes([_check("failure")]).seams())
     assert stopped is not None and stopped.payload["scoped_restart"] is True  # No second rerun on the same head.
+
+
+def test_a_partial_rerun_dispatch_is_counted_only_after_the_resolve_routing_is_recorded(tmp_path: Path) -> None:
+    ctx, fakes = _ctx(tmp_path), Fakes([_check("failure")])
+    fakes.rerun = lambda run_id: fakes.reruns.append(run_id) or run_id == "11"  # type: ignore[method-assign]
+    second = {"run_id": "12", "check_run_id": 2, "name": "lint", "conclusion": "failure"}
+    record = {**_red(), "runs": [*_red()["runs"], second]}
+    stopped, retried = _route_merged_head_failure(ctx, START, record, fakes.seams())
+    assert stopped is not None and stopped.payload["scoped_restart"] is True and retried["state"] == "failed"
+    assert fakes.reruns == ["11", "12"]
+    (row,) = _rows(tmp_path, "ci-failure-routing")
+    assert row["ci_failure_routing"]["decision"] == "resolve" and row["ci_failure_routing"]["reruns"] == 0
+    assert _reruns_spent(ctx, MERGED, "11") == 1 and _reruns_spent(ctx, MERGED, "12") == 0
 
 
 def test_an_unsettled_repoll_after_the_rerun_fails_stage5_closed(tmp_path: Path) -> None:

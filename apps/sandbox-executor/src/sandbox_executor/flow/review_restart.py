@@ -35,13 +35,12 @@ from sandbox_executor.flow.review.merged_head_gate import (
     gate_record,
     skipped_record,
 )
-from sandbox_executor.flow.review.merged_head_routing import (
+from sandbox_executor.flow.review.merged_head_resume import (
     _pending_scoped_restart,
-    _refuse_calibration,
     _resumed_restart,
-    _route_merged_head_failure,
     _withdraw_after_rejected_restart,
 )
+from sandbox_executor.flow.review.merged_head_routing import _refuse_calibration, _route_merged_head_failure
 from sandbox_executor.git import run_git
 
 MAX_MERGED_HEAD_REVIEW_RESTARTS = 3

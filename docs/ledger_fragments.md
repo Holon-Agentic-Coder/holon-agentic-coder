@@ -88,8 +88,8 @@ file.
 - **Held fragments.** A fragment that is not UTF-8 or has a non-blank line that is not a JSON object is neither promoted
   nor deleted. It is reported as a warning on stderr (and in `held` with `--json`), and the exit code stays 0.
 - **Snapshot check.** Each fragment's bytes are recorded when the promotion is planned and re-read before the ledger is
-  written. If any fragment of a ledger changed, nothing is appended for that ledger, no fragment of it is deleted, and
-  the command exits 1.
+  written. Every ledger is checked before any is written: if any fragment of any ledger changed, nothing is appended to
+  any ledger, no fragment is deleted, and the command exits 1.
 - **Run it on a quiescent checkout.** Run promotion only on a checkout with no active flows (normally `main`). A
   fragment writer blocked on a fragment's lock at the moment the fragment is deleted would append to the deleted file.
 - **Reader view.** `read_merged_rows` returns the same identity multiset before and after promotion. The order is also

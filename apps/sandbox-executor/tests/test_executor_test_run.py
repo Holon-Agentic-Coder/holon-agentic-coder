@@ -88,3 +88,50 @@ def test_failing_run_maps_the_failure_loop_outcome(monkeypatch, capsys) -> None:
     assert fields["test_failure_rows"] == ["ACT-1"]
     assert fields["test_fix_tier"] == "opus-x"
     assert "Test failure blocked" in capsys.readouterr().err
+
+
+def _request():
+    from sandbox_executor.entrypoint.test_failure_loop import FixRequest
+
+    return FixRequest("introduced", ("tests/test_a.py::test_x",), {}, "sig", "tier-x", 1)
+
+
+def test_a_failed_fix_turn_verdict_stops_the_fix(monkeypatch) -> None:
+    import pytest
+    from sandbox_executor.entrypoint.conflict_resolver_verify import Verdict
+
+    failed = Verdict("agent_failed", reason="agent turn exited with code 1")
+    monkeypatch.setattr(executor_test_run, "run_agent_turn", lambda *_: failed)
+    clock = executor_test_run._StageClock(None)
+    fix = executor_test_run._fix_turn("/w", _repo(), executor_test_run.FixRunner("claude", "opus"), "b", clock)
+
+    with pytest.raises(RuntimeError, match="exited with code 1"):
+        fix(_request())
+
+
+def test_the_fix_runner_reaches_the_fix_turn_and_an_alias_starts_at_its_tier(monkeypatch) -> None:
+    turns: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        executor_test_run, "run_agent_turn", lambda _w, runner, model, _p: turns.append((runner, model))
+    )
+    repo = MagicMock()
+    repo.run.return_value = MagicMock(returncode=0, stdout="E-1/branch")
+
+    loop = executor_test_run.default_failure_loop("/w", repo, executor_test_run.FixRunner("claude", "opus"))
+    assert loop.ports.fix_turn is not None
+    loop.ports.fix_turn(_request())
+
+    assert loop.ports.start_tier == loop.ports.ladder[-1] != "opus"
+    assert turns == [("claude", "tier-x")]
+
+
+def test_the_stage_clock_reads_the_stage_timer_and_reserves_one_run_and_one_fix() -> None:
+    from sandbox_executor.budgets import StageTimer
+
+    now = [0.0]
+    timer = StageTimer("execute", 1000.0, clock=lambda: now[0])
+    now[0] = 400.0
+    clock = executor_test_run._StageClock(timer)
+    clock.longest_run, clock.longest_fix = 150.0, 200.0
+
+    assert clock.remaining() == 250.0

@@ -9,17 +9,24 @@ from __future__ import annotations
 import functools
 import os
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
-from sandbox_executor.entrypoint.test_failure_classify import BaseSnapshot, ShortSummaryRunner, run_failing_ids
-from sandbox_executor.entrypoint.test_failure_loop import LoopOutcome, LoopPorts, TestFailureBlocked, TestFailureLoop
+from sandbox_executor.entrypoint.test_failure_classify import BaseSnapshot, run_failing_ids
+from sandbox_executor.entrypoint.test_failure_loop import (
+    LoopOutcome,
+    LoopPorts,
+    TestFailureBlocked,
+    TestFailureLoop,
+    measure_selection,
+)
 from sandbox_executor.entrypoint.test_failure_record import (
     BLOCKED_CLASSIFICATIONS,
     LEDGER_RELPATH,
     STAGE_4,
     record_test_failure,
 )
-from sandbox_executor.entrypoint.test_measurement import TestMeasurement, run_test_task
+from sandbox_executor.entrypoint.test_measurement import TestMeasurement
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.dispatch import _test_evidence
 from sandbox_executor.flow.github.pr_head import pr_head_sha
@@ -45,8 +52,16 @@ from sandbox_executor.flow.review.head_test_evidence import (
 from sandbox_executor.git import run_git
 
 
+@dataclass(frozen=True)
+class _MeasurementWithOutput(TestMeasurement):
+    """A measurement that also carries the full test output, not only its bounded ``output_excerpt`` tail."""
+
+    full_output: str = ""
+
+
 def _measure_with_short_summary(repo_dir: str) -> TestMeasurement:
-    return run_test_task(repo_dir, runner=ShortSummaryRunner())
+    measurement, output = measure_selection(repo_dir)
+    return _MeasurementWithOutput(**vars(measurement), full_output=output)
 
 
 # The test run; replaced in tests so no real ``uv run task test`` starts.
@@ -55,9 +70,14 @@ run_measurement: Callable[[str], TestMeasurement] = _measure_with_short_summary
 FailureLoopFactory = Callable[[], "TestFailureLoop | None"]
 
 
+def _output_of(measurement: TestMeasurement) -> str:
+    """The full output of a run, as Stage 3 feeds its loop; the excerpt only when a replaced run kept no more."""
+    return getattr(measurement, "full_output", "") or measurement.output_excerpt
+
+
 def _measured_with_output(repo_dir: str) -> tuple[TestMeasurement, str]:
     measurement = run_measurement(repo_dir)
-    return measurement, measurement.output_excerpt
+    return measurement, _output_of(measurement)
 
 
 def _git_head(repo_dir: str) -> str:
@@ -109,7 +129,7 @@ class _ReviewLocalTests:
         if head not in self._cache:
             measurement = run_measurement(self._repo_dir)
             if self._failure_loop is not None and _failed(measurement) and (loop := self._failure_loop()) is not None:
-                self.loop_outcomes[head] = loop.run(measurement, measurement.output_excerpt)
+                self.loop_outcomes[head] = loop.run(measurement, _output_of(measurement))
                 measurement = self.loop_outcomes[head].measurement
             self._cache[head] = _LocalTestOutcome(measurement.rate, _failed(measurement), measurement)
         return self._cache[head]

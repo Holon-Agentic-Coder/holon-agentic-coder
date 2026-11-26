@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import shutil
-import signal
 import subprocess
 import tarfile
 import tempfile
@@ -13,12 +13,14 @@ from enum import StrEnum
 
 from sandbox_executor.entrypoint.review_failure_detail import with_short_summary
 from sandbox_executor.entrypoint.test_failure_record import IDENTITY_PREFIXES, failing_ids_from_output
-from sandbox_executor.entrypoint.test_measurement import configured_timeout
+from sandbox_executor.entrypoint.test_measurement import configured_timeout, run_in_process_group
 from sandbox_executor.entrypoint.uv_lock import frozen_env
 from sandbox_executor.git import run_git
 
 PYTEST_NO_TESTS_COLLECTED = 5
 PYTEST_USAGE_ERROR = 4
+# pytest's own line for a selected id that does not exist, e.g. ``ERROR: not found: /repo/tests/test_x.py::test_y``.
+_PYTEST_NOT_FOUND = re.compile(r"^ERROR: not found: ", re.MULTILINE)
 # why: xdist start-up dominates for a handful of ids, and a serial run keeps each excerpt readable.
 RERUN_COMMAND = (
     "uv",
@@ -85,7 +87,7 @@ def scrubbed_environment(env: Mapping[str, str], home: str, tmpdir: str) -> dict
 def base_check_of(base: RerunResult) -> str:
     if not base.ran:
         return "unavailable"
-    if base.exit_code in (PYTEST_USAGE_ERROR, PYTEST_NO_TESTS_COLLECTED) or "not found" in base.output:
+    if base.exit_code in (PYTEST_USAGE_ERROR, PYTEST_NO_TESTS_COLLECTED) or _PYTEST_NOT_FOUND.search(base.output):
         return "absent"
     return "passed" if base.passed else "failed"
 
@@ -132,30 +134,8 @@ def diagnose(failing_ids: tuple[str, ...], rerun: Rerun, base_rerun: BaseRerun, 
     )
 
 
-def run_in_session(
-    argv: list[str], cwd: str, timeout: float, env: Mapping[str, str]
-) -> subprocess.CompletedProcess[str]:
-    with subprocess.Popen(
-        argv,
-        cwd=cwd,
-        env=dict(env),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
-        start_new_session=True,
-    ) as proc:
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
-            proc.communicate()
-            raise
-        return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
-
-
 class ShortSummaryRunner:
-    def __init__(self, session: SessionRun = run_in_session) -> None:
+    def __init__(self, session: SessionRun = run_in_process_group) -> None:
         self._session = session
         self.last_output = ""
 
@@ -171,7 +151,7 @@ def rerun_ids_command(failing_ids: tuple[str, ...]) -> list[str]:
 
 
 def run_failing_ids(
-    failing_ids: tuple[str, ...], env: Mapping[str, str], cwd: str, session: SessionRun = run_in_session
+    failing_ids: tuple[str, ...], env: Mapping[str, str], cwd: str, session: SessionRun = run_in_process_group
 ) -> RerunResult:
     try:
         result = session(rerun_ids_command(failing_ids), cwd, configured_timeout(), env)
@@ -198,7 +178,7 @@ def _extract_snapshot(workspace: str, commit: str, root: str) -> bool:
 
 
 class BaseSnapshot:
-    def __init__(self, workspace: str, target_ref: str, session: SessionRun = run_in_session) -> None:
+    def __init__(self, workspace: str, target_ref: str, session: SessionRun = run_in_process_group) -> None:
         self.workspace = workspace
         self.target_ref = target_ref
         self._session = session

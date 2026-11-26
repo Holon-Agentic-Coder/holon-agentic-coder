@@ -481,9 +481,11 @@ class _ScriptedLoop:
     def __init__(self, status: str, classification: str, measurement: TestMeasurement | None = None) -> None:
         self.status, self.classification, self.measurement = status, classification, measurement
         self.runs: list[TestMeasurement] = []
+        self.outputs: list[str] = []
 
     def run(self, measurement: TestMeasurement, output: str) -> LoopOutcome:
         self.runs.append(measurement)
+        self.outputs.append(output)
         return LoopOutcome(
             self.status,
             self.measurement or measurement,
@@ -540,3 +542,19 @@ def test_an_unmeasured_head_run_starts_no_failure_loop(monkeypatch):
     local_tests._ReviewLocalTests("/w", failure_loop=lambda: loop).measure()
 
     assert loop.runs == []
+
+
+def test_the_failure_loop_reads_the_full_output_not_the_excerpt_tail(monkeypatch):
+    full = "tests/test_a.py::test_alpha FAILED\n" + "x" * 5000 + "\n1 failed, 9 passed in 1s"
+
+    def measure(workspace, runner=None):
+        return _measurement(0.9, exit_code=1), full
+
+    monkeypatch.setattr(local_tests, "measure_selection", measure)
+    monkeypatch.setattr(local_tests, "run_measurement", local_tests._measure_with_short_summary)
+    loop = _ScriptedLoop("blocked", "introduced")
+
+    local_tests._ReviewLocalTests("/w", failure_loop=lambda: loop).measure()
+
+    assert loop.outputs == [full]
+    assert loop.runs[0].rate == 0.9

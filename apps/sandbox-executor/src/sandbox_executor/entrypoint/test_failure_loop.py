@@ -23,6 +23,7 @@ from sandbox_executor.entrypoint.test_failure_record import (
     failure_signature,
 )
 from sandbox_executor.entrypoint.test_measurement import TestMeasurement, run_test_task
+from sandbox_executor.model_tiers import next_tier
 
 # why: each full selection can take up to the 900 s test timeout, so the loop must stay inside the stage budget.
 MAX_FLAKY_RERUNS = 2
@@ -120,13 +121,6 @@ class _Case:
 
 def measurement_passed(measurement: TestMeasurement) -> bool:
     return measurement.run_error is None and measurement.exit_code == 0 and (measurement.rate or 0.0) >= 1.0
-
-
-def next_tier(ladder: tuple[str, ...], current: str | None) -> str | None:
-    if current not in ladder:
-        return None
-    index = ladder.index(current) + 1
-    return ladder[index] if index < len(ladder) else None
 
 
 def measure_selection(workspace: str, runner: ShortSummaryRunner | None = None) -> tuple[TestMeasurement, str]:

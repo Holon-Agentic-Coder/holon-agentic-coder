@@ -149,3 +149,12 @@ def test_scrubbed_environment_keeps_everything_else_and_does_not_mutate_its_inpu
 
 def test_scrubbed_environment_keeps_an_explicit_uv_cache() -> None:
     assert scrubbed_environment({"UV_CACHE_DIR": "/cache"}, "/h", "/t")["UV_CACHE_DIR"] == "/cache"
+
+
+def test_a_failing_base_output_mentioning_not_found_is_not_absent():
+    from sandbox_executor.entrypoint.test_failure_classify import base_check_of
+
+    real = RerunResult(passed=False, exit_code=1, output="E   KeyError: user not found\n1 failed in 0.1s")
+    assert base_check_of(real) == "failed"
+    missing = RerunResult(passed=False, exit_code=1, output="ERROR: not found: /repo/tests/test_x.py::test_y")
+    assert base_check_of(missing) == "absent"

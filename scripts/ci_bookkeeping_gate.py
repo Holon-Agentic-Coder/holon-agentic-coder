@@ -43,8 +43,9 @@ from scripts.ci_timing_gate import OVERRIDE_LABEL, default_opener, write_step_su
 BOOKKEEPING_ROOTS = ("plans", "executions", "holon-knowledge")
 # The file types a skipped hygiene job still checks (``make lint-md``, ``make lint-json``); any other type runs in full.
 BOOKKEEPING_SUFFIXES = (".md", ".json", ".jsonl")
-# Every label that a workflow reads belongs here: adding or removing one can change a job's result.
-RESULT_AFFECTING_LABELS = frozenset({OVERRIDE_LABEL, "module-budget-change"})
+# Every label that a workflow reads belongs here: adding or removing one can change a job's result. ``ci-macos`` is read
+# by ``scripts/macos_relevance.py`` (its ``FORCE_LABEL``) and forces the macOS unit leg to run.
+RESULT_AFFECTING_LABELS = frozenset({OVERRIDE_LABEL, "module-budget-change", "ci-macos"})
 ELIGIBLE_ACTIONS = ("synchronize", "labeled", "unlabeled")
 LABEL_ACTIONS = ("labeled", "unlabeled")
 

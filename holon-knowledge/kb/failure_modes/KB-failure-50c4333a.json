@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-50c4333a",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T06:07:26.695066+00:00",
+  "updated_ts": "2026-11-26T06:07:26.695066+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795671362-fab8f955",
+      "ACT-FIND-1795671357-c3c3af29"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795669275-macos-unit-sensitive-paths-only/P-1795669298-CLA-CO5.5/E-1795670038-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R2-001-01",
+    "symptoms": [
+      "GATE_PATH_PATTERNS omits the gate's runtime helpers (ci_bookkeeping_gate/api/chain, ci_timing_gate), which judge as neutral, so a change to them is judged by the changed code and can skip the macOS leg."
+    ]
+  }
+}

@@ -37,6 +37,7 @@ from sandbox_executor.ledger import read_merged_rows, read_merged_text
 from tests.flow.helpers import SteppingClock, _dispatch_context, _prefix, _review_loop_gh_stubs, seed_empty_ledger
 from tests.flow.lookup_patch import patch_lookup_sites
 from tests.flow.timed_dispatch import dispatch_timed_execute
+from tests.repo_templates import copy_template, shared_template
 
 
 class TestFlowStages:
@@ -841,12 +842,9 @@ class TestSkipPushRejectedOnEveryNonDryRun:
 class TestFlowWorktreeHermetic:
     """Hermetic integration tests for git worktree provisioning, pruning, and reuse."""
 
-    @pytest.fixture
-    def hermetic_repos(self, tmp_path: Path) -> dict[str, Path]:
-        """Initialise real origin, bare, and worktree git repositories."""
-        root_dir = tmp_path / "hermetic_env"
-        root_dir.mkdir(parents=True, exist_ok=True)
-
+    @staticmethod
+    def _build_hermetic_repos(root_dir: Path) -> None:
+        """A source repository with one commit on main, and a bare clone of it."""
         src_dir = root_dir / "src_repo"
         src_dir.mkdir()
         subprocess.run(["git", "init"], cwd=str(src_dir), check=True, capture_output=True)
@@ -877,7 +875,12 @@ class TestFlowWorktreeHermetic:
         bare_dir = root_dir / "bare.git"
         subprocess.run(["git", "clone", "--bare", str(src_dir), str(bare_dir)], check=True, capture_output=True)
 
-        return {"root": root_dir, "src": src_dir, "bare": bare_dir}
+    @pytest.fixture
+    def hermetic_repos(self, tmp_path_factory: pytest.TempPathFactory, tmp_path: Path) -> dict[str, Path]:
+        """Real source and bare repositories: a private copy of a read-only template built once per run (git only)."""
+        template, _ = shared_template(tmp_path_factory, "pipeline-hermetic-repos", self._build_hermetic_repos)
+        root_dir = copy_template(template, tmp_path / "hermetic_env")
+        return {"root": root_dir, "src": root_dir / "src_repo", "bare": root_dir / "bare.git"}
 
     def test_is_bare_and_is_working_tree(self, hermetic_repos: dict[str, Path], tmp_path: Path) -> None:
         """Verify is_bare_repository and is_working_tree on bare, worktree, and absent paths."""

@@ -2,7 +2,8 @@
 
 Every API answer is served by ``tests.ci_bookkeeping_fakes.FakeGitHub``; nothing here reaches the network. The usual
 scene is run 90 of ``test-unit.yml`` for the push of ``MERGE``, the merge commit of pull request #7 whose head ``HEAD``
-has the same tree and ran the unit job in run 80.
+has the same tree and ran the unit job in run 80. ``MERGE`` is the tip of ``main``, so the superseded check reads the
+tip and leaves the decision to the evidence chain.
 """
 
 from __future__ import annotations
@@ -90,7 +91,7 @@ def push_context(**overrides: object) -> GateContext:
 
 def merged_scene(*jobs: dict[str, object], workflow: str = "test-unit.yml") -> FakeGitHub:
     """Return a fake for one merged pull request with equal trees and one head run holding ``jobs``."""
-    fake = FakeGitHub()
+    fake = FakeGitHub().set_tip(MERGE)
     fake.pulls[MERGE] = [pull(7, HEAD, MERGE)]
     fake.trees.update({MERGE: TREE, HEAD: TREE})
     fake.add_run(HEAD_RUN, HEAD, *jobs, path=f".github/workflows/{workflow}")
@@ -114,7 +115,8 @@ def test_a_merge_commit_with_the_tested_tree_skips() -> None:
     decision = judge(push_context(), fake)
 
     assert decision == Decision(True, "main-push-tested-tree", f"#7 head {HEAD[:12]} run {HEAD_RUN} real success")
-    assert len(fake.urls) == 5
+    assert len(fake.urls) == 6
+    assert len(fake.calls("git/ref/heads/main")) == 1
 
 
 def test_a_gate_skipped_head_job_skips_and_says_so() -> None:
@@ -198,7 +200,7 @@ def test_a_head_run_of_another_pull_request_is_passed_over() -> None:
 
 
 def test_a_head_run_of_another_pull_request_alone_runs_in_full() -> None:
-    fake = FakeGitHub()
+    fake = FakeGitHub().set_tip(MERGE)
     fake.pulls[MERGE] = [pull(7, HEAD, MERGE)]
     fake.trees.update({MERGE: TREE, HEAD: TREE})
     fake.add_run(HEAD_RUN, HEAD, real_success_job(), pull_requests=[{"number": 7, "base": {"ref": "release"}}])
@@ -207,7 +209,7 @@ def test_a_head_run_of_another_pull_request_alone_runs_in_full() -> None:
 
 
 def test_a_head_run_naming_no_pull_request_still_counts() -> None:
-    fake = FakeGitHub()
+    fake = FakeGitHub().set_tip(MERGE)
     fake.pulls[MERGE] = [pull(7, HEAD, MERGE)]
     fake.trees.update({MERGE: TREE, HEAD: TREE})
     fake.add_run(HEAD_RUN, HEAD, real_success_job(), pull_requests=None)

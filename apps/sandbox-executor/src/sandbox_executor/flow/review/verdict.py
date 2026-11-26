@@ -7,7 +7,7 @@ ensemble verdict was not APPROVED. Any blocker turns an APPROVED verdict into CH
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from sandbox_executor.flow.review.adjudication import Adjudication
@@ -20,7 +20,13 @@ from sandbox_executor.review_ensemble import (
     ReviewerVerdict,
     decide_consensus,
 )
-from sandbox_executor.review_report import finding_signature, parse_reviewer_detail
+from sandbox_executor.review_finding_outcomes import (
+    REQUIRED_VERDICTS,
+    returned_verdict_count,
+    undisposed_finding_ids,
+    verdict_count_ok,
+)
+from sandbox_executor.review_report import FindingDisposition, FindingRow, finding_signature, parse_reviewer_detail
 
 
 def role_objections(reviewers: Sequence[ReviewerResult]) -> list[str]:
@@ -62,6 +68,28 @@ def consensus_blockers(
     blockers = role_objections(reviewers) + adjudication_mismatches(reviewers, adjudication)
     if container_verdict is not None and container_verdict is not ConsensusVerdict.APPROVED:
         blockers.append(f"reviewer container reported ensemble verdict {container_verdict}")
+    return blockers
+
+
+def verdict_count_blocker(reviewers: Sequence[ReviewerResult]) -> list[str]:
+    count = returned_verdict_count(reviewers)
+    if verdict_count_ok(count):
+        return []
+    return [f"{count} reviewer verdict(s) returned; approval needs exactly {REQUIRED_VERDICTS}"]
+
+
+def finding_outcome_blockers(
+    reviewers: Sequence[ReviewerResult],
+    findings: Sequence[FindingRow],
+    dispositions: Iterable[FindingDisposition],
+) -> list[str]:
+    blockers = verdict_count_blocker(reviewers)
+    ids = undisposed_finding_ids(findings, dispositions)
+    if ids:
+        blockers.append(
+            f"{len(ids)} finding(s) without a resolver outcome (applied with a commit or rejected with a reason): "
+            f"{', '.join(ids)}"
+        )
     return blockers
 
 

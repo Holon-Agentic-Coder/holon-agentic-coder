@@ -1,15 +1,38 @@
 from __future__ import annotations
 
+import glob
 import os
+import shutil
+import signal
+import subprocess
+import tarfile
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from sandbox_executor.entrypoint.test_failure_record import IDENTITY_PREFIXES
+from sandbox_executor.entrypoint.review_failure_detail import with_short_summary
+from sandbox_executor.entrypoint.test_failure_record import IDENTITY_PREFIXES, failing_ids_from_output
+from sandbox_executor.entrypoint.test_measurement import configured_timeout
+from sandbox_executor.entrypoint.uv_lock import frozen_env
+from sandbox_executor.git import run_git
 
 PYTEST_NO_TESTS_COLLECTED = 5
 PYTEST_USAGE_ERROR = 4
+# why: xdist start-up dominates for a handful of ids, and a serial run keeps each excerpt readable.
+RERUN_COMMAND = (
+    "uv",
+    "run",
+    "--no-sync",
+    "python",
+    "-m",
+    "pytest",
+    "-p",
+    "no:cacheprovider",
+    "-q",
+    "-rfE",
+    "--tb=short",
+)
 
 
 class FailureClass(StrEnum):
@@ -32,6 +55,7 @@ NOT_RUN = RerunResult(passed=False, ran=False)
 
 Rerun = Callable[[tuple[str, ...], Mapping[str, str]], RerunResult]
 BaseRerun = Callable[[tuple[str, ...]], RerunResult]
+SessionRun = Callable[[list[str], str, float, Mapping[str, str]], "subprocess.CompletedProcess[str]"]
 
 
 @dataclass(frozen=True)
@@ -106,3 +130,95 @@ def diagnose(failing_ids: tuple[str, ...], rerun: Rerun, base_rerun: BaseRerun, 
         base_check_of(base),
         suspects,
     )
+
+
+def run_in_session(
+    argv: list[str], cwd: str, timeout: float, env: Mapping[str, str]
+) -> subprocess.CompletedProcess[str]:
+    with subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=dict(env),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
+        start_new_session=True,
+    ) as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            raise
+        return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+
+
+class ShortSummaryRunner:
+    def __init__(self, session: SessionRun = run_in_session) -> None:
+        self._session = session
+        self.last_output = ""
+
+    def __call__(self, argv: list[str], cwd: str, timeout: float) -> subprocess.CompletedProcess[str]:
+        self.last_output = ""
+        result = self._session(argv, cwd, timeout, with_short_summary(frozen_env(cwd=cwd)))
+        self.last_output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+        return result
+
+
+def rerun_ids_command(failing_ids: tuple[str, ...]) -> list[str]:
+    return [*RERUN_COMMAND, *failing_ids]
+
+
+def run_failing_ids(
+    failing_ids: tuple[str, ...], env: Mapping[str, str], cwd: str, session: SessionRun = run_in_session
+) -> RerunResult:
+    try:
+        result = session(rerun_ids_command(failing_ids), cwd, configured_timeout(), env)
+    except (OSError, subprocess.SubprocessError):
+        return NOT_RUN
+    output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    return RerunResult(result.returncode == 0, failing_ids_from_output(output), True, output, result.returncode)
+
+
+def _merge_base(workspace: str, target_ref: str) -> str | None:
+    for ref in (f"origin/{target_ref}", target_ref):
+        result = run_git(["merge-base", "HEAD", ref], cwd=workspace, check=False)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    return None
+
+
+def _extract_snapshot(workspace: str, commit: str, root: str) -> bool:
+    with subprocess.Popen(["git", "archive", "--format=tar", commit], cwd=workspace, stdout=subprocess.PIPE) as proc:
+        assert proc.stdout is not None
+        with tarfile.open(fileobj=proc.stdout, mode="r|") as archive:
+            archive.extractall(root, filter="data")
+        return proc.wait() == 0
+
+
+class BaseSnapshot:
+    def __init__(self, workspace: str, target_ref: str, session: SessionRun = run_in_session) -> None:
+        self.workspace = workspace
+        self.target_ref = target_ref
+        self._session = session
+
+    def environment(self, root: str) -> dict[str, str]:
+        env = dict(os.environ)
+        env.setdefault("UV_PROJECT_ENVIRONMENT", os.path.join(self.workspace, ".venv"))
+        env["PYTHONPATH"] = os.pathsep.join(sorted(glob.glob(os.path.join(root, "apps", "*", "src"))))
+        return env
+
+    def __call__(self, failing_ids: tuple[str, ...]) -> RerunResult:
+        commit = _merge_base(self.workspace, self.target_ref)
+        if commit is None:
+            return NOT_RUN
+        root = tempfile.mkdtemp(prefix="holon-test-base-")
+        try:
+            if not _extract_snapshot(self.workspace, commit, root):
+                return NOT_RUN
+            return run_failing_ids(failing_ids, self.environment(root), root, self._session)
+        except Exception:
+            return NOT_RUN
+        finally:
+            shutil.rmtree(root, ignore_errors=True)

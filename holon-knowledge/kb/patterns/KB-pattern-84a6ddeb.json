@@ -1,0 +1,33 @@
+{
+  "kb_id": "KB-pattern-84a6ddeb",
+  "kb_type": "pattern",
+  "version": "1.0",
+  "created_ts": "2026-11-25T23:52:44.461824+00:00",
+  "updated_ts": "2026-11-25T23:52:44.461824+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "SYNC-1795583796-57091b7b",
+      "SYNC-1795582874-dc6dce52",
+      "SYNC-1795580062-dcc4499e",
+      "SYNC-1795579299-b385ae97",
+      "SYNC-1795577963-4d7592f7"
+    ],
+    "success_count": 21,
+    "failure_count": 0,
+    "wilson_lower": 0.8453609810751602,
+    "posterior_mean": 0.9565217391304348,
+    "ladder_state": "likely-success"
+  },
+  "tags": [
+    "code",
+    "proven"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Proven approach for main",
+    "description": "Advisory (likely-success): Historical executions matching this context pattern succeeded in 21/21 (100.0%) trials (Wilson 95% lower bound: 0.85). Consider evaluating proven approach: 'target_sync'.",
+    "action": "target_sync"
+  }
+}

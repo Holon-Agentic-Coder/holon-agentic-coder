@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -77,7 +78,9 @@ def test_action_row_written_to_the_ledger_masks_the_class(leak: tuple[str, str],
     assert json.loads(content.splitlines()[-1])["error_context"].startswith("failed with ")
 
 
-def test_stage5_reconciliation_warning_masks_the_class(leak: tuple[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stage5_reconciliation_warning_masks_the_class(
+    leak: tuple[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     text, secret = leak
     branch = "I-1-x/P-2-y/E-3-z/calibrated"
 
@@ -99,7 +102,10 @@ def test_stage5_reconciliation_warning_masks_the_class(leak: tuple[str, str], mo
 
     context = Context()
     monkeypatch.setattr(calibrate, "run_git", fake_git)
-    calibrate._commit_stage5_reconciliation(context, "/nonexistent")
+    ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text("", encoding="utf-8")
+    calibrate._commit_stage5_reconciliation(context, str(tmp_path))
 
     (line,) = context.lines
     assert "reconciliation rows failed" in line

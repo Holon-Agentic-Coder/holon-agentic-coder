@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sandbox_executor.ledger import read_merged_rows
 
 from tests.flow.github.fake_github import FakeGitHub, merge_view
 from tests.review_fakes import install_fake_reviewers
@@ -19,10 +19,7 @@ def _sandboxed_clean_reviewers(monkeypatch):
 
 
 def _ledger_rows(repo_dir: Path) -> list[dict]:
-    ledger = repo_dir / "holon-knowledge" / "ledger" / "executions.jsonl"
-    if not ledger.exists():
-        return []
-    return [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return read_merged_rows(str(repo_dir / "holon-knowledge" / "ledger" / "executions.jsonl"))
 
 
 def test_approved_loop_records_summary_row_status_approved(tmp_path):

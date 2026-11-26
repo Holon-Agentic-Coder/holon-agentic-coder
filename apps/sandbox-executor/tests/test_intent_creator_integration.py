@@ -108,12 +108,14 @@ class TestIntentCreatorIntegration(unittest.TestCase):
 
             # Verify the created branch carries our intent record. The fixture never surfaces on the
             # host, so the read is done by a container running as the volume's own user.
-            show_result = remote_show_file(intent_branch, "holon-knowledge/ledger/intents.jsonl", volume)
+            # The intent row lands in the intent's pending fragment, not in the canonical intents.jsonl.
+            fragment_rel = f"holon-knowledge/ledger/pending/intents/{intent_branch.split('/', 1)[0]}.jsonl"
+            show_result = remote_show_file(intent_branch, fragment_rel, volume)
 
             self.assertEqual(
                 show_result.returncode,
                 0,
-                f"Failed to show intents ledger from branch {intent_branch}. Stderr:\n{show_result.stderr}",
+                f"Failed to show intents ledger fragment from branch {intent_branch}. Stderr:\n{show_result.stderr}",
             )
 
             # Verify the ledger contains our intent JSON

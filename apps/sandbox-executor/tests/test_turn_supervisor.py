@@ -5,7 +5,6 @@ host it runs on (``/proc`` on Linux, ``ps`` on macOS) with one short-lived busy 
 """
 
 import io
-import json
 import os
 import queue
 import signal
@@ -16,6 +15,7 @@ from unittest import mock
 from sandbox_executor import turns
 from sandbox_executor.artefacts import PLAN_SPEC
 from sandbox_executor.budgets import BudgetBreach, StageTimer, TurnBudgets
+from sandbox_executor.ledger import read_merged_rows
 from sandbox_executor.turns import (
     TurnResult,
     parse_stop_reason,
@@ -723,8 +723,7 @@ class TestSuperviseAuthoringTurn(unittest.TestCase):
             self.assertEqual(f.read(), "# Plan for I-1\n")
 
         record_budget_failure(self.ledger, outcome.budget_failure, record_id="P-1", target="plans/P-1.md")
-        with open(self.ledger) as f:
-            lines = [json.loads(line) for line in f if line.strip()]
+        lines = read_merged_rows(self.ledger)
         self.assertEqual(len(lines), 1)
         record = lines[0]
         self.assertRegex(record["action_id"], r"^ACT-BUDGET-\d+-[0-9a-f]{8}$")

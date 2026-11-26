@@ -6,6 +6,7 @@ from typing import Any
 
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import atomic_ledger_append
+from sandbox_executor.ledger.fragments import ledger_commit_paths
 
 SYNC_CONFLICT_STATUS = "sync_conflict"
 
@@ -65,6 +66,6 @@ def record_sync_failure(
         commit_msg = f"execute: record sync failure for {exec_id}"
     with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ef:
         ef.write(json.dumps(ledger_row) + "\n")
-    repo.add("holon-knowledge/ledger/executions.jsonl", check=False)
+    repo.add(ledger_commit_paths(os.path.dirname(os.path.dirname(ledger_dir)), "executions.jsonl"), check=False)
     repo.commit(commit_msg, check=False)
     return resumable

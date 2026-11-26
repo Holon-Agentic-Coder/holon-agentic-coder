@@ -22,6 +22,7 @@ from sandbox_executor.flow.stage5 import _reconcile_execution
 from sandbox_executor.flow.stage5_ledger import already_reconciled
 from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
 from sandbox_executor.knowledge.index import ActionIndexDatabase
+from sandbox_executor.ledger import read_merged_rows_at_ref, read_merged_text
 from sandbox_executor.ref_names import calibration_branch
 
 EXEC = "I-1-x/P-2-y/E-3-z/_"
@@ -128,7 +129,7 @@ def calibrated_subjects(repo: SimpleNamespace) -> list[str]:
 
 
 def ledger_rows(repo: SimpleNamespace, ref: str = f"refs/heads/{CALIBRATED}") -> list[dict]:
-    return [json.loads(line) for line in git(repo.host, "show", f"{ref}:{LEDGER_REL}").splitlines() if line]
+    return read_merged_rows_at_ref(str(repo.host), ref, "executions.jsonl")
 
 
 def reconciliation_rows(repo: SimpleNamespace) -> list[dict]:
@@ -207,11 +208,21 @@ def test_second_run_appends_no_duplicate_rows_and_promotes_nothing(repo: SimpleN
 def test_no_commit_leaves_head_refs_and_ledger_unchanged(repo: SimpleNamespace, capsys) -> None:
     git(repo.host, "checkout", "-q", EXEC)
     ledger = repo.host / LEDGER_REL
-    before = (git(repo.host, "rev-parse", "HEAD"), git(repo.host, "for-each-ref"), ledger.read_bytes())
+    before = (
+        git(repo.host, "rev-parse", "HEAD"),
+        git(repo.host, "for-each-ref"),
+        ledger.read_bytes(),
+        read_merged_text(str(ledger)),
+    )
 
     stage5 = json.loads(run_cli(repo, "--no-commit", "--json", capsys=capsys))["stage5"]
 
-    after = (git(repo.host, "rev-parse", "HEAD"), git(repo.host, "for-each-ref"), ledger.read_bytes())
+    after = (
+        git(repo.host, "rev-parse", "HEAD"),
+        git(repo.host, "for-each-ref"),
+        ledger.read_bytes(),
+        read_merged_text(str(ledger)),
+    )
     assert after == before
     assert stage5["reconciliation"]["status"] == "skipped_no_commit"
     assert (repo.host / "plans/I-1-x/P-2-y_calibration.md").exists()

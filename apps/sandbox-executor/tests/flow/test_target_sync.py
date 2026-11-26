@@ -17,11 +17,13 @@ from sandbox_executor.flow.target_probe import TargetProbe
 from sandbox_executor.flow.target_sync import sync_with_target
 from sandbox_executor.flow.target_sync_result import CodeResolution, SyncBoundary, SyncRequest
 from sandbox_executor.git import run_git
+from sandbox_executor.ledger import read_merged_rows
 
 from tests.flow.helpers import _git
 from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
 
 LEDGER = "holon-knowledge/ledger/executions.jsonl"
+FRAGMENT = "holon-knowledge/ledger/pending/executions/I-1-x.jsonl"
 BUDGETS = Path(__file__).resolve().parents[4] / "holon-config/hygiene/module_budgets.json"
 BASE_ROW = json.dumps({"execution_id": "E-base", "created_at": "2026-11-01T00:00:00Z"}) + "\n"
 
@@ -71,8 +73,7 @@ def _request(work: Path, boundary: SyncBoundary = SyncBoundary.STAGE_START, reso
 
 
 def _sync_rows(work: Path) -> list[dict]:
-    lines = (work / LEDGER).read_text(encoding="utf-8").splitlines()
-    return [row for row in map(json.loads, lines) if row.get("action") == "target_sync"]
+    return [row for row in read_merged_rows(str(work / LEDGER)) if row.get("action") == "target_sync"]
 
 
 def _origin_flow_sha(work: Path) -> str:
@@ -157,7 +158,7 @@ def test_a_code_conflict_with_the_default_resolver_blocks_cleanly(repos):
     assert run_git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=str(work), check=False).returncode != 0
     assert (_git(work, "rev-parse", "HEAD~1"), _origin_flow_sha(work)) == (head, pushed)
     assert result.head_after == _git(work, "rev-parse", "HEAD")
-    assert _git(work, "diff", "--name-only", "HEAD~1", "HEAD") == LEDGER
+    assert _git(work, "diff", "--name-only", "HEAD~1", "HEAD") == FRAGMENT
     assert [row["outcome"] for row in _sync_rows(work)] == ["blocked"]
     assert _git(work, "status", "--porcelain") == ""
 
@@ -169,7 +170,7 @@ def test_a_blocked_row_that_creates_the_ledger_is_committed(tmp_path: Path):
     result = sync_with_target(_request(work))
 
     assert result.status == "blocked"
-    assert _git(work, "diff", "--name-only", "HEAD~1", "HEAD") == LEDGER
+    assert _git(work, "diff", "--name-only", "HEAD~1", "HEAD") == FRAGMENT
     assert [row["outcome"] for row in _sync_rows(work)] == ["blocked"]
     assert _git(work, "status", "--porcelain") == ""
 

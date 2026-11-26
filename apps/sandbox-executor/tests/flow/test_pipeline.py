@@ -32,8 +32,9 @@ from sandbox_executor.git_flow import (
     is_working_tree,
     prune_worktrees,
 )
+from sandbox_executor.ledger import read_merged_rows, read_merged_text
 
-from tests.flow.helpers import SteppingClock, _dispatch_context, _prefix, _read_rows, _review_loop_gh_stubs
+from tests.flow.helpers import SteppingClock, _dispatch_context, _prefix, _review_loop_gh_stubs, seed_empty_ledger
 from tests.flow.lookup_patch import patch_lookup_sites
 from tests.flow.timed_dispatch import dispatch_timed_execute
 
@@ -279,7 +280,7 @@ class TestFlowStages:
             res = run_calibrate_stage(ctx)
 
         assert res.status == StageStatus.FAILED
-        cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
+        cal_rows = [r for r in read_merged_rows(str(ledger)) if _prefix(r) == "ACT-CAL"]
         assert len(cal_rows) == 1
         assert cal_rows[0]["outcome"] == "failure"
         assert "calibration failed" in cal_rows[0]["error_context"]
@@ -295,7 +296,7 @@ class TestFlowStages:
         assert git("rev-parse", "main").strip() == head_before
         assert git("branch", "--list", "*calibrated").strip() == ""
         status = git("status", "--porcelain", "--untracked-files=all")
-        assert "holon-knowledge/ledger/executions.jsonl" in status
+        assert "holon-knowledge/ledger/pending/executions/" in status
         assert "plans/I-100-intent/P-200-plan_calibration.md" not in status
 
     @pytest.mark.parametrize("scenario", ["raises_after_checkout", "rerun_on_calibrated"])
@@ -339,7 +340,7 @@ class TestFlowStages:
 
         assert res.status == StageStatus.FAILED
         assert "nothing was committed or pushed" in (res.error or "")
-        cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
+        cal_rows = [r for r in read_merged_rows(str(ledger)) if _prefix(r) == "ACT-CAL"]
         assert len(cal_rows) == 1
         assert cal_rows[0]["outcome"] == "failure"
 
@@ -354,7 +355,7 @@ class TestFlowStages:
             assert git("rev-parse", calibrated_branch).strip() == execution_tip
             assert git("show", f"{calibrated_branch}:holon-knowledge/ledger/executions.jsonl") == ""
         status = git("status", "--porcelain", "--untracked-files=all")
-        assert "holon-knowledge/ledger/executions.jsonl" in status
+        assert "holon-knowledge/ledger/pending/executions/" in status
         assert "plans/I-100-intent/P-200-plan_calibration.md" not in status
 
     def test_stage5_calibrate_failure_redacts_credentials_in_act_cal(self, tmp_path):
@@ -380,10 +381,10 @@ class TestFlowStages:
         ):
             res = run_calibrate_stage(ctx)
 
-        cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
+        cal_rows = [r for r in read_merged_rows(str(ledger)) if _prefix(r) == "ACT-CAL"]
         assert len(cal_rows) == 1
         assert cal_rows[0]["error_context"] == "Calibration run failed: fetch failed *******"
-        assert sample_value not in ledger.read_text(encoding="utf-8")
+        assert sample_value not in (read_merged_text(str(ledger)) or "")
         assert sample_value not in (res.error or "")
         assert all(sample_value not in line for line in ctx.logs)
 
@@ -413,13 +414,13 @@ class TestFlowStages:
         ):
             run_calibrate_stage(ctx)
 
-        cal_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-CAL"]
+        cal_rows = [r for r in read_merged_rows(str(ledger)) if _prefix(r) == "ACT-CAL"]
         assert len(cal_rows) == 1
         error_context = cal_rows[0]["error_context"]
         assert len(error_context) <= POSTING_ERROR_CONTEXT_MAX_CHARS
         assert error_context.startswith("Calibration run failed: xxx")
         assert "ghp_" not in error_context
-        assert "ghp_" not in ledger.read_text(encoding="utf-8")
+        assert "ghp_" not in (read_merged_text(str(ledger)) or "")
 
     @staticmethod
     def _stage5_push_context(tmp_path):
@@ -523,6 +524,7 @@ class TestFlowStages:
                 return MagicMock(returncode=1, stdout="", stderr=f"remote rejected {sample_value}")
             return MagicMock(returncode=0, stdout="", stderr="")
 
+        seed_empty_ledger(tmp_path)
         with patch("sandbox_executor.flow.stages.calibrate.run_git", side_effect=fake_run_git):
             _commit_stage5_reconciliation(ctx, str(tmp_path))
 

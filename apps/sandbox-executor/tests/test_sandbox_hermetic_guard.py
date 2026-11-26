@@ -1,12 +1,15 @@
-"""Canary guard test simulating container conditions to prove the whole suite stays hermetic.
+"""Canary guard test simulating container conditions to prove the suite stays hermetic.
 
-Scope note: this guard runs the *entire* ``apps/sandbox-executor/tests`` directory, not a curated
-module list. The workspace-deletion defect was suite-wide -- an unguarded test could resolve the live
-workspace and delete it -- so a single-module or few-module canary cannot establish that the
-hazard is gone. A list of "the modules we remember" silently rots as the suite grows, which is
-exactly how the original guard ended up excluding ``test_agent_runner.py``, the one module that
-exercises the real ``cleanup_repo_dir``/``_rmtree``. Running the directory also covers any new
-test file the moment it is added.
+Scope note: the workspace-deletion defect was suite-wide -- an unguarded test could resolve the live
+workspace and delete it -- so a list of "the modules we remember" cannot establish that the hazard is
+gone; it silently rots as the suite grows, which is exactly how the original guard ended up excluding
+``test_agent_runner.py``, the one module that exercises the real ``cleanup_repo_dir``/``_rmtree``.
+This guard's child therefore runs a selection *computed* by a stated rule
+(``tests/stress_selection.py``): every test module that resolves ``HOME`` or the workspace, deletes
+directories, or directly references a production or helper module that does. A new module is covered
+the moment it matches. The rest of the suite is not left unchecked: the workspace-survival stress test
+(``test_workspace_survival_stress.py``) re-runs the whole unit selection under the same simulated
+``HOME`` and workspace layout, so a test reaching the workspace by an indirect route still trips it.
 
 The child suite is launched with ``uv run pytest`` -- the repository's only sanctioned test runner
 -- so it inherits the root pytest configuration and the unit job's marker selection. Launching it
@@ -14,9 +17,9 @@ with ``python -m unittest`` bypasses both: ``unittest`` has no concept of pytest
 re-runs the ``integration_test``-marked Docker image tests that the unit job never builds, and the
 guard then fails for an environment reason that has nothing to do with hermeticity.
 
-Where it runs: the canary re-runs the whole unit selection in a child process, so it roughly doubles
-the unit job's wall time. It is therefore marked ``stress`` and runs only in the ``Workspace
-survival`` job (``.github/workflows/test-stress.yml``, ``-m stress``), which also fails if it was
+Where it runs: the canary re-runs about half of the unit selection in a child process, which would
+add a large share of the unit job's wall time. It is therefore marked ``stress`` and runs only in the
+``Workspace survival`` job (``.github/workflows/test-stress.yml``, ``-m stress``), which also fails if it was
 skipped. The negative control below is a single short subprocess and stays in the unit job. The
 child's own selection (``not integration_test and not stress``) excludes the canary, and the
 ``HOLON_HERMETIC_GUARD_CHILD`` sentinel skips it in any child run, so it cannot recurse.
@@ -42,16 +45,24 @@ from tests.hermetic_fixtures import (
     UV,
     describe_index_changes,
     knowledge_index_snapshot,
-    pytest_suite_command,
     simulated_container_env,
     uv_available,
+)
+from tests.stress_selection import canary_selection
+from tests.stress_support import (
+    canary_violations,
+    child_context,
+    child_env,
+    child_suite_command,
+    run_child,
+    seed_canary_workspace,
 )
 
 #: Sentinel set in the child environment so a child run can never recurse back into this guard.
 CHILD_ENV_VAR = "HOLON_HERMETIC_GUARD_CHILD"
 
-#: Generous ceiling: the child runs the whole non-integration suite, which itself nests the
-#: negative-control harness.
+#: Generous ceiling: the child runs the canary selection of the non-integration suite, which itself
+#: nests the negative-control harness.
 CHILD_TIMEOUT_SECONDS = 1800
 
 
@@ -85,37 +96,25 @@ class TestSandboxHermeticGuard(unittest.TestCase):
 
     @pytest.mark.stress
     def test_canary_workspace_survives_entrypoint_tests(self):
-        with tempfile.TemporaryDirectory() as sim_home:
-            sim_sandbox_workspace = os.path.join(sim_home, ".holon-sandbox", "workspace")
-            os.makedirs(sim_sandbox_workspace, exist_ok=True)
-
-            canary_marker = os.path.join(sim_sandbox_workspace, "canary.txt")
-            canary_content = "canary-alive-guard-marker-2026"
-            with open(canary_marker, "w") as f:
-                f.write(canary_content)
-
-            # Create dummy repo files inside the simulated workspace
-            dummy_repo_file = os.path.join(sim_sandbox_workspace, "important_code.py")
-            with open(dummy_repo_file, "w") as f:
-                f.write("# important code\n")
-
-            dummy_git_dir = os.path.join(sim_sandbox_workspace, ".git")
-            os.makedirs(dummy_git_dir, exist_ok=True)
+        # The context gives this test its own HOME, workspace, TMPDIR and pytest --basetemp, so it can
+        # run concurrently with the workspace-survival stress test (see tests/stress_support.py).
+        with child_context("canary") as context:
+            seed = seed_canary_workspace(context)
 
             # Snapshot the checkout's knowledge index before the child run.
             index_before = knowledge_index_snapshot(REPO_ROOT)
 
-            # Run the whole suite through the sanctioned runner and the unit job's selection, from
-            # the repository root so the child inherits the root pytest configuration.
-            cmd = pytest_suite_command()
-            res = subprocess.run(
+            # Run the canary selection (tests/stress_selection.py) through the sanctioned runner and
+            # the unit job's marker selection, from the repository root so the child inherits the
+            # root pytest configuration.
+            cmd = child_suite_command(context, targets=canary_selection(REPO_ROOT, TESTS_DIR))
+            res = run_child(
                 cmd,
+                label=context.label,
                 cwd=REPO_ROOT,
-                env=simulated_container_env(sim_home, CHILD_ENV_VAR),
-                capture_output=True,
-                text=True,
+                env=child_env(context, CHILD_ENV_VAR),
                 timeout=CHILD_TIMEOUT_SECONDS,
-            )
+            ).completed
             self.assertEqual(
                 res.returncode,
                 0,
@@ -124,42 +123,9 @@ class TestSandboxHermeticGuard(unittest.TestCase):
                 f"Stdout:\n{res.stdout}\nStderr:\n{res.stderr}",
             )
 
-            # Assert the checkout's knowledge index was not touched by the child run.
-            index_after = knowledge_index_snapshot(REPO_ROOT)
-            index_changes = describe_index_changes(index_before, index_after)
-            self.assertEqual(
-                index_changes,
-                [],
-                "A test in the child suite wrote the checkout's holon-knowledge/.index/: " + ", ".join(index_changes),
-            )
-
-            # Assert canary workspace still exists
-            self.assertTrue(
-                os.path.exists(sim_sandbox_workspace),
-                "Simulated sandbox workspace was deleted during entrypoint test runs!",
-            )
-
-            # Assert canary marker file is intact
-            self.assertTrue(
-                os.path.exists(canary_marker),
-                "Canary marker file was deleted during entrypoint test runs!",
-            )
-            with open(canary_marker) as f:
-                self.assertEqual(
-                    f.read(),
-                    canary_content,
-                    "Canary marker content was modified during entrypoint test runs!",
-                )
-
-            # Assert other workspace files remain intact
-            self.assertTrue(
-                os.path.exists(dummy_repo_file),
-                "Dummy workspace file was deleted during entrypoint test runs!",
-            )
-            self.assertTrue(
-                os.path.exists(dummy_git_dir),
-                "Dummy .git directory was deleted during entrypoint test runs!",
-            )
+            # The checkout's knowledge index, the workspace, its canary marker, the dummy repository
+            # file and the dummy .git must all be untouched by the child run.
+            self.assertEqual(canary_violations(context, seed, REPO_ROOT, index_before), [])
 
     def test_negative_control_canary_is_actually_live(self):
         """Prove the simulated workspace is the path an unpatched cleanup really destroys.

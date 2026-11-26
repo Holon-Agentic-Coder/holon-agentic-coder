@@ -5,10 +5,12 @@ import json
 import os
 import sqlite3
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+
+from sandbox_executor.knowledge.fragment_identities import ParsedRow, RowIdentity, drop_known_rows, record_identities
 
 _FAILURE_VERDICTS = ("failure", "failed")
 _SQLITE_CONNECT_TIMEOUT_SECONDS = 5.0
@@ -65,9 +67,6 @@ def resume_offset(stat: os.stat_result, watermark: SyncWatermark) -> int:
     return 0 if stat.st_size < watermark.byte_offset else watermark.byte_offset
 
 
-ParsedRow = tuple[int, str, dict[str, Any]]
-
-
 def read_new_rows(ledger_path: str, offset: int) -> tuple[list[ParsedRow], int]:
     rows: list[ParsedRow] = []
     with open(ledger_path, encoding="utf-8") as f:
@@ -84,7 +83,8 @@ def read_new_rows(ledger_path: str, offset: int) -> tuple[list[ParsedRow], int]:
                 data = json.loads(line_str)
             except Exception:
                 continue
-            rows.append((line_offset, line_str, data))
+            if isinstance(data, dict):
+                rows.append((line_offset, line_str, data))
         return rows, f.tell()
 
 
@@ -267,7 +267,12 @@ def persist_watermark(conn: sqlite3.Connection, ledger_path: str, mtime: float, 
     )
 
 
-def sync_ledger_incremental(db_path: str, ledger_path: str) -> int:
+def sync_ledger_incremental(
+    db_path: str,
+    ledger_path: str,
+    skip_row: Callable[[dict[str, Any]], bool] | None = None,
+    identity: RowIdentity | None = None,
+) -> int:
     if not os.path.exists(ledger_path):
         return 0
 
@@ -279,10 +284,19 @@ def sync_ledger_incremental(db_path: str, ledger_path: str) -> int:
         if ledger_unchanged(stat, watermark):
             return 0
 
-        parsed_rows, new_byte_offset = read_new_rows(ledger_path, resume_offset(stat, watermark))
+        rereads_whole_file = identity is not None and identity.record
+        offset = 0 if rereads_whole_file else resume_offset(stat, watermark)
+        parsed_rows, new_byte_offset = read_new_rows(ledger_path, offset)
+        if skip_row is not None:
+            parsed_rows = [parsed for parsed in parsed_rows if not skip_row(parsed[2])]
+        identities: list[str] = []
+        if identity is not None:
+            parsed_rows, identities = drop_known_rows(conn, identity, parsed_rows)
         batch = build_row_batch(parsed_rows)
         with conn:
             write_row_batch(conn, batch)
+            if identity is not None:
+                record_identities(conn, identity, identities)
             persist_watermark(conn, ledger_path, stat.st_mtime, new_byte_offset)
         return len(batch.records)
     finally:

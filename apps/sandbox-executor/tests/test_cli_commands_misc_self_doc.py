@@ -15,6 +15,7 @@ SCOPED_MODULES: tuple[str, ...] = (
     "calibrate.py",
     "consult.py",
     "ledger.py",
+    "ledger_promote.py",
     "models.py",
     "promote.py",
     "reconcile.py",

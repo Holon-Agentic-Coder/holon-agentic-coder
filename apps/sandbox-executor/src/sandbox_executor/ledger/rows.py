@@ -12,10 +12,11 @@ import time
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
 from typing import Any, Literal
 
-from sandbox_executor.ledger.lock import LedgerRewriteError, atomic_ledger_append
+from sandbox_executor.ledger.lock import LedgerRewriteError
+from sandbox_executor.ledger.order import utc_now_z
+from sandbox_executor.ledger.route import atomic_ledger_append
 from sandbox_executor.naming import distinct_stage_id, stage_id
 from sandbox_executor.ref_names import ensure_stage_segment_fits
 
@@ -164,7 +165,7 @@ class ActionRecord:
     review_disposition: str | None = None
     rejection_reason: str | None = None
     introduced_by_action_id: str | None = None
-    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    created_at: str = field(default_factory=utc_now_z)
     stage: str | None = None
     budget_name: str | None = None
     budget_seconds: float | None = None
@@ -228,7 +229,7 @@ class SummaryRecord:
     entry_type: Literal["summary"] = "summary"
     agent_version: str | None = None
     summary: str | None = None
-    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    created_at: str = field(default_factory=utc_now_z)
     agent_output_truncated: bool = False
     agent_output_bytes: int = 0
     ledger_revision: int = 1
@@ -368,8 +369,7 @@ def append_summary_record(ledger_path: str, record: SummaryRecord | dict[str, An
     with atomic_ledger_append(ledger_path) as f:
         f.write(json.dumps(data) + "\n")
 
-    if os.path.exists(ledger_path):
-        validate_ledger_file_unique_ids(ledger_path, id_key="execution_id", parent_key="plan_branch")
+    validate_ledger_file_unique_ids(ledger_path, id_key="execution_id", parent_key="plan_branch")
 
     return data
 

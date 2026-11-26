@@ -10,7 +10,6 @@ values. The warning is advisory; calibration still uses the selected row. Ledger
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -18,6 +17,7 @@ from typing import Any, NamedTuple
 
 from sandbox_executor.calibration_ev import is_matching_record, parse_summary_records
 from sandbox_executor.calibration_outcome import latest_summary_row, summary_row_order_key
+from sandbox_executor.ledger import read_merged_rows, read_merged_text
 from sandbox_executor.plan_paths import is_row_of_plan, plan_file_candidates, recorded_plan_file, split_plan_branch
 
 logger = logging.getLogger(__name__)
@@ -48,23 +48,8 @@ def plans_row_revision(row: dict[str, Any]) -> int:
 
 
 def read_plans_rows(plans_jsonl_path: str) -> list[dict[str, Any]]:
-    """Every JSON object row of a ``plans.jsonl`` file, in line order; none when it is missing or unreadable."""
-    if not os.path.exists(plans_jsonl_path):
-        return []
-    try:
-        with open(plans_jsonl_path, encoding="utf-8") as f:
-            content = f.read()
-    except OSError:
-        return []
-    rows: list[dict[str, Any]] = []
-    for line in content.splitlines():
-        try:
-            row = json.loads(line) if line.strip() else None
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if isinstance(row, dict):
-            rows.append(row)
-    return rows
+    """Every JSON object row of a ``plans.jsonl`` file and its pending fragments; none when missing or unreadable."""
+    return read_merged_rows(plans_jsonl_path)
 
 
 def select_plans_row(rows: list[dict[str, Any]], plan_branch: str) -> dict[str, Any] | None:
@@ -130,13 +115,10 @@ def plan_file_overall_metrics(
 
 def execution_predicted_metrics(executions_path: str, execution_id: str, plan_branch: str) -> dict[str, float]:
     """``predicted_metrics`` of the latest summary row of the execution (of the plan) that carries them."""
-    if not execution_id or not os.path.exists(executions_path):
+    content = read_merged_text(executions_path) if execution_id else None
+    if content is None:
         return {}
-    try:
-        with open(executions_path, encoding="utf-8") as f:
-            records = parse_summary_records(f.read())
-    except OSError:
-        return {}
+    records = parse_summary_records(content)
     carrying = [
         record
         for record in records

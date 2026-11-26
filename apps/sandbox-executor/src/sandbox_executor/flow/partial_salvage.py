@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.entrypoint.execution_workspace import (
+    ENGINE_OWNED_LEDGER_DIRS,
     ENGINE_OWNED_LEDGER_PATHS,
     ENGINE_OWNED_NOTES_GLOB,
     format_skipped_scratch_message,
@@ -54,7 +55,7 @@ class SalvageResult:
 
 
 def _excluded_pathspecs(exec_id: str | None) -> list[str]:
-    paths = list(ENGINE_OWNED_LEDGER_PATHS)
+    paths = [*ENGINE_OWNED_LEDGER_PATHS, *ENGINE_OWNED_LEDGER_DIRS]
     if exec_id:
         paths.append(os.path.join("executions", f"{exec_id}.md"))
     return ["--", ".", *(f":(exclude,literal){path}" for path in paths)]

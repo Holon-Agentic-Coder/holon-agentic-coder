@@ -8,13 +8,20 @@ from dataclasses import dataclass
 from sandbox_executor.entrypoint.pytest_summary import counts_line, summary_excerpt
 from sandbox_executor.entrypoint.review_failure_detail import failed_test_ids
 from sandbox_executor.knowledge import CredentialRedactor
+from sandbox_executor.ledger.fragments import PENDING_EXCLUDE_PATHSPEC
 from sandbox_executor.review_paths import REJECTED_DIR
 
 PATCH_MAX_CHARS = 200_000
 SUMMARY_MAX_CHARS = 2000
 PROMPT_PATCH_MAX_CHARS = 6000
 _TRUNCATION_MARKER = "\n[... patch truncated ...]\n"
-_DIFF_PATHSPEC = ["--", ".", ":(exclude)holon-knowledge/ledger/executions.jsonl", ":(exclude).holon"]
+_DIFF_PATHSPEC = [
+    "--",
+    ".",
+    ":(exclude)holon-knowledge/ledger/executions.jsonl",
+    PENDING_EXCLUDE_PATHSPEC,
+    ":(exclude).holon",
+]
 
 
 @dataclass(frozen=True)

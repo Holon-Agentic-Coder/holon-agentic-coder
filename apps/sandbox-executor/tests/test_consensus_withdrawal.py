@@ -30,6 +30,11 @@ def _ledger(tmp_path: Path) -> Path:
     return tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
 
 
+def _unscoped_fragment(tmp_path: Path) -> Path:
+    """Where the branchless review rows land: ``tmp_path`` is not a git checkout, so no intent root is derived."""
+    return tmp_path / "holon-knowledge" / "ledger" / "pending" / "executions" / "_unscoped.jsonl"
+
+
 def _ctx(tmp_path: Path, **kwargs: Any) -> FlowContext:
     _ledger(tmp_path).parent.mkdir(parents=True, exist_ok=True)
     ctx = FlowContext(repo_dir=str(tmp_path), execution_branch=BRANCH, agent="a", model="m", **kwargs)
@@ -86,14 +91,14 @@ def _seed_ledger(ctx: FlowContext, tmp_path: Path) -> bytes:
         "created_at": "2026-11-23T00:00:00+00:00",
     }
     assert record_review_action(ctx, str(_ledger(tmp_path)), approval) is not None
-    return _ledger(tmp_path).read_bytes()
+    return _unscoped_fragment(tmp_path).read_bytes()
 
 
 def test_one_row_is_appended_and_earlier_rows_stay_a_byte_prefix(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     before = _seed_ledger(ctx, tmp_path)
     withdrawal = withdraw_consensus(ctx, _record(), Comments().seams())
-    after = _ledger(tmp_path).read_bytes()
+    after = _unscoped_fragment(tmp_path).read_bytes()
     assert after.startswith(before)
     rows = [json.loads(line) for line in after[len(before) :].decode().splitlines() if line.strip()]
     assert len(rows) == 1

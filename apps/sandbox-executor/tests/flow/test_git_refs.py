@@ -171,7 +171,8 @@ class TestStageTargetsIgnoreOperatorHead:
 
         assert res.status == StageStatus.FAILED
         assert heads == [ctx.execution_branch]
-        assert _git(host, "rev-parse", "--abbrev-ref", "HEAD") == ctx.execution_branch
+        # The failure row is an untracked pending fragment, so nothing blocks restoring the starting branch.
+        assert _git(host, "rev-parse", "--abbrev-ref", "HEAD") == "main"
         assert not list((host / "plans").rglob("P-*_calibration.md")), "a failed calibration must write no report"
         assert _git(host, "log", "-1", "--format=%H", "main") == main_tip
 

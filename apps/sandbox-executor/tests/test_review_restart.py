@@ -17,6 +17,7 @@ from sandbox_executor.flow.review_restart import (
     calibrate_with_review_restart,
     stage5_merged_head_gate,
 )
+from sandbox_executor.ledger import read_merged_rows
 
 BRANCH = "I-1-x/P-1-A/E-1-A/_"
 APPROVED = "a" * 40
@@ -188,8 +189,7 @@ class Flow:
 
 
 def _ledger_rows(tmp_path: Path) -> list[dict[str, Any]]:
-    path = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
+    return read_merged_rows(str(tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"))
 
 
 def test_pipeline_restarts_stage4_on_a_red_merged_head_and_calibrates_the_green_one(tmp_path: Path) -> None:

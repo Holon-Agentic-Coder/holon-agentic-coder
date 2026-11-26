@@ -18,6 +18,7 @@ from sandbox_executor.flow.conflict_classes import ConflictClass, ConflictSides,
 from sandbox_executor.flow.conflict_classes_lists import appended_list_union
 from sandbox_executor.flow.ledger_reconcile import _append_only_union, _has_conflict_marker_lines
 from sandbox_executor.git import run_git
+from sandbox_executor.ledger.fragments import PENDING_DIR_REL
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,20 @@ def _ledger_union_holds(merged: str, sides: ConflictSides) -> bool:
     )
 
 
+def _keep_branch_fragment(worktree: str, sides: ConflictSides) -> bool:
+    """Keep the flow branch's copy of a pending fragment the target deleted when it promoted the fragment.
+
+    Rows the target already promoted stay in the fragment; the merged reader and the next promotion drop them by
+    identity, so no row is lost or duplicated.
+    """
+    _write(worktree, sides.path, sides.ours or "")
+    return _git_ok(worktree, "add", "--", sides.path)
+
+
 def _resolve_ledger(worktree: str, sides: ConflictSides) -> bool:
     """Append the flow branch's rows the target lacks after the untouched target ledger."""
+    if sides.ours is not None and sides.theirs is None and sides.path.startswith(f"{PENDING_DIR_REL}/"):
+        return _keep_branch_fragment(worktree, sides)
     if sides.ours is None or sides.theirs is None:
         return False
     merged = _append_only_union(sides.theirs.splitlines(keepends=True), sides.ours.splitlines(keepends=True))

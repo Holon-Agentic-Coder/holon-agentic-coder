@@ -19,6 +19,7 @@ from sandbox_executor.entrypoint.review_loop import _run_resolver_mode, _verify_
 from sandbox_executor.entrypoint.review_verification import missing_tool_result, verification_error
 from sandbox_executor.flow import ResolverInput, _bounded_error_context, run_review_loop
 from sandbox_executor.flow.review.resolver import _dispatch_review_resolver
+from sandbox_executor.ledger import read_merged_rows
 from sandbox_executor.resolver_result import (
     OUTPUT_TAIL_MAX_CHARS,
     bounded_output_tail,
@@ -249,16 +250,15 @@ def test_review_loop_halts_when_the_resolver_cannot_run_uv(tmp_path: Path) -> No
     assert res["error"].startswith("resolver failed: Resolver pre-push verification could not run")
     assert res["reviewers"][0]["verdict"] == str(ReviewerVerdict.CHANGES_REQUESTED)
     assert not [r for r in _rows(tmp_path, "ACT-RES") if r.get("review_disposition") == "applied"]
-    summary = [r for r in map(json.loads, _ledger_lines(tmp_path)) if r.get("entry_type") == "summary"]
+    summary = [r for r in _ledger_rows(tmp_path) if r.get("entry_type") == "summary"]
     assert "resolver failed: Resolver pre-push verification could not run" in summary[-1]["summary"]
     assert stubs.posts() == []
     assert not _rows(tmp_path, "ACT-POST")
     assert any("Not posting a review consensus" in line and "halted" in line for line in ctx.logs)
 
 
-def _ledger_lines(tmp_path: Path) -> list[str]:
-    ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
-    return [line for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+def _ledger_rows(tmp_path: Path) -> list[dict]:
+    return read_merged_rows(str(tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"))
 
 
 @pytest.mark.usefixtures("in_simulated_sandbox")

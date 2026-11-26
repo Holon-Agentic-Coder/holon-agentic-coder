@@ -23,6 +23,7 @@ from sandbox_executor.ledger import (
     generate_action_id,
     parse_commit_trailers,
     query_ledger,
+    read_merged_rows,
 )
 from sandbox_executor.ledger.query import LedgerQuery
 from sandbox_executor.ledger.query_filters import (
@@ -271,8 +272,7 @@ class TestLedgerAppend(unittest.TestCase):
             )
             append_summary_record(ledger_file, summ)
 
-            with open(ledger_file, encoding="utf-8") as f:
-                lines = [json.loads(line) for line in f if line.strip()]
+            lines = read_merged_rows(ledger_file)
 
             self.assertEqual(len(lines), 2)
             self.assertEqual(lines[0]["entry_type"], "action")
@@ -610,6 +610,20 @@ class TestLedgerCli(unittest.TestCase):
                 cli_main()
             self.assertEqual(cm.exception.code, 1)
         self.assertIn("does not exist", stderr.getvalue())
+
+    def test_cli_ledger_query_fragment_only_ledger(self):
+        ledger_file = os.path.join(self.temp_dir.name, "holon-knowledge", "ledger", "executions.jsonl")
+        fragment = os.path.join(os.path.dirname(ledger_file), "pending", "executions", "I-1.jsonl")
+        os.makedirs(os.path.dirname(fragment))
+        with open(fragment, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"execution_id": "E-FRAG-1", "created_at": "2026-11-01T00:00:00Z"}) + "\n")
+        argv = ["holon", "ledger", "query", "--ledger-file", ledger_file, "--json"]
+        stdout = io.StringIO()
+        with patch("sys.argv", argv), patch("sys.stdout", stdout):
+            with self.assertRaises(SystemExit) as cm:
+                cli_main()
+            self.assertEqual(cm.exception.code, 0)
+        self.assertEqual([row["execution_id"] for row in json.loads(stdout.getvalue())], ["E-FRAG-1"])
 
 
 class TestAtomicLedgerLocking(unittest.TestCase):

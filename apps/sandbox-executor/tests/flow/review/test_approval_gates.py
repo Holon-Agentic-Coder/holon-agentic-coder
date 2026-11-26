@@ -190,3 +190,10 @@ def test_drift_between_the_gates_and_the_verdict_is_logged(tmp_path):
     ctx = _ctx(tmp_path)
     record_iteration_gates(ctx, _facts([clean_reviewer(1)], True), ConsensusVerdict.CHANGES_REQUESTED)
     assert any("Gate drift at iteration 2" in line for line in ctx.logs)
+
+
+def test_a_scoped_re_review_records_a_scoped_diff_gate(tmp_path):
+    ctx = _ctx(tmp_path)
+    facts = IterationGates(HEAD, 3, [clean_reviewer(1)], 1, True, [], True, {}, "main", None, mode="scoped")
+    record_iteration_gates(ctx, facts, ConsensusVerdict.APPROVED)
+    assert diff_gate_of(ctx).mode == "scoped"

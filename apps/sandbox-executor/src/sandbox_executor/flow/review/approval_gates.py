@@ -90,6 +90,7 @@ class IterationGates:
     ci_status: Mapping[str, Any] = field(default_factory=dict)
     base_branch: str | None = None
     fingerprint_of: Callable[[str], str | None] | None = None
+    mode: str = "full"  # ``scoped`` when the iteration re-reviewed only ``context.review_scope_paths``.
 
 
 def pipeline_state_of(ci_green: bool | None, ci_status: Mapping[str, Any]) -> str:
@@ -189,9 +190,8 @@ def record_iteration_gates(context: FlowContext, facts: IterationGates, verdict:
     diff_ok = diff_verdict is ConsensusVerdict.APPROVED
     fingerprint = facts.fingerprint_of(facts.head) if diff_ok and facts.fingerprint_of else None
     verdicts = tuple(str(r.verdict) for r in facts.reviewers)
-    record_diff_gate(
-        context, DiffGate(diff_ok, facts.head, fingerprint, facts.base_branch, facts.iteration, "full", verdicts)
-    )
+    gate = DiffGate(diff_ok, facts.head, fingerprint, facts.base_branch, facts.iteration, facts.mode, verdicts)
+    record_diff_gate(context, gate)
     state = pipeline_state_of(facts.ci_green, facts.ci_status)
     record_pipeline_gate(context, PipelineGate(facts.head, state, _run_ids(facts.ci_status, state)))
     if diff_ok and state == GREEN and verdict is not ConsensusVerdict.APPROVED:

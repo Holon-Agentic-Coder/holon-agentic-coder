@@ -121,8 +121,15 @@ def test_a_settled_pipeline_counts_one_run_per_head_and_run_id(tmp_path):
     red = {**RED, "checks": [run]}
     inspect_ci(_inputs(red, reviewer_objected=True), context)
     inspect_ci(_inputs(red), context)  # The same run inspected again (a resume or a rerun) is no new run.
-    inspect_ci(_inputs(GREEN, is_dirty=True), context)  # No run id: counted by head and settled state.
+    inspect_ci(_inputs(GREEN, is_dirty=True), context)  # No run id: counted once per head.
     assert accounting_of(context)["pipeline_runs"] == 2
+
+
+def test_a_rerun_without_run_ids_that_turns_green_is_no_new_run(tmp_path):
+    context = _ctx(tmp_path)
+    inspect_ci(_inputs(RED, is_dirty=True), context)
+    inspect_ci(_inputs(GREEN, is_dirty=True), context)
+    assert accounting_of(context)["pipeline_runs"] == 1
 
 
 def test_a_pending_or_local_status_is_no_pipeline_run(tmp_path):

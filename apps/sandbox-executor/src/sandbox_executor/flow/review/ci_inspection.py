@@ -80,7 +80,7 @@ def _count_settled_pipeline(context: FlowContext, review_target: str, ci_status:
         return
     links = (check.get("link") for check in ci_status.get("checks") or [] if isinstance(check, dict))
     run_ids = sorted({run_id for run_id in map(parse_run_id, links) if run_id})
-    runs = ",".join(run_ids) or ("passed" if ci_status.get("all_passed") else "failed")
+    runs = ",".join(run_ids) or "no-run-id"
     count_accounting(context, "pipeline_runs", event=f"run:{current_decision(context).head or review_target}:{runs}")
 
 

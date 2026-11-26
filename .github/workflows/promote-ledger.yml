@@ -112,6 +112,9 @@ jobs:
             if git push origin HEAD:main; then
               exit 0
             fi
+            if [ "${attempt}" -eq 3 ]; then
+              break
+            fi
             echo "::warning::Push attempt ${attempt} of 3 was rejected; fetching and rebasing onto origin/main."
             git fetch origin main
             if ! git rebase origin/main; then

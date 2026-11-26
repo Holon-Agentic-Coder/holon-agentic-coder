@@ -34,7 +34,7 @@ from sandbox_executor.git_flow import (
 )
 from sandbox_executor.ledger import read_merged_rows, read_merged_text
 
-from tests.flow.helpers import SteppingClock, _dispatch_context, _prefix, _review_loop_gh_stubs
+from tests.flow.helpers import SteppingClock, _dispatch_context, _prefix, _review_loop_gh_stubs, seed_empty_ledger
 from tests.flow.lookup_patch import patch_lookup_sites
 from tests.flow.timed_dispatch import dispatch_timed_execute
 
@@ -524,9 +524,7 @@ class TestFlowStages:
                 return MagicMock(returncode=1, stdout="", stderr=f"remote rejected {sample_value}")
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
-        ledger.parent.mkdir(parents=True)
-        ledger.write_text("", encoding="utf-8")
+        seed_empty_ledger(tmp_path)
         with patch("sandbox_executor.flow.stages.calibrate.run_git", side_effect=fake_run_git):
             _commit_stage5_reconciliation(ctx, str(tmp_path))
 

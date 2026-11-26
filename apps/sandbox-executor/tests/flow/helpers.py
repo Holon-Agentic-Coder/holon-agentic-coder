@@ -366,6 +366,14 @@ def _ledger_fingerprint(path: Path) -> tuple[int, str]:
     return (data.count(b"\n"), hashlib.sha256(data).hexdigest())
 
 
+def seed_empty_ledger(repo: Path) -> Path:
+    """Create an empty canonical executions ledger under ``repo`` and return its path."""
+    ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text("", encoding="utf-8")
+    return ledger
+
+
 def _read_rows(ledger: Path) -> list[dict]:
     return read_merged_rows(str(ledger))
 

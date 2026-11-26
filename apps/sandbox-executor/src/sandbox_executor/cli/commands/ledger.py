@@ -9,6 +9,7 @@ import sys
 
 from sandbox_executor import cli
 from sandbox_executor.cli.options import add_target_worktree_option
+from sandbox_executor.ledger.fragments import iter_fragment_files
 
 ORDER = 90
 _DEFAULT_LEDGER_RELATIVE_PATH = "holon-knowledge/ledger/executions.jsonl"
@@ -131,7 +132,7 @@ def run(args: argparse.Namespace) -> int:
     if getattr(args, "ledger_command", None) == "query":
         ledger_file = _resolve_worktree_path(args.ledger_file, args.target_worktree)
 
-        if not os.path.exists(ledger_file):
+        if not os.path.exists(ledger_file) and not iter_fragment_files(ledger_file):
             print(f"Error: Ledger file '{ledger_file}' does not exist.", file=sys.stderr)
             return 1
 

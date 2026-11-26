@@ -12,11 +12,13 @@ from sandbox_executor.flow import conflict_classes_resolve
 from sandbox_executor.flow.conflict_classes import ConflictClass, classify_merge_conflicts
 from sandbox_executor.flow.conflict_classes_lists import appended_list_union
 from sandbox_executor.flow.conflict_classes_resolve import resolve_mechanical
+from sandbox_executor.ledger import read_merged_rows
 
 from tests.flow.helpers import _git
 from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
 
 LEDGER = "holon-knowledge/ledger/executions.jsonl"
+FRAGMENT = "holon-knowledge/ledger/pending/executions/I-1.jsonl"
 KB = "holon-knowledge/kb/entry.json"
 INIT = "pkg/__init__.py"
 
@@ -53,6 +55,22 @@ def test_ledger_rows_of_both_sides_are_kept_after_the_target_prefix(tmp_path: Pa
     assert outcome.resolved == [(LEDGER, ConflictClass.LEDGER)] and outcome.code_paths == []
     assert (work / LEDGER).read_text(encoding="utf-8") == target + _row("E-flow", "2026-11-03T00:00:00Z")
     assert _git(work, "diff", "--name-only", "--diff-filter=U") == ""
+
+
+def test_a_fragment_promoted_on_the_target_keeps_the_branch_copy(tmp_path: Path):
+    promoted = _row("E-base", "2026-11-01T00:00:00Z")
+    flow = promoted + _row("E-flow", "2026-11-03T00:00:00Z")
+    target = {LEDGER: promoted, FRAGMENT: None}
+    work, paths = _conflicted(tmp_path, {LEDGER: "", FRAGMENT: promoted}, {FRAGMENT: flow}, target)
+
+    classified, outcome = _classify_and_resolve(work, paths)
+
+    assert classified == [(FRAGMENT, ConflictClass.LEDGER)]
+    assert outcome.resolved == [(FRAGMENT, ConflictClass.LEDGER)] and outcome.code_paths == []
+    assert (work / FRAGMENT).read_text(encoding="utf-8") == flow
+    assert _git(work, "diff", "--name-only", "--diff-filter=U") == ""
+    rows = read_merged_rows(str(work / LEDGER))
+    assert [row["execution_id"] for row in rows] == ["E-base", "E-flow"]
 
 
 def _kb(title: str, updated_at: str) -> str:

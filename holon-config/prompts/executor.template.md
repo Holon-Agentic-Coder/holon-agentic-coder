@@ -31,6 +31,14 @@ codebase files.
 9. Module line budgets: if `uv run task lint` reports a module over its line limit, split the module into smaller
    modules. Never edit the frozen module budget configuration (`holon-config/hygiene/module_budgets.json`); Stage 3
    refuses an execution that changes it unless the intent carries `module_budget_change` quoting the maintainer.
+10. Code is self-explaining: names state the intent of every statement, and a block that cannot be named where it is
+    gets extracted into a function whose name says what it does. Write no docstrings and no explanatory comments in any
+    language (Python, shell, Makefile, Dockerfile, YAML, TOML, JavaScript). The only allowed comment is a `# why:`
+    comment recording a reason the code cannot show (a constraint, an incident, a non-obvious decision), never what the
+    code does. Machine directives stay allowed: shebangs, encoding lines, `# noqa`, `# type:`, `# pragma`, `# fmt:` and
+    shellcheck directives. Do not remove existing docstrings or comments as part of unrelated work.
+    `scripts/check_self_explaining.py` (run by `uv run task lint`) enforces this on added lines, so editing or moving a
+    docstring counts as adding one.
 
 **Write Protocol (incremental execution notes):**
 

@@ -18,7 +18,11 @@ except ImportError:
     from self_explaining_diff import ChangedFile, changed_files_against_merge_base, merge_base, staged_changed_files
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
-NO_MERGE_BASE_NOTICE = "no merge base with origin/main; self-explaining check skipped"
+MISSING_MERGE_BASE_ERROR = (
+    "self-explaining check failed: no merge base with origin/main, even after fetching origin main and unshallowing; "
+    "fetch origin main with full history and rerun"
+)
+MISSING_MERGE_BASE_EXIT = 2
 VIOLATION_RULE = "code is self-explaining; only '# why:' reasons and machine directives are allowed"
 
 
@@ -32,6 +36,25 @@ def violations_in(changed_file: ChangedFile) -> list[str]:
         for finding in find_comments_and_docstrings(changed_file.path, changed_file.text)
         if touches_added_line(finding, changed_file)
     ]
+
+
+def violations_by_file(changed_files: list[ChangedFile]) -> dict[str, list[str]]:
+    violations_by_path = {}
+    for changed_file in changed_files:
+        violations = violations_in(changed_file)
+        if violations:
+            violations_by_path[changed_file.path] = violations
+    return violations_by_path
+
+
+def report_violations(violations_by_path: dict[str, list[str]]) -> None:
+    for violations in violations_by_path.values():
+        for violation in violations:
+            print(violation, file=sys.stderr)
+    for path, violations in violations_by_path.items():
+        print(f"{path}: {len(violations)} added docstring(s)/comment(s)", file=sys.stderr)
+    total = sum(len(violations) for violations in violations_by_path.values())
+    print(f"{total} added docstring(s) or comment(s) found.", file=sys.stderr)
 
 
 def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
@@ -52,13 +75,11 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parse_arguments(argv)
     changed_files = changed_files_to_check(arguments.root, arguments.staged)
     if changed_files is None:
-        print(NO_MERGE_BASE_NOTICE)
-        return 0
-    violations = [violation for changed_file in changed_files for violation in violations_in(changed_file)]
-    for violation in violations:
-        print(violation, file=sys.stderr)
-    if violations:
-        print(f"{len(violations)} added docstring(s) or comment(s) found.", file=sys.stderr)
+        print(MISSING_MERGE_BASE_ERROR, file=sys.stderr)
+        return MISSING_MERGE_BASE_EXIT
+    violations_by_path = violations_by_file(changed_files)
+    if violations_by_path:
+        report_violations(violations_by_path)
         return 1
     print(f"Self-explaining check passed ({len(changed_files)} changed file(s)).")
     return 0

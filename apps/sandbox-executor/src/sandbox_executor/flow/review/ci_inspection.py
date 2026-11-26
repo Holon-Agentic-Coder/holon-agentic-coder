@@ -9,6 +9,7 @@ from typing import Any, NamedTuple
 from sandbox_executor.budgets import StageTimer
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.github.ci import _ci_green, resolve_ci_registration_timeout
+from sandbox_executor.flow.github.ci_failure_detail import DetailLookup
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, CiWaitResult, settle_pending_ci
 from sandbox_executor.flow.review.ci_evidence import _apply_guarded_test_evidence
 from sandbox_executor.flow.review.ci_outcome import gate_ci_flags
@@ -19,7 +20,8 @@ class CiInspectionInputs:
     """What one iteration's CI inspection reads: the run's CI seams, then the per-iteration flags.
 
     ``probe_ci`` and ``wait_registration`` come from the loop module's namespace, so tests patching
-    ``loop.probe_ci_checks`` or ``loop._wait_for_ci_registration`` still intercept them.
+    ``loop.probe_ci_checks`` or ``loop._wait_for_ci_registration`` still intercept them. ``detail_lookup`` and
+    ``rerun_failed`` replace the ``gh`` defaults of the noise rerun (:mod:`.ci_noise_rerun`) in tests.
     """
 
     repo_dir: str
@@ -42,6 +44,8 @@ class CiInspectionInputs:
     effective_dry_run: bool = False
     infra_failed: bool = False
     ci_wait: CiWaitResult | None = None
+    detail_lookup: DetailLookup | None = None
+    rerun_failed: Callable[[str], bool] | None = None
 
 
 class CiInspection(NamedTuple):

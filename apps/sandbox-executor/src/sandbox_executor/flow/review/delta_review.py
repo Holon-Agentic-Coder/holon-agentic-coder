@@ -170,3 +170,13 @@ def end_review_pass(context: FlowContext, head: str, reviewers: Sequence[Reviewe
         state["anchor_head"], state["scoped_chain"] = head, 0
     state["last_critical"] = any(r.counts.critical > 0 for r in reviewers)
     state["last_reviewed_head"], state["addressed"] = head, []
+
+
+def _adopt_reviewed_head(context: FlowContext, head: str) -> None:
+    """Make ``head`` the reviewed anchor, so a fix on top of it can be reviewed scoped; ``last_critical`` stays.
+
+    Called only when the diff approval holds on ``head`` (the same PR-own change), e.g. a merged head whose CI found a
+    defect: the merge commit is then behind the anchor and the fix delta is the resolver's change alone.
+    """
+    state = delta_state_of(context)
+    state["last_reviewed_head"], state["anchor_head"], state["scoped_chain"] = head, head, 0

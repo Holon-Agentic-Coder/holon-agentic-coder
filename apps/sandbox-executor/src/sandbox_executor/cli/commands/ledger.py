@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
+import pkgutil
 import sys
 
 from sandbox_executor import cli
@@ -10,12 +12,26 @@ from sandbox_executor.cli.options import add_target_worktree_option
 
 ORDER = 90
 _DEFAULT_LEDGER_RELATIVE_PATH = "holon-knowledge/ledger/executions.jsonl"
+_LEDGER_SUBCOMMAND_PREFIX = "ledger_"
 
 
 def _resolve_worktree_path(path: str, target_worktree: str) -> str:
     if os.path.isabs(path):
         return path
     return os.path.join(target_worktree, path)
+
+
+def _register_ledger_subcommands(ledger_subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    package = __name__.rpartition(".")[0]
+    names = sorted(
+        info.name
+        for info in pkgutil.iter_modules(importlib.import_module(package).__path__)
+        if info.name.startswith(_LEDGER_SUBCOMMAND_PREFIX)
+    )
+    for name in names:
+        register_subcommand = getattr(importlib.import_module(f"{package}.{name}"), "register_ledger_subcommand", None)
+        if callable(register_subcommand):
+            register_subcommand(ledger_subparsers)
 
 
 def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -104,10 +120,14 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help="Maximum number of records to return.",
     )
     add_target_worktree_option(query_parser, default=".")
+    _register_ledger_subcommands(ledger_subparsers)
     ledger_parser.set_defaults(_run=run)
 
 
 def run(args: argparse.Namespace) -> int:
+    ledger_run = getattr(args, "_ledger_run", None)
+    if callable(ledger_run):
+        return ledger_run(args)
     if getattr(args, "ledger_command", None) == "query":
         ledger_file = _resolve_worktree_path(args.ledger_file, args.target_worktree)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 
 from sandbox_executor import cli
@@ -30,6 +31,8 @@ from sandbox_executor.cli.options import (
 )
 from sandbox_executor.flow import FlowStage
 from sandbox_executor.review_ensemble import ENSEMBLE_SIZE_HELP
+
+logger = logging.getLogger(__name__)
 
 ORDER = 60
 

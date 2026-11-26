@@ -18,6 +18,7 @@ from collections.abc import Sequence
 
 try:
     from scripts.check_self_explaining import main as check_self_explaining
+    from scripts.pre_commit_credentials import _GITHUB_CREDENTIAL_MARKERS as _GITHUB_CREDENTIAL_MARKERS
     from scripts.pre_commit_credentials import CREDENTIAL_PATTERNS as CREDENTIAL_PATTERNS
     from scripts.pre_commit_credentials import FALSE_POSITIVE_INDICATORS as FALSE_POSITIVE_INDICATORS
     from scripts.pre_commit_credentials import GITHUB_CREDENTIAL_PATTERN_NAMES as GITHUB_CREDENTIAL_PATTERN_NAMES
@@ -28,6 +29,7 @@ try:
     from scripts.pre_commit_spelling import check_spelling_orthography
 except ImportError:
     from check_self_explaining import main as check_self_explaining
+    from pre_commit_credentials import _GITHUB_CREDENTIAL_MARKERS as _GITHUB_CREDENTIAL_MARKERS
     from pre_commit_credentials import CREDENTIAL_PATTERNS as CREDENTIAL_PATTERNS
     from pre_commit_credentials import FALSE_POSITIVE_INDICATORS as FALSE_POSITIVE_INDICATORS
     from pre_commit_credentials import GITHUB_CREDENTIAL_PATTERN_NAMES as GITHUB_CREDENTIAL_PATTERN_NAMES

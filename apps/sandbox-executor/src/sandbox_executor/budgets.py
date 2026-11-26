@@ -11,6 +11,8 @@ from sandbox_executor.budget_limits import (
     unbounded_supervision_warning,
 )
 from sandbox_executor.budgets_timer import _ACTIVE_STAGE_TIMER as _ACTIVE_STAGE_TIMER
+from sandbox_executor.budgets_timer import _HANDDOWN_MARGIN_DIVISOR as _HANDDOWN_MARGIN_DIVISOR
+from sandbox_executor.budgets_timer import _MIN_HANDDOWN_SECONDS as _MIN_HANDDOWN_SECONDS
 from sandbox_executor.budgets_timer import _SECONDS_PER_MINUTE, ENV_STAGE_BUDGET_SECONDS
 from sandbox_executor.budgets_timer import (
     CONTAINER_OVERHEAD_AND_HOST_CHECKS_MARGIN_SECONDS as CONTAINER_OVERHEAD_AND_HOST_CHECKS_MARGIN_SECONDS,

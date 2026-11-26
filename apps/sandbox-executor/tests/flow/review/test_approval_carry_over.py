@@ -195,3 +195,21 @@ def test_git_failures_are_never_bookkeeping_only(approved_repo, tmp_path: Path) 
     assert not is_bookkeeping_only_move(str(repo), approved, approved)  # No change at all.
     assert not is_bookkeeping_only_move(str(repo), approved, "0" * 40)
     assert not is_bookkeeping_only_move(str(tmp_path / "missing"), approved, "b" * 40)
+
+
+def test_a_target_merge_of_only_knowledge_and_execution_records_carries_over(approved_repo) -> None:
+    from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of
+
+    repo, approved = approved_repo
+    _git(repo, "update-ref", "refs/remotes/origin/main", "main")
+    recorded = approval_fingerprint_of(str(repo), approved, "main")
+    _git(repo, "checkout", "-q", "main")
+    _commit(repo, {"holon-knowledge/kb/note.md": "learnt\n", "executions/E-9.md": "# other flow\n"}, "main bookkeeping")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "main")
+    _git(repo, "checkout", "-q", "feature")
+    _git(repo, "merge", "-q", "--no-ff", "main", "-m", "merge main")
+    merged = _git(repo, "rev-parse", "HEAD")
+    consensus = _consensus(target_commit=approved, approval_fingerprint=recorded)
+
+    assert recorded is not None and recorded.startswith("pf2:")
+    assert decide_carry_over(str(repo), consensus, merged, "main") == CarryOver(approved, merged, recorded)

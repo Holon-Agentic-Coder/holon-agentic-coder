@@ -56,7 +56,7 @@ jobs:
           job-name: unit
           os: ${{ matrix.os }}
 
-      # A pull request whose changed files are all platform-neutral skips the macOS leg's steps below; see
+      # A pull request that changes no platform-sensitive path or content skips the macOS leg's steps below; see
       # "macOS Relevance Gate" in .github/workflows/README.md.
       - name: macOS relevance gate
         id: macos_relevance

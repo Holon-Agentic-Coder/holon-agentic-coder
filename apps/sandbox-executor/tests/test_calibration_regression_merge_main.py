@@ -175,7 +175,7 @@ def build_pr_249_topology(path: Path) -> SimpleNamespace:
 
 @pytest.fixture
 def topology(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    monkeypatch.setattr("sandbox_executor.calibration.datetime", FrozenDatetime)
+    monkeypatch.setattr("sandbox_executor.calibration.generate.datetime", FrozenDatetime)
     monkeypatch.delenv("HOLON_PR_HEAD_SHA", raising=False)
     return build_pr_249_topology(tmp_path)
 

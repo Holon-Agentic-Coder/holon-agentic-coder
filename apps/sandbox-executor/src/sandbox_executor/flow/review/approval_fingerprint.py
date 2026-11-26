@@ -1,15 +1,18 @@
 """The PR-own change fingerprint an approval is bound to, next to the SHA the reviewers saw.
 
-The fingerprint covers the diff from ``merge-base(head, origin/<target>)`` to ``head``, without ``holon-knowledge/**``
-(the ledgers and the knowledge base every flow appends to) and the Stage 5 calibration reports
-(``plans/**/*_calibration.md``). It hashes two reductions of that diff together:
+The fingerprint covers the PR's reviewable own diff: ``merge-base(head, origin/<target>)`` to ``head``, without the
+bookkeeping files. Those are the shared CI definition (``ci_final_head.BOOKKEEPING_PATH_PREFIXES`` and
+``scripts/ci_bookkeeping_gate.py``): a ``.md``, ``.json`` or ``.jsonl`` file under ``plans/``, ``executions/`` or
+``holon-knowledge/`` with a non-dot stem. Any other file under those roots (a ``plans/tool.py``, a ``plans/.json``)
+still counts as reviewable code. It hashes two reductions of that diff together:
 
 - ``git patch-id --stable`` over the full-index binary diff, which ignores line numbers and hunk order, so a merge of a
   target branch that only touched other files leaves it unchanged;
 - the sorted ``status mode blob path`` lines of ``--raw``, so a mode-only change, an empty-file change or a binary
   change (none of which carries a text hunk) still changes the fingerprint.
 
-The result is ``pf1:`` and 40 hex characters; the version prefix keeps a later reduction from ever matching an old one.
+The result is ``pf2:`` and 40 hex characters; the version prefix keeps a later reduction from ever matching an old one,
+so a ``pf1`` approval (which excluded only the knowledge base and calibration reports) never matches a ``pf2`` one.
 An empty PR-own change, an unknown ref or any git failure gives None, and None never matches anything, so an approval
 without a fingerprint (a legacy checkpoint) keeps today's behaviour.
 
@@ -22,28 +25,41 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import posixpath
 import subprocess
 from collections.abc import Mapping
 from typing import Any
 
+from sandbox_executor.flow.github.ci_final_head import BOOKKEEPING_PATH_PREFIXES
 from sandbox_executor.git import run_git
-from sandbox_executor.plan_paths import CALIBRATION_REPORT_SUFFIX
 
 logger = logging.getLogger(__name__)
 
-FINGERPRINT_VERSION = "pf1"
+FINGERPRINT_VERSION = "pf2"
 FINGERPRINT_HEX_CHARS = 40
-FINGERPRINT_EXCLUDED_PATHSPECS = (
-    ":(exclude,glob)holon-knowledge/**",
-    f":(exclude,glob)plans/**/*{CALIBRATION_REPORT_SUFFIX}",
+# Mirrors ``scripts/ci_bookkeeping_gate.BOOKKEEPING_SUFFIXES``; a parity test keeps the two equal.
+BOOKKEEPING_PATH_SUFFIXES = (".md", ".json", ".jsonl")
+# ``*[!.]*`` needs a non-dot character before the suffix, like ``posixpath.splitext``: a ``plans/.json`` or
+# ``plans/..json`` has no extension, so ``is_bookkeeping_path`` and the CI gate treat it as reviewable, as does this.
+FINGERPRINT_EXCLUDED_PATHSPECS = tuple(
+    f":(exclude,glob){prefix}**/*[!.]*{suffix}"
+    for prefix in BOOKKEEPING_PATH_PREFIXES
+    for suffix in BOOKKEEPING_PATH_SUFFIXES
 )
 # What an approval is bound to, carried from the loop's consensus data into the Stage 4 payload for Stage 5.
 APPROVAL_RECORD_KEYS = ("target_commit", "approval_fingerprint", "base_branch", "carried_from", "carried_to")
 _GIT_TIMEOUT_SECONDS = 60
 
 
-def _pathspecs() -> list[str]:
-    return ["--", ".", *FINGERPRINT_EXCLUDED_PATHSPECS]
+def reviewable_pathspecs() -> tuple[str, ...]:
+    """The ``git diff`` pathspecs of the reviewable diff: everything except the bookkeeping files."""
+    return ("--", ".", *FINGERPRINT_EXCLUDED_PATHSPECS)
+
+
+def is_bookkeeping_path(path: str) -> bool:
+    """True only for a bookkeeping-suffixed file under a bookkeeping root, the same rule as the CI bookkeeping gate."""
+    root, _, rest = path.partition("/")
+    return f"{root}/" in BOOKKEEPING_PATH_PREFIXES and posixpath.splitext(rest)[1] in BOOKKEEPING_PATH_SUFFIXES
 
 
 def _git_bytes(repo_dir: str, args: list[str], stdin: bytes | None = None) -> bytes | None:
@@ -78,11 +94,11 @@ def pr_change_fingerprint(repo_dir: str, head: str, target_ref: str) -> str | No
     if base.returncode != 0 or not base_sha:
         return None
     span = [base_sha, head]
-    raw = _git_bytes(repo_dir, ["diff", "--raw", "--no-abbrev", "-z", "--no-renames", *span, *_pathspecs()])
+    raw = _git_bytes(repo_dir, ["diff", "--raw", "--no-abbrev", "-z", "--no-renames", *span, *reviewable_pathspecs()])
     lines = _raw_lines(raw or b"")
     if not lines:
         return None
-    diff = _git_bytes(repo_dir, ["diff", "--full-index", "--binary", "--no-renames", *span, *_pathspecs()])
+    diff = _git_bytes(repo_dir, ["diff", "--full-index", "--binary", "--no-renames", *span, *reviewable_pathspecs()])
     patch_id = _git_bytes(repo_dir, ["patch-id", "--stable"], stdin=diff) if diff is not None else None
     if patch_id is None:
         return None
@@ -102,9 +118,29 @@ def approval_fingerprint_of(repo_dir: str, head: str | None, base_branch: str | 
         return None
 
 
+def is_bookkeeping_only_move(repo_dir: str, approved: str, head: str) -> bool:
+    """True only when ``approved..head`` changed at least one path and every changed path is bookkeeping.
+
+    The span includes whatever a target merge brought in, so a merge with target code is never bookkeeping-only. An
+    unknown commit, a missing repository or any git failure gives False.
+    """
+    try:
+        names = run_git(["diff", "--name-only", "--no-renames", approved, head], cwd=repo_dir, check=False)
+    except (OSError, TimeoutError) as exc:
+        logger.debug("Could not diff %s..%s: %s", approved, head, exc)
+        return False
+    paths = [line for line in str(names.stdout or "").splitlines() if line.strip()]
+    return names.returncode == 0 and bool(paths) and all(is_bookkeeping_path(path) for path in paths)
+
+
 def approval_record(consensus_data: Mapping[str, Any]) -> dict[str, Any]:
     """The head the reviewers saw, the fingerprint and any carry-over, for the Stage 4 payload's consensus."""
     return {key: consensus_data.get(key) for key in APPROVAL_RECORD_KEYS}
+
+
+def is_current_version(fingerprint: str | None) -> bool:
+    """True only for a fingerprint of today's reduction; an older (``pf1``) one can never be compared, only unknown."""
+    return bool(fingerprint) and str(fingerprint).startswith(f"{FINGERPRINT_VERSION}:")
 
 
 def fingerprints_match(first: str | None, second: str | None) -> bool:

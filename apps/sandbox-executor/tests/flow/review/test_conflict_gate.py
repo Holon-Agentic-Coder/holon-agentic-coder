@@ -181,7 +181,7 @@ def test_ledger_only_conflict_is_merged_and_pushed_but_the_approval_is_not_poste
     assert posting_res["conflict_gate"]["ledger_only"] is True
     assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") != before
     merged_rows = read_merged_rows_at_ref(str(origin), f"refs/heads/{BRANCH}", "executions.jsonl")
-    assert [r["execution_id"] for r in merged_rows[:4]] == ["E-base", "E-main", "E-early", "E-late"]
+    assert [r["execution_id"] for r in merged_rows[:4]] == ["E-base", "E-early", "E-main", "E-late"]
     assert merged_rows[-1]["action"] == "target_sync"
     message = _git(origin, "log", "-1", "--format=%B", f"refs/heads/{BRANCH}")
     assert "sync: merge target" in message
@@ -264,7 +264,7 @@ def test_a_conflict_merge_starts_from_a_clean_tree_with_pending_rows_committed_a
     assert _git(work, "rev-parse", "HEAD") == merged  # The local branch followed the pushed merge.
     assert _git(work, "status", "--porcelain") == ""
     ids = [json.loads(line)["execution_id"] for line in _git(origin, "show", f"{merged}:{LEDGER}").splitlines()]
-    assert ids[:5] == ["E-base", "E-main", "E-early", "E-late", "E-pending"]
+    assert ids[:5] == ["E-base", "E-early", "E-main", "E-late", "E-pending"]
 
 
 def _unpushable_rows_repos(tmp_path: Path) -> tuple[Path, Path]:
@@ -400,7 +400,7 @@ def _approved_at_head(work: Path, origin: Path, *, fingerprinted: bool = True) -
     data["mergeability"] = {"merge_state_status": "CLEAN", "mergeable": "MERGEABLE", "is_dirty": False}  # A's probe.
     if fingerprinted:
         data["approval_fingerprint"] = approval_fingerprint_of(str(work), head, "main")
-        assert str(data["approval_fingerprint"]).startswith("pf1:")
+        assert str(data["approval_fingerprint"]).startswith("pf2:")
     return data
 
 
@@ -527,7 +527,7 @@ def test_a_carried_approval_ends_the_loop_approved_without_another_reviewer_disp
         SyncResult("merged", "a" * 40, merged_head, "c" * 40, resolutions=((LEDGER, "ledger", "mechanical"),))
     )
     monkeypatch.setattr(sync_points, "sync_review_head", merge)
-    same_change = MagicMock(return_value="pf1:" + "c" * 40)
+    same_change = MagicMock(return_value="pf2:" + "c" * 40)
     monkeypatch.setattr("sandbox_executor.flow.review.loop.approval_fingerprint_of", same_change)
     monkeypatch.setattr("sandbox_executor.flow.review.approval_carry_over.approval_fingerprint_of", same_change)
     ensemble = FakeEnsemble([clean_reviewer(1)])
@@ -544,7 +544,7 @@ def test_a_carried_approval_ends_the_loop_approved_without_another_reviewer_disp
     approved = res["consensus"]["target_commit"]  # The SHA the reviewers saw, never the merged head.
     assert approved and approved != merged_head
     assert (res["consensus"]["carried_from"], res["consensus"]["carried_to"]) == (approved, merged_head)
-    assert res["consensus"]["approval_fingerprint"] == "pf1:" + "c" * 40
+    assert res["consensus"]["approval_fingerprint"] == "pf2:" + "c" * 40
     (carry,) = _rows(tmp_path, "ACT-CARRY")
     assert carry["merged_head"] == merged_head
     assert not _rows(tmp_path, "ACT-GATE")
@@ -575,3 +575,73 @@ def test_stage5_records_one_carry_over_row_for_a_merge_that_kept_the_change(tmp_
     consensus = ctx.stage_results["review"].payload["consensus"]
     assert consensus["target_commit"] == consensus_data["target_commit"] and consensus["carried_to"] == merged
     assert before != after
+
+
+FINGERPRINT = "pf2:" + "c" * 40
+MECHANICAL_RESOLUTIONS = {
+    "clean": (),
+    "ledger": ((LEDGER, "ledger", "mechanical"),),
+    "kb_timestamp_only": (("holon-knowledge/kb/entry.json", "kb_timestamp_only", "mechanical"),),
+    "appended_list": (("src/registry.py", "appended_list", "mechanical"),),
+    "delete_vs_touch": (("src/old.py", "delete_vs_touch", "mechanical"),),
+}
+
+
+def _gate_post(
+    tmp_path: Path, monkeypatch, result: SyncResult, merged_fingerprint: str, ctx: FlowContext | None = None
+):
+    """Run ``_approved_post_gate`` on a CONFLICTING head whose merge returns ``result``; the fingerprint is stubbed."""
+    monkeypatch.setattr(sync_points, "sync_review_head", _RecordingSync(result))
+    monkeypatch.setattr(
+        "sandbox_executor.flow.review.approval_carry_over.approval_fingerprint_of", lambda *a: merged_fingerprint
+    )
+    consensus = {
+        "approved": True,
+        "base_branch": "main",
+        "target_commit": "a" * 40,
+        "approval_fingerprint": FINGERPRINT,
+    }
+    request = PostRequest(str(tmp_path), BRANCH, consensus, None, [], "t", iteration=1)
+    ctx = ctx or FlowContext(target_worktree=str(tmp_path), execution_branch=BRANCH, token_reduce=False)
+    exec_file = tmp_path / "gate.jsonl"
+    gated = conflict_gate._approved_post_gate(ctx, str(exec_file), request, lambda **_: dict(CONFLICTING))
+    rows = _gate_rows(exec_file) if exec_file.exists() else []
+    return gated, [row["action_id"].split("-")[1] for row in rows], consensus, ctx
+
+
+@pytest.mark.parametrize("resolutions", list(MECHANICAL_RESOLUTIONS.values()), ids=list(MECHANICAL_RESOLUTIONS))
+def test_a_mechanical_merge_with_an_unchanged_fingerprint_carries_the_approval(tmp_path, monkeypatch, resolutions):
+    merge = SyncResult("merged", "a" * 40, "b" * 40, "c" * 40, resolutions=resolutions)
+    gated, rows, consensus, ctx = _gate_post(tmp_path, monkeypatch, merge, FINGERPRINT)
+    assert gated is None and rows == ["CARRY"]
+    assert (consensus["carried_from"], consensus["carried_to"]) == ("a" * 40, "b" * 40)
+    assert ctx.review_scope_paths == []
+
+
+@pytest.mark.parametrize("resolutions", list(MECHANICAL_RESOLUTIONS.values()), ids=list(MECHANICAL_RESOLUTIONS))
+def test_a_mechanical_merge_with_a_changed_fingerprint_blocks_and_never_carries(tmp_path, monkeypatch, resolutions):
+    # The carry is gated on the fingerprint, never on the conflict class alone: a delete-vs-touch that removed a file
+    # the PR changed alters the PR-own change, so it blocks here too.
+    merge = SyncResult("merged", "a" * 40, "b" * 40, "c" * 40, resolutions=resolutions)
+    gated, rows, consensus, _ = _gate_post(tmp_path, monkeypatch, merge, "pf2:" + "d" * 40)
+    assert gated is not None and gated[0] == f"conflict gate: {conflict_gate.MERGED_REASON}"
+    assert rows == ["GATE"] and "carried_to" not in consensus
+
+
+def test_a_code_resolution_never_carries_and_unions_the_resolved_paths_into_the_scope(tmp_path, monkeypatch):
+    merge = SyncResult(
+        "merged",
+        "a" * 40,
+        "b" * 40,
+        "c" * 40,
+        resolutions=(("src/app.py", "code", "tier-1"), (LEDGER, "ledger", "mechanical")),
+        code_paths=("src/app.py",),
+        resolver_tier="tier-1",
+        resolver_test_edits=("tests/test_app.py",),
+    )
+    ctx = FlowContext(target_worktree=str(tmp_path), execution_branch=BRANCH, token_reduce=False)
+    ctx.review_scope_paths = ["src/earlier.py"]
+    gated, rows, consensus, ctx = _gate_post(tmp_path, monkeypatch, merge, FINGERPRINT, ctx)
+    assert gated is not None and gated[1]["conflict_gate"]["mechanical_only"] is False
+    assert rows == ["GATE"] and "carried_to" not in consensus
+    assert ctx.review_scope_paths == ["src/app.py", "src/earlier.py", "tests/test_app.py"]

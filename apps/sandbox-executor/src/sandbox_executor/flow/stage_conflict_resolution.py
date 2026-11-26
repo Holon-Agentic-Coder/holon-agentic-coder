@@ -1,9 +1,10 @@
 """Classify and resolve the conflicts ``detect_stage_conflicts`` found, before a stage pushes.
 
 Classification keeps the detection order; resolution walks that order, so the unresolved paths a stage reports stay in
-the order git reported them. Conflicted ledgers are resolved by pure append and never staged. Every other unmerged path
-is classified by :mod:`sandbox_executor.flow.conflict_classes` (the one classifier of the codebase), so a container
-stage resolves the same mechanical classes as the host target sync without an agent.
+the order git reported them. Conflicted ledgers are resolved by inserting incoming rows at their ``created_at`` slot
+with the kept rows unmoved, and never staged. Every other unmerged path is classified by
+:mod:`sandbox_executor.flow.conflict_classes` (the one classifier of the codebase), so a container stage resolves the
+same mechanical classes as the host target sync without an agent.
 """
 
 from __future__ import annotations

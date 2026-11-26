@@ -376,10 +376,10 @@ Stage 3 never halts for a human. The executor's outcome is judged against the pl
     checkpoint keyed on its branch. Resuming a decomposed Stage 3 never dispatches the parent executor: the recorded
     progress is reconciled with origin (origin wins), merged children are skipped, a reviewed child is merged, a child
     with an execution branch or a PR resumes from its own checkpoint, and only a child with nothing recorded anywhere is
-    dispatched. Ledger-only conflicts during these merges keep the merge-base rows as an untouched prefix and interleave
-    both sides' appended rows on `created_at`; any other conflict fails the stage. The same reconciliation runs on a
-    fresh Stage 3 (`--from-stage execute` without the parent checkpoint), and an unexpected exception in the loop fails
-    Stage 3 while keeping the recorded progress.
+    dispatched. Ledger-only conflicts during these merges keep every row of the checked-out side in place and insert the
+    merged side's appended rows at their `created_at` slot; any other conflict fails the stage. The same reconciliation
+    runs on a fresh Stage 3 (`--from-stage execute` without the parent checkpoint), and an unexpected exception in the
+    loop fails Stage 3 while keeping the recorded progress.
 
   The `holon flow` summary lists each child's PR (or branch) and whether it was merged into the plan branch, nests a
   child that itself decomposed with its own children below it, and names the combined PR that Stage 4 raises.
@@ -1151,8 +1151,9 @@ push that already carries its salvage row.
   current plan tip, or when its fork point lies on the plan branch's first-parent history after the intent branch tip
   and every first-parent commit of the plan branch since changed only `holon-knowledge/ledger/*.jsonl` or is a Stage 3
   refresh merge ([plan_refresh.md](plan_refresh.md)). The executor then merges the current plan tip into the new
-  execution branch (ledger conflicts are reconciled with the plan side as byte prefix), so the branch always descends
-  from today's plan tip. Any other merge conflict aborts the merge and the execution starts from the plan tip.
+  execution branch (ledger conflicts keep the plan side's rows in place and insert the execution rows by `created_at`),
+  so the branch always descends from today's plan tip. Any other merge conflict aborts the merge and the execution
+  starts from the plan tip.
 - **The branch tip is preferred.** When the failed execution branch's tip strictly descends from the recorded
   `partial_head`, adds more than the failure commit's ledgers and notes, and passes the same lineage rule (a merge of
   `origin/main` to settle a sync conflict, for example), the resume starts from the tip; no hand-written ledger row is

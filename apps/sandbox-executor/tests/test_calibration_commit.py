@@ -14,14 +14,13 @@ from unittest.mock import patch
 
 import pytest
 from sandbox_executor.calibration import (
-    LINT_DOCS_PRETTIER,
-    PRETTIER_PASSES,
     CalibrationCommitError,
     CalibrationFormatError,
     format_calibration_report,
     record_calibration_action,
     run_calibrate,
 )
+from sandbox_executor.calibration_format import LINT_DOCS_PRETTIER, PRETTIER_PASSES
 from sandbox_executor.cli import main as cli_main
 from sandbox_executor.ledger import merged_jsonl_text, read_merged_rows_at_ref, read_merged_text
 
@@ -113,9 +112,9 @@ def test_run_calibrate_commit_failure_warning_redacts_credentials(calibration_re
     caplog.set_level("WARNING", logger="sandbox_executor.calibration")
     sample_value = "ghp_" + "C" * 36
     with (
-        patch("sandbox_executor.calibration.format_calibration_report"),
+        patch("sandbox_executor.calibration.run.format_calibration_report"),
         patch(
-            "sandbox_executor.calibration.calibration_commit_env",
+            "sandbox_executor.calibration.run.calibration_commit_env",
             side_effect=RuntimeError(f"credential helper {sample_value}"),
         ),
         pytest.raises(CalibrationCommitError) as excinfo,
@@ -147,7 +146,7 @@ def test_run_calibrate_rejected_report_commit_raises(calibration_repo, capsys):
     repo, git = calibration_repo
     _install_rejecting_pre_commit_hook(repo, git)
     with (
-        patch("sandbox_executor.calibration.format_calibration_report"),
+        patch("sandbox_executor.calibration.run.format_calibration_report"),
         pytest.raises(CalibrationCommitError) as excinfo,
     ):
         run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
@@ -172,7 +171,7 @@ def test_cli_calibrate_rejected_report_commit_exits_non_zero(calibration_repo, c
     _install_rejecting_pre_commit_hook(repo, git)
     test_args = ["holon", "calibrate", _EXEC_BRANCH, "--target-worktree", str(repo)]
     with (
-        patch("sandbox_executor.calibration.format_calibration_report"),
+        patch("sandbox_executor.calibration.run.format_calibration_report"),
         patch.object(sys, "argv", test_args),
         pytest.raises(SystemExit) as excinfo,
     ):
@@ -187,7 +186,7 @@ def test_cli_calibrate_rejected_report_commit_exits_non_zero(calibration_repo, c
 
 def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
     repo, git = calibration_repo
-    with patch("sandbox_executor.calibration.format_calibration_report"):
+    with patch("sandbox_executor.calibration.run.format_calibration_report"):
         report = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
 
     ledger_rel = "holon-knowledge/ledger/executions.jsonl"
@@ -241,7 +240,7 @@ def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
 
 def test_run_calibrate_metrics_unaffected_by_act_cal_rows(calibration_repo):
     repo, _ = calibration_repo
-    with patch("sandbox_executor.calibration.format_calibration_report"):
+    with patch("sandbox_executor.calibration.run.format_calibration_report"):
         first = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
         second = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
         third = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
@@ -253,7 +252,7 @@ def test_run_calibrate_skip_commit_appends_nothing(calibration_repo):
     repo, _ = calibration_repo
     ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
     before, merged_before = ledger.read_bytes(), _merged_ledger_text(repo)
-    with patch("sandbox_executor.calibration.format_calibration_report"):
+    with patch("sandbox_executor.calibration.run.format_calibration_report"):
         run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
     assert ledger.read_bytes() == before
     assert _merged_ledger_text(repo) == merged_before
@@ -263,7 +262,7 @@ def test_run_calibrate_ledger_failure_warns_and_still_commits_report(calibration
     repo, git = calibration_repo
     caplog.set_level("WARNING")
     with (
-        patch("sandbox_executor.calibration.format_calibration_report"),
+        patch("sandbox_executor.calibration.run.format_calibration_report"),
         patch("sandbox_executor.ledger.LedgerLock.__enter__", side_effect=PermissionError("ledger denied")),
     ):
         run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
@@ -279,7 +278,7 @@ def test_run_calibrate_ledger_failure_reaches_operator_log_fn(calibration_repo):
     repo, git = calibration_repo
     logs: list[str] = []
     with (
-        patch("sandbox_executor.calibration.format_calibration_report"),
+        patch("sandbox_executor.calibration.run.format_calibration_report"),
         patch("sandbox_executor.ledger.LedgerLock.__enter__", side_effect=PermissionError("ledger denied")),
     ):
         run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False, log_fn=logs.append)
@@ -347,7 +346,7 @@ def test_stage5_dry_run_leaves_executions_ledger_unchanged(calibration_repo):
     repo, _ = calibration_repo
     ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
     before, merged_before = ledger.read_bytes(), _merged_ledger_text(repo)
-    with patch("sandbox_executor.calibration.format_calibration_report"):
+    with patch("sandbox_executor.calibration.run.format_calibration_report"):
         res = run_calibrate_stage(_stage5_context(repo, dry_run=True))
     assert res.status == StageStatus.SUCCESS
     assert ledger.read_bytes() == before
@@ -372,7 +371,7 @@ def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
         return real_run_git(args, *a, **kw)
 
     with (
-        patch("sandbox_executor.calibration.format_calibration_report"),
+        patch("sandbox_executor.calibration.run.format_calibration_report"),
         patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.review.run_git", side_effect=recording_run_git),
     ):
@@ -409,7 +408,7 @@ def test_stage5_commits_reconciliation_row_on_calibrated_branch(calibration_repo
     ledger_rel = "holon-knowledge/ledger/executions.jsonl"
     ctx = _stage5_context(repo, dry_run=False)
     with (
-        patch("sandbox_executor.calibration.format_calibration_report"),
+        patch("sandbox_executor.calibration.run.format_calibration_report"),
         patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
     ):
         res = run_calibrate_stage(ctx)
@@ -457,7 +456,7 @@ _REPOSITORY_STYLE = (
 
 
 class _FakePrettier:
-    """Stand-in for calibration._run_prettier: records argv and rewrites the report like the repository Prettier."""
+    """Stand-in for calibration_format._run_prettier: records argv and rewrites the report like repository Prettier."""
 
     def __init__(
         self,
@@ -510,7 +509,7 @@ def no_real_npx(monkeypatch):
         return real_run(cmd, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", guarded_run)
-    monkeypatch.setattr("sandbox_executor.calibration.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("sandbox_executor.calibration_format.shutil.which", lambda name: f"/usr/bin/{name}")
 
 
 @pytest.mark.usefixtures("no_real_npx")
@@ -524,7 +523,7 @@ class TestFormatCalibrationReport:
     def test_report_needing_rewrap_is_formatted_to_repository_style(self, tmp_path):
         self._write_report(tmp_path)
         fake = _FakePrettier(expect_input=_PINNED_WRAP)
-        with patch("sandbox_executor.calibration._run_prettier", side_effect=fake):
+        with patch("sandbox_executor.calibration_format._run_prettier", side_effect=fake):
             format_calibration_report(_REPORT_REL, str(tmp_path))
 
         assert fake.expect_input is None
@@ -536,8 +535,8 @@ class TestFormatCalibrationReport:
             assert cwd == str(tmp_path)
 
     def test_run_prettier_uses_lint_docs_argv_and_repository_cwd(self, tmp_path):
-        with patch("sandbox_executor.calibration.subprocess.run") as mock_run:
-            from sandbox_executor.calibration import _run_prettier
+        with patch("sandbox_executor.calibration_format.subprocess.run") as mock_run:
+            from sandbox_executor.calibration_format import _run_prettier
 
             _run_prettier("--check", _REPORT_REL, str(tmp_path))
 
@@ -571,8 +570,8 @@ class TestFormatCalibrationReport:
     def test_guard_fails_closed(self, tmp_path, fake, which, reason):
         self._write_report(tmp_path)
         with (
-            patch("sandbox_executor.calibration.shutil.which", return_value=which),
-            patch("sandbox_executor.calibration._run_prettier", side_effect=fake()),
+            patch("sandbox_executor.calibration_format.shutil.which", return_value=which),
+            patch("sandbox_executor.calibration_format._run_prettier", side_effect=fake()),
             pytest.raises(CalibrationFormatError) as excinfo,
         ):
             format_calibration_report(_REPORT_REL, str(tmp_path))
@@ -587,7 +586,7 @@ class TestFormatCalibrationReport:
         self._write_report(tmp_path)
         fake = _FakePrettier(write_returncode=2)
         with (
-            patch("sandbox_executor.calibration._run_prettier", side_effect=fake),
+            patch("sandbox_executor.calibration_format._run_prettier", side_effect=fake),
             pytest.raises(CalibrationFormatError),
         ):
             format_calibration_report(_REPORT_REL, str(tmp_path))
@@ -596,7 +595,7 @@ class TestFormatCalibrationReport:
     def test_check_converges_within_bounded_passes(self, tmp_path):
         self._write_report(tmp_path)
         fake = _FakePrettier(failing_checks=PRETTIER_PASSES - 1)
-        with patch("sandbox_executor.calibration._run_prettier", side_effect=fake):
+        with patch("sandbox_executor.calibration_format._run_prettier", side_effect=fake):
             format_calibration_report(_REPORT_REL, str(tmp_path))
         assert [argv[-2] for argv, _ in fake.calls] == ["--write", "--check"] * PRETTIER_PASSES
 
@@ -604,7 +603,7 @@ class TestFormatCalibrationReport:
         self._write_report(tmp_path)
         fake = _FakePrettier(check_returncode=1)
         with (
-            patch("sandbox_executor.calibration._run_prettier", side_effect=fake),
+            patch("sandbox_executor.calibration_format._run_prettier", side_effect=fake),
             pytest.raises(CalibrationFormatError, match="check exited 1"),
         ):
             format_calibration_report(_REPORT_REL, str(tmp_path))
@@ -614,7 +613,7 @@ class TestFormatCalibrationReport:
         sample_value = "ghp_" + "F" * 36
         fake = _FakePrettier(raises=OSError(f"npx auth {sample_value}"))
         with (
-            patch("sandbox_executor.calibration._run_prettier", side_effect=fake),
+            patch("sandbox_executor.calibration_format._run_prettier", side_effect=fake),
             pytest.raises(CalibrationFormatError) as excinfo,
         ):
             format_calibration_report(_REPORT_REL, str(tmp_path))
@@ -634,9 +633,11 @@ class TestFormatCalibrationReport:
             return real_run_git(args, *a, **kw)
 
         with (
-            patch("sandbox_executor.calibration._run_prettier", side_effect=_FakePrettier(check_returncode=1)),
-            patch("sandbox_executor.calibration.run_git", side_effect=recording_run_git),
-            patch("sandbox_executor.calibration.record_calibration_action") as mock_record,
+            patch("sandbox_executor.calibration_format._run_prettier", side_effect=_FakePrettier(check_returncode=1)),
+            patch("sandbox_executor.calibration.refs.run_git", side_effect=recording_run_git),
+            patch("sandbox_executor.calibration.run.run_git", side_effect=recording_run_git),
+            patch("sandbox_executor.calibration.checkout.run_git", side_effect=recording_run_git),
+            patch("sandbox_executor.calibration.run.record_calibration_action") as mock_record,
             pytest.raises(CalibrationFormatError),
         ):
             run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
@@ -650,7 +651,7 @@ class TestFormatCalibrationReport:
     def test_run_calibrate_skip_commit_only_warns(self, calibration_repo, caplog):
         repo, _ = calibration_repo
         caplog.set_level("WARNING", logger="sandbox_executor.calibration")
-        with patch("sandbox_executor.calibration._run_prettier", side_effect=_FakePrettier(check_returncode=1)):
+        with patch("sandbox_executor.calibration_format._run_prettier", side_effect=_FakePrettier(check_returncode=1)):
             report = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
 
         assert report.committed is False
@@ -660,14 +661,14 @@ class TestFormatCalibrationReport:
     def test_run_calibrate_skip_commit_warning_reaches_log_fn(self, calibration_repo):
         repo, _ = calibration_repo
         messages: list[str] = []
-        with patch("sandbox_executor.calibration._run_prettier", side_effect=_FakePrettier(check_returncode=1)):
+        with patch("sandbox_executor.calibration_format._run_prettier", side_effect=_FakePrettier(check_returncode=1)):
             run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True, log_fn=messages.append)
 
         assert any("failed the repository Prettier check" in m for m in messages)
 
     def test_run_calibrate_commits_report_that_passes_check(self, calibration_repo):
         repo, git = calibration_repo
-        with patch("sandbox_executor.calibration._run_prettier", side_effect=_FakePrettier()):
+        with patch("sandbox_executor.calibration_format._run_prettier", side_effect=_FakePrettier()):
             run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
 
         assert git("show", f"HEAD:{_REPORT_REL}") == _REPOSITORY_STYLE

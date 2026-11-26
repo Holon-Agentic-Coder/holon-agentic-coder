@@ -43,7 +43,7 @@ def _row(execution_id: str, created_at: str) -> str:
     return json.dumps({"execution_id": execution_id, "created_at": created_at}) + "\n"
 
 
-def test_ledger_rows_of_both_sides_are_kept_after_the_target_prefix(tmp_path: Path):
+def test_an_older_branch_ledger_row_is_inserted_before_the_newer_target_tail(tmp_path: Path):
     base = _row("E-base", "2026-11-01T00:00:00Z")
     target = base + _row("E-main", "2026-11-04T00:00:00Z")
     flow = base + _row("E-flow", "2026-11-03T00:00:00Z")
@@ -53,7 +53,8 @@ def test_ledger_rows_of_both_sides_are_kept_after_the_target_prefix(tmp_path: Pa
 
     assert classified == [(LEDGER, ConflictClass.LEDGER)]
     assert outcome.resolved == [(LEDGER, ConflictClass.LEDGER)] and outcome.code_paths == []
-    assert (work / LEDGER).read_text(encoding="utf-8") == target + _row("E-flow", "2026-11-03T00:00:00Z")
+    expected = base + _row("E-flow", "2026-11-03T00:00:00Z") + _row("E-main", "2026-11-04T00:00:00Z")
+    assert (work / LEDGER).read_text(encoding="utf-8") == expected
     assert _git(work, "diff", "--name-only", "--diff-filter=U") == ""
 
 

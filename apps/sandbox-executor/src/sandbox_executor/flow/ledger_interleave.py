@@ -1,33 +1,22 @@
-"""Ledger-only merge conflicts: keep the merge-base rows as an untouched prefix and interleave both sides' appended
-rows on ``created_at``.
+"""Ledger-only merge conflicts: keep every row of the checked-out side in place and insert the incoming side's
+appended rows at their ``created_at`` slot.
 
 Used when a branch is merged into another (a plan branch into a child head, a plan branch into the parent execution
-branch) and the only conflicts are in ``holon-knowledge/ledger/*.jsonl``. No existing line is removed or rewritten:
-the merge-base rows stay a byte-identical prefix, each side keeps the relative order of its own appended rows, and a
-row both sides appended is kept once.
+branch) and the only conflicts are in ``holon-knowledge/ledger/*.jsonl``. No existing line is removed, rewritten or
+moved: the merge-base rows and ours' appended rows keep their relative order, theirs' appended rows are inserted by
+parsed UTC instant (ours first on a tie, also between merge-base rows when they are older), and a row both sides
+appended is kept once at ours' position. Merging into a sorted side is additions only and stays sorted.
 """
 
 from __future__ import annotations
 
-import json
 import os
 
 from sandbox_executor.flow.ledger_reconcile import ConflictResolutionError
 from sandbox_executor.git import run_git
+from sandbox_executor.ledger.reconcile import insert_incoming_lines
 
 LEDGER_DIR_PREFIX = "holon-knowledge/ledger/"
-
-
-def _created_at_key(line: str) -> str | None:
-    """Return a sortable ``created_at`` for a ledger row (``Z`` normalised to ``+00:00``), or None when it has none."""
-    try:
-        row = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    value = row.get("created_at") if isinstance(row, dict) else None
-    if not isinstance(value, str) or not value.strip():
-        return None
-    return value.strip().replace("Z", "+00:00")
 
 
 def _appended_tail(base_lines: list[str], side_lines: list[str], side: str) -> list[str]:
@@ -39,18 +28,6 @@ def _appended_tail(base_lines: list[str], side_lines: list[str], side: str) -> l
     return side_lines[len(base_lines) :]
 
 
-def _precedes(left: str, right: str) -> bool:
-    """True when ``left`` (from ours) goes before ``right`` (from theirs): earlier ``created_at``, ours on a tie.
-
-    A row without a parsable ``created_at`` sorts after every timed row, so it waits until the other side runs out of
-    timed rows; that keeps each side's own order intact.
-    """
-    left_key, right_key = _created_at_key(left), _created_at_key(right)
-    if left_key is None:
-        return right_key is None
-    return right_key is None or left_key <= right_key
-
-
 def interleave_ledger_rows(base_lines: list[str], ours_lines: list[str], theirs_lines: list[str]) -> list[str]:
     """Merge two append-only versions of one ledger into a single append-only result.
 
@@ -60,23 +37,16 @@ def interleave_ledger_rows(base_lines: list[str], ours_lines: list[str], theirs_
         theirs_lines: The rows on the side being merged in.
 
     Returns:
-        list[str]: The merge-base rows unchanged, then both sides' appended rows interleaved on ``created_at`` (each
-        side's own order kept, ours first on a tie); only a row both sides appended collapses to one.
+        list[str]: Ours unchanged (merge-base rows, then ours' appended rows), with each of theirs' appended rows
+        inserted after every ours row whose instant is not later than its own; a row ours already holds is not
+        inserted again.
 
     Raises:
         ConflictResolutionError: When either side does not start with the merge-base rows, so the conflict is not a
             pure append and must not be resolved automatically.
     """
-    ours = _appended_tail(base_lines, ours_lines, "ours")
-    theirs = _appended_tail(base_lines, theirs_lines, "theirs")
-    merged = list(base_lines)
-    while ours or theirs:
-        take_ours = bool(ours) and (not theirs or _precedes(ours[0], theirs[0]))
-        line, other = (ours.pop(0), theirs) if take_ours else (theirs.pop(0), ours)
-        if line in other:
-            other.remove(line)
-        merged.append(line)
-    return merged
+    _appended_tail(base_lines, ours_lines, "ours")
+    return insert_incoming_lines(ours_lines, _appended_tail(base_lines, theirs_lines, "theirs"))
 
 
 def _staged_lines(repo_dir: str, stage: int, path: str) -> list[str]:

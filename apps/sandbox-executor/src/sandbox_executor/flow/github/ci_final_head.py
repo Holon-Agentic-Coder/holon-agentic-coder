@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import json
 import os
 import subprocess
 from collections.abc import Callable, Mapping
@@ -26,6 +27,16 @@ from sandbox_executor.flow.github.ci_failure_detail import (
     gh_detail_lookup,
     parse_run_id,
 )
+from sandbox_executor.flow.github.ci_head_checks import (
+    CANCELLED_CONCLUSIONS,
+    CHECK_RUNS_JQ,
+    PASSING_CONCLUSIONS,
+    HeadCheck,
+    is_pending,
+    latest_checks_for_head,
+    parse_check_runs,
+)
+from sandbox_executor.flow.github.ci_policy import summarise_ci_checks
 from sandbox_executor.flow.github.ci_reverify import approved_head_of
 from sandbox_executor.flow.github.ci_timing_rerun import _dispatch_rerun, _retry_timing_noise, _wait_for_rerun_start
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, wait_for_pending_ci
@@ -34,6 +45,13 @@ from sandbox_executor.knowledge import CredentialRedactor
 MAX_REASON_CHARS = 300
 
 BOOKKEEPING_PATH_PREFIXES = ("plans/", "executions/", "holon-knowledge/")
+
+PR_HEAD_LAGGED_REASON = "pull request head lagged the pushed head"
+NO_CHECKS_REASON = "no checks registered for the pushed head"
+LOOKUP_FAILED_REASON = "check-runs lookup failed for the pushed head"
+_UNREGISTERED = {"source": "unregistered", "total": 0, "pending": 0, "checks": []}
+
+Probe = Callable[[], dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -86,22 +104,64 @@ def _git_gh_head(check: _FinalHeadCheck) -> tuple[Callable[[], str | None], ...]
     return _local_head, lambda: check.github.pr_head_sha(check.branch, STEP_LOOKUP_TIMEOUT_SECONDS)
 
 
-def _wait_for_pr_head(check: _FinalHeadCheck, policy: Any) -> None:
+def _pr_bucket(head_check: HeadCheck) -> tuple[str, str]:
+    conclusion = head_check.get("conclusion")
+    if is_pending(head_check):
+        return "pending", "PENDING"
+    if conclusion == "skipped":
+        return "skipping", "SKIPPED"
+    if conclusion in PASSING_CONCLUSIONS:
+        return "pass", "SUCCESS"
+    if conclusion in CANCELLED_CONCLUSIONS:
+        return "cancel", "CANCELLED"
+    return "fail", "FAILURE"
+
+
+def _details_urls(output: str) -> dict[int, str]:
+    raws = [json.loads(line) for line in output.splitlines() if line.strip()]
+    return {int(raw.get("id") or 0): str(raw.get("details_url") or "") for raw in raws}
+
+
+def _as_pr_check(head_check: HeadCheck, links: Mapping[int, str]) -> dict[str, Any]:
+    bucket, state = _pr_bucket(head_check)
+    link = links.get(int(head_check.get("check_run_id") or 0), "")
+    return {"name": head_check.get("name"), "bucket": bucket, "state": state, "link": link}
+
+
+def _lookup_failed(detail: str) -> dict[str, Any]:
+    head = CredentialRedactor.redact_text(detail.strip().splitlines()[0] if detail.strip() else "")[:200]
+    return {**_UNREGISTERED, "unknown_reason": f"{LOOKUP_FAILED_REASON}: {head}".rstrip(": ")}
+
+
+def _commit_probe(check: _FinalHeadCheck, sha: str) -> Probe:
+    argv = ["api", "--paginate", f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs", "--jq", CHECK_RUNS_JQ]
+
+    def probe() -> dict[str, Any]:
+        try:
+            proc = check.github.gh(argv, check.repo_dir)
+        except Exception as exc:
+            return _lookup_failed(str(exc))
+        if proc.returncode != 0:
+            return _lookup_failed(proc.stderr or f"gh exited {proc.returncode}")
+        checks = latest_checks_for_head(parse_check_runs(proc.stdout), sha)
+        links = _details_urls(proc.stdout)
+        return summarise_ci_checks([_as_pr_check(c, links) for c in checks]) if checks else dict(_UNREGISTERED)
+
+    return probe
+
+
+def _select_probe(check: _FinalHeadCheck) -> tuple[Probe, str | None]:
     seams = check.seams
     default_pushed, default_pr = _git_gh_head(check)
     pushed = (seams.pushed_head or default_pushed)()
-    if not pushed:
-        return
-    pr_head = seams.pr_head or default_pr
-    deadline = policy.clock() + resolve_ci_registration_timeout(seams.registration_timeout)
-    while True:
-        current = pr_head()
-        if current is None or current == pushed:
-            return
-        remaining = deadline - policy.clock()
-        if remaining <= 0:
-            raise RuntimeError("the PR head did not match the pushed head before the registration wait ran out")
-        policy.sleep(max(0.0, min(CI_REGISTRATION_POLL_SECONDS, remaining)))
+    pr_head = (seams.pr_head or default_pr)() if pushed else None
+    if not pushed or not pr_head or pr_head == pushed:
+        return seams.probe or check.default_probe(), None
+    return _commit_probe(check, pushed), f"{PR_HEAD_LAGGED_REASON} ({pr_head[:8]} vs {pushed[:8]})"
+
+
+def _registered(ci_status: dict[str, Any]) -> bool:
+    return ci_status.get("source") == "github_cli"
 
 
 def _failed_checks_by_name(ci_status: dict[str, Any], names: list[str]) -> list[dict[str, Any]]:
@@ -127,7 +187,8 @@ def classify_final_head(
     ci_status: dict[str, Any], wait_record: dict[str, Any] | None, detail_lookup: DetailLookup
 ) -> dict[str, Any]:
     if ci_status.get("source") != "github_cli":
-        return _record("unknown", "CI checks were not measured on GitHub.", ci_wait=wait_record)
+        reason = ci_status.get("unknown_reason") or "CI checks were not measured on GitHub."
+        return _record("unknown", reason, ci_wait=wait_record)
     names = _extract_failed_ci_check_names(ci_status)
     if names:
         details = _failed_details(ci_status, names, detail_lookup)
@@ -141,30 +202,51 @@ def classify_final_head(
     return _record("unknown", "CI reported no checks.", ci_wait=wait_record)
 
 
-def _settled_status(check: _FinalHeadCheck) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    seams, context = check.seams, check.context
-    default_probe = check.default_probe()
-    probe = seams.probe or default_probe
-    policy = seams.policy or CiWaitPolicy(resolve_review_ci_wait_seconds(os.environ))
-    _wait_for_pr_head(check, policy)
+def _branch_status(check: _FinalHeadCheck, probe: Probe, policy: CiWaitPolicy) -> dict[str, Any]:
+    seams = check.seams
     ci_status = probe()
-    if ci_status.get("source") != "github_cli":
-        registration_timeout = resolve_ci_registration_timeout(seams.registration_timeout)
-        _wait_for_ci_registration(
-            context,
-            check.repo_dir,
-            check.branch,
-            dict(seams.proxy_env),
-            registration_timeout,
-            CI_REGISTRATION_POLL_SECONDS,
-            policy.clock,
-            policy.sleep,
-            probe=default_probe,
-        )
-        ci_status = probe()
-    if ci_status.get("source") != "github_cli" or ci_status.get("pending", 0) <= 0:
+    if _registered(ci_status):
+        return ci_status
+    _wait_for_ci_registration(
+        check.context,
+        check.repo_dir,
+        check.branch,
+        dict(seams.proxy_env),
+        resolve_ci_registration_timeout(seams.registration_timeout),
+        CI_REGISTRATION_POLL_SECONDS,
+        policy.clock,
+        policy.sleep,
+        probe=check.default_probe(),
+    )
+    ci_status = probe()
+    return ci_status if _registered(ci_status) else {**ci_status, "unknown_reason": NO_CHECKS_REASON}
+
+
+def _lagged_status(check: _FinalHeadCheck, probe: Probe, policy: CiWaitPolicy) -> tuple[Probe, dict[str, Any]]:
+    ci_status = probe()
+    if _registered(ci_status):
+        return probe, ci_status
+    policy.sleep(CI_REGISTRATION_POLL_SECONDS)
+    probe, still_lagged = _select_probe(check)
+    if still_lagged is None:
+        return probe, _branch_status(check, probe, policy)
+    ci_status = probe()
+    if _registered(ci_status):
+        return probe, ci_status
+    cause = ci_status.get("unknown_reason") or NO_CHECKS_REASON
+    return probe, {**ci_status, "unknown_reason": f"{still_lagged}; {cause}"}
+
+
+def _settled_status(check: _FinalHeadCheck) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    policy = check.seams.policy or CiWaitPolicy(resolve_review_ci_wait_seconds(os.environ))
+    probe, lagged = _select_probe(check)
+    if lagged is None:
+        ci_status = _branch_status(check, probe, policy)
+    else:
+        probe, ci_status = _lagged_status(check, probe, policy)
+    if not _registered(ci_status) or ci_status.get("pending", 0) <= 0:
         return ci_status, None
-    ci_status, waited = wait_for_pending_ci(context, probe, ci_status, policy, stop_on_failure=True)
+    ci_status, waited = wait_for_pending_ci(check.context, probe, ci_status, policy, stop_on_failure=True)
     return ci_status, waited.as_record()
 
 
@@ -222,7 +304,7 @@ def _failed_run_ids(ci_status: dict[str, Any], names: list[str]) -> list[str] | 
 
 def _resolve_final_head(check: _FinalHeadCheck) -> str | None:
     default_pushed, default_pr = _git_gh_head(check)
-    return (check.seams.pr_head or default_pr)() or (check.seams.pushed_head or default_pushed)()
+    return (check.seams.pushed_head or default_pushed)() or (check.seams.pr_head or default_pr)()
 
 
 def _eligible_run_ids(check: _FinalHeadCheck, record: dict[str, Any], ci_status: dict[str, Any]) -> list[str] | None:
@@ -249,7 +331,7 @@ def _rerun_timing_once(
     rerun = seams.rerun_dispatcher or functools.partial(_dispatch_rerun, check.github)
     if not all(rerun(run_id) for run_id in run_ids):
         return None
-    probe = seams.probe or check.default_probe()
+    probe = _select_probe(check)[0]
     policy = seams.policy or CiWaitPolicy(resolve_review_ci_wait_seconds(os.environ))
     registration_timeout = resolve_ci_registration_timeout(seams.registration_timeout)
     _wait_for_rerun_start(probe, record["failed_checks"], policy, registration_timeout)

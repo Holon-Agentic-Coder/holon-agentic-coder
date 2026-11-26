@@ -19,14 +19,8 @@ from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.git_refs import _resolve_review_commit
 from sandbox_executor.flow.github.adapter import GitHubAdapter
-from sandbox_executor.flow.github.ci import (
-    _ci_green,
-    _extract_failed_ci_check_names,
-    _wait_for_ci_registration,
-    probe_ci_checks,
-    resolve_ci_registration_timeout,
-)
-from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, CiWaitResult, settle_pending_ci
+from sandbox_executor.flow.github.ci import _extract_failed_ci_check_names, _wait_for_ci_registration, probe_ci_checks
+from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, CiWaitResult
 from sandbox_executor.flow.github.pr import check_pr_mergeability, create_or_update_pr, format_review_git_trailers
 from sandbox_executor.flow.github.pr_head import PR_HEAD_TIMEOUT_SECONDS
 from sandbox_executor.flow.github.review_post import post_pr_review_consensus
@@ -47,8 +41,7 @@ from sandbox_executor.flow.review.carried_findings import (
     serialize_open,
     undisposed,
 )
-from sandbox_executor.flow.review.ci_evidence import _apply_guarded_test_evidence
-from sandbox_executor.flow.review.ci_outcome import gate_ci_flags
+from sandbox_executor.flow.review.ci_inspection import CiInspectionInputs, inspect_ci
 from sandbox_executor.flow.review.ci_timing_finding import gh_timing_seams, timing_gate_finding
 from sandbox_executor.flow.review.ensemble import (
     _dispatch_review_ensemble,
@@ -280,6 +273,21 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     probe_ci = functools.partial(probe_ci_checks, repo_dir, review_target, proxy_env=proxy_env, github=github)
     ci_policy = CiWaitPolicy(ci_wait_budget_seconds, ci_poll_interval, clock=clock, sleep=sleep)
     ci_wait: CiWaitResult | None = None  # The first wait that spent its budget; recorded once, never waited out again.
+    ci_seams = CiInspectionInputs(
+        repo_dir,
+        review_target,
+        proxy_env,
+        github,
+        test_gate,
+        ci_policy,
+        probe_ci,
+        _wait_for_ci_registration,
+        pr_allowed,
+        ci_registration_timeout,
+        ci_poll_interval,
+        clock,
+        sleep,
+    )
     iteration_summaries: list[str] = []
     budget_breach: dict[str, Any] | None = None
     resolver_enabled = (run_resolver_fn is not None) or (not reviewers_sandboxed())
@@ -370,63 +378,25 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         reviewer_findings = collect_review_data(reviewers).findings
         reviewer_objected = _any_reviewer_objects(reviewers) or bool(reviewer_findings) or bool(blockers)
 
-        # 3. CI status inspection: post-review gate or fast-path probe
-        if reviewer_objected:
-            # Fast path on reviewer findings: probe CI once without waiting on pending checks.
-            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env, github=github)
-            tests_failed, _ = _apply_guarded_test_evidence(
-                test_gate, last_ci_status, effective_dry_run, infra_error is not None or missing_ref, False
-            )
-            ci_wait = ci_wait if last_ci_status.get("pending", 0) else None  # Never keep a stale wait record.
-
-            # Include FIND-CI only if CI has already failed or local tests failed; pending checks are omitted.
-            ci_failed = last_ci_status.get("failed", 0) > 0 or tests_failed
-            ci_finding = ci_failed
-            ensemble_verdict = decide_returned_consensus(
-                reviewers, ensemble_size, None if missing_ref else not is_dirty, False if ci_failed else None, blockers
-            )
-        elif not is_dirty and not missing_ref and not effective_dry_run and infra_error is None:
-            # Post-review CI gate on clean review: wait for CI registration and pending checks to settle.
-            if pr_allowed and test_gate.needs_ci_registration() and github.available:
-                reg_timeout = iteration_timer.remaining_capped(resolve_ci_registration_timeout(ci_registration_timeout))
-                _wait_for_ci_registration(
-                    context,
-                    repo_dir,
-                    review_target,
-                    proxy_env,
-                    reg_timeout,
-                    ci_poll_interval,
-                    clock=clock,
-                    sleep=sleep,
-                    probe=probe_ci,
-                )
-
-            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env, github=github)
-            last_ci_status, waited = settle_pending_ci(context, probe_ci, last_ci_status, ci_policy, bool(ci_wait))
-            iteration_timer.credit(waited.waited_seconds if waited else 0.0)  # The wait has its own budget.
-            ci_wait = waited if waited and waited.exhausted else (ci_wait if last_ci_status.get("pending", 0) else None)
-            tests_failed, unmeasured = _apply_guarded_test_evidence(test_gate, last_ci_status, False, False, True)
-            tests_not_measured |= unmeasured
-            ci_green, ci_finding = gate_ci_flags(last_ci_status, tests_failed)
-            ensemble_verdict = decide_returned_consensus(reviewers, ensemble_size, True, ci_green, blockers)
-        else:
-            # Fallback for dry runs, dirty mergeability, or infra failures: probe once without waiting.
-            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env, github=github)
-            tests_failed, unmeasured = _apply_guarded_test_evidence(
-                test_gate, last_ci_status, effective_dry_run, infra_error is not None or missing_ref, True
-            )
-            tests_not_measured |= unmeasured
-            ci_wait = ci_wait if last_ci_status.get("pending", 0) else None  # Never keep a stale wait record.
-
-            ci_finding = not last_ci_status.get("all_passed", False) or tests_failed
-            if not effective_dry_run:
-                ensemble_verdict = decide_returned_consensus(
-                    reviewers,
-                    ensemble_size,
-                    None if missing_ref else not is_dirty,
-                    _ci_green(last_ci_status, tests_failed),
-                    blockers,
-                )
+        # 3. CI status inspection: post-review gate or fast-path probe (see ci_inspection.py)
+        ci = inspect_ci(
+            dataclasses.replace(
+                ci_seams,
+                iteration_timer=iteration_timer,
+                reviewer_objected=reviewer_objected,
+                is_dirty=is_dirty,
+                missing_ref=missing_ref,
+                effective_dry_run=effective_dry_run,
+                infra_failed=infra_error is not None,
+                ci_wait=ci_wait,
+            ),
+            context,
+        )
+        last_ci_status, ci_wait, tests_failed, ci_finding = ci.ci_status, ci.ci_wait, ci.tests_failed, ci.ci_finding
+        tests_not_measured |= ci.tests_not_measured
+        if ci.decides:
+            mergeable = None if missing_ref else not is_dirty
+            ensemble_verdict = decide_returned_consensus(reviewers, ensemble_size, mergeable, ci.ci_green, blockers)
 
         # 4. Findings: mergeability and CI infrastructure ids, then every reviewer finding
         finding_ids = [

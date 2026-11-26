@@ -219,10 +219,10 @@ sensitive.
 ### When the leg skips
 
 "macOS relevance gate" is the step directly after "Bookkeeping gate" in `test-unit.yml`. It runs only on the macOS leg
-and only when the bookkeeping gate said "run". The rules are checked in order and the first match decides for a run: the
-event is a pull request, the run is the first attempt, the pull request does not carry the `ci-macos` label, the event
-names the base and head commits, the comparison lists fewer than 300 files, it lists at least one file, and every listed
-file is neutral. Any error runs the leg.
+and only when the bookkeeping gate said "run". The leg skips only when all of these hold, checked in order; the first
+that fails runs the leg: the event is a pull request, the run is the first attempt, the pull request does not carry the
+`ci-macos` label, the event names the base and head commits, the comparison lists fewer than 300 files, it lists at
+least one file, and every listed file is neutral. Any error runs the leg.
 
 ### Reading the gate output
 

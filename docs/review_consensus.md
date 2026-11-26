@@ -186,12 +186,12 @@ pipeline gate.
 
 A red pipeline after the reviewers approved the diff is classified fail-safe (`flow/review/ci_failure_routing.py`):
 
-| class             | when                                                                                                   |
-| ----------------- | ------------------------------------------------------------------------------------------------------ |
-| `noise_timing`    | every failed job failed only in its `CI Timing Gate` step                                              |
-| `noise_infra`     | every failed job did not start (`startup_failure`, `timed_out`) or failed only setup or teardown steps |
-| `noise_cancelled` | every failed run was cancelled or stale                                                                |
-| `defect`          | anything else: a failed test step, a mix of classes, an unreadable job, no run id, more than 5 jobs    |
+| class             | when                                                                                                |
+| ----------------- | --------------------------------------------------------------------------------------------------- |
+| `noise_timing`    | every failed job failed only in its `CI Timing Gate` step                                           |
+| `noise_infra`     | every failed job hit `startup_failure` or `timed_out`, or failed only setup or teardown steps       |
+| `noise_cancelled` | every failed run was cancelled or stale                                                             |
+| `defect`          | anything else: a failed test step, a mix of classes, an unreadable job, no run id, more than 5 jobs |
 
 Noise is rerun once per run id and head, and the diff approval stands. In Stage 4 the rerun happens inside the iteration
 that saw the red pipeline, after a clean review and before the verdict, so no further reviewer ensemble runs. In Stage 5

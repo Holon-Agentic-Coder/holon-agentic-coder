@@ -1,12 +1,12 @@
 """Classes of a post-approval CI failure, and the rerun budget shared by Stage 4 and Stage 5.
 
 A red pipeline after the reviewers approved is either noise (``noise_timing``: only the CI timing gate failed;
-``noise_infra``: the runner failed to start or only setup and teardown steps failed; ``noise_cancelled``: every failed
-run was cancelled or stale) or a ``defect``. Noise is rerun once per run id and head (``CI_NOISE_RERUNS``) while the
-diff approval stands; a defect, or noise still red after its rerun, goes to the resolver. The rule fails safe: no run,
-a run without an Actions run id, more than ``MAX_JOBS_DESCRIBED`` failed jobs, an unreadable job detail, a failed test
-step or any mix of classes is a ``defect``. A repeated timing-gate failure keeps the slowest-tests finding
-(:mod:`sandbox_executor.flow.review.ci_timing_finding`).
+``noise_infra``: the runner failed to start, the job timed out or only setup and teardown steps failed;
+``noise_cancelled``: every failed run was cancelled or stale) or a ``defect``. Noise is rerun once per run id and head
+(``CI_NOISE_RERUNS``) while the diff approval stands; a defect, or noise still red after its rerun, goes to the
+resolver. The rule fails safe: no run, a run without an Actions run id, more than ``MAX_JOBS_DESCRIBED`` failed jobs, an
+unreadable job detail, a failed test step or any mix of classes is a ``defect``. A repeated timing-gate failure keeps
+the slowest-tests finding (:mod:`sandbox_executor.flow.review.ci_timing_finding`).
 
 The budget and the last decision live in ``context.review_state["ci_routing"]``, checkpointed with the context, so a
 resume never reruns twice.

@@ -32,6 +32,7 @@ from sandbox_executor.flow.review.adjudication import (
     record_nit_rejections,
 )
 from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of, approval_record
+from sandbox_executor.flow.review.approval_gates import IterationGates, gates_summary, record_iteration_gates
 from sandbox_executor.flow.review.carried_findings import (
     CarriedPass,
     carried_blocker,
@@ -394,9 +395,15 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         )
         last_ci_status, ci_wait, tests_failed, ci_finding = ci.ci_status, ci.ci_wait, ci.tests_failed, ci.ci_finding
         tests_not_measured |= ci.tests_not_measured
+        mergeable = None if missing_ref else not is_dirty
         if ci.decides:
-            mergeable = None if missing_ref else not is_dirty
             ensemble_verdict = decide_returned_consensus(reviewers, ensemble_size, mergeable, ci.ci_green, blockers)
+        if not effective_dry_run and infra_error is None and resolved_target is not None and resolved_target.head_sha:
+            gate_base = resolved_target.base_branch or target_branch
+            fingerprint_of = functools.partial(approval_fingerprint_of, repo_dir, base_branch=gate_base)
+            gate_facts = (reviewers, ensemble_size, mergeable, blockers, ci.ci_green, last_ci_status, gate_base)
+            facts = IterationGates(resolved_target.head_sha, iteration, *gate_facts, fingerprint_of=fingerprint_of)
+            record_iteration_gates(context, facts, ensemble_verdict)  # Both gates; the verdict stays the conjunction.
 
         # 4. Findings: mergeability and CI infrastructure ids, then every reviewer finding
         finding_ids = [
@@ -838,6 +845,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             "max_review_iterations": last_label,
             "status": consensus_status,
             **approval_record(consensus_data),  # Stage 5 compares the head it calibrates with the approved one.
+            "gates": gates_summary(context),  # The diff and pipeline gates recorded by the last iteration.
         },
         "halted_for_human": False,
         "human_merge_gate_enforced": consensus_reached,

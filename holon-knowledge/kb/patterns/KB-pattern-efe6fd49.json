@@ -1,0 +1,20 @@
+{
+  "kb_id": "KB-pattern-efe6fd49",
+  "kb_type": "pattern",
+  "version": "1.0",
+  "created_ts": "1970-01-01T00:00:00+00:00",
+  "updated_ts": "1970-01-01T00:00:00+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {},
+  "tags": [
+    "code",
+    "proven"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Proven approach for I-1795444112-fable-model-registry-entry/P-1795444541-ANA-G4A/E-1795444771-ANA-G4A/_",
+    "description": "Advisory: historical executions matching this context pattern succeeded consistently. Consider evaluating proven approach: 'Review Loop iteration 1 reviewer 1 completed'. Execution counts live in the action index and ledgers.",
+    "action": "Review Loop iteration 1 reviewer 1 completed"
+  }
+}

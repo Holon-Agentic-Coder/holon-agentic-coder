@@ -23,9 +23,17 @@ HINT_BLOCK = (
 class ScriptedGh:
     """A ``subprocess.run`` stand-in that scripts gh results by subcommand and records argv and env."""
 
-    def __init__(self, *, pr_exists: bool, edit_stdout: str = "", view_error: BaseException | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        pr_exists: bool,
+        edit_stdout: str = "",
+        edit_stderr: str = HINT_BLOCK,
+        view_error: BaseException | None = None,
+    ) -> None:
         self.pr_exists = pr_exists
         self.edit_stdout = edit_stdout
+        self.edit_stderr = edit_stderr
         self.view_error = view_error
         self.calls: list[tuple[list[str], dict[str, str]]] = []
 
@@ -41,7 +49,7 @@ class ScriptedGh:
             return subprocess.CompletedProcess(argv, 1, "", "no pull requests found for branch")
         if subcommand == "create":
             return subprocess.CompletedProcess(argv, 0, f"{PR_URL}\r\n", HINT_BLOCK)
-        return subprocess.CompletedProcess(argv, 0, self.edit_stdout, HINT_BLOCK)
+        return subprocess.CompletedProcess(argv, 0, self.edit_stdout, self.edit_stderr)
 
 
 def _create_or_update(run: ScriptedGh, which: Any = lambda _: "/usr/bin/gh") -> dict[str, Any]:
@@ -64,6 +72,15 @@ def test_edit_path_without_stdout_url_has_no_pr_url() -> None:
     result = _create_or_update(ScriptedGh(pr_exists=True, edit_stdout="updated\n"))
 
     assert result["action"] == "edit"
+    assert result["pr_url"] is None
+
+
+def test_edit_path_ignores_url_led_stderr_when_stdout_is_empty() -> None:
+    stderr = "https://github.com/o/r/actions\nhint:   gh event listen --pull-request 7\n"
+
+    result = _create_or_update(ScriptedGh(pr_exists=True, edit_stderr=stderr))
+
+    assert result["output"].startswith("https://")
     assert result["pr_url"] is None
 
 

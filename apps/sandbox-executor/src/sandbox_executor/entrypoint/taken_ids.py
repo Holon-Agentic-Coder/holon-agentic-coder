@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import os
-
 from sandbox_executor.git import GitRepository
-from sandbox_executor.ledger import read_merged_rows
-from sandbox_executor.plan_paths import plan_file_rel
 
 
 def taken_child_ids(repo: GitRepository, parent_prefix: str, kind: str) -> set[str]:
@@ -19,25 +15,3 @@ def taken_child_ids(repo: GitRepository, parent_prefix: str, kind: str) -> set[s
             if child.startswith(f"{kind}-"):
                 taken.add(child)
     return taken
-
-
-def _plan_ids_on_disk(repo_dir: str, prefix: str) -> set[str]:
-    plan_dir = os.path.dirname(os.path.join(repo_dir, plan_file_rel(prefix, "P-0")))
-    on_disk = os.listdir(plan_dir) if os.path.isdir(plan_dir) else []
-    return {name.removesuffix(".md") for name in on_disk if name.startswith("P-") and name.endswith(".md")}
-
-
-def _plan_ids_in_ledger(repo_dir: str, prefix: str) -> set[str]:
-    taken: set[str] = set()
-    for row in read_merged_rows(os.path.join(repo_dir, "holon-knowledge/ledger/plans.jsonl")):
-        recorded = str(row.get("intent_branch") or "").removesuffix("/_").rstrip("/")
-        if recorded == prefix and isinstance(row.get("plan_id"), str):
-            taken.add(row["plan_id"])
-    return taken
-
-
-def taken_plan_ids(repo: GitRepository, repo_dir: str, intent_branch_prefix: str) -> set[str]:
-    prefix = intent_branch_prefix.removesuffix("/_").rstrip("/")
-    return (
-        _plan_ids_on_disk(repo_dir, prefix) | taken_child_ids(repo, prefix, "P") | _plan_ids_in_ledger(repo_dir, prefix)
-    )

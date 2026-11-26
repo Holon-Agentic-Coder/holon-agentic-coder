@@ -5,9 +5,7 @@ from pathlib import Path
 
 import pytest
 from sandbox_executor.entrypoint.plan_id_unique import PLAN_ID_CLAIM_ROOT, mint_plan_id
-from sandbox_executor.entrypoint.taken_ids import taken_plan_ids
 from sandbox_executor.git import GitRepository
-from sandbox_executor.ledger import build_plan_id
 from sandbox_executor.ledger.fragments import pending_dir_for
 from sandbox_executor.naming import GENERATION_TICKER, StageIdCollisionError, parse_stage_id
 from sandbox_executor.plan_paths import PLAN_FILE_PATTERN, plan_file_rel
@@ -45,16 +43,6 @@ def _assert_parser_compatible(prefix: str, plan_id: str) -> None:
     assert parsed.variant is None or 2 <= parsed.variant <= 9
     assert re.fullmatch(PLAN_FILE_PATTERN, plan_file_rel(prefix, plan_id))
     ensure_stage_segment_fits(prefix, plan_id, extra=len(plan_id) + 1)
-
-
-def test_the_per_prefix_mint_gives_same_second_twin_flows_the_same_plan_id(tmp_path):
-    repo = _repo(tmp_path)
-    ids = {
-        build_plan_id(SEQ, prefix, *AGENT_MODEL, taken=taken_plan_ids(repo, str(tmp_path), prefix))
-        for prefix in ("I-1-alpha", "I-1-beta")
-    }
-
-    assert ids == {BASE}
 
 
 def test_same_second_mints_for_different_intent_slugs_return_different_plan_ids(tmp_path):

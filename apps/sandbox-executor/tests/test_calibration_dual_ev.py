@@ -115,7 +115,7 @@ class TestCalibrationDualEV(unittest.TestCase):
             return MagicMock(returncode=0, stdout="")
 
         with (
-            patch("sandbox_executor.calibration.read_git_file", return_value=jsonl),
+            patch("sandbox_executor.calibration.actual.read_git_file", return_value=jsonl),
             patch("subprocess.run", side_effect=mock_subp),
         ):
             actual, _meta = parse_actual_metrics("E-dec-1", "I-t/P-t/_", predicted)
@@ -140,7 +140,7 @@ class TestCalibrationDualEV(unittest.TestCase):
                 return MagicMock(returncode=0, stdout="")
 
             with (
-                patch("sandbox_executor.calibration.read_git_file", return_value=jsonl),
+                patch("sandbox_executor.calibration.actual.read_git_file", return_value=jsonl),
                 patch("subprocess.run", side_effect=mock_subp),
             ):
                 actual, _meta = parse_actual_metrics("E-dec-2", "I-t/P-t/_", predicted)
@@ -283,7 +283,7 @@ class TestCalibrationDualEV(unittest.TestCase):
             return MagicMock(returncode=0, stdout="")
 
         with (
-            patch("sandbox_executor.calibration.read_git_file", return_value=jsonl),
+            patch("sandbox_executor.calibration.actual.read_git_file", return_value=jsonl),
             patch("subprocess.run", side_effect=mock_subp),
         ):
             actual, _meta = parse_actual_metrics("E-int-1", "I-t/P-t/_", predicted)
@@ -318,7 +318,7 @@ class TestCalibrationDualEV(unittest.TestCase):
             return MagicMock(returncode=0, stdout="")
 
         with (
-            patch("sandbox_executor.calibration.read_git_file", return_value=jsonl),
+            patch("sandbox_executor.calibration.actual.read_git_file", return_value=jsonl),
             patch("subprocess.run", side_effect=mock_subp),
         ):
             actual, _meta = parse_actual_metrics("E-int-2", "I-t/P-t/_", predicted)
@@ -331,16 +331,17 @@ class TestCalibrationDualEV(unittest.TestCase):
         """Assert module size budgets and complexity limits are strictly respected."""
         repo_root = Path(__file__).resolve().parents[3]
         helper_file = repo_root / "apps/sandbox-executor/src/sandbox_executor/calibration_ev.py"
-        calibration_file = repo_root / "apps/sandbox-executor/src/sandbox_executor/calibration.py"
+        calibration_package = repo_root / "apps/sandbox-executor/src/sandbox_executor/calibration"
+        calibration_modules = sorted(calibration_package.glob("*.py"))
 
         helper_lines = len(helper_file.read_text(encoding="utf-8").splitlines())
-        calibration_lines = len(calibration_file.read_text(encoding="utf-8").splitlines())
+        calibration_lines = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in calibration_modules)
 
         self.assertLess(helper_lines, 200, f"calibration_ev.py has {helper_lines} lines (budget < 200)")
         self.assertLessEqual(
             calibration_lines,
             1684,
-            f"calibration.py has {calibration_lines} lines (baseline was 1684; net delta must be <= 0)",
+            f"the calibration package has {calibration_lines} lines (baseline was 1684; net delta must be <= 0)",
         )
 
         # Assert no new noqa annotations added in calibration_ev.py

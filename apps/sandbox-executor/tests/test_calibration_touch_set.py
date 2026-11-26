@@ -48,7 +48,7 @@ def test_shortstat_diff_leaves_changed_paths_unmeasured():
 
     with (
         patch("os.path.exists", return_value=False),
-        patch("sandbox_executor.calibration.read_git_file", return_value=None),
+        patch("sandbox_executor.calibration.actual.read_git_file", return_value=None),
         patch("subprocess.run", side_effect=fake_run),
     ):
         actual, meta = parse_actual_metrics("E-3", "", PredictedMetrics())
@@ -102,7 +102,7 @@ def test_changed_paths_exclude_metadata():
 
     with (
         patch("os.path.exists", return_value=False),
-        patch("sandbox_executor.calibration.read_git_file", return_value=None),
+        patch("sandbox_executor.calibration.actual.read_git_file", return_value=None),
         patch("subprocess.run", side_effect=fake_run),
     ):
         _, meta = parse_actual_metrics("E-3", "", PredictedMetrics())

@@ -291,7 +291,7 @@ def test_classifier_redacts_the_cause():
 
 
 def test_fallback_symbols_are_gone():
-    src = Path(sandbox_executor.calibration.__file__).parent
+    src = Path(sandbox_executor.calibration.__file__).parent.parent
     for path in src.rglob("*.py"):
         text = path.read_text(encoding="utf-8")
         for symbol in ("_fallback_report", "on_calibrate_error", "fallback_report_written"):

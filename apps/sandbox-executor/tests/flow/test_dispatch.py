@@ -208,7 +208,7 @@ class TestFlowRoleDispatch:
         start = stage_start("intent")
         host, ctx = start.host, start.ctx
 
-        with patch("sandbox_executor.calibration.format_calibration_report") as mock_format:
+        with patch("sandbox_executor.calibration.run.format_calibration_report") as mock_format:
             res = run_plan_stage(ctx)
 
         assert res.status == StageStatus.SUCCESS

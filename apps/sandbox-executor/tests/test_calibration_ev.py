@@ -163,7 +163,7 @@ class TestParseActualMetricsFinalRow(unittest.TestCase):
             with self.subTest(resolved_status=resolved_status):
                 jsonl = "".join(json.dumps(row) + "\n" for row in _conflict_flow(resolved_status=resolved_status))
                 with (
-                    patch("sandbox_executor.calibration.read_git_file", return_value=jsonl),
+                    patch("sandbox_executor.calibration.actual.read_git_file", return_value=jsonl),
                     patch("subprocess.run", side_effect=mock_subp),
                 ):
                     actual, _meta = parse_actual_metrics("E-1", PLAN, predicted)

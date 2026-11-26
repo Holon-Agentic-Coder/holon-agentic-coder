@@ -37,6 +37,7 @@ PUBLIC_NAMES = (
     "extract_branch_components",
     "fetch_ref_if_needed",
     "fetch_remote_ref_if_needed",
+    "format_calibration_report",
     "format_markdown_report",
     "generate_calibration",
     "is_calibration_stale",

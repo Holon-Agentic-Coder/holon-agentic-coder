@@ -583,7 +583,7 @@ class TestActualMetricsIntegrity(unittest.TestCase):
         diff_res = MagicMock(returncode=0, stdout="3 files changed, 100 insertions(+), 10 deletions(-)\n")
 
         with (
-            patch("sandbox_executor.calibration.read_git_file", side_effect=mock_read_git_file),
+            patch("sandbox_executor.calibration.actual.read_git_file", side_effect=mock_read_git_file),
             patch("subprocess.run", return_value=diff_res),
         ):
             actual, _meta = parse_actual_metrics("E-prov-1", "I-test/P-test/_", PredictedMetrics(), "exec-sha")
@@ -624,7 +624,7 @@ class TestActualMetricsIntegrity(unittest.TestCase):
             return MagicMock(returncode=0, stdout="")
 
         with (
-            patch("sandbox_executor.calibration.read_git_file", side_effect=mock_read_git_file),
+            patch("sandbox_executor.calibration.actual.read_git_file", side_effect=mock_read_git_file),
             patch("subprocess.run", side_effect=mock_subp),
         ):
             actual, meta = parse_actual_metrics("E-merge-1", "I-test/P-test/_", predicted, "exec-branch")
@@ -687,7 +687,7 @@ class TestActualMetricsIntegrity(unittest.TestCase):
             return MagicMock(returncode=0, stdout="")
 
         with (
-            patch("sandbox_executor.calibration.read_git_file", side_effect=mock_read_git_file),
+            patch("sandbox_executor.calibration.actual.read_git_file", side_effect=mock_read_git_file),
             patch("subprocess.run", side_effect=mock_subp),
         ):
             actual, meta = parse_actual_metrics("E-linear-1", "I-test/P-test/_", predicted, "exec-linear")
@@ -723,7 +723,7 @@ class TestActualMetricsIntegrity(unittest.TestCase):
 class TestAppendOnlyCalibratedBranch(unittest.TestCase):
     """Test fast-forward and append-only commit logic on /calibrated branches."""
 
-    @patch("sandbox_executor.calibration.format_calibration_report")
+    @patch("sandbox_executor.calibration.run.format_calibration_report")
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("os.makedirs")
     def test_run_calibrate_appends_to_existing_local_branch(self, mock_makedirs, mock_open, mock_prettier):
@@ -755,7 +755,7 @@ class TestAppendOnlyCalibratedBranch(unittest.TestCase):
         expected_co = ["git", "checkout", "I-1/P-2/E-3/calibrated"]
         self.assertIn(expected_co, called_cmds)
 
-    @patch("sandbox_executor.calibration.format_calibration_report")
+    @patch("sandbox_executor.calibration.run.format_calibration_report")
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("os.makedirs")
     def test_run_calibrate_checks_out_remote_branch_when_local_absent(self, mock_makedirs, mock_open, mock_prettier):
@@ -778,7 +778,7 @@ class TestAppendOnlyCalibratedBranch(unittest.TestCase):
         expected_co = ["git", "checkout", "-b", "I-1/P-2/E-3/calibrated", "refs/remotes/origin/I-1/P-2/E-3/calibrated"]
         self.assertIn(expected_co, called_cmds)
 
-    @patch("sandbox_executor.calibration.format_calibration_report")
+    @patch("sandbox_executor.calibration.run.format_calibration_report")
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("os.makedirs")
     def test_run_calibrate_creates_new_branch_when_neither_exists(self, mock_makedirs, mock_open, mock_prettier):
@@ -802,7 +802,7 @@ class TestAppendOnlyCalibratedBranch(unittest.TestCase):
         matching_cmds = [cmd for cmd in called_cmds if isinstance(cmd, list) and cmd[:4] == expected_prefix]
         self.assertTrue(matching_cmds, "Expected checkout -b command was not executed")
 
-    @patch("sandbox_executor.calibration.format_calibration_report")
+    @patch("sandbox_executor.calibration.run.format_calibration_report")
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("os.makedirs")
     def test_run_calibrate_remote_only_execution_branch_strips_origin(self, mock_makedirs, mock_open, mock_prettier):
@@ -926,7 +926,7 @@ class TestEvaluatedCommitShaAndStaleness(unittest.TestCase):
 class TestNoCommitMessagingAndJson(unittest.TestCase):
     """Test accurate logging and schema output for --no-commit."""
 
-    @patch("sandbox_executor.calibration.format_calibration_report")
+    @patch("sandbox_executor.calibration.run.format_calibration_report")
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("os.makedirs")
     def test_no_commit_console_output(self, mock_makedirs, mock_open, mock_prettier):
@@ -942,7 +942,7 @@ class TestNoCommitMessagingAndJson(unittest.TestCase):
             self.assertTrue(any("(uncommitted)" in msg for msg in printed_msgs))
             self.assertFalse(any("Calibrated branch:" in msg for msg in printed_msgs))
 
-    @patch("sandbox_executor.calibration.format_calibration_report")
+    @patch("sandbox_executor.calibration.run.format_calibration_report")
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("os.makedirs")
     def test_no_commit_json_output(self, mock_makedirs, mock_open, mock_prettier):
@@ -957,7 +957,7 @@ class TestNoCommitMessagingAndJson(unittest.TestCase):
             self.assertIsNone(parsed["calibrated_branch"])
             self.assertIn("evaluated_commit_sha", parsed)
 
-    @patch("sandbox_executor.calibration.format_calibration_report")
+    @patch("sandbox_executor.calibration.run.format_calibration_report")
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("os.makedirs")
     def test_committed_json_output(self, mock_makedirs, mock_open, mock_prettier):
@@ -1060,7 +1060,7 @@ class TestCalibrationInterleavedActionLedger(unittest.TestCase):
         diff_res = MagicMock(returncode=0, stdout="1 file changed, 10 insertions(+), 0 deletions(-)\n")
 
         with (
-            patch("sandbox_executor.calibration.read_git_file", side_effect=mock_read_git_file),
+            patch("sandbox_executor.calibration.actual.read_git_file", side_effect=mock_read_git_file),
             patch("subprocess.run", return_value=diff_res),
         ):
             actual, meta = parse_actual_metrics("E-interleave", "I-test/P-test/_", PredictedMetrics(), "exec-sha")

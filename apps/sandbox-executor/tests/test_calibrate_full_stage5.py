@@ -93,7 +93,7 @@ def make_repo(root: Path) -> SimpleNamespace:
 
 @pytest.fixture(autouse=True)
 def no_prettier():
-    with patch("sandbox_executor.calibration.format_calibration_report"):
+    with patch("sandbox_executor.calibration.run.format_calibration_report"):
         yield
 
 

@@ -12,6 +12,11 @@ REVIEW_LAZY_EXPORTS: dict[str, str] = {
         "merged_head_coverage record_stage5_carry_over"
     ),
     "sandbox_executor.flow.review.approval_coverage": "ApprovalCoverage approval_covers approved_fingerprint_of",
+    "sandbox_executor.flow.review.approval_gates": (
+        "DiffGate IterationGates PipelineGate approved diff_gate_holds diff_gate_of gates_summary mark_pipeline_red "
+        "pipeline_gate_holds pipeline_gate_of pipeline_state_of record_diff_gate record_iteration_gates "
+        "record_pipeline_gate"
+    ),
     "sandbox_executor.flow.review.approval_fingerprint": (
         "approval_fingerprint_of approval_record fingerprints_match is_bookkeeping_only_move is_bookkeeping_path "
         "pr_change_fingerprint reviewable_pathspecs"
@@ -19,6 +24,7 @@ REVIEW_LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.review.carried_findings": (
         "CarriedPass carried_blocker deserialize_carried merge_findings resolve_carried_first serialize_open undisposed"
     ),
+    "sandbox_executor.flow.review.ci_inspection": "CiInspection CiInspectionInputs inspect_ci",
     "sandbox_executor.flow.review.ci_outcome": "describe_ci_outcome gate_ci_flags",
     "sandbox_executor.flow.review.cli": "run_review_loop_cli",
     "sandbox_executor.flow.review.consensus_withdrawal": (

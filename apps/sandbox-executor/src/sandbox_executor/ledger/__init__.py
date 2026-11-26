@@ -17,6 +17,13 @@ from sandbox_executor.ledger.merged import (
     with_ref_fragments,
 )
 from sandbox_executor.ledger.order import parse_created_at
+from sandbox_executor.ledger.promote import (
+    PromotionRaceError,
+    PromotionResult,
+    apply_promotion,
+    plan_promotion,
+    promote,
+)
 from sandbox_executor.ledger.query import (
     LedgerQuery,
     _describe_id_owner,
@@ -102,6 +109,8 @@ __all__ = [
     "LedgerReconciler",
     "LedgerRewriteError",
     "PrefixSide",
+    "PromotionRaceError",
+    "PromotionResult",
     "SummaryRecord",
     "_append_only_union",
     "_describe_id_owner",
@@ -123,6 +132,7 @@ __all__ = [
     "append_action_record",
     "append_execution_record",
     "append_summary_record",
+    "apply_promotion",
     "assert_ledger_prefix",
     "atomic_ledger_append",
     "build_execution_id",
@@ -136,6 +146,8 @@ __all__ = [
     "merged_jsonl_text",
     "parse_commit_trailers",
     "parse_created_at",
+    "plan_promotion",
+    "promote",
     "query_ledger",
     "read_merged_rows",
     "read_merged_rows_at_ref",

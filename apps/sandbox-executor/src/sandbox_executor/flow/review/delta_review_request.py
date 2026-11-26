@@ -1,7 +1,8 @@
 """The ``ReviewRequest`` of a scoped delta review: the delta diff, the full modified files, the addressed findings.
 
-Everything agent-visible is redacted; each file is capped at the decision's ``context_bytes`` with a visible marker and
-the files together at ``CONTEXT_FILES_FACTOR`` times that, later files listed by name only.
+The delta diff is bounded by ``bound_review_diff``, as the full review's is. Everything agent-visible is redacted; each
+file is capped at the decision's ``context_bytes`` with a visible marker and the files together at
+``CONTEXT_FILES_FACTOR`` times that, later files listed by name only.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from sandbox_executor.flow.review.delta_review import addressed_findings, curren
 from sandbox_executor.flow.review.delta_review_git import DeltaRepo
 from sandbox_executor.flow.review.delta_review_mode import FULL, ReviewMode
 from sandbox_executor.redaction import redact_agent_secrets
-from sandbox_executor.review_request import ReviewRequest, ScopedDelta, format_delta_body
+from sandbox_executor.review_request import ReviewRequest, ScopedDelta, bound_review_diff, format_delta_body
 from sandbox_executor.review_target import ReviewTarget
 
 CONTEXT_FILES_FACTOR = 4
@@ -56,7 +57,7 @@ def build_delta_request(
     git = DeltaRepo(repo_dir)
     if not decision.scoped or not head or head != decision.head:
         raise RuntimeError("the scoped decision is not for the reviewed head")
-    diff_text = redact_agent_secrets(git.diff(decision.base, head, decision.paths))
+    diff_text = redact_agent_secrets(bound_review_diff(git.diff(decision.base, head, decision.paths)))
     if not diff_text.strip():
         raise RuntimeError("the scoped delta diff is empty")
     files, omitted = _context_files(git, head, decision.paths, decision.context_bytes)

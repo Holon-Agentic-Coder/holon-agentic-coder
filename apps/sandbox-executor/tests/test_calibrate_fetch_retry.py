@@ -128,6 +128,8 @@ def test_exhausted_attempts_without_an_origin_ref_only_warn(tmp_path: Path) -> N
     "detail",
     [
         "fatal: couldn't find remote ref refs/heads/x",
+        "fatal: 'origin' does not appear to be a git repository",
+        "fatal: not a git repository (or any of the parent directories): .git",
         "refusing to fetch: the target branch name is not a plain branch name",
     ],
 )

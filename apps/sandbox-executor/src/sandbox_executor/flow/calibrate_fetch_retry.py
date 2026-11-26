@@ -1,8 +1,9 @@
 """Stage 5 bounded retry of the origin fetch of the execution branch.
 
 A single git fetch can hit an SSH, keychain or network hiccup that clears within seconds. The fetch is retried a few
-times with a short backoff; a failure that cannot clear by waiting (the branch is absent on origin, or a name is
-unsafe) is raised at once. After the last attempt the final ``HostRemoteError`` is raised unchanged.
+times with a short backoff; a failure that cannot clear by waiting (the branch is absent on origin, the worktree or the
+remote is not a git repository, or a name is unsafe) is raised at once. After the last attempt the final
+``HostRemoteError`` is raised unchanged.
 """
 
 from __future__ import annotations
@@ -15,7 +16,12 @@ from sandbox_executor.flow.host_remote import DEFAULT_REMOTE, HostRemoteError, f
 
 FETCH_BACKOFF_SECONDS: tuple[float, ...] = (4.0, 8.0)
 FETCH_ATTEMPTS = len(FETCH_BACKOFF_SECONDS) + 1
-_PERMANENT_DETAILS = ("couldn't find remote ref", "refusing to fetch:")
+_PERMANENT_DETAILS = (
+    "couldn't find remote ref",
+    "does not appear to be a git repository",
+    "not a git repository",
+    "refusing to fetch:",
+)
 
 
 def _is_permanent(exc: HostRemoteError) -> bool:

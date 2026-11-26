@@ -29,18 +29,18 @@ from sandbox_executor.flow.review.approval_coverage import CHANGED
 from sandbox_executor.flow.review.consensus_withdrawal import withdraw_consensus, withdrawn_consensus_of
 from sandbox_executor.flow.review.merged_head_gate import (
     MergedHeadSeams,
-    _stage4_ci_record,
     format_merged_head_ci,
     gate_merged_head_ci,
     gate_record,
     skipped_record,
+    stage4_ci_record,
 )
 from sandbox_executor.flow.review.merged_head_resume import (
-    _pending_scoped_restart,
-    _resumed_restart,
-    _withdraw_after_rejected_restart,
+    pending_scoped_restart,
+    resumed_restart,
+    withdraw_after_rejected_restart,
 )
-from sandbox_executor.flow.review.merged_head_routing import _refuse_calibration, _route_merged_head_failure
+from sandbox_executor.flow.review.merged_head_routing import refuse_calibration, route_merged_head_failure
 from sandbox_executor.git import run_git
 
 MAX_MERGED_HEAD_REVIEW_RESTARTS = 3
@@ -81,8 +81,8 @@ def _decide(
     if record["state"] == PASSED:
         return None, record
     if record["state"] == FAILED:
-        return _route_merged_head_failure(context, start, record, seams, withdraw_consensus)
-    return _refuse_calibration(context, start, record), record
+        return route_merged_head_failure(context, start, record, seams, withdraw_consensus)
+    return refuse_calibration(context, start, record), record
 
 
 def stage5_merged_head_gate(
@@ -90,7 +90,7 @@ def stage5_merged_head_gate(
 ) -> tuple[StageResult | None, dict[str, Any]]:
     """Gate Stage 5 on CI of the head it would calibrate: (the result that stops Stage 5 or None, the CI record)."""
     seams, start = seams or MergedHeadSeams(), datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    resumed = _resumed_restart(context, start)
+    resumed = resumed_restart(context, start)
     if resumed is not None:  # A resume after a withdrawal or a scoped restart: Stage 4 runs again first.
         return resumed
     skip = _skip_reason(context)
@@ -103,7 +103,7 @@ def stage5_merged_head_gate(
         return _decide(context, start, record, seams)
     moved = seams.bookkeeping_move or _git_bookkeeping_move(context.target_worktree)
     if _same_commit(approved, head) or moved(approved, head):
-        record = _stage4_ci_record(context, head)
+        record = stage4_ci_record(context, head)
         context.log(
             f"Stage 5 relies on Stage 4 CI for head {head} (approved {approved}). {format_merged_head_ci(record)}"
         )
@@ -121,7 +121,7 @@ def approval_stands(context: FlowContext, result: StageResult) -> bool:
     """Whether ``result`` and Stage 4's latest result are approvals no merged-head CI failure has withdrawn."""
     latest = context.stage_results.get(FlowStage.REVIEW.value) or result
     approved = result.status == StageStatus.APPROVED and latest.status == StageStatus.APPROVED
-    return approved and withdrawn_consensus_of(context) is None and _pending_scoped_restart(context) is None
+    return approved and withdrawn_consensus_of(context) is None and pending_scoped_restart(context) is None
 
 
 def is_review_restart(result: StageResult) -> bool:
@@ -179,12 +179,13 @@ def calibrate_with_review_restart(
     while is_review_restart(result):
         restarts += 1
         gate, scoped = result.payload.get("merged_head_ci") or {}, bool(result.payload.get("scoped_restart"))
+        approved = result.payload.get("approved_head")  # Named before the restarted Stage 4 replaces the consensus.
         context.log(f"{_restart_note(result)} (restart {restarts} of {MAX_MERGED_HEAD_REVIEW_RESTARTS}).")
         review = run_stage(FlowStage.REVIEW)
         record(FlowStage.REVIEW, review)
         if review.status != StageStatus.APPROVED:
             if scoped and gate.get("head_sha"):
-                _withdraw_after_rejected_restart(context, gate)
+                withdraw_after_rejected_restart(context, gate, approved)
             return review
         result = _run_calibrate(context, run_stage, record, restarts)
     return result

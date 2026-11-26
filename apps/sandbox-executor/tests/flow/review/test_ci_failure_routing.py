@@ -15,15 +15,15 @@ from sandbox_executor.flow.review.ci_failure_routing import (
     NOISE_TIMING,
     RERUN,
     RESOLVE,
-    _classify_failure,
-    _failed_runs_from_record,
+    FailedRun,
     _failed_runs_from_status,
-    _FailedRun,
     _last_routing,
-    _note_rerun,
-    _record_routing,
     _reruns_spent,
-    _route_failure,
+    classify_ci_failure,
+    failed_runs_from_record,
+    note_rerun,
+    record_routing,
+    route_failure,
 )
 from sandbox_executor.ledger import read_merged_rows
 from sandbox_executor.review_accounting import accounting_of
@@ -47,8 +47,8 @@ def _lookup(steps: dict[str, list[str]]) -> Any:
     return lookup
 
 
-def _run(name: str = "test", run_id: str | None = "11", conclusion: str = "failure") -> _FailedRun:
-    return _FailedRun(name, run_id, conclusion)
+def _run(name: str = "test", run_id: str | None = "11", conclusion: str = "failure") -> FailedRun:
+    return FailedRun(name, run_id, conclusion)
 
 
 @pytest.mark.parametrize(
@@ -82,8 +82,8 @@ def _run(name: str = "test", run_id: str | None = "11", conclusion: str = "failu
         "no-run",
     ],
 )
-def test_classification_fails_safe(runs: list[_FailedRun], steps: dict[str, list[str]], expected: str) -> None:
-    assert _classify_failure(runs, _lookup(steps)) == expected
+def test_classification_fails_safe(runs: list[FailedRun], steps: dict[str, list[str]], expected: str) -> None:
+    assert classify_ci_failure(runs, _lookup(steps)) == expected
 
 
 def test_failed_runs_from_the_stage4_and_stage5_shapes() -> None:
@@ -103,25 +103,25 @@ def test_failed_runs_from_the_stage4_and_stage5_shapes() -> None:
             {"name": "slow", "run_id": 14, "conclusion": "in_progress"},
         ]
     }
-    assert _failed_runs_from_record(record) == [_run()]
+    assert failed_runs_from_record(record) == [_run()]
 
 
 def test_one_rerun_per_run_id_and_head(tmp_path: Path) -> None:
     ctx, runs = _ctx(tmp_path), [_run()]
-    assert _route_failure(ctx, HEAD, NOISE_TIMING, runs) == RERUN
-    _note_rerun(ctx, HEAD, ["11"])
+    assert route_failure(ctx, HEAD, NOISE_TIMING, runs) == RERUN
+    note_rerun(ctx, HEAD, ["11"])
     assert _reruns_spent(ctx, HEAD, "11") == 1
-    assert _route_failure(ctx, HEAD, NOISE_TIMING, runs) == RESOLVE
-    assert _route_failure(ctx, "b" * 40, NOISE_TIMING, runs) == RERUN
-    assert _route_failure(ctx, HEAD, DEFECT, [_run(run_id="99")]) == RESOLVE
-    assert _route_failure(ctx, HEAD, NOISE_INFRA, [_run(run_id=None)]) == RESOLVE
+    assert route_failure(ctx, HEAD, NOISE_TIMING, runs) == RESOLVE
+    assert route_failure(ctx, "b" * 40, NOISE_TIMING, runs) == RERUN
+    assert route_failure(ctx, HEAD, DEFECT, [_run(run_id="99")]) == RESOLVE
+    assert route_failure(ctx, HEAD, NOISE_INFRA, [_run(run_id=None)]) == RESOLVE
     assert FlowContext.from_dict(ctx.to_dict()).review_state["ci_routing"]["reruns"][HEAD] == {"11": 1}
 
 
 def test_record_routing_classifies_the_gate_and_appends_one_row(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     record_pipeline_gate(ctx, PipelineGate(HEAD, RED, ("11",)))
-    last = _record_routing(ctx, HEAD, NOISE_TIMING, RERUN, [_run()])
+    last = record_routing(ctx, HEAD, NOISE_TIMING, RERUN, [_run()])
     gate = pipeline_gate_of(ctx)
     assert gate is not None and gate.classification == NOISE_TIMING
     rows = read_merged_rows(str(tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"))
@@ -133,16 +133,16 @@ def test_record_routing_classifies_the_gate_and_appends_one_row(tmp_path: Path) 
 def test_record_routing_leaves_another_heads_gate_alone(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
     record_pipeline_gate(ctx, PipelineGate("b" * 40, RED))
-    _record_routing(ctx, HEAD, DEFECT, RESOLVE, [_run()])
+    record_routing(ctx, HEAD, DEFECT, RESOLVE, [_run()])
     gate = pipeline_gate_of(ctx)
     assert gate is not None and gate.classification is None
 
 
 def test_a_noise_rerun_counts_one_rerun_and_one_ci_noise_churn(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
-    _note_rerun(ctx, HEAD, ["11"])
-    _record_routing(ctx, HEAD, NOISE_INFRA, RERUN, [_run()])
-    _record_routing(ctx, HEAD, NOISE_INFRA, RESOLVE, [_run()])  # Still red after its rerun: no new churn.
+    note_rerun(ctx, HEAD, ["11"])
+    record_routing(ctx, HEAD, NOISE_INFRA, RERUN, [_run()])
+    record_routing(ctx, HEAD, NOISE_INFRA, RESOLVE, [_run()])  # Still red after its rerun: no new churn.
     accounting = accounting_of(FlowContext.from_dict(ctx.to_dict()))
     assert accounting is not None
     assert (accounting["pipeline_reruns"], accounting["non_defect_churn"]["ci_noise"]) == (1, 1)
@@ -150,5 +150,5 @@ def test_a_noise_rerun_counts_one_rerun_and_one_ci_noise_churn(tmp_path: Path) -
 
 def test_a_defect_routing_counts_no_churn(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
-    _record_routing(ctx, HEAD, DEFECT, RESOLVE, [_run()])
+    record_routing(ctx, HEAD, DEFECT, RESOLVE, [_run()])
     assert accounting_of(ctx) is None

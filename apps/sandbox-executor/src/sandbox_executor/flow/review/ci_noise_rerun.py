@@ -19,12 +19,12 @@ from sandbox_executor.flow.review.ci_failure_routing import (
     CLASS_LABELS,
     RERUN,
     RESOLVE,
-    _classify_failure,
+    FailedRun,
     _failed_runs_from_status,
-    _FailedRun,
-    _note_rerun,
-    _record_routing,
-    _route_failure,
+    classify_ci_failure,
+    note_rerun,
+    record_routing,
+    route_failure,
 )
 from sandbox_executor.flow.review.ci_inspection import CiInspection, CiInspectionInputs, inspect_ci
 
@@ -49,7 +49,7 @@ def _dispatch(inputs: CiInspectionInputs, run_id: str, whole_run: bool) -> bool:
         return False
 
 
-def _dispatch_all(inputs: CiInspectionInputs, runs: Sequence[_FailedRun]) -> tuple[bool, list[str]]:
+def _dispatch_all(inputs: CiInspectionInputs, runs: Sequence[FailedRun]) -> tuple[bool, list[str]]:
     """Dispatch one rerun per run id: whether every dispatch succeeded, and the run ids that were dispatched."""
     dispatched = []
     for run_id in dict.fromkeys(run.run_id for run in runs if run.run_id):
@@ -73,26 +73,26 @@ def _wait_for_rerun_start(inputs: CiInspectionInputs, names: set[str]) -> None:
         inputs.iteration_timer.credit(max(0.0, inputs.clock() - start))  # The CI wait has its own budget.
 
 
-def _rerun_noise_once(
+def rerun_noise_once(
     context: FlowContext, inputs: CiInspectionInputs, ci: CiInspection, head: str | None
 ) -> CiInspection:
     """The inspection after one noise rerun, or ``ci`` unchanged when nothing is rerun."""
     runs = _failed_runs_from_status(ci.ci_status) if head and _eligible(inputs, ci, head) else []
     if not head or not runs:
         return ci
-    cls = _classify_failure(runs, inputs.detail_lookup or gh_detail_lookup(inputs.repo_dir, inputs.proxy_env))
-    decision, dispatched = _route_failure(context, head, cls, runs), []
+    cls = classify_ci_failure(runs, inputs.detail_lookup or gh_detail_lookup(inputs.repo_dir, inputs.proxy_env))
+    decision, dispatched = route_failure(context, head, cls, runs), []
     if decision == RERUN:
         ok, dispatched = _dispatch_all(inputs, runs)
         if ok:
-            _note_rerun(context, head, dispatched)
+            note_rerun(context, head, dispatched)
         else:
             context.log(f"[Review Loop] CI noise rerun on {short_sha(head)} could not be dispatched; resolving.")
             decision = RESOLVE
-    last = _record_routing(context, head, cls, decision, runs)
+    last = record_routing(context, head, cls, decision, runs)
     if decision != RERUN:
         # A partial dispatch is counted only after recording: ``reruns`` names only reruns that were inspected.
-        _note_rerun(context, head, dispatched)
+        note_rerun(context, head, dispatched)
         context.log(f"[Review Loop] CI failure on {short_sha(head)} classified {cls}: sent to the resolver.")
         return ci
     context.log(
@@ -102,6 +102,6 @@ def _rerun_noise_once(
     _wait_for_rerun_start(inputs, {run.name for run in runs})
     after = inspect_ci(inputs, context)
     if after.ci_green is False:  # Still red: the ledger records the hand-off to the resolver, as Stage 5 does.
-        _record_routing(context, head, cls, RESOLVE, _failed_runs_from_status(after.ci_status) or runs)
+        record_routing(context, head, cls, RESOLVE, _failed_runs_from_status(after.ci_status) or runs)
         context.log(f"[Review Loop] CI noise on {short_sha(head)} still red after its rerun: sent to the resolver.")
     return after

@@ -20,6 +20,7 @@ from sandbox_executor.flow.review.approval_gates import (
     record_pipeline_gate,
 )
 from sandbox_executor.flow.review.consensus_withdrawal import (
+    CAP_STEP,
     WithdrawalSeams,
     failed_runs_of,
     render_withdrawal,
@@ -179,7 +180,7 @@ def test_render_names_both_heads_and_each_failing_run() -> None:
 
 
 def test_at_the_restart_cap_the_comment_says_the_flow_stopped() -> None:
-    body = render_withdrawal(APPROVED, MERGED, [], restart=False)
+    body = render_withdrawal(APPROVED, MERGED, [], CAP_STEP)
     assert "restarts at iteration 1" not in body
     assert "the review was not restarted and the flow stopped" in body
 

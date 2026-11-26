@@ -84,7 +84,7 @@ def skipped_record(head_sha: str | None, reason: str) -> dict[str, Any]:
     return gate_record("skipped", str(head_sha or ""), [], [], reason)
 
 
-def _stage4_ci_record(context: FlowContext, head: str) -> dict[str, Any]:
+def stage4_ci_record(context: FlowContext, head: str) -> dict[str, Any]:
     """The Stage 4 CI checks Stage 5 relies on when the approved code is unchanged."""
     review = context.stage_results.get("review")
     checks = ((review.payload.get("ci_checks") if review else None) or {}).get("checks") or []

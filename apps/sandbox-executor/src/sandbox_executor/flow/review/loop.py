@@ -43,9 +43,9 @@ from sandbox_executor.flow.review.carried_findings import (
     serialize_open,
     undisposed,
 )
-from sandbox_executor.flow.review.ci_failure_routing import _apply_last_classification
+from sandbox_executor.flow.review.ci_failure_routing import apply_last_classification
 from sandbox_executor.flow.review.ci_inspection import CiInspectionInputs, inspect_ci
-from sandbox_executor.flow.review.ci_noise_rerun import _rerun_noise_once
+from sandbox_executor.flow.review.ci_noise_rerun import rerun_noise_once
 from sandbox_executor.flow.review.ci_timing_finding import gh_timing_seams, timing_gate_finding
 from sandbox_executor.flow.review.ensemble import (
     _dispatch_review_ensemble,
@@ -397,7 +397,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             ci_wait=ci_wait,
         )
         ci = inspect_ci(ci_inputs, context)  # A noise failure is rerun once here, keeping the diff approval.
-        ci = _rerun_noise_once(context, ci_inputs, ci, resolved_target.head_sha if resolved_target else None)
+        ci = rerun_noise_once(context, ci_inputs, ci, resolved_target.head_sha if resolved_target else None)
         last_ci_status, ci_wait, tests_failed, ci_finding = ci.ci_status, ci.ci_wait, ci.tests_failed, ci.ci_finding
         tests_not_measured |= ci.tests_not_measured
         mergeable = None if missing_ref else not is_dirty
@@ -413,7 +413,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 resolved_target.head_sha, iteration, *gate_facts, fingerprint_of=fingerprint_of, mode=gate_mode
             )
             record_iteration_gates(context, facts, ensemble_verdict)  # Both gates; the verdict stays the conjunction.
-            _apply_last_classification(context, resolved_target.head_sha)
+            apply_last_classification(context, resolved_target.head_sha)
             delta_review.end_review_pass(context, resolved_target.head_sha, reviewers, ensemble_size)
 
         # 4. Findings: mergeability and CI infrastructure ids, then every reviewer finding

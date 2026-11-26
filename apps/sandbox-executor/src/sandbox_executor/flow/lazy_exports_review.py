@@ -13,8 +13,8 @@ REVIEW_LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.review.approval_coverage": "ApprovalCoverage approval_covers approved_fingerprint_of",
     "sandbox_executor.flow.review.delta_review": (
-        "addressed_findings begin_review_pass current_decision decide_review_mode delta_state_of end_review_pass "
-        "record_addressed_findings set_current set_forwarded"
+        "addressed_findings adopt_reviewed_head begin_review_pass current_decision decide_review_mode delta_state_of "
+        "end_review_pass record_addressed_findings set_current set_forwarded"
     ),
     "sandbox_executor.flow.review.delta_review_forwarding": (
         "discard_forwarded_decision forward_scoped_decision load_forwarded_decision"
@@ -37,7 +37,12 @@ REVIEW_LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.review.carried_findings": (
         "CarriedPass carried_blocker deserialize_carried merge_findings resolve_carried_first serialize_open undisposed"
     ),
+    "sandbox_executor.flow.review.ci_failure_routing": (
+        "FailedRun apply_last_classification classify_ci_failure failed_runs_from_record note_rerun record_routing "
+        "route_failure"
+    ),
     "sandbox_executor.flow.review.ci_inspection": "CiInspection CiInspectionInputs inspect_ci",
+    "sandbox_executor.flow.review.ci_noise_rerun": "rerun_noise_once",
     "sandbox_executor.flow.review.ci_outcome": "describe_ci_outcome gate_ci_flags",
     "sandbox_executor.flow.review.cli": "run_review_loop_cli",
     "sandbox_executor.flow.review.consensus_withdrawal": (
@@ -53,8 +58,12 @@ REVIEW_LAZY_EXPORTS: dict[str, str] = {
         "_loop_status _review_window _reviewers_objected _run_engine_review_loop run_review_loop"
     ),
     "sandbox_executor.flow.review.merged_head_gate": (
-        "MergedHeadSeams format_merged_head_ci gate_merged_head_ci gate_record skipped_record"
+        "MergedHeadSeams format_merged_head_ci gate_merged_head_ci gate_record skipped_record stage4_ci_record"
     ),
+    "sandbox_executor.flow.review.merged_head_resume": (
+        "pending_scoped_restart resumed_restart withdraw_after_rejected_restart"
+    ),
+    "sandbox_executor.flow.review.merged_head_routing": "refuse_calibration route_merged_head_failure",
     "sandbox_executor.flow.review.posting": "is_terminal_verdict",
     "sandbox_executor.flow.review.proxy_env": "review_proxy_env",
     "sandbox_executor.flow.review.records": (

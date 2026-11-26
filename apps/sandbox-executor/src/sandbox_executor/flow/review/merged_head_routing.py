@@ -20,6 +20,7 @@ from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.ci_failure_detail import gh_detail_lookup, short_sha
 from sandbox_executor.flow.github.ci_head_checks import FAILED, PASSED
 from sandbox_executor.flow.github.ci_head_reruns import gh_run_rerunner
+from sandbox_executor.flow.github.ci_reverify import approved_head_of
 from sandbox_executor.flow.github.ci_slowest_tests import gh_slowest_lookup
 from sandbox_executor.flow.review import delta_review
 from sandbox_executor.flow.review.approval_gates import (
@@ -35,12 +36,12 @@ from sandbox_executor.flow.review.ci_failure_routing import (
     NOISE_TIMING,
     RERUN,
     RESOLVE,
-    _classify_failure,
-    _failed_runs_from_record,
-    _FailedRun,
-    _note_rerun,
-    _record_routing,
-    _route_failure,
+    FailedRun,
+    classify_ci_failure,
+    failed_runs_from_record,
+    note_rerun,
+    record_routing,
+    route_failure,
 )
 from sandbox_executor.flow.review.ci_timing_finding import timing_gate_finding
 from sandbox_executor.flow.review.consensus_withdrawal import failed_runs_of, withdraw_consensus
@@ -64,7 +65,7 @@ def _skipped(start: str, payload: dict[str, Any]) -> StageResult:
     return StageResult(FlowStage.CALIBRATE, StageStatus.SKIPPED, start, _now(), payload=payload)
 
 
-def _refuse_calibration(context: FlowContext, start: str, record: dict[str, Any]) -> StageResult:
+def refuse_calibration(context: FlowContext, start: str, record: dict[str, Any]) -> StageResult:
     """Fail Stage 5 closed on an unsettled merged head: nothing is calibrated or pushed."""
     reason = (
         f"Calibrate stage refused: CI on merged head {record['head_sha']} is {record['state']} ({record['reason']}); "
@@ -79,7 +80,7 @@ def _withdraw(context: FlowContext, start: str, record: dict[str, Any], seams: M
 
 
 def _rerun(
-    context: FlowContext, head: str, cls: str, runs: Sequence[_FailedRun], seams: MergedHeadSeams
+    context: FlowContext, head: str, cls: str, runs: Sequence[FailedRun], seams: MergedHeadSeams
 ) -> tuple[dict[str, Any], list[str]]:
     """Rerun each failed run once, record the routing as Stage 4 does and poll the head again.
 
@@ -95,15 +96,15 @@ def _rerun(
             reason = f"the rerun of run {run_id} could not be dispatched"
             return {"state": FAILED, "head_sha": head, "reason": reason}, dispatched
         dispatched.append(run_id)
-    _note_rerun(context, head, dispatched)
-    _record_routing(context, head, cls, RERUN, runs)
+    note_rerun(context, head, dispatched)
+    record_routing(context, head, cls, RERUN, runs)
     _wait_for_rerun_start(context, head, {run.name for run in runs}, seams)
     retried = gate_merged_head_ci(context, repo_dir, head, seams)
     context.log(f"After the noise rerun: {format_merged_head_ci(retried)}")
     return retried, []
 
 
-def _ci_finding(cls: str, runs: Sequence[_FailedRun], seams: MergedHeadSeams, context: FlowContext) -> Any:
+def _ci_finding(cls: str, runs: Sequence[FailedRun], seams: MergedHeadSeams, context: FlowContext) -> Any:
     """The carried ``FIND-CI-000``: the slowest-tests finding for a repeated timing failure, else the generic one."""
     names = list(dict.fromkeys(run.name for run in runs))
     status = {"pending": 0, "checks": [{"name": r.name, "link": f"/actions/runs/{r.run_id}"} for r in runs]}
@@ -119,22 +120,23 @@ def _ci_finding(cls: str, runs: Sequence[_FailedRun], seams: MergedHeadSeams, co
 
 def _scoped_restart(context: FlowContext, start: str, record: dict[str, Any], cls: str, seams: MergedHeadSeams) -> Any:
     """Restart Stage 4 with the resolver on the CI finding; the diff approval stands and the fix is reviewed scoped."""
-    head, runs = str(record["head_sha"]), _failed_runs_from_record(record)
+    head, runs, approved = str(record["head_sha"]), failed_runs_from_record(record), approved_head_of(context)
     mark_pipeline_red(context, head, failed_runs_of(record))
-    routing = _record_routing(context, head, cls, RESOLVE, runs)
+    routing = record_routing(context, head, cls, RESOLVE, runs)
     restart_review_passes(context)
     context.carried_review_findings = serialize_open([_ci_finding(cls, runs, seams, context)], {})
     defect = {"head_sha": head, "classification": cls, "action_id": routing.get("action_id"), "merged_head_ci": record}
+    defect["approved_head"] = approved  # The consensus stops naming it below; a rejected fix review withdraws it.
     review = context.stage_results.get(FlowStage.REVIEW.value)
     if review is not None:
         consensus = {**(review.payload.get("consensus") or {}), "approved": False, "pipeline_defect": defect}
         review.payload = {**review.payload, "consensus": consensus}
-    delta_review._adopt_reviewed_head(context, head)
+    delta_review.adopt_reviewed_head(context, head)
     payload = {"review_restart": True, "scoped_restart": True, "merged_head_ci": record, "ci_routing": routing}
-    return _skipped(start, payload)
+    return _skipped(start, {**payload, "approved_head": approved})
 
 
-def _route_merged_head_failure(
+def route_merged_head_failure(
     context: FlowContext,
     start: str,
     record: dict[str, Any],
@@ -148,9 +150,9 @@ def _route_merged_head_failure(
     head = str(record.get("head_sha") or "")
     if record.get("withdrawal_reason") or not diff_gate_holds(context, context.target_worktree, head):
         return _withdraw(context, start, record, seams, withdraw), record
-    runs = _failed_runs_from_record(record)
-    cls = _classify_failure(runs, seams.detail_lookup or gh_detail_lookup(context.target_worktree, seams.proxy_env))
-    if _route_failure(context, head, cls, runs) != RERUN:
+    runs = failed_runs_from_record(record)
+    cls = classify_ci_failure(runs, seams.detail_lookup or gh_detail_lookup(context.target_worktree, seams.proxy_env))
+    if route_failure(context, head, cls, runs) != RERUN:
         return _scoped_restart(context, start, record, cls, seams), record
     context.log(
         f"CI noise ({CLASS_LABELS[cls]}) on merged head {short_sha(head)}: rerunning once; the diff approval stands."
@@ -162,6 +164,6 @@ def _route_merged_head_failure(
         return None, retried
     if retried["state"] == FAILED:
         restart = _scoped_restart(context, start, retried, cls, seams)
-        _note_rerun(context, head, partial)  # Counted after recording, as Stage 4 does.
+        note_rerun(context, head, partial)  # Counted after recording, as Stage 4 does.
         return restart, retried
-    return _refuse_calibration(context, start, retried), retried
+    return refuse_calibration(context, start, retried), retried

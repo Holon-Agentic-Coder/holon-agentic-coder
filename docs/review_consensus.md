@@ -154,8 +154,10 @@ check run on exactly that SHA, read from the GitHub check-runs API for the commi
   the diff approval stands. The consensus is withdrawn only when the diff gate does not hold on the merged head, or when
   the scoped review of the fix does not approve. A withdrawal appends a new ledger row (labels `consensus-withdrawn` and
   `merged-head-ci`), and no earlier row is edited. One PR comment per merged head says the approval was withdrawn, and
-  Stage 4 restarts at iteration 1 with a fresh reviewer ensemble. Either kind of restart happens at most 3 times; after
-  that, Stage 5 fails and nothing is calibrated.
+  Stage 4 restarts at iteration 1 with a fresh reviewer ensemble. A withdrawal after a scoped review of the fix that did
+  not approve restarts nothing: the row and comment name the approved head and say the flow stopped at Stage 4, whose
+  iteration count and open findings are kept for a resume. Either kind of restart happens at most 3 times; after that,
+  Stage 5 fails and nothing is calibrated.
 
 The Stage 5 log names the head SHA, the run ids and the conclusions it relied on. Dry runs and `--skip-push` skip the
 gate.
@@ -229,14 +231,14 @@ Before each pass the loop decides the mode. The first rule that matches gives a 
 | `critical finding on last pass` | A reviewer of the last reviewed pass reported a critical finding, or none was recorded. |
 | `scoped chain limit`            | 3 scoped passes in a row since the anchor; the next one is full.                        |
 | `history rewritten`             | The last reviewed head is not an ancestor of the head (a force-push or rebase).         |
-| `target merge in delta`         | The range contains a merge commit and no mechanical-merge scope is set.                 |
+| `target merge in delta`         | The range contains a merge commit and no conflict-resolution scope is set.              |
 | `no reviewable change`          | Only bookkeeping files changed (`plans/`, `executions/`, `holon-knowledge/` records).   |
 | `delta N lines over limit L`    | The changed lines exceed the limit; a binary change counts as over it.                  |
 | `delta check failed`            | A git read failed, or the commit is unknown.                                            |
 
-Otherwise the pass is `scoped`, with the reason `delta N lines`. When a mechanical target merge left
-`review_scope_paths` set, the delta covers only those paths and the paths changed by the PR branch's own (first-parent,
-non-merge) commits, never the files the target branch brought in.
+Otherwise the pass is `scoped`, with the reason `delta N lines`. When an agent-resolved (code-conflict) target merge
+left `review_scope_paths` set, the delta covers only those paths and the paths changed by the PR branch's own
+(first-parent, non-merge) commits, never the files the target branch brought in. A mechanical merge sets no scope.
 
 A scoped pass sends the reviewers:
 

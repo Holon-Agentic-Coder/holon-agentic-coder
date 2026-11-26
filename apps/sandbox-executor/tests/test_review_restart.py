@@ -325,20 +325,44 @@ def test_a_rejected_scoped_restart_withdraws_the_consensus(tmp_path: Path) -> No
     scoped = StageResult(
         stage=FlowStage.CALIBRATE,
         status=StageStatus.SKIPPED,
-        payload={"review_restart": True, "scoped_restart": True, "merged_head_ci": record},
+        payload={"review_restart": True, "scoped_restart": True, "merged_head_ci": record, "approved_head": APPROVED},
     )
-    halted = _review(StageStatus.HALTED_FOR_HUMAN)
+    halted = _review(StageStatus.HALTED_FOR_HUMAN, target_commit=MERGED_GREEN)
+    carried = [{"id": "FIND-CI-000", "severity": "important", "summary": "CI failed"}]
 
     def run_stage(stage: FlowStage) -> StageResult:
-        if stage == FlowStage.REVIEW:
+        if stage == FlowStage.REVIEW:  # The halted scoped review leaves its count and open findings for a resume.
             ctx.stage_results["review"] = halted
+            ctx.review_iterations_done, ctx.carried_review_findings = 2, list(carried)
             return halted
         return scoped
 
     result = calibrate_with_review_restart(ctx, run_stage, lambda _s, _r: None)
     assert result is halted
-    assert [row["merged_head"] for row in _withdrawn_rows(tmp_path)] == [MERGED_RED]
+    (row,) = _withdrawn_rows(tmp_path)
+    assert row["merged_head"] == MERGED_RED and row["approved_head"] == APPROVED
+    assert row["review_restarted"] is False and "did not approve" in row["action"]
     assert halted.payload["consensus"]["withdrawn"]["merged_head"] == MERGED_RED
+    assert ctx.review_iterations_done == 2 and ctx.carried_review_findings == carried
+
+
+def test_a_rejected_scoped_restart_comment_names_the_approval_and_the_halt(tmp_path: Path) -> None:
+    from sandbox_executor.flow.review.merged_head_resume import withdraw_after_rejected_restart
+
+    ctx = _ctx(tmp_path)
+    ctx.stage_results["review"] = _review(StageStatus.HALTED_FOR_HUMAN, target_commit=MERGED_GREEN)
+    ctx.review_iterations_done = 3
+    record = {"state": "failed", "head_sha": MERGED_RED, "runs": [{"run_id": "9", "name": "unit", "conclusion": "x"}]}
+    comments: list[str] = []
+    seams = WithdrawalSeams(lister=lambda _pr: [], poster=lambda _pr, body: comments.append(body) or True)
+
+    withdrawn = withdraw_after_rejected_restart(ctx, record, APPROVED, seams)
+
+    assert withdrawn["approved_head"] == APPROVED and withdrawn["review_restarted"] is False
+    (body,) = comments
+    assert f"approval of `{APPROVED[:7]}`" in body and "scoped review of its fix did not approve" in body
+    assert "stopped at Stage 4" in body and "restarts at iteration 1" not in body and "cap was reached" not in body
+    assert ctx.review_iterations_done == 3
 
 
 def test_a_changed_pr_own_change_restarts_stage4_for_a_fresh_review(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from scripts.normalise_ledgers import (
+    DEFAULT_LEDGERS,
     canonical_created_at,
     ledger_violations,
     main,
@@ -149,3 +150,8 @@ def test_check_mode_fails_for_unsorted_or_offset_ledgers_and_passes_once_normali
 
     assert main(["--check", str(unsorted), str(offset), str(fixture)]) == 0
     assert fixture.read_text() == "".join(f"{line}\n" for line in normalise_lines(_fixture_lines()))
+
+
+def test_the_committed_canonical_ledgers_pass_the_check() -> None:
+    assert all(path.is_file() for path in DEFAULT_LEDGERS)
+    assert main(["--check"]) == 0

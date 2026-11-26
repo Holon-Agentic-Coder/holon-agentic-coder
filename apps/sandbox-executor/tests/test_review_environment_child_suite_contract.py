@@ -14,6 +14,7 @@ from tests.hermetic_fixtures import (
     TESTS_DIR,
     project_environment,
     pytest_suite_command,
+    uv_available,
 )
 from tests.test_review_loop import FakeGitCommands, _run_entrypoint
 
@@ -25,14 +26,14 @@ CANARY_TESTS = (
 
 PRE_PUSH_TEST_COMMAND = ["uv", "run", "task", "test"]
 
-PARENT_RUNNER_VARIABLES = (
-    "PYTEST_CURRENT_TEST",
-    "PYTEST_XDIST_WORKER",
-    "PYTEST_XDIST_WORKER_COUNT",
-    "PYTEST_XDIST_TESTRUNUID",
-)
+PARENT_XDIST_PREFIX = "PYTEST_XDIST_"
 
 CHILD_TIMEOUT_SECONDS = 120
+
+pytestmark = [
+    pytest.mark.skipif(os.environ.get(CHILD_SUITE_SENTINEL) == "1", reason="child suite must not recurse"),
+    pytest.mark.skipif(not uv_available(), reason="uv is not available to run the child suite"),
+]
 
 
 class PrePushEnvironmentRecordingGit(FakeGitCommands):
@@ -69,10 +70,12 @@ def review_loop_child_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 def run_canaries_under(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     child_env = dict(env)
     # why: the parent runner's variables would make the child mistake itself for an xdist worker
-    for name in PARENT_RUNNER_VARIABLES:
-        child_env.pop(name, None)
+    for name in list(child_env):
+        if name.startswith(PARENT_XDIST_PREFIX):
+            del child_env[name]
+    child_env.pop("PYTEST_CURRENT_TEST", None)
     child_env[CHILD_SUITE_SENTINEL] = "1"
-    # why: under a throwaway HOME uv can neither find the project environment nor may it reach the network
+    # why: the child must reuse the parent's uv environment and never reach the network or download a Python
     child_env["UV_PROJECT_ENVIRONMENT"] = project_environment()
     child_env["UV_OFFLINE"] = "1"
     child_env["UV_PYTHON_DOWNLOADS"] = "never"

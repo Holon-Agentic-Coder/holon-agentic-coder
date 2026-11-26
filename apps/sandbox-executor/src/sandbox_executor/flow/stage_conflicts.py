@@ -132,7 +132,8 @@ def check_and_resolve_stage_conflicts(
 
     Three steps: ``detect_stage_conflicts`` collects the conflicting paths, ``classify_conflicts`` labels each one
     (a ``conflict_classes`` class, or a deferred ledger) and ``resolve_classified_conflicts`` resolves the mechanical
-    ones: ledgers by pure append, the other mechanical classes through ``conflict_classes_resolve``.
+    ones: ledgers by inserting incoming rows at their ``created_at`` slot, the other mechanical classes
+    through ``conflict_classes_resolve``.
 
     - Runs git status --porcelain to detect conflicting files, with isinstance(..., str) guards
       on stdout for test mock safety.
@@ -140,7 +141,8 @@ def check_and_resolve_stage_conflicts(
       branches out, so each stage names the branch it works from; None skips this probe (Stage 1, whose
       branch does not exist yet).
     - A ledger counts as conflicted only when git reports it unmerged or a line starts with a conflict
-      marker. Conflicted ledgers are resolved by pure append (``reconcile_ledger_file``) and never staged.
+      marker. Conflicted ledgers are resolved (``reconcile_ledger_file``) by
+      inserting incoming rows at their ``created_at`` slot with the kept rows unmoved, and never staged.
     - If code conflicts (or a mechanical path whose resolver failed) remain, raises ConflictResolutionError.
 
     Args:

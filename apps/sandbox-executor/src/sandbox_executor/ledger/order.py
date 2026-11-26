@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Sequence
@@ -18,24 +17,6 @@ def parse_created_at(value: object) -> datetime | None:
     except ValueError:
         return None
     return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-
-
-def _created_at(line: str) -> datetime | None:
-    try:
-        value = json.loads(line).get("created_at")
-    except (ValueError, TypeError, AttributeError):
-        return None
-    return parse_created_at(str(value))
-
-
-def _order_appended_rows(lines: list[str]) -> list[str]:
-    parsed_timestamps = [_created_at(line) for line in lines]
-    timestamped_indices = [index for index, stamp in enumerate(parsed_timestamps) if stamp is not None]
-    chronological_indices = sorted(timestamped_indices, key=lambda index: (parsed_timestamps[index], index))
-    reordered_lines = list(lines)
-    for slot_index, source_index in zip(timestamped_indices, chronological_indices, strict=True):
-        reordered_lines[slot_index] = lines[source_index]
-    return reordered_lines
 
 
 def _row_instant(row: dict[str, Any]) -> datetime | None:

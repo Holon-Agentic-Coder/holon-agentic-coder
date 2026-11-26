@@ -1,7 +1,7 @@
 """The conflict gate's merge: ``origin/<target>`` into ``origin/<head>`` in a temporary worktree, then pushed.
 
-Ledger-only conflicts are resolved without a test run (target rows stay a byte prefix, head-only rows follow in
-``created_at`` order); a code conflict aborts the merge. :mod:`.conflict_gate` decides when to merge.
+Ledger-only conflicts are resolved without a test run (target rows stay in place, head-only rows are inserted at
+their ``created_at`` slot); a code conflict aborts the merge. :mod:`.conflict_gate` decides when to merge.
 """
 
 from __future__ import annotations
@@ -40,7 +40,8 @@ def _is_ledger_path(path: str) -> bool:
 def _merge_target_ledger_only(worktree: str, target_ref: str, message: str) -> _MergeOutcome:
     """Merge ``target_ref`` into the worktree's HEAD; resolve a ledger-only conflict, abort on any code conflict.
 
-    The ledgers are resolved with the target side (``theirs`` in a merge) as the byte prefix. No test command runs.
+    The ledgers keep the target side's (``theirs`` in a merge) rows in place and insert the head rows by
+    ``created_at``. No test command runs.
     The merge commit carries ``message`` (with its provenance trailers) whether or not a ledger conflict was resolved.
     """
     env = {**os.environ, **REVIEW_GIT_ENV}
@@ -82,7 +83,7 @@ def _merge_and_push(repo_dir: str, branch: str, target_branch: str, trailers: st
     """Merge ``origin/<target_branch>`` into ``origin/<branch>`` in a temporary worktree and push the result.
 
     Like :func:`sandbox_executor.flow.github.merge.merge_branch_detailed`, a protected ``branch`` is refused and a
-    failed fetch stops the merge; unlike it, the target's ledger rows stay a byte prefix (see the module docstring).
+    failed fetch stops the merge; unlike it, the target's ledger rows stay in place (see the module docstring).
     """
     if _bare_branch(branch) in PROTECTED_BRANCHES:
         return _MergeOutcome(merged=False, error=f"refusing to push to protected branch '{branch}'")

@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 from sandbox_executor.flow import reconcile_jsonl_ledger_conflict
 from sandbox_executor.flow.review import conflict_gate, conflict_merge
-from sandbox_executor.ledger.order import _order_appended_rows
 
 from tests.flow.helpers import _git
 from tests.ledger_conflict_repos import BRANCH, LEDGER, _commit, _row, build_conflicting_repos, refuse_test_runs
@@ -25,15 +24,6 @@ def repos(tmp_path: Path) -> tuple[Path, Path]:
 @pytest.fixture
 def no_test_run(monkeypatch: pytest.MonkeyPatch) -> None:
     refuse_test_runs(monkeypatch)
-
-
-def test_order_appended_rows_sorts_timestamped_rows_and_keeps_the_rest_in_place():
-    rows = [_row("B", "2026-11-05T00:00:00Z"), "not json\n", _row("A", "2026-11-03"), _row("C", None)]
-    rows.append(_row("A2", "2026-11-03T00:00:00+00:00"))
-
-    ordered = _order_appended_rows(rows)
-
-    assert ordered == [rows[2], "not json\n", rows[4], rows[3], rows[0]]
 
 
 def _is_ordered_subsequence(kept: list[str], merged: list[str]) -> bool:

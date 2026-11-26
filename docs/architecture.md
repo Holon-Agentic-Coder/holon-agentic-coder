@@ -487,7 +487,7 @@ split from the former single `flow.py` by moving code only. Three tests guard th
 | `flow/ledger_interleave.py`            | Resolves ledger-only merge conflicts: ours' rows kept in place, theirs' appended rows inserted by `created_at`.  |
 | `flow/child_progress.py`               | Per-child progress of a decomposed Stage 3, origin reconciliation and the next-action decision.                  |
 | `flow/stage_conflicts.py`              | The proactive conflict check a stage runs before it pushes: `detect_stage_conflicts`, then classify and resolve. |
-| `flow/stage_conflict_resolution.py`    | Classifies each conflicting path (code, ledger, deferred ledger) and append-merges the conflicted ledgers.       |
+| `flow/stage_conflict_resolution.py`    | Classifies each conflicting path (code, ledger, deferred ledger) and insertion-merges the conflicted ledgers.    |
 | `flow/intent_questions.py`             | Validates an intent's clarifying questions before Stage 1 accepts it: `IntentQuestions` over a rule table.       |
 | `flow/dispatch.py`                     | Role-agent dispatch shared with `holon intent`, `holon plan` and `holon execute`.                                |
 | `flow/host_remote.py`                  | Host-side fetch of the base and push of the committed branch; containers never touch the remote.                 |

@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-35953bc3",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T08:14:38.596907+00:00",
+  "updated_ts": "2026-11-26T08:14:38.596907+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795679824-44ee0ce7",
+      "ACT-FIND-1795679705-6b0e3e46"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795674200-preflight-outage-wait-resume/P-1795674223-CLA-CO5.5/E-1795674407-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 3 finding detected: FIND-R2-003-01",
+    "symptoms": [
+      "The new is_model_error() takes preflight.py to 552 lines, over its frozen 548-line budget; scripts/check_module_budgets.py exits 1. Bring it back within budget without editing module_budgets.json."
+    ]
+  }
+}

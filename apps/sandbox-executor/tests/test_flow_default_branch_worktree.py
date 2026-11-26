@@ -29,6 +29,8 @@ from sandbox_executor.git_flow import (
 )
 from sandbox_executor.launcher.coherence import FlowProxyChoice
 
+from tests.worktree_repo_templates import build_checkout_behind_origin, copy_of
+
 _NO_PROXY = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
 
 _SLUG = "redirect-me"
@@ -56,27 +58,19 @@ def _snapshot(repo: Path) -> tuple[str, str, str]:
 
 
 @pytest.fixture
-def main_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
-    """A bare origin, a main worktree on 'main' and an origin/main one commit ahead of local main.
+def main_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> dict[str, Path]:
+    """A bare origin, a main worktree on 'main' and an origin/main one commit ahead of local main (a template copy).
 
     The cwd is a non-git directory, so nothing can fall back to the developer's real repository.
     """
     outside = tmp_path / "outside"
     outside.mkdir()
     monkeypatch.chdir(outside)
-    seed = tmp_path / "seed"
-    seed.mkdir()
-    _git(seed, "init", "-q", "-b", "main")
-    _commit(seed, "README.md")
-    origin = tmp_path / "origin.git"
-    _git(tmp_path, "clone", "-q", "--bare", str(seed), str(origin))
+    names = ("origin.git", "checkout")
+    copy_of(tmp_path_factory, tmp_path, "default-branch-checkout", build_checkout_behind_origin, names=names)
     checkout = tmp_path / "checkout"
-    _git(tmp_path, "clone", "-q", str(origin), str(checkout))
-    pusher = tmp_path / "pusher"
-    _git(tmp_path, "clone", "-q", str(origin), str(pusher))
-    _commit(pusher, "ahead.txt")
-    _git(pusher, "push", "-q", "origin", "main")
-    _git(checkout, "fetch", "-q", "origin")
     intent = tmp_path / "intent.json"
     intent.write_text(json.dumps({"slug": _SLUG, "target_branch": "main"}), encoding="utf-8")
     return {"root": tmp_path, "checkout": checkout, "intent": intent, "flow": tmp_path / f"flow-{_SLUG}"}

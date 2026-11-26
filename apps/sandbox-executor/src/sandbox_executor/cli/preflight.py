@@ -2,7 +2,10 @@
 
 import logging
 import sys
+import time
+from collections.abc import Callable
 
+from sandbox_executor import preflight_outage
 from sandbox_executor.agent_defaults import (
     Resolution,
     resolve_agent_runner,
@@ -62,15 +65,25 @@ def flow_dispatches_agent(from_stage: str | None) -> bool:
     return str(from_stage).strip().lower() in _AGENT_FLOW_STAGES
 
 
-def preflight_gate(agent: str, model: str, skip: bool = False) -> PreflightResult | None:
-    """Run the readiness probe unless skipped and print the diagnosis when it fails.
+def preflight_gate(
+    agent: str,
+    model: str,
+    skip: bool = False,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> PreflightResult | None:
+    """Run the readiness probe unless skipped, wait out a connectivity outage, and print the diagnosis on failure.
 
-    Must be called before any branch, checkpoint or ledger write.
+    Must be called before any branch, checkpoint or ledger write. A connectivity UNKNOWN result is re-probed with the
+    bounded back-off of :mod:`sandbox_executor.preflight_outage`; every other failure returns at once.
 
     Args:
         agent: Resolved runner name.
         model: Resolved model name.
         skip: True when ``--skip-preflight`` was given.
+        sleep: Sleep function used between outage re-probes (injected in tests).
+        clock: Monotonic clock used to measure the outage (injected in tests).
 
     Returns:
         The probe result, or None when the probe was skipped by flag or ``HOLON_SKIP_PREFLIGHT``.
@@ -78,9 +91,18 @@ def preflight_gate(agent: str, model: str, skip: bool = False) -> PreflightResul
     if skip or preflight_skipped_by_env():
         logger.info("Pre-flight probe skipped (--skip-preflight or HOLON_SKIP_PREFLIGHT).")
         return None
-    result = run_preflight_probe(agent, model, timeout=resolve_timeout())
+    started_at = clock()
+    timeout = resolve_timeout()
+
+    def probe() -> PreflightResult:
+        return run_preflight_probe(agent, model, timeout=timeout)
+
+    outcome = preflight_outage.wait_out_outage(probe, probe(), started_at, sleep=sleep, clock=clock)
+    result = outcome.result
     if not result.ok:
         print(result.format_report(), file=sys.stderr)
+        if outcome.gave_up:
+            print(preflight_outage.format_outage_duration(outcome.outage_seconds), file=sys.stderr)
         print(
             "Aborting before any branch, checkpoint or ledger write. Use --skip-preflight to bypass this check.",
             file=sys.stderr,

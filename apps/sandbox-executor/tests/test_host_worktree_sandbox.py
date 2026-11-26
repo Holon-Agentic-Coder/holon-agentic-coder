@@ -33,6 +33,7 @@ from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.entrypoint.execution_workspace import validate_mounted_workspace
 
 from tests.env_file_capture import DockerEnvFileRecorder
+from tests.worktree_repo_templates import build_primary_with_remote, copy_of
 
 MOUNT = "/sandbox/workspace"
 
@@ -59,7 +60,7 @@ def _git(cwd: Path | str, *args: str) -> str:
 
 
 @pytest.fixture
-def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A primary checkout on main with a local bare origin; git never reads the host's own config.
 
     The host user plays the container user, so the write preflight holds whatever uid runs the tests.
@@ -71,16 +72,9 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for role in ("AUTHOR", "COMMITTER"):
         monkeypatch.setenv(f"GIT_{role}_NAME", "Holon Test")
         monkeypatch.setenv(f"GIT_{role}_EMAIL", "test@holon.com")
-    remote = tmp_path / "remote.git"
-    main = tmp_path / "repo"
-    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(remote))
-    _git(tmp_path, "init", "-q", "-b", "main", str(main))
-    (main / "README.md").write_text("seed\n", encoding="utf-8")
-    _git(main, "add", "-A")
-    _git(main, "commit", "-qm", "seed")
-    _git(main, "remote", "add", "origin", str(remote))
-    _git(main, "push", "-q", "-u", "origin", "main")
-    return main.resolve()
+    # Built once per run under the environment above, then copied: a seed commit on main, pushed with upstream set.
+    copy_of(tmp_path_factory, tmp_path, "host-worktree-sandbox-repo", build_primary_with_remote)
+    return (tmp_path / "repo").resolve()
 
 
 @pytest.fixture

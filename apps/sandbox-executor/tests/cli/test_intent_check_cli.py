@@ -113,3 +113,17 @@ def test_invalid_intent_file_exits_two(repo: Path, tmp_path: Path, capsys: pytes
     intent.write_text("not json", encoding="utf-8")
     assert _run(["intent-check", str(intent), "--target-worktree", str(repo)]) == 2
     assert capsys.readouterr().err.startswith("Error: cannot read intent file")
+
+
+def test_missing_worktree_exits_two(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    intent = _intent_file(tmp_path, ["src/pkg/core.py"])
+    assert _run(["intent-check", intent, "--target-worktree", str(tmp_path / "absent")]) == 2
+    assert capsys.readouterr().err.startswith("Error: target worktree is not a directory")
+
+
+def test_subdirectory_worktree_resolves_to_repository_root(
+    repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    intent = _intent_file(tmp_path, ["src/pkg/core.py"])
+    assert _run(["intent-check", intent, "--target-worktree", str(repo / "src" / "pkg")]) == 1
+    assert "tests/test_core.py" in capsys.readouterr().out

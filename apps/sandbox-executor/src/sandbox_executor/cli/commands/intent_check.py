@@ -8,6 +8,7 @@ import os
 import sys
 
 from sandbox_executor.cli.options import add_target_worktree_option
+from sandbox_executor.git import run_git
 from sandbox_executor.intent_scope_check import check_intent_scope, load_intent, render_text, to_json
 
 ORDER = 11
@@ -29,11 +30,19 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     parser.set_defaults(_run=run)
 
 
+def _resolve_worktree(path: str) -> str:
+    """Resolve a worktree path to its repository root so scope paths match from any subdirectory."""
+    if not os.path.isdir(path):
+        raise ValueError(f"target worktree is not a directory: {path}")
+    result = run_git(["rev-parse", "--show-toplevel"], cwd=path, check=False)
+    return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else path
+
+
 def run(args: argparse.Namespace) -> int:
-    worktree = args.target_worktree or os.getcwd()
     try:
+        worktree = _resolve_worktree(args.target_worktree or os.getcwd())
         report = check_intent_scope(load_intent(args.intent_file), worktree)
-    except ValueError as exc:
+    except (ValueError, OSError, TimeoutError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return _INVALID_INPUT_EXIT_CODE
     print(json.dumps(to_json(report), indent=2) if args.json else render_text(report))

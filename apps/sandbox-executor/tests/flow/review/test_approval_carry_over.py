@@ -1,12 +1,15 @@
 """The approval carry-over helpers: the decision, the append-only ACT-CARRY row and the consensus annotation.
 
 The fingerprint is stubbed here (``tests/test_approval_fingerprint.py`` covers it with real git), so these cases run
-no git and touch no repository.
+no git and touch no repository, except the bookkeeping-only coverage cases, which commit in a ``tmp_path`` repository.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.review import approval_carry_over
 from sandbox_executor.flow.review.approval_carry_over import (
     CarryOver,
@@ -15,10 +18,12 @@ from sandbox_executor.flow.review.approval_carry_over import (
     carry_over_record,
     decide_carry_over,
 )
-from sandbox_executor.flow.review.approval_fingerprint import fingerprints_match
+from sandbox_executor.flow.review.approval_coverage import BOOKKEEPING, UNKNOWN_CHANGE, approval_covers
+from sandbox_executor.flow.review.approval_fingerprint import fingerprints_match, is_bookkeeping_only_move
 from sandbox_executor.ledger import ActionRecord
 from sandbox_executor.review_report import _mergeability_word
 
+from tests.flow.helpers import _git
 from tests.leak_assertions import assert_no_leak, make_gh_probe
 
 APPROVED = "a" * 40
@@ -121,3 +126,72 @@ def test_the_message_names_both_shas_the_fingerprint_and_the_ci_wait() -> None:
 
     assert APPROVED in message and MERGED in message and FINGERPRINT in message
     assert f"CI on {MERGED} is still required" in message
+
+
+def _commit(repo: Path, files: dict[str, str], message: str) -> str:
+    for rel, text in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text, encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+def approved_repo(tmp_path: Path, hermetic_git_config: str) -> tuple[Path, str]:
+    """A repository on ``feature`` whose head (the approved head) carries the PR's code change."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _commit(repo, {"README.md": "base\n"}, "base")
+    _git(repo, "checkout", "-q", "-b", "feature")
+    return repo, _commit(repo, {"apps/x/pr.py": "x = 1\n"}, "pr change")
+
+
+def _covering_context(repo: Path, **consensus: object) -> FlowContext:
+    context = FlowContext(repo_dir=str(repo), execution_branch="feature", agent="a", model="m")
+    payload = {"consensus": _consensus(base_branch="main") | consensus}
+    context.stage_results["review"] = StageResult(stage=FlowStage.REVIEW, status=StageStatus.APPROVED, payload=payload)
+    return context
+
+
+def test_a_bookkeeping_commit_after_the_approval_is_covered(approved_repo) -> None:
+    repo, approved = approved_repo
+    head = _commit(repo, {"executions/E-1.md": "# record\n", "plans/I-1/P-2.md": "# plan\n"}, "bookkeeping")
+    context = _covering_context(repo, target_commit=approved, approval_fingerprint=None)
+    assert is_bookkeeping_only_move(str(repo), approved, head)
+    assert approval_covers(context, str(repo), head)[:2] == (True, BOOKKEEPING)
+
+
+def test_a_code_file_under_a_bookkeeping_root_is_not_bookkeeping(approved_repo) -> None:
+    repo, approved = approved_repo
+    head = _commit(repo, {"plans/x.py": "print(1)\n", "executions/E-1.md": "# record\n"}, "plans code")
+    coverage = approval_covers(_covering_context(repo, target_commit=approved), str(repo), head)
+    assert not is_bookkeeping_only_move(str(repo), approved, head)
+    assert coverage.how != BOOKKEEPING and not coverage.covers
+
+
+def test_a_target_merge_with_code_falls_back_to_the_fingerprint(approved_repo) -> None:
+    repo, approved = approved_repo
+    _git(repo, "checkout", "-q", "main")
+    _commit(repo, {"apps/x/main.py": "y = 2\n"}, "main code")
+    _git(repo, "checkout", "-q", "feature")
+    _git(repo, "merge", "-q", "--no-ff", "main", "-m", "merge main")
+    head = _commit(repo, {"executions/E-1.md": "# record\n"}, "bookkeeping")
+    coverage = approval_covers(_covering_context(repo, target_commit=approved), str(repo), head)
+    assert not is_bookkeeping_only_move(str(repo), approved, head)
+    assert coverage.how == UNKNOWN_CHANGE and not coverage.covers  # No origin/main here, so no current fingerprint.
+
+
+def test_an_unapproved_consensus_never_covers(approved_repo) -> None:
+    repo, approved = approved_repo
+    head = _commit(repo, {"executions/E-1.md": "# record\n"}, "bookkeeping")
+    coverage = approval_covers(_covering_context(repo, target_commit=approved, approved=False), str(repo), head)
+    assert not coverage.covers
+
+
+def test_git_failures_are_never_bookkeeping_only(approved_repo, tmp_path: Path) -> None:
+    repo, approved = approved_repo
+    assert not is_bookkeeping_only_move(str(repo), approved, approved)  # No change at all.
+    assert not is_bookkeeping_only_move(str(repo), approved, "0" * 40)
+    assert not is_bookkeeping_only_move(str(tmp_path / "missing"), approved, "b" * 40)

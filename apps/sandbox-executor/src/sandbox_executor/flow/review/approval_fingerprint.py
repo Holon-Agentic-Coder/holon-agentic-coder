@@ -116,6 +116,21 @@ def approval_fingerprint_of(repo_dir: str, head: str | None, base_branch: str | 
         return None
 
 
+def is_bookkeeping_only_move(repo_dir: str, approved: str, head: str) -> bool:
+    """True only when ``approved..head`` changed at least one path and every changed path is bookkeeping.
+
+    The span includes whatever a target merge brought in, so a merge with target code is never bookkeeping-only. An
+    unknown commit, a missing repository or any git failure gives False.
+    """
+    try:
+        names = run_git(["diff", "--name-only", "--no-renames", approved, head], cwd=repo_dir, check=False)
+    except (OSError, TimeoutError) as exc:
+        logger.debug("Could not diff %s..%s: %s", approved, head, exc)
+        return False
+    paths = [line for line in str(names.stdout or "").splitlines() if line.strip()]
+    return names.returncode == 0 and bool(paths) and all(is_bookkeeping_path(path) for path in paths)
+
+
 def approval_record(consensus_data: Mapping[str, Any]) -> dict[str, Any]:
     """The head the reviewers saw, the fingerprint and any carry-over, for the Stage 4 payload's consensus."""
     return {key: consensus_data.get(key) for key in APPROVAL_RECORD_KEYS}

@@ -115,6 +115,9 @@ only when all of the following hold, in this order:
   `main`, shows that job `completed` with conclusion `success`, and its `Full run completed` step succeeded (a real
   success) or was skipped (the job's own gates, the bookkeeping gate or the macOS relevance gate, proved it on an
   ancestor). The detail of the decision line says which of the two it was.
+- When that step was skipped and the head commit is a merge commit, the walk through the skipped runs on the head branch
+  reaches a real success, and every path changed between that commit and the head is bookkeeping. A merge-push skip
+  (`merge-push-clean-main-merge`) is never enough: it proves both parents, but no job ran the merged tree.
 
 Every missing piece of evidence runs the full job under a rule of its own, and every API error or unexpected answer is
 `api-error`, so the job runs in full. A re-run of a main push always runs in full. Reading the pull requests of a commit
@@ -138,6 +141,56 @@ These rules belong to `scripts/ci_main_push_gate.py`:
 | `main-push-head-job-not-finished`   | the job on the head commit is still queued or in progress                                    |
 | `main-push-head-job-not-successful` | the job on the head commit failed or was cancelled; the detail names the conclusion          |
 | `main-push-head-job-unverified`     | the job on the head commit succeeded but has no `Full run completed` step                    |
+| `main-push-head-skip-unproven`      | the job on a merge head was skipped; no real success has only bookkeeping changes since      |
+
+### Merge pushes
+
+A push that merges the base branch into the pull request's head ("Merge remote-tracking branch origin/main") changes,
+against the previous head, every file that `main` changed since the branch point, so the rules above run it in full
+under `non-bookkeeping-change` or `diff-too-large`. Such a `synchronize` push is then handed to
+`scripts/ci_merge_push_gate.py`. When the new head is not a merge commit, the gate keeps its own decision, except in the
+hygiene job. Otherwise the module decides, and it says "skip" (`merge-push-clean-main-merge`) only when all of the
+following hold, in this order:
+
+- The job is not `hygiene` and the workflow is not `test-hygiene.yml`.
+- The new head has two parents, the first is the previous head, and the event names the base branch.
+- The job really succeeded on the previous head (the walk and the diff rule of "When a job skips").
+- The newest push run of the workflow on the base branch on the merged-in commit (the second parent) that holds this job
+  shows a real success.
+- A merge base exists, and the trees of the merge base, both parents and the head are complete.
+- Every path of the head holds the file-level three-way merge: no conflict was resolved by hand.
+- The two sides changed no common path and no path in a common parent directory. Bookkeeping paths are left out of this
+  rule and the next two.
+- Neither side changed `pyproject.toml`, `uv.lock`, `Makefile` or `.python-version` at the root, an app's
+  `pyproject.toml` or a workflow file while the other side changed any path.
+- When both sides changed files under `apps/` or `scripts/`, every such file is a regular Python file other than
+  `conftest.py` that parses, and no file of one side imports a module of the other or is its `test_<stem>.py`.
+
+These rules belong to `scripts/ci_merge_push_gate.py`:
+
+| rule                                        | meaning                                                                                    |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `merge-push-clean-main-merge`               | skip: both parents really passed this job and the merge combined changes that do not touch |
+| `merge-push-hygiene-never-skipped`          | the job is the hygiene job, which never skips on this route                                |
+| `merge-push-not-two-parents`                | the new head is not a commit with two parents                                              |
+| `merge-push-first-parent-not-previous-head` | the first parent of the new head is not the previous head                                  |
+| `merge-push-incomplete-event`               | the event lacks the base branch of the pull request                                        |
+| `merge-push-base-run-missing`               | no push run of the workflow on the merged-in commit holds this job                         |
+| `merge-push-base-run-not-finished`          | the job on the merged-in commit is still queued or in progress                             |
+| `merge-push-base-run-not-successful`        | the job on the merged-in commit failed or was cancelled; the detail names the conclusion   |
+| `merge-push-base-run-unverified`            | the job on the merged-in commit succeeded but its `Full run completed` step did not        |
+| `merge-push-no-merge-base`                  | the two parents have no merge base                                                         |
+| `merge-push-tree-truncated`                 | the API cut a tree of the merge base, a parent or the head short                           |
+| `merge-push-conflict-resolution`            | a path of the head differs from the three-way merge of its parents                         |
+| `merge-push-overlapping-change`             | both sides changed the same path or paths in the same directory                            |
+| `merge-push-config-change`                  | one side changed a dependency, tool or workflow file and the other side changed any path   |
+| `merge-push-unanalysable-change`            | a file both sides could couple through is not a regular Python file that parses            |
+| `merge-push-scan-too-large`                 | the import scan needs more blob reads than the module allows                               |
+| `merge-push-related-change`                 | a file of one side imports a module of the other side or is its test                       |
+| `merge-push-api-error`                      | an API call failed or answered in an unexpected shape; the detail names the class          |
+
+No job ran the merged tree, so a merge-push skip is never evidence for a later push to `main`
+(`main-push-head-skip-unproven`).
 
 ### The marker step
 
@@ -225,6 +278,9 @@ An empty commit does not force a full run: it changes no path, so it counts as b
   main push can skip on that run's merge ref; the tree check still requires the head to hold the pushed tree.
 - A main push skips on the pull-request head's judgement, including a head job that a gate skipped. A defect that only a
   full run on `main` would catch can stay on `main` until the next daily scheduled run.
+- A merge push skips when the two sides share no path, no directory and no direct import or test name. A coupling the
+  module does not see, such as a transitive import, a data file or a fixture, can let a merge push skip a job that the
+  merged tree would fail. The next full run, the daily scheduled run and the flow's CI check on the final head catch it.
 - The marker step proves a real success only while no step of the job uses `continue-on-error`. The wiring test rejects
   that key in the six workflows.
 

@@ -16,6 +16,11 @@ import subprocess
 import sys
 from collections.abc import Sequence
 
+try:
+    from scripts.check_self_explaining import main as check_self_explaining
+except ImportError:
+    from check_self_explaining import main as check_self_explaining
+
 # Regex patterns for detecting API keys, tokens, and private keys
 CREDENTIAL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("OpenAI API Key", re.compile(r"sk-[a-zA-Z0-9_\-]{20,}")),
@@ -366,6 +371,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    staged_mode = not args.files and not args.all
     target_files: list[str] = []
     if args.files:
         target_files = args.files
@@ -374,7 +380,10 @@ def main() -> None:
     else:
         target_files = get_git_files("staged")
 
-    sys.exit(run_checks(target_files))
+    exit_code = run_checks(target_files)
+    if staged_mode:
+        exit_code = max(exit_code, check_self_explaining(["--staged"]))
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

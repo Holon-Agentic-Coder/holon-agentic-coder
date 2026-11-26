@@ -31,7 +31,7 @@ from tests.leak_assertions import assert_no_leak, make_gh_probe
 
 APPROVED = "a" * 40
 MERGED = "b" * 40
-FINGERPRINT = "pf1:" + "c" * 40
+FINGERPRINT = "pf2:" + "c" * 40
 CARRY = CarryOver(APPROVED, MERGED, FINGERPRINT)
 
 

@@ -527,7 +527,7 @@ def test_a_carried_approval_ends_the_loop_approved_without_another_reviewer_disp
         SyncResult("merged", "a" * 40, merged_head, "c" * 40, resolutions=((LEDGER, "ledger", "mechanical"),))
     )
     monkeypatch.setattr(sync_points, "sync_review_head", merge)
-    same_change = MagicMock(return_value="pf1:" + "c" * 40)
+    same_change = MagicMock(return_value="pf2:" + "c" * 40)
     monkeypatch.setattr("sandbox_executor.flow.review.loop.approval_fingerprint_of", same_change)
     monkeypatch.setattr("sandbox_executor.flow.review.approval_carry_over.approval_fingerprint_of", same_change)
     ensemble = FakeEnsemble([clean_reviewer(1)])
@@ -544,7 +544,7 @@ def test_a_carried_approval_ends_the_loop_approved_without_another_reviewer_disp
     approved = res["consensus"]["target_commit"]  # The SHA the reviewers saw, never the merged head.
     assert approved and approved != merged_head
     assert (res["consensus"]["carried_from"], res["consensus"]["carried_to"]) == (approved, merged_head)
-    assert res["consensus"]["approval_fingerprint"] == "pf1:" + "c" * 40
+    assert res["consensus"]["approval_fingerprint"] == "pf2:" + "c" * 40
     (carry,) = _rows(tmp_path, "ACT-CARRY")
     assert carry["merged_head"] == merged_head
     assert not _rows(tmp_path, "ACT-GATE")

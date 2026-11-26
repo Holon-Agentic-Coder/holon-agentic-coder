@@ -106,6 +106,7 @@ __all__ = [
     "head_move_since_calibration", "held_execution_failure", "hold_unrecorded_executions",
     "holds_only_calibration_commits", "host_git", "inspect_ci", "intent_payload_file", "is_ancestor",
     "is_bookkeeping_only_move", "is_bookkeeping_path", "is_calibration_commit", "is_calibration_path", "is_cancelled",
+    "is_current_version",
     "is_failed", "is_ledger_only_sync", "is_marked_open", "is_mechanical_only", "is_pending", "is_pending_only",
     "is_review_restart", "is_self_approval_rejection", "is_terminal_verdict", "keep_rejected_executions",
     "latest_checks_for_head", "leftover_paths", "list_base_files", "load_checkpoint", "load_forwarded_decision",

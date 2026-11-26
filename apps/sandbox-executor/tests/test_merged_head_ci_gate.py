@@ -400,8 +400,8 @@ def test_a_withdrawn_consensus_restarts_stage4_on_resume_without_a_second_withdr
 
 # --- the PR-own change fingerprint at the merged head ---------------------------------------------------------------
 
-FINGERPRINT = "pf1:" + "f" * 40
-OTHER_FINGERPRINT = "pf1:" + "e" * 40
+FINGERPRINT = "pf2:" + "f" * 40
+OTHER_FINGERPRINT = "pf2:" + "e" * 40
 
 
 def _fingerprinted_ctx(

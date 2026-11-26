@@ -32,7 +32,7 @@ REVIEW_LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.review.approval_fingerprint": (
         "approval_fingerprint_of approval_record fingerprints_match is_bookkeeping_only_move is_bookkeeping_path "
-        "pr_change_fingerprint reviewable_pathspecs"
+        "is_current_version pr_change_fingerprint reviewable_pathspecs"
     ),
     "sandbox_executor.flow.review.carried_findings": (
         "CarriedPass carried_blocker deserialize_carried merge_findings resolve_carried_first serialize_open undisposed"

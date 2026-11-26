@@ -185,7 +185,7 @@ def test_agent_resolved_merge_never_carries_approval_and_preserves_scope_across_
         resolver_test_edits=("tests/test_app.py",),
     )
     monkeypatch.setattr(sync_points, "sync_review_head", lambda *a, **k: agent_merged)
-    monkeypatch.setattr(approval_carry_over, "approval_fingerprint_of", lambda *a, **k: "pf1:" + "e" * 40)
+    monkeypatch.setattr(approval_carry_over, "approval_fingerprint_of", lambda *a, **k: "pf2:" + "e" * 40)
     ctx = FlowContext(target_worktree=str(tmp_path), execution_branch=FLOW_BRANCH, token_reduce=False)
     exec_file = tmp_path / "gate.jsonl"
     post = MagicMock()
@@ -196,7 +196,7 @@ def test_agent_resolved_merge_never_carries_approval_and_preserves_scope_across_
             "approved": True,
             "base_branch": "main",
             "target_commit": "a" * 40,
-            "approval_fingerprint": "pf1:" + "e" * 40,
+            "approval_fingerprint": "pf2:" + "e" * 40,
         },
         proxy_env=None,
         reviewers=[],
@@ -223,7 +223,7 @@ def test_agent_resolved_merge_never_carries_approval_and_preserves_scope_across_
     restored.stage_results["review"] = StageResult(
         stage=FlowStage.REVIEW,
         status=StageStatus.APPROVED,
-        payload={"consensus": {"approved": True, "target_commit": "a" * 40, "approval_fingerprint": "pf1:" + "e" * 40}},
+        payload={"consensus": {"approved": True, "target_commit": "a" * 40, "approval_fingerprint": "pf2:" + "e" * 40}},
     )
     monkeypatch.setattr("sandbox_executor.flow.review_restart._execution_head", lambda *a, **k: "b" * 40)
     monkeypatch.setattr("sandbox_executor.flow.review_restart._git_bookkeeping_move", lambda *a, **k: lambda *_: False)

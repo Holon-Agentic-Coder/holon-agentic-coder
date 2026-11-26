@@ -138,6 +138,11 @@ def approval_record(consensus_data: Mapping[str, Any]) -> dict[str, Any]:
     return {key: consensus_data.get(key) for key in APPROVAL_RECORD_KEYS}
 
 
+def is_current_version(fingerprint: str | None) -> bool:
+    """True only for a fingerprint of today's reduction; an older (``pf1``) one can never be compared, only unknown."""
+    return bool(fingerprint) and str(fingerprint).startswith(f"{FINGERPRINT_VERSION}:")
+
+
 def fingerprints_match(first: str | None, second: str | None) -> bool:
     """True only when both fingerprints are known and equal: None never matches None."""
     return bool(first and second) and first == second

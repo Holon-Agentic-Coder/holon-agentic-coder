@@ -263,8 +263,8 @@ def test_the_checkpoint_after_a_restart_carries_iteration_zero(tmp_path: Path) -
     assert context["stage_results"]["review"]["payload"]["consensus"]["withdrawn"]["merged_head"] == MERGED_RED
 
 
-SAME_CHANGE = "pf1:" + "f" * 40
-NEW_CHANGE = "pf1:" + "e" * 40
+SAME_CHANGE = "pf2:" + "f" * 40
+NEW_CHANGE = "pf2:" + "e" * 40
 
 
 def _withdrawn_rows(tmp_path: Path) -> list[dict[str, Any]]:

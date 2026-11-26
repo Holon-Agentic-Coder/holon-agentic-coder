@@ -137,13 +137,19 @@ def test_approval_covers_the_same_head_without_computing_a_fingerprint(monkeypat
 
 
 def test_approval_covers_the_same_fingerprint_and_flags_a_changed_one(monkeypatch) -> None:
-    fingerprints = {FINAL: "pf1:same", "c" * 40: "pf1:other"}
+    fingerprints = {FINAL: "pf2:same", "c" * 40: "pf2:other"}
     monkeypatch.setattr(approval_coverage, "approval_fingerprint_of", lambda _r, head, _b: fingerprints.get(head))
-    context = _approved_context(approval_fingerprint="pf1:same", base_branch="main")
+    context = _approved_context(approval_fingerprint="pf2:same", base_branch="main")
 
-    assert approval_covers(context, "/repo", FINAL) == (True, SAME_FINGERPRINT, "pf1:same", "pf1:same")
-    assert approval_covers(context, "/repo", "c" * 40) == (False, CHANGED, "pf1:same", "pf1:other")
+    assert approval_covers(context, "/repo", FINAL) == (True, SAME_FINGERPRINT, "pf2:same", "pf2:same")
+    assert approval_covers(context, "/repo", "c" * 40) == (False, CHANGED, "pf2:same", "pf2:other")
     assert approval_covers(context, "/repo", "d" * 40).how == UNKNOWN_CHANGE  # Unreadable: today's behaviour.
+
+
+def test_an_older_version_fingerprint_is_unknown_not_changed(monkeypatch) -> None:
+    monkeypatch.setattr(approval_coverage, "approval_fingerprint_of", _refuse)
+    context = _approved_context(approval_fingerprint="pf1:" + "a" * 40, base_branch="main")
+    assert approval_covers(context, "/repo", FINAL) == (False, UNKNOWN_CHANGE, "pf1:" + "a" * 40, None)
 
 
 def test_a_legacy_approval_is_unknown_and_computes_nothing(monkeypatch) -> None:
@@ -155,9 +161,9 @@ def test_a_legacy_approval_is_unknown_and_computes_nothing(monkeypatch) -> None:
 
 def test_the_recorded_base_reaches_the_coverage_check_through_the_payload(monkeypatch) -> None:
     bases: list[str | None] = []
-    fingerprint_of = lambda _r, _h, base: bases.append(base) or "pf1:x"  # noqa: E731
+    fingerprint_of = lambda _r, _h, base: bases.append(base) or "pf2:x"  # noqa: E731
     monkeypatch.setattr(approval_coverage, "approval_fingerprint_of", fingerprint_of)
-    consensus_data = {"target_commit": APPROVED, "approval_fingerprint": "pf1:x", "base_branch": "release/1.2"}
+    consensus_data = {"target_commit": APPROVED, "approval_fingerprint": "pf2:x", "base_branch": "release/1.2"}
     context = _approved_context(**approval_record(consensus_data))
     context.intent_data["target_branch"] = "main"
 

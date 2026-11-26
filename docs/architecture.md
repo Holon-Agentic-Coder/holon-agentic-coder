@@ -561,7 +561,7 @@ Rules that keep the package healthy:
 ### CLI module map
 
 The host CLI lives in the `sandbox_executor.cli` package (`apps/sandbox-executor/src/sandbox_executor/cli/`). Each
-implementation module stays within 200 lines:
+implementation module stays within its module line budget (see below):
 
 | Module                      | Responsibility                                                                                   |
 | --------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -585,12 +585,14 @@ that tests patch submodule-local symbols on their owning `sandbox_executor.cli.<
 
 The settings live in `holon-config/hygiene/module_budgets.json`, with exactly three keys:
 
-- `default_max_lines` (200): the limit of every module without an override, so a new module, a new package or a split
-  needs no entry;
+- `default_max_lines` (400): the limit of every module without an override, so a new module, a new package or a split
+  needs no entry. The maintainer's schedule lowers it by 50 per pull request (350, 300, 250); each step splits the
+  modules over the new limit and drops the overrides it makes redundant, until 250 is reached;
 - `exclude`: a short list of `{"path", "reason"}` objects for generated or vendored code only (empty today). A path
   ending in `/` excludes everything under it; an entry without a non-blank `reason` is a configuration error;
-- `overrides`: repository-relative module paths mapped to their own limit, sorted, one per line, plain integers, for the
-  modules that were already over 200 lines when the budgets were frozen (each at its exact line count then).
+- `overrides`: repository-relative module paths mapped to their own limit, sorted, one per line, plain integers, only
+  for modules above the default, each frozen at its exact line count when the budgets were frozen. The overrides at or
+  below the default were removed when the default was raised to 400; the rest still only ratchet down.
 
 `scripts/check_module_budgets.py` runs in `uv run task lint` (which the review loop runs before pushing) and as its own
 step of the CI hygiene job. It has no package allowlist: it measures every `.py` file that `git ls-files` lists under

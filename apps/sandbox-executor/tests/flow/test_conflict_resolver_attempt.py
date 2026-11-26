@@ -103,25 +103,21 @@ def test_new_untracked_file_is_removed_and_older_ones_are_kept(work):
     assert not (work / "stray.py").exists() and (work / "notes.txt").exists()
 
 
-def test_saved_diff_artefacts_are_not_new_files(work):
+def test_save_attempt_diff_sanitises_label_and_stays_inside_artefact_dir(work):
+    # One copy for every label: the labels are data the save does not branch on (identical lines and arcs per label).
+    # The plain label also carries test_saved_diff_artefacts_are_not_new_files: the saved diffs are no new files.
     before = snapshot_merge(str(work))
     _resolve(work)
-    saved = save_attempt_diff(str(work), ["app.py"], "attempt-1")
-    assert saved.endswith(f"{ARTEFACT_DIR}/attempt-1.diff") and "value = 3" in Path(saved).read_text(encoding="utf-8")
-    assert check_attempt(str(work), ["app.py"], before).ok
-
-
-@pytest.mark.parametrize("label", ["abc-attempt-1-anthropic/claude-opus-5-5", "../../escape", "../a/b..c"])
-def test_save_attempt_diff_sanitises_label_and_stays_inside_artefact_dir(work, label):
-    before = snapshot_merge(str(work))
-    _resolve(work)
-    saved = save_attempt_diff(str(work), ["app.py"], label)
     artefact_dir = (work / ARTEFACT_DIR).resolve()
-    saved_path = Path(saved).resolve()
-    assert saved_path.parent == artefact_dir and saved_path.suffix == ".diff"
-    assert (artefact_dir / ".gitignore").read_text(encoding="utf-8") == "*\n"
-    assert "value = 3" in saved_path.read_text(encoding="utf-8")
-    assert check_attempt(str(work), ["app.py"], before).ok
+    for label in ["attempt-1", "abc-attempt-1-anthropic/claude-opus-5-5", "../../escape", "../a/b..c"]:
+        saved = save_attempt_diff(str(work), ["app.py"], label)
+        saved_path = Path(saved).resolve()
+        assert saved_path.parent == artefact_dir and saved_path.suffix == ".diff", label
+        assert (artefact_dir / ".gitignore").read_text(encoding="utf-8") == "*\n", label
+        assert "value = 3" in saved_path.read_text(encoding="utf-8"), label
+        assert check_attempt(str(work), ["app.py"], before).ok, label
+        if label == "attempt-1":
+            assert saved.endswith(f"{ARTEFACT_DIR}/attempt-1.diff")
 
 
 @pytest.mark.parametrize(

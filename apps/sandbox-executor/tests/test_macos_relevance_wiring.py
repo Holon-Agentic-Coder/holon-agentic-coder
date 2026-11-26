@@ -10,6 +10,7 @@ import re
 
 from scripts.ci_bookkeeping_chain import FULL_RUN_STEP
 from scripts.macos_relevance import FORCE_LABEL, RUN_RULES, SKIP_RULES
+from scripts.macos_relevance_rules import CONTENT_PATTERNS
 from tests.test_ci_bookkeeping_wiring import (
     GATE_STEP,
     GUARD,
@@ -116,3 +117,12 @@ def test_readme_documents_the_gate_and_every_rule_it_prints() -> None:
     assert "### Forcing the macOS leg" in section
     assert set(re.findall(r"^- `([a-z-]+)`: ", section, flags=re.MULTILINE)) == set(RUN_RULES + SKIP_RULES)
     assert "- `.github/actions/macos-relevance-gate/action.yml`: " in text.partition("\n## Composite Actions\n")[2]
+
+
+def test_readme_lists_every_content_pattern_and_the_accepted_risk() -> None:
+    section = README.read_text(encoding="utf-8").partition("\n## macOS Relevance Gate\n")[2].partition("\n## ")[0]
+
+    assert [pattern.pattern for _, pattern in CONTENT_PATTERNS if f"`{pattern.pattern}`" not in section] == []
+    assert "### Limits and accepted risk" in section
+    assert "judged neutral" in section
+    assert "catches it" in section

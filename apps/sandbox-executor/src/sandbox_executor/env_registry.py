@@ -8,63 +8,22 @@ by ``config_env.is_secret_key`` (the test asserts the ``secret`` flags here agre
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import StrEnum
-from typing import Literal
-
-ReadSide = Literal["host", "container", "both", "ci", "ci and container"]
-Forwarding = Literal["env-file", "argv", "not forwarded"]
-
-_BOOLEAN = "boolean: `1`, `true`, `yes`, `on` (any case)"
-_OTHER_IS_OFF = "any other value is off"
-_SECONDS = "seconds, a positive number"
-_BUDGETS_DOC = "`docs/budgets.md`"
-_CREDENTIALS_DOC = "`docs/executor/agent_credentials_requirements.md`"
-_LOCAL_DOC = "host-local models (`local_llm.py`)"
-_PROXY_DOC = "`docs/optimisation/token_reduction_architecture.md`"
-_AGENTS_DOC = "`docs/agents.md`"
-_PASSED_THROUGH = "passed through unvalidated; the runner CLI rejects it"
-_LOCAL_CONFIG_ERROR = "configuration error naming the variable, never the value"
-_STAGE_MINUTES = "minutes, a positive number up to 7 days, or `unlimited`"
-_STAGE_INVALID = "warning naming the variable; the default is kept"
-
-
-class Area(StrEnum):
-    """The sections of the reference, in document order."""
-
-    RUNNER_AND_AGENT = "runner and agent"
-    BUDGETS = "budgets"
-    TOKEN_REDUCTION_AND_PROXY = "token reduction and proxy"
-    GIT = "git"
-    LEDGER_AND_ACTIONS = "ledger and actions"
-    REVIEW_LOOP = "review loop"
-    LOGGING = "logging"
-    CI_ONLY = "CI-only"
-
-
-@dataclass(frozen=True, slots=True)
-class EnvironmentVariable:
-    """One ``HOLON_*`` variable: what it does, what it accepts and where it is read and forwarded.
-
-    ``forwarding`` describes how the value reaches a role or sidecar container: ``env-file`` is the 0600 docker
-    env-file every forwarded ``HOLON_*`` value goes through (a value no env-file line can carry goes as a passthrough
-    ``-e NAME`` instead), ``argv`` is an explicit ``-e`` item on the sidecar command line. ``internal`` marks a variable
-    the host or a maintainer sets, not an operator setting.
-    """
-
-    name: str
-    area: Area
-    purpose: str
-    value_type: str
-    default: str
-    when_unset: str
-    when_invalid: str
-    read_side: ReadSide
-    since: str
-    forwarding: Forwarding = "env-file"
-    secret: bool = False
-    internal: bool = False
-
+from sandbox_executor.env_registry_model import (
+    AGENTS_DOC,
+    BOOLEAN,
+    BUDGETS_DOC,
+    CREDENTIALS_DOC,
+    LOCAL_CONFIG_ERROR,
+    LOCAL_DOC,
+    OTHER_IS_OFF,
+    PASSED_THROUGH,
+    PROXY_DOC,
+    SECONDS,
+    STAGE_INVALID,
+    STAGE_MINUTES,
+    Area,
+    EnvironmentVariable,
+)
 
 ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
     # --- runner and agent -------------------------------------------------------------------------------------------
@@ -77,7 +36,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="harness detection (off inside a sandbox), else the run fails asking for `--agent`",
         when_invalid="an unknown runner name fails the run",
         read_side="host",
-        since=_AGENTS_DOC,
+        since=AGENTS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_AGENT_CONFIG",
@@ -86,9 +45,9 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         value_type="string",
         default="unset",
         when_unset="no `-c` flag",
-        when_invalid=_PASSED_THROUGH,
+        when_invalid=PASSED_THROUGH,
         read_side="container",
-        since=_AGENTS_DOC,
+        since=AGENTS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_AGENT_EFFORT",
@@ -97,9 +56,9 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         value_type="string, for example `low`, `medium`, `high`",
         default="`medium`",
         when_unset="`medium`",
-        when_invalid=_PASSED_THROUGH,
+        when_invalid=PASSED_THROUGH,
         read_side="container",
-        since=_AGENTS_DOC,
+        since=AGENTS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_AGENT_ID",
@@ -110,7 +69,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="the role dispatcher maps no credential",
         when_invalid="an unknown id maps no credential",
         read_side="container",
-        since=_CREDENTIALS_DOC,
+        since=CREDENTIALS_DOC,
         internal=True,
     ),
     EnvironmentVariable(
@@ -125,7 +84,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="the runner needs session credentials or the secret bundle",
         when_invalid="the provider rejects it and the pre-flight probe reports an invalid credential",
         read_side="both",
-        since=_CREDENTIALS_DOC,
+        since=CREDENTIALS_DOC,
         secret=True,
     ),
     EnvironmentVariable(
@@ -135,9 +94,9 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         value_type="string",
         default="unset",
         when_unset="no `--local-provider` flag",
-        when_invalid=_PASSED_THROUGH,
+        when_invalid=PASSED_THROUGH,
         read_side="container",
-        since=_AGENTS_DOC,
+        since=AGENTS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_AGENT_MODE",
@@ -146,9 +105,9 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         value_type="string",
         default="unset",
         when_unset="no `--agent` flag",
-        when_invalid=_PASSED_THROUGH,
+        when_invalid=PASSED_THROUGH,
         read_side="container",
-        since=_AGENTS_DOC,
+        since=AGENTS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_AGENT_OAUTH_TOKEN",
@@ -162,7 +121,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="claude uses `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` or the OS keychain",
         when_invalid="a value not shaped like a subscription token warns once and is forwarded all the same",
         read_side="both",
-        since=_CREDENTIALS_DOC,
+        since=CREDENTIALS_DOC,
         secret=True,
     ),
     EnvironmentVariable(
@@ -180,7 +139,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
             "no token; loose permissions warn"
         ),
         read_side="host",
-        since=_CREDENTIALS_DOC,
+        since=CREDENTIALS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_AGENT_OSS_MODE",
@@ -189,9 +148,9 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         value_type="`1` or `true`",
         default="unset",
         when_unset="no `--oss` flag",
-        when_invalid=_OTHER_IS_OFF,
+        when_invalid=OTHER_IS_OFF,
         read_side="both",
-        since=_AGENTS_DOC,
+        since=AGENTS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_AGENT_PROVIDER",
@@ -200,9 +159,9 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         value_type="string",
         default="unset; in host-local mode `HOLON_LOCAL_PROVIDER`, else `local`",
         when_unset="no `--provider` flag, except the host-local default",
-        when_invalid=_PASSED_THROUGH,
+        when_invalid=PASSED_THROUGH,
         read_side="both",
-        since=_AGENTS_DOC,
+        since=AGENTS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_AGENT_SETTINGS",
@@ -216,19 +175,19 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="attribution-off settings only",
         when_invalid="warning; attribution-off settings only",
         read_side="both",
-        since=_CREDENTIALS_DOC,
+        since=CREDENTIALS_DOC,
         secret=True,
     ),
     EnvironmentVariable(
         name="HOLON_AGENT_SKIP_PERMISSIONS",
         area=Area.RUNNER_AND_AGENT,
         purpose="Run the agent with its permission prompts bypassed.",
-        value_type=_BOOLEAN,
+        value_type=BOOLEAN,
         default="`true`",
         when_unset="prompts are bypassed",
         when_invalid="any other value keeps the prompts on",
         read_side="container",
-        since=_AGENTS_DOC,
+        since=AGENTS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_ANTIGRAVITY_SESSION_DIR",
@@ -239,7 +198,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="the default directory, else `~/.gemini/antigravity-cli`",
         when_invalid="a missing directory without `HOLON_AGENT_KEY` fails the run on macOS",
         read_side="host",
-        since=_AGENTS_DOC,
+        since=AGENTS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_CLAUDE_CODE_MODE",
@@ -253,7 +212,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="code mode is enabled (`CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`)",
         when_invalid="any value other than `0`, `false`, `no` or `off` keeps code mode enabled",
         read_side="both",
-        since=_AGENTS_DOC,
+        since=AGENTS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_CONFIG_RESOLVED",
@@ -274,9 +233,9 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         value_type="positive integer",
         default="`4096`",
         when_unset="`4096`",
-        when_invalid=_LOCAL_CONFIG_ERROR,
+        when_invalid=LOCAL_CONFIG_ERROR,
         read_side="both",
-        since=_LOCAL_DOC,
+        since=LOCAL_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_HOST_LOCAL_HOSTS",
@@ -287,7 +246,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="only loopback endpoints are allowed",
         when_invalid="a non-UTF-8 value is a configuration error; empty entries are dropped",
         read_side="both",
-        since=_LOCAL_DOC,
+        since=LOCAL_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_IN_SANDBOX",
@@ -310,7 +269,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="the host pi `models.json` is used",
         when_invalid="not a URL, or neither loopback nor in `HOLON_HOST_LOCAL_HOSTS`: configuration error",
         read_side="both",
-        since=_LOCAL_DOC,
+        since=LOCAL_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_LOCAL_CONTEXT_WINDOW",
@@ -319,20 +278,20 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         value_type="positive integer",
         default="unset",
         when_unset="a model without `contextWindow` is rejected",
-        when_invalid=_LOCAL_CONFIG_ERROR,
+        when_invalid=LOCAL_CONFIG_ERROR,
         read_side="both",
-        since=_LOCAL_DOC,
+        since=LOCAL_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_LOCAL_LLM",
         area=Area.RUNNER_AND_AGENT,
         purpose="Enable host-local models for the pi runner.",
-        value_type=_BOOLEAN,
+        value_type=BOOLEAN,
         default="unset",
         when_unset="off",
-        when_invalid=_OTHER_IS_OFF,
+        when_invalid=OTHER_IS_OFF,
         read_side="both",
-        since=_LOCAL_DOC,
+        since=LOCAL_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_LOCAL_MODELS",
@@ -343,7 +302,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="a configuration error when `HOLON_LOCAL_BASE_URL` is set",
         when_invalid="empty entries are dropped",
         read_side="both",
-        since=_LOCAL_DOC,
+        since=LOCAL_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_LOCAL_PROVIDER",
@@ -354,7 +313,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="`HOLON_AGENT_PROVIDER`, else `local`",
         when_invalid="an unknown provider fails the host-local configuration",
         read_side="both",
-        since=_LOCAL_DOC,
+        since=LOCAL_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_MODEL",
@@ -365,13 +324,13 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="the run fails: the model is mandatory",
         when_invalid="model validation or the pre-flight probe fails the run",
         read_side="host",
-        since=_AGENTS_DOC,
+        since=AGENTS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_PREFLIGHT_TIMEOUT",
         area=Area.RUNNER_AND_AGENT,
         purpose="Timeout of the pre-flight readiness probe.",
-        value_type=_SECONDS,
+        value_type=SECONDS,
         default="`60`",
         when_unset="`60`",
         when_invalid="non-numeric, zero or negative keeps `60`",
@@ -385,9 +344,9 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         value_type="`off`, `minimal`, `low`, `medium` or `high`",
         default="unset",
         when_unset="the host model entry's mode, else `off`",
-        when_invalid=_LOCAL_CONFIG_ERROR,
+        when_invalid=LOCAL_CONFIG_ERROR,
         read_side="both",
-        since=_LOCAL_DOC,
+        since=LOCAL_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_REPLAN_FEEDBACK",
@@ -398,7 +357,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="no feedback in the planner prompt",
         when_invalid="not validated",
         read_side="container",
-        since=_BUDGETS_DOC,
+        since=BUDGETS_DOC,
         internal=True,
     ),
     EnvironmentVariable(
@@ -422,13 +381,13 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="the default path",
         when_invalid="a missing or unreadable bundle supplies no key",
         read_side="both",
-        since=_CREDENTIALS_DOC,
+        since=CREDENTIALS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_SKIP_PREFLIGHT",
         area=Area.RUNNER_AND_AGENT,
         purpose="Skip the pre-flight readiness probe, as `--skip-preflight`; the host sets `1` for role containers.",
-        value_type=_BOOLEAN,
+        value_type=BOOLEAN,
         default="unset",
         when_unset="the probe runs",
         when_invalid="any other value runs the probe",
@@ -440,56 +399,56 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         name="HOLON_STAGE_BUDGET_CALIBRATION_MINUTES",
         area=Area.BUDGETS,
         purpose="Wall-clock budget of the calibration stage.",
-        value_type=_STAGE_MINUTES,
+        value_type=STAGE_MINUTES,
         default="`10`",
         when_unset="`10`",
-        when_invalid=_STAGE_INVALID,
+        when_invalid=STAGE_INVALID,
         read_side="host",
-        since=_BUDGETS_DOC,
+        since=BUDGETS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_STAGE_BUDGET_EXECUTE_MINUTES",
         area=Area.BUDGETS,
         purpose="Wall-clock budget of the execute stage.",
-        value_type=_STAGE_MINUTES,
+        value_type=STAGE_MINUTES,
         default="`45`",
         when_unset="`45`",
-        when_invalid=_STAGE_INVALID,
+        when_invalid=STAGE_INVALID,
         read_side="host",
-        since=_BUDGETS_DOC,
+        since=BUDGETS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_STAGE_BUDGET_INTENT_MINUTES",
         area=Area.BUDGETS,
         purpose="Wall-clock budget of the intent stage.",
-        value_type=_STAGE_MINUTES,
+        value_type=STAGE_MINUTES,
         default="`10`",
         when_unset="`10`",
-        when_invalid=_STAGE_INVALID,
+        when_invalid=STAGE_INVALID,
         read_side="host",
-        since=_BUDGETS_DOC,
+        since=BUDGETS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_STAGE_BUDGET_PLAN_MINUTES",
         area=Area.BUDGETS,
         purpose="Wall-clock budget of the plan stage.",
-        value_type=_STAGE_MINUTES,
+        value_type=STAGE_MINUTES,
         default="`35`",
         when_unset="`35`",
-        when_invalid=_STAGE_INVALID,
+        when_invalid=STAGE_INVALID,
         read_side="host",
-        since=_BUDGETS_DOC,
+        since=BUDGETS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_STAGE_BUDGET_REVIEW_ITERATION_MINUTES",
         area=Area.BUDGETS,
         purpose="Wall-clock budget of each review-loop iteration.",
-        value_type=_STAGE_MINUTES,
+        value_type=STAGE_MINUTES,
         default="`120`",
         when_unset="`120`",
-        when_invalid=_STAGE_INVALID,
+        when_invalid=STAGE_INVALID,
         read_side="host",
-        since=_BUDGETS_DOC,
+        since=BUDGETS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_STAGE_BUDGET_SECONDS",
@@ -503,18 +462,18 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="the per-stage budgets apply",
         when_invalid="warning naming the variable; the per-stage budgets apply",
         read_side="both",
-        since=_BUDGETS_DOC,
+        since=BUDGETS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_TEST_MEASUREMENT_TIMEOUT_SECONDS",
         area=Area.BUDGETS,
         purpose="Ceiling of one measured test run inside the executor.",
-        value_type=_SECONDS,
+        value_type=SECONDS,
         default="`900`",
         when_unset="`900`",
         when_invalid="non-numeric, zero or negative keeps `900`",
         read_side="container",
-        since=_BUDGETS_DOC,
+        since=BUDGETS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_TURN_STALL_SECONDS",
@@ -523,9 +482,9 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         value_type="seconds, zero or positive, up to 7 days; `0` disables stall detection",
         default="`90`",
         when_unset="`90`",
-        when_invalid=_STAGE_INVALID,
+        when_invalid=STAGE_INVALID,
         read_side="both",
-        since=_BUDGETS_DOC,
+        since=BUDGETS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_TURN_TIMEOUT_SECONDS",
@@ -534,9 +493,9 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         value_type="seconds, a positive number up to 7 days, or `unlimited`",
         default="`3600`",
         when_unset="`3600`",
-        when_invalid=_STAGE_INVALID,
+        when_invalid=STAGE_INVALID,
         read_side="both",
-        since=_BUDGETS_DOC,
+        since=BUDGETS_DOC,
     ),
     # --- token reduction and proxy ----------------------------------------------------------------------------------
     EnvironmentVariable(
@@ -550,7 +509,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="the default path",
         when_invalid="an unwritable path warns; clients use the image's default store",
         read_side="container",
-        since=_PROXY_DOC,
+        since=PROXY_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_COHERENCE_IMAGE",
@@ -561,7 +520,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="a local image, else the GHCR image",
         when_invalid="the sidecar fails to start and the run reports it",
         read_side="host",
-        since=_PROXY_DOC,
+        since=PROXY_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_COHERENCE_WEB_PASSWORD",
@@ -572,7 +531,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="the dashboard has no password",
         when_invalid="not validated",
         read_side="container",
-        since=_PROXY_DOC,
+        since=PROXY_DOC,
         forwarding="argv",
         secret=True,
         internal=True,
@@ -586,7 +545,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="not applicable: always set",
         when_invalid="not applicable: always `1`",
         read_side="container",
-        since=_PROXY_DOC,
+        since=PROXY_DOC,
         forwarding="argv",
         internal=True,
     ),
@@ -599,7 +558,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="the image's default user",
         when_invalid="docker refuses to start the sidecar",
         read_side="host",
-        since=_PROXY_DOC,
+        since=PROXY_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_MITM_WEB_PASSWORD",
@@ -610,7 +569,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="the dashboard has no password",
         when_invalid="not validated",
         read_side="host",
-        since=_PROXY_DOC,
+        since=PROXY_DOC,
         secret=True,
     ),
     EnvironmentVariable(
@@ -622,18 +581,18 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="`8081`",
         when_invalid="warning; `8081`",
         read_side="host",
-        since=_PROXY_DOC,
+        since=PROXY_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_PASSIVE_MONITORING",
         area=Area.TOKEN_REDUCTION_AND_PROXY,
         purpose="Run the proxy in passive monitoring mode; also opts in to the proxy; refused in a project `.env`.",
-        value_type=_BOOLEAN,
+        value_type=BOOLEAN,
         default="unset",
         when_unset="off",
-        when_invalid=_OTHER_IS_OFF,
+        when_invalid=OTHER_IS_OFF,
         read_side="host",
-        since=_PROXY_DOC,
+        since=PROXY_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_PROXY_PORT",
@@ -644,7 +603,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="`8080`",
         when_invalid="a non-integer keeps `8080`",
         read_side="host",
-        since=_PROXY_DOC,
+        since=PROXY_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_PROXY_URL",
@@ -655,7 +614,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="the host gateway (`host.docker.internal` on macOS and Windows, `172.17.0.1` on Linux)",
         when_invalid="warning without the value; the URL is ignored",
         read_side="host",
-        since=_PROXY_DOC,
+        since=PROXY_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_ROOT_CA_PATH",
@@ -666,7 +625,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="the default path",
         when_invalid="a missing file adds no CA",
         read_side="container",
-        since=_PROXY_DOC,
+        since=PROXY_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_TOKEN_REDUCE",
@@ -680,17 +639,17 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="no explicit choice; the flags decide",
         when_invalid="any other value is no explicit choice",
         read_side="host",
-        since=_PROXY_DOC,
+        since=PROXY_DOC,
     ),
     # --- git --------------------------------------------------------------------------------------------------------
     EnvironmentVariable(
         name="HOLON_ATTRIBUTION_STRICT",
         area=Area.GIT,
         purpose="Fail the push, rather than warn, when a commit carries an attribution trailer.",
-        value_type=_BOOLEAN,
+        value_type=BOOLEAN,
         default="unset",
         when_unset="findings warn only",
-        when_invalid=_OTHER_IS_OFF,
+        when_invalid=OTHER_IS_OFF,
         read_side="container",
         since="`docs/executor/stage3_push_safeguards.md`",
     ),
@@ -698,7 +657,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         name="HOLON_GIT_LOCK_AGE_SECONDS",
         area=Area.GIT,
         purpose="Age after which a stale git lock file is removed.",
-        value_type=_SECONDS,
+        value_type=SECONDS,
         default="`60`",
         when_unset="`60`",
         when_invalid="non-numeric, zero or negative keeps `60`",
@@ -759,7 +718,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         name="HOLON_ACTION_LOGGING",
         area=Area.LEDGER_AND_ACTIONS,
         purpose="Record discrete agent actions in `executions.jsonl`; alias `HOLON_RECORD_ACTIONS`.",
-        value_type=_BOOLEAN,
+        value_type=BOOLEAN,
         default="unset",
         when_unset="`HOLON_RECORD_ACTIONS`, else on (off under pytest)",
         when_invalid="any other set value turns action logging off",
@@ -796,7 +755,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         name="HOLON_RECORD_ACTIONS",
         area=Area.LEDGER_AND_ACTIONS,
         purpose="Alias of `HOLON_ACTION_LOGGING`, read only when that is unset.",
-        value_type=_BOOLEAN,
+        value_type=BOOLEAN,
         default="unset",
         when_unset="on (off under pytest)",
         when_invalid="any other set value turns action logging off",
@@ -824,7 +783,7 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_unset="`1800`",
         when_invalid="warning naming the variable; `1800` is kept",
         read_side="host",
-        since=_BUDGETS_DOC,
+        since=BUDGETS_DOC,
     ),
     EnvironmentVariable(
         name="HOLON_REVIEW_FINDING_IDS",
@@ -872,6 +831,28 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         read_side="container",
         since="`docs/review_consensus.md`",
         internal=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_SCOPED_REVIEW_CONTEXT_BYTES",
+        area=Area.REVIEW_LOOP,
+        purpose="Bytes of each modified file's full content shown to a scoped delta review; four times it in total.",
+        value_type="integer of at least `1000`",
+        default="`40000`",
+        when_unset="`40000`",
+        when_invalid="warning naming the variable; `40000` is kept",
+        read_side="host",
+        since="`docs/review_consensus.md` (scoped delta review)",
+    ),
+    EnvironmentVariable(
+        name="HOLON_SCOPED_REVIEW_MAX_LINES",
+        area=Area.REVIEW_LOOP,
+        purpose="Largest reviewable delta, in changed lines, a follow-up pass reviews scoped instead of in full.",
+        value_type="integer, zero or positive; `0` disables scoped review",
+        default="`400`",
+        when_unset="`400`",
+        when_invalid="warning naming the variable; `400` is kept",
+        read_side="host",
+        since="`docs/review_consensus.md` (scoped delta review)",
     ),
     # --- logging ----------------------------------------------------------------------------------------------------
     EnvironmentVariable(

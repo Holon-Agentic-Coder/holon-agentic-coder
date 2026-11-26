@@ -400,8 +400,8 @@ def test_a_withdrawn_consensus_restarts_stage4_on_resume_without_a_second_withdr
 
 # --- the PR-own change fingerprint at the merged head ---------------------------------------------------------------
 
-FINGERPRINT = "pf1:" + "f" * 40
-OTHER_FINGERPRINT = "pf1:" + "e" * 40
+FINGERPRINT = "pf2:" + "f" * 40
+OTHER_FINGERPRINT = "pf2:" + "e" * 40
 
 
 def _fingerprinted_ctx(
@@ -555,3 +555,14 @@ def test_merged_head_gate_fails_early_while_other_checks_are_pending(tmp_path: P
     assert rec_later["state"] == "failed"
     assert fakes_later.sleeps == [15.0]
     assert len(fakes_later.probed) == 2
+
+
+def test_the_stage4_ci_record_lives_with_the_gate_and_the_new_seams_default_to_gh(tmp_path: Path) -> None:
+    from sandbox_executor.flow.review.merged_head_gate import stage4_ci_record
+
+    ctx = _approved_ctx(tmp_path)
+    checks = [{"name": "unit", "bucket": "pass", "link": "https://x/actions/runs/11/job/1"}]
+    ctx.stage_results["review"].payload["ci_checks"] = {"checks": checks}
+    record = stage4_ci_record(ctx, MERGED)
+    assert record["state"] == "stage4" and record["runs"][0]["run_id"] == "11"
+    assert MergedHeadSeams().detail_lookup is None and MergedHeadSeams().slowest_lookup is None

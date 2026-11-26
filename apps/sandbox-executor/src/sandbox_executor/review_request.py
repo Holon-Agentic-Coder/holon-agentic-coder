@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from sandbox_executor.git import EMPTY_DIFF_EXCLUDES, run_git
 from sandbox_executor.redaction import redact_agent_secrets
@@ -75,6 +76,46 @@ def format_scoped_body(body: str, scoped_paths: Sequence[str]) -> str:
         return body
     bullets = "\n".join(f"- `{p}`" for p in scoped_paths)
     return f"{body}\n\n## Scoped Conflict-Resolution Re-Review\n\nReviewing resolved paths:\n{bullets}".strip()
+
+
+@dataclass(frozen=True)
+class ScopedDelta:
+    """What a scoped delta review shows besides the diff; the file contents are already redacted and bounded."""
+
+    base: str
+    head: str
+    context_files: tuple[tuple[str, str], ...] = ()
+    addressed: tuple[Mapping[str, Any], ...] = ()
+    omitted: tuple[str, ...] = ()
+
+
+def _fenced(text: str) -> str:
+    """``text`` in a code fence longer than any backtick run inside it."""
+    fence = "`" * max([3, *(len(run) + 1 for run in re.findall(r"`+", text))])
+    return f"{fence}\n{text.rstrip(chr(10))}\n{fence}"
+
+
+def _addressed_line(row: Mapping[str, Any]) -> str:
+    location = f"{row.get('path')}:{row.get('line')}" if row.get("line") else str(row.get("path") or "-")
+    return f"- `{row.get('id')}` ({row.get('severity')}, `{location}`): {row.get('summary')}"
+
+
+def format_delta_body(body: str, delta: ScopedDelta) -> str:
+    """Append the scoped delta review notice, the addressed findings and the modified files' full content."""
+    parts = [
+        body,
+        "## Scoped Delta Review",
+        f"Only the change `{delta.base}..{delta.head}` is under review: an earlier pass in which every reviewer "
+        "completed reviewed everything before it. Verify that the addressed findings are fixed and judge the change "
+        "itself; do not re-review unchanged code.",
+        "### Addressed findings",
+        "\n".join(_addressed_line(row) for row in delta.addressed) or "None recorded.",
+        "### Full content of modified files",
+        *(f"`{path}`:\n\n{_fenced(text)}" for path, text in delta.context_files),
+    ]
+    if delta.omitted:
+        parts.append("Not shown (context limit): " + ", ".join(f"`{path}`" for path in delta.omitted))
+    return "\n\n".join(part for part in parts if part).strip()
 
 
 def _placeholder_values(request: ReviewRequest) -> dict[str, str]:

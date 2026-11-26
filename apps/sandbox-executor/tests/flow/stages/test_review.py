@@ -162,3 +162,54 @@ def test_the_review_stage_builds_one_adapter_and_hands_it_to_the_loop(tmp_path):
 
     adapter.assert_called_once_with(ctx.target_worktree, {})
     assert loop.call_args.kwargs["github"] is github
+
+
+def _approved_stage(ctx: FlowContext, loop_res: dict[str, Any]) -> StageResult:
+    with (
+        patch("sandbox_executor.flow.stages.review.run_git", return_value=MagicMock(returncode=0, stdout="")),
+        patch("sandbox_executor.flow.stages.review.at_stage_boundary", return_value=None),
+        patch("sandbox_executor.flow.stages.review._checkout_execution_branch", return_value=None),
+        patch("sandbox_executor.flow.review.loop.run_review_loop", return_value=loop_res),
+    ):
+        return run_review_stage(ctx)
+
+
+def test_the_review_stage_reports_the_counted_review_accounting(tmp_path):
+    """Counts from the context reach the Stage 4 log, the payload and the flow summary lines."""
+    from sandbox_executor.flow import review_summary_lines
+    from sandbox_executor.review_accounting import count_accounting, count_carry_over
+
+    ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-a-b/E-3-a-b/_", token_reduce=False)
+    for key in ("full_reviews", "scoped_reviews", "scoped_reviews", "pipeline_runs", "pipeline_reruns"):
+        count_accounting(ctx, key)
+    count_accounting(ctx, "non_defect_churn", "ci_noise")
+    count_carry_over(ctx, "a" * 40, "b" * 40)
+    loop_res = {
+        "consensus": {"approved": True, "status": "approved"},
+        "mergeability": {"is_dirty": False},
+        "reviewers": [{"status": "COMPLETED", "verdict": "APPROVED"}],
+    }
+
+    res = _approved_stage(ctx, loop_res)
+
+    accounting = res.payload["review_accounting"]
+    assert res.payload["review_package"]["review_accounting"] == accounting
+    assert (accounting["full_reviews"], accounting["scoped_reviews"], accounting["approval_carry_overs"]) == (1, 2, 1)
+    assert "seen_events" not in accounting
+    lines = review_summary_lines(loop_res)
+    assert "  Reviews        : 1 full, 2 scoped; carry-overs: 1" in lines
+    assert "  Non-defect churn: target merge 1, bookkeeping 0, CI noise 1" in lines
+    assert any("Pipelines      : 1 run(s), 1 rerun(s)" in log for log in ctx.logs)
+
+
+def test_a_legacy_loop_result_renders_review_churn_not_recorded(tmp_path):
+    from sandbox_executor.flow import review_summary_lines
+
+    ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-a-b/E-3-a-b/_", token_reduce=False)
+    loop_res = {"consensus": {"approved": False, "status": "failed"}, "mergeability": {"is_dirty": False}}
+
+    res = _approved_stage(ctx, loop_res)
+
+    assert res.payload["review_accounting"] is None
+    assert "  Review churn   : not recorded" in review_summary_lines({"consensus": {"approved": False}})
+    assert any("Review churn   : not recorded" in log for log in ctx.logs)

@@ -12,6 +12,7 @@ from typing import Any
 
 from sandbox_executor.flow.review.adjudication import Adjudication
 from sandbox_executor.flow.review.records import _reviewer_summary, render_reviewer_summary_line
+from sandbox_executor.review_accounting import accounting_of, render_accounting_lines
 from sandbox_executor.review_ensemble import (
     ConsensusVerdict,
     ReviewerResult,
@@ -123,13 +124,18 @@ def review_loop_approved(loop_res: dict[str, Any]) -> bool:
 
 
 def review_summary_lines(loop_res: dict[str, Any]) -> list[str]:
-    """Summary lines with the real per-reviewer verdicts of the deciding iteration, naming any that did not approve."""
+    """Summary lines with the real per-reviewer verdicts of the deciding iteration, naming any that did not approve.
+
+    The review accounting (reviews, pipeline runs, non-defect churn) precedes the roles line; a loop result without
+    one (a legacy result, or the sandboxed review loop) shows "not recorded".
+    """
     reviewers = loop_res.get("reviewers") or []
     lines = [f"  Ensemble       : {loop_res.get('ensemble_verdict') or 'NOT RUN'}"]
     lines.extend(f"    {render_reviewer_summary_line(r)}" for r in reviewers)
     not_approved = not_approved_verdicts(reviewers)
     if not_approved:
         lines.append(f"  Not approved   : {'; '.join(not_approved)}")
+    lines.extend(render_accounting_lines(accounting_of(loop_res)))
     review_data = loop_res.get("review_data") or {}
     roles = (
         ", ".join(f"{r.get('role')} ({r.get('verdict')})" for r in review_data.get("roles") or []) or "none reported"

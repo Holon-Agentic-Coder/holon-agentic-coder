@@ -20,6 +20,7 @@ from sandbox_executor.flow.review.approval_fingerprint import approval_fingerpri
 from sandbox_executor.flow.review.merged_head_gate import gate_record
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.review_accounting import count_carry_over
 
 if TYPE_CHECKING:
     from sandbox_executor.flow.context import FlowContext
@@ -113,6 +114,7 @@ def carry_approval_over(
     context.log(f"[Review Loop] Conflict gate: {carry_over_message(carry)}")
     record_review_action(context, exec_file, carry_over_record(review_target, carry))
     apply_carry_over(consensus_data, carry)
+    count_carry_over(context, carry.approved_head, carry.merged_head)
     return True
 
 
@@ -148,6 +150,7 @@ def record_stage5_carry_over(
     review = context.stage_results["review"]
     carried = {**consensus, "carried_from": carry.approved_head, "carried_to": carry.merged_head}
     review.payload = {**review.payload, "consensus": carried}
+    count_carry_over(context, carry.approved_head, carry.merged_head)
     return carry
 
 
@@ -181,6 +184,7 @@ def merged_head_coverage(context: FlowContext, approved: str, head: str) -> tupl
             f"waiting for CI on {head}."
         )
         carry = {"approved_head": approved, "merged_head": head, "approval_fingerprint": coverage.recorded}
+        count_carry_over(context, approved, head)
         return coverage.how, {"approval_carry_over": carry}
     if coverage.how == CHANGED:
         reason = f"PR-own change changed since approval (fingerprint {coverage.recorded} -> {coverage.current})"

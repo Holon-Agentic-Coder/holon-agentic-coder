@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-115a3085",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T07:42:00.052328+00:00",
+  "updated_ts": "2026-11-26T07:42:00.052328+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795676825-ac506580",
+      "ACT-FIND-1795676820-ca9d6667"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795665991-no-unneeded-full-review/P-1795666015-CLA-CO5.5--3-add-scoped-delta-review-new-flow/P-1795676003-CLA-CO5.5/E-1795676206-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R2-001-02",
+    "symptoms": [
+      "When the container rejects the forwarded scoped decision and reviews in full, the host still records the pass as scoped in the gate and the scoped chain."
+    ]
+  }
+}

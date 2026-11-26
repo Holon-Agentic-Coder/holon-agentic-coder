@@ -261,6 +261,8 @@ _READ_OPEN_ALLOW_LIST = {
 
 def _opens_for_reading(function: ast.AST) -> bool:
     for node in ast.walk(function):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "read_text":
+            return True
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open"):
             continue
         mode = node.args[1] if len(node.args) > 1 else next((k.value for k in node.keywords if k.arg == "mode"), None)

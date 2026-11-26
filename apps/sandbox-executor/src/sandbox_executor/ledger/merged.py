@@ -122,7 +122,10 @@ def _merged_text(ledger_name: str, canonical_text: str | None, fragment_texts: l
 
 
 def _git_text(git: GitRunner, repo_dir: str, args: list[str]) -> str | None:
-    res = git(args, cwd=repo_dir, check=False)
+    try:
+        res = git(args, cwd=repo_dir, check=False)
+    except OSError:
+        return None
     if res.returncode != 0 or not isinstance(res.stdout, str):
         return None
     return res.stdout

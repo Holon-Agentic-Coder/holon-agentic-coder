@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -168,11 +167,12 @@ def reconcile_records(  # noqa: C901, PLR0912, PLR0913
     reason: str | None = None,
     db_path: str | None = None,
 ) -> dict[str, Any]:
-    if not os.path.exists(ledger_path):
+    ledger_text = read_merged_text(ledger_path)
+    if ledger_text is None:
         return {"reconciled": 0, "expired": 0, "total_scanned": 0}
 
     scanned_records: list[dict[str, Any]] = []
-    for line in (read_merged_text(ledger_path) or "").splitlines():
+    for line in ledger_text.splitlines():
         line_str = line.strip()
         if not line_str:
             continue

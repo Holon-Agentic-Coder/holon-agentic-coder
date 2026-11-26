@@ -19,6 +19,7 @@ from sandbox_executor.flow.github.ci_reverify import approved_head_of
 from sandbox_executor.flow.stage5_ledger import recorded_verdicts
 from sandbox_executor.knowledge import ActionIndexDatabase
 from sandbox_executor.ledger import LedgerRewriteError
+from sandbox_executor.ledger.fragments import iter_fragment_files
 
 ACTION_INDEX_REL = "holon-knowledge/.index/action_index.db"
 
@@ -69,7 +70,7 @@ def _reconcile_execution(context: FlowContext, steps: Stage5Steps, verdict: str 
     # Dry runs append nothing, so the reconciliation events are only written on a real run.
     if context.dry_run:
         return _reconciliation("skipped_no_commit", verdict)
-    if not os.path.exists(executions_file):
+    if not os.path.exists(executions_file) and not iter_fragment_files(executions_file):
         return _reconciliation("skipped_no_ledger", verdict)
     if verdict is None:
         context.log("Stage 5 reconciliation and promotion skipped: no execution verdict was found in the ledger.")

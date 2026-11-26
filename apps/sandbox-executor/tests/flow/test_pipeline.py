@@ -524,6 +524,9 @@ class TestFlowStages:
                 return MagicMock(returncode=1, stdout="", stderr=f"remote rejected {sample_value}")
             return MagicMock(returncode=0, stdout="", stderr="")
 
+        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+        ledger.parent.mkdir(parents=True)
+        ledger.write_text("", encoding="utf-8")
         with patch("sandbox_executor.flow.stages.calibrate.run_git", side_effect=fake_run_git):
             _commit_stage5_reconciliation(ctx, str(tmp_path))
 

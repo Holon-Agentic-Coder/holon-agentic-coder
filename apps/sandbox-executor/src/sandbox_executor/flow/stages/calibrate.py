@@ -78,6 +78,8 @@ def _commit_stage5_reconciliation(context: FlowContext, repo_dir: str) -> None:
             )
             return
         ledger_paths = ledger_commit_paths(repo_dir, "executions.jsonl")
+        if not ledger_paths:  # an empty pathspec would make ``git commit --`` commit the whole index
+            return
         run_git(["add", *ledger_paths], cwd=repo_dir, check=False)
         commit_res = run_git(
             ["commit", "-m", "chore(calibration): record stage 5 reconciliation", "--", *ledger_paths],

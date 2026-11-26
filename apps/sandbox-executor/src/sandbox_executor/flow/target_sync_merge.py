@@ -161,6 +161,9 @@ def _commit_blocked_row(request: SyncRequest, result: SyncResult) -> SyncResult:
     """Commit the blocked row alone (not pushed), so the next merge of a target that changed the ledger can start."""
     message = f"sync: record blocked target sync of {result.target_sha[:12]}"
     ledger_paths = _ledger_paths(request)  # the row may create its fragment
+    if not ledger_paths:  # an empty pathspec would make ``git commit --`` commit the whole index
+        logger.warning("Could not commit the blocked target_sync row: no ledger path exists")
+        return result
     run_git(["add", "--", *ledger_paths], cwd=request.worktree, check=False)
     commit = run_git(["commit", "-q", "-m", message, "--", *ledger_paths], cwd=request.worktree, check=False)
     if commit.returncode != 0:

@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from sandbox_executor.entrypoint.sync_conflict import record_sync_failure
-from sandbox_executor.knowledge import append_action_event
+from sandbox_executor.knowledge import append_action_event, reconcile_records
 from sandbox_executor.ledger import (
     ActionRecord,
     SummaryRecord,
@@ -137,3 +137,14 @@ def test_the_static_scan_flags_a_canonical_append_or_lock(tmp_path: Path) -> Non
 
     assert sum(_is_append_open_of_a_ledger(call, source) for call in calls) == 2
     assert len(_canonical_writers(leak, tmp_path)) == 3
+
+
+def test_reconcile_scans_a_fragment_only_ledger(tmp_path: Path) -> None:
+    executions = tmp_path / LEDGER_REL / "executions.jsonl"
+    executions.parent.mkdir(parents=True)
+    append_action_record(str(executions), _action("ACT-1"))
+    assert not executions.exists()
+
+    result = reconcile_records(ledger_path=str(executions), db_path=str(tmp_path / "idx.db"))
+
+    assert result["total_scanned"] == 1

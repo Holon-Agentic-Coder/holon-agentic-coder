@@ -140,7 +140,6 @@ __all__ = [
     "WithdrawalSeams",
     "WorktreeCheckpoint",
     "_append_ledger_row",
-    "_append_only_union",
     "_append_superseding_execution_row",
     "_attach_transported_detail",
     "_augment_pr_text_with_rejected",

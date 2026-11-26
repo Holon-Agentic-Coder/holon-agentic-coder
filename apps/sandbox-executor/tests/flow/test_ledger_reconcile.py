@@ -6,7 +6,7 @@ from collections import Counter
 
 import pytest
 from sandbox_executor.flow import extract_valid_ledger_rows, reconcile_jsonl_ledger_conflict, reconcile_ledger_file
-from sandbox_executor.flow.ledger_reconcile import _append_only_union, insert_incoming_lines
+from sandbox_executor.flow.ledger_reconcile import insert_incoming_lines
 from sandbox_executor.ledger.order import parse_created_at
 
 _SORTED_BASE = [
@@ -132,14 +132,6 @@ def test_merging_into_a_sorted_base_keeps_every_base_row_and_only_inserts(prefix
     instants = [parse_created_at(json.loads(line).get("created_at")) for line in merged]
     timed = [instant for instant in instants if instant is not None]
     assert timed == sorted(timed)
-
-
-def test_the_legacy_append_would_not_be_additions_only_on_a_sorted_base() -> None:
-    appended = _append_only_union([f"{line}\n" for line in _SORTED_BASE], [f"{line}\n" for line in _INCOMING])
-    instants = [parse_created_at(json.loads(line).get("created_at")) for line in appended.splitlines()]
-    timed = [instant for instant in instants if instant is not None]
-
-    assert timed != sorted(timed)
 
 
 def test_an_unsorted_kept_side_is_never_reordered() -> None:

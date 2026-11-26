@@ -31,7 +31,6 @@ __all__ = [
     "ConflictResolutionError",
     "LedgerReconciler",
     "PrefixSide",
-    "_append_only_union",
     "_has_conflict_marker_lines",
     "_ledgers_with_conflict_markers",
     "_resolve_conflicting_ledger",
@@ -60,11 +59,6 @@ def extract_valid_ledger_rows(content: str) -> list[dict[str, Any]]:
 def _split_conflict_sides(content: str) -> tuple[list[str], list[str]]:
     """Split conflicted content into the ours and theirs files, each keeping shared lines."""
     return _DEFAULT_RECONCILER._split_conflict_sides(content)
-
-
-def _append_only_union(prefix_lines: list[str], other_lines: list[str]) -> str:
-    """Legacy pure append: the prefix side unchanged, then the other side's missing lines by ``created_at``."""
-    return _DEFAULT_RECONCILER._append_only_union(prefix_lines, other_lines)
 
 
 def resolve_append_only_conflict(content: str, prefix_side: PrefixSide = "ours") -> tuple[str, str]:

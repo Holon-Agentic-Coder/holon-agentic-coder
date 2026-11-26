@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any, Literal, TextIO
 
 from sandbox_executor.ledger.lock import LedgerLock, LedgerRewriteError
-from sandbox_executor.ledger.order import _order_appended_rows, interleave_by_instant, parse_created_at
+from sandbox_executor.ledger.order import interleave_by_instant, parse_created_at
 
 logger = logging.getLogger(__name__)
 
@@ -108,16 +108,6 @@ class LedgerReconciler:
         return ours, theirs
 
     @staticmethod
-    def _append_only_union(prefix_lines: list[str], other_lines: list[str]) -> str:
-        prefix = "".join(prefix_lines)
-        if prefix and not prefix.endswith("\n"):
-            prefix += "\n"
-        seen = {line.rstrip("\r\n") for line in prefix_lines}
-        missing = (line.rstrip("\r\n") for line in other_lines if line.strip())
-        extra = _order_appended_rows([line + "\n" for line in dict.fromkeys(missing) if line not in seen])
-        return prefix + "".join(extra)
-
-    @staticmethod
     def _insertion_union(prefix_lines: list[str], other_lines: list[str]) -> str:
         kept = [line.rstrip("\r\n") for line in prefix_lines]
         incoming = [line.rstrip("\r\n") for line in other_lines if line.strip()]
@@ -200,7 +190,6 @@ _DEFAULT_RECONCILER = LedgerReconciler()
 extract_valid_ledger_rows = _DEFAULT_RECONCILER.extract_valid_ledger_rows
 _has_conflict_marker_lines = _DEFAULT_RECONCILER._has_conflict_marker_lines
 _split_conflict_sides = _DEFAULT_RECONCILER._split_conflict_sides
-_append_only_union = _DEFAULT_RECONCILER._append_only_union
 _insertion_union = _DEFAULT_RECONCILER._insertion_union
 resolve_append_only_conflict = _DEFAULT_RECONCILER.resolve_append_only_conflict
 reconcile_jsonl_ledger_conflict = _DEFAULT_RECONCILER.reconcile_jsonl_ledger_conflict

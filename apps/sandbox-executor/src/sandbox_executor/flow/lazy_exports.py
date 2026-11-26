@@ -122,7 +122,7 @@ LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.ledger_warning": "_warn_ledger_failure",
     "sandbox_executor.flow.ledger_reconcile": (
         "_CONFLICT_MARKERS _SECTION_AFTER_MARKER LEDGER_REL_PATHS ConflictResolutionError PrefixSide "
-        "_append_only_union _has_conflict_marker_lines _ledgers_with_conflict_markers _resolve_conflicting_ledger "
+        "_has_conflict_marker_lines _ledgers_with_conflict_markers _resolve_conflicting_ledger "
         "_resolve_ledger_under_lock _split_conflict_sides _write_resolved_ledger extract_valid_ledger_rows "
         "reconcile_jsonl_ledger_conflict reconcile_ledger_file resolve_append_only_conflict"
     ),

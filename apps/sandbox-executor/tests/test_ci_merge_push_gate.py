@@ -66,7 +66,7 @@ OLDER_SHA = "d" * 40
 OTHER_SHA = "9" * 40
 CURRENT_RUN = 50
 CODE_FILE = "scripts/ci_x.py"
-ENGINE = "apps/sandbox-executor/src/sandbox_executor/flow/engine.py"
+ENGINE = "apps/sandbox-executor/src/sandbox_executor/pipeline/engine.py"
 ROWS = "apps/sandbox-executor/src/sandbox_executor/ledger/rows.py"
 BASE_FILES = {
     CODE_FILE: "VALUE = 1\n",
@@ -393,8 +393,10 @@ def test_answer_of_an_unexpected_shape_is_an_api_error(part: str, body: dict, de
     ("pr_rows", "base_engine"),
     [
         pytest.param("VALUE = 2\n", "from sandbox_executor.ledger import rows\n", id="base imports the pr module"),
-        pytest.param("from sandbox_executor.flow.engine import run\n", "import os\n", id="pr imports the base module"),
-        pytest.param("from ..flow import engine\n", "import os\n", id="relative import"),
+        pytest.param(
+            "from sandbox_executor.pipeline.engine import run\n", "import os\n", id="pr imports the base module"
+        ),
+        pytest.param("from ..pipeline import engine\n", "import os\n", id="relative import"),
         pytest.param("import sandbox_executor\n", "import os\n", id="a dotted prefix"),
     ],
 )
@@ -444,7 +446,7 @@ def test_symlink_or_submodule_in_the_same_root_runs(mode: str, kind: str) -> Non
 
 
 def test_more_files_than_the_blob_read_budget_runs() -> None:
-    many = {f"apps/sandbox-executor/src/sandbox_executor/flow/m{index}.py": "VALUE = 1\n" for index in range(40)}
+    many = {f"apps/sandbox-executor/src/sandbox_executor/pipeline/m{index}.py": "VALUE = 1\n" for index in range(40)}
     fake = scene(pr={**PR_CHANGES, ROWS: "import os\n"}, base={**BASE_CHANGES, **many})
 
     assert gate(fake) == Decision(False, "merge-push-scan-too-large", f"more than {MAX_BLOB_READS} blob reads")
@@ -495,7 +497,7 @@ def test_sweep_of_scenes_skips_only_under_the_skip_rule() -> None:
         scene(),
         scene(merged={ENGINE: "x = 1\n"}),
         scene(base={**BASE_CHANGES, CODE_FILE: "VALUE = 2\n"}),
-        scene(pr={**PR_CHANGES, ROWS: "from sandbox_executor.flow import engine\n"}),
+        scene(pr={**PR_CHANGES, ROWS: "from sandbox_executor.pipeline import engine\n"}),
         scene(pr={**PR_CHANGES, ROWS: "def (:\n"}),
     ]
     decisions = [gate(fake) for fake in scenes]
@@ -610,8 +612,8 @@ def test_overlap_finds_a_shared_path_or_parent_directory(pr: list[str], base: li
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
-        (ENGINE, ("engine", "sandbox_executor.flow.engine")),
-        ("apps/sandbox-executor/src/sandbox_executor/flow/__init__.py", ("flow", "sandbox_executor.flow")),
+        (ENGINE, ("engine", "sandbox_executor.pipeline.engine")),
+        ("apps/sandbox-executor/src/sandbox_executor/pipeline/__init__.py", ("pipeline", "sandbox_executor.pipeline")),
         ("scripts/ci_x.py", ("ci_x", "scripts.ci_x")),
         ("apps/sandbox-executor/tests/ci_bookkeeping_fakes.py", ("ci_bookkeeping_fakes", "tests.ci_bookkeeping_fakes")),
     ],
@@ -621,9 +623,9 @@ def test_module_names_cover_the_src_layout_scripts_tests_and_packages(path: str,
 
 
 def test_imports_of_resolves_relative_imports_and_rejects_bad_source() -> None:
-    names = imports_of(ROWS, b"import os.path\nfrom . import store\nfrom ..flow.engine import run\n")
+    names = imports_of(ROWS, b"import os.path\nfrom . import store\nfrom ..pipeline.engine import run\n")
     assert names is not None
-    assert {"os.path", "sandbox_executor.ledger.store", "sandbox_executor.flow.engine.run"} <= names
+    assert {"os.path", "sandbox_executor.ledger.store", "sandbox_executor.pipeline.engine.run"} <= names
     assert imports_of(ROWS, b"def (:\n") is None
     assert imports_of(ROWS, b"x = 1\x00\n") is None
 

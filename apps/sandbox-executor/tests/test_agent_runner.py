@@ -742,3 +742,27 @@ def test_real_registered_runners_build_command_contract(monkeypatch: pytest.Monk
     assert "--effort" in cmd_build
     assert cmd_build[cmd_build.index("--effort") + 1] == "low"
     assert "--dangerously-skip-permissions" not in cmd_build
+
+
+def test_validate_has_no_per_agent_branch():
+    import inspect
+
+    source = inspect.getsource(StandardAgentRunner.validate)
+    assert "custom_validator" not in source
+    assert "agent_id ==" not in source
+    assert "agent_id in" not in source
+    assert "norm_id" not in source
+
+
+@pytest.mark.parametrize("agent_id", sorted(runners))
+def test_validate_prints_spec_message_and_exits_1(agent_id, monkeypatch, tmp_path, capsys):
+    from sandbox_executor.runners import RUNNER_SPECS
+
+    for name in list(os.environ):
+        monkeypatch.delenv(name)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(os.path, "exists", lambda _p: False)
+    with pytest.raises(SystemExit) as exc:
+        get_runner(agent_id).validate()
+    assert exc.value.code == 1
+    assert capsys.readouterr().err == RUNNER_SPECS[agent_id].check_credentials() + "\n"

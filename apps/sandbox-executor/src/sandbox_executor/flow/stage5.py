@@ -16,6 +16,7 @@ from typing import Any
 from sandbox_executor.calibration import LEDGER_EXECUTIONS_REL
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.github.ci_reverify import approved_head_of
+from sandbox_executor.flow.review.review_accounting import _accounting_of
 from sandbox_executor.flow.stage5_ledger import recorded_verdicts
 from sandbox_executor.knowledge import ActionIndexDatabase
 from sandbox_executor.ledger import LedgerRewriteError
@@ -142,6 +143,7 @@ def run_stage5(
         skip_commit=context.dry_run,
         log_fn=context.log,
         approved_head=approved_head_of(context),
+        review_accounting=_accounting_of(context),
     )
     context.calibrated_branch = report.calibrated_branch
     outcome.report_dict = report.to_dict()

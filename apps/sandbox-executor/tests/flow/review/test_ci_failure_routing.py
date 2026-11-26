@@ -25,6 +25,7 @@ from sandbox_executor.flow.review.ci_failure_routing import (
     _reruns_spent,
     _route_failure,
 )
+from sandbox_executor.flow.review.review_accounting import _accounting_of
 from sandbox_executor.ledger import read_merged_rows
 
 HEAD = "a" * 40
@@ -135,3 +136,19 @@ def test_record_routing_leaves_another_heads_gate_alone(tmp_path: Path) -> None:
     _record_routing(ctx, HEAD, DEFECT, RESOLVE, [_run()])
     gate = pipeline_gate_of(ctx)
     assert gate is not None and gate.classification is None
+
+
+def test_a_noise_rerun_counts_one_rerun_and_one_ci_noise_churn(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    _note_rerun(ctx, HEAD, ["11"])
+    _record_routing(ctx, HEAD, NOISE_INFRA, RERUN, [_run()])
+    _record_routing(ctx, HEAD, NOISE_INFRA, RESOLVE, [_run()])  # Still red after its rerun: no new churn.
+    accounting = _accounting_of(FlowContext.from_dict(ctx.to_dict()))
+    assert accounting is not None
+    assert (accounting["pipeline_reruns"], accounting["non_defect_churn"]["ci_noise"]) == (1, 1)
+
+
+def test_a_defect_routing_counts_no_churn(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    _record_routing(ctx, HEAD, DEFECT, RESOLVE, [_run()])
+    assert _accounting_of(ctx) is None

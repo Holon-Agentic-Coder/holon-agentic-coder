@@ -14,12 +14,15 @@ from sandbox_executor.flow.review import approval_carry_over
 from sandbox_executor.flow.review.approval_carry_over import (
     CarryOver,
     apply_carry_over,
+    carry_approval_over,
     carry_over_message,
     carry_over_record,
     decide_carry_over,
+    record_stage5_carry_over,
 )
 from sandbox_executor.flow.review.approval_coverage import BOOKKEEPING, UNKNOWN_CHANGE, approval_covers
 from sandbox_executor.flow.review.approval_fingerprint import fingerprints_match, is_bookkeeping_only_move
+from sandbox_executor.flow.review.review_accounting import _accounting_of
 from sandbox_executor.ledger import ActionRecord
 from sandbox_executor.review_report import _mergeability_word
 
@@ -163,6 +166,17 @@ def test_a_bookkeeping_commit_after_the_approval_is_covered(approved_repo) -> No
     assert approval_covers(context, str(repo), head)[:2] == (True, BOOKKEEPING)
 
 
+def test_a_bookkeeping_move_counts_bookkeeping_churn_once_per_head(approved_repo) -> None:
+    repo, approved = approved_repo
+    head = _commit(repo, {"executions/E-1.md": "# record\n"}, "bookkeeping")
+    context = _covering_context(repo, target_commit=approved)
+    approval_covers(context, str(repo), head)
+    approval_covers(context, str(repo), head)
+    accounting = _accounting_of(context)
+    assert accounting is not None and accounting["non_defect_churn"]["bookkeeping"] == 1
+    assert accounting["approval_carry_overs"] == 0
+
+
 def test_a_code_file_under_a_bookkeeping_root_is_not_bookkeeping(approved_repo) -> None:
     repo, approved = approved_repo
     head = _commit(repo, {"plans/x.py": "print(1)\n", "executions/E-1.md": "# record\n"}, "plans code")
@@ -213,3 +227,15 @@ def test_a_target_merge_of_only_knowledge_and_execution_records_carries_over(app
 
     assert recorded is not None and recorded.startswith("pf2:")
     assert decide_carry_over(str(repo), consensus, merged, "main") == CarryOver(approved, merged, recorded)
+
+
+def test_a_carry_over_counts_once_across_stage4_and_stage5(merged_fingerprint, monkeypatch, tmp_path: Path) -> None:
+    from sandbox_executor.flow.review import records
+
+    monkeypatch.setattr(records, "record_review_action", lambda *_args, **_kwargs: None)
+    context = _covering_context(tmp_path, target_commit=APPROVED)
+    assert carry_approval_over(context, str(tmp_path / "executions.jsonl"), _consensus(), "feature", MERGED)
+    assert record_stage5_carry_over(context, "main", MERGED) == CARRY
+    accounting = _accounting_of(context)
+    assert accounting is not None
+    assert (accounting["approval_carry_overs"], accounting["non_defect_churn"]["target_merge"]) == (1, 1)

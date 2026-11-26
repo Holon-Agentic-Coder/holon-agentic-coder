@@ -82,6 +82,7 @@ from sandbox_executor.flow.review.resolver import (
     _invoke_resolver_pass,
     _lookup_introducing_action_id,
 )
+from sandbox_executor.flow.review.review_accounting import _accounting_of
 from sandbox_executor.flow.review.sync_points import sync_iteration_mergeability
 from sandbox_executor.flow.review.verdict import (
     _loop_status,
@@ -922,7 +923,7 @@ def _run_engine_review_loop(context: FlowContext, *, github: GitHubAdapter | Non
         # iterations = label of the latest pass already run (the clamped checkpointed count); passes = 0 dispatches.
         done = first_label - 1
         consensus = {"approved": False, "score": 0.0, "iterations": done, "passes": 0, "status": "failed"}
-        return {"consensus": consensus, "total_iterations": done, "error": err}
+        return {"consensus": consensus, "total_iterations": done, "error": err, "accounting": _accounting_of(context)}
     loop_res = run_review_loop(
         context=context,
         target=context.execution_branch,
@@ -935,4 +936,5 @@ def _run_engine_review_loop(context: FlowContext, *, github: GitHubAdapter | Non
     context.review_iterations_done = max(context.review_iterations_done, int(loop_res.get("total_iterations") or 0))
     if "open_findings" in loop_res:  # Saved with the checkpoint after Stage 4, so a resume resolves them first.
         context.carried_review_findings = list(loop_res["open_findings"])
+    loop_res["accounting"] = _accounting_of(context)  # None (rendered "not recorded") when nothing was counted.
     return loop_res

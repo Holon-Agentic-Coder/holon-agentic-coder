@@ -19,6 +19,7 @@ from sandbox_executor.flow.review.ledger_commit import _close_review_stage
 from sandbox_executor.flow.review.loop import _reviewers_objected, _run_engine_review_loop
 from sandbox_executor.flow.review.proxy_env import review_proxy_env
 from sandbox_executor.flow.review.records import render_reviewer_summary_line
+from sandbox_executor.flow.review.review_accounting import _accounting_of, _render_accounting_lines
 from sandbox_executor.flow.review.verdict import not_approved_verdicts, render_final_verdicts
 from sandbox_executor.flow.stages.review_outcome import ReviewOutcomeContext, build_review_stage_outcome
 from sandbox_executor.flow.target_sync_hooks import at_stage_boundary
@@ -156,6 +157,8 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
     # One adapter for the whole stage: every PR, CI, mergeability and posting call of the loop goes through it.
     github = GitHubAdapter(context.target_worktree, review_proxy_env(context))
     loop_res = _run_engine_review_loop(context, github=github)
+    for line in _render_accounting_lines(_accounting_of(loop_res)):
+        context.log(f"[Review Loop]{line}")
     # The payload reports the engine's configured budget, not the remaining passes of this run.
     consensus_info = {**loop_res.get("consensus", {}), "max_review_iterations": context.max_review_iterations}
 
@@ -183,6 +186,7 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
         "consulted_knowledge_ids": review_consulted_ids,
         "posting": loop_res.get("posting"),
         "pr": loop_res.get("pr"),
+        "review_accounting": loop_res.get("accounting"),
     }
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -268,6 +272,7 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
                 "mergeability": mergeability,
                 "posting": loop_res.get("posting"),
                 "pr": loop_res.get("pr"),
+                "review_accounting": loop_res.get("accounting"),
             },
             error=err_msg,
         )

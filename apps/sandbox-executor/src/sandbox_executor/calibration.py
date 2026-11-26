@@ -40,6 +40,7 @@ from sandbox_executor.calibration_predicted import (
     select_plans_row,
 )
 from sandbox_executor.calibration_record import calibration_action_row
+from sandbox_executor.calibration_review_churn import review_churn_report_lines
 from sandbox_executor.calibration_rows import is_execution_row
 from sandbox_executor.calibration_self_check import CalibrateReview, enforce_report_self_check
 from sandbox_executor.calibration_self_check import CalibrationSelfCheckError as CalibrationSelfCheckError
@@ -211,6 +212,7 @@ class CalibrationReport:
     merged_commit_count: int = 0
     touch_set: dict[str, Any] | None = None
     diff_base: str | None = None
+    review_accounting: dict[str, Any] | None = None
     # Self-check inputs, not serialised: the counted (non-metadata) paths and the ledger summary rows read.
     changed_paths: list[str] | None = None
     summary_records: list[dict[str, Any]] = dataclasses.field(default_factory=list)
@@ -240,6 +242,7 @@ class CalibrationReport:
             "merged_commit_count": self.merged_commit_count,
             "touch_set": self.touch_set,
             "diff_base": self.diff_base,
+            "review_accounting": self.review_accounting,
         }
 
 
@@ -1075,6 +1078,9 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
             "---",
             "",
             *touch_set_report_lines(report_data),
+            "---",
+            "",
+            *review_churn_report_lines(report_data),
         ]
     )
     return "\n".join(lines)
@@ -1083,12 +1089,14 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
 def generate_calibration(  # noqa: C901, PLR0915
     execution_branch: str,
     target_worktree: str = ".",
+    review_accounting: dict[str, Any] | None = None,
 ) -> CalibrationReport:
     """Run calibration calculation and return a complete CalibrationReport.
 
     Args:
         execution_branch: Execution branch, remote tracking ref, or commit SHA.
         target_worktree: Path to the target git worktree directory.
+        review_accounting: The flow's review accounting for the "Review Churn" section; None renders "not recorded".
 
     Returns:
         CalibrationReport: Complete calibration report.
@@ -1224,6 +1232,7 @@ def generate_calibration(  # noqa: C901, PLR0915
         "delta_ev_clean": deltas.delta_ev_clean,
         "delta_ev_with_bugs": deltas.delta_ev_with_bugs,
         "touch_set": touch_set_metrics(plan_meta, exec_meta.get("changed_paths"), target_worktree),
+        "review_accounting": review_accounting,
     }
 
     markdown_content = format_markdown_report(report_dict)
@@ -1253,6 +1262,7 @@ def generate_calibration(  # noqa: C901, PLR0915
         merged_commit_count=merged_commit_count,
         touch_set=report_dict["touch_set"],
         diff_base=report_dict["diff_base"],
+        review_accounting=review_accounting,
         changed_paths=exec_meta.get("changed_paths"),
         summary_records=exec_meta.get("summary_records") or [],
     )
@@ -1452,7 +1462,8 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
         log_fn: Optional operator-facing log callable (for example ``FlowContext.log``) that
             receives a failed ACT-CAL ledger append warning. When None, the warning goes to the
             module logger only.
-        **review: ``CalibrateReview`` keywords; ``approved_head`` feeds the report self-check.
+        **review: ``CalibrateReview`` keywords; ``approved_head`` feeds the report self-check and
+            ``review_accounting`` the report's "Review Churn" section.
 
     Returns:
         CalibrationReport: Generated calibration report.
@@ -1468,7 +1479,8 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
         CalibrationSelfCheckError: If the report fails its self-check (``calibration_self_check``).
             Raised before any branch checkout, report write, ledger append or commit.
     """
-    report = generate_calibration(execution_branch, target_worktree=target_worktree)
+    accounting = review.get("review_accounting")
+    report = generate_calibration(execution_branch, target_worktree=target_worktree, review_accounting=accounting)
     # Fail closed before any branch, file or commit is touched
     enforce_report_self_check(report, target_worktree, review.get("approved_head"), log_fn)
     report.committed = not skip_commit

@@ -1,5 +1,6 @@
 """Hermetic tests of the Stage 3 resume salvage: interrupted edits become a labelled partial-work commit."""
 
+import functools
 import json
 import os
 import subprocess
@@ -16,7 +17,13 @@ from sandbox_executor.flow import (
     failed_partial_head,
     run_execute_stage,
 )
-from sandbox_executor.flow.partial_salvage import SalvageError, leftover_paths, salvage_leftovers
+from sandbox_executor.flow.partial_salvage import (
+    SalvageError,
+    _publish_partial,
+    _salvage_row,
+    leftover_paths,
+    salvage_leftovers,
+)
 from sandbox_executor.ledger import read_merged_rows_at_ref
 
 from tests.repo_templates import copy_template, shared_template
@@ -221,3 +228,38 @@ def test_sidecar_scratch_files_are_excluded_from_salvage_and_logged(work: Path) 
     joined_logs = "\n".join(ctx.logs)
     assert "mitm_wire_logs/wire_log_1.json" in joined_logs
     assert "cache/llm_cache.db" in joined_logs
+
+
+def _dirty_code_and_notes(work: Path) -> None:
+    (work / "tests" / "conftest.py").write_text("# interrupted\n", encoding="utf-8")
+    (work / "executions").mkdir()
+    (work / "executions" / f"{EXEC_ID}.md").write_text("# notes\n", encoding="utf-8")
+
+
+def test_include_notes_commits_the_branch_notes_and_marks_the_row(work: Path) -> None:
+    _dirty_code_and_notes(work)
+    result = salvage_leftovers(context(work), prefix(), include_notes=True)
+    assert sorted(result.files) == [f"executions/{EXEC_ID}.md", "tests/conftest.py"]
+    assert git(work, "status", "--porcelain") == ""
+    assert rows(work)[-1]["adopted_unrecorded"] is True
+
+
+def test_notes_stay_uncommitted_by_default(work: Path) -> None:
+    _dirty_code_and_notes(work)
+    result = salvage_leftovers(context(work), prefix())
+    assert git(work, "show", "--name-only", "--format=", result.sha) == "tests/conftest.py"
+    assert "adopted_unrecorded" not in rows(work)[-1]
+
+
+def test_publish_partial_on_an_origin_only_branch_appends_the_row_without_a_push(work: Path) -> None:
+    (work / "a.py").write_text("work\n", encoding="utf-8")
+    commit_all(work, "agent work")
+    tip = git(work, "rev-parse", "HEAD")
+    git(work, "push", "-q", "origin", EXEC_BRANCH)
+    git(work, "checkout", "-q", PLAN)
+    git(work, "branch", "-q", "-D", EXEC_BRANCH)
+    ctx, target = context(work), (EXEC_BRANCH, EXEC_ID)
+    with patch("sandbox_executor.flow.partial_salvage.push_branch") as push:
+        _publish_partial(ctx, target, tip, prefix(), functools.partial(_salvage_row, ctx, target, tip, 0))
+    push.assert_not_called()
+    assert failed_partial_head(str(work), f"refs/remotes/origin/{EXEC_BRANCH}", EXEC_ID) == tip

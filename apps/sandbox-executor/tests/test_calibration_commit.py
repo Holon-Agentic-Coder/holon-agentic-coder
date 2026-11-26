@@ -636,6 +636,7 @@ class TestFormatCalibrationReport:
             patch("sandbox_executor.calibration_format._run_prettier", side_effect=_FakePrettier(check_returncode=1)),
             patch("sandbox_executor.calibration.refs.run_git", side_effect=recording_run_git),
             patch("sandbox_executor.calibration.run.run_git", side_effect=recording_run_git),
+            patch("sandbox_executor.calibration.checkout.run_git", side_effect=recording_run_git),
             patch("sandbox_executor.calibration.run.record_calibration_action") as mock_record,
             pytest.raises(CalibrationFormatError),
         ):

@@ -14,6 +14,8 @@ from datetime import datetime
 from typing import Any
 
 TIMING_GATE_STEP_PREFIX = "CI Timing Gate"
+# The Workspace survival and build-images jobs run the same gate script in a step named only "Timing gate".
+TIMING_GATE_STEP_NAMES = frozenset({"Timing gate"})
 STEP_LOOKUP_TIMEOUT_SECONDS = 30.0
 MAX_STEP_LOOKUPS = 5
 SHORT_SHA_CHARS = 7
@@ -38,6 +40,11 @@ def _seconds_between(started: Any, completed: Any) -> float | None:
     return max(0.0, (end - start).total_seconds())
 
 
+def _is_timing_gate_step(step: str) -> bool:
+    """Whether a CI step name is a timing gate: a ``CI Timing Gate ...`` step or a bare ``Timing gate`` step."""
+    return step.startswith(TIMING_GATE_STEP_PREFIX) or step in TIMING_GATE_STEP_NAMES
+
+
 def failure_detail(name: str, job: Mapping[str, Any] | None) -> dict[str, Any]:
     """The detail record of one failed check: its failed step names, duration and timing gate flag."""
     steps = (job or {}).get("steps") or []
@@ -46,7 +53,7 @@ def failure_detail(name: str, job: Mapping[str, Any] | None) -> dict[str, Any]:
         "name": name,
         "failed_steps": failed_steps,
         "duration_seconds": _seconds_between((job or {}).get("startedAt"), (job or {}).get("completedAt")),
-        "timing_gate": bool(failed_steps) and all(s.startswith(TIMING_GATE_STEP_PREFIX) for s in failed_steps),
+        "timing_gate": bool(failed_steps) and all(_is_timing_gate_step(s) for s in failed_steps),
     }
 
 

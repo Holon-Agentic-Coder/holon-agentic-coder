@@ -554,18 +554,19 @@ The job's failed steps and duration come from one extra `gh run view` call and o
 `final head CI: failed: macos-unit (CI Timing Gate, 6 min)`.
 
 A runner can be slow on identical code, so a timing-gate failure on unchanged code is rerun before consensus is
-withdrawn. When every failing check failed only in its `CI Timing Gate` step, no check is pending, and every path
-changed between the approved head and the measured head is a bookkeeping record (`plans/`, `executions/`,
-`holon-knowledge/`) or nothing changed, Stage 5 reruns the failed jobs up to three times in sequence. Each attempt
-starts only when the previous one is still a timing-gate-only failure on unchanged code, and the first green result ends
-the loop. Any changed code, test or workflow path, an unreadable diff, any other failing check or any pending check
-means no rerun. The record `final_head_ci.timing_rerun` keeps `attempted`, `run_ids` (of the first attempt), `outcome`
-(of the last attempt), `attempts` and `outcomes` (one state per attempt), and `reason` when a rerun could not be
-dispatched. Consensus is withdrawn only when the last attempt still fails.
+withdrawn. When every failing check failed only in its timing-gate step, no check is pending, and every path changed
+between the approved head and the measured head is a bookkeeping record (`plans/`, `executions/`, `holon-knowledge/`) or
+nothing changed, Stage 5 reruns the failed jobs up to three times in sequence. Each attempt starts only when the
+previous one is still a timing-gate-only failure on unchanged code, and the first green result ends the loop. Any
+changed code, test or workflow path, an unreadable diff, any other failing check or any pending check means no rerun.
+The record `final_head_ci.timing_rerun` keeps `attempted`, `run_ids` (of the first attempt), `outcome` (of the last
+attempt), `attempts` and `outcomes` (one state per attempt), and `reason` when a rerun could not be dispatched.
+Consensus is withdrawn only when the last attempt still fails.
 
-The rule applies to every check judged by a `CI Timing Gate (compare with main)` step: the `unit` job on `ubuntu-latest`
-and on `macos-latest`. The `Workspace survival` job runs the same gate script in a step named `Timing gate`, which the
-failure detail does not recognise as a timing gate, so its timing failures are not rerun yet.
+The rule applies to every check whose failed steps are all timing-gate steps: a step whose name starts with
+`CI Timing Gate` or a step named exactly `Timing gate`. That covers the `unit` jobs on `ubuntu-latest` and
+`macos-latest` (`CI Timing Gate (compare with main)`), the `Workspace survival` and build-images jobs (`Timing gate`),
+and the hygiene, integration, make, docker-build, CI durations and promote-ledger jobs (`CI Timing Gate (Check ...)`).
 
 Stage 5 then re-verifies the head it published and records `ci_verdict` in the stage result, with the approved head, the
 final head and whether the head moved:

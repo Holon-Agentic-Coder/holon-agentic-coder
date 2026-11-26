@@ -10,7 +10,7 @@ import pytest
 from sandbox_executor.flow import FlowContext
 from sandbox_executor.flow.context import FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.github import ci_reverify
-from sandbox_executor.flow.github.ci_failure_detail import STEP_LOOKUP_TIMEOUT_SECONDS
+from sandbox_executor.flow.github.ci_failure_detail import STEP_LOOKUP_TIMEOUT_SECONDS, failure_detail
 from sandbox_executor.flow.github.ci_final_head import FinalHeadSeams, check_final_head_ci
 from sandbox_executor.flow.github.ci_reverify import reverify_and_report, reverify_final_head
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy
@@ -51,7 +51,7 @@ def _check(name: str, bucket: str, link: str | None = None) -> dict:
 def _detail(name: str, steps: list[str] | None, seconds: float | None = 360.0) -> dict | None:
     if steps is None:
         return None
-    gate = bool(steps) and all(s.startswith("CI Timing Gate") for s in steps)
+    gate = failure_detail(name, {"steps": [{"name": s, "conclusion": "failure"} for s in steps]})["timing_gate"]
     return {"name": name, "failed_steps": steps, "duration_seconds": seconds, "timing_gate": gate}
 
 
@@ -265,6 +265,33 @@ def test_a_failed_second_dispatch_keeps_the_first_attempt_record(tmp_path: Path)
     }
     assert fakes.dispatched == ["42", "42"]
     assert fakes.probes == 3  # No probe after the failed dispatch.
+
+
+def test_a_workspace_survival_timing_gate_failure_is_rerun(tmp_path: Path) -> None:
+    fakes = RerunFakes(
+        _status([_check("Workspace survival", "fail")]),
+        _status([_check("Workspace survival", "pass")]),
+        steps={"Workspace survival": ["Timing gate"]},
+    )
+    record = _run(tmp_path, fakes)
+    assert record["state"] == "success"
+    assert record["timing_rerun"]["outcomes"] == ["success"]
+    assert fakes.dispatched == ["42"]
+
+
+@pytest.mark.parametrize(
+    ("steps", "gate"),
+    [
+        (["Timing gate"], True),
+        (["CI Timing Gate (Check <= 5 min)"], True),
+        (["Timing gate", "Run stress tests"], False),
+        (["Timing gate check"], False),
+        ([], False),
+    ],
+)
+def test_failure_detail_recognises_both_timing_gate_step_names(steps: list[str], gate: bool) -> None:
+    job = {"steps": [{"name": s, "conclusion": "failure"} for s in steps]}
+    assert failure_detail("Workspace survival", job)["timing_gate"] is gate
 
 
 def test_non_timing_and_mixed_failures_get_no_rerun(tmp_path: Path) -> None:

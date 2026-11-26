@@ -57,6 +57,8 @@ DOCUMENTED_KEYS: tuple[tuple[str, str, str], ...] = (
     ("HOLON_STAGE_BUDGET_CALIBRATION_MINUTES", "`10`", "Budget of the calibration stage."),
     ("HOLON_REVIEW_CI_WAIT_SECONDS", "`1800`", "Wait for pending CI checks after the reviewers ran."),
     ("HOLON_REVIEW_QUOTA_WAIT_SECONDS", "`900`", "Longest wait for a reviewer quota reset."),
+    ("HOLON_SCOPED_REVIEW_MAX_LINES", "`400`", "Largest delta reviewed scoped instead of in full; `0` disables it."),
+    ("HOLON_SCOPED_REVIEW_CONTEXT_BYTES", "`40000`", "Bytes of each modified file shown to a scoped review."),
     ("HOLON_CI_REGISTRATION_TIMEOUT", "`180`", "Wait for CI checks to register on a pushed head."),
     ("HOLON_TEST_MEASUREMENT_TIMEOUT_SECONDS", "`900`", "Ceiling of one measured test run."),
     ("HOLON_GIT_LOCK_AGE_SECONDS", "`60`", "Age after which a stale git lock is removed."),

@@ -1,7 +1,7 @@
 """Stage-start templates: the host and origin of a flow after its real Stages 1, 2 or 3 ran, copied per test.
 
 A test whose subject is a later stage needs the state the earlier stages leave: their branches and ledger rows on
-origin, the host's refs and checkpoint, and the context fields they set. ``stage_start_copy`` builds that state once
+origin, the host's refs and checkpoint, and the context fields they set. ``StageTemplates.start`` builds that state once
 per test run by running the real stage functions with the fake role containers, as a read-only template
 (``tests.repo_templates``), and gives each test a private copy with the context rebuilt from the build's own values.
 

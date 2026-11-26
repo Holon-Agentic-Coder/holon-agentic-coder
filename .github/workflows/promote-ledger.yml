@@ -93,7 +93,9 @@ jobs:
           fi
           outside="$(printf '%s\n' "${paths}" | grep -v '^holon-knowledge/ledger/' || true)"
           if [ -n "${outside}" ]; then
-            printf '::error::Ledger promotion changed a path outside holon-knowledge/ledger/: %s\n' ${outside}
+            while IFS= read -r path; do
+              printf '::error::Ledger promotion changed a path outside holon-knowledge/ledger/: %s\n' "${path}"
+            done <<< "${outside}"
             exit 1
           fi
           echo "changed=true" >> "${GITHUB_OUTPUT}"

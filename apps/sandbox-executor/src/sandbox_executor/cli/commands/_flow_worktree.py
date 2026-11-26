@@ -8,6 +8,7 @@ import sys
 from typing import Any
 
 from sandbox_executor import cli
+from sandbox_executor.flow.run_lock import hold_flow_run_lock
 from sandbox_executor.git_flow import (
     checked_out_branch,
     default_branch_worktree_problem,
@@ -60,13 +61,9 @@ def _extract_flow_slug(
 def _flow_target_branch(intent_data: dict[str, Any], context: Any | None) -> str:
     if intent_data and isinstance(intent_data, dict) and intent_data.get("target_branch"):
         return str(intent_data["target_branch"])
-    if (
-        context is not None
-        and getattr(context, "intent_data", None)
-        and isinstance(context.intent_data, dict)
-        and context.intent_data.get("target_branch")
-    ):
-        return str(context.intent_data["target_branch"])
+    context_data = getattr(context, "intent_data", None)
+    if isinstance(context_data, dict) and context_data.get("target_branch"):
+        return str(context_data["target_branch"])
     return _DEFAULT_BASE_BRANCH
 
 
@@ -184,6 +181,7 @@ def ensure_flow_worktree(
     intent_data: dict[str, Any],
 ) -> bool:
     target_worktree, from_checkpoint = _effective_flow_target(args, context)
+    hold_flow_run_lock(target_worktree, _extract_flow_slug(args, context, intent_data))
     if is_default_branch_worktree(target_worktree, _flow_target_branch(intent_data, context)):
         if from_checkpoint:
             return _refuse_default_branch_checkpoint(args, context, intent_data, target_worktree)

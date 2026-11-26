@@ -24,7 +24,7 @@ from sandbox_executor.flow.checkpoint_discovery import get_default_checkpoint_pa
 from sandbox_executor.flow.git_refs import _latest_execution_summary
 from sandbox_executor.flow.pipeline import PipelineEngine
 from sandbox_executor.flow.stages import touch_set_guard
-from sandbox_executor.ledger import query_ledger
+from sandbox_executor.ledger import query_ledger, read_merged_rows_at_ref
 
 from tests.flow.helpers import OTHER_HEAD, OTHER_PLAN, FakeGh, _git, make_plan_branch, no_worktrees, seed_base_files
 
@@ -123,8 +123,7 @@ def test_override_appends_exactly_one_row(own_plan, monkeypatch):
     _use_real_check(monkeypatch, other_pr(["src/app.py"]))
     context = own_context(own_plan, allow_overlap=True)
     assert admission.admission_stage_failure(context, "2026-11-14T00:00:00Z") is None
-    content = _git(own_plan, "show", f"refs/remotes/origin/{OWN_PLAN}:holon-knowledge/ledger/executions.jsonl")
-    rows = [json.loads(line) for line in content.splitlines() if line.strip()]
+    rows = read_merged_rows_at_ref(str(own_plan), f"refs/remotes/origin/{OWN_PLAN}", "executions.jsonl")
     assert len(rows) == 1
     row = rows[0]
     assert row["kind"] == row["entry_type"] == "admission_override"
@@ -141,8 +140,8 @@ def test_override_is_recorded_once_per_plan(own_plan, monkeypatch):
     resumed = own_context(own_plan, allow_overlap=True)
     assert admission.admission_stage_failure(resumed, "2026-11-14T01:00:00Z") is None
     assert _git(own_plan, "rev-parse", f"refs/remotes/origin/{OWN_PLAN}") == tip
-    content = _git(own_plan, "show", f"refs/remotes/origin/{OWN_PLAN}:holon-knowledge/ledger/executions.jsonl")
-    assert [json.loads(line)["kind"] for line in content.splitlines() if line.strip()] == ["admission_override"]
+    rows = read_merged_rows_at_ref(str(own_plan), f"refs/remotes/origin/{OWN_PLAN}", "executions.jsonl")
+    assert [row["kind"] for row in rows] == ["admission_override"]
     assert any("override already recorded on" in line for line in resumed.logs)
 
 

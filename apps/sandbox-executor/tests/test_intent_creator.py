@@ -73,7 +73,7 @@ class TestIntentCreator(unittest.TestCase):
         self.assertFalse(any(cmd.startswith("git config") for cmd in called_cmds))
 
         # Check that intents.jsonl was written to
-        written_file_path = next(k for k in file_contents if "intents.jsonl" in k)
+        written_file_path = next(k for k in file_contents if "ledger/pending/intents/" in k)
         written_mock = file_contents[written_file_path]
         written_mock.write.assert_called()
         written_data = json.loads(written_mock.write.call_args[0][0].strip())
@@ -122,7 +122,7 @@ class TestIntentCreator(unittest.TestCase):
             mock_start.assert_called_once()
 
         # Check that intents.jsonl was written to
-        written_file_path = next(k for k in file_contents if "intents.jsonl" in k)
+        written_file_path = next(k for k in file_contents if "ledger/pending/intents/" in k)
         written_mock = file_contents[written_file_path]
         written_mock.write.assert_called()
         written_data = json.loads(written_mock.write.call_args[0][0].strip())
@@ -228,7 +228,7 @@ class TestIntentCreator(unittest.TestCase):
             mock_start.assert_called_once()
 
         # Check that intents.jsonl was written to
-        written_file_path = next(k for k in file_contents if "intents.jsonl" in k)
+        written_file_path = next(k for k in file_contents if "ledger/pending/intents/" in k)
         written_mock = file_contents[written_file_path]
         written_mock.write.assert_called()
         written_data = json.loads(written_mock.write.call_args[0][0].strip())
@@ -343,7 +343,7 @@ class TestIntentCreator(unittest.TestCase):
             intent_creator.main()
 
         # Check that intents.jsonl contains resolved questions and answers
-        written_file_path = next(k for k in file_contents if "intents.jsonl" in k)
+        written_file_path = next(k for k in file_contents if "ledger/pending/intents/" in k)
         written_mock = file_contents[written_file_path]
         written_mock.write.assert_called()
         written_data = json.loads(written_mock.write.call_args[0][0].strip())

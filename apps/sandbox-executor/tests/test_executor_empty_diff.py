@@ -13,6 +13,7 @@ from sandbox_executor.entrypoint.empty_diff_excerpt import (
     EMPTY_DIFF_EXCERPT_CHARS,
     format_empty_diff_excerpt,
 )
+from sandbox_executor.ledger import read_merged_rows
 from sandbox_executor.turns import TurnResult
 
 
@@ -85,8 +86,7 @@ class TestExecutorEmptyDiff(unittest.TestCase):
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
         ):
             executor.main()
-            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as ef:
-                rows = [json.loads(line) for line in ef if line.strip()]
+            rows = read_merged_rows(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl"))
         summaries = [r for r in rows if r.get("entry_type") == "summary"]
         return summaries, stderr_io.getvalue()
 

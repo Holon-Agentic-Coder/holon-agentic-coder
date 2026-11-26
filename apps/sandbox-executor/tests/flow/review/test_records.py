@@ -3,11 +3,14 @@
 import json
 import os
 from contextlib import nullcontext
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, run_review_loop, run_review_stage
 from sandbox_executor.flow.review.records import record_review_action
+from sandbox_executor.ledger import read_merged_rows
+from sandbox_executor.ledger.fragments import iter_fragment_files
 
 from tests.flow.github.fake_github import FakeGitHub, merge_view
 from tests.flow.helpers import (
@@ -20,11 +23,20 @@ from tests.flow.helpers import (
     _git,
     _ledger_fingerprint,
     _prefix,
-    _read_rows,
     _verified_diff,
 )
 from tests.review_flow_repo import LEDGER, added_rows, build_flow_worktree, changed_paths
 from tests.review_loop_stubs import EXEC_TARGET
+
+
+def _read_rows(ledger: Path) -> list[dict]:
+    return read_merged_rows(str(ledger))
+
+
+def _ledger_text(ledger: Path) -> str:
+    """The raw text of the canonical ledger and every pending fragment the loop appended to."""
+    paths = [str(ledger)] if ledger.exists() else []
+    return "".join(Path(path).read_text(encoding="utf-8") for path in [*paths, *iter_fragment_files(str(ledger))])
 
 
 class TestStage4LedgerProvenance:
@@ -83,7 +95,8 @@ class TestStage4LedgerProvenance:
         assert action_rows[-1]["outcome"] == "success"
 
         ledger_dir = ledger.parent
-        assert sorted(p.name for p in ledger_dir.iterdir() if p.suffix == ".jsonl") == ["executions.jsonl"]
+        assert sorted(p.name for p in ledger_dir.iterdir() if p.suffix == ".jsonl") == []
+        assert sorted(p.name for p in (ledger_dir / "pending").iterdir()) == ["executions"]
         assert not (ledger_dir / "actions.jsonl").exists()
         assert not (ledger_dir / "reviews.jsonl").exists()
 
@@ -92,7 +105,7 @@ class TestStage4LedgerProvenance:
 
         _, _, ledger = self._run_dirty_then_clean_loop(tmp_path)
 
-        raw_lines = [line for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+        raw_lines = [line for line in _ledger_text(ledger).splitlines() if line.strip()]
         seen: set[str] = set()
         for raw in raw_lines:
             row = json.loads(raw)
@@ -136,7 +149,7 @@ class TestStage4LedgerProvenance:
         post_rows = [r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST"]
         assert len(post_rows) == 1
         assert post_rows[0]["error_context"] == "gh exploded using *******"
-        assert sample_value not in ledger.read_text(encoding="utf-8")
+        assert sample_value not in _ledger_text(ledger)
         assert sample_value not in str(result["posting"])
         assert all(sample_value not in rec.getMessage() for rec in caplog.records)
         assert all(sample_value not in line for line in ctx.logs)
@@ -155,7 +168,7 @@ class TestStage4LedgerProvenance:
         assert "official_review: Official review submission failed (exit code 1)" in error_context
         assert "*******" in error_context
         assert "discussion_comment: gh pr comment failed (exit code 1): rejected" in error_context
-        assert sample_value not in ledger.read_text(encoding="utf-8")
+        assert sample_value not in _ledger_text(ledger)
 
     def test_act_post_error_context_redacts_before_truncating(self, tmp_path):
         from sandbox_executor.flow import POSTING_ERROR_CONTEXT_MAX_CHARS
@@ -169,7 +182,7 @@ class TestStage4LedgerProvenance:
         error_context = next(r for r in _read_rows(ledger) if _prefix(r) == "ACT-POST")["error_context"]
         assert len(error_context) <= POSTING_ERROR_CONTEXT_MAX_CHARS
         assert "ghp_" not in error_context
-        assert "ghp_" not in ledger.read_text(encoding="utf-8")
+        assert "ghp_" not in _ledger_text(ledger)
 
     def test_dry_run_suppresses_appends_visibly(self, tmp_path):
         ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1/P-2/E-3/_", dry_run=True)
@@ -269,7 +282,7 @@ def test_a_stage_4_exit_by_raise_commits_the_rows_the_loop_recorded(tmp_path):
         run_review_stage(ctx)
 
     assert _git(work, "status", "--porcelain") == ""
-    assert changed_paths(work) == [LEDGER]
+    assert changed_paths(work) == ["holon-knowledge/ledger/pending/executions/I-100-intent.jsonl"]
     assert [r["action"] for r in added_rows(work)] == ["recorded before the raise"]
     assert _git(origin, "rev-parse", f"refs/heads/{EXEC_TARGET}") == _git(work, "rev-parse", "HEAD")
     assert _git(work, "rev-parse", "--abbrev-ref", "HEAD") == EXEC_TARGET

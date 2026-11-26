@@ -14,9 +14,9 @@ from sandbox_executor.decomposition_rule import (
 )
 from sandbox_executor.entrypoint.executor.commands import is_action_logging_enabled
 from sandbox_executor.ledger import ActionRecord, generate_action_id, suppress_ledger_failures
+from sandbox_executor.ledger.fragments import ledger_commit_paths
 
 _LEDGER_DIR_REL = "holon-knowledge/ledger"
-_EXECUTIONS_LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
 _DEFAULT_ACTION_ORIGIN = "initial_implementation"
 
 
@@ -80,7 +80,7 @@ class SubIntentSteps:
                     ),
                 )
 
-        self.repo.add(_EXECUTIONS_LEDGER_REL)
+        self.repo.add(ledger_commit_paths(self.repo_dir, "executions.jsonl"))
 
     def _describe_non_execute_decision(self, decision: DecompositionDecision) -> str:
         plan_branch = self.plan_branch

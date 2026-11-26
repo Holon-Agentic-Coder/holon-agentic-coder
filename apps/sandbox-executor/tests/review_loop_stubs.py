@@ -3,12 +3,12 @@
 A plain helper module (not a test module), so importing it never makes pytest collect or re-register test code.
 """
 
-import json
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
 from sandbox_executor.flow.github.adapter_runner import GhResult
+from sandbox_executor.ledger import read_merged_rows
 
 from tests.flow.github.fake_github import FakeGitHub, checks_for, ci_checks_payload, merge_view, view_for
 
@@ -36,8 +36,7 @@ def _ensemble_ctx(tmp_path: Path, **kwargs):
 
 
 def _ledger(tmp_path: Path) -> list[dict]:
-    ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
-    return [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()] if ledger.exists() else []
+    return read_merged_rows(str(tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"))
 
 
 def _rows(tmp_path: Path, prefix: str) -> list[dict]:

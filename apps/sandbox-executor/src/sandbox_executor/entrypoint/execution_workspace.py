@@ -11,6 +11,7 @@ from sandbox_executor.entrypoint.partial_resume import (
     resume_from_branch_tip,
 )
 from sandbox_executor.git import GitRepository
+from sandbox_executor.ledger.fragments import PENDING_DIR_REL
 
 _PARTIAL_BRANCH_RE = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/E-\d+-[A-Za-z0-9._-]+/_$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
@@ -33,9 +34,10 @@ ENGINE_OWNED_LEDGER_PATHS = (
     "holon-knowledge/ledger/plans.jsonl",
     "holon-knowledge/ledger/executions.jsonl",
 )
+ENGINE_OWNED_LEDGER_DIRS = (PENDING_DIR_REL,)
 ENGINE_OWNED_NOTES_GLOB = "executions/E-*.md"
 _ENGINE_OWNED_EXCLUDES = (
-    *(f":(exclude){path}" for path in ENGINE_OWNED_LEDGER_PATHS),
+    *(f":(exclude){path}" for path in (*ENGINE_OWNED_LEDGER_PATHS, *ENGINE_OWNED_LEDGER_DIRS)),
     f":(exclude){ENGINE_OWNED_NOTES_GLOB}",
 )
 

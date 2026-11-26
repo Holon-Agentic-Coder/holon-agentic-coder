@@ -19,6 +19,7 @@ from sandbox_executor.flow import (
     run_review_loop,
     run_review_stage,
 )
+from sandbox_executor.ledger import read_merged_rows
 
 from tests.flow.github.fake_github import FakeGitHub, checks_for, merge_view, spawn_failure
 from tests.flow.helpers import _verified_diff
@@ -65,10 +66,7 @@ class TestUnmeasuredTestsStopEarly:
 
     @staticmethod
     def _ledger_rows(tmp_path: Path) -> list[dict[str, Any]]:
-        ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
-        if not ledger.exists():
-            return []
-        return [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
+        return read_merged_rows(str(tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"))
 
     def _loop(
         self,

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 import os
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from sandbox_executor.ledger.merged import read_merged_rows
 from sandbox_executor.ledger.query_filters import FILTER_PREDICATES, FilterPredicate, match_entry_type, parse_labels
 from sandbox_executor.ledger.rows import _REPEAT_CHECKED_ID_KEYS
 from sandbox_executor.plan_paths import bare_branch, plan_branch_of
@@ -45,12 +45,9 @@ class LedgerQuery:
 
 def query_ledger(ledger_path: str, **filters: Any) -> list[dict[str, Any]]:
     spec = LedgerQuery(**filters)
-    if not os.path.exists(ledger_path):
-        return []
-
     active = spec.predicates()
     results: list[dict[str, Any]] = []
-    for rec in _iter_ledger_records(ledger_path):
+    for rec in read_merged_rows(ledger_path):
         if not all(predicate(rec, wanted) for predicate, wanted in active):
             continue
         results.append(rec)
@@ -58,19 +55,6 @@ def query_ledger(ledger_path: str, **filters: Any) -> list[dict[str, Any]]:
             break
 
     return results
-
-
-def _iter_ledger_records(ledger_path: str) -> Iterator[Any]:
-    with open(ledger_path, encoding="utf-8") as f:
-        for line in f:
-            line_str = line.strip()
-            if not line_str:
-                continue
-            try:
-                rec = json.loads(line_str)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            yield rec
 
 
 def _truncate_cell(text: str, max_width: int) -> str:
@@ -160,19 +144,7 @@ def validate_ledger_file_unique_ids(
     id_key: str = "plan_id",
     parent_key: str = "intent_branch",
 ) -> None:
-    if not os.path.exists(ledger_path):
-        return
-    records: list[dict[str, Any]] = []
-    with open(ledger_path, encoding="utf-8") as f:
-        for line in f:
-            line_str = line.strip()
-            if not line_str:
-                continue
-            try:
-                records.append(json.loads(line_str))
-            except json.JSONDecodeError:
-                continue
-    validate_ledger_unique_ids(records, id_key=id_key, parent_key=parent_key)
+    validate_ledger_unique_ids(read_merged_rows(ledger_path), id_key=id_key, parent_key=parent_key)
 
 
 def validate_stage_ledger(repo_dir: str | None, stage: Any) -> None:

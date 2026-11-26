@@ -13,6 +13,8 @@ from sandbox_executor.flow import (
     _dispatch_review_ensemble,
     run_review_stage,
 )
+from sandbox_executor.ledger import read_merged_rows
+from sandbox_executor.ledger.fragments import iter_fragment_files
 from sandbox_executor.review_ensemble import (
     ConsensusVerdict,
     ParsedTrailer,
@@ -231,8 +233,8 @@ def test_stage4_canonical_ledger_records_verified_results(tmp_path: Path, monkey
     assert github.methods().count("post_review") == 1
 
     ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
-    assert ledger.exists()
-    records = [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
+    assert iter_fragment_files(str(ledger))
+    records = read_merged_rows(str(ledger))
     act_rev = [r for r in records if str(r.get("action_id", "")).startswith("ACT-REV-")]
     act_post = [r for r in records if str(r.get("action_id", "")).startswith("ACT-POST-")]
     assert len(act_rev) >= 3
@@ -353,8 +355,7 @@ def test_every_stage4_dispatch_reviews_the_flow_worktree_in_place(tmp_path: Path
     host_push.assert_called_once_with(ctx.target_worktree, "b" * 40, EXEC_TARGET)
 
     # Canonical Stage 4 provenance stays host-written: per-iteration ACT-REV rows and one summary row.
-    ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
-    records = [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
+    records = read_merged_rows(str(tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"))
     iteration_rows = [
         r for r in records if str(r.get("action_id", "")).startswith("ACT-REV-") and "review_reviewer_index" not in r
     ]

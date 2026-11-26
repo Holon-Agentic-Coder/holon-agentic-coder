@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from sandbox_executor.entrypoint import executor
+from sandbox_executor.ledger import read_merged_rows
 
 from tests.executor_fixtures import _cuts_branch, _run_executor_main, _validate_stub
 
@@ -108,8 +109,8 @@ def test_main_reads_the_newest_matching_plan_row(tmp_path):
         patch("sys.argv", ["executor.py", "I-456/P-123/_", "claude-agent", "claude-opus-5-5"]),
     ):
         executor.main()
-    with open(os.path.join(repo, "holon-knowledge/ledger/executions.jsonl")) as f:
-        (summary,) = [r for r in map(json.loads, f) if r.get("entry_type") == "summary"]
+    rows = read_merged_rows(os.path.join(repo, "holon-knowledge/ledger/executions.jsonl"))
+    (summary,) = [r for r in rows if r.get("entry_type") == "summary"]
     assert (summary["status"], summary["plan_decision"]["sub_intent_count"]) == ("decomposed", 1)
     assert ["git", "commit", "-m", "execute: the plan I-456/P-123/_ records 1 sub-intent(s)"] in commands
 
@@ -140,5 +141,5 @@ def test_main_corrupt_recorded_decision_exits_without_a_row(tmp_path, capsys):
         executor.main()
     assert exc_info.value.code == 1
     assert "records an invalid decomposition decision" in capsys.readouterr().err
-    assert not os.path.exists(os.path.join(repo, "holon-knowledge/ledger/executions.jsonl"))
+    assert read_merged_rows(os.path.join(repo, "holon-knowledge/ledger/executions.jsonl")) == []
     runner.build_cmd.assert_not_called()

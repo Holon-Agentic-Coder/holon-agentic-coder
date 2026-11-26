@@ -779,6 +779,20 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         internal=True,
     ),
     EnvironmentVariable(
+        name="HOLON_LEDGER_PROMOTE_EVERY",
+        area=Area.LEDGER_AND_ACTIONS,
+        purpose=(
+            "Minimum number of root intents with pending ledger fragments before `holon ledger promote` promotes; "
+            "`--force` ignores it."
+        ),
+        value_type="positive integer",
+        default="`10`",
+        when_unset="`10`",
+        when_invalid="non-integer or below 1 is an error (exit 2)",
+        read_side="host",
+        since="`docs/ledger_fragments.md`",
+    ),
+    EnvironmentVariable(
         name="HOLON_RECORD_ACTIONS",
         area=Area.LEDGER_AND_ACTIONS,
         purpose="Alias of `HOLON_ACTION_LOGGING`, read only when that is unset.",
@@ -885,6 +899,23 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         when_invalid="any value other than `1` does not authorise",
         read_side="ci and container",
         since="`holon-config/hygiene/module_budgets.json`",
+        internal=True,
+    ),
+    EnvironmentVariable(
+        name="HOLON_LEDGER_BOT_TOKEN",
+        area=Area.CI_ONLY,
+        purpose=(
+            "Repository secret a maintainer creates to enable `promote-ledger.yml`: the token that commits and pushes "
+            "promoted ledger rows to `main`. Never set outside CI."
+        ),
+        value_type="string (credential): a token with `Contents: Read and write` on this repository",
+        default="unset",
+        when_unset="the workflow logs why and skips promotion; the run stays green",
+        when_invalid="the checkout or push is rejected and the run fails",
+        read_side="ci",
+        since="`.github/workflows/README.md`",
+        forwarding="not forwarded",
+        secret=True,
         internal=True,
     ),
 )

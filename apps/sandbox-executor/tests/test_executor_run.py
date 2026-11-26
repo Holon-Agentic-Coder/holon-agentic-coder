@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from sandbox_executor.budgets import BudgetBreach
 from sandbox_executor.entrypoint import executor
+from sandbox_executor.ledger import read_merged_rows, read_merged_text
 
 from tests.executor_fixtures import (
     VALID_NOTES,
@@ -69,11 +70,10 @@ class TestExecutor(unittest.TestCase):
 
             mock_runner.validate.assert_called_once()
             mock_runner.build_cmd.assert_called_once()
-            self.assertTrue(os.path.exists(os.path.join(ledger_dir, "executions.jsonl")))
-            with open(os.path.join(ledger_dir, "executions.jsonl")) as ef:
-                content = ef.read()
-                self.assertIn("P-123", content)
-                self.assertIn("success", content)
+            content = read_merged_text(os.path.join(ledger_dir, "executions.jsonl"))
+            self.assertIsNotNone(content)
+            self.assertIn("P-123", content)
+            self.assertIn("success", content)
 
     @patch("sandbox_executor.entrypoint.executor.converge_prettier")
     @patch("sandbox_executor.entrypoint.executor.run_cmd")
@@ -298,9 +298,8 @@ class TestExecutor(unittest.TestCase):
             executor.main()
 
             ledger_file = os.path.join(tmp_dir, "holon-knowledge", "ledger", "executions.jsonl")
-            self.assertTrue(os.path.exists(ledger_file))
-            with open(ledger_file, encoding="utf-8") as f:
-                entries = [json.loads(line) for line in f if line.strip()]
+            entries = read_merged_rows(ledger_file)
+            self.assertTrue(entries)
 
             # Should contain action records and summary record
             action_entries = [e for e in entries if e.get("entry_type") == "action"]

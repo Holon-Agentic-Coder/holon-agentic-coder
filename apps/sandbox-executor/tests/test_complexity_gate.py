@@ -60,7 +60,7 @@ BASELINE_SNAPSHOT: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("sandbox_executor/entrypoint/intent_creator.py", ("PLR0915",)),
     ("sandbox_executor/entrypoint/planner.py", ("C901", "PLR0912", "PLR0915")),
     ("sandbox_executor/entrypoint/planner.py", ("PLR0913",)),
-    ("sandbox_executor/entrypoint/review_loop.py", ("C901", "PLR0912", "PLR0915")),
+    ("sandbox_executor/entrypoint/review_loop.py", ("C901", "PLR0915")),
     ("sandbox_executor/flow/github/ci.py", ("PLR0913",)),
     ("sandbox_executor/flow/github/ci.py", ("PLR0913",)),
     ("sandbox_executor/flow/github/pr.py", ("PLR0913",)),

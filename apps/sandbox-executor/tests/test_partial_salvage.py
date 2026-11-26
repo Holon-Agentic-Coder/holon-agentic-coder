@@ -1,6 +1,7 @@
 """Hermetic tests of the Stage 3 resume salvage: interrupted edits become a labelled partial-work commit."""
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from sandbox_executor.flow import (
     run_execute_stage,
 )
 from sandbox_executor.flow.partial_salvage import SalvageError, leftover_paths, salvage_leftovers
+from sandbox_executor.ledger import read_merged_rows_at_ref
 
 PLAN = "I-1-x/P-2-claude-agent-claude-opus-5-5/_"
 EXEC_ID = "E-100-claude-agent-claude-opus-5-5"
@@ -71,7 +73,7 @@ def prefix() -> str:
 
 
 def rows(repo: Path, ref: str = f"origin/{EXEC_BRANCH}") -> list[dict[str, Any]]:
-    return [json.loads(line) for line in git(repo, "show", f"{ref}:{LEDGER}").splitlines()]
+    return read_merged_rows_at_ref(str(repo), ref, os.path.basename(LEDGER))
 
 
 def test_dirty_tracked_file_is_committed_and_recorded(work: Path) -> None:

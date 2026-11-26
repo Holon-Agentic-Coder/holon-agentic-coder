@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from sandbox_executor.entrypoint import executor
+from sandbox_executor.ledger import read_merged_rows, read_merged_text
 
 from tests.executor_fixtures import (
     _agent_turns_use_run_cmd,  # noqa: F401  (autouse fixture)
@@ -70,8 +71,7 @@ class TestExecutor(unittest.TestCase):
             executor.main()
 
             self.assertFalse(os.path.exists(os.path.join(tmp_dir, "executions")))
-            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
-                entry = json.loads(lf.readline())
+            entry = read_merged_rows(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl"))[0]
             self.assertEqual(entry["status"], "failure")
             self.assertEqual(entry["summary"], "Plan execution failed with exit code 1")
 
@@ -130,8 +130,7 @@ class TestExecutor(unittest.TestCase):
             executor.main()
 
             self.assertFalse(os.path.exists(os.path.join(tmp_dir, "executions")))
-            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
-                entry = json.loads(lf.readline())
+            entry = read_merged_rows(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl"))[0]
             self.assertTrue(entry["agent_output_truncated"])
             self.assertLessEqual(entry["agent_output_bytes"], 1024)
             self.assertGreater(entry["agent_output_bytes"], 0)
@@ -199,8 +198,7 @@ class TestExecutor(unittest.TestCase):
             executor.main()
 
             self.assertFalse(os.path.exists(os.path.join(tmp_dir, "executions")))
-            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
-                ledger_content = lf.read()
+            ledger_content = read_merged_text(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl"))
 
             for secret in (secret_gh, secret_gh_tok, secret_key):
                 self.assertNotIn(secret, ledger_content, f"Secret {secret} leaked into executions.jsonl!")
@@ -283,8 +281,7 @@ class TestExecutor(unittest.TestCase):
             executor.main()
 
             self.assertFalse(os.path.exists(os.path.join(tmp_dir, "executions")))
-            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
-                ledger_content = lf.read()
+            ledger_content = read_merged_text(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl"))
 
             self.assertNotIn(straddle_value, ledger_content)
             for start in range(len(straddle_value) - 7):
@@ -369,8 +366,7 @@ class TestExecutor(unittest.TestCase):
             self.assertIn(str(_MAX_REDACT_INPUT_LEN), warning, "the clamp must name the limit it applied")
 
             self.assertFalse(os.path.exists(os.path.join(tmp_dir, "executions")))
-            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
-                entry = json.loads(lf.readline())
+            entry = read_merged_rows(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl"))[0]
 
             self.assertTrue(entry["agent_output_truncated"])
             self.assertLessEqual(entry["agent_output_bytes"], _MAX_REDACT_INPUT_LEN)
@@ -404,8 +400,7 @@ class TestExecutor(unittest.TestCase):
             executor.main()
 
             self.assertFalse(os.path.exists(os.path.join(tmp_dir, "executions")))
-            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
-                entry = json.loads(lf.readline())
+            entry = read_merged_rows(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl"))[0]
 
             self.assertTrue(entry["agent_output_truncated"])
             self.assertLessEqual(entry["agent_output_bytes"], budget)
@@ -432,8 +427,7 @@ class TestExecutor(unittest.TestCase):
             executor.main()
 
             self.assertFalse(os.path.exists(os.path.join(tmp_dir, "executions")))
-            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
-                entry = json.loads(lf.readline())
+            entry = read_merged_rows(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl"))[0]
             self.assertEqual(entry["status"], "failure")
             self.assertGreater(entry["agent_output_bytes"], 0)
 
@@ -488,8 +482,7 @@ class TestExecutor(unittest.TestCase):
             # Assert executor.main() does not raise
             executor.main()
 
-            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
-                entry = json.loads(lf.readline())
+            entry = read_merged_rows(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl"))[0]
             self.assertEqual(entry["status"], "failure")
             self.assertEqual(entry["summary"], "Plan execution failed with exit code 1")
             self.assertFalse(entry["agent_output_truncated"])
@@ -542,8 +535,7 @@ class TestExecutor(unittest.TestCase):
         ):
             executor.main()
 
-            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as lf:
-                entry = json.loads(lf.readline())
+            entry = read_merged_rows(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl"))[0]
 
             required_keys = {
                 "execution_id",

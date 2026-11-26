@@ -22,14 +22,19 @@ from sandbox_executor.flow import (
     save_checkpoint,
 )
 from sandbox_executor.flow.github.pr_head import PR_HEAD_TIMEOUT_SECONDS
+from sandbox_executor.ledger import read_merged_rows
+from sandbox_executor.ledger.fragments import iter_fragment_files
 from sandbox_executor.review_target import ReviewTarget
 
 from tests.flow.github.fake_github import FakeGitHub, ci_checks_payload
 from tests.flow.helpers import _git, _review_loop_gh_stubs
 from tests.flow.lookup_patch import patch_lookup_sites
 from tests.review_fakes import FakeEnsemble, clean_reviewer, objecting_reviewer
-from tests.review_flow_repo import LEDGER, added_rows, build_flow_worktree, changed_paths, ledger_commits
+from tests.review_flow_repo import added_rows, build_flow_worktree, changed_paths, ledger_commits
 from tests.review_loop_stubs import EXEC_TARGET, _ensemble_ctx, _LoopStubs
+
+#: Where the loop's rows for the ``I-100-intent`` execution branch land (the fragment of its root intent).
+EXEC_FRAGMENT = "holon-knowledge/ledger/pending/executions/I-100-intent.jsonl"
 
 
 class TestReviewLoopStage:
@@ -182,9 +187,9 @@ class TestReviewLoopStage:
         assert github.methods().count("post_review") == 1
 
         exec_file = ledger_dir / "executions.jsonl"
-        assert exec_file.exists()
+        assert iter_fragment_files(str(exec_file))
 
-        records = [json.loads(line) for line in exec_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+        records = read_merged_rows(str(exec_file))
         action_records = [r for r in records if r.get("entry_type") == "action"]
         summary_records = [r for r in records if r.get("entry_type") == "summary"]
 
@@ -447,7 +452,7 @@ class TestReviewLoopCommitsItsLedgerRows:
         assert _git(origin, "rev-parse", f"refs/heads/{EXEC_TARGET}") == _git(work, "rev-parse", "HEAD")
         final, first = ledger_commits(work)
         assert final == _git(work, "rev-parse", "HEAD")
-        assert changed_paths(work, final) == changed_paths(work, first) == [LEDGER]
+        assert changed_paths(work, final) == changed_paths(work, first) == [EXEC_FRAGMENT]
         assert changed_paths(work, fixes[0]) == ["src/app.py"]  # The fix commit carries no ledger row.
         assert _git(work, "rev-parse", f"{first}^") == fixes[0]
         assert {row.get("review_iteration") for row in added_rows(work, first)} == {1}
@@ -466,7 +471,7 @@ class TestReviewLoopCommitsItsLedgerRows:
 
         assert res["resolver_error"]
         assert _git(work, "status", "--porcelain") == ""
-        assert changed_paths(work) == [LEDGER]
+        assert changed_paths(work) == [EXEC_FRAGMENT]
         rows = added_rows(work)
         assert any("resolver change rejected" in str(row.get("action")) for row in rows)
         assert any(row.get("entry_type") == "summary" for row in rows)

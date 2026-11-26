@@ -21,6 +21,7 @@ from sandbox_executor.decomposition_rule import (
     should_decompose,
 )
 from sandbox_executor.entrypoint import planner
+from sandbox_executor.ledger import read_merged_rows
 from sandbox_executor.plan_attempt import PLAN_FAILURE_DETAIL_REL
 from sandbox_executor.turns import TurnResult
 
@@ -297,10 +298,7 @@ class _PlannerHarness:
         return self
 
     def ledger_lines(self, name):
-        path = pathlib.Path(self.repo_dir) / "holon-knowledge" / "ledger" / name
-        if not path.exists():
-            return []
-        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        return read_merged_rows(str(pathlib.Path(self.repo_dir) / "holon-knowledge" / "ledger" / name))
 
     def committed(self):
         n = len(planner.PLANNER_GIT_IDENTITY)
@@ -750,7 +748,7 @@ class TestPlannerMain(unittest.TestCase):
         self.assertEqual(record["elapsed_seconds"], 300)
         # The salvaged partial plan and the ledger record are committed together so neither is lost with the sandbox.
         add_cmds = [c for c in h.git_cmds if c[:2] == ["git", "add"]]
-        self.assertTrue(any("holon-knowledge/ledger/executions.jsonl" in c for c in add_cmds))
+        self.assertTrue(any("holon-knowledge/ledger/pending/executions" in c for c in add_cmds))
         self.assertTrue(any(any(arg.startswith("plans/I-12345/P-") for arg in c) for c in add_cmds))
         self.assertTrue(h.committed())
         self.assertIn("plan: failed", h.stdout)

@@ -18,6 +18,7 @@ from sandbox_executor.ledger import (
     generate_action_id,
     suppress_ledger_failures,
 )
+from sandbox_executor.ledger.fragments import PENDING_EXCLUDE_PATHSPEC
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.turns import AuthoringOutcome
 
@@ -68,7 +69,8 @@ def finalise_execution_notes(notes_path: str, report: ArtefactReport | None) -> 
 
 
 def _salvage_pathspec(notes_rel: str) -> list[str]:
-    return ["--", ".", f":(exclude){executor_facade.EXECUTIONS_LEDGER_REL}", f":(exclude){notes_rel}"]
+    ledger_exclude = f":(exclude){executor_facade.EXECUTIONS_LEDGER_REL}"
+    return ["--", ".", ledger_exclude, PENDING_EXCLUDE_PATHSPEC, f":(exclude){notes_rel}"]
 
 
 def _salvage_partial_work(

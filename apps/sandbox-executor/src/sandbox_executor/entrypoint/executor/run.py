@@ -38,6 +38,7 @@ from sandbox_executor.entrypoint.partial_resume import merge_plan_tip, start_exe
 from sandbox_executor.entrypoint.taken_ids import taken_child_ids
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import LedgerRewriteError, build_execution_id
+from sandbox_executor.ledger.fragments import ledger_commit_paths
 from sandbox_executor.plan_paths import recorded_plan_file
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.ref_names import INTENT_SUFFIX
@@ -359,9 +360,7 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
         On a failure the code changes are already in the partial-work commit, so only the ledger and notes are staged.
         """
         repo_dir, repo = self.repo_dir, self.repo
-        add_targets = [
-            f for f in ("holon-knowledge/ledger/executions.jsonl",) if os.path.exists(os.path.join(repo_dir, f))
-        ]
+        add_targets = ledger_commit_paths(repo_dir, "executions.jsonl")
         if self.exec_status != "success" and os.path.exists(self.notes_path):
             # The notes (partial or not) explain the failure; the code changes are already in the partial commit.
             add_targets.append(self.notes_rel)

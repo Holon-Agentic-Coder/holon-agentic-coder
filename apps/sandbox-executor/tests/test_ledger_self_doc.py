@@ -13,11 +13,16 @@ _LEDGER_DIR = _APP_ROOT / "src" / "sandbox_executor" / "ledger"
 
 SCOPED_LEDGER_FILES: tuple[str, ...] = (
     "__init__.py",
+    "fragments.py",
     "lock.py",
+    "merged.py",
     "order.py",
+    "promote.py",
+    "promote_threshold.py",
     "query.py",
     "query_filters.py",
     "reconcile.py",
+    "route.py",
     "rows.py",
 )
 

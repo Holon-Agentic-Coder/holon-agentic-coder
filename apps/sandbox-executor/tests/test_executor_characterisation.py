@@ -22,6 +22,7 @@ import pytest
 from sandbox_executor.budgets import BudgetBreach
 from sandbox_executor.cli import PACKAGE_LOGGER_NAME, _CurrentStderrHandler
 from sandbox_executor.entrypoint import executor
+from sandbox_executor.ledger import read_merged_rows_at_ref
 from sandbox_executor.turns import TurnResult
 
 PLAN = "I-456/P-123/_"
@@ -53,7 +54,7 @@ Implemented the plan. Details of the change. Details of the change. Details of t
 
 _EXEC_ID_RE = re.compile(r"E-\d+-ANA-G3\.5F")
 _SHA_RE = re.compile(r"\b[0-9a-f]{40}\b")
-_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?\+00:00")
+_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(?:\+00:00|Z)")
 _STAGE_MINUTES_RE = re.compile(r"\(\d+\.\d min /")
 _PROMPT_FILE_RE = re.compile(r"exec_(prompt|intent)-\d+")
 
@@ -152,8 +153,8 @@ class _Run:
         return branch
 
     def summary_row(self) -> dict:
-        ledger = _git(self.workspace, "show", f"{self.exec_branch()}:holon-knowledge/ledger/executions.jsonl")
-        return [json.loads(line) for line in ledger.splitlines() if line.strip()][-1]
+        rows = read_merged_rows_at_ref(str(self.workspace), self.exec_branch(), "executions.jsonl")
+        return [row for row in rows if row.get("entry_type") == "summary"][-1]
 
     def subjects(self) -> list[str]:
         log = _git(self.workspace, "log", "--format=%s", f"{self.plan_tip}..{self.exec_branch()}")
@@ -296,7 +297,7 @@ _BRANCH_START_STDOUT = [
     "Running: git rev-parse --verify HEAD^{commit}",
     "Running: git status --porcelain -- . :(exclude)holon-knowledge/ledger/intents.jsonl "
     ":(exclude)holon-knowledge/ledger/plans.jsonl :(exclude)holon-knowledge/ledger/executions.jsonl "
-    ":(exclude)executions/E-*.md",
+    ":(exclude)holon-knowledge/ledger/pending :(exclude)executions/E-*.md",
     "Running: git rev-parse --verify refs/remotes/origin/I-456/P-123/_^{commit}",
     "Running: git for-each-ref --format=%(refname) refs/heads/I-456/P-123/",
     "Running: git for-each-ref --format=%(refname) refs/remotes/origin/I-456/P-123/",
@@ -325,12 +326,12 @@ SUCCESS_STDOUT = [
     "Running: git diff --name-only --no-renames -z <sha> --",
     "Running: git ls-files --others --exclude-standard -z",
     "Running: git status --porcelain",
-    "Running: git add holon-knowledge/ledger/executions.jsonl",
+    "Running: git add holon-knowledge/ledger/pending/executions",
     "Running: git add -A",
     "Running: git status --short",
     "Current git repository status:",
     "A  executions/E-<id>.md",
-    "A  holon-knowledge/ledger/executions.jsonl",
+    "A  holon-knowledge/ledger/pending/executions/I-456.jsonl",
     "M  src/codebase.py",
     "A  src/new_module.py",
     "D  src/obsolete.py",
@@ -348,16 +349,17 @@ SUCCESS_STDERR = [""]
 SALVAGE_STDOUT = [
     *_BRANCH_START_STDOUT,
     "Running: git status --porcelain",
-    "Running: git add -A -- . :(exclude)holon-knowledge/ledger/executions.jsonl :(exclude)executions/E-<id>.md",
+    "Running: git add -A -- . :(exclude)holon-knowledge/ledger/executions.jsonl "
+    ":(exclude)holon-knowledge/ledger/pending :(exclude)executions/E-<id>.md",
     "Running: git diff --cached --quiet",
     *_IDENTITY_STDOUT,
     "Running: git commit -m execute: E-<id> partial work (failed) for plan I-456/P-123/_",
     "Running: git rev-parse HEAD",
-    "Running: git add holon-knowledge/ledger/executions.jsonl executions/E-<id>.md",
+    "Running: git add holon-knowledge/ledger/pending/executions executions/E-<id>.md",
     "Running: git status --short",
     "Current git repository status:",
     "A  executions/E-<id>.md",
-    "A  holon-knowledge/ledger/executions.jsonl",
+    "A  holon-knowledge/ledger/pending/executions/I-456.jsonl",
     "",
     "Running: git diff --cached --quiet",
     *_IDENTITY_STDOUT,

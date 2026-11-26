@@ -14,12 +14,14 @@ from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.target_sync import sync_with_target
 from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest
 from sandbox_executor.git import run_git
+from sandbox_executor.ledger import read_merged_rows
 from sandbox_executor.module_budget_guard import MODULE_BUDGET_CONFIG
 
 from tests.flow.helpers import _git
 from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
 
 LEDGER = "holon-knowledge/ledger/executions.jsonl"
+FRAGMENT = "holon-knowledge/ledger/pending/executions/I-1-x.jsonl"
 APP = "src/app.py"
 HAIKU, SONNET, OPUS = "claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-5-5"
 Edit = Callable[[Path], None]
@@ -109,8 +111,7 @@ def _sync(work: Path, dispatcher: FakeDispatcher, agent: str = "claude-agent", i
 
 
 def _rows(work: Path) -> list[dict]:
-    lines = (work / LEDGER).read_text(encoding="utf-8").splitlines()
-    return [row for row in map(json.loads, lines) if row.get("action") == "target_sync"]
+    return [row for row in read_merged_rows(str(work / LEDGER)) if row.get("action") == "target_sync"]
 
 
 def _merging(work: Path) -> bool:
@@ -165,7 +166,7 @@ def test_tampering_stops_after_one_dispatch(work, pushes):
     assert result.status == "blocked" and dispatcher.tiers() == [HAIKU]
     assert result.test_result.startswith("tampered") and pushes == []
     assert not _merging(work) and _git(work, "rev-parse", "HEAD~1") == head  # the agent commit is gone
-    assert _git(work, "diff", "--name-only", "HEAD~1", "HEAD") == LEDGER
+    assert _git(work, "diff", "--name-only", "HEAD~1", "HEAD") == FRAGMENT
     assert result.head_after == _git(work, "rev-parse", "HEAD")
 
 
@@ -177,7 +178,7 @@ def test_exhaustion_fails_closed_without_a_push(work, pushes):
     assert dispatcher.tiers() == [HAIKU, SONNET, OPUS]
     assert not _merging(work) and pushes == []
     assert _git(work, "rev-parse", "HEAD~1") == head
-    assert _git(work, "diff", "--name-only", "HEAD~1", "HEAD") == LEDGER
+    assert _git(work, "diff", "--name-only", "HEAD~1", "HEAD") == FRAGMENT
     row = _rows(work)[-1]
     assert (row["outcome"], row["resolver_tier"], row["attempts"]) == ("blocked", OPUS, 3)
     assert "tests/test_app.py::test_x" in row["test_result"] and len(row["test_result"]) <= 500

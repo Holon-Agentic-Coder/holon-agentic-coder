@@ -18,6 +18,7 @@ from sandbox_executor.entrypoint.sync_conflict import (
 from sandbox_executor.flow import FlowContext, FlowStage
 from sandbox_executor.flow.stages.review import run_review_stage
 from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
+from sandbox_executor.ledger import read_merged_rows, read_merged_text
 
 LEDGER = "holon-knowledge/ledger/executions.jsonl"
 EXEC_BRANCH = "I-1-x/P-2-a-b/E-3-a-b/_"
@@ -85,7 +86,7 @@ def test_non_ledger_conflict_keeps_the_branch_and_records_a_sync_conflict_row(re
     ledger_dir = work / "holon-knowledge" / "ledger"
     exec_entry = {"execution_id": "E-3", "status": "success", "ledger_revision": 1}
     assert record_sync_failure(_get_repo(str(work)), exec_entry, "E-3", str(ledger_dir), message) is True
-    row = json.loads((work / LEDGER).read_text(encoding="utf-8").splitlines()[-1])
+    row = read_merged_rows(str(work / LEDGER))[-1]
     assert row["status"] == SYNC_CONFLICT_STATUS
     assert row["conflicted_paths"] == ["code.py"]
     assert row["ledger_revision"] == 2
@@ -100,7 +101,7 @@ def test_other_sync_failures_still_record_a_failure_and_do_not_publish(repos: tu
         _get_repo(str(work)), exec_entry, "E-3", str(work / "holon-knowledge" / "ledger"), "Failed to reconcile ledger"
     )
     assert published is False
-    row = json.loads((work / LEDGER).read_text(encoding="utf-8").splitlines()[-1])
+    row = read_merged_rows(str(work / LEDGER))[-1]
     assert row["status"] == "failure"
     assert "conflicted_paths" not in row
     assert row == {**row, **superseding_failure_row(exec_entry, row["summary"]), "created_at": row["created_at"]}
@@ -120,7 +121,7 @@ def test_conflict_after_a_non_success_execution_keeps_a_failure_and_does_not_pub
     published = record_sync_failure(_get_repo(str(work)), exec_entry, "E-3", ledger_dir, message)
 
     assert published is False
-    row = json.loads((work / LEDGER).read_text(encoding="utf-8").splitlines()[-1])
+    row = read_merged_rows(str(work / LEDGER))[-1]
     assert row["status"] == "failure"
     assert "conflicted_paths" not in row
 
@@ -135,7 +136,7 @@ def test_ledger_only_conflict_is_reconciled_without_a_sync_conflict_row(repos: t
     assert ok, message
     assert "Successfully reconciled" in message
     assert sync_conflict_paths(message) is None
-    assert SYNC_CONFLICT_STATUS not in (work / LEDGER).read_text(encoding="utf-8")
+    assert SYNC_CONFLICT_STATUS not in (read_merged_text(str(work / LEDGER)) or "")
 
 
 def test_clean_sync_merges_without_a_sync_conflict_row(repos: tuple[Path, Path]) -> None:
@@ -147,7 +148,7 @@ def test_clean_sync_merges_without_a_sync_conflict_row(repos: tuple[Path, Path])
 
     assert ok
     assert message.startswith("Cleanly merged")
-    assert SYNC_CONFLICT_STATUS not in (work / LEDGER).read_text(encoding="utf-8")
+    assert SYNC_CONFLICT_STATUS not in (read_merged_text(str(work / LEDGER)) or "")
 
 
 def stage_context(tmp_path: Path) -> FlowContext:

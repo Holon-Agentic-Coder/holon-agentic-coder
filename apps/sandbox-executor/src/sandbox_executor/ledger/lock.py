@@ -148,25 +148,6 @@ def assert_ledger_prefix(path: str, before: bytes) -> None:
 
 
 @contextlib.contextmanager
-def atomic_ledger_append(
-    filepath: str,
-    timeout: float = 10.0,
-    initial_delay: float = 0.02,
-    max_delay: float = 0.5,
-) -> Iterator[TextIO]:
-    with LedgerLock(
-        filepath=filepath,
-        timeout=timeout,
-        initial_delay=initial_delay,
-        max_delay=max_delay,
-    ) as f:
-        before = _read_ledger_bytes(filepath)
-        yield f
-        f.flush()
-        assert_ledger_prefix(filepath, before)
-
-
-@contextlib.contextmanager
 def suppress_ledger_failures() -> Iterator[None]:
     try:
         yield

@@ -105,7 +105,8 @@ only when all of the following hold, in this order:
 
 - The run is the first attempt and names the pushed commit, the workflow file, the job and its run number.
 - Exactly one pull request is associated with the pushed commit; it was merged, its base is `main` and its merge commit
-  is the pushed commit. A rebase merge has another merge commit and so always runs in full.
+  is the pushed commit. For a rebase merge the merge commit is the rebased tip, so it skips only when the next rule
+  holds too.
 - The tree of the pushed commit equals the tree of the pull request's head commit. The head already contained `main`, so
   the merge ref that the head's run tested had the same tree too. When `main` moved after the head's run, the trees
   differ and the jobs run in full.

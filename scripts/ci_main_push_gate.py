@@ -10,7 +10,7 @@ in this order, and the first one that fails decides for a full run:
 2. ``main-push-no-pull-request``, ``main-push-several-pull-requests``: exactly one pull request is associated with the
    pushed commit.
 3. ``main-push-pull-request-not-merged``: that pull request was merged into ``main`` and its merge commit is the pushed
-   commit (a rebase merge therefore always runs in full).
+   commit (for a rebase merge that is the rebased tip, so it skips only when rule 4 also holds).
 4. ``main-push-tree-mismatch``: the pushed commit's tree is the tree of the pull request's head commit.
 5. ``main-push-head-job-missing``, ``main-push-head-job-not-finished``, ``main-push-head-job-not-successful``,
    ``main-push-head-job-unverified``: the newest pull-request run of this workflow on the head commit that holds this

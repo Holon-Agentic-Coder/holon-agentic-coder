@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from bisect import bisect_right
 from collections import defaultdict
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -41,26 +42,35 @@ def _row_instant(row: dict[str, Any]) -> datetime | None:
     return parse_created_at(row.get("created_at"))
 
 
-def merge_by_instant(canonical_rows: list[dict[str, Any]], fragment_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def interleave_by_instant[T](
+    kept: Sequence[T], kept_instants: Sequence[datetime | None], incoming: Sequence[tuple[datetime, T]]
+) -> list[T]:
     running_max: list[datetime] = []
     high = _EARLIEST
-    for row in canonical_rows:
-        high = max(high, _row_instant(row) or _EARLIEST)
+    for instant in kept_instants:
+        high = max(high, instant or _EARLIEST)
         running_max.append(high)
-    slots: defaultdict[int, list[tuple[datetime, int, dict[str, Any]]]] = defaultdict(list)
+    slots: defaultdict[int, list[tuple[datetime, int, T]]] = defaultdict(list)
+    for index, (instant, item) in enumerate(incoming):
+        slots[bisect_right(running_max, instant)].append((instant, index, item))
+    merged: list[T] = []
+    for position in range(len(kept) + 1):
+        merged.extend(item for _instant, _index, item in sorted(slots[position], key=lambda entry: entry[:2]))
+        if position < len(kept):
+            merged.append(kept[position])
+    return merged
+
+
+def merge_by_instant(canonical_rows: list[dict[str, Any]], fragment_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    timed: list[tuple[datetime, dict[str, Any]]] = []
     untimed: list[dict[str, Any]] = []
-    for index, row in enumerate(fragment_rows):
+    for row in fragment_rows:
         instant = _row_instant(row)
         if instant is None:
             untimed.append(row)
-            continue
-        slots[bisect_right(running_max, instant)].append((instant, index, row))
-    merged: list[dict[str, Any]] = []
-    for position in range(len(canonical_rows) + 1):
-        merged.extend(row for _instant, _index, row in sorted(slots[position], key=lambda entry: entry[:2]))
-        if position < len(canonical_rows):
-            merged.append(canonical_rows[position])
-    return merged + untimed
+        else:
+            timed.append((instant, row))
+    return interleave_by_instant(canonical_rows, [_row_instant(row) for row in canonical_rows], timed) + untimed
 
 
 def _format_utc_z(instant: datetime) -> str:

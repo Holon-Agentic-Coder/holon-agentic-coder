@@ -22,6 +22,8 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sandbox_executor.ledger.order import parse_created_at as parse_instant
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LEDGERS = tuple(
     REPO_ROOT / "holon-knowledge" / "ledger" / f"{name}.jsonl" for name in ("executions", "intents", "plans")
@@ -31,17 +33,6 @@ _CANONICAL = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
 _FRACTION = re.compile(r"T\d{2}:\d{2}:\d{2}\.(\d+)")
 _EARLIEST = datetime.min.replace(tzinfo=UTC)
 _UTC_OFFSET = "+00:00"
-
-
-def parse_instant(value: object) -> datetime | None:
-    """Return ``value`` as a UTC datetime (``Z`` read as UTC, naive read as UTC), or None when it is not one."""
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", _UTC_OFFSET))
-    except ValueError:
-        return None
-    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def canonical_created_at(value: object) -> str | None:

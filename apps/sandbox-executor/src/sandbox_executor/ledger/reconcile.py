@@ -4,13 +4,11 @@ import contextlib
 import json
 import logging
 import os
-from bisect import bisect_right
-from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Literal, TextIO
 
 from sandbox_executor.ledger.lock import LedgerLock, LedgerRewriteError
-from sandbox_executor.ledger.order import _order_appended_rows, parse_created_at
+from sandbox_executor.ledger.order import _order_appended_rows, interleave_by_instant, parse_created_at
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +24,6 @@ _CONFLICT_MARKER_LEN = 7
 _LOG_PREVIEW_LIMIT = 100
 
 PrefixSide = Literal["ours", "theirs"]
-_EARLIEST = datetime.min.replace(tzinfo=UTC)
 
 LEDGER_REL_PATHS = (
     os.path.join("holon-knowledge", "ledger", "intents.jsonl"),
@@ -43,24 +40,12 @@ def _line_instant(line: str) -> datetime | None:
     return parse_created_at(row.get("created_at")) if isinstance(row, dict) else None
 
 
-def _running_max_instants(lines: list[str]) -> list[datetime]:
-    running: list[datetime] = []
-    high = _EARLIEST
-    for line in lines:
-        high = max(high, _line_instant(line) or high)
-        running.append(high)
-    return running
-
-
-def _slot_incoming_lines(
-    kept_lines: list[str], incoming_lines: list[str]
-) -> tuple[defaultdict[int, list[tuple[datetime, int, str]]], list[str]]:
-    running_max = _running_max_instants(kept_lines)
+def insert_incoming_lines(kept_lines: list[str], incoming_lines: list[str]) -> list[str]:
     seen = set(kept_lines)
-    slots: defaultdict[int, list[tuple[datetime, int, str]]] = defaultdict(list)
+    timed: list[tuple[datetime, str]] = []
     untimed: list[str] = []
     previous: datetime | None = None
-    for index, line in enumerate(incoming_lines):
+    for line in incoming_lines:
         previous = _line_instant(line) or previous
         if line in seen:
             continue
@@ -68,18 +53,8 @@ def _slot_incoming_lines(
         if previous is None:
             untimed.append(line)
         else:
-            slots[bisect_right(running_max, previous)].append((previous, index, line))
-    return slots, untimed
-
-
-def insert_incoming_lines(kept_lines: list[str], incoming_lines: list[str]) -> list[str]:
-    slots, untimed = _slot_incoming_lines(kept_lines, incoming_lines)
-    merged: list[str] = []
-    for position in range(len(kept_lines) + 1):
-        merged.extend(line for _instant, _index, line in sorted(slots.get(position, ())))
-        if position < len(kept_lines):
-            merged.append(kept_lines[position])
-    return merged + untimed
+            timed.append((previous, line))
+    return interleave_by_instant(kept_lines, [_line_instant(line) for line in kept_lines], timed) + untimed
 
 
 def _keeps_lines_in_order(kept_lines: list[str], resolved_lines: list[str]) -> bool:

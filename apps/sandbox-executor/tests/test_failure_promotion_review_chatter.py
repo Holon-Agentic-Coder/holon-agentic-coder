@@ -83,10 +83,10 @@ def test_review_failures_across_two_flows_still_promote(tmp_path: Path) -> None:
     items = _failure_items(ws.promote())
 
     assert [item["kb_id"] for item in items] == [KB_FAILURE_ID]
-    assert items[0]["evidence"]["ledger_refs"] == ["ACT-FIND-B", "ACT-FIND-A"]
+    assert items[0]["evidence"]["ledger_refs"] == ["ACT-FIND-A", "ACT-FIND-B"]
     payload = json.loads(ws.failure_file().read_text(encoding="utf-8"))["payload"]
     assert payload["action"] == "Review finding"
-    assert payload["name"] == f"Failure mode in {FLOW_B}"
+    assert payload["name"] == f"Failure mode in {FLOW_A}"
     assert payload["symptoms"] == ["Reviewer flagged a defect"]
 
 

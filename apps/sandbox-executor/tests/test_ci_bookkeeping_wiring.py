@@ -15,6 +15,7 @@ import pytest
 from scripts.ci_bookkeeping_chain import FULL_RUN_STEP
 from scripts.ci_bookkeeping_gate import BOOKKEEPING_ROOTS, RESULT_AFFECTING_LABELS, RUN_RULES, SKIP_RULES
 from scripts.ci_main_push_gate import GATED_WORKFLOWS, MAIN_PUSH_RUN_RULES, MAIN_PUSH_SKIP_RULES
+from scripts.ci_merge_push_gate import MERGE_PUSH_RUN_RULES, MERGE_PUSH_SKIP_RULES
 from tests.test_workflow_triggers import parse_triggers
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -354,3 +355,18 @@ def test_readme_documents_pushes_to_main_and_every_main_push_rule() -> None:
     assert "`pull-requests: read`" in section
     assert "`api-error`" in section
     assert "runs in full" in section
+
+
+def test_readme_documents_merge_pushes_and_every_merge_push_rule() -> None:
+    text = README.read_text(encoding="utf-8")
+    gate = text.partition("\n## Bookkeeping-Only Push Gate\n")[2].partition("\n## ")[0]
+    section = gate.partition("\n### Merge pushes\n")[2].partition("\n### ")[0]
+    limits = gate.partition("\n### Limits\n")[2].partition("\n### ")[0]
+
+    assert section, "the gate section has the subsection about merge pushes"
+    assert "`scripts/ci_merge_push_gate.py`" in section
+    assert set(re.findall(r"^\| `(merge-push-[a-z-]+)` ", section, flags=re.MULTILINE)) == set(
+        MERGE_PUSH_RUN_RULES + MERGE_PUSH_SKIP_RULES
+    )
+    assert "`main-push-head-skip-unproven`" in section
+    assert "transitive import" in limits

@@ -14,7 +14,7 @@ REVIEW_LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.review.approval_coverage": "ApprovalCoverage approval_covers approved_fingerprint_of",
     "sandbox_executor.flow.review.delta_review": (
         "addressed_findings begin_review_pass current_decision decide_review_mode delta_state_of end_review_pass "
-        "record_addressed_findings set_current"
+        "record_addressed_findings set_current set_forwarded"
     ),
     "sandbox_executor.flow.review.delta_review_forwarding": (
         "discard_forwarded_decision forward_scoped_decision load_forwarded_decision"

@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import tempfile
 
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.review.delta_review import (
@@ -16,6 +17,7 @@ from sandbox_executor.flow.review.delta_review import (
     delta_state_of,
     record_addressed_findings,
     set_current,
+    set_forwarded,
 )
 from sandbox_executor.flow.review.delta_review_mode import FULL, ReviewMode, decision_from_dict
 
@@ -30,8 +32,16 @@ def forward_scoped_decision(context: FlowContext) -> str | None:
     path = os.path.join(context.target_worktree, FORWARDED_REL)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(current, handle)
+        # A fresh temp file renamed over the target never follows a link planted at ``path`` in the shared worktree.
+        fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".delta_request.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(current, handle)
+            os.replace(tmp_path, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.remove(tmp_path)
+            raise
     except OSError as exc:
         set_current(context, ReviewMode(FULL, "forwarding failed", current_decision(context).head))
         context.log(f"[Review Loop] Could not forward the scoped decision; reviewing in full: {exc}")
@@ -53,7 +63,7 @@ def load_forwarded_decision(context: FlowContext, repo_dir: str, rel_path: str) 
     if not decision.scoped:
         return False
     addressed = data.get("addressed")
-    delta_state_of(context)["forwarded"] = decision.to_dict()
+    set_forwarded(context, decision)
     record_addressed_findings(context, addressed if isinstance(addressed, list) else [])
     return True
 

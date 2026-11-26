@@ -509,6 +509,7 @@ __all__ = [
     "scoped_review_request",
     "serialize_open",
     "set_current",
+    "set_forwarded",
     "settle_pending_ci",
     "skipped_record",
     "snapshot_merge",

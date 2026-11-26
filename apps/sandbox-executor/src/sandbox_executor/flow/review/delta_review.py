@@ -4,7 +4,8 @@ The record lives in ``context.review_state["delta"]`` (checkpointed with the con
 ``last_reviewed_head`` (the head of the latest pass in which every reviewer completed), ``last_critical`` (whether a
 reviewer of that pass reported a critical finding), ``anchor_head`` (the head of the latest such full pass),
 ``scoped_chain`` (scoped passes since that anchor), ``addressed`` (the findings the resolver was given since) and
-``current`` (the decision for the pass in flight). Every unknown, malformed or failed state
+``current`` (the decision for the pass in flight) and ``forwarded`` (a decision the host forwarded to the review-loop
+container, consumed by the next ``decide_review_mode``). Every unknown, malformed or failed state
 decides ``full``: a scoped approval never covers code no completed pass reviewed.
 """
 
@@ -80,6 +81,11 @@ def set_current(context: FlowContext, decision: ReviewMode) -> None:
     state = delta_state_of(context)
     addressed = _addressed_rows(state.get("addressed") or []) if decision.scoped else []
     state["current"] = {**decision.to_dict(), "addressed": addressed}
+
+
+def set_forwarded(context: FlowContext, decision: ReviewMode) -> None:
+    """Hold a decision forwarded from the host for the next ``decide_review_mode`` (review-loop container side)."""
+    delta_state_of(context)["forwarded"] = decision.to_dict()
 
 
 def _precheck(state: Mapping[str, Any], head: str, limit: int) -> str | None:

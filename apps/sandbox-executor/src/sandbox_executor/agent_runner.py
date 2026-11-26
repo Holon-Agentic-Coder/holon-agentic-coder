@@ -10,9 +10,9 @@ import tempfile
 from collections.abc import Callable
 from typing import Any
 
-from sandbox_executor import claude_keychain, local_llm
+from sandbox_executor import local_llm
 from sandbox_executor.agent_attribution import attribution_off_settings, place_settings_arg
-from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES
+from sandbox_executor.runners import runner_spec_for
 
 logger = logging.getLogger(__name__)
 
@@ -259,20 +259,6 @@ class AgentRunner:
     ) -> list[str]:
         raise NotImplementedError
 
-    def _missing_credentials_message(self) -> str:
-        if self.agent_id == "claude":
-            return (
-                "Error: Missing required credentials for agent 'claude'.\n"
-                "Please store a token or API key from 'claude setup-token' in the host's OS keychain "
-                f"({claude_keychain.store_commands_text()}), set 'CLAUDE_CODE_OAUTH_TOKEN' (sk-ant-oat...) or "
-                "'ANTHROPIC_API_KEY' (sk-ant-api...), or mount a session. 'HOLON_AGENT_KEY' is not used for claude."
-            )
-        return (
-            f"Error: Missing required API credentials for agent '{self.agent_id}'.\n"
-            "Please set 'HOLON_AGENT_KEY', mount session credentials, or select a host-local model with "
-            f"'{local_llm.ENV_LOCAL_MODE}=1' plus a reachable endpoint."
-        )
-
     def compose_cmd(self, model_name: str, full_prompt: str) -> list[str]:
         """Assemble the agent argv without validating credentials (see :class:`StandardAgentRunner`)."""
         raise NotImplementedError
@@ -317,8 +303,6 @@ class StandardAgentRunner(AgentRunner):
         prefix: list[str] | None = None,
         suffix: list[str] | None = None,
         env_mappings: list[EnvMapping] | None = None,
-        required_keys: list[str] | None = None,
-        custom_validator: str | None = None,
         bypass_flags: list[str] | None = None,
     ):
         super().__init__(agent_id, binary_name, model_flag)
@@ -327,9 +311,13 @@ class StandardAgentRunner(AgentRunner):
         self.bypass_flags = bypass_flags or []
         self.suffix = suffix or []
         self.env_mappings = env_mappings or []
-        self.required_keys = required_keys or []
-        self.custom_validator = custom_validator
         self._ephemeral_files: list[str] = []
+
+    @property
+    def required_keys(self) -> list[str]:
+        """Read-only view of the spec's accepted API-key variables; the spec is authoritative."""
+        spec = runner_spec_for(self.agent_id)
+        return list(spec.api_key_env_vars) if spec else []
 
     def resolve_credentials(self) -> None:
         """Processes Tier 1 secret bundles to unpack configuration files."""
@@ -378,87 +366,18 @@ class StandardAgentRunner(AgentRunner):
                 logger.warning(f"Failed to clean up ephemeral file {path}: {e}")
         self._ephemeral_files.clear()
 
-    def validate(self) -> None:  # noqa: C901
+    def validate(self) -> None:
         """Validates that required environment variables or credentials exist across the 3-Tier Fallback Contract."""
         self.resolve_credentials()
 
-        # Tier 2 & 3: Agent-specific environment variables and session directory fallbacks
-        if self.custom_validator == "codex":
-            if os.getenv("HOLON_AGENT_OSS_MODE") in ("true", "1"):
-                return
-            has_key = os.getenv("HOLON_AGENT_KEY")
-            has_session = os.path.exists("/home/holon/.codex") or os.path.exists(os.path.expanduser("~/.codex"))
-            if not (has_key or has_session):
-                print(
-                    "Error: Missing required credentials for agent 'codex'.\n"
-                    "Please set 'HOLON_AGENT_KEY', set 'HOLON_AGENT_OSS_MODE=true', "
-                    "or mount active credentials to '/home/holon/.codex'.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
+        # Tier 2 & 3: the agent's spec owns its accepted variables, session paths and exemptions.
+        spec = runner_spec_for(self.agent_id)
+        if spec is None:
             return
-
-        if self.custom_validator == "antigravity":
-            has_key = os.getenv("HOLON_AGENT_KEY")
-            has_session = (
-                os.path.exists("/home/holon/.gemini/antigravity-cli")
-                or os.path.exists(os.path.expanduser("~/.gemini/antigravity-cli"))
-                or os.path.exists("/home/holon/.gemini")
-                or os.path.exists(os.path.expanduser("~/.gemini"))
-                or os.path.exists("/home/holon/.config/gcloud")
-                or os.path.exists(os.path.expanduser("~/.config/gcloud"))
-                or os.path.exists(os.path.expanduser("~/.holon/sessions/antigravity"))
-            )
-            if not (has_key or has_session):
-                print(
-                    "Error: Missing required API credentials for agent 'antigravity'.\n"
-                    "Please set 'HOLON_AGENT_KEY' or mount active session to '/home/holon/.gemini'.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-            return
-
-        if self.required_keys:
-            # A host-local inference server addressed through the Docker gateway needs no provider credential.
-            # Only accepted for pi -- the generated artifact is a pi agent directory, so a pi-only gate keeps a
-            # stray opt-in from masking a missing cloud key for another runner -- and only when the local endpoint is
-            # actually configured.
-            if (
-                self.agent_id in ("pi", "pi-agent")
-                and local_llm.local_llm_requested()
-                and (os.getenv(local_llm.ENV_PI_AGENT_DIR) or os.getenv(local_llm.ENV_LOCAL_BASE_URL))
-            ):
-                return
-
-            pi_dirs = [
-                "/home/holon/.pi/agent/models.json",
-                "~/.pi/agent/models.json",
-                "/home/holon/.config/pi/models.json",
-                "~/.config/pi/models.json",
-            ]
-            env_pi_dir = os.getenv(local_llm.ENV_PI_AGENT_DIR, "").strip()
-            if env_pi_dir:
-                pi_dirs.insert(0, os.path.join(env_pi_dir, "models.json"))
-
-            session_dirs = {
-                "claude": ["/home/holon/.config/claude", "~/.config/claude"],
-                # pi resolves providers from models.json; that single file is what the launcher mounts, so that is what
-                # counts as an available session here -- not the surrounding directory, which holds auth.json and
-                # transcripts.
-                "pi": pi_dirs,
-            }
-            has_session_dir = False
-            norm_id = local_llm.normalize_agent_id(self.agent_id)
-            if norm_id in session_dirs:
-                has_session_dir = any(
-                    os.path.exists(p) or os.path.exists(os.path.expanduser(p)) for p in session_dirs[norm_id]
-                )
-
-            has_key = any(os.getenv(k) for k in self.required_keys)
-
-            if not (has_key or has_session_dir):
-                print(self._missing_credentials_message(), file=sys.stderr)
-                sys.exit(1)
+        error = spec.check_credentials()
+        if error:
+            print(error, file=sys.stderr)
+            sys.exit(1)
 
     def compose_cmd(self, model_name: str, full_prompt: str) -> list[str]:
         """Assemble the agent argv without validating credentials or changing the environment.
@@ -576,7 +495,6 @@ class AntigravityAgentRunner(StandardAgentRunner):
         agent_id: str = "antigravity",
         binary_name: str = "agy",
         model_flag: str = "--model",
-        custom_validator: str | None = "antigravity",
         **kwargs: Any,
     ):
         super().__init__(
@@ -586,8 +504,6 @@ class AntigravityAgentRunner(StandardAgentRunner):
             prefix=kwargs.pop("prefix", None),
             suffix=kwargs.pop("suffix", None),
             env_mappings=kwargs.pop("env_mappings", None),
-            required_keys=kwargs.pop("required_keys", None),
-            custom_validator=custom_validator,
             bypass_flags=kwargs.pop("bypass_flags", None),
             **kwargs,
         )
@@ -638,8 +554,6 @@ class PiAgentRunner(StandardAgentRunner):
             prefix=kwargs.pop("prefix", ["-p"]),
             suffix=kwargs.pop("suffix", None),
             env_mappings=kwargs.pop("env_mappings", [EnvMapping("HOLON_AGENT_PROVIDER", "--provider")]),
-            required_keys=kwargs.pop("required_keys", ["HOLON_AGENT_KEY"]),
-            custom_validator=kwargs.pop("custom_validator", None),
             bypass_flags=kwargs.pop("bypass_flags", None),
             **kwargs,
         )
@@ -668,8 +582,6 @@ class ClaudeAgentRunner(StandardAgentRunner):
             ),
             # The raw value is for compose_cmd (host pre-flight probe) only; turn argv carries a private file path.
             env_mappings=kwargs.pop("env_mappings", [EnvMapping("HOLON_AGENT_SETTINGS", "--settings")]),
-            required_keys=kwargs.pop("required_keys", list(CLAUDE_CREDENTIAL_ENV_NAMES)),
-            custom_validator=kwargs.pop("custom_validator", None),
             **kwargs,
         )
 
@@ -713,8 +625,6 @@ class OpenCodeAgentRunner(StandardAgentRunner):
             prefix=kwargs.pop("prefix", ["run"]),
             suffix=kwargs.pop("suffix", None),
             env_mappings=kwargs.pop("env_mappings", [EnvMapping("HOLON_AGENT_MODE", "--agent")]),
-            required_keys=kwargs.pop("required_keys", ["HOLON_AGENT_KEY"]),
-            custom_validator=kwargs.pop("custom_validator", None),
             bypass_flags=kwargs.pop("bypass_flags", None),
             **kwargs,
         )
@@ -746,8 +656,6 @@ class CodexAgentRunner(StandardAgentRunner):
                     EnvMapping("HOLON_AGENT_CONFIG", "-c"),
                 ],
             ),
-            required_keys=kwargs.pop("required_keys", None),
-            custom_validator=kwargs.pop("custom_validator", "codex"),
             bypass_flags=kwargs.pop("bypass_flags", None),
             **kwargs,
         )

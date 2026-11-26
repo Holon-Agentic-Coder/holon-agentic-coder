@@ -2,13 +2,13 @@
   "wb_id": "WB-heuristic-84a6ddeb",
   "wb_type": "heuristic",
   "version": "1.0",
-  "created_ts": "2026-11-26T12:35:37.518226+00:00",
+  "created_ts": "2026-11-26T12:38:45.415064+00:00",
   "scope": "global",
   "status": "active",
   "ascension_evidence": {
     "project_count": 1,
-    "total_executions": 24,
-    "wilson_lower": 0.8620237953250264,
+    "total_executions": 23,
+    "wilson_lower": 0.8568833815495798,
     "provenance": [
       {
         "kb_id": "KB-pattern-84a6ddeb"
@@ -18,6 +18,6 @@
   "human_approved": false,
   "payload": {
     "name": "Universal heuristic: main",
-    "advisory": "Advisory (proven-success): Historical executions matching this context pattern succeeded in 24/24 (100.0%) trials (Wilson 95% lower bound: 0.86). Consider evaluating proven approach: 'target_sync'."
+    "advisory": "Advisory (proven-success): Historical executions matching this context pattern succeeded in 23/23 (100.0%) trials (Wilson 95% lower bound: 0.86). Consider evaluating proven approach: 'target_sync'."
   }
 }

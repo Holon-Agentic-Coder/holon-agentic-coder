@@ -16,9 +16,10 @@ from pathlib import Path
 
 from sandbox_executor.flow.conflict_classes import ConflictClass, ConflictSides, read_sides, unmerged_stages
 from sandbox_executor.flow.conflict_classes_lists import appended_list_union
-from sandbox_executor.flow.ledger_reconcile import _append_only_union, _has_conflict_marker_lines
+from sandbox_executor.flow.ledger_reconcile import _has_conflict_marker_lines
 from sandbox_executor.git import run_git
 from sandbox_executor.ledger.fragments import PENDING_DIR_REL
+from sandbox_executor.ledger.reconcile import _insertion_union, _keeps_lines_in_order
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +42,11 @@ def _write(worktree: str, path: str, text: str) -> None:
 
 
 def _ledger_union_holds(merged: str, sides: ConflictSides) -> bool:
-    """The target ledger is a byte prefix, no marker remains and every flow-branch row is kept byte-identically."""
+    """Every target row stays in order, no marker remains and every flow-branch row is kept byte-identically."""
     theirs, ours = sides.theirs or "", sides.ours or ""
     kept = {line.rstrip("\r\n") for line in merged.splitlines()}
     return (
-        merged.startswith(theirs)
+        _keeps_lines_in_order(theirs.splitlines(), merged.splitlines())
         and not _has_conflict_marker_lines(merged)
         and all(line.rstrip("\r\n") in kept for line in ours.splitlines() if line.strip())
     )
@@ -62,12 +63,12 @@ def _keep_branch_fragment(worktree: str, sides: ConflictSides) -> bool:
 
 
 def _resolve_ledger(worktree: str, sides: ConflictSides) -> bool:
-    """Append the flow branch's rows the target lacks after the untouched target ledger."""
+    """Insert the flow branch's rows the target lacks by ``created_at``, never moving a target row."""
     if sides.ours is not None and sides.theirs is None and sides.path.startswith(f"{PENDING_DIR_REL}/"):
         return _keep_branch_fragment(worktree, sides)
     if sides.ours is None or sides.theirs is None:
         return False
-    merged = _append_only_union(sides.theirs.splitlines(keepends=True), sides.ours.splitlines(keepends=True))
+    merged = _insertion_union(sides.theirs.splitlines(keepends=True), sides.ours.splitlines(keepends=True))
     if not _ledger_union_holds(merged, sides):
         return False
     _write(worktree, sides.path, merged)

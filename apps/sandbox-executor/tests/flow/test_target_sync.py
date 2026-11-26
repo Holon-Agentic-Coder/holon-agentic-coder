@@ -154,7 +154,7 @@ def test_a_ledger_only_conflict_merges_with_one_row_and_no_agent(repos_with):
     assert resolver.calls == []
     assert result.resolutions == ((LEDGER, "ledger", "mechanical"),)
     text = (work / LEDGER).read_text(encoding="utf-8")
-    assert text.startswith(main_ledger + flow_row)
+    assert text.startswith(BASE_ROW + flow_row + main_ledger[len(BASE_ROW) :])
     assert [row["outcome"] for row in _sync_rows(work)] == ["success"]
     assert _git(work, "status", "--porcelain") == ""
 

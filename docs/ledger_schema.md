@@ -102,7 +102,8 @@ ledger appends are guarded by `LedgerLock` (`sandbox_executor.ledger.LedgerLock`
   stops before a rewritten ledger is committed or pushed. The guard covers each write window; no code path rewrites a
   ledger between appends. Conflict resolution only appends the other side's lines that the kept side lacks, in their
   original order (an identical line is not repeated), and never sorts, deduplicates by key or re-serialises rows. Failed
-  and dry-run stages never stage a ledger. Appends write [pending fragments](ledger_fragments.md), not canonical files.
+  and dry-run stages never stage a ledger. Appends write [pending fragments](ledger_fragments.md), not canonical files,
+  and `holon ledger promote` moves them into the canonical files ([Promotion](ledger_fragments.md#promotion)).
 
 #### Flow Stage Record Matrix
 

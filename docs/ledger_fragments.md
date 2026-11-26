@@ -65,3 +65,33 @@ file.
   [Ledger Schema](ledger_schema.md)). `tests/test_ledger_no_canonical_write.py` checks that the append APIs leave
   canonical bytes unchanged, and that no module outside the ledger package uses `LedgerLock` or opens a ledger for
   append.
+
+## Promotion
+
+`holon ledger promote [--force] [--every N] [--check-only] [--json] [--target-worktree PATH]`
+(`sandbox_executor.ledger.promote`) moves pending fragment rows into the canonical ledgers. It only changes files under
+`holon-knowledge/ledger/` and runs no git command; committing the result is the caller's job.
+
+- **Threshold.** Promotion runs when at least `N` distinct root intents have a fragment in any of the three
+  `pending/<stem>/` directories. `N` is `--every`, else `HOLON_LEDGER_PROMOTE_EVERY`, else `10`; a non-integer or a
+  value below 1 in the variable or in `--every` is an error (exit 2). `_unscoped` does not count toward the threshold,
+  but its fragments are promoted with the rest once the threshold is met. `--force` promotes whatever the count, and
+  `--check-only` prints `root intents with fragments: k / N (threshold met|not met)` and changes nothing.
+- **Additions only, verbatim.** For each ledger, the rows of every fragment whose identity (the reader's
+  `ledger.merged.row_identity`, see [Read side](#read-side)) is not already in the canonical file or an earlier fragment
+  are appended as their original line text, ordered by `created_at` instant (ties in fragment file-name and line order,
+  rows without a parseable instant last). The append runs under `LedgerLock` with `assert_ledger_prefix`; a canonical
+  file that does not end in a newline first gains one.
+- **Append, then delete.** Promoted fragments are deleted only after the canonical append, and empty `pending/<stem>/`
+  and `pending/` directories are removed. A crash in between leaves duplicates that readers hide and that the next run
+  skips before finishing the deletion, so promotion is idempotent: a second run changes zero bytes.
+- **Held fragments.** A fragment that is not UTF-8 or has a non-blank line that is not a JSON object is neither promoted
+  nor deleted. It is reported as a warning on stderr (and in `held` with `--json`), and the exit code stays 0.
+- **Snapshot check.** Each fragment's bytes are recorded when the promotion is planned and re-read before the ledger is
+  written. If any fragment of a ledger changed, nothing is appended for that ledger, no fragment of it is deleted, and
+  the command exits 1.
+- **Run it on a quiescent checkout.** Run promotion only on a checkout with no active flows (normally `main`). A
+  fragment writer blocked on a fragment's lock at the moment the fragment is deleted would append to the deleted file.
+- **Reader view.** `read_merged_rows` returns the same identity multiset before and after promotion. The order is also
+  the same when no promoted row's instant is earlier than the canonical file's latest instant; otherwise only the
+  promoted rows' positions change, because they now sit at the end of the canonical file.

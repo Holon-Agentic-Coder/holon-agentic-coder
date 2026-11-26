@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-1c0ecef3",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T08:17:20.749148+00:00",
+  "updated_ts": "2026-11-26T08:17:20.749148+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795680012-d5a46c54",
+      "ACT-FIND-1795680006-f10ee5ed"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795677070-tests-fewer-git-worktree-exec/P-1795677093-CLA-CO5.5/E-1795677324-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-01",
+    "symptoms": [
+      "The read-only check passes vacuously for templates without a.txt (os.access is False for a missing path), and the glob walks earlier runs' temp directories; assert on this test's own template root instead."
+    ]
+  }
+}

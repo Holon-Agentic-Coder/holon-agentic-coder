@@ -42,8 +42,8 @@ def _make_private_dirs(directory: str) -> None:
 def _write_private_file(path: str, content: str) -> None:
     """Write ``content`` to ``path`` with owner-only mode, also when the file already exists."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, _OWNER_ONLY_FILE_MODE)
-    os.fchmod(fd, _OWNER_ONLY_FILE_MODE)
     try:
+        os.fchmod(fd, _OWNER_ONLY_FILE_MODE)
         handle = os.fdopen(fd, "w")
     except BaseException:
         os.close(fd)

@@ -7,6 +7,11 @@ in this order, and the first one that fails decides for a full run:
 
 1. ``main-push-rerun-attempt``, ``main-push-incomplete-event``: the run is a first attempt and names the pushed commit,
    the workflow file, the job and its run number.
+
+   Then ``scripts.ci_main_push_superseded`` may skip with ``main-push-superseded``: the pushed commit is a strict
+   ancestor of the current tip of ``main``, whose own push run tests a superset tree. Any doubt there leaves the
+   decision to the rules below; the pushed commit being the tip reads only the tip.
+
 2. ``main-push-no-pull-request``, ``main-push-several-pull-requests``: exactly one pull request is associated with the
    pushed commit.
 3. ``main-push-pull-request-not-merged``: that pull request was merged into ``main`` and its merge commit is the pushed
@@ -22,8 +27,9 @@ in this order, and the first one that fails decides for a full run:
    since it is a bookkeeping path. A merge-push skip (``merge-push-clean-main-merge``) proves the two parents, not the
    merged tree, so it is never evidence here and the push to ``main`` runs in full.
 
-The one rule that skips is ``main-push-tested-tree``. No exception is caught here: the gate turns every exception into
-``api-error`` and a full run. Standard library only and Python 3.9 syntax, so it runs on the runner's own ``python3``.
+The two rules that skip are ``main-push-superseded`` and ``main-push-tested-tree``. No exception of the evidence chain
+is caught here: the gate turns every exception into ``api-error`` and a full run. Standard library only and Python 3.9
+syntax, so it runs on the runner's own ``python3``.
 """
 
 from __future__ import annotations
@@ -50,6 +56,7 @@ from scripts.ci_bookkeeping_chain import (
     find_real_success,
     match_job,
 )
+from scripts.ci_main_push_superseded import superseded_check
 from scripts.ci_merge_push_gate import GateRules
 
 MAIN_REF = "refs/heads/main"
@@ -84,6 +91,7 @@ MAIN_PUSH_RUN_RULES = (
     RULE_HEAD_JOB_UNVERIFIED,
     RULE_HEAD_SKIP_UNPROVEN,
 )
+# ``main-push-superseded`` lives in ``scripts.ci_main_push_superseded.SUPERSEDED_SKIP_RULES``.
 MAIN_PUSH_SKIP_RULES = (RULE_TESTED_TREE,)
 
 
@@ -191,13 +199,18 @@ def _head_job_check(context: GateContext, client: GateClient, pull: PullRef, rul
 
 
 def decide_main_push(context: GateContext, client: GateClient, rules: GateRules) -> Decision:
-    """Apply the main-push rules in order; only the head-job check can return "skip". Exceptions reach the caller.
+    """Apply the main-push rules in order; the superseded and head-job checks can return "skip".
+
+    Exceptions of the evidence chain reach the caller; the superseded check catches its own.
 
     ``rules`` carries the gate's diff rule, which judges the changes since a real success behind a gate-skipped head.
     """
     blocked = _event_check(context)
     if blocked is not None:
         return blocked
+    superseded = superseded_check(context, client)
+    if superseded is not None:
+        return superseded
     pull = _merged_pull_request(context, client)
     if isinstance(pull, Decision):
         return pull

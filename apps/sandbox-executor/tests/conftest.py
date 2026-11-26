@@ -81,6 +81,30 @@ def pytest_configure(config: pytest.Config) -> None:
     config.add_cleanup(fast_tmp_dirs.install_fast_numbered_dirs())
 
 
+#: The first collector seen for each directory path in this session.
+_FIRST_DIRECTORY_NODES = pytest.StashKey[dict[Path, pytest.Directory]]()
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_make_collect_report(collector: pytest.Collector) -> Iterator[None]:
+    """Give a directory's conftest fixtures to every collector of that directory, not only the first.
+
+    pytest 9.1 binds a conftest's fixtures to the first collector of its directory, and a later file argument in an
+    already-collected directory makes pytest collect that directory again (`handle_dupes`) into new nodes. Parsing
+    the conftest onto those nodes lets any file selection, in any order, see what the full run sees
+    (`tests/test_fixture_discovery_subset.py`).
+    """
+    report = yield
+    if not isinstance(collector, pytest.Directory):
+        return report
+    first_nodes = collector.config.stash.setdefault(_FIRST_DIRECTORY_NODES, {})
+    first = first_nodes.setdefault(collector.path, collector)
+    conftest = collector.config.pluginmanager.get_plugin(str(collector.path / "conftest.py"))
+    if first is not collector and conftest is not None:
+        collector.session._fixturemanager.parsefactories(holder=conftest, node=collector)
+    return report
+
+
 @pytest.fixture
 def _private_test_root(tmp_path_factory) -> Path:
     """One new, empty, private directory for this test under the worker base temp's `isolated/` directory.

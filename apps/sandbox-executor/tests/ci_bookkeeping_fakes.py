@@ -2,12 +2,12 @@
 
 ``FakeGitHub`` is passed as the opener of ``GateClient``. It serves the URL shapes the gate reads (compare, the runs
 of a workflow by branch or by head commit, the jobs of a run, for a push to ``main`` the pull requests of a commit and
-the tree of a commit, and for a merge push the parents of a commit, the merge base of a compare, recursive trees, blobs
-and the push runs of a commit) from data given by the test, records every requested URL and its ``Authorization``
-header, and raises ``AssertionError`` for any other URL, so nothing reaches the network. The builders return
-recorded-shape entries with defaults: a run, a push run, a merged pull request, a job, the three shapes of a successful
-job (a real success, a job the gate skipped, and a success from before the gate existed), a recursive tree, and a whole
-merge scene (``merge_scene``).
+the tree of a commit and the tip of ``main``, and for a merge push the parents of a commit, the merge base of a
+compare, recursive trees, blobs and the push runs of a commit) from data given by the test, records every requested URL
+and its ``Authorization`` header, and raises ``AssertionError`` for any other URL, so nothing reaches the network. The
+builders return recorded-shape entries with defaults: a run, a push run, a merged pull request, a job, the three shapes
+of a successful job (a real success, a job the gate skipped, and a success from before the gate existed), a recursive
+tree, and a whole merge scene (``merge_scene``).
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ _PULLS = re.compile(r"^commits/([^/?]+)/pulls\?per_page=100$")
 _COMMIT = re.compile(r"^git/commits/([^/?]+)$")
 _TREE = re.compile(r"^git/trees/([^/?]+)\?recursive=1$")
 _BLOB = re.compile(r"^git/blobs/([^/?]+)$")
+_REF = re.compile(r"^git/ref/heads/([^/?]+)$")
 # The commits of the usual merge scene: the merge base, the previous head, the merged-in main commit and the new head.
 MERGE_BASE_SHA = "a" * 40
 PREVIOUS_HEAD_SHA = "b" * 40
@@ -159,6 +160,7 @@ class FakeGitHub:
         self.tree_listings: dict[str, dict[str, object]] = {}
         self.blobs: dict[str, bytes] = {}
         self.merge_bases: dict[tuple[str, str], object] = {}
+        self.refs: dict[str, str] = {}
         self.errors: dict[str, Exception] = {}
         self.bodies: dict[str, bytes] = {}
         self.urls: list[str] = []
@@ -176,6 +178,11 @@ class FakeGitHub:
         entry = push_run(number, head_sha, **overrides)
         self.runs.append(entry)
         self.jobs[int(str(entry["id"]))] = list(jobs)
+        return self
+
+    def set_tip(self, sha: str) -> FakeGitHub:
+        """Serve ``sha`` as the tip of ``main`` and return the fake."""
+        self.refs["main"] = sha
         return self
 
     def add_tree(self, tree_sha: str, files: Mapping[str, str], truncated: bool = False) -> FakeGitHub:
@@ -242,6 +249,10 @@ class FakeGitHub:
         return {"sha": sha, "tree": {"sha": self.trees[sha]}}
 
     def _git_object(self, path: str) -> object:
+        ref = _REF.match(path)
+        if ref:
+            assert ref[1] in self.refs, f"no ref {ref[1]}"
+            return {"ref": f"refs/heads/{ref[1]}", "object": {"sha": self.refs[ref[1]], "type": "commit"}}
         tree = _TREE.match(path)
         if tree:
             assert tree[1] in self.tree_listings, f"no tree listing for {tree[1]}"

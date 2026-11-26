@@ -39,8 +39,11 @@ def _failed_steps(steps):
     return lambda repo_dir, proxy_env: lambda check: dict(detail)
 
 
-def _routed_loop(tmp_path, statuses, steps):
-    """Run one clean-review iteration on a red pipeline; return the result, the resolver calls and the fake."""
+def _routed_loop(tmp_path, statuses, steps, container=False):
+    """Run one clean-review iteration on a red pipeline; return the result, the resolver calls and the fake.
+
+    ``container`` runs the loop as the sandboxed review-loop container does: no injected ensemble seam.
+    """
     from sandbox_executor.flow import run_review_loop
 
     from tests.review_fakes import FakeEnsemble, clean_reviewer
@@ -60,6 +63,7 @@ def _routed_loop(tmp_path, statuses, steps):
         _LoopStubs() as stubs,
         patch("sandbox_executor.flow.review.ci_noise_rerun.gh_detail_lookup", detail),
         patch("sandbox_executor.flow.review.loop.gh_timing_seams", lambda r, p: (detail(r, p), slowest)),
+        patch("sandbox_executor.flow.review.loop.run_ensemble", ensemble),
     ):
         stubs.github.checks_sequence = [checks_for(status) for status in statuses]
         res = run_review_loop(
@@ -67,7 +71,7 @@ def _routed_loop(tmp_path, statuses, steps):
             target=EXEC_TARGET,
             max_iterations=1,
             ensemble_size=1,
-            run_ensemble_fn=ensemble,
+            run_ensemble_fn=None if container else ensemble,
             run_resolver_fn=fake_resolver,
             clock=lambda: now[0],
             sleep=sleep,
@@ -92,6 +96,14 @@ def test_a_timing_gate_still_red_after_its_rerun_goes_to_the_resolver_with_the_t
     assert reruns == ["11"] and len(ensemble.calls) == 1
     ci_rows = [f for f in resolver_calls[0]["findings"] if f.id == "FIND-CI-001"]
     assert ci_rows and "timing gate" in ci_rows[0].summary and "tests/test_slow.py::test_x" in ci_rows[0].summary
+
+
+def test_the_review_loop_container_leaves_the_noise_rerun_to_the_host(tmp_path):
+    red = _one_check("fail", "FAILURE")
+    res, _, ensemble, reruns = _routed_loop(tmp_path, [red], ["CI Timing Gate (fast)"], container=True)
+    assert res["consensus"]["approved"] is False
+    assert reruns == [] and len(ensemble.calls) == 1
+    assert _rows(tmp_path, "ACT-CIROUTE") == []
 
 
 def test_a_failed_test_step_goes_straight_to_the_resolver_without_a_rerun(tmp_path):

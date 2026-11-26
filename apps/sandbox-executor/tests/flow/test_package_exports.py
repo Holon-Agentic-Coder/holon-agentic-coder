@@ -172,7 +172,7 @@ def test_public_definitions_are_unambiguous():
 
 def test_every_public_definition_is_listed_in_all():
     assert DEFINITIONS_ERROR is None, DEFINITIONS_ERROR
-    missing = set(names_missing_from_all(DEFINITIONS, declared_all(FLOW_PACKAGE_DIR)))
+    missing = set(names_missing_from_all(DEFINITIONS, set(flow.__all__)))
     assert sorted(missing - KNOWN_UNEXPORTED) == []
     assert sorted(KNOWN_UNEXPORTED - missing) == []
 

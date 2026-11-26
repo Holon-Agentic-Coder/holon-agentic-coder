@@ -296,6 +296,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     iteration_summaries: list[str] = []
     budget_breach: dict[str, Any] | None = None
     resolver_enabled = (run_resolver_fn is not None) or (not reviewers_sandboxed())
+    noise_rerun_enabled = (run_ensemble_fn is not None) or (not reviewers_sandboxed())
     finding_action_ids: dict[str, str] = {}
     recorded_disposition_keys: set[tuple[str, str, int | None, str]] = set()
     rejected_history: dict[tuple[str, str, int | None, str], FindingDisposition] = {}  # Rejected nits only.
@@ -397,7 +398,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             ci_wait=ci_wait,
         )
         ci = inspect_ci(ci_inputs, context)  # A noise failure is rerun once here, keeping the diff approval.
-        ci = rerun_noise_once(context, ci_inputs, ci, resolved_target.head_sha if resolved_target else None)
+        if noise_rerun_enabled:  # The host reruns: a container's rerun budget and routing rows never reach it.
+            ci = rerun_noise_once(context, ci_inputs, ci, resolved_target.head_sha if resolved_target else None)
         last_ci_status, ci_wait, tests_failed, ci_finding = ci.ci_status, ci.ci_wait, ci.tests_failed, ci.ci_finding
         tests_not_measured |= ci.tests_not_measured
         mergeable = None if missing_ref else not is_dirty

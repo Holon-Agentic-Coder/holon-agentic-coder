@@ -1,6 +1,8 @@
 """Whether the Stage 4 approval still covers a head: the same head, a bookkeeping-only move, or the same fingerprint.
 
-:func:`approval_covers` only annotates reports and records; it never stands in for CI on the head.
+:func:`approval_covers` only annotates reports and records; it never stands in for CI on the head. Its one side
+effect is accounting: a bookkeeping-only move counts one ``non_defect_churn`` (``bookkeeping``) per head, deduplicated
+by event, so repeated queries such as ``diff_gate_holds`` never count the same head twice.
 """
 
 from __future__ import annotations
@@ -48,7 +50,7 @@ def approval_covers(context: FlowContext, repo_dir: str, head: str | None) -> Ap
     fingerprint (a legacy approval) or with a bookkeeping-only PR change (no fingerprint at all).
     Both fingerprints must be known and of the current version to call a change ``CHANGED``; otherwise (a legacy
     approval, a ``pf1`` fingerprint recorded before a version bump, unreadable git) it is ``UNKNOWN_CHANGE``, which
-    keeps today's behaviour.
+    keeps today's behaviour. A ``BOOKKEEPING`` result counts the head's bookkeeping churn once (see the module doc).
     """
     approved = approved_head_of(context)
     if _same_commit(approved, head):

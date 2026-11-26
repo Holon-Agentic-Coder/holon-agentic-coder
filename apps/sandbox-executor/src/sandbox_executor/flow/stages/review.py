@@ -241,7 +241,9 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
             # Every reviewer approved cleanly, but a role, container or adjudication check withheld consensus.
             err_msg = f"Autonomous review blocked: consensus withheld by {'; '.join(blockers)} ({summaries})."
         else:
-            routing = (context.review_state.get("ci_routing") or {}).get("last")  # The CI failure class, if routed.
+            # The CI failure class, named only when it was routed on the head the reviewers saw.
+            routing = (context.review_state.get("ci_routing") or {}).get("last") or {}
+            routing = routing if routing.get("head_sha") == consensus_info.get("target_commit") else None
             err_msg = describe_ci_outcome(
                 ci_checks, loop_res.get("ci_wait"), bool(loop_res.get("tests_failed")), routing=routing
             )

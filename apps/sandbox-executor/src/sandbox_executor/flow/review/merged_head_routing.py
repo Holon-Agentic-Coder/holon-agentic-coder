@@ -83,8 +83,14 @@ def _withdraw(context: FlowContext, start: str, record: dict[str, Any], seams: M
     return _skipped(start, {"review_restart": True, "merged_head_ci": record, "consensus_withdrawal": withdrawal})
 
 
-def _rerun(context: FlowContext, head: str, runs: Sequence[_FailedRun], seams: MergedHeadSeams) -> dict[str, Any]:
-    """Rerun each failed run once and poll the head again; a failed dispatch keeps the head failed."""
+def _rerun(
+    context: FlowContext, head: str, cls: str, runs: Sequence[_FailedRun], seams: MergedHeadSeams
+) -> dict[str, Any]:
+    """Rerun each failed run once, record the routing as Stage 4 does and poll the head again.
+
+    The routing is recorded after the rerun is counted, so ``reruns`` means the same in both stages;
+    a failed dispatch keeps the head failed, and its scoped restart records the resolve routing.
+    """
     repo_dir = context.target_worktree
     dispatch = seams.rerun_dispatcher or gh_run_rerunner(repo_dir, seams.proxy_env)
     dispatched: list[str] = []
@@ -94,6 +100,7 @@ def _rerun(context: FlowContext, head: str, runs: Sequence[_FailedRun], seams: M
             return {"state": FAILED, "head_sha": head, "reason": f"the rerun of run {run_id} could not be dispatched"}
         dispatched.append(run_id)
     _note_rerun(context, head, dispatched)
+    _record_routing(context, head, cls, RERUN, runs)
     _wait_for_rerun_start(context, head, {run.name for run in runs}, seams)
     retried = gate_merged_head_ci(context, repo_dir, head, seams)
     context.log(f"After the noise rerun: {format_merged_head_ci(retried)}")
@@ -149,11 +156,10 @@ def _route_merged_head_failure(
     cls = _classify_failure(runs, seams.detail_lookup or gh_detail_lookup(context.target_worktree, seams.proxy_env))
     if _route_failure(context, head, cls, runs) != RERUN:
         return _scoped_restart(context, start, record, cls, seams), record
-    _record_routing(context, head, cls, RERUN, runs)
     context.log(
         f"CI noise ({CLASS_LABELS[cls]}) on merged head {short_sha(head)}: rerunning once; the diff approval stands."
     )
-    retried = {**record, **_rerun(context, head, runs, seams)}
+    retried = {**record, **_rerun(context, head, cls, runs, seams)}
     if retried["state"] == PASSED:
         record_pipeline_gate(context, PipelineGate(head, GREEN, source="merged_head"))
         return None, retried

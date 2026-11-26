@@ -18,7 +18,6 @@ TESTS_DIR = Path(__file__).parent
 REPO_ROOT = TESTS_DIR.parents[2]
 
 _FIXTURE_NOT_FOUND = re.compile(r"fixture '[^']+' not found")
-_NO_TESTS = re.compile(r"\bno tests ran\b|\b0 (passed|tests)\b")
 
 FILE_LISTS = {
     "no_origin_reconcile": (
@@ -48,5 +47,5 @@ def test_file_subset_sees_conftest_fixtures(files: tuple[str, ...]) -> None:
     missing = [line for line in output.splitlines() if _FIXTURE_NOT_FOUND.search(line)]
     assert not missing, "\n".join(missing)
     assert result.returncode == 0, output
-    summary = output.strip().splitlines()[-1]
-    assert not _NO_TESTS.search(summary), output
+    unplanned = [name for name in files if f"{name}::" not in output]
+    assert not unplanned, f"no tests planned for {unplanned}:\n{output}"

@@ -137,3 +137,56 @@ def test_every_pre_split_public_name_is_still_importable() -> None:
     assert tuple(sorted(PUBLIC_NAMES)) == PUBLIC_NAMES
     missing = [name for name in PUBLIC_NAMES if not hasattr(calibration, name)]
     assert missing == []
+
+
+# CalibrationReport.to_dict() key order before the split: the --json output and the ACT-CAL row depend on it.
+REPORT_DICT_KEYS = (
+    "plan_id",
+    "execution_id",
+    "intent_branch",
+    "plan_branch",
+    "execution_branch",
+    "calibrated_branch",
+    "agent_id",
+    "agent_version",
+    "model_name",
+    "timestamp",
+    "predicted",
+    "actual",
+    "deltas",
+    "entropy_factors",
+    "accuracy_ratings",
+    "bias_directions",
+    "evaluated_commit_sha",
+    "committed",
+    "base_sha",
+    "merge_base_sha",
+    "merged_commit_count",
+    "touch_set",
+    "diff_base",
+    "review_accounting",
+)
+
+
+def test_report_to_dict_keeps_the_pre_split_key_order() -> None:
+    data = _golden_report_dict()
+    report = calibration.CalibrationReport(
+        **{
+            key: data[key]
+            for key in REPORT_DICT_KEYS
+            if key not in ("predicted", "actual", "deltas", "entropy_factors")
+        },
+        predicted=PredictedMetrics(),
+        actual=ActualMetrics(),
+        deltas=calibration.CalibrationDeltas(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        entropy_factors=EntropyFactors(),
+        markdown_content="# not serialised",
+        changed_paths=["src/a.py"],
+    )
+
+    serialised = report.to_dict()
+
+    assert tuple(serialised) == REPORT_DICT_KEYS
+    assert serialised["predicted"] == PredictedMetrics().to_dict()
+    assert serialised["entropy_factors"]["ssa"] == {"predicted": 0.5, "observed": 0.4}
+    assert serialised["accuracy_ratings"] is data["accuracy_ratings"]

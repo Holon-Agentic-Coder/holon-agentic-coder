@@ -166,8 +166,8 @@ def test_clean_two_parent_main_merge_with_real_successes_skips(too_large: bool) 
     fake = scene(too_large=too_large)
 
     assert gate(fake) == Decision(True, "merge-push-clean-main-merge", skip_detail())
-    assert len(fake.urls) <= 13
-    assert fake.calls("git/blobs/") == []
+    assert len(fake.urls) <= 15
+    assert len(fake.calls("git/blobs/")) == 2
 
 
 def test_bookkeeping_files_in_the_same_directories_on_both_sides_still_skip() -> None:
@@ -413,11 +413,18 @@ def test_test_file_of_a_base_side_module_runs() -> None:
     assert gate(fake) == Decision(False, "merge-push-related-change", f"{test_file} and {ENGINE}")
 
 
-def test_unrelated_python_files_in_the_same_root_skip_after_reading_their_blobs() -> None:
+def test_test_under_apps_of_a_pr_script_runs() -> None:
+    test_file = "apps/sandbox-executor/tests/test_ci_gate.py"
+    fake = scene(base={**BASE_CHANGES, test_file: "from scripts.ci_x import VALUE\n"})
+
+    assert gate(fake) == Decision(False, "merge-push-related-change", f"{CODE_FILE} and {test_file}")
+
+
+def test_unrelated_python_files_in_the_related_roots_skip_after_reading_their_blobs() -> None:
     fake = scene(pr={**PR_CHANGES, ROWS: "import os\nimport sandbox_executor.ledger.other\n"})
 
     assert gate(fake).rule == "merge-push-clean-main-merge"
-    assert len(fake.calls("git/blobs/")) == 2
+    assert len(fake.calls("git/blobs/")) == 3
 
 
 @pytest.mark.parametrize(
@@ -455,7 +462,7 @@ def test_more_files_than_the_blob_read_budget_runs() -> None:
 
 def test_local_file_with_the_same_blob_id_is_read_without_a_blob_request(tmp_path: Path) -> None:
     fake = scene(pr={**PR_CHANGES, ROWS: "import os\n"})
-    for path, text in ((ROWS, "import os\n"), (ENGINE, "stale local copy\n")):
+    for path, text in ((ROWS, "import os\n"), (CODE_FILE, PR_CHANGES[CODE_FILE]), (ENGINE, "stale local copy\n")):
         (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / path).write_text(text, encoding="utf-8")
 

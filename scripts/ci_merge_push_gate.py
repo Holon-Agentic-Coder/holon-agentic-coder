@@ -3,7 +3,8 @@
 A "Merge remote-tracking branch origin/main" push changes, against the previous head, every file ``main`` changed since
 the branch point, so the gate's diff rule blocks it and hands the ``synchronize`` push to ``decide_merge_push``. That
 answers ``None`` (keep the gate's decision) when the new head is not a merge commit or its parents cannot be read, else
-a ``Decision``. Only positive evidence skips; the rules run cheapest first, and the first that fails decides "run":
+a ``Decision``; rule 1 answers before any request, so it decides a non-merge push of the hygiene job too. Only
+positive evidence skips; the rules run cheapest first, and the first that fails decides "run":
 
 1. ``-hygiene-never-skipped``: never for job ``hygiene`` or workflow ``test-hygiene.yml`` (no request).
 2. ``-not-two-parents``, ``-first-parent-not-previous-head``, ``-incomplete-event``: two parents, the first is the
@@ -17,16 +18,18 @@ a ``Decision``. Only positive evidence skips; the rules run cheapest first, and 
 7. ``-overlapping-change``: the two sides' changed paths since the merge base share no path and no parent directory.
    Bookkeeping paths are left out of 7 and 8: every flow pull request adds siblings in the same ``executions/``,
    ``plans/`` and ledger directories and they cannot change a test result; rule 6 and the hygiene job still cover them.
-8. ``-unanalysable-change``, ``-scan-too-large``, ``-related-change``: in a root of ``RELATED_ROOTS`` both sides
-   changed, every changed file is a regular ``.py`` file (not ``conftest.py``) that parses with the running grammar,
-   and no file of one side imports a module of the other (a dotted prefix counts) or is its ``test_<stem>.py``, in both
-   directions. Content comes from the local checkout when its blob id matches, else from ``MAX_BLOB_READS`` reads.
+8. ``-unanalysable-change``, ``-scan-too-large``, ``-related-change``: when both sides changed a file under the roots
+   of ``RELATED_ROOTS`` (one pool, since tests under ``apps/`` import ``scripts.*``), every such file is a regular
+   ``.py`` file (not ``conftest.py``) that parses with the running grammar, and no file of one side imports a module of
+   the other (a dotted prefix counts) or is its ``test_<stem>.py``, in both directions. Content comes from the local
+   checkout when its blob id matches, else from ``MAX_BLOB_READS`` reads.
 
-Every rule name starts with ``merge-push``; the one that skips is ``merge-push-clean-main-merge`` (about 11 requests).
-After the merge is confirmed, any exception is ``merge-push-api-error`` with its class name and HTTP status. A later
-``main`` push may skip under ``main-push-tested-tree`` on this evidence. A coupling other than a direct import or a test
-name (a transitive import, a data file, a fixture) is not seen; the daily full runs and the flow's final-head CI check
-remain the backstop. Standard library only and Python 3.9 syntax, so it runs on the runner's own ``python3``.
+Every rule name starts with ``merge-push``; the one that skips is ``merge-push-clean-main-merge`` (about 11 requests
+and the blob reads of rule 8). After the merge is confirmed, any exception is ``merge-push-api-error`` with its class
+name and HTTP status. A later ``main`` push may skip under ``main-push-tested-tree`` on this evidence. A coupling other
+than a direct import or a test name (a transitive import, a data file, a fixture) is not seen; the daily full runs and
+the flow's final-head CI check remain the backstop. Standard library only and Python 3.9 syntax, so it runs on the
+runner's own ``python3``.
 """
 
 from __future__ import annotations
@@ -260,13 +263,22 @@ def _is_analysable(path: str, entry: Entry | None) -> bool:
     return regular and path.endswith(".py") and posixpath.basename(path) != "conftest.py"
 
 
-def _scan_root(trees: MergeTrees, pr_paths: list[str], base_paths: list[str], reader: BlobReader) -> Decision | None:
-    """Judge the changed files of one root where both sides changed files; ``None`` when no file relates to another."""
+def _relation_check(trees: MergeTrees, pr: list[str], base: list[str], client: GateClient) -> Decision | None:
+    """Judge the changed files under ``RELATED_ROOTS`` when both sides changed one; ``None`` when none relates.
+
+    The roots form one pool: a test under ``apps/`` imports ``scripts.*``, so a file is paired across roots too.
+    """
+    prefixes = tuple(f"{root}/" for root in RELATED_ROOTS)
+    pr_paths = [path for path in pr if path.startswith(prefixes)]
+    base_paths = [path for path in base if path.startswith(prefixes)]
+    if not pr_paths or not base_paths:
+        return None
     sides = ((pr_paths, trees.previous), (base_paths, trees.merged_in))
     entries = {p: trees.merged.get(p) or side.get(p) or trees.base.get(p) for paths, side in sides for p in paths}
     odd = next((path for path, entry in entries.items() if not _is_analysable(path, entry)), None)
     if odd is not None:
         return Decision(False, RULE_UNANALYSABLE_CHANGE, odd)
+    reader = BlobReader(client)
     imports: dict[str, frozenset[str]] = {}
     for path, entry in entries.items():
         source = reader.source(path, entry[2]) if entry else None
@@ -278,18 +290,6 @@ def _scan_root(trees: MergeTrees, pr_paths: list[str], base_paths: list[str], re
         imports[path] = found
     pair = related_pair(pr_paths, base_paths, imports)
     return Decision(False, RULE_RELATED_CHANGE, f"{pair[0]} and {pair[1]}") if pair else None
-
-
-def _relation_check(trees: MergeTrees, pr: list[str], base: list[str], client: GateClient) -> Decision | None:
-    """Scan each root of ``RELATED_ROOTS`` that both sides changed; return the first "run" decision."""
-    reader = BlobReader(client)
-    for root in RELATED_ROOTS:
-        pr_under = [path for path in pr if path.startswith(f"{root}/")]
-        base_under = [path for path in base if path.startswith(f"{root}/")]
-        blocked = _scan_root(trees, pr_under, base_under, reader) if pr_under and base_under else None
-        if blocked is not None:
-            return blocked
-    return None
 
 
 def _tree_rules(trees: MergeTrees, is_bookkeeping_path: Callable[[str], bool], client: GateClient) -> Decision | None:

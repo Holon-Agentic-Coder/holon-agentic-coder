@@ -13,7 +13,7 @@ WhichFn = Callable[[str], str | None]
 
 GH_MISSING = "gh not found"
 _SPAWN_FAILURE_EXIT_CODE = 127
-_DISABLE_CLI_HINTS_ENV = {"DOCKER_CLI_HINTS": "false"}
+_NON_INTERACTIVE_GH_ENV = {"DOCKER_CLI_HINTS": "false", "GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,7 @@ class GhResult:
 
 
 def gh_env(proxy_env: Mapping[str, str] | None) -> dict[str, str]:
-    return {**os.environ, **(proxy_env or {}), **_DISABLE_CLI_HINTS_ENV}
+    return {**os.environ, **(proxy_env or {}), **_NON_INTERACTIVE_GH_ENV}
 
 
 def spawn_gh(run: RunFn, args: list[str], cwd: str, timeout: float, env: dict[str, str]) -> GhResult:

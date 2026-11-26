@@ -94,8 +94,13 @@ class Judgement:
     def lines(self) -> list[str]:
         """Render the decision line, one line per judged path and, on a skip, the sentence that says how to force."""
         head = "macos-relevance-gate:" + self.decision.line().partition(":")[2]
-        judged = [f"  {kind:<9} {path}" for path, kind in judge_paths(self.paths)]
+        judged = [f"  {kind:<9} {_printable(path)}" for path, kind in judge_paths(self.paths)]
         return [head, *judged, *([SKIP_SENTENCE] if self.decision.skip else [])]
+
+
+def _printable(text: str) -> str:
+    """Replace every character that is not printable, as ``Decision.line`` does, so no path injects a log command."""
+    return "".join(char if char.isprintable() else "?" for char in text)
 
 
 def _text(value: object) -> str:

@@ -22,6 +22,7 @@ from scripts.macos_relevance import (
     RUN_RULES,
     SKIP_RULES,
     SKIP_SENTENCE,
+    Judgement,
     RelevanceFacts,
     facts_from,
     is_platform_neutral,
@@ -98,6 +99,16 @@ def test_sensitive_paths(path: str) -> None:
 
 def test_judge_paths_keeps_the_input_order() -> None:
     assert judge_paths([SOURCE, DOC]) == [(SOURCE, "sensitive"), (DOC, "neutral")]
+
+
+def test_a_judged_path_cannot_inject_a_workflow_command() -> None:
+    path = "docs/a\n::error::injected.md"
+    judgement = Judgement(Decision(False, "platform-sensitive-change", path), (path,))
+
+    lines = judgement.lines()
+
+    assert lines[1] == "  neutral   docs/a?::error::injected.md"
+    assert not any(line.startswith("::") for line in "\n".join(lines).splitlines())
 
 
 def test_all_neutral_changes_skip() -> None:

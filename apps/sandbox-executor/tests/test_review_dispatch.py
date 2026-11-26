@@ -195,7 +195,7 @@ def test_stage4_host_integrity_failed_ci_blocks_approval(tmp_path: Path, monkeyp
         result = run_review_stage(ctx)
 
     assert result.status is StageStatus.FAILED
-    assert "CI failed: lint, unit." in (result.error or "")
+    assert "without a resolver outcome" in (result.error or "") and "FIND-CI-" in (result.error or "")
     assert "test suite reported failures" not in (result.error or "")
     posts = [args for name, args in github.calls if name == "post_review"]
     assert posts

@@ -20,9 +20,9 @@ from sandbox_executor.flow.review.adjudication import (
 )
 from sandbox_executor.flow.review.approval_gates import approved
 from sandbox_executor.flow.review.verdict import (
+    _finding_outcome_blockers,
     consensus_blockers,
     decide_returned_consensus,
-    finding_outcome_blockers,
     not_approved_verdicts,
     render_final_verdicts,
 )
@@ -315,7 +315,7 @@ _PRIOR_NIT = FindingRow("R1-F1", "nit", "src/app.py", 4, (1,), "Trailing whitesp
 
 
 def _gated_verdict(reviewers, findings=(), dispositions=()):
-    blockers = finding_outcome_blockers(reviewers, findings, dispositions)
+    blockers = _finding_outcome_blockers(reviewers, findings, dispositions)
     return blockers, decide_returned_consensus(reviewers, len(reviewers), True, True, blockers)
 
 

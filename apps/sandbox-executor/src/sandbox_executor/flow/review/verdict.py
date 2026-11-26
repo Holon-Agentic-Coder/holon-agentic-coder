@@ -71,19 +71,19 @@ def consensus_blockers(
     return blockers
 
 
-def verdict_count_blocker(reviewers: Sequence[ReviewerResult]) -> list[str]:
+def _verdict_count_blocker(reviewers: Sequence[ReviewerResult]) -> list[str]:
     count = returned_verdict_count(reviewers)
     if verdict_count_ok(count):
         return []
     return [f"{count} reviewer verdict(s) returned; approval needs exactly {REQUIRED_VERDICTS}"]
 
 
-def finding_outcome_blockers(
+def _finding_outcome_blockers(
     reviewers: Sequence[ReviewerResult],
     findings: Sequence[FindingRow],
     dispositions: Iterable[FindingDisposition],
 ) -> list[str]:
-    blockers = verdict_count_blocker(reviewers)
+    blockers = _verdict_count_blocker(reviewers)
     ids = undisposed_finding_ids(findings, dispositions)
     if ids:
         blockers.append(

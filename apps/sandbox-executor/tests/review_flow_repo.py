@@ -7,7 +7,10 @@ importing another test module. Everything lives under ``tmp_path``; nothing reac
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+
+from sandbox_executor.ledger.fragments import pending_rel_dir
 
 from tests.flow.helpers import _git
 from tests.review_loop_stubs import EXEC_TARGET
@@ -51,8 +54,8 @@ def changed_paths(work: Path, rev: str = "HEAD") -> list[str]:
 
 
 def added_rows(work: Path, rev: str = "HEAD", rel: str = LEDGER) -> list[dict]:
-    """The ledger rows ``rev`` appended to ``rel``."""
-    diff = _git(work, "diff", f"{rev}^", rev, "--", rel)
+    """The ledger rows ``rev`` appended to ``rel`` or to its pending fragments."""
+    diff = _git(work, "diff", f"{rev}^", rev, "--", rel, pending_rel_dir(os.path.basename(rel)))
     return [json.loads(line[1:]) for line in diff.splitlines() if line.startswith("+{")]
 
 

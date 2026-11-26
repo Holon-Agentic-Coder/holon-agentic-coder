@@ -20,6 +20,7 @@ SCOPED_LEDGER_FILES: tuple[str, ...] = (
     "query.py",
     "query_filters.py",
     "reconcile.py",
+    "route.py",
     "rows.py",
 )
 

@@ -53,6 +53,7 @@ from sandbox_executor.flow.review.records import _bounded_error_context
 from sandbox_executor.flow.review.verdict import review_loop_approved, review_summary_lines
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 from sandbox_executor.ledger import generate_action_id, read_merged_rows, try_append_action_record
+from sandbox_executor.ledger.fragments import PENDING_EXCLUDE_PATHSPEC
 from sandbox_executor.module_budget_guard import (
     MODULE_BUDGET_CONFIG,
     module_budget_change_authorised,
@@ -278,7 +279,7 @@ def _prepare_workspace(repo_dir: str, raw: str) -> ReviewTarget:
 _FORBIDDEN_GIT_FLAGS = frozenset({"--force", "-f", "--force-with-lease", "--amend", "rebase"})
 _SEVERITY_ORDER = {"clean": 0, "nit": 1, "important": 2, "critical": 3}
 #: The resolver stages only its own changes: the host loop's uncommitted ledger rows in the shared worktree stay out.
-_RESOLVER_PATHSPEC = ["--", ".", ":(exclude)holon-knowledge/ledger/executions.jsonl"]
+_RESOLVER_PATHSPEC = ["--", ".", ":(exclude)holon-knowledge/ledger/executions.jsonl", PENDING_EXCLUDE_PATHSPEC]
 #: Where a host-dispatched pass (one given --result-file) appends its ledger rows. The host loop owns the canonical
 #: ledger of the bind-mounted worktree and records every pass from the result file, so writing there would duplicate.
 _SCRATCH_LEDGER = "/tmp/holon-review-executions.jsonl"

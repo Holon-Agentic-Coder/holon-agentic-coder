@@ -253,9 +253,7 @@ _READ_OPEN_ALLOW_LIST = {
     ("calibration_touch_set.py", "touch_set_metrics"),  # opens the plan file, only names plans.jsonl in prose
     ("entrypoint/intent_creator.py", "main"),  # opens the intent JSON input; the ledger is appended to
     ("entrypoint/planner.py", "main"),  # opens prompt, template and plan files
-    ("flow/stage5_ledger.py", "recorded_verdicts"),  # Stage 5 reads back its own reconciliation rows (writer side)
     ("knowledge/ledger_sync.py", "read_new_rows"),  # per-file index sync; consult syncs fragment files too
-    ("knowledge/records.py", "reconcile_records"),  # Stage 5 reconciliation read-then-append (writer side)
 }
 
 

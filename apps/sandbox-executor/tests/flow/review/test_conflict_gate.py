@@ -16,6 +16,7 @@ from sandbox_executor.flow.review import conflict_gate, sync_points
 from sandbox_executor.flow.review.posting import PostRequest, post_review_consensus
 from sandbox_executor.flow.stages import calibrate
 from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncResult
+from sandbox_executor.ledger import read_merged_rows, read_merged_rows_at_ref
 from sandbox_executor.review_report import _mergeability_word
 
 from tests.flow.github.fake_github import view_for
@@ -179,7 +180,7 @@ def test_ledger_only_conflict_is_merged_and_pushed_but_the_approval_is_not_poste
     assert posting_res["posted"] is False
     assert posting_res["conflict_gate"]["ledger_only"] is True
     assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") != before
-    merged_rows = [json.loads(line) for line in _git(origin, "show", f"refs/heads/{BRANCH}:{LEDGER}").splitlines()]
+    merged_rows = read_merged_rows_at_ref(str(origin), f"refs/heads/{BRANCH}", "executions.jsonl")
     assert [r["execution_id"] for r in merged_rows[:4]] == ["E-base", "E-main", "E-early", "E-late"]
     assert merged_rows[-1]["action"] == "target_sync"
     message = _git(origin, "log", "-1", "--format=%B", f"refs/heads/{BRANCH}")
@@ -559,17 +560,18 @@ def test_stage5_records_one_carry_over_row_for_a_merge_that_kept_the_change(tmp_
     ctx.stage_results["review"] = StageResult(
         stage=calibrate.FlowStage.REVIEW, status=StageStatus.APPROVED, payload={"consensus": dict(consensus_data)}
     )
-    ledger = work / LEDGER
-    before = ledger.read_text(encoding="utf-8")
+    ledger = str(work / LEDGER)
+    before = read_merged_rows(ledger)
 
     assert conflict_gate._stage5_conflict_gate(ctx) is None
 
     merged = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
-    after = ledger.read_text(encoding="utf-8")
-    assert after.startswith(_git(work, "show", f"{merged}:{LEDGER}"))  # Appended after the merged rows only.
-    (carry,) = [json.loads(line) for line in after.splitlines() if "ACT-CARRY-" in line]
+    after = read_merged_rows(ledger)
+    merged_rows = read_merged_rows_at_ref(str(work), merged, "executions.jsonl")
+    assert after[: len(merged_rows)] == merged_rows  # Appended after the merged rows only.
+    (carry,) = [row for row in after if str(row.get("action_id", "")).startswith("ACT-CARRY-")]
     assert (carry["approved_head"], carry["merged_head"]) == (consensus_data["target_commit"], merged)
-    assert len(after.splitlines()) == len(_git(work, "show", f"{merged}:{LEDGER}").splitlines()) + 1
+    assert len(after) == len(merged_rows) + 1
     consensus = ctx.stage_results["review"].payload["consensus"]
     assert consensus["target_commit"] == consensus_data["target_commit"] and consensus["carried_to"] == merged
     assert before != after

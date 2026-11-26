@@ -23,6 +23,7 @@ from sandbox_executor.flow.calibrate_retry import RetryKind, classify_calibrate_
 from sandbox_executor.flow.checkpoint import load_checkpoint, save_checkpoint
 from sandbox_executor.flow.stage5 import Stage5Steps, run_stage5, standalone_context
 from sandbox_executor.flow.stages.calibrate import stage5_steps
+from sandbox_executor.ledger import read_merged_rows, read_merged_text
 
 from tests.flow.helpers import _configure_identity
 from tests.flow.sleep_patch import scoped_sleep_patch
@@ -114,7 +115,10 @@ def _raising(*errors: BaseException, then: Callable[[], Any] | None = None) -> C
 def _new_rows(repo: Path) -> list[dict[str, Any]]:
     text = (repo / LEDGER_REL).read_text(encoding="utf-8")
     assert text.startswith(SEED_ROW)
-    return [json.loads(line) for line in text[len(SEED_ROW) :].splitlines() if line.strip()]
+    seed = [json.loads(line) for line in SEED_ROW.splitlines() if line.strip()]
+    rows = read_merged_rows(str(repo / LEDGER_REL))
+    assert rows[: len(seed)] == seed
+    return rows[len(seed) :]
 
 
 def test_permanent_error_fails_closed(repo, sleep):
@@ -150,7 +154,7 @@ def test_failure_row_is_a_pure_append(repo, sleep):
     assert row["action"] == "Calibration failed for plan P-200-plan; nothing committed, row left uncommitted"
     assert row["error_context"].startswith(f"Calibration run failed: {PR_249_ERROR}")
     assert row["calibration_report_path"] == REPORT_REL
-    assert TOKEN not in (repo / LEDGER_REL).read_text(encoding="utf-8")
+    assert TOKEN not in (read_merged_text(str(repo / LEDGER_REL)) or "")
 
 
 def test_transient_error_retried_then_succeeds(repo, sleep):

@@ -15,7 +15,6 @@ import os
 import re
 import shutil
 import subprocess
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -40,13 +39,15 @@ from sandbox_executor.calibration_predicted import (
     read_plans_rows,
     select_plans_row,
 )
+from sandbox_executor.calibration_record import calibration_action_row
 from sandbox_executor.calibration_rows import is_execution_row
 from sandbox_executor.calibration_self_check import CalibrateReview, enforce_report_self_check
 from sandbox_executor.calibration_self_check import CalibrationSelfCheckError as CalibrationSelfCheckError
 from sandbox_executor.calibration_touch_set import touch_set_metrics, touch_set_report_lines
 from sandbox_executor.git import METADATA_PATH_PREFIXES as METADATA_PATH_PREFIXES
 from sandbox_executor.git import is_metadata_path, run_git
-from sandbox_executor.ledger import generate_action_id, read_merged_text, try_append_action_record, with_ref_fragments
+from sandbox_executor.ledger import read_merged_text, try_append_action_record, with_ref_fragments
+from sandbox_executor.ledger.fragments import ledger_commit_paths
 from sandbox_executor.plan_paths import (
     calibration_report_for_branch,
     legacy_calibration_report_rel,
@@ -1304,33 +1305,7 @@ def record_calibration_action(  # noqa: PLR0913
         The written record, or None if the append failed.
     """
     data = report.to_dict() if isinstance(report, CalibrationReport) else dict(report)
-    plan_id = str(data.get("plan_id") or "P-unknown")
-    execution_branch = data.get("execution_branch")
-    if outcome == "success":
-        action = f"Calibration report generated for plan {plan_id}"
-    else:
-        action = f"Calibration failed for plan {plan_id}; nothing committed, row left uncommitted"
-    record: dict[str, Any] = {
-        "action_id": generate_action_id("ACT-CAL"),
-        "execution_id": f"CAL-{plan_id}-{int(time.time())}",
-        "action": action,
-        "category": "doc",
-        "target": data.get("calibrated_branch") or execution_branch or plan_id,
-        "outcome": outcome,
-        "entry_type": "action",
-        "action_origin": "calibration",
-        "labels": ["calibration", "stage-5", plan_id],
-        "error_context": error_context,
-        "plan_branch": data.get("plan_branch"),
-        "execution_branch": execution_branch,
-        "evaluated_commit_sha": data.get("evaluated_commit_sha"),
-        "predicted_metrics": data.get("predicted"),
-        "actual_metrics": data.get("actual"),
-        "calibration_deltas": data.get("deltas"),
-        "calibration_report_path": report_rel,
-        "created_at": datetime.now(UTC).isoformat(),
-        "touch_set_accuracy": data.get("touch_set"),
-    }
+    record = calibration_action_row(data, report_rel, outcome, error_context)
     ledger_path = os.path.join(target_worktree, LEDGER_EXECUTIONS_REL)
     return try_append_action_record(
         ledger_path, record, label="Stage 5 calibration action ACT-CAL", preserve_shape=True, log_fn=log_fn
@@ -1587,7 +1562,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
     if skip_commit:
         logger.info("Skipping ACT-CAL ledger record for %s: calibration is not being committed", report.plan_id)
     elif record_calibration_action(report, target_worktree, report_rel, log_fn=log_fn) is not None:
-        commit_paths.append(LEDGER_EXECUTIONS_REL)
+        commit_paths.extend(ledger_commit_paths(target_worktree, "executions.jsonl"))
 
     if not skip_commit:
         try:

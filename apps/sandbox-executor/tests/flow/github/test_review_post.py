@@ -1,6 +1,5 @@
 """Tests for semantic PR metadata and the posted consensus review."""
 
-import json
 from unittest.mock import patch
 
 from sandbox_executor.flow import (
@@ -13,6 +12,8 @@ from sandbox_executor.flow import (
     post_pr_review_consensus,
     run_review_loop,
 )
+from sandbox_executor.ledger import read_merged_rows
+from sandbox_executor.ledger.fragments import iter_fragment_files
 
 from tests.flow.github.fake_github import FakeGitHub, checks_for, spawn_failure, view_for
 from tests.review_fakes import clean_reviewer
@@ -330,8 +331,8 @@ class TestSemanticPRAndConsensusReview:
             assert github.methods()[0] == "open_or_update" and "post_review" in github.methods()
 
         exec_file = ledger_dir / "executions.jsonl"
-        assert exec_file.exists()
-        records = [json.loads(line) for line in exec_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+        assert iter_fragment_files(str(exec_file))
+        records = read_merged_rows(str(exec_file))
 
         action_records = [r for r in records if r.get("entry_type") == "action"]
 

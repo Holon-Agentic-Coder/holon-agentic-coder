@@ -61,3 +61,16 @@ def merge_by_instant(canonical_rows: list[dict[str, Any]], fragment_rows: list[d
         if position < len(canonical_rows):
             merged.append(canonical_rows[position])
     return merged + untimed
+
+
+def _format_utc_z(instant: datetime) -> str:
+    return instant.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def utc_now_z() -> str:
+    return _format_utc_z(datetime.now(UTC))
+
+
+def to_utc_z(value: object) -> str | None:
+    instant = parse_created_at(value)
+    return None if instant is None else _format_utc_z(instant)

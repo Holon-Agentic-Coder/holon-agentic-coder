@@ -12,6 +12,7 @@ are bookkeeping all the same (``is_ledger_only_commit``), so they never make a r
 from __future__ import annotations
 
 from sandbox_executor.git import run_git
+from sandbox_executor.ledger.fragments import pending_rel_dir
 from sandbox_executor.plan_paths import is_calibration_report_path
 
 LEDGER_EXECUTIONS_REL = "holon-knowledge/ledger/executions.jsonl"
@@ -30,7 +31,9 @@ def _git_out(repo_dir: str, args: list[str]) -> str | None:
 def is_calibration_path(path: str) -> bool:
     """True for a path Stage 5 commits: a plans/ calibration report, the executions ledger, kb or wisdom files."""
     return (
-        path == LEDGER_EXECUTIONS_REL or path.startswith(CALIBRATION_DIR_PREFIXES) or is_calibration_report_path(path)
+        path == LEDGER_EXECUTIONS_REL
+        or path.startswith((*CALIBRATION_DIR_PREFIXES, f"{pending_rel_dir('executions.jsonl')}/"))
+        or is_calibration_report_path(path)
     )
 
 

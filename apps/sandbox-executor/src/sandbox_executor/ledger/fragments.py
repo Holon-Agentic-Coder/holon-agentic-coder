@@ -65,3 +65,19 @@ def root_intent_id(row: dict[str, Any]) -> str:
 
 def fragment_path(canonical_path: str, row: dict[str, Any]) -> str:
     return os.path.join(pending_dir_for(canonical_path), f"{root_intent_id(row)}{FRAGMENT_SUFFIX}")
+
+
+PENDING_EXCLUDE_PATHSPEC = f":(exclude){PENDING_DIR_REL}"
+
+
+def ledger_commit_paths(repo_dir: str, *ledger_names: str) -> list[str]:
+    paths: list[str] = []
+    for name in ledger_names or LEDGER_NAMES:
+        for rel in (f"{LEDGER_DIR_REL}/{name}", pending_rel_dir(name)):
+            if rel not in paths and os.path.exists(os.path.join(repo_dir, rel)):
+                paths.append(rel)
+    return paths
+
+
+def is_ledger_commit_path(path: str) -> bool:
+    return path in {f"{LEDGER_DIR_REL}/{name}" for name in LEDGER_NAMES} or path.startswith(f"{PENDING_DIR_REL}/")

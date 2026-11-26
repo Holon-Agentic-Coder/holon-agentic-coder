@@ -25,6 +25,7 @@ from sandbox_executor.flow.github.merge import PROTECTED_BRANCHES, _bare_branch
 from sandbox_executor.flow.host_remote import HostRemoteError, push_commit
 from sandbox_executor.flow.review.git_identity import REVIEW_GIT_ENV
 from sandbox_executor.git import run_git
+from sandbox_executor.ledger.fragments import PENDING_DIR_REL, is_ledger_commit_path
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_target import ReviewTarget
 
@@ -45,11 +46,12 @@ class _LedgerCommit:
 
 def _pending_ledger_paths(repo_dir: str) -> list[str]:
     """Return the ledger files modified or untracked in ``repo_dir``; empty when it is not a git worktree."""
-    res = run_git(["status", "--porcelain", "--untracked-files=all", "--", *LEDGER_RELS], cwd=repo_dir, check=False)
+    spec = ["--", *LEDGER_RELS, PENDING_DIR_REL]
+    res = run_git(["status", "--porcelain", "--untracked-files=all", *spec], cwd=repo_dir, check=False)
     if res.returncode != 0:
         return []
     paths = (line[2:].strip() for line in (res.stdout or "").splitlines())
-    return [path for path in paths if path in LEDGER_RELS]
+    return [path for path in paths if is_ledger_commit_path(path)]
 
 
 def _checked_out_branch(repo_dir: str) -> str | None:
@@ -105,7 +107,7 @@ def _only_ledger_commits_ahead(repo_dir: str, rev: str, branch: str) -> bool:
         if len(shas) != 2:
             return False
         names = run_git(["diff-tree", "--no-commit-id", "--name-only", "-r", shas[0]], cwd=repo_dir, check=False)
-        if names.returncode != 0 or not set((names.stdout or "").splitlines()) <= set(LEDGER_RELS):
+        if names.returncode != 0 or not all(map(is_ledger_commit_path, (names.stdout or "").splitlines())):
             return False
     return True
 

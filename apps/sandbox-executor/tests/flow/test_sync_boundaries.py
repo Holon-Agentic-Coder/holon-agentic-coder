@@ -22,6 +22,7 @@ from sandbox_executor.flow import (
     sync_conflict_result,
 )
 from sandbox_executor.flow.target_sync_result import SyncBoundary
+from sandbox_executor.ledger import read_merged_rows_at_ref
 
 from tests.flow.helpers import _git
 from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
@@ -60,8 +61,8 @@ class FakeResolverDispatcher:
 
 
 def _sync_rows(work: Path, branch: str = FLOW_BRANCH) -> list[dict]:
-    content = _git(work, "show", f"origin/{branch}:{LEDGER}")
-    return [row for row in map(json.loads, content.splitlines()) if row.get("action") == "target_sync"]
+    rows = read_merged_rows_at_ref(str(work), f"origin/{branch}", "executions.jsonl")
+    return [row for row in rows if row.get("action") == "target_sync"]
 
 
 def _inject_ledger_conflict(work: Path, branch: str, idx: int) -> None:
@@ -235,7 +236,7 @@ def test_stage3_sync_conflict_row_triggers_host_sync_and_records_supersedes(tmp_
     assert len(rows) == 1
     assert rows[0]["supersedes"] == "E-3-z@r2"
     assert rows[0]["outcome"] == "success"
-    ledger_lines = [json.loads(line) for line in _git(work, "show", f"origin/{FLOW_BRANCH}:{LEDGER}").splitlines()]
+    ledger_lines = read_merged_rows_at_ref(str(work), f"origin/{FLOW_BRANCH}", "executions.jsonl")
     summaries = [r for r in ledger_lines if r.get("entry_type") == "summary" and r.get("execution_id") == "E-3-z"]
     assert summaries[-1]["status"] == "success"
     assert summaries[-1]["ledger_revision"] == 3

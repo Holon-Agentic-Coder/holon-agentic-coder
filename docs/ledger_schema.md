@@ -102,36 +102,7 @@ ledger appends are guarded by `LedgerLock` (`sandbox_executor.ledger.LedgerLock`
   stops before a rewritten ledger is committed or pushed. The guard covers each write window; no code path rewrites a
   ledger between appends. Conflict resolution only appends the other side's lines that the kept side lacks, in their
   original order (an identical line is not repeated), and never sorts, deduplicates by key or re-serialises rows. Failed
-  and dry-run stages never stage a ledger.
-
-#### Pending fragments (read side)
-
-A ledger may also have pending fragment files that are not yet promoted into the canonical file:
-`holon-knowledge/ledger/pending/<ledger-stem>/<root-intent-id>.jsonl` (for example
-`holon-knowledge/ledger/pending/plans/I-1795584436-ledger-fragments-and-promotion.jsonl`). The root intent id is the
-first `/` segment of the row's `branch`, `intent_branch`, `plan_branch` or `parent_branch`, without a `--N-...` child
-suffix, and `_unscoped` when the row has none (`sandbox_executor.ledger.fragments`).
-
-Every reader of a canonical ledger reads the logical ledger: the canonical file plus its fragments
-(`sandbox_executor.ledger.read_merged_rows` for a working tree, `read_merged_rows_at_ref` for a git ref, which lists
-`pending/<stem>/` with `git ls-tree`).
-
-- **Canonical wins.** Fragment rows are de-duplicated by row identity against the canonical file and against earlier
-  fragments (fragment files are read in file-name order). Canonical rows are never de-duplicated against each other. The
-  identities are:
-  - plans: `(intent_branch, plan_id, ledger_revision)`, so revision rows stay distinct;
-  - intents: `(branch or intent_id, ledger_revision, entry_type)`;
-  - executions: `action_id` when present, otherwise
-    `(plan_branch, execution_id, entry_type, ledger_revision, created_at)`;
-  - any other row: its whole JSON object.
-- **Instant ordering.** Canonical rows keep their file order. Each fragment row is placed after the longest canonical
-  prefix whose latest `created_at` instant is not later than its own, so a canonical file written out of order places it
-  before the first canonical row that pushes that running maximum past it. `Z`, `+00:00` and other offsets compare as
-  UTC instants, and a naive timestamp is UTC. On a tie the canonical row comes first, then the fragment rows in input
-  order. Fragment rows without a parseable `created_at` come last.
-- **No fragments, no change.** Without fragment files a reader returns exactly the canonical rows (or the raw canonical
-  text for text-based parsers), in file order, skipping blank and malformed lines as before. A path outside
-  `holon-knowledge/ledger/` (for example a scratch ledger in `/tmp`) never reads fragments.
+  and dry-run stages never stage a ledger. Appends write [pending fragments](ledger_fragments.md), not canonical files.
 
 #### Flow Stage Record Matrix
 

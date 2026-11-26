@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import pytest
 from sandbox_executor.flow import FlowContext, check_pr_mergeability, probe_ci_checks, run_review_loop
+from sandbox_executor.ledger import read_merged_rows
 from sandbox_executor.review_target import DiffVerdict
 
 from tests.review_fakes import FakeEnsemble, install_fake_reviewers
@@ -97,8 +98,7 @@ def _stacked_context(tmp_path: Path) -> FlowContext:
 
 
 def _ledger_rows(tmp_path: Path) -> list[dict[str, Any]]:
-    ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
-    return [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return read_merged_rows(str(tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"))
 
 
 def _with_gh_present(monkeypatch: pytest.MonkeyPatch, fake_gh: FakeGh) -> None:

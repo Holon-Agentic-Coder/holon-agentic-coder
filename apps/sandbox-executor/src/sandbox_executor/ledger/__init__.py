@@ -7,7 +7,6 @@ from sandbox_executor.ledger.lock import (
     _first_divergence,
     _read_ledger_bytes,
     assert_ledger_prefix,
-    atomic_ledger_append,
     suppress_ledger_failures,
 )
 from sandbox_executor.ledger.merged import (
@@ -49,6 +48,7 @@ from sandbox_executor.ledger.reconcile import (
     reconcile_ledgers,
     resolve_append_only_conflict,
 )
+from sandbox_executor.ledger.route import atomic_ledger_append
 from sandbox_executor.ledger.rows import (
     _REPEAT_CHECKED_ID_KEYS,
     OPTIONAL_OMITTED_FIELDS,

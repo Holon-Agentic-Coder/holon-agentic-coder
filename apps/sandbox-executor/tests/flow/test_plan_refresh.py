@@ -30,7 +30,7 @@ from sandbox_executor.flow.admission import check_admission
 from sandbox_executor.flow.admission_decision import AdmissionDecision
 from sandbox_executor.flow.checkpoint import load_checkpoint
 from sandbox_executor.flow.checkpoint_discovery import get_default_checkpoint_path
-from sandbox_executor.ledger import build_execution_id
+from sandbox_executor.ledger import build_execution_id, read_merged_rows_at_ref
 from sandbox_executor.plan_paths import REFRESH_MERGE_PREFIX
 
 INTENT = "I-1-x/_"
@@ -167,7 +167,7 @@ def saved_admission(repo: Path) -> dict | None:
 
 
 def refresh_rows(repo: Path, ref: str = f"refs/remotes/origin/{PLAN}") -> list[dict]:
-    rows = [json.loads(line) for line in git(repo, "show", f"{ref}:{EXECUTIONS}").splitlines()]
+    rows = read_merged_rows_at_ref(str(repo), ref, "executions.jsonl")
     return [r for r in rows if r.get("kind") == PLAN_REFRESH_KIND]
 
 

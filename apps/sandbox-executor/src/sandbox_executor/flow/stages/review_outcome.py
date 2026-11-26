@@ -50,6 +50,7 @@ def build_review_stage_outcome(
                 "mergeability": outcome.mergeability,
                 "posting": outcome.loop_res.get("posting"),
                 "pr": outcome.loop_res.get("pr"),
+                "review_accounting": outcome.loop_res.get("accounting"),
             },
             error=None,
         )
@@ -75,6 +76,7 @@ def build_review_stage_outcome(
                 "mergeability": outcome.mergeability,
                 "posting": outcome.loop_res.get("posting"),
                 "pr": outcome.loop_res.get("pr"),
+                "review_accounting": outcome.loop_res.get("accounting"),
             },
             error=None,
         )

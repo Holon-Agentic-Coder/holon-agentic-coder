@@ -28,6 +28,7 @@ from sandbox_executor.git import run_git
 from sandbox_executor.git_revisions import qualify_branch_revision, revision_args
 from sandbox_executor.knowledge import ConsultEngine
 from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.review_accounting import accounting_of, render_accounting_lines
 from sandbox_executor.review_ensemble import ConsensusVerdict
 from sandbox_executor.worktree_head import ReattachStatus, reattach_branch, restore_branch
 
@@ -156,6 +157,8 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
     # One adapter for the whole stage: every PR, CI, mergeability and posting call of the loop goes through it.
     github = GitHubAdapter(context.target_worktree, review_proxy_env(context))
     loop_res = _run_engine_review_loop(context, github=github)
+    for line in render_accounting_lines(accounting_of(loop_res)):
+        context.log(f"[Review Loop]{line}")
     # The payload reports the engine's configured budget, not the remaining passes of this run.
     consensus_info = {**loop_res.get("consensus", {}), "max_review_iterations": context.max_review_iterations}
 
@@ -183,6 +186,7 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
         "consulted_knowledge_ids": review_consulted_ids,
         "posting": loop_res.get("posting"),
         "pr": loop_res.get("pr"),
+        "review_accounting": loop_res.get("accounting"),
     }
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -268,6 +272,7 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
                 "mergeability": mergeability,
                 "posting": loop_res.get("posting"),
                 "pr": loop_res.get("pr"),
+                "review_accounting": loop_res.get("accounting"),
             },
             error=err_msg,
         )

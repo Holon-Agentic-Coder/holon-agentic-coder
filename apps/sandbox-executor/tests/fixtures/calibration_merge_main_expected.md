@@ -74,3 +74,9 @@ Declared entries the diff did not touch:
 
 - none
 
+---
+
+## 6. Review Churn
+
+- **Review churn:** not recorded
+

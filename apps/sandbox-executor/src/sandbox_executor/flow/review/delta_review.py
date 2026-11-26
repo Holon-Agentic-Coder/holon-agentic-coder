@@ -23,6 +23,7 @@ from sandbox_executor.flow.review.delta_review_limits import (
 )
 from sandbox_executor.flow.review.delta_review_mode import FULL, SCOPED, ReviewMode, decision_from_dict
 from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.review_accounting import count_accounting, review_generation
 from sandbox_executor.review_ensemble import ReviewerResult, ReviewerStatus
 
 SCOPED_CHAIN_LIMIT = 3
@@ -152,6 +153,11 @@ def begin_review_pass(context: FlowContext, repo_dir: str, head: str, iteration:
     """Decide and record the mode of pass ``iteration`` on ``head``, and log it."""
     decision = decide_review_mode(context, repo_dir, head)
     set_current(context, decision)
+    count_accounting(
+        context,
+        "scoped_reviews" if decision.scoped else "full_reviews",
+        event=f"review:{review_generation(context)}:{head}:{iteration}",
+    )
     context.log(f"[Review Loop] Review mode at iteration {iteration}: {decision.mode} ({decision.reason}).")
     return decision
 

@@ -35,6 +35,7 @@ from sandbox_executor.flow.review.approval_coverage import approved_fingerprint_
 from sandbox_executor.knowledge import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.review_accounting import restart_review_passes
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +157,7 @@ def _reset_review(context: FlowContext, withdrawn: dict[str, Any]) -> None:
     if review is not None:
         consensus = {**(review.payload.get("consensus") or {}), "approved": False, "withdrawn": withdrawn}
         review.payload = {**review.payload, "consensus": consensus}
-    context.review_iterations_done = 0
-    context.carried_review_findings = []
+    restart_review_passes(context)
 
 
 def withdraw_consensus(

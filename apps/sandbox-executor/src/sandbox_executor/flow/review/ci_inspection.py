@@ -9,10 +9,12 @@ from typing import Any, NamedTuple
 from sandbox_executor.budgets import StageTimer
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.github.ci import _ci_green, resolve_ci_registration_timeout
-from sandbox_executor.flow.github.ci_failure_detail import DetailLookup
+from sandbox_executor.flow.github.ci_failure_detail import DetailLookup, parse_run_id
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, CiWaitResult, settle_pending_ci
 from sandbox_executor.flow.review.ci_evidence import _apply_guarded_test_evidence
 from sandbox_executor.flow.review.ci_outcome import gate_ci_flags
+from sandbox_executor.flow.review.delta_review import current_decision
+from sandbox_executor.review_accounting import count_accounting
 
 
 @dataclass(frozen=True)
@@ -63,10 +65,23 @@ class CiInspection(NamedTuple):
 def inspect_ci(inputs: CiInspectionInputs, context: FlowContext) -> CiInspection:
     """Run the fast probe on reviewer objections, the post-review gate on a clean review, else the fallback probe."""
     if inputs.reviewer_objected:
-        return _fast_probe(inputs)
-    if not inputs.is_dirty and not inputs.missing_ref and not inputs.effective_dry_run and not inputs.infra_failed:
-        return _post_review_gate(inputs, context)
-    return _fallback_probe(inputs)
+        ci = _fast_probe(inputs)
+    elif not inputs.is_dirty and not inputs.missing_ref and not inputs.effective_dry_run and not inputs.infra_failed:
+        ci = _post_review_gate(inputs, context)
+    else:
+        ci = _fallback_probe(inputs)
+    _count_settled_pipeline(context, inputs.review_target, ci.ci_status)
+    return ci
+
+
+def _count_settled_pipeline(context: FlowContext, review_target: str, ci_status: dict[str, Any]) -> None:
+    """Count a settled GitHub pipeline once per head and run ids; pending, unavailable or local status is no run."""
+    if ci_status.get("source") != "github_cli" or not ci_status.get("total") or ci_status.get("pending", 0):
+        return
+    links = (check.get("link") for check in ci_status.get("checks") or [] if isinstance(check, dict))
+    run_ids = sorted({run_id for run_id in map(parse_run_id, links) if run_id})
+    runs = ",".join(run_ids) or "no-run-id"
+    count_accounting(context, "pipeline_runs", event=f"run:{current_decision(context).head or review_target}:{runs}")
 
 
 def _kept_wait(ci_wait: CiWaitResult | None, ci_status: dict[str, Any]) -> CiWaitResult | None:

@@ -36,6 +36,7 @@ from sandbox_executor.flow.review.delta_review_limits import (
 )
 from sandbox_executor.flow.review.delta_review_mode import FULL, SCOPED, ReviewMode, decision_from_dict
 from sandbox_executor.flow.review.delta_review_request import build_delta_request
+from sandbox_executor.review_accounting import accounting_of, restart_review_passes
 from sandbox_executor.review_report import FindingRow
 from sandbox_executor.review_request import ScopedDelta, format_delta_body
 from sandbox_executor.review_target import ReviewTarget
@@ -238,6 +239,28 @@ def test_begin_review_pass_logs_and_records_the_mode(repo):
     begin_review_pass(context, str(repo), _git(repo, "rev-parse", "HEAD"), 4)
     assert current_decision(context).mode == FULL
     assert any("Review mode at iteration 4: full (last reviewed head unknown)." in line for line in context.logs)
+
+
+def test_begin_review_pass_counts_full_and_scoped_passes_once_per_head_and_label(repo):
+    context = _reviewed(repo)
+    begin_review_pass(context, str(repo), _git(repo, "rev-parse", "HEAD"), 1)
+    head = _commit(repo, {APP: "line 0\nchanged\n"}, "fix")
+    begin_review_pass(context, str(repo), head, 2)
+    begin_review_pass(context, str(repo), head, 2)  # A resumed pass with the same label.
+    accounting = accounting_of(context)
+    assert (accounting["full_reviews"], accounting["scoped_reviews"]) == (1, 1)
+
+
+def test_a_pass_after_a_review_restart_counts_again_at_the_same_head_and_label(repo):
+    """A consensus withdrawal or scoped restart resets the label to 1: the same head and label is a new pass."""
+    context, head = FlowContext(repo_dir=str(repo)), _git(repo, "rev-parse", "HEAD")
+    begin_review_pass(context, str(repo), head, 1)
+    context.review_iterations_done = 1
+    restart_review_passes(context)
+    begin_review_pass(context, str(repo), head, 1)
+    begin_review_pass(context, str(repo), head, 1)  # A resumed pass after the restart.
+    assert accounting_of(context)["full_reviews"] == 2
+    assert (context.review_iterations_done, context.carried_review_findings) == (0, [])
 
 
 # --- the record ------------------------------------------------------------------------------------------------------

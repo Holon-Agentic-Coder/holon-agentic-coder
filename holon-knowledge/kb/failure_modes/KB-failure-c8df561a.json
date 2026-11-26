@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-c8df561a",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T10:41:01.937181+00:00",
+  "updated_ts": "2026-11-26T10:41:01.937181+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795686382-0bbec174",
+      "ACT-FIND-1795686376-d966e1c5"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795665991-no-unneeded-full-review/P-1795666015-CLA-CO5.5--5-count-full-reviews-scoped/P-1795685564-CLA-CO5.5/E-1795685676-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-01",
+    "symptoms": [
+      "calibration.py was already over 1,000 lines (1,608) and grows to 1,620; offset the growth by moving the accounting plumbing into calibration_review_churn.py or extracting another block."
+    ]
+  }
+}

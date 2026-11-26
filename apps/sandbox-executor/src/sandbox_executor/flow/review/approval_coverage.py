@@ -14,6 +14,7 @@ from sandbox_executor.flow.review.approval_fingerprint import (
     fingerprints_match,
     is_bookkeeping_only_move,
 )
+from sandbox_executor.review_accounting import count_accounting
 
 SAME_HEAD = "same_head"
 SAME_FINGERPRINT = "same_fingerprint"
@@ -51,6 +52,7 @@ def approval_covers(context: FlowContext, repo_dir: str, head: str | None) -> Ap
     if _same_commit(approved, head):
         return ApprovalCoverage(True, SAME_HEAD)
     if approved and head and is_bookkeeping_only_move(repo_dir, approved, head):
+        count_accounting(context, "non_defect_churn", "bookkeeping", event=f"bookkeeping:{head}")
         return ApprovalCoverage(True, BOOKKEEPING)
     recorded = approved_fingerprint_of(context)
     consensus = _consensus_of(context)

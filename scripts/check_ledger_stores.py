@@ -29,8 +29,7 @@ def fragment_dir(kind: str) -> str:
 
 
 def list_repository_files(repo: Path) -> list[str]:
-    # why: untracked files that are not ignored count, so a new store is caught before it is committed, while ignored
-    # trees such as .venv never do.
+    # why: untracked-not-ignored files count, so a new store fails before its commit; ignored trees never do.
     listing = subprocess.run(
         ["git", "-C", str(repo), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         check=True,

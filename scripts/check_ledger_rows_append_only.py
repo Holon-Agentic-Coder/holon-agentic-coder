@@ -23,8 +23,7 @@ def _git(repo: Path, *args: str, stdin: bytes | None = None) -> bytes:
 
 
 def merge_base(repo: Path, base: str, head: str) -> str:
-    # why: rows that landed on the base branch after the branch point are not this pull request's edits, so the
-    # comparison starts at the merge base.
+    # why: rows that landed on the base branch after the branch point are not this pull request's edits.
     return _git(repo, "merge-base", base, head).decode("ascii").strip()
 
 

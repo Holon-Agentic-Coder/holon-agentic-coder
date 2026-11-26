@@ -44,6 +44,7 @@ from tests.flow.helpers import _git
 from tests.review_fakes import clean_reviewer, failed_reviewer, objecting_reviewer
 
 APP = "src/app.py"
+H1, H2 = "1" * 40, "2" * 40
 
 
 def _commit(repo: Path, files: dict[str, str | bytes], message: str = "change") -> str:
@@ -242,17 +243,17 @@ def test_missing_reviewer_clears_the_last_reviewed_head(repo):
 def test_full_pass_anchors_and_resets_the_chain_and_scoped_pass_extends_it():
     context = FlowContext(repo_dir=".")
     delta_state_of(context).update(scoped_chain=2, addressed=[{"id": "X"}])
-    set_current(context, ReviewMode(FULL, "head not moved", "h1"))
-    end_review_pass(context, "h1", [clean_reviewer(1)], 1)
+    set_current(context, ReviewMode(FULL, "head not moved", H1))
+    end_review_pass(context, H1, [clean_reviewer(1)], 1)
     assert {k: delta_state_of(context)[k] for k in ("anchor_head", "scoped_chain", "last_reviewed_head")} == {
-        "anchor_head": "h1",
+        "anchor_head": H1,
         "scoped_chain": 0,
-        "last_reviewed_head": "h1",
+        "last_reviewed_head": H1,
     }
     assert delta_state_of(context)["addressed"] == []
-    set_current(context, ReviewMode(SCOPED, "delta 1 lines", "h2", "h1", (APP,), 1))
-    end_review_pass(context, "h2", [clean_reviewer(1)], 1)
-    assert (delta_state_of(context)["anchor_head"], delta_state_of(context)["scoped_chain"]) == ("h1", 1)
+    set_current(context, ReviewMode(SCOPED, "delta 1 lines", H2, H1, (APP,), 1))
+    end_review_pass(context, H2, [clean_reviewer(1)], 1)
+    assert (delta_state_of(context)["anchor_head"], delta_state_of(context)["scoped_chain"]) == (H1, 1)
 
 
 def test_end_review_pass_records_a_critical_finding():
@@ -392,6 +393,8 @@ def test_escaping_forwarded_paths_are_rejected(repo, rel_path):
     "data",
     [
         None,
+        {"mode": "scoped", "reason": "r", "head": "h", "base": "b", "paths": ["a"], "context_bytes": 1},
+        {"mode": "scoped", "reason": "r", "head": H2, "base": "--output=x", "paths": ["a"], "context_bytes": 1},
         {"mode": "scoped"},
         {"mode": "scoped", "reason": "r", "head": "h", "base": "", "paths": ["a"], "context_bytes": 1},
         {"mode": "scoped", "reason": "r", "head": "h", "base": "b", "paths": "a", "context_bytes": 1},
@@ -403,7 +406,7 @@ def test_malformed_decisions_are_full(data):
 
 
 def test_scoped_decision_serialises_to_json():
-    decision = ReviewMode(SCOPED, "delta 1 lines", "h", "b", (APP,), 1, 10)
+    decision = ReviewMode(SCOPED, "delta 1 lines", H2, H1, (APP,), 1, 10)
     assert decision_from_dict(json.loads(json.dumps(decision.to_dict()))) == decision
 
 

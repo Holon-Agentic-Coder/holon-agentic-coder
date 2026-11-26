@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
 from sandbox_executor.flow.review.delta_review_limits import DEFAULT_SCOPED_REVIEW_CONTEXT_BYTES
 
 SCOPED, FULL = "scoped", "full"
+_COMMIT_ID = re.compile(r"[0-9a-f]{7,64}")
 
 
 @dataclass(frozen=True)
@@ -31,7 +33,7 @@ class ReviewMode:
 
 
 def decision_from_dict(data: Any) -> ReviewMode:
-    """The decision ``data`` records; anything malformed (or a scoped one without its range) gives ``full``."""
+    """The decision ``data`` records; anything malformed (or a scoped one without a commit-id range) gives ``full``."""
     try:
         paths = data.get("paths") or []
         if not isinstance(paths, list):
@@ -42,5 +44,6 @@ def decision_from_dict(data: Any) -> ReviewMode:
         decision = ReviewMode(*fields, tuple(paths), int(data.get("delta_lines") or 0), int(data["context_bytes"]))
     except (AttributeError, KeyError, TypeError, ValueError):
         return ReviewMode(FULL, "malformed decision")
-    complete = decision.head and decision.base and decision.paths and decision.context_bytes > 0
+    commits = all(_COMMIT_ID.fullmatch(c) for c in (decision.head, decision.base))
+    complete = commits and decision.paths and decision.context_bytes > 0
     return decision if decision.mode == FULL or complete else ReviewMode(FULL, "malformed decision", decision.head)

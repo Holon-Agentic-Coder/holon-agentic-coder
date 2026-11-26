@@ -102,6 +102,14 @@ You will be eliminated from the selection process if you:
 - Use intention-revealing names in the domain language (`intent`, `plan`, `execution`, `review`, `calibration`,
   `ledger`).
 - Add no new imports from entrypoints into the host flow engine.
+- Code is self-explaining: names state the intent of every statement, and a block that cannot be named where it is gets
+  extracted into a function whose name says what it does. Write no docstrings and no explanatory comments in any
+  language (Python, shell, Makefile, Dockerfile, YAML, TOML, JavaScript). The only allowed comment is a `# why:` comment
+  recording a reason the code cannot show (a constraint, an incident, a non-obvious decision), never what the code does.
+  Machine directives stay allowed: shebangs, encoding lines, `# noqa`, `# type:`, `# pragma`, `# fmt:` and shellcheck
+  directives. Do not remove existing docstrings or comments as part of unrelated work.
+  `scripts/check_self_explaining.py` (run by `uv run task lint`) enforces this on added lines, so editing or moving a
+  docstring counts as adding one.
 - A module over its line limit (`default_max_lines` and per-module overrides in
   `holon-config/hygiene/module_budgets.json`, checked by `uv run task lint`) is split into smaller modules. The module
   budget configuration is frozen: never list it in the touch set and never plan to change it, unless the intent carries

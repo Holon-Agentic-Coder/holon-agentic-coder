@@ -1,0 +1,130 @@
+# Promote pending ledger fragments to the canonical ledgers on main with `holon ledger promote`, then commit and push
+# the ledger-only result with the maintainer-provided bot token. Without that secret the job is a green no-op that logs
+# why. See .github/workflows/README.md "Ledger Promotion".
+name: Promote Ledger
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Promote whatever the root-intent threshold"
+        type: boolean
+        required: false
+        default: false
+
+# The push uses the bot token from the checkout, never GITHUB_TOKEN, so the default token stays read-only.
+permissions:
+  contents: read
+
+concurrency:
+  group: promote-ledger
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    # The bot's own promotion commit carries the marker, so it never triggers another promotion.
+    if: github.event_name != 'push' || !contains(github.event.head_commit.message, '[ledger-promote]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Secrets cannot appear in an `if:`; every step tests this variable instead and never prints it.
+      HOLON_LEDGER_BOT_TOKEN: ${{ secrets.HOLON_LEDGER_BOT_TOKEN }}
+
+    steps:
+      - name: Explain a missing bot token
+        if: env.HOLON_LEDGER_BOT_TOKEN == ''
+        run: |
+          reason="Ledger promotion skipped: the repository secret HOLON_LEDGER_BOT_TOKEN is not configured, so the run stays green. See .github/workflows/README.md (Ledger Promotion)."
+          echo "::notice::${reason}"
+          echo "${reason}" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Checkout repository
+        if: env.HOLON_LEDGER_BOT_TOKEN != ''
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.HOLON_LEDGER_BOT_TOKEN }}
+
+      - name: CI Timing Gate (Start)
+        if: env.HOLON_LEDGER_BOT_TOKEN != ''
+        uses: ./.github/actions/ci-timing-gate
+        with:
+          phase: start
+
+      - name: Install uv
+        if: env.HOLON_LEDGER_BOT_TOKEN != ''
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        if: env.HOLON_LEDGER_BOT_TOKEN != ''
+        run: uv sync --locked
+
+      - name: Promote pending ledger fragments
+        if: env.HOLON_LEDGER_BOT_TOKEN != ''
+        env:
+          # The input reaches the shell through the environment only, never interpolated into the script.
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "${FORCE}" = "true" ]; then
+            args+=(--force)
+          fi
+          uv run holon ledger promote "${args[@]}"
+
+      - name: Fail on changes outside holon-knowledge/ledger/
+        id: guard
+        if: env.HOLON_LEDGER_BOT_TOKEN != ''
+        run: |
+          set -euo pipefail
+          # Every changed, deleted and untracked path; a rename contributes both its old and its new path.
+          paths="$(git status --porcelain=v1 -uall | cut -c4- | sed 's/ -> /\n/')"
+          if [ -z "${paths}" ]; then
+            echo "Nothing to promote (below the threshold or no pending fragments)."
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          outside="$(printf '%s\n' "${paths}" | grep -v '^holon-knowledge/ledger/' || true)"
+          if [ -n "${outside}" ]; then
+            printf '::error::Ledger promotion changed a path outside holon-knowledge/ledger/: %s\n' ${outside}
+            exit 1
+          fi
+          echo "changed=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Commit and push the promotion
+        if: env.HOLON_LEDGER_BOT_TOKEN != '' && steps.guard.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "holon-ledger-bot"
+          git config user.email "holon-ledger-bot@users.noreply.github.com"
+          git add -A -- holon-knowledge/ledger
+          git commit -m "chore(ledger): promote pending fragments [ledger-promote]"
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "::warning::Push attempt ${attempt} of 3 was rejected; fetching and rebasing onto origin/main."
+            git fetch origin main
+            if ! git rebase origin/main; then
+              git rebase --abort
+              echo "::error::Rebasing the promotion commit onto origin/main conflicted; nothing is resolved by hand."
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "::error::Ledger promotion push failed after 3 attempts."
+          exit 1
+
+      - name: CI Timing Gate (Check <= 10 min)
+        if: always() && env.HOLON_LEDGER_BOT_TOKEN != ''
+        uses: ./.github/actions/ci-timing-gate
+        with:
+          phase: check
+          max-seconds: 600

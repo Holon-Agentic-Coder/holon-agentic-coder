@@ -2,14 +2,12 @@
 """macOS relevance gate: decide whether the ``macos-latest`` unit leg may skip its expensive steps on a pull request.
 
 The macOS leg is the slowest job of the pipeline, and most changes cannot behave differently on macOS than on Linux.
-The rule is an allow-list with a default of "run": the leg skips only when every file the pull request changes is
-platform-neutral: bookkeeping files exactly as ``scripts.ci_bookkeeping_gate.is_bookkeeping_path`` defines them, any
-markdown file (lower-case ``.md``) outside ``.github/``, and ``LICENSE``. A list of platform-sensitive paths could never
-be complete (a new module that calls ``subprocess`` would be missing from it); here an unknown file runs the leg.
-Everything else runs the leg, among it every workflow and action under ``.github/``, this script, ``pyproject.toml``,
-the lock files, shell scripts and all Python. The rules of ``RUN_RULES`` are checked in order (the first match runs the
-leg; any exception is ``api-error``) and only ``all-platform-neutral`` skips. The changed files are those of
-``base...head``, the pull request's own changes since the merge base. Standard library only and Python 3.9 syntax.
+The leg runs when at least one changed file is platform-sensitive by path or by content, its new or its old version,
+as ``scripts.macos_relevance_rules`` states; it skips only when every changed file is neutral. The changed files are
+those of the checked-out merge commit against its first parent (``scripts.macos_relevance_git``). The rules of
+``RUN_RULES`` are checked in order and the first match runs the leg; any exception is ``internal-error``; only
+``all-neutral`` skips. ``--replay-commit`` and ``--replay-range`` judge squash-merged commits offline with the same
+functions. Standard library only and Python 3.9 syntax.
 """
 
 from __future__ import annotations
@@ -17,60 +15,57 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
-import posixpath
+import re
+import subprocess
 import sys
-import urllib.error
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from scripts.ci_bookkeeping_api import GateClient, Opener, compare, load_event
+from scripts.ci_bookkeeping_api import load_event
 from scripts.ci_bookkeeping_chain import Decision
-from scripts.ci_bookkeeping_gate import is_bookkeeping_path, write_output
-from scripts.ci_timing_gate import default_opener, write_step_summary
+from scripts.ci_bookkeeping_gate import write_output
+from scripts.ci_timing_gate import write_step_summary
+from scripts.macos_relevance_git import (
+    GitRunner,
+    blob_text,
+    changed_files,
+    commit_parents,
+    default_runner,
+    first_parent_commits,
+)
+from scripts.macos_relevance_rules import BY_PATH, CONTENT_CAP, Verdict, judge_change
 
 # ``scripts.ci_bookkeeping_gate.RESULT_AFFECTING_LABELS`` carries the same literal; a test keeps the two equal.
 FORCE_LABEL = "ci-macos"
-NEUTRAL_FILE_NAMES = ("LICENSE",)
-MARKDOWN_SUFFIX = ".md"
-SENSITIVE_ROOT = ".github"
-NEUTRAL, SENSITIVE = "neutral", "sensitive"
 SKIP_SENTENCE = (
-    "The macOS unit leg is skipped: every changed file is platform-neutral; "
+    "The macOS unit leg is skipped: no changed file is platform-sensitive; "
     f"add the '{FORCE_LABEL}' label or re-run the job to force it."
 )
+PULL_REQUEST_NUMBER = re.compile(r"\(#(\d+)\)\s*$")
 
 RULE_EVENT_NOT_PULL_REQUEST = "event-not-pull-request"
 RULE_RERUN_ATTEMPT = "rerun-attempt"
 RULE_FORCE_LABEL = "force-label"
 RULE_INCOMPLETE_EVENT = "incomplete-event"
-RULE_DIFF_TOO_LARGE = "diff-too-large"
+RULE_CHANGED_FILES_UNREADABLE = "changed-files-unreadable"
 RULE_NO_CHANGED_FILES = "no-changed-files"
-RULE_PLATFORM_SENSITIVE_CHANGE = "platform-sensitive-change"
-RULE_API_ERROR = "api-error"
-RULE_ALL_PLATFORM_NEUTRAL = "all-platform-neutral"
+RULE_SENSITIVE_PATH = "sensitive-path"
+RULE_SENSITIVE_CONTENT = "sensitive-content"
+RULE_INTERNAL_ERROR = "internal-error"
+RULE_ALL_NEUTRAL = "all-neutral"
 RUN_RULES = (
     RULE_EVENT_NOT_PULL_REQUEST,
     RULE_RERUN_ATTEMPT,
     RULE_FORCE_LABEL,
     RULE_INCOMPLETE_EVENT,
-    RULE_DIFF_TOO_LARGE,
+    RULE_CHANGED_FILES_UNREADABLE,
     RULE_NO_CHANGED_FILES,
-    RULE_PLATFORM_SENSITIVE_CHANGE,
-    RULE_API_ERROR,
+    RULE_SENSITIVE_PATH,
+    RULE_SENSITIVE_CONTENT,
+    RULE_INTERNAL_ERROR,
 )
-SKIP_RULES = (RULE_ALL_PLATFORM_NEUTRAL,)
-
-
-def is_platform_neutral(path: str) -> bool:
-    """Return true only for a bookkeeping file, a markdown file outside ``.github/`` or ``LICENSE``."""
-    if not path or path.partition("/")[0] == SENSITIVE_ROOT:
-        return False
-    return is_bookkeeping_path(path) or posixpath.basename(path).endswith(MARKDOWN_SUFFIX) or path in NEUTRAL_FILE_NAMES
-
-
-def judge_paths(paths: Sequence[str]) -> list[tuple[str, str]]:
-    """Return every path with its class, ``neutral`` or ``sensitive``, in input order."""
-    return [(path, NEUTRAL if is_platform_neutral(path) else SENSITIVE) for path in paths]
+SKIP_RULES = (RULE_ALL_NEUTRAL,)
+GIT_ERRORS = (subprocess.SubprocessError, OSError, ValueError)
 
 
 @dataclass(frozen=True)
@@ -80,22 +75,31 @@ class RelevanceFacts:
     event_name: str
     run_attempt: int
     labels: tuple[str, ...]
-    base_sha: str
-    head_sha: str
+    sha: str
 
 
 @dataclass(frozen=True)
 class Judgement:
-    """The gate's decision and the changed paths it judged (none when an earlier rule decided)."""
+    """The gate's decision and the verdict on every changed file (none when an earlier rule decided)."""
 
     decision: Decision
-    paths: tuple[str, ...] = ()
+    verdicts: tuple[Verdict, ...] = ()
 
     def lines(self) -> list[str]:
         """Render the decision line, one line per judged path and, on a skip, the sentence that says how to force."""
-        head = "macos-relevance-gate:" + self.decision.line().partition(":")[2]
-        judged = [f"  {kind:<9} {_printable(path)}" for path, kind in judge_paths(self.paths)]
-        return [head, *judged, *([SKIP_SENTENCE] if self.decision.skip else [])]
+        decision = self.decision
+        head = f"macos-relevance-gate: {'skip' if decision.skip else 'run'} ({decision.rule}): {decision.detail}"
+        judged = [verdict_line(verdict) for verdict in self.verdicts]
+        return [_printable(head.rstrip()), *judged, *([SKIP_SENTENCE] if decision.skip else [])]
+
+
+def verdict_line(verdict: Verdict) -> str:
+    """Render ``  <sensitive|neutral> <status> <path> [<- old path]  <side>:<reason>``, printable only."""
+    change = verdict.change
+    moved = f" <- {change.old_path}" if change.old_path and change.old_path != change.path else ""
+    why = f"  {verdict.side}:{verdict.reason}" if verdict.sensitive else ""
+    kind = "sensitive" if verdict.sensitive else "neutral"
+    return _printable(f"  {kind:<9} {change.status} {change.path}{moved}{why}")
 
 
 def _printable(text: str) -> str:
@@ -114,87 +118,124 @@ def _child(mapping: Mapping[str, object], key: str) -> Mapping[str, object]:
 
 def facts_from(environ: Mapping[str, str], payload: Mapping[str, object]) -> RelevanceFacts:
     """Fill the facts from the ``GITHUB_*`` environment and the event payload; label names are lowered."""
-    pull_request = _child(payload, "pull_request")
-    labels = pull_request.get("labels")
+    labels = _child(payload, "pull_request").get("labels")
     entries = labels if isinstance(labels, list) else []
     attempt = _text(environ.get("GITHUB_RUN_ATTEMPT"))
     return RelevanceFacts(
         event_name=_text(environ.get("GITHUB_EVENT_NAME")),
         run_attempt=int(attempt) if attempt.isascii() and attempt.isdigit() else 0,
         labels=tuple(_text(entry.get("name")).lower() for entry in entries if isinstance(entry, dict)),
-        base_sha=_text(_child(pull_request, "base").get("sha")),
-        head_sha=_text(_child(pull_request, "head").get("sha")),
+        sha=_text(environ.get("GITHUB_SHA")),
     )
 
 
 def event_rule(facts: RelevanceFacts) -> Decision | None:
-    """Return the "run" decision of the first event rule that matches, or ``None`` when the paths decide."""
+    """Return the "run" decision of the first event rule that matches, or ``None`` when the changed files decide."""
     checks = (
         (facts.event_name != "pull_request", RULE_EVENT_NOT_PULL_REQUEST, facts.event_name),
         (facts.run_attempt > 1, RULE_RERUN_ATTEMPT, f"attempt {facts.run_attempt}"),
         (FORCE_LABEL in facts.labels, RULE_FORCE_LABEL, FORCE_LABEL),
-        (not (facts.base_sha and facts.head_sha and facts.run_attempt), RULE_INCOMPLETE_EVENT, ""),
+        (not (facts.sha and facts.run_attempt), RULE_INCOMPLETE_EVENT, ""),
     )
     return next((Decision(False, rule, detail) for matched, rule, detail in checks if matched), None)
 
 
-def paths_decision(paths: Sequence[str], truncated: bool = False) -> Decision:
-    """Judge the changed paths; only the last statement returns "skip"."""
-    if truncated:
-        return Decision(False, RULE_DIFF_TOO_LARGE, f"{len(paths)} paths or more")
-    if not paths:
+def verdicts_decision(verdicts: Sequence[Verdict]) -> Decision:
+    """Decide on the judged files: the first sensitive one runs the leg; only the last statement returns "skip"."""
+    if not verdicts:
         return Decision(False, RULE_NO_CHANGED_FILES, "")
-    sensitive = next((path for path in paths if not is_platform_neutral(path)), None)
+    sensitive = next((verdict for verdict in verdicts if verdict.sensitive), None)
     if sensitive is not None:
-        return Decision(False, RULE_PLATFORM_SENSITIVE_CHANGE, sensitive)
-    return Decision(True, RULE_ALL_PLATFORM_NEUTRAL, f"{len(paths)} changed files")
+        rule = RULE_SENSITIVE_PATH if sensitive.basis == BY_PATH else RULE_SENSITIVE_CONTENT
+        return Decision(False, rule, f"{sensitive.change.path} ({sensitive.side}: {sensitive.reason})")
+    return Decision(True, RULE_ALL_NEUTRAL, f"{len(verdicts)} changed files")
 
 
-def decide(facts: RelevanceFacts, client: GateClient) -> Judgement:
-    """Apply the event rules, then judge the paths of ``base...head``. Exceptions are left to ``safe_decide``."""
+def judge_commit(runner: GitRunner, base: str, head: str) -> Judgement:
+    """Judge every file that ``head`` changes against ``base``; a git failure listing them runs the leg."""
+    try:
+        changes = changed_files(runner, base, head)
+    except GIT_ERRORS as error:
+        return Judgement(Decision(False, RULE_CHANGED_FILES_UNREADABLE, type(error).__name__))
+    revs = {"new": head, "old": base}
+    verdicts = tuple(
+        judge_change(change, lambda side, path: blob_text(runner, revs[side], path, CONTENT_CAP)) for change in changes
+    )
+    return Judgement(verdicts_decision(verdicts), verdicts)
+
+
+def decide(facts: RelevanceFacts, runner: GitRunner) -> Judgement:
+    """Apply the event rules, then judge the checked-out merge commit against its first parent."""
     blocked = event_rule(facts)
     if blocked is not None:
         return Judgement(blocked)
-    comparison = compare(client, facts.base_sha, facts.head_sha)
-    return Judgement(paths_decision(comparison.paths, comparison.truncated), comparison.paths)
-
-
-def safe_decide(facts: RelevanceFacts, client: GateClient) -> Judgement:
-    """Call ``decide``; any exception is ``api-error`` with its class name and HTTP status, never its text."""
     try:
-        return decide(facts, client)
+        head, parents = commit_parents(runner, "HEAD")
+    except GIT_ERRORS as error:
+        return Judgement(Decision(False, RULE_CHANGED_FILES_UNREADABLE, type(error).__name__))
+    if head != facts.sha:
+        return Judgement(Decision(False, RULE_CHANGED_FILES_UNREADABLE, "HEAD is not GITHUB_SHA"))
+    if len(parents) != 2:
+        return Judgement(Decision(False, RULE_CHANGED_FILES_UNREADABLE, f"HEAD has {len(parents)} parents, not 2"))
+    return judge_commit(runner, parents[0], head)
+
+
+def safe_decide(facts: RelevanceFacts, runner: GitRunner) -> Judgement:
+    """Call ``decide``; any exception is ``internal-error`` with its class name, never its text."""
+    try:
+        return decide(facts, runner)
     except Exception as error:
-        status = f" {error.code}" if isinstance(error, urllib.error.HTTPError) else ""
-        return Judgement(Decision(False, RULE_API_ERROR, f"{type(error).__name__}{status}"))
+        return Judgement(Decision(False, RULE_INTERNAL_ERROR, type(error).__name__))
 
 
-def replay(paths_file: str) -> Judgement:
-    """Judge the newline-separated paths of ``paths_file`` as a pull request without a label; no network."""
-    with open(paths_file, encoding="utf-8") as handle:
-        paths = tuple(line.strip() for line in handle if line.strip())
-    return Judgement(paths_decision(paths), paths)
+def replay_commit(runner: GitRunner, rev: str) -> Judgement:
+    """Judge ``rev`` against its first parent as a pull request without a label; no ``GITHUB_*`` value is read."""
+    sha, parents = commit_parents(runner, rev)
+    if not parents:
+        return Judgement(Decision(False, RULE_CHANGED_FILES_UNREADABLE, "a root commit has no parent"))
+    return judge_commit(runner, parents[0], sha)
+
+
+def replay_range(runner: GitRunner, rev_range: str) -> list[str]:
+    """Return one markdown table row per squash-merged pull request (subject ending in ``(#N)``) of ``rev_range``."""
+    rows = ["| pull request | macOS leg | rule | first sensitive file (side: reason) |", "| --- | --- | --- | --- |"]
+    for sha, subject in first_parent_commits(runner, rev_range):
+        number = PULL_REQUEST_NUMBER.search(subject)
+        if number:
+            decision = replay_commit(runner, sha).decision
+            detail = "-" if decision.skip else _printable(decision.detail).replace("|", "\\|")
+            rows.append(f"| #{number.group(1)} | {'skip' if decision.skip else 'run'} | {decision.rule} | {detail} |")
+    return rows
+
+
+def run_replay(args: argparse.Namespace, runner: GitRunner) -> None:
+    """Print the replay of one commit (with every judged path) or of a range (one row per pull request)."""
+    if args.replay_commit:
+        print("\n".join(replay_commit(runner, args.replay_commit).lines()))
+    else:
+        print("\n".join(replay_range(runner, args.replay_range)))
 
 
 def main(
-    argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = None, opener: Opener = default_opener
+    argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = None, runner: GitRunner = default_runner
 ) -> int:
-    """Report the judgement and return 0 in every case; whatever goes wrong ends in ``api-error`` and ``skip=false``."""
+    """Report the judgement and return 0 in every case; whatever goes wrong ends in ``skip=false``."""
     env = os.environ if environ is None else environ
     try:
         parser = argparse.ArgumentParser(description="Decide whether the macOS unit leg may skip its expensive steps.")
-        parser.add_argument("--paths-file", default="", help="replay: judge these paths, one per line, offline")
+        parser.add_argument("--replay-commit", default="", help="replay: judge this commit against its first parent")
+        parser.add_argument("--replay-range", default="", help="replay: one row per squash-merged pull request")
         args = parser.parse_args(argv)
-        if args.paths_file:
-            print("\n".join(replay(args.paths_file).lines()))
+        if args.replay_commit or args.replay_range:
+            run_replay(args, runner)
             return 0
         facts = facts_from(env, load_event(env.get("GITHUB_EVENT_PATH", "")))
-        client = GateClient(env.get("GITHUB_REPOSITORY", ""), env.get("GITHUB_TOKEN", ""), opener)
-        judgement = safe_decide(facts, client)
+        judgement = safe_decide(facts, runner)
         print("\n".join(judgement.lines()))
         write_step_summary(judgement.lines())
         write_output(env, judgement.decision.skip)
     except (Exception, SystemExit) as error:
-        print(Judgement(Decision(False, RULE_API_ERROR, type(error).__name__)).lines()[0])
+        print(Judgement(Decision(False, RULE_INTERNAL_ERROR, type(error).__name__)).lines()[0])
         with contextlib.suppress(OSError):
             write_output(env, False)
     return 0

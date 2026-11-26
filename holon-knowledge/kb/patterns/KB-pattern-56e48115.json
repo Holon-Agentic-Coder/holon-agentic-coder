@@ -1,0 +1,20 @@
+{
+  "kb_id": "KB-pattern-56e48115",
+  "kb_type": "pattern",
+  "version": "1.0",
+  "created_ts": "1970-01-01T00:00:00+00:00",
+  "updated_ts": "1970-01-01T00:00:00+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {},
+  "tags": [
+    "code",
+    "proven"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Proven approach for claude-agent:claude-fable-5-2",
+    "description": "Advisory: historical executions matching this context pattern succeeded consistently. Consider evaluating proven approach: 'Executed agent claude-agent with model claude-fable-5-2'. Execution counts live in the action index and ledgers.",
+    "action": "Executed agent claude-agent with model claude-fable-5-2"
+  }
+}

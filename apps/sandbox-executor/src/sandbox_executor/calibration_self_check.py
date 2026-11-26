@@ -42,10 +42,13 @@ class CalibrateReview(TypedDict, total=False):
     """What Stage 4 established about the execution head, passed to ``run_calibrate`` by keyword.
 
     ``approved_head`` is the commit the review approval covered (``approved_head_of``); None (the CLI) skips the
-    self-check's approved-head condition.
+    self-check's approved-head condition. ``review_accounting`` is the flow's review accounting
+    (:mod:`sandbox_executor.review_accounting`), rendered in the "Review Churn" section; None (the CLI, a legacy flow)
+    renders "not recorded".
     """
 
     approved_head: str | None
+    review_accounting: dict[str, Any] | None
 
 
 class CalibrationSelfCheckError(RuntimeError):

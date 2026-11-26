@@ -9,7 +9,18 @@ from unittest.mock import MagicMock, patch
 
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.github.ci_reverify import approved_head_of
+from sandbox_executor.flow.review.approval_gates import (
+    DiffGate,
+    PipelineGate,
+    approved,
+    diff_gate_holds,
+    diff_gate_of,
+    pipeline_gate_of,
+    record_diff_gate,
+    record_pipeline_gate,
+)
 from sandbox_executor.flow.review.consensus_withdrawal import (
+    CAP_STEP,
     WithdrawalSeams,
     failed_runs_of,
     render_withdrawal,
@@ -169,7 +180,7 @@ def test_render_names_both_heads_and_each_failing_run() -> None:
 
 
 def test_at_the_restart_cap_the_comment_says_the_flow_stopped() -> None:
-    body = render_withdrawal(APPROVED, MERGED, [], restart=False)
+    body = render_withdrawal(APPROVED, MERGED, [], CAP_STEP)
     assert "restarts at iteration 1" not in body
     assert "the review was not restarted and the flow stopped" in body
 
@@ -203,3 +214,24 @@ def test_stage4_after_a_consensus_withdrawal_starts_at_iteration_one_with_the_fu
     assert loop.call_args.kwargs["first_iteration"] == 1
     assert loop.call_args.kwargs["max_iterations"] == 6
     assert ctx.review_iterations_done == 1
+
+
+def test_a_merged_head_failure_marks_only_the_pipeline_gate_red(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    record_diff_gate(ctx, DiffGate(True, APPROVED, "pf2:x", "main"))
+    record_pipeline_gate(ctx, PipelineGate(APPROVED, "green"))
+    withdraw_consensus(ctx, _record(), Comments().seams())
+
+    assert ctx.stage_results["review"].payload["consensus"]["approved"] is False
+    assert pipeline_gate_of(ctx) == PipelineGate(MERGED, "red", ("12",), source="merged_head")
+    assert diff_gate_of(ctx) == DiffGate(True, APPROVED, "pf2:x", "main")
+    with patch("sandbox_executor.flow.review.approval_gates.approval_fingerprint_of", return_value="pf2:x"):
+        assert diff_gate_holds(ctx, str(tmp_path), MERGED) is True  # Same PR-own change on the merged head.
+        assert approved(ctx, str(tmp_path), MERGED) is False
+
+
+def test_a_changed_pr_withdrawal_leaves_the_pipeline_gate(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
+    record_pipeline_gate(ctx, PipelineGate(APPROVED, "green"))
+    withdraw_consensus(ctx, {**_record(), "withdrawal_reason": "PR-own change changed"}, Comments().seams())
+    assert pipeline_gate_of(ctx) == PipelineGate(APPROVED, "green")

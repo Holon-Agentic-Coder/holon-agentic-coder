@@ -1,6 +1,7 @@
 """The resolver finding for a CI failure whose only failed step is a timing gate.
 
-A timing gate fails because a job took too long, so the fix is in the slowest tests of that job: never a rerun.
+A timing gate fails because a job took too long. It is rerun once as noise (:mod:`.ci_failure_routing`); when it
+fails again, the fix is in the slowest tests of that job and this finding names them.
 Any other failure keeps the generic CI finding (:func:`sandbox_executor.review_report.ci_failure_finding`).
 """
 

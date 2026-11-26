@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,6 +31,9 @@ from sandbox_executor.calibration_ev import (
 from sandbox_executor.calibration_evaluated_sha import LEDGER_EXECUTIONS_REL as LEDGER_EXECUTIONS_REL
 from sandbox_executor.calibration_evaluated_sha import evaluated_code_commit
 from sandbox_executor.calibration_execution_owner import unique_plan_branch_of_execution
+from sandbox_executor.calibration_format import CalibrationCommitError as CalibrationCommitError
+from sandbox_executor.calibration_format import CalibrationFormatError as CalibrationFormatError
+from sandbox_executor.calibration_format import format_calibration_report
 from sandbox_executor.calibration_outcome import is_converged_record, latest_summary_row
 from sandbox_executor.calibration_predicted import (
     cross_check_selected_row,
@@ -40,6 +42,7 @@ from sandbox_executor.calibration_predicted import (
     select_plans_row,
 )
 from sandbox_executor.calibration_record import calibration_action_row
+from sandbox_executor.calibration_review_churn import review_churn_report_lines
 from sandbox_executor.calibration_rows import is_execution_row
 from sandbox_executor.calibration_self_check import CalibrateReview, enforce_report_self_check
 from sandbox_executor.calibration_self_check import CalibrationSelfCheckError as CalibrationSelfCheckError
@@ -58,35 +61,6 @@ from sandbox_executor.plan_paths import (
 from sandbox_executor.redaction import redact_agent_secrets
 
 logger = logging.getLogger(__name__)
-
-
-# Prettier invocation for the calibration report. It mirrors ``lint-docs`` in the root pyproject.toml and the
-# ``lint-md`` Makefile target (``npx prettier``, unpinned, repository .prettierrc.json found from cwd). ``--yes`` only
-# suppresses npx's install prompt and does not change version resolution. The earlier pinned prettier@3.8.4 wrapped
-# prose around inline maths differently from the Prettier that CI resolves, so every calibrated head went red.
-LINT_DOCS_PRETTIER: tuple[str, ...] = ("npx", "--yes", "prettier")
-PRETTIER_TIMEOUT_SECONDS = 120
-PRETTIER_OUTPUT_LINES = 5
-# Bounded write/check passes: Markdown output is not always a fixpoint after a single Prettier write.
-PRETTIER_PASSES = 3
-
-
-class CalibrationCommitError(RuntimeError):
-    """Raised when git rejects the calibration report commit (for example a hook or signing failure).
-
-    The message is credential-redacted. Callers treat it as a calibration failure: the report
-    and the ACT-CAL row stay uncommitted and the ``/calibrated`` branch is neither pushed nor
-    fast-forwarded.
-    """
-
-
-class CalibrationFormatError(CalibrationCommitError):
-    """Raised when the calibration report does not pass the repository Prettier check.
-
-    Subclassing CalibrationCommitError keeps callers that treat that error as "nothing committed,
-    nothing pushed" correct: the guard runs before the ACT-CAL ledger append, ``git add`` and
-    ``git commit``. The message is credential-redacted.
-    """
 
 
 @dataclass
@@ -211,6 +185,7 @@ class CalibrationReport:
     merged_commit_count: int = 0
     touch_set: dict[str, Any] | None = None
     diff_base: str | None = None
+    review_accounting: dict[str, Any] | None = None
     # Self-check inputs, not serialised: the counted (non-metadata) paths and the ledger summary rows read.
     changed_paths: list[str] | None = None
     summary_records: list[dict[str, Any]] = dataclasses.field(default_factory=list)
@@ -240,6 +215,7 @@ class CalibrationReport:
             "merged_commit_count": self.merged_commit_count,
             "touch_set": self.touch_set,
             "diff_base": self.diff_base,
+            "review_accounting": self.review_accounting,
         }
 
 
@@ -1075,6 +1051,9 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
             "---",
             "",
             *touch_set_report_lines(report_data),
+            "---",
+            "",
+            *review_churn_report_lines(report_data),
         ]
     )
     return "\n".join(lines)
@@ -1083,12 +1062,14 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
 def generate_calibration(  # noqa: C901, PLR0915
     execution_branch: str,
     target_worktree: str = ".",
+    review_accounting: dict[str, Any] | None = None,
 ) -> CalibrationReport:
     """Run calibration calculation and return a complete CalibrationReport.
 
     Args:
         execution_branch: Execution branch, remote tracking ref, or commit SHA.
         target_worktree: Path to the target git worktree directory.
+        review_accounting: The flow's review accounting for the "Review Churn" section; None renders "not recorded".
 
     Returns:
         CalibrationReport: Complete calibration report.
@@ -1224,6 +1205,7 @@ def generate_calibration(  # noqa: C901, PLR0915
         "delta_ev_clean": deltas.delta_ev_clean,
         "delta_ev_with_bugs": deltas.delta_ev_with_bugs,
         "touch_set": touch_set_metrics(plan_meta, exec_meta.get("changed_paths"), target_worktree),
+        "review_accounting": review_accounting,
     }
 
     markdown_content = format_markdown_report(report_dict)
@@ -1253,6 +1235,7 @@ def generate_calibration(  # noqa: C901, PLR0915
         merged_commit_count=merged_commit_count,
         touch_set=report_dict["touch_set"],
         diff_base=report_dict["diff_base"],
+        review_accounting=review_accounting,
         changed_paths=exec_meta.get("changed_paths"),
         summary_records=exec_meta.get("summary_records") or [],
     )
@@ -1312,128 +1295,6 @@ def record_calibration_action(  # noqa: PLR0913
     )
 
 
-def _run_prettier(mode: str, report_rel: str, target_worktree: str) -> subprocess.CompletedProcess[str]:
-    """Run the lint-docs Prettier invocation on one report (the single seam tests patch).
-
-    Args:
-        mode: Prettier mode flag, ``--write`` or ``--check``.
-        report_rel: Report path relative to ``target_worktree``.
-        target_worktree: Worktree root; Prettier finds .prettierrc.json from here.
-
-    Returns:
-        subprocess.CompletedProcess[str]: The finished Prettier process with captured output.
-
-    Raises:
-        OSError: If npx cannot be started.
-        subprocess.TimeoutExpired: If Prettier runs longer than PRETTIER_TIMEOUT_SECONDS.
-
-    Side Effects:
-        ``--write`` rewrites the report in place.
-    """
-    return subprocess.run(
-        [*LINT_DOCS_PRETTIER, mode, report_rel],
-        cwd=target_worktree,
-        capture_output=True,
-        text=True,
-        timeout=PRETTIER_TIMEOUT_SECONDS,
-        check=False,
-    )
-
-
-def _summarise(label: str, proc: subprocess.CompletedProcess[str]) -> str:
-    """Summarise a failed Prettier pass as its exit code and the first lines of its output.
-
-    Args:
-        label: The pass that failed (``write`` or ``check``).
-        proc: The completed Prettier process.
-
-    Returns:
-        str: For example ``check exited 1: [warn] plans/P-1_calibration.md``.
-    """
-    output = (proc.stdout + proc.stderr).strip().splitlines()[:PRETTIER_OUTPUT_LINES]
-    return f"{label} exited {proc.returncode}: " + " | ".join(output)
-
-
-def _converge_report(report_rel: str, target_worktree: str) -> str | None:
-    """Run up to PRETTIER_PASSES write/check passes, stopping at the first passing check or failed write.
-
-    Args:
-        report_rel: Report path relative to ``target_worktree``.
-        target_worktree: Worktree root used as Prettier's working directory.
-
-    Returns:
-        str | None: Why the last pass failed, or None once the check passes.
-
-    Raises:
-        OSError: If npx cannot be started.
-        subprocess.TimeoutExpired: If a Prettier pass times out.
-
-    Side Effects:
-        Rewrites the report in place through Prettier's write passes.
-    """
-    reason = None
-    for _ in range(PRETTIER_PASSES):
-        write = _run_prettier("--write", report_rel, target_worktree)
-        if write.returncode != 0:
-            return _summarise("write", write)
-        check = _run_prettier("--check", report_rel, target_worktree)
-        if check.returncode == 0:
-            return None
-        reason = _summarise("check", check)
-    return reason
-
-
-def _prettier_failure(report_rel: str, target_worktree: str) -> str | None:
-    """Format the report then check it, returning why the check did not pass (None when it passed).
-
-    Args:
-        report_rel: Report path relative to ``target_worktree``.
-        target_worktree: Worktree root used as Prettier's working directory.
-
-    Returns:
-        str | None: A short reason when npx is missing, Prettier cannot run, a write fails or the
-            check still fails after PRETTIER_PASSES passes; None when the report passes the check.
-
-    Side Effects:
-        Rewrites the report in place through Prettier's write passes.
-    """
-    if shutil.which("npx") is None:
-        return "npx is not on PATH"
-    try:
-        return _converge_report(report_rel, target_worktree)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return f"Prettier could not run: {e}"
-
-
-def format_calibration_report(report_rel: str, target_worktree: str) -> None:
-    """Format the calibration report exactly as ``uv run task lint-docs`` checks it, failing closed.
-
-    Runs up to PRETTIER_PASSES rounds of ``npx --yes prettier --write`` then ``--check`` with ``cwd=target_worktree``,
-    so the repository .prettierrc.json applies and Prettier resolves exactly as it does for lint-docs and the CI
-    lint-md check (unpinned npx; a host with a stale npx cache can still resolve an older version than CI).
-
-    Args:
-        report_rel: Report path relative to ``target_worktree`` (for example ``plans/P-1_calibration.md``).
-        target_worktree: Worktree root.
-
-    Raises:
-        CalibrationFormatError: If npx is missing, Prettier cannot run or times out, or the check
-            does not pass. The redacted message names the report and the command to reproduce.
-
-    Side Effects:
-        Rewrites the report in place; logs the outcome.
-    """
-    reason = _prettier_failure(report_rel, target_worktree)
-    if reason is None:
-        logger.info("Calibration report %s passes the repository Prettier check", report_rel)
-        return
-    detail = redact_agent_secrets(reason)
-    raise CalibrationFormatError(
-        f"Calibration report {report_rel} failed the repository Prettier check ({detail}); "
-        f"reproduce with: npx prettier --check {report_rel}"
-    )
-
-
 def run_calibrate(  # noqa: C901, PLR0912, PLR0915
     execution_branch: str,
     target_worktree: str = ".",
@@ -1452,7 +1313,8 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
         log_fn: Optional operator-facing log callable (for example ``FlowContext.log``) that
             receives a failed ACT-CAL ledger append warning. When None, the warning goes to the
             module logger only.
-        **review: ``CalibrateReview`` keywords; ``approved_head`` feeds the report self-check.
+        **review: ``CalibrateReview`` keywords; ``approved_head`` feeds the report self-check and
+            ``review_accounting`` the report's "Review Churn" section.
 
     Returns:
         CalibrationReport: Generated calibration report.
@@ -1468,7 +1330,8 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
         CalibrationSelfCheckError: If the report fails its self-check (``calibration_self_check``).
             Raised before any branch checkout, report write, ledger append or commit.
     """
-    report = generate_calibration(execution_branch, target_worktree=target_worktree)
+    accounting = review.get("review_accounting")
+    report = generate_calibration(execution_branch, target_worktree=target_worktree, review_accounting=accounting)
     # Fail closed before any branch, file or commit is touched
     enforce_report_self_check(report, target_worktree, review.get("approved_head"), log_fn)
     report.committed = not skip_commit

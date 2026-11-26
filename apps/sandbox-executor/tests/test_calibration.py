@@ -440,43 +440,6 @@ class TestReportFormatting(unittest.TestCase):
         self.assertIn("| **$P(\\text{success})$**", md)
         self.assertIn("EV_{\\text{pred}}", md)
         self.assertIn("EV_{\\text{actual}}", md)
-        self.assertIn("- **Review churn:** not recorded", md)  # No accounting: a CLI run or a legacy flow.
-        self.assertTrue(md.endswith("not recorded\n"))
-
-    def test_format_markdown_report_review_churn_follows_touch_set_accuracy(self):
-        pred = PredictedMetrics(p_success=0.9, entropy=1.0, impact=10.0, cost=2.0, learning_value=1.0, ev=6.7)
-        act = ActualMetrics(p_success=1.0, entropy=1.0, impact=10.0, cost=2.0, learning_value=1.0, ev=7.7)
-        deltas, ratings, biases = compute_calibration_deltas(pred, act)
-        accounting = {
-            "full_reviews": 1,
-            "scoped_reviews": 2,
-            "pipeline_runs": 3,
-            "pipeline_reruns": 1,
-            "approval_carry_overs": 0,
-            "non_defect_churn": {"target_merge": 0, "bookkeeping": 1, "ci_noise": 1},
-        }
-        report_dict = {
-            "plan_id": "P-1",
-            "execution_id": "E-1",
-            "intent_branch": "I-1-x/_",
-            "agent_id": "claude-agent",
-            "model_name": "claude-opus-5-5",
-            "timestamp": "2026-11-26T09:00:00.000Z",
-            "predicted": pred.to_dict(),
-            "actual": act.to_dict(),
-            "deltas": deltas.to_dict(),
-            "entropy_factors": EntropyFactors().to_dict(),
-            "accuracy_ratings": ratings,
-            "bias_directions": biases,
-            "review_accounting": accounting,
-        }
-
-        md = format_markdown_report(report_dict)
-
-        self.assertLess(md.index("## 5. Touch Set Accuracy"), md.index("## 6. Review Churn"))
-        self.assertIn("- **Scoped reviews:** `2`", md)
-        self.assertIn("- **Non-defect churn (CI noise):** `1`", md)
-        self.assertNotIn("not recorded", md)
 
 
 class TestRefResolution(unittest.TestCase):

@@ -7,6 +7,13 @@ import subprocess
 import sys
 
 import pytest
+from sandbox_executor.calibration import (
+    ActualMetrics,
+    EntropyFactors,
+    PredictedMetrics,
+    compute_calibration_deltas,
+    format_markdown_report,
+)
 from sandbox_executor.calibration_review_churn import review_churn_report_lines
 
 ACCOUNTING = {
@@ -56,6 +63,54 @@ def test_partial_accounting_is_marked():
     lines = review_churn_report_lines({"review_accounting": {**ACCOUNTING, "partial": True}})
     assert lines[2] == "- **Review churn:** partial: counting began after a resume"
     assert "- **Full reviews:** `2`" in lines
+
+
+def _report_dict(accounting=None):
+    pred = PredictedMetrics(p_success=0.9, entropy=1.0, impact=10.0, cost=2.0, learning_value=1.0, ev=6.7)
+    act = ActualMetrics(p_success=1.0, entropy=1.0, impact=10.0, cost=2.0, learning_value=1.0, ev=7.7)
+    deltas, ratings, biases = compute_calibration_deltas(pred, act)
+    report = {
+        "plan_id": "P-1",
+        "execution_id": "E-1",
+        "intent_branch": "I-1-x/_",
+        "agent_id": "claude-agent",
+        "model_name": "claude-opus-5-5",
+        "timestamp": "2026-11-26T09:00:00.000Z",
+        "predicted": pred.to_dict(),
+        "actual": act.to_dict(),
+        "deltas": deltas.to_dict(),
+        "entropy_factors": EntropyFactors().to_dict(),
+        "accuracy_ratings": ratings,
+        "bias_directions": biases,
+    }
+    if accounting is not None:
+        report["review_accounting"] = accounting
+    return report
+
+
+def test_markdown_report_without_accounting_ends_with_not_recorded():
+    """No accounting (a CLI run or a legacy flow) renders "not recorded" as the final section."""
+    md = format_markdown_report(_report_dict())
+    assert "- **Review churn:** not recorded" in md
+    assert md.endswith("not recorded\n")
+
+
+def test_markdown_report_review_churn_follows_touch_set_accuracy():
+    accounting = {
+        "full_reviews": 1,
+        "scoped_reviews": 2,
+        "pipeline_runs": 3,
+        "pipeline_reruns": 1,
+        "approval_carry_overs": 0,
+        "non_defect_churn": {"target_merge": 0, "bookkeeping": 1, "ci_noise": 1},
+    }
+
+    md = format_markdown_report(_report_dict(accounting))
+
+    assert md.index("## 5. Touch Set Accuracy") < md.index("## 6. Review Churn")
+    assert "- **Scoped reviews:** `2`" in md
+    assert "- **Non-defect churn (CI noise):** `1`" in md
+    assert "not recorded" not in md
 
 
 def test_the_calibration_report_imports_no_flow_module():

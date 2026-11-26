@@ -15,6 +15,10 @@ are checked in this order, and the first one that fails decides for a full run:
    on the current head), reached through a chain of runs that this gate skipped.
 5. When that real success is on an older commit, the checks of point 3 again, from that commit to the new head.
 
+A ``synchronize`` push that point 3 blocks with ``non-bookkeeping-change`` or ``diff-too-large`` and whose new head is a
+two-parent merge of the base branch into the previous head is decided by ``scripts.ci_merge_push_gate`` (rule
+``merge-push-clean-main-merge`` skips); a push whose new head is not a merge commit keeps the decision of point 3.
+
 A push to ``main`` in ``test-unit.yml`` or ``test-stress.yml`` is decided by ``scripts.ci_main_push_gate`` instead (rule
 ``main-push-tested-tree`` skips). Any exception is ``api-error``. The two rules that skip are ``bookkeeping-only`` and
 ``label-not-result-affecting``. The gate prints one line with the rule that decided and writes ``skip=true`` or
@@ -41,6 +45,7 @@ from scripts.ci_bookkeeping_chain import (
     find_real_success,
 )
 from scripts.ci_main_push_gate import decide_main_push, is_main_push
+from scripts.ci_merge_push_gate import GateRules, decide_merge_push
 from scripts.ci_timing_gate import OVERRIDE_LABEL, default_opener, write_step_summary
 
 BOOKKEEPING_ROOTS = ("plans", "executions", "holon-knowledge")
@@ -128,6 +133,14 @@ def diff_rule(client: GateClient, base: str, head: str) -> tuple[Decision | None
     return None, len(comparison.paths)
 
 
+def merge_push_or(blocked: Decision, context: GateContext, client: GateClient) -> Decision:
+    """Hand a push blocked by a changed or too large diff to the merge-push route; keep ``blocked`` when it declines."""
+    if blocked.rule not in (RULE_NON_BOOKKEEPING_CHANGE, RULE_DIFF_TOO_LARGE):
+        return blocked
+    merged = decide_merge_push(context, client, GateRules(diff_rule, is_bookkeeping_path))
+    return blocked if merged is None else merged
+
+
 def decide(context: GateContext, client: GateClient) -> Decision:
     """Apply the rules in order; only the last statement returns "skip". Exceptions are left to ``safe_decide``."""
     if is_main_push(context):
@@ -141,7 +154,7 @@ def decide(context: GateContext, client: GateClient) -> Decision:
     if synchronize:
         blocked, changed = diff_rule(client, target, context.head_sha)
         if blocked is not None:
-            return blocked
+            return merge_push_or(blocked, context, client)
     query = JobQuery(
         context.workflow_file, context.branch, context.job_name, context.os_name, context.run_number, target
     )

@@ -1,0 +1,32 @@
+{
+  "kb_id": "KB-pattern-a8b5adb7",
+  "kb_type": "pattern",
+  "version": "1.0",
+  "created_ts": "2026-11-25T23:52:44.032751+00:00",
+  "updated_ts": "2026-11-25T23:52:44.032751+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1795579285-bbb345ad",
+      "ACT-REV-1795579281-8d85be74",
+      "ACT-REV-1795577163-1862d495",
+      "ACT-REV-1795577159-d1dfcac5"
+    ],
+    "success_count": 9,
+    "failure_count": 0,
+    "wilson_lower": 0.7008549515804675,
+    "posterior_mean": 0.9090909090909091,
+    "ladder_state": "likely-success"
+  },
+  "tags": [
+    "code",
+    "proven"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Proven approach for I-1795562456-workspace-survival-job-parallel/P-1795562493-CLA-CO5.5/E-1795573757-CLA-CO5.5/_",
+    "description": "Advisory (likely-success): Historical executions matching this context pattern succeeded in 9/9 (100.0%) trials (Wilson 95% lower bound: 0.70). Consider evaluating proven approach: 'Review Loop iteration 2 evaluation for I-1795562456-workspace-survival-job-parallel/P-1795562493-CLA-CO5.5/E-1795573757-CLA-CO5.5/_'.",
+    "action": "Review Loop iteration 2 evaluation for I-1795562456-workspace-survival-job-parallel/P-1795562493-CLA-CO5.5/E-1795573757-CLA-CO5.5/_"
+  }
+}

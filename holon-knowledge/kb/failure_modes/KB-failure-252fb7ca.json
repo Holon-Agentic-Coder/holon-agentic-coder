@@ -1,0 +1,30 @@
+{
+  "kb_id": "KB-failure-252fb7ca",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-25T04:12:52.600788+00:00",
+  "updated_ts": "2026-11-25T04:12:52.600788+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-WITHDRAW-1795563363-0ee3307a"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795425253-resolve-conflicts-in-flow/P-1795425271-CLA-CO5.5/E-1795425483-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Consensus approval withdrawn for I-1795425253-resolve-conflicts-in-flow/P-1795425271-CLA-CO5.5/E-1795425483-CLA-CO5.5/_: PR-own change changed since approval (fingerprint pf1:a0c9b3955b9449c1458c65927aeeddfec8aadc9a -> pf1:31a0f811c42d64ee28ef60e7024cb2be7ebb7821)",
+    "symptoms": [
+      "PR-own change changed since approval (fingerprint pf1:a0c9b3955b9449c1458c65927aeeddfec8aadc9a -> pf1:31a0f811c42d64ee28ef60e7024cb2be7ebb7821) on head e1e7150ffddaef97194ee1c6c3c5362f6181b710 after the approval of 523186776539c874a8d3816375952e66dfc5e1ea. The review restarts at iteration 1 for the new head."
+    ]
+  }
+}

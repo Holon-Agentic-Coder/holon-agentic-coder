@@ -24,6 +24,7 @@ import os
 import shutil
 import subprocess
 import uuid
+from collections.abc import Sequence
 
 DEFAULT_FIXTURE_IMAGE = "holon/orchestrator"
 IMAGE_UID = "1000:1000"
@@ -188,8 +189,8 @@ CHILD_TIMEOUT_SECONDS = 1800
 CHILD_SUITE_SENTINEL = "HOLON_CHILD_SUITE_ACTIVE"
 
 
-def pytest_suite_command(*extra_args: str) -> list[str]:
-    """Build the sanctioned command that runs the whole suite in a child process.
+def pytest_suite_command(*extra_args: str, targets: Sequence[str] = (TESTS_DIR,)) -> list[str]:
+    """Build the sanctioned command that runs the suite (by default the whole of it) in a child process.
 
     Launched from :data:`REPO_ROOT` with ``uv`` so the child inherits the repository's pytest
     configuration and marker policy. ``no:cacheprovider`` stops a child whose ``HOME`` points at a
@@ -197,6 +198,8 @@ def pytest_suite_command(*extra_args: str) -> list[str]:
     ``prepend``-mode basename collisions if a sibling branch ever adds a ``conftest.py``.
     ``-n auto --dist worksteal`` matches ``task test`` and the unit job; the xdist workers are
     started from the child's own interpreter and environment, so they inherit its simulated ``HOME``.
+    ``targets`` replaces the suite directory with specific test files (the canary's narrowed selection,
+    ``tests/stress_selection.py``); the marker selection still applies to them.
     """
     return [
         UV,
@@ -214,7 +217,7 @@ def pytest_suite_command(*extra_args: str) -> list[str]:
         "--tb=short",
         "-m",
         UNIT_MARKER_EXPRESSION,
-        TESTS_DIR,
+        *targets,
         *extra_args,
     ]
 

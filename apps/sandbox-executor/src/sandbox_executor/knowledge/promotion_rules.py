@@ -75,7 +75,6 @@ def _flow_key(target: Any) -> str:
 
 
 def is_single_flow_review_chatter(records: Sequence[Mapping[str, Any]]) -> bool:
-    """Stage 4 review rows of one flow are not independent failure evidence."""
     if not records or not all(str(r["record_id"] or "").startswith(REVIEW_ACTION_ID_PREFIXES) for r in records):
         return False
     return len({_flow_key(r["target"]) for r in records}) == 1

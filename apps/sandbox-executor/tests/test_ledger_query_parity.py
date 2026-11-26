@@ -134,10 +134,10 @@ def test_query_matches_reference_on_real_ledgers(
 
 @pytest.mark.parametrize("ledger_name", LEDGER_NAMES)
 def test_row_reference_matches_file_reference(pinned_ledgers: dict[str, Path], ledger_name: str) -> None:
-    """The oracle over rows parsed once answers as the oracle reading the file, unfiltered and with a label filter."""
+    """The oracle over rows parsed once answers as the oracle reading the file, across label, entry-type and limit."""
     path = _pinned(pinned_ledgers, ledger_name)
     rows = reference_rows(path)
-    for filter_id in ("no-filter", "labels-single"):
+    for filter_id in ("no-filter", "labels-single", "entry-type-action", "limit-5"):
         filters = FILTER_MATRIX[filter_id]
         from_rows = _run(lambda _path, **f: reference_query_rows(rows, **f), path, filters)
         assert from_rows == _run(reference_query_ledger, path, filters), filter_id

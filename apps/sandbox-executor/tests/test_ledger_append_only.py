@@ -29,6 +29,7 @@ from sandbox_executor.ledger import (
     try_append_action_record,
     try_append_ledger_line,
 )
+from sandbox_executor.ledger import reconcile as reconcile_module
 from sandbox_executor.ledger import route as route_module
 from sandbox_executor.ledger.merged import parse_jsonl_rows
 
@@ -122,6 +123,11 @@ def _report_rewrite(path: str, before: bytes) -> None:
     raise LedgerRewriteError(f"Ledger {path} was rewritten, not appended")
 
 
+def _report_resolution_rewrite(path: str, kept: str, resolved: str) -> None:
+    """Stand in for the resolution guard detecting a dropped or moved kept row."""
+    raise LedgerRewriteError(f"Ledger {path} was rewritten: a kept row was dropped or moved")
+
+
 class TestPrefixGuard:
     """``assert_ledger_prefix`` and the guarded ``atomic_ledger_append`` fail closed on any non-append write."""
 
@@ -185,12 +191,22 @@ class TestPrefixGuard:
             )
         assert reported == []
 
-    def test_resolution_that_moves_the_prefix_never_touches_the_file(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("kept", "resolved"),
+        [
+            ('{"execution_id":"A"}\n{"execution_id":"B"}\n', '{"execution_id":"B"}\n{"execution_id":"A"}\n'),
+            ('{"execution_id":"A"}\n', '{"execution_id":"Z"}\n'),
+        ],
+        ids=["moved", "dropped"],
+    )
+    def test_resolution_that_moves_or_drops_a_kept_row_never_touches_the_file(
+        self, tmp_path: Path, kept: str, resolved: str
+    ) -> None:
         ledger = tmp_path / "executions.jsonl"
         ledger.write_text(_conflicted(), encoding="utf-8")
         before = ledger.read_bytes()
         with pytest.raises(LedgerRewriteError), LedgerLock(str(ledger)) as locked:
-            flow._write_resolved_ledger(locked, str(ledger), f"{OURS_ROW}\n", f"{THEIRS_ROWS[0]}\n{OURS_ROW}\n")
+            flow._write_resolved_ledger(locked, str(ledger), kept, resolved)
         assert ledger.read_bytes() == before
 
     def test_suppress_ledger_failures_hides_other_errors_but_not_a_rewrite(self) -> None:
@@ -204,7 +220,7 @@ class TestPrefixGuard:
     ) -> None:
         ledger = tmp_path / "executions.jsonl"
         ledger.write_text(_conflicted(), encoding="utf-8")
-        monkeypatch.setattr("sandbox_executor.ledger.reconcile.assert_ledger_prefix", _report_rewrite)
+        monkeypatch.setattr(reconcile_module, "assert_resolution_keeps_rows", _report_resolution_rewrite)
         with pytest.raises(LedgerRewriteError):
             reconcile_ledger_file(str(ledger))
 
@@ -367,9 +383,10 @@ class TestAppendOnlyResolution:
         resolved = reconcile_jsonl_ledger_conflict(_conflicted(diff3))
         assert resolved == "\n".join([BASE_ROW, OURS_ROW, *THEIRS_ROWS]) + "\n"
 
-    def test_theirs_prefix_keeps_target_bytes_first(self) -> None:
+    def test_theirs_prefix_keeps_target_rows_in_place_and_inserts_ours(self) -> None:
         resolved = reconcile_jsonl_ledger_conflict(_conflicted(), prefix_side="theirs")
-        assert resolved == "\n".join([BASE_ROW, *THEIRS_ROWS, OURS_ROW]) + "\n"
+        # Target rows keep their order; E-ours (10:00) is the only addition, inserted before E-z (11:00).
+        assert resolved == "\n".join([BASE_ROW, OURS_ROW, *THEIRS_ROWS]) + "\n"
 
     def test_lines_already_present_are_not_repeated(self) -> None:
         content = f"<<<<<<< HEAD\n{OURS_ROW}\n=======\n{OURS_ROW}\n{THEIRS_ROWS[1]}\n>>>>>>> main\n"
@@ -445,7 +462,7 @@ class TestPrePushMerge:
         _git(host, "commit", "-qam", "branch row")
         return ledger
 
-    def test_ledger_conflict_keeps_main_bytes_as_prefix(self, seeded_repos, tmp_path: Path) -> None:
+    def test_ledger_conflict_keeps_main_rows_in_place(self, seeded_repos, tmp_path: Path) -> None:
         host, origin, _ = seeded_repos
         ledger = self._branch_with_intent_row(host)
         main_row = '{"slug":"main-row","created_at":"2026-10-30"}\n'
@@ -454,7 +471,8 @@ class TestPrePushMerge:
         ok, msg = sync_and_reconcile_pre_push(str(host), target_branch="main")
 
         assert ok, msg
-        assert ledger.read_bytes() == main_intents + b'{"slug":"branch-row","created_at":"2026-09-01"}\n'
+        # Every main row keeps its order; the older branch row is the only addition, inserted before them.
+        assert ledger.read_bytes() == b'{"slug":"branch-row","created_at":"2026-09-01"}\n' + main_intents
         assert _git(host, "status", "--porcelain", "--untracked-files=no") == ""
 
     def test_clean_merge_leaves_ledgers_as_git_merged_them(self, seeded_repos, tmp_path: Path) -> None:
@@ -478,7 +496,7 @@ class TestPrePushMerge:
         self._branch_with_intent_row(host)
         self._advance_main(host, origin, tmp_path, "holon-knowledge/ledger/intents.jsonl", '{"slug":"main-row"}\n')
         head = _git(host, "rev-parse", "HEAD")
-        monkeypatch.setattr("sandbox_executor.ledger.reconcile.assert_ledger_prefix", _report_rewrite)
+        monkeypatch.setattr(reconcile_module, "assert_resolution_keeps_rows", _report_resolution_rewrite)
 
         with pytest.raises(LedgerRewriteError):
             sync_and_reconcile_pre_push(str(host), target_branch="main")

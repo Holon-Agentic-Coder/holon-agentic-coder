@@ -12,7 +12,7 @@ from typing import Any
 
 from sandbox_executor import local_llm
 from sandbox_executor.agent_attribution import attribution_off_settings, place_settings_arg
-from sandbox_executor.runners import RUNNER_SPECS, runner_spec_for
+from sandbox_executor.runners import runner_spec_for
 
 logger = logging.getLogger(__name__)
 
@@ -303,7 +303,6 @@ class StandardAgentRunner(AgentRunner):
         prefix: list[str] | None = None,
         suffix: list[str] | None = None,
         env_mappings: list[EnvMapping] | None = None,
-        required_keys: list[str] | None = None,
         bypass_flags: list[str] | None = None,
     ):
         super().__init__(agent_id, binary_name, model_flag)
@@ -312,8 +311,13 @@ class StandardAgentRunner(AgentRunner):
         self.bypass_flags = bypass_flags or []
         self.suffix = suffix or []
         self.env_mappings = env_mappings or []
-        self.required_keys = required_keys or []
         self._ephemeral_files: list[str] = []
+
+    @property
+    def required_keys(self) -> list[str]:
+        """Read-only view of the spec's accepted API-key variables; the spec is authoritative."""
+        spec = runner_spec_for(self.agent_id)
+        return list(spec.api_key_env_vars) if spec else []
 
     def resolve_credentials(self) -> None:
         """Processes Tier 1 secret bundles to unpack configuration files."""
@@ -500,7 +504,6 @@ class AntigravityAgentRunner(StandardAgentRunner):
             prefix=kwargs.pop("prefix", None),
             suffix=kwargs.pop("suffix", None),
             env_mappings=kwargs.pop("env_mappings", None),
-            required_keys=kwargs.pop("required_keys", None),
             bypass_flags=kwargs.pop("bypass_flags", None),
             **kwargs,
         )
@@ -551,7 +554,6 @@ class PiAgentRunner(StandardAgentRunner):
             prefix=kwargs.pop("prefix", ["-p"]),
             suffix=kwargs.pop("suffix", None),
             env_mappings=kwargs.pop("env_mappings", [EnvMapping("HOLON_AGENT_PROVIDER", "--provider")]),
-            required_keys=kwargs.pop("required_keys", list(RUNNER_SPECS["pi"].api_key_env_vars)),
             bypass_flags=kwargs.pop("bypass_flags", None),
             **kwargs,
         )
@@ -580,7 +582,6 @@ class ClaudeAgentRunner(StandardAgentRunner):
             ),
             # The raw value is for compose_cmd (host pre-flight probe) only; turn argv carries a private file path.
             env_mappings=kwargs.pop("env_mappings", [EnvMapping("HOLON_AGENT_SETTINGS", "--settings")]),
-            required_keys=kwargs.pop("required_keys", list(RUNNER_SPECS["claude"].api_key_env_vars)),
             **kwargs,
         )
 
@@ -624,7 +625,6 @@ class OpenCodeAgentRunner(StandardAgentRunner):
             prefix=kwargs.pop("prefix", ["run"]),
             suffix=kwargs.pop("suffix", None),
             env_mappings=kwargs.pop("env_mappings", [EnvMapping("HOLON_AGENT_MODE", "--agent")]),
-            required_keys=kwargs.pop("required_keys", list(RUNNER_SPECS["opencode"].api_key_env_vars)),
             bypass_flags=kwargs.pop("bypass_flags", None),
             **kwargs,
         )
@@ -656,7 +656,6 @@ class CodexAgentRunner(StandardAgentRunner):
                     EnvMapping("HOLON_AGENT_CONFIG", "-c"),
                 ],
             ),
-            required_keys=kwargs.pop("required_keys", None),
             bypass_flags=kwargs.pop("bypass_flags", None),
             **kwargs,
         )

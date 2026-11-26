@@ -1,0 +1,42 @@
+# Check on every pull request that the repository keeps exactly three ledgers and that no ledger row of the merge base
+# changed, moved or disappeared on the head. The job never uses the bookkeeping gate: ledger-only pull requests are the
+# ones it must check.
+name: Test - Ledger Invariants
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  ledger-invariants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          # Full history, so the merge base and the base ledger blobs exist.
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Check the ledger stores
+        run: uv run --no-project python -m scripts.check_ledger_stores
+
+      - name: Check ledger rows are append-only
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run:
+          uv run --no-project python -m scripts.check_ledger_rows_append_only --base "${BASE_SHA}" --head "${HEAD_SHA}"

@@ -3,6 +3,11 @@
 The oracle in ``tests/ledger_query_reference.py`` is the previous implementation, so this check stays valid as the
 append-only ledgers grow, where a golden snapshot would break on the next append. Each ledger is copied once into a
 temporary directory and both implementations read that copy, so a concurrent append cannot split the comparison.
+
+The live query reads the pinned file in every case. The oracle's answers come from ``reference_results``: each pinned
+ledger is parsed once per module and each filter set is applied to those rows on first use
+(``tests/ledger_parity_rows.py``); ``test_row_reference_matches_file_reference`` checks that this gives what the
+oracle gives when it reads the file itself.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ import pytest
 from sandbox_executor.cli import main as cli_main
 from sandbox_executor.ledger import format_query_results_table, query_ledger
 
+from tests.ledger_parity_rows import ReferenceResults, reference_query_rows, reference_rows
 from tests.ledger_query_reference import reference_query_ledger
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -105,23 +111,44 @@ def _pinned(pinned_ledgers: dict[str, Path], name: str) -> str:
     return str(pinned_ledgers[name])
 
 
+@pytest.fixture(scope="module")
+def reference_results(pinned_ledgers: dict[str, Path]) -> ReferenceResults:
+    """One answer cache per module (per xdist worker), filled only for the cases the worker runs."""
+    return ReferenceResults(lambda name: _pinned(pinned_ledgers, name), _run)
+
+
 @pytest.mark.parametrize("ledger_name", LEDGER_NAMES)
-@pytest.mark.parametrize("filters", FILTER_MATRIX.values(), ids=FILTER_MATRIX.keys())
+@pytest.mark.parametrize("filter_id", FILTER_MATRIX)
 def test_query_matches_reference_on_real_ledgers(
-    pinned_ledgers: dict[str, Path], ledger_name: str, filters: dict[str, Any]
+    pinned_ledgers: dict[str, Path], reference_results: ReferenceResults, ledger_name: str, filter_id: str
 ) -> None:
     """The live query and the frozen oracle agree on records, table output and raised errors."""
     path = _pinned(pinned_ledgers, ledger_name)
+    filters = FILTER_MATRIX[filter_id]
     status, live = _run(query_ledger, path, filters)
-    reference_status, reference = _run(reference_query_ledger, path, filters)
+    reference_status, reference, reference_table = reference_results.answer(ledger_name, filter_id, filters)
     assert (status, live) == (reference_status, reference)
     if status == "ok":
-        assert format_query_results_table(live) == format_query_results_table(reference)
+        assert format_query_results_table(live) == reference_table
+
+
+@pytest.mark.parametrize("ledger_name", LEDGER_NAMES)
+def test_row_reference_matches_file_reference(pinned_ledgers: dict[str, Path], ledger_name: str) -> None:
+    """The oracle over rows parsed once answers as the oracle reading the file, across label, entry-type and limit."""
+    path = _pinned(pinned_ledgers, ledger_name)
+    rows = reference_rows(path)
+    for filter_id in ("no-filter", "labels-single", "entry-type-action", "limit-5"):
+        filters = FILTER_MATRIX[filter_id]
+        from_rows = _run(lambda _path, **f: reference_query_rows(rows, **f), path, filters)
+        assert from_rows == _run(reference_query_ledger, path, filters), filter_id
 
 
 @pytest.mark.parametrize("ledger_name", LEDGER_NAMES)
 def test_cli_json_output_matches_reference(
-    pinned_ledgers: dict[str, Path], ledger_name: str, capsys: pytest.CaptureFixture[str]
+    pinned_ledgers: dict[str, Path],
+    reference_results: ReferenceResults,
+    ledger_name: str,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """``holon ledger query --json`` prints the oracle's records and exits 0."""
     path = _pinned(pinned_ledgers, ledger_name)
@@ -129,7 +156,10 @@ def test_cli_json_output_matches_reference(
     with pytest.raises(SystemExit) as exit_info:
         cli_main(argv)
     assert exit_info.value.code == 0
-    expected = reference_query_ledger(path, entry_type="all", query="review")
+    status, expected, _table = reference_results.answer(
+        ledger_name, "cli-json", {"entry_type": "all", "query": "review"}
+    )
+    assert status == "ok"
     assert capsys.readouterr().out == json.dumps(expected, indent=2) + "\n"
 
 

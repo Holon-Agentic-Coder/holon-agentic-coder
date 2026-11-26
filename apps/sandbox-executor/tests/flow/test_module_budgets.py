@@ -67,10 +67,11 @@ def test_the_live_configuration_passes_against_the_real_tree(capsys: pytest.Capt
 def test_the_live_configuration_holds_only_the_three_keys_and_sorted_overrides_over_the_default():
     config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
     assert list(config) == ["default_max_lines", "exclude", "overrides"]
-    assert config["default_max_lines"] == 200
+    # The maintainer's staged schedule lowers the default by 50 per pull request (400, 350, 300, 250).
+    assert config["default_max_lines"] == 400
     assert all(isinstance(entry["reason"], str) and entry["reason"].strip() for entry in config["exclude"])
     assert list(config["overrides"]) == sorted(config["overrides"])
-    assert all(type(limit) is int and limit > 200 for limit in config["overrides"].values())
+    assert all(type(limit) is int and limit > config["default_max_lines"] for limit in config["overrides"].values())
 
 
 def test_a_new_module_under_the_default_needs_no_entry(tmp_path: Path, capsys: pytest.CaptureFixture[str]):

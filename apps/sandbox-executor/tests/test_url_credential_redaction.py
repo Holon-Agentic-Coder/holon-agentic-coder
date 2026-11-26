@@ -18,7 +18,6 @@ pi-agent session dir that `mkdtemp` creates, is masked before the fragment check
 false leak. Failure messages name the case id and the seed, never the value.
 """
 
-import argparse
 import contextlib
 import io
 import itertools
@@ -37,12 +36,14 @@ from unittest.mock import patch
 from urllib.parse import urlsplit
 
 import pytest
-from sandbox_executor import cli, local_llm
+from sandbox_executor import cli, local_llm, preflight
 from sandbox_executor.cli import doctor as cli_doctor
 from sandbox_executor.launcher import env_files, proxy_readiness, root_ca
 
 from tests import seeded_secrets
-from tests.doctor_replay import replayed_configuration_section, replayed_environment_report
+from tests.doctor_replay import replayed_configuration_section, replayed_direct_report, replayed_environment_report
+from tests.fast_home import fast_home
+from tests.url_redaction_matrix import HEALTH_TIGHT_BYTES, doctor_args, probe_stand_in
 
 FRAGMENT_LEN = 4
 _LETTERS = "FGJQVZ"
@@ -179,14 +180,6 @@ def _host_config_base_url(value: str) -> list[str]:
     return out
 
 
-# A health response that drives every #94 doctor line: the cache state, memory figures, and both envelope warnings.
-_HEALTH_TIGHT = {
-    "prefill_cache": {"enabled": True, "entries": 1, "memory_bytes": 5},
-    "memory": {"used_bytes": 1},
-    "effective_defaults": {"max_output_tokens": 1, "max_prompt_tokens": 1},
-}
-
-
 def _host_config(value: str) -> dict:
     return {"providers": {"vmlx": {"baseUrl": value, "models": [{"id": "m", "contextWindow": 65536}]}}}
 
@@ -196,7 +189,8 @@ def _fetchers(seen: list[str]) -> tuple[Callable[[str, float], bytes], ...]:
 
     def ok(url: str, timeout: float) -> bytes:
         seen.append(url)
-        return json.dumps(_HEALTH_TIGHT).encode()
+        # `HEALTH_TIGHT_BYTES` drives every #94 doctor line: the cache state, memory figures, both envelope warnings.
+        return HEALTH_TIGHT_BYTES
 
     def fail(url: str, timeout: float) -> bytes:
         seen.append(url)
@@ -207,34 +201,31 @@ def _fetchers(seen: list[str]) -> tuple[Callable[[str, float], bytes], ...]:
 
 def _doctor(value: str) -> list[str]:
     """#94 `holon doctor`: the environment section, then the unified report as text and as `--json`."""
-    from sandbox_executor.preflight import PreflightResult, PreflightStatus
-
-    probe = PreflightResult(
-        status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
-    )
     env = {"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_BASE_URL": value, "HOLON_LOCAL_MODELS": "m1"}
     texts: list[str] = []
     # The eight doctor runs of one case differ only in host configuration, fetcher and `--json`; the configuration
     # section reads none of them (proved in test_doctor_replay.py), so it is computed once per case and replayed.
-    with replayed_configuration_section():
+    # The four blocks of a case share one environment, so one capture collects all of them.
+    with (
+        replayed_configuration_section(),
+        # Plain stand-ins, not MagicMocks: building a mock per call dominated this matrix's runtime.
+        patch.object(cli_doctor, "run_preflight_probe", probe_stand_in),
+        _captured(env) as out,
+    ):
         for host_config in (None, _host_config(value)):
             for fetch in _fetchers(texts):
                 with (
-                    # Plain stand-ins, not MagicMocks: building a mock per call dominated this matrix's runtime.
                     patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
-                    patch.object(cli_doctor, "run_preflight_probe", lambda *_a, **_k: probe),
-                    _captured(env) as out,
-                    # The two doctor runs of one block have the same host configuration and fetcher: the environment
-                    # report runs for the first one and its text and code are replayed for the second.
+                    # The direct report and the two doctor runs of one block have the same host configuration and
+                    # fetcher: the environment report runs once and its text and code are replayed for all three
+                    # (proved in test_doctor_replay.py and test_doctor_replay_users.py).
                     replayed_environment_report(),
+                    replayed_direct_report(),
                 ):
                     cli_doctor.report_budgets_and_envelope(fetch=fetch)
                     for as_json in (False, True):
-                        doctor_args = argparse.Namespace(
-                            agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None
-                        )
-                        cli.run_doctor(doctor_args, fetch=fetch)
-                texts.extend(out)
+                        cli.run_doctor(doctor_args(as_json), fetch=fetch)
+    texts.extend(out)
     return texts
 
 
@@ -243,11 +234,19 @@ class _RefusingOpener:
         raise urllib.error.URLError(f"refused {url}")
 
 
+_REFUSING_OPENER = _RefusingOpener()
+
+
+def _refusing_opener(*_handlers) -> _RefusingOpener:
+    """`urllib.request.build_opener` stand-in: one opener that refuses every URL, whatever handlers are asked for."""
+    return _REFUSING_OPENER
+
+
 def _gateway_probe(value: str) -> list[str]:
     """#94 gateway probe: the probe URL, its cache line and error (injected and default fetchers), `redact_url`."""
     texts: list[str] = []
     with (
-        patch.object(local_llm.urllib.request, "build_opener", lambda *_handlers: _RefusingOpener()),
+        patch.object(local_llm.urllib.request, "build_opener", _refusing_opener),
         _captured({}) as out,
     ):
         for fetch in (*_fetchers(texts), None):
@@ -332,6 +331,9 @@ def test_url_credential_matrix_covers_every_shape():
     """The matrix is the full cross product and its ids are unique."""
     ids = [case_id for case_id, _, _ in matrix(seeded_secrets.generator("url-redaction:matrix"))]
     assert len(ids) == MATRIX_SIZE == len(set(ids))
+    # Every prefix, userinfo form, credential shape, host and suffix is reached, in that order of the id.
+    reached = [set(parts) for parts in zip(*(case_id.split("/") for case_id in ids), strict=True)]
+    assert reached == [set(PREFIXES), set(USERINFO), set(_credential_shapes()), set(HOSTS), set(SUFFIXES)]
 
 
 @pytest.mark.parametrize(
@@ -411,9 +413,7 @@ class _DockerRecorder:
         if "--env-file" in cmd:
             with open(cmd[cmd.index("--env-file") + 1], encoding="utf-8") as fh:
                 self.env_file = dict(line.rstrip("\n").split("=", 1) for line in fh)
-        from unittest.mock import MagicMock
-
-        return MagicMock(returncode=0)
+        return subprocess.CompletedProcess(cmd, 0)
 
 
 def _patch_docker_host(monkeypatch) -> None:
@@ -493,8 +493,6 @@ def _leak_sites(texts: dict[str, list[str]], argv: list[str], parts: list[str]) 
 
 def _run_delimiter_case(value: str) -> tuple[int, _DockerRecorder, list[str], dict[str, str], list[str]]:
     """Run the main container and the probe for one value; return `(rc, docker, probe_argv, probe_secret, echo)`."""
-    from sandbox_executor import preflight
-
     docker = _DockerRecorder()
     env = {"HOLON_PROXY_URL": value}
     stdout = io.StringIO()
@@ -646,11 +644,6 @@ def _invalid_value_case(
     case_id: str, env: dict[str, str], host_config: dict | None, credential: str, home: str
 ) -> Iterator[tuple[list[str], _DockerRecorder]]:
     """Run one invalid-value case under the isolated `home`; yields the captured texts and the docker recorder."""
-    from sandbox_executor.preflight import PreflightResult, PreflightStatus
-
-    probe = PreflightResult(
-        status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
-    )
     docker = _DockerRecorder()
     # Each temp name is first drawn sharing a run with the credential, so the masking under the isolated HOME is
     # what keeps a forwarded run from reading as a leak, not the luck of a random name.
@@ -658,7 +651,7 @@ def _invalid_value_case(
     with (
         patch.object(tempfile, "_get_candidate_names", colliding),
         patch.object(local_llm, "host_models_json", lambda *_a, **_k: host_config),
-        patch.object(cli_doctor, "run_preflight_probe", lambda *_a, **_k: probe),
+        patch.object(cli_doctor, "run_preflight_probe", probe_stand_in),
         patch.object(subprocess, "run", docker),
         _captured({**env, "HOME": home}) as out,
     ):
@@ -673,41 +666,39 @@ def _invalid_value_doctor(out: list[str]) -> list[int]:
         env_out = io.StringIO()
         codes = [cli_doctor.report_budgets_and_envelope(fetch=_empty_health, out=env_out)]
         out.append(env_out.getvalue())
-        for as_json in (False, True):
-            doctor_args = argparse.Namespace(
-                agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None
-            )
-            codes.append(cli.run_doctor(doctor_args, fetch=_empty_health))
+        codes.extend(cli.run_doctor(doctor_args(as_json), fetch=_empty_health) for as_json in (False, True))
     return codes
 
 
 def test_credential_in_invalid_envelope_value_never_echoed(monkeypatch, tmp_path):
     """Doctor (environment section, text and `--json`) and the run path withhold an invalid value.
 
-    The isolated `HOME` is `tmp_path`, and the pi-agent session dir is created under it; its parent `pytest-<N>` and the
-    temp name can share a 4-character run with the credential, so what keeps the `HOME` path from reading as a fragment
-    is that the whole pi-agent mount path is masked, not the choice of `tmp_path` basename.
+    The isolated `HOME` comes from `fast_home` (memory-backed when the host has it, else under `tmp_path`), and the
+    pi-agent session dir is created under it per case; the `HOME` path and the temp name can share a 4-character run
+    with the credential, so what keeps the `HOME` path from reading as a fragment is that the whole pi-agent mount path
+    is masked, not the choice of `HOME`.
     """
     _isolate_invalid_value_process(monkeypatch)
     failures: list[str] = []
     collided: list[str] = []
     cases = list(_invalid_value_cases(seeded_secrets.generator("url-redaction:invalid-envelope")))
-    for case_id, env, host_config, credential in cases:
-        # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variable to the
-        # container unchanged: through the env-file, so neither the argv nor the echo may hold a fragment of it.
-        rejected = "TIMEOUT" not in case_id and "BUDGET" not in case_id
-        with _invalid_value_case(case_id, env, host_config, credential, str(tmp_path)) as (out, docker):
-            codes = _invalid_value_doctor(out)
-            codes.append(cli.run_docker_container("planner", "img", [], agent_id="pi"))
-        if _leaks(_without_fixture_paths(out, docker.argv, str(tmp_path)), credential):
-            failures.append(case_id)
-        if rejected and (codes != [1, 1, 1, 1] or docker.argv):
-            failures.append(f"{case_id}:not-rejected")
-        if not rejected:
-            forwarded = _forwarded_run_failures(env, docker, credential, str(tmp_path))
-            failures.extend(f"{case_id}:{where}" for where in forwarded)
-            if _leaks(out, credential) and _leaks([" ".join(docker.argv)], credential):
-                collided.append(case_id)
+    with fast_home(str(tmp_path)) as home:
+        for case_id, env, host_config, credential in cases:
+            # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variable to
+            # the container unchanged: through the env-file, so neither the argv nor the echo may hold a fragment of it.
+            rejected = "TIMEOUT" not in case_id and "BUDGET" not in case_id
+            with _invalid_value_case(case_id, env, host_config, credential, home) as (out, docker):
+                codes = _invalid_value_doctor(out)
+                codes.append(cli.run_docker_container("planner", "img", [], agent_id="pi"))
+            if _leaks(_without_fixture_paths(out, docker.argv, home), credential):
+                failures.append(case_id)
+            if rejected and (codes != [1, 1, 1, 1] or docker.argv):
+                failures.append(f"{case_id}:not-rejected")
+            if not rejected:
+                forwarded = _forwarded_run_failures(env, docker, credential, home)
+                failures.extend(f"{case_id}:{where}" for where in forwarded)
+                if _leaks(out, credential) and _leaks([" ".join(docker.argv)], credential):
+                    collided.append(case_id)
     assert len(cases) == (len(INVALID_VALUE_ENV) + len(INVALID_VALUE_HOST_FIELDS)) * MATRIX_SIZE // (
         len(HOSTS) * len(SUFFIXES)
     )
@@ -833,8 +824,6 @@ FORWARDED_HOLON_NAMES = (
 
 def _run_forwarded_value(name: str, value: str) -> tuple[int, _DockerRecorder, list[str], dict[str, str], list[str]]:
     """Run the main container and the probe with only `name=value` set (plus the isolated `HOME`)."""
-    from sandbox_executor import preflight
-
     docker = _DockerRecorder()
     stdout = io.StringIO()
     with (
@@ -911,12 +900,7 @@ def test_doctor_survives_unparseable_base_url(slot, monkeypatch):  # noqa: C901,
     Text and `--json` both exit 0 (the run path handles the same config), `--json` stays valid JSON with the problem
     under `environment.warnings`, the warning names only the source, and no part of the value is echoed.
     """
-    from sandbox_executor.preflight import PreflightResult, PreflightStatus
-
     monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: None)
-    probe = PreflightResult(
-        status=PreflightStatus.OK, agent="pi-agent", model="m", image="img", exit_code=0, output_excerpt="", hint=""
-    )
     source = "HOLON_LOCAL_BASE_URL" if slot == "HOLON_LOCAL_BASE_URL" else "host models.json provider 'vmlx' baseUrl"
     expected = f"WARNING: {source} is not a parseable URL, so its server is not probed (value withheld)"
     failures: list[str] = []
@@ -933,8 +917,9 @@ def test_doctor_survives_unparseable_base_url(slot, monkeypatch):  # noqa: C901,
         probed: list[str] = []
         texts: list[str] = []
         with (
-            patch.object(local_llm, "host_models_json", return_value=host_config),
-            patch.object(cli_doctor, "run_preflight_probe", return_value=probe),
+            # Plain stand-ins, not MagicMocks, as in `_doctor`.
+            patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
+            patch.object(cli_doctor, "run_preflight_probe", probe_stand_in),
             _captured(env) as out,
         ):
             try:
@@ -947,11 +932,8 @@ def test_doctor_survives_unparseable_base_url(slot, monkeypatch):  # noqa: C901,
                 results = {}
                 for as_json in (False, True):
                     stdout = io.StringIO()
-                    doctor_args = argparse.Namespace(
-                        agent="antigravity-agent", model="gemini-3.8-flash-medium", json=as_json, timeout=None
-                    )
                     with contextlib.redirect_stdout(stdout):
-                        code = cli.run_doctor(doctor_args, fetch=fetch)
+                        code = cli.run_doctor(doctor_args(as_json), fetch=fetch)
                     results[as_json] = (code, stdout.getvalue())
                     out.append(stdout.getvalue())
             except Exception as exc:  # any escape is the doctor crash; report the case id only

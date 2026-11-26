@@ -994,16 +994,11 @@ def test_c_executor_commits_its_execution_branch_in_the_mounted_worktree_and_lea
 ) -> None:
     tip = _push_over_budget_plan(repo)
     git_flow.fetch_origin_branch(str(flow_worktree), _PLAN)
-    # The host's origin is unreachable once the plan is fetched: the run needs none of it (this case also carries
-    # test_c_executor_runs_no_remote_git_command_even_when_the_hosts_origin_is_unreachable, same lines and arcs).
-    _git(repo, "remote", "set-url", "origin", "git@unreachable.invalid:holon/demo.git")
     calls: list[list[str]] = []
 
     _run_executor_on_mounted_worktree(repo, flow_worktree, monkeypatch, calls)
 
     assert not any(c[:2] == ["git", "clone"] or c[:2] == ["git", "clean"] for c in calls), calls
-    remote_verbs = {"fetch", "push", "pull", "ls-remote", "clone"}
-    assert not [c for c in calls if c[0] == "git" and remote_verbs & set(c[1:3])], calls
     # The execution branch is checked out in the host worktree and starts at the plan tip.
     branch = _git(flow_worktree, "symbolic-ref", "--short", "HEAD")
     assert branch.startswith("I-1-demo/P-1/E-") and branch.endswith("/_")
@@ -1015,6 +1010,20 @@ def test_c_executor_commits_its_execution_branch_in_the_mounted_worktree_and_lea
     # Nothing was written to the host's shared repository config: no upstream, no identity.
     host_config = (repo / ".git" / "config").read_text(encoding="utf-8")
     assert "Holon Executor Agent" not in host_config and f'branch "{branch}"' not in host_config
+
+
+def test_c_executor_runs_no_remote_git_command_even_when_the_hosts_origin_is_unreachable(
+    repo: Path, flow_worktree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _push_over_budget_plan(repo)
+    git_flow.fetch_origin_branch(str(flow_worktree), _PLAN)
+    _git(repo, "remote", "set-url", "origin", "git@unreachable.invalid:holon/demo.git")
+    calls: list[list[str]] = []
+
+    _run_executor_on_mounted_worktree(repo, flow_worktree, monkeypatch, calls)
+
+    remote_verbs = {"fetch", "push", "pull", "ls-remote", "clone"}
+    assert not [c for c in calls if c[0] == "git" and remote_verbs & set(c[1:3])], calls
 
 
 def test_g_holon_execute_provisions_the_plans_flow_worktree_off_a_default_branch_checkout(repo: Path) -> None:

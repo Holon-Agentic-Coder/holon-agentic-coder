@@ -15,6 +15,7 @@ from tests.flow_repo_templates import (
     derived_template,
     flow_history_copy,
     replace_with_copy,
+    template_name,
 )
 from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
 from tests.repo_templates import shared_template
@@ -37,7 +38,12 @@ def _state(work: Path) -> dict[str, str]:
         "head": _git(work, "symbolic-ref", "HEAD"),
         "config": _git(work, "config", "--list", "--local").replace(str(work.parent), "ROOT"),
         "status": _git(work, "status", "--porcelain", "--branch"),
-        "graph": _git(work, "log", "--all", "--graph", "--format=%s %an %ae"),
+        # Each ref's history rather than one graph: the fast build's commits share a timestamp, so the order git
+        # log gives to the tips of different branches is not the order the commits were made in.
+        **{
+            f"log {ref}": _git(work, "log", "--format=%s %an %ae", ref)
+            for ref in _git(work, "for-each-ref", "--format=%(refname)").splitlines()
+        },
     }
 
 
@@ -73,8 +79,10 @@ def test_a_copy_is_private_and_the_template_read_only(tmp_path_factory, tmp_path
     assert repos.shas == again.shas and _git(repos.work, "rev-parse", "origin/main") == repos.shas[0]
     commit_on(repos.work, "main", {"z.txt": "z\n"}, "mine")
     assert _git(again.origin, "rev-parse", "main") == repos.shas[0] != _git(repos.origin, "rev-parse", "main")
-    shared = [p for p in tmp_path_factory.getbasetemp().parent.glob("**/shared-flow-history-*") if p.is_dir()]
-    assert shared and all(not os.access(p / "work" / "a.txt", os.W_OK) for p in shared)
+    # The template this test copied: shared_template hands back the root it built for the same name.
+    name = template_name("flow-history", sorted(BASE.items()), list(COMMITS[:1]), [])
+    template = shared_template(tmp_path_factory, name, lambda root: pytest.fail("the template was not built"))[0]
+    assert (template / "work" / "a.txt").is_file() and not os.access(template / "work" / "a.txt", os.W_OK)
 
 
 def test_then_runs_in_the_template_and_its_merge_state_is_copied(tmp_path_factory, tmp_path: Path):

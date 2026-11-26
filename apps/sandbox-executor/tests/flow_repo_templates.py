@@ -15,8 +15,10 @@ autouse guards, and runs git only: no production code.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -123,15 +125,26 @@ def _flow_graph(base_files: Files, commits: Sequence[FlowCommit]) -> tuple[list[
     return graph, tips[FLOW_BRANCH]
 
 
+@functools.cache
+def _fetch_creates_origin_head() -> bool:
+    """Whether ``git fetch`` creates a missing ``origin/HEAD``, as git 2.48 and later do (``followRemoteHEAD``)."""
+    version = subprocess.run(["git", "version"], check=True, capture_output=True, text=True).stdout
+    match = re.search(r"(\d+)\.(\d+)", version)
+    assert match, version
+    return (int(match[1]), int(match[2])) >= (2, 48)
+
+
 def _as_after_build_flow_repos(work: Path, main_sha: str) -> None:
     """Give a ``clone -b FLOW_BRANCH`` of a filled origin the refs and config of ``build_flow_repos``'s clone.
 
     That clone was made while origin was empty: it has a local ``main`` tracking ``origin/main``, a ``FLOW_BRANCH``
-    without an upstream, and no ``origin/HEAD``. Plain file edits, so no git process is spent on them.
+    without an upstream, and an ``origin/HEAD`` only where its last ``fetch`` created one. Plain file edits, so no
+    git process is spent on them.
     """
     git_dir = work / ".git"
     (git_dir / "refs" / "heads" / "main").write_text(main_sha + "\n", encoding="utf-8")
-    (git_dir / "refs" / "remotes" / "origin" / "HEAD").unlink()
+    if not _fetch_creates_origin_head():
+        (git_dir / "refs" / "remotes" / "origin" / "HEAD").unlink()
     config = (git_dir / "config").read_text(encoding="utf-8")
     flow_section = f'[branch "{FLOW_BRANCH}"]\n\tremote = origin\n\tmerge = refs/heads/{FLOW_BRANCH}\n'
     assert flow_section in config, config

@@ -11,7 +11,7 @@ from collections.abc import Callable
 from typing import Any
 
 from sandbox_executor import claude_keychain, local_llm
-from sandbox_executor.agent_attribution import attribution_off_settings
+from sandbox_executor.agent_attribution import attribution_off_settings, place_settings_arg
 from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES
 
 logger = logging.getLogger(__name__)
@@ -664,15 +664,9 @@ class ClaudeAgentRunner(StandardAgentRunner):
             prefix=kwargs.pop("prefix", None),
             suffix=kwargs.pop("suffix", ["-p"]),
             bypass_flags=kwargs.pop(
-                "bypass_flags",
-                [
-                    "--allow-dangerously-skip-permissions",
-                    "--permission-mode",
-                    "bypassPermissions",
-                ],
+                "bypass_flags", ["--allow-dangerously-skip-permissions", "--permission-mode", "bypassPermissions"]
             ),
-            # HOLON_AGENT_SETTINGS carries non-credential settings (attribution) only: the OAuth token has its own
-            # route, HOLON_AGENT_OAUTH_TOKEN, which the image's role dispatcher maps to CLAUDE_CODE_OAUTH_TOKEN.
+            # The raw value is for compose_cmd (host pre-flight probe) only; turn argv carries a private file path.
             env_mappings=kwargs.pop("env_mappings", [EnvMapping("HOLON_AGENT_SETTINGS", "--settings")]),
             required_keys=kwargs.pop("required_keys", list(CLAUDE_CREDENTIAL_ENV_NAMES)),
             custom_validator=kwargs.pop("custom_validator", None),
@@ -687,14 +681,17 @@ class ClaudeAgentRunner(StandardAgentRunner):
         full_prompt: str = "",
     ) -> list[str]:
         """Build the launch argv with attribution disabled; the pre-flight probe (``compose_cmd``) makes no commits."""
-        cmd = super().build_cmd(model_name, prompt_file, intent_file, full_prompt)
+        return self._with_private_settings(super().build_cmd(model_name, prompt_file, intent_file, full_prompt))
+
+    def build_command(self, prompt: str, model_name: str) -> list[str]:
+        """In-container turn argv (conflict resolver, review loop); ``compose_cmd`` stays raw for the host probe."""
+        cmd = self.compose_cmd(model_name, prompt)
+        return self._with_private_settings(cmd) if os.getenv("HOLON_AGENT_SETTINGS") else cmd
+
+    def _with_private_settings(self, cmd: list[str]) -> list[str]:
         default_env = {CLAUDE_EXPERIMENTAL_CODE_MODE_ENV: "1"} if claude_code_mode_enabled() else None
         value = attribution_off_settings(os.getenv("HOLON_AGENT_SETTINGS"), default_env=default_env)
-        if "--settings" in cmd:
-            cmd[cmd.index("--settings") + 1] = value
-        else:
-            cmd[cmd.index(self.model_flag) + 2 : cmd.index(self.model_flag) + 2] = ["--settings", value]
-        return cmd
+        return place_settings_arg(cmd, self.model_flag, value)
 
 
 class OpenCodeAgentRunner(StandardAgentRunner):

@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import unittest
+from pathlib import Path
 
 import pytest
 from sandbox_executor.agent_attribution import ATTRIBUTION_OFF
@@ -22,6 +23,19 @@ def _docker_image_available(image_name: str) -> bool:
     """
     probe = subprocess.run(["docker", "image", "inspect", image_name], capture_output=True, text=True)
     return probe.returncode == 0
+
+
+SETTINGS_FILE = "<private settings file>"
+
+
+def _split_settings(cmd: list[str]) -> tuple[list[str], dict]:
+    """Return ``cmd`` with a private-file ``--settings`` value masked, and the parsed settings it carries."""
+    at = cmd.index("--settings") + 1
+    value = cmd[at]
+    if value.startswith("{"):
+        return cmd, json.loads(value)
+    assert Path(value).stat().st_mode & 0o777 == 0o600
+    return [*cmd[:at], SETTINGS_FILE, *cmd[at + 1 :]], json.loads(Path(value).read_text(encoding="utf-8"))
 
 
 class TestAgentRunner(unittest.TestCase):
@@ -50,7 +64,7 @@ class TestAgentRunner(unittest.TestCase):
                 "--model",
                 "gemini-3.5-flash",
                 "--settings",
-                json.dumps({**ATTRIBUTION_OFF, "env": {"CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"}}),
+                SETTINGS_FILE,
                 "-p",
             ],
             "opencode": ["opencode", "run", "--model", "gemini-3.5-flash"],
@@ -90,6 +104,9 @@ class TestAgentRunner(unittest.TestCase):
                         intent_file="/tmp/intent.json",
                         full_prompt="compiled prompt text",
                     )
+                    if agent_name == "claude":
+                        cmd, settings = _split_settings(cmd)
+                        self.assertEqual(settings, CLAUDE_DEFAULT_SETTINGS)
                     self.assertEqual(cmd, expected_cmd)
 
     def test_runner_validation_failures(self):
@@ -119,7 +136,7 @@ class TestAgentRunner(unittest.TestCase):
             runner = get_runner("claude")
             cmd = runner.build_cmd("claude-3", "/tmp/p", "/tmp/i", "prompt")
             self.assertIn("--settings", cmd)
-            settings = json.loads(cmd[cmd.index("--settings") + 1])
+            _, settings = _split_settings(cmd)
             self.assertIs(settings["includeCoAuthoredBy"], False)
 
         # 2. Codex OSS and local provider configurations
@@ -589,7 +606,7 @@ class TestWorkspaceDirAndCleanup(unittest.TestCase):
 
 
 CLAUDE_BYPASS = ["--allow-dangerously-skip-permissions", "--permission-mode", "bypassPermissions"]
-CLAUDE_DEFAULT_SETTINGS = json.dumps({**ATTRIBUTION_OFF, "env": {"CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"}})
+CLAUDE_DEFAULT_SETTINGS = {**ATTRIBUTION_OFF, "env": {"CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"}}
 
 
 @pytest.fixture
@@ -604,15 +621,17 @@ def claude_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
 
 
 def test_claude_bypass_on_by_default(claude_env: pytest.MonkeyPatch) -> None:
-    cmd = get_runner("claude").build_cmd("m", "/tmp/p", "/tmp/i", "p")
-    assert cmd == ["claude", *CLAUDE_BYPASS, "--model", "m", "--settings", CLAUDE_DEFAULT_SETTINGS, "-p"]
+    cmd, settings = _split_settings(get_runner("claude").build_cmd("m", "/tmp/p", "/tmp/i", "p"))
+    assert cmd == ["claude", *CLAUDE_BYPASS, "--model", "m", "--settings", SETTINGS_FILE, "-p"]
+    assert settings == CLAUDE_DEFAULT_SETTINGS
 
 
 @pytest.mark.parametrize("value", ["false", "0", "no", "off", "FALSE"])
 def test_claude_bypass_opt_out(claude_env: pytest.MonkeyPatch, value: str) -> None:
     claude_env.setenv("HOLON_AGENT_SKIP_PERMISSIONS", value)
-    cmd = get_runner("claude").build_cmd("m", "/tmp/p", "/tmp/i", "p")
-    assert cmd == ["claude", "--model", "m", "--settings", CLAUDE_DEFAULT_SETTINGS, "-p"]
+    cmd, settings = _split_settings(get_runner("claude").build_cmd("m", "/tmp/p", "/tmp/i", "p"))
+    assert cmd == ["claude", "--model", "m", "--settings", SETTINGS_FILE, "-p"]
+    assert settings == CLAUDE_DEFAULT_SETTINGS
     assert not set(CLAUDE_BYPASS) & set(cmd)
 
 
@@ -632,10 +651,29 @@ def test_claude_bypass_coexists_with_settings(claude_env: pytest.MonkeyPatch) ->
     assert cmd == ["claude", *CLAUDE_BYPASS, "--model", "m", "-p", "--settings", settings, "p"]
     value = cmd[cmd.index("--settings") + 1]
     assert value == settings
-    built = get_runner("claude").build_cmd("m", None, None, "p")
-    merged = json.loads(built[built.index("--settings") + 1])
+    _, merged = _split_settings(get_runner("claude").build_cmd("m", None, None, "p"))
     assert merged["env"] == {"ANTHROPIC_API_KEY": "x", "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"}
     assert "bypassPermissions" not in value and "skip-permissions" not in value
+
+
+@pytest.mark.parametrize("builder", ["build_cmd", "build_command"])
+def test_claude_inline_settings_token_stays_off_argv(claude_env: pytest.MonkeyPatch, builder: str) -> None:
+    token = f"sk-ant-oat01-FAKE-test-token-{builder}"
+    claude_env.setenv("HOLON_AGENT_SETTINGS", json.dumps({"env": {"CLAUDE_CODE_OAUTH_TOKEN": token}}))
+    runner = get_runner("claude")
+    raw = runner.build_cmd("m", None, None, "p") if builder == "build_cmd" else runner.build_command("p", "m")
+    assert not any(token in part for part in raw)
+    cmd, settings = _split_settings(raw)
+    assert cmd.count(SETTINGS_FILE) == 1
+    assert settings == {
+        **ATTRIBUTION_OFF,
+        "env": {"CLAUDE_CODE_OAUTH_TOKEN": token, "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"},
+    }
+
+
+def test_claude_build_command_without_settings_equals_compose_cmd(claude_env: pytest.MonkeyPatch) -> None:
+    runner = get_runner("claude")
+    assert runner.build_command("p", "m") == runner.compose_cmd("m", "p")
 
 
 def test_claude_bypass_evaluated_at_build_time(claude_env: pytest.MonkeyPatch) -> None:
@@ -655,6 +693,7 @@ def test_other_runners_never_emit_claude_bypass(claude_env: pytest.MonkeyPatch, 
 
 def test_real_registered_runners_build_command_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify that all real registered runners implement build_command identically to compose_cmd without mocks."""
+    monkeypatch.delenv("HOLON_AGENT_SETTINGS", raising=False)
     # 1. Iterate over all registered runner instances in the runners dictionary directly without mocks
     for runner in runners.values():
         cmd_build = runner.build_command("test-prompt", "test-model")

@@ -13,7 +13,8 @@ REVIEW_LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.review.approval_coverage": "ApprovalCoverage approval_covers approved_fingerprint_of",
     "sandbox_executor.flow.review.approval_fingerprint": (
-        "approval_fingerprint_of approval_record fingerprints_match pr_change_fingerprint"
+        "approval_fingerprint_of approval_record fingerprints_match is_bookkeeping_only_move is_bookkeeping_path "
+        "pr_change_fingerprint reviewable_pathspecs"
     ),
     "sandbox_executor.flow.review.carried_findings": (
         "CarriedPass carried_blocker deserialize_carried merge_findings resolve_carried_first serialize_open undisposed"
@@ -48,9 +49,11 @@ REVIEW_LAZY_EXPORTS: dict[str, str] = {
         "_lookup_introducing_action_id"
     ),
     "sandbox_executor.flow.review.sync_points": (
-        "compute_rereview_scope finalize_resolver_turn format_conflict_block_reason is_ledger_only_sync "
-        "is_mechanical_only sync_after_resolver_turn sync_before_review_iteration sync_iteration_mergeability "
-        "sync_review_head"
+        "finalize_resolver_turn is_ledger_only_sync sync_after_resolver_turn sync_before_review_iteration "
+        "sync_iteration_mergeability sync_review_head"
+    ),
+    "sandbox_executor.flow.review.sync_scope": (
+        "compute_rereview_scope format_conflict_block_reason is_mechanical_only record_rereview_scope"
     ),
     "sandbox_executor.flow.review.verdict": "review_loop_approved review_summary_lines",
     "sandbox_executor.flow.review.workspace": "HOST_REVIEW_REFUSAL reviewers_sandboxed",

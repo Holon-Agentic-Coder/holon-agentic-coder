@@ -7,7 +7,6 @@ import os
 from collections.abc import Callable
 from typing import Any
 
-from sandbox_executor.calibration import is_metadata_path
 from sandbox_executor.entrypoint.execution_workspace import workspace_mounted
 from sandbox_executor.flow import target_sync_hooks as _hooks
 from sandbox_executor.flow.conflict_classes import ConflictClass
@@ -16,17 +15,16 @@ from sandbox_executor.flow.context import FlowContext, FlowStage
 from sandbox_executor.flow.git_refs import _resolve_branch_ref, _track_local_branch
 from sandbox_executor.flow.github.merge import PROTECTED_BRANCHES, _bare_branch
 from sandbox_executor.flow.review.ledger_commit import _commit_pending_ledger_rows
+from sandbox_executor.flow.review.sync_scope import compute_rereview_scope as compute_rereview_scope
+from sandbox_executor.flow.review.sync_scope import format_conflict_block_reason as format_conflict_block_reason
+from sandbox_executor.flow.review.sync_scope import is_mechanical_only as is_mechanical_only
+from sandbox_executor.flow.review.sync_scope import record_rereview_scope as record_rereview_scope
 from sandbox_executor.flow.target_probe import TargetProbeError, probe_target
 from sandbox_executor.flow.target_sync import sync_with_target
 from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest, SyncResult
 from sandbox_executor.review_target import ReviewTarget
 
 _STRICT_BOUNDARIES = frozenset({SyncBoundary.PUSH, SyncBoundary.CALIBRATE})
-
-
-def is_mechanical_only(result: SyncResult) -> bool:
-    """True only when ``result`` merged cleanly or mechanically without invoking a code resolver."""
-    return result.status == "merged" and not result.code_paths and not result.resolver_tier
 
 
 def is_ledger_only_sync(result: SyncResult) -> bool:
@@ -36,35 +34,6 @@ def is_ledger_only_sync(result: SyncResult) -> bool:
         and bool(result.resolutions)
         and all(c == ConflictClass.LEDGER.value for _, c, _ in result.resolutions)
     )
-
-
-def compute_rereview_scope(result: SyncResult) -> tuple[str, ...]:
-    """Return sorted deduplicated code and test paths touched by an agent-resolved merge commit."""
-    if result.status != "merged" or is_mechanical_only(result):
-        return ()
-    scoped = {
-        p
-        for p in (*result.code_paths, *result.resolver_test_edits)
-        if p and not is_metadata_path(p) and not p.startswith("holon-knowledge/ledger/")
-    }
-    return tuple(sorted(scoped))
-
-
-def format_conflict_block_reason(result: SyncResult, target_branch: str) -> str:
-    """Format a class-accurate block reason; ``code conflicts`` appears only for unresolved ``CODE`` paths."""
-    resolved = {path for path, _, _ in result.resolutions}
-    unresolved_code = [path for path in result.code_paths if path not in resolved]
-    if unresolved_code:
-        suffix = f" ({result.test_result})" if result.test_result else ""
-        return f"code conflicts with {target_branch} in: {', '.join(unresolved_code)}{suffix}"
-    unresolved_other = [path for path in result.conflicted_paths if path not in resolved]
-    if unresolved_other:
-        detail = f": {result.error}" if result.error else ""
-        return f"merge conflicts with {target_branch} in: {', '.join(unresolved_other)}{detail}"
-    if result.resolutions and result.error:
-        classes = ", ".join(sorted({cls for _, cls, _ in result.resolutions}))
-        return f"merging {target_branch} ({classes}) failed: {result.error}"
-    return f"merging {target_branch} failed: {result.error or 'unknown error'}"
 
 
 def _precheck_review_sync(
@@ -145,8 +114,7 @@ def _apply_turn_sync(
         context.log(f"[Review Loop] Target sync {label} blocked: {reason}.")
         return resolved_target, f"target sync blocked: {reason}"
     if result.status == "merged":
-        if (scope := compute_rereview_scope(result)) and getattr(context, "review_scope_paths", None):
-            context.review_scope_paths = sorted(set(context.review_scope_paths) | set(scope))
+        record_rereview_scope(context, compute_rereview_scope(result))
         if resolved_target is not None and result.head_after:
             resolved_target = dataclasses.replace(resolved_target, head_sha=result.head_after)
         context.log(f"[Review Loop] Target sync {label} merged '{target_branch}' into '{branch}'.")

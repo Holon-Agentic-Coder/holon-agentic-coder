@@ -161,8 +161,8 @@ def _approved_post_gate(
     gate = _gate_conflicting_head(context, branch, target_branch, mergeability, merge)
     if gate.blocked_reason is None:
         return None
-    if gate.merged and not gate.mechanical_only and gate.rereview_scope:
-        context.review_scope_paths = list(gate.rereview_scope)
+    if gate.merged and not gate.mechanical_only:
+        _sp.record_rereview_scope(context, gate.rereview_scope, approved=True)
     if (
         gate.merged
         and gate.mechanical_only

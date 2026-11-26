@@ -3,11 +3,11 @@
 The conflict gate may merge the target branch into the approved head, and the head may move after approval for other
 reasons. Either way the Stage 4 approval no longer covers the head Stage 5 would calibrate, so the gate waits for every
 check run on that exact SHA (:mod:`sandbox_executor.flow.github.ci_head_checks`). States: ``passed``, ``failed`` (a
-check failed: the consensus is withdrawn and Stage 4 restarts), ``pending`` (the CI wait budget ran out), ``unknown``
-(nothing registered or the checks could not be read), ``failed_closed`` (a cancelled run could not be re-triggered or
-was cancelled again) and ``skipped``. Only ``failed`` withdraws the consensus; every other unsettled state fails Stage 5
-closed. It never merges, approves or pushes.
-"""
+check failed: Stage 4 restarts), ``pending`` (the CI wait budget ran out), ``unknown`` (nothing registered or the
+checks could not be read), ``failed_closed`` (a cancelled run could not be re-triggered or was cancelled again) and
+``skipped``. Only ``failed`` restarts Stage 4, routed by failure class
+(:mod:`sandbox_executor.flow.review.merged_head_routing`); every other unsettled state fails Stage 5 closed. It never
+merges, approves or pushes."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from sandbox_executor.budgets import resolve_review_ci_wait_seconds
 from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.github.ci import resolve_ci_registration_timeout
+from sandbox_executor.flow.github.ci_failure_detail import DetailLookup, parse_run_id
 from sandbox_executor.flow.github.ci_head_checks import (
     FAILED,
     PASSED,
@@ -29,15 +30,18 @@ from sandbox_executor.flow.github.ci_head_checks import (
     classify_head_checks,
     gh_head_checks_probe,
     is_cancelled,
+    is_failed,
     is_pending,
     suite_pending,
 )
 from sandbox_executor.flow.github.ci_head_reruns import CancelledReruns, gh_run_rerunner
+from sandbox_executor.flow.github.ci_slowest_tests import SlowestLookup
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, next_poll_interval
 from sandbox_executor.flow.review.consensus_withdrawal import WithdrawalSeams
 from sandbox_executor.knowledge import CredentialRedactor
 
 MAX_REASON_CHARS = 300
+RERUN_START_POLL_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -52,6 +56,8 @@ class MergedHeadSeams:
     head_reader: Callable[[], str | None] | None = None
     bookkeeping_move: Callable[[str, str], bool] | None = None
     withdrawal: WithdrawalSeams | None = None
+    detail_lookup: DetailLookup | None = None  # The failed-step detail that classifies a red head (``gh`` default).
+    slowest_lookup: SlowestLookup | None = None  # The slowest tests a repeated timing failure names (``gh`` default).
 
 
 def _run_entry(check: Mapping[str, Any]) -> dict[str, Any]:
@@ -76,6 +82,24 @@ def gate_record(
 def skipped_record(head_sha: str | None, reason: str) -> dict[str, Any]:
     """The record of a gate that did not wait, so the Stage 5 payload always carries the key."""
     return gate_record("skipped", str(head_sha or ""), [], [], reason)
+
+
+def stage4_ci_record(context: FlowContext, head: str) -> dict[str, Any]:
+    """The Stage 4 CI checks Stage 5 relies on when the approved code is unchanged."""
+    review = context.stage_results.get("review")
+    checks = ((review.payload.get("ci_checks") if review else None) or {}).get("checks") or []
+    runs = [
+        {
+            "run_id": parse_run_id(c.get("link")),
+            "check_run_id": None,
+            "name": c.get("name"),
+            "conclusion": c.get("bucket"),
+        }
+        for c in checks
+        if isinstance(c, dict)
+    ]
+    reason = "no merge since approval: Stage 5 relies on the Stage 4 CI of the approved head"
+    return {"state": "stage4", "head_sha": head, "runs": runs, "reruns": [], "reason": reason}
 
 
 def _settle(checks: list[HeadCheck], reruns: CancelledReruns) -> tuple[str, str] | None:
@@ -140,3 +164,15 @@ def format_merged_head_ci(record: Mapping[str, Any]) -> str:
     if record.get("reruns"):
         line += f"; re-triggered: {', '.join(record['reruns'])}"
     return line + (f" ({record['reason']})" if record.get("reason") else "")
+
+
+def _wait_for_rerun_start(context: FlowContext, head: str, names: set[str], seams: MergedHeadSeams) -> None:
+    """Poll until no rerun check is still reported failed on ``head``, at most the registration timeout."""
+    probe = seams.probe or gh_head_checks_probe(context.target_worktree, seams.proxy_env)
+    policy = seams.policy or CiWaitPolicy(resolve_review_ci_wait_seconds(os.environ))
+    deadline = policy.clock() + resolve_ci_registration_timeout(seams.registration_timeout)
+    while any(is_failed(c) and c.get("name") in names for c in probe(head) or []):
+        remaining = deadline - policy.clock()
+        if remaining <= 0:
+            return
+        policy.sleep(max(0.0, min(RERUN_START_POLL_SECONDS, remaining)))

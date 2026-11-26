@@ -100,8 +100,15 @@ only on positive evidence, and every doubt or error runs the full job. All of th
 
 A merge to `main` used to run every job again, although the merged pull request's head had already passed the same jobs
 on the same tree. In `test-unit.yml` and `test-stress.yml` (the `GATED_WORKFLOWS` of `scripts/ci_main_push_gate.py`) a
-push to `main` is therefore decided by that module instead of the rules above. It says "skip" (`main-push-tested-tree`)
-only when all of the following hold, in this order:
+push to `main` is therefore decided by that module instead of the rules above. It says "skip" through one of two rules.
+
+Right after the event check (first attempt, complete event), `scripts/ci_main_push_superseded.py` reads the tip of
+`main`. When the pushed commit is a strict ancestor of that tip (the compare from the pushed commit to the tip answers
+`ahead`), it says "skip" (`main-push-superseded`): the tip's own push run tests a superset tree. The check does not
+confirm that such a run exists (a `[skip ci]` tip has none); the daily `schedule` run is the backstop. The pushed commit
+being the tip, any other compare status and every error give no opinion, and the rules below decide.
+
+Otherwise it says "skip" (`main-push-tested-tree`) only when all of the following hold, in this order:
 
 - The run is the first attempt and names the pushed commit, the workflow file, the job and its run number.
 - Exactly one pull request is associated with the pushed commit; it was merged, its base is `main` and its merge commit
@@ -126,11 +133,12 @@ permission. Both workflows also run once a day on a `schedule` trigger: the gate
 (`event-not-pull-request`), so `main` is tested in full at least once a day whatever the pushes decided. A push to
 `main` in any other workflow keeps `event-not-pull-request` and runs in full.
 
-These rules belong to `scripts/ci_main_push_gate.py`:
+These rules belong to `scripts/ci_main_push_gate.py` (`main-push-superseded` to `scripts/ci_main_push_superseded.py`):
 
 | rule                                | meaning                                                                                      |
 | ----------------------------------- | -------------------------------------------------------------------------------------------- |
 | `main-push-tested-tree`             | skip: the pushed tree was tested by this job on the merged pull request's head               |
+| `main-push-superseded`              | skip: the pushed commit is a strict ancestor of the tip of `main`, whose push run tests it   |
 | `main-push-rerun-attempt`           | the run is a second or later attempt                                                         |
 | `main-push-incomplete-event`        | the environment lacks the pushed commit, the workflow file, the job name or the run number   |
 | `main-push-no-pull-request`         | no pull request is associated with the pushed commit (a direct push)                         |

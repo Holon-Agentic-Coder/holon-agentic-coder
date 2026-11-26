@@ -36,6 +36,7 @@ from tests.flow.sync_boundary_repos import (
     sync_conflict_commit,
     sync_work,
 )
+from tests.flow.sync_boundary_repos import BASE_ROW as BASE_ROW  # re-exported for review/test_sync_points.py
 from tests.ledger_conflict_repos import FLOW_BRANCH, commit_on
 
 Edit = Callable[[Path], None]
@@ -73,10 +74,16 @@ def _sync_rows(work: Path, branch: str = FLOW_BRANCH) -> list[dict]:
     return [row for row in rows if row.get("action") == "target_sync"]
 
 
-def _inject_ledger_conflict(work: Path, idx: int) -> None:
-    """``ledger_conflict(idx)`` committed on a repository a test has already changed."""
-    for commit in ledger_conflict(idx):
-        commit_on(work, commit.branch, dict(commit.files), commit.message)
+def _inject_ledger_conflict(work: Path, branch: str, idx: int) -> None:
+    """A newer row on ``main`` and an older one on ``branch``, appended to what each holds now (also used by
+    review/test_sync_points.py on repositories whose ledgers have moved on); fixed scenarios use
+    ``sync_boundary_repos.ledger_conflict`` instead."""
+    main_row = json.dumps({"execution_id": f"E-main-{idx}", "created_at": f"2026-11-0{idx}T02:00:00Z"}) + "\n"
+    flow_row = json.dumps({"execution_id": f"E-flow-{idx}", "created_at": f"2026-11-0{idx}T01:00:00Z"}) + "\n"
+    main_current = _git(work, "show", f"origin/main:{LEDGER}") + "\n"
+    flow_current = _git(work, "show", f"origin/{branch}:{LEDGER}") + "\n"
+    commit_on(work, "main", {LEDGER: main_current + main_row}, f"main row {idx}")
+    commit_on(work, branch, {LEDGER: flow_current + flow_row}, f"flow row {idx}")
 
 
 def _context_for(work: Path, stage: FlowStage, dispatcher: FakeResolverDispatcher | None = None) -> FlowContext:
@@ -411,7 +418,7 @@ def test_stage5_resume_flow_start_syncs_execution_branch_not_calibrated(
     exec_before = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
     _git(work, "branch", "--no-track", calibrated, exec_before)
     _git(work, "push", "-q", "origin", calibrated)
-    _inject_ledger_conflict(work, 6)
+    _inject_ledger_conflict(work, FLOW_BRANCH, 6)
 
     ctx = _context_for(work, FlowStage.CALIBRATE)
     ctx.calibrated_branch = calibrated

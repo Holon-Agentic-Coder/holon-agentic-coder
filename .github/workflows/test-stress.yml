@@ -7,6 +7,9 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
+  # One full run a day, whatever the gate decided on the pushes to main; see "Pushes to main" in README.md.
+  schedule:
+    - cron: "41 3 * * *"
 
 permissions:
   contents: read
@@ -25,6 +28,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     strategy:
       fail-fast: false
       matrix:
@@ -133,7 +137,8 @@ jobs:
           name: ci-timing-test-stress-workspace-survival-${{ matrix.os }}
           path: ci-timing/record.json
           retention-days: 30
-          if-no-files-found: error
+          # A main push that the gate skipped writes no timing record; a full run without one still fails.
+          if-no-files-found: ${{ steps.bookkeeping.outputs.skip != 'true' && 'error' || 'ignore' }}
 
       - name: Full run completed
         if: steps.bookkeeping.outputs.skip != 'true'

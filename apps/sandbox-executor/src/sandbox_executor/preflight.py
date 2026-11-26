@@ -6,7 +6,6 @@ import functools
 import logging
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import time
@@ -19,6 +18,7 @@ from sandbox_executor import claude_token_migration, local_llm
 from sandbox_executor.agent_defaults import AGENT_IMAGE_MAPPING, normalise_agent_id
 from sandbox_executor.claude_credential import pin_claude_credential, resolve_claude_credential_with_lookup
 from sandbox_executor.preflight_model_error import is_model_error
+from sandbox_executor.preflight_secret_args import reference_secret_args
 
 logger = logging.getLogger(__name__)
 
@@ -272,17 +272,8 @@ def build_probe_docker_cmd(
     cmd.extend(session_mounts)
     cmd.extend(mounts.build_network_isolation_args())
     cmd.append(image)
-    cmd.extend(_reference_secret_args(runners[agent_id].compose_cmd(model, PROBE_PROMPT), secret_env))
+    cmd.extend(reference_secret_args(runners[agent_id].compose_cmd(model, PROBE_PROMPT), secret_env))
     return cmd, secret_env
-
-
-def _reference_secret_args(runner_cmd: list[str], secret_env: Mapping[str, str]) -> list[str]:
-    by_value = {value: key for key, value in sorted(secret_env.items()) if value}
-    binary, *args = runner_cmd
-    if not any(arg in by_value for arg in args):
-        return runner_cmd
-    script = " ".join(f'"${{{by_value[arg]}}}"' if arg in by_value else shlex.quote(arg) for arg in args)
-    return ["sh", "-c", f"exec {shlex.quote(binary)} {script}"]
 
 
 def _result(  # noqa: PLR0913

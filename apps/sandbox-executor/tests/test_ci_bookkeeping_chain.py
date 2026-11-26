@@ -314,9 +314,9 @@ def test_earlier_runs_are_sorted_by_run_number_highest_first() -> None:
     runs = list_earlier_runs(client_for(fake), WORKFLOW, BRANCH, CURRENT_RUN)
 
     assert runs == [
-        RunRef(1049, 49, SHA_B, "completed", 1),
-        RunRef(1012, 12, SHA_C, "completed", 1),
-        RunRef(1007, 7, SHA_A, "completed", 1),
+        RunRef(1049, 49, SHA_B, "completed", 1, ((7, ""),)),
+        RunRef(1012, 12, SHA_C, "completed", 1, ((7, ""),)),
+        RunRef(1007, 7, SHA_A, "completed", 1, ((7, ""),)),
     ]
 
 

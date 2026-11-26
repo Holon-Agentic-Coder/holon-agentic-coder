@@ -5,10 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from sandbox_executor.knowledge import wisdom as wisdom_module
 from sandbox_executor.knowledge.index import ActionIndexDatabase
+from sandbox_executor.knowledge.stable_envelope import STABLE_CREATED_TS
 from sandbox_executor.knowledge.wisdom import (
     load_index,
     persist_kb_fact,
@@ -168,6 +171,147 @@ def test_load_index_skips_unreadable_entry(tmp_path: Path) -> None:
     Path(subfolder, "KB-pattern-list.json").write_text("[]", encoding="utf-8")
 
     assert [e["kb_id"] for e in load_index(subfolder)] == ["KB-pattern-good"]
+
+
+class _ShiftingClock:
+    """A datetime stand-in whose now() returns a later instant on every call."""
+
+    calls = 0
+
+    @classmethod
+    def now(cls, tz: object = None) -> datetime:
+        """Return a distinct instant per call."""
+        cls.calls += 1
+        return datetime(2026, 11, cls.calls, 12, 0, tzinfo=UTC)
+
+
+def _kb_fact(success_count: int, wilson_lower: float, ladder_state: str) -> dict:
+    """A KB pattern fact whose evidence counters vary per run."""
+    return {
+        "kb_id": "KB-pattern-deadbeef",
+        "kb_type": "pattern",
+        "evidence": {
+            "ledger_refs": [f"act-{i}" for i in range(success_count - 5, success_count)],
+            "success_count": success_count,
+            "failure_count": 0,
+            "wilson_lower": wilson_lower,
+            "ladder_state": ladder_state,
+        },
+        "tags": ["refactor", "proven"],
+        "payload": {"name": "Proven approach for src/a.py", "action": "Refactor a"},
+    }
+
+
+def _wb_rule(total_executions: int, wilson_lower: float) -> dict:
+    """A WB heuristic rule whose ascension counters vary per run."""
+    return {
+        "wb_id": "WB-heuristic-deadbeef",
+        "wb_type": "heuristic",
+        "ascension_evidence": {
+            "project_count": 1,
+            "total_executions": total_executions,
+            "wilson_lower": wilson_lower,
+            "provenance": [{"kb_id": "KB-pattern-deadbeef"}],
+        },
+        "payload": {"name": "Universal heuristic: src/a.py", "advisory": "Consider the proven approach."},
+    }
+
+
+def test_persist_kb_fact_bytes_independent_of_clock_and_counters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two runs with different clocks and counters write byte-identical KB files free of counters and clock times."""
+    monkeypatch.setattr(wisdom_module, "datetime", _ShiftingClock)
+    first = persist_kb_fact(_kb_fact(10, 0.7, "likely-success"), kb_dir=str(tmp_path / "a" / "kb"))
+    second = persist_kb_fact(_kb_fact(37, 0.9, "proven-success"), kb_dir=str(tmp_path / "b" / "kb"))
+
+    assert Path(first).read_bytes() == Path(second).read_bytes()
+    data = json.loads(Path(first).read_text(encoding="utf-8"))
+    assert data["created_ts"] == data["updated_ts"] == STABLE_CREATED_TS
+    assert data["evidence"] == {}
+
+
+def test_persist_wb_rule_bytes_independent_of_clock_and_counters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two runs with different clocks and counters write byte-identical WB files keeping only stable evidence."""
+    monkeypatch.setattr(wisdom_module, "datetime", _ShiftingClock)
+    first = persist_wb_rule(_wb_rule(22, 0.86), wb_dir=str(tmp_path / "a" / "wisdom"))
+    second = persist_wb_rule(_wb_rule(31, 0.89), wb_dir=str(tmp_path / "b" / "wisdom"))
+
+    assert Path(first).read_bytes() == Path(second).read_bytes()
+    data = json.loads(Path(first).read_text(encoding="utf-8"))
+    assert data["created_ts"] == STABLE_CREATED_TS
+    assert data["ascension_evidence"] == {"project_count": 1, "provenance": [{"kb_id": "KB-pattern-deadbeef"}]}
+
+
+_LEGACY_KB = {
+    "kb_id": "KB-pattern-legacy01",
+    "kb_type": "pattern",
+    "version": "1.0",
+    "created_ts": "2026-11-25T23:52:44.461824+00:00",
+    "updated_ts": "2026-11-25T23:52:44.461824+00:00",
+    "created_by": "holon-promotion-engine",
+    "status": "active",
+    "evidence": {"ledger_refs": ["act-1"], "success_count": 21, "wilson_lower": 0.85},
+    "tags": ["legacy"],
+    "human_approved": False,
+    "payload": {"description": "Succeeded in 21/21 executions (0.85)."},
+}
+
+_LEGACY_WB = {
+    "wb_id": "WB-heuristic-legacy01",
+    "wb_type": "heuristic",
+    "version": "1.0",
+    "created_ts": "2026-11-25T23:52:44.461824+00:00",
+    "scope": "global",
+    "status": "active",
+    "ascension_evidence": {"project_count": 1, "total_executions": 21, "wilson_lower": 0.85},
+    "human_approved": False,
+    "payload": {"advisory": "Succeeded in 21/21 executions (0.85)."},
+}
+
+
+def _write_legacy(path: Path, envelope: dict) -> Path:
+    """Write a legacy-shaped envelope by hand, as older promotion runs did."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
+    return path
+
+
+def test_persist_never_rewrites_existing_file(tmp_path: Path) -> None:
+    """An existing legacy KB or WB file keeps its bytes and mtime when the same id is persisted again."""
+    kb_file = _write_legacy(tmp_path / "kb" / "patterns" / "KB-pattern-legacy01.json", _LEGACY_KB)
+    wb_file = _write_legacy(tmp_path / "wisdom" / "heuristics" / "WB-heuristic-legacy01.json", _LEGACY_WB)
+    before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in (kb_file, wb_file)}
+
+    kb_out = persist_kb_fact({"kb_id": "KB-pattern-legacy01", "kb_type": "pattern"}, kb_dir=str(tmp_path / "kb"))
+    wb_out = persist_wb_rule({"wb_id": "WB-heuristic-legacy01"}, wb_dir=str(tmp_path / "wisdom"))
+
+    assert (kb_out, wb_out) == (str(kb_file), str(wb_file))
+    assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in (kb_file, wb_file)} == before
+
+
+def test_load_index_reads_legacy_and_stable_files(tmp_path: Path) -> None:
+    """load_index lists a legacy file and a newly written stable file together, the epoch-dated one first."""
+    kb_dir = tmp_path / "kb"
+    _write_legacy(kb_dir / "patterns" / "KB-pattern-legacy01.json", _LEGACY_KB)
+    persist_kb_fact({"kb_id": "KB-pattern-stable01", "kb_type": "pattern"}, kb_dir=str(kb_dir))
+    wb_dir = tmp_path / "wisdom"
+    _write_legacy(wb_dir / "heuristics" / "WB-heuristic-legacy01.json", _LEGACY_WB)
+    persist_wb_rule({"wb_id": "WB-heuristic-stable01"}, wb_dir=str(wb_dir))
+
+    kb_entries = load_index(str(kb_dir / "patterns"))
+    wb_entries = load_index(str(wb_dir / "heuristics"))
+
+    assert [(e["kb_id"], e["file"], e["created_ts"]) for e in kb_entries] == [
+        ("KB-pattern-stable01", "KB-pattern-stable01.json", STABLE_CREATED_TS),
+        ("KB-pattern-legacy01", "KB-pattern-legacy01.json", _LEGACY_KB["created_ts"]),
+    ]
+    assert [(e["wb_id"], e["file"], e["created_ts"]) for e in wb_entries] == [
+        ("WB-heuristic-stable01", "WB-heuristic-stable01.json", STABLE_CREATED_TS),
+        ("WB-heuristic-legacy01", "WB-heuristic-legacy01.json", _LEGACY_WB["created_ts"]),
+    ]
 
 
 def test_promote_pending_candidates_zero_touch_immutability(tmp_path: Path) -> None:

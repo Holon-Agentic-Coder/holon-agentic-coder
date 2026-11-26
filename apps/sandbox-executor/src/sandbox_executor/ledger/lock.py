@@ -148,20 +148,6 @@ def assert_ledger_prefix(path: str, before: bytes) -> None:
 
 
 @contextlib.contextmanager
-def atomic_ledger_append(
-    filepath: str,
-    timeout: float = 10.0,
-    initial_delay: float = 0.02,
-    max_delay: float = 0.5,
-) -> Iterator[TextIO]:
-    from sandbox_executor.ledger.route import RoutedLedgerBuffer, flush_routed
-
-    buffer = RoutedLedgerBuffer(filepath, {"timeout": timeout, "initial_delay": initial_delay, "max_delay": max_delay})
-    yield buffer
-    flush_routed(buffer)
-
-
-@contextlib.contextmanager
 def suppress_ledger_failures() -> Iterator[None]:
     try:
         yield

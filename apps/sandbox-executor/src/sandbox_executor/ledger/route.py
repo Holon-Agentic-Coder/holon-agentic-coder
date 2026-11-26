@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
-from typing import Any
+from collections.abc import Iterator
+from typing import Any, TextIO
 
 from sandbox_executor.ledger.fragments import (
     UNSCOPED_ROOT,
@@ -108,3 +110,15 @@ def flush_routed(buffer: RoutedLedgerBuffer) -> None:
         return
     for target, routed in route_lines(buffer.filepath, text).items():
         _append_locked(target, routed, buffer.lock_options)
+
+
+@contextlib.contextmanager
+def atomic_ledger_append(
+    filepath: str,
+    timeout: float = 10.0,
+    initial_delay: float = 0.02,
+    max_delay: float = 0.5,
+) -> Iterator[TextIO]:
+    buffer = RoutedLedgerBuffer(filepath, {"timeout": timeout, "initial_delay": initial_delay, "max_delay": max_delay})
+    yield buffer
+    flush_routed(buffer)

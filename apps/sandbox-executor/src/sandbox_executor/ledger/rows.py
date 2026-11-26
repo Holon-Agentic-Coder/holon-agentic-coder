@@ -14,8 +14,9 @@ from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-from sandbox_executor.ledger.lock import LedgerRewriteError, atomic_ledger_append
+from sandbox_executor.ledger.lock import LedgerRewriteError
 from sandbox_executor.ledger.order import utc_now_z
+from sandbox_executor.ledger.route import atomic_ledger_append
 from sandbox_executor.naming import distinct_stage_id, stage_id
 from sandbox_executor.ref_names import ensure_stage_segment_fits
 

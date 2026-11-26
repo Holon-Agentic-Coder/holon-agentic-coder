@@ -23,13 +23,12 @@ from sandbox_executor.budgets import (
 )
 from sandbox_executor.decomposition_rule import should_decompose
 from sandbox_executor.entrypoint.execution_workspace import start_branch_from_host_fetch
-from sandbox_executor.entrypoint.taken_ids import taken_plan_ids
+from sandbox_executor.entrypoint.plan_id_unique import mint_plan_id
 from sandbox_executor.formatting import converge_prettier
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import (
     _sanitize_model_name,
     atomic_ledger_append,
-    build_plan_id,
     read_merged_rows,
     validate_ledger_file_unique_ids,
 )
@@ -350,9 +349,8 @@ def main():  # noqa: C901, PLR0912, PLR0915
     plan_seq = int(time.time())
     safe_model = _sanitize_model_name(model_name)
     repo = GitRepository(repo_dir, runner=run_cmd)
-    taken_ids = taken_plan_ids(repo, repo_dir, intent_branch_prefix)
     try:
-        plan_id = build_plan_id(plan_seq, intent_branch_prefix, agent_name, model_name, taken=taken_ids)
+        plan_id = mint_plan_id(repo, repo_dir, intent_branch_prefix, plan_seq, (agent_name, model_name))
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)

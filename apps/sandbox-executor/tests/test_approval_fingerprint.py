@@ -19,10 +19,13 @@ import pytest
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from sandbox_executor.flow.review.approval_fingerprint import (
+    BOOKKEEPING_PATH_SUFFIXES,
     FINGERPRINT_VERSION,
     approval_fingerprint_of,
     fingerprints_match,
+    is_bookkeeping_path,
     pr_change_fingerprint,
+    reviewable_pathspecs,
 )
 from sandbox_executor.flow.review.conflict_merge import _merge_target_ledger_only
 
@@ -111,27 +114,86 @@ def test_fingerprint_is_versioned_and_stable(repos_template: Path, tmp_path: Pat
     assert approval_fingerprint_of(str(work), _git(work, "rev-parse", "HEAD"), "main") == first
 
 
-def test_excluded_paths_do_not_change_the_fingerprint(repos_template: Path, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"executions/E-1.md": "# top-level execution record\n"},
+        {"plans/I-1-x/P-2-y.md": "# plan\n", "plans/I-1-x/P-2-y_calibration.md": "# calibration\n"},
+        {"plans/P-2-y_calibration.md": "# flat calibration\n", "plans/meta.json": "{}\n"},
+        {"holon-knowledge/kb/note.md": "learnt\n", "holon-knowledge/kb/deep/rows.jsonl": "{}\n"},
+        {LEDGER: None},
+    ],
+    ids=["execution", "plan", "plan-json", "knowledge-base", "ledger"],
+)
+def test_bookkeeping_paths_do_not_change_the_fingerprint(
+    repos_template: Path, tmp_path: Path, files: dict[str, str | None]
+) -> None:
     work = _repos(repos_template, tmp_path, {"src/pr_a.py": "x = 1\n"})
     before = _fingerprint(work)
-    _commit(
-        work,
-        {
-            "holon-knowledge/kb/note.md": "learnt\n",
-            LEDGER: _ledger_with(work, "E-late"),
-            "plans/I-1-x/P-2-y_calibration.md": "# calibration\n",
-            "plans/P-2-y_calibration.md": "# flat calibration\n",
-        },
-        "bookkeeping",
-    )
-    assert _fingerprint(work) == before
+    _commit(work, {rel: text or _ledger_with(work, "E-late") for rel, text in files.items()}, "bookkeeping")
+    assert before is not None and _fingerprint(work) == before
 
 
-def test_non_calibration_plan_edit_changes_the_fingerprint(repos_template: Path, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "plans/tool.py",
+        "executions/run.sh",
+        "holon-knowledge/kb/loader.py",
+        "apps/sandbox-executor/src/x.py",
+        "scripts/gate.py",
+        "docs/guide.md",
+        "holon-config/world/rules.md",
+        "README.md",
+        "planning/notes.md",
+    ],
+)
+def test_every_reviewable_path_changes_the_fingerprint(repos_template: Path, tmp_path: Path, rel: str) -> None:
     work = _repos(repos_template, tmp_path, {"src/pr_a.py": "x = 1\n"})
     before = _fingerprint(work)
-    _commit(work, {"plans/I-1-x/P-2-y.md": "# plan\n"}, "plan")
-    assert _fingerprint(work) != before
+    _commit(work, {rel: "changed\n"}, "reviewable")
+    assert before is not None and _fingerprint(work) not in (before, None)
+
+
+def test_bookkeeping_only_pr_change_has_no_fingerprint(repos_template: Path, tmp_path: Path) -> None:
+    work = _repos(repos_template, tmp_path, {"executions/E-1.md": "# record\n", "plans/P-1.md": "# plan\n"})
+    assert _fingerprint(work) is None
+
+
+def test_version_is_pf2_and_never_matches_pf1() -> None:
+    assert FINGERPRINT_VERSION == "pf2"
+    assert not fingerprints_match("pf1:" + "a" * 40, "pf2:" + "a" * 40)
+
+
+@pytest.mark.parametrize(
+    ("path", "bookkeeping"),
+    [
+        ("executions/E-1.md", True),
+        ("plans/I-1/P-2.md", True),
+        ("holon-knowledge/ledger/executions.jsonl", True),
+        ("holon-knowledge/kb/x.json", True),
+        ("plans/tool.py", False),
+        ("docs/x.md", False),
+        ("planning/x.md", False),
+        ("executions", False),
+    ],
+)
+def test_is_bookkeeping_path(path: str, bookkeeping: bool) -> None:
+    assert is_bookkeeping_path(path) is bookkeeping
+
+
+def test_bookkeeping_definition_matches_the_shared_ci_definition() -> None:
+    from sandbox_executor.flow.github.ci_final_head import BOOKKEEPING_PATH_PREFIXES
+
+    from scripts.ci_bookkeeping_gate import BOOKKEEPING_ROOTS, BOOKKEEPING_SUFFIXES
+    from scripts.ci_bookkeeping_gate import is_bookkeeping_path as ci_is_bookkeeping_path
+
+    assert tuple(prefix.rstrip("/") for prefix in BOOKKEEPING_PATH_PREFIXES) == BOOKKEEPING_ROOTS
+    assert BOOKKEEPING_PATH_SUFFIXES == BOOKKEEPING_SUFFIXES
+    expected = {f":(exclude,glob){root}/**/*{suffix}" for root in BOOKKEEPING_ROOTS for suffix in BOOKKEEPING_SUFFIXES}
+    assert set(reviewable_pathspecs()[2:]) == expected and reviewable_pathspecs()[:2] == ("--", ".")
+    for path in ("executions/E-1.md", "plans/a/b.json", "plans/tool.py", "docs/x.md", "holon-knowledge/l.jsonl"):
+        assert is_bookkeeping_path(path) is ci_is_bookkeeping_path(path)
 
 
 def test_mode_only_change_changes_the_fingerprint(repos_template: Path, tmp_path: Path) -> None:

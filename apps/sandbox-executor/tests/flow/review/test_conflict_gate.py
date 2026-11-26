@@ -400,7 +400,7 @@ def _approved_at_head(work: Path, origin: Path, *, fingerprinted: bool = True) -
     data["mergeability"] = {"merge_state_status": "CLEAN", "mergeable": "MERGEABLE", "is_dirty": False}  # A's probe.
     if fingerprinted:
         data["approval_fingerprint"] = approval_fingerprint_of(str(work), head, "main")
-        assert str(data["approval_fingerprint"]).startswith("pf1:")
+        assert str(data["approval_fingerprint"]).startswith("pf2:")
     return data
 
 

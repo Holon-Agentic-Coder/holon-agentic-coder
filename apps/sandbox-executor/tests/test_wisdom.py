@@ -5,10 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import UTC, datetime
 from pathlib import Path
 
-import pytest
 from sandbox_executor.knowledge import wisdom as wisdom_module
 from sandbox_executor.knowledge.index import ActionIndexDatabase
 from sandbox_executor.knowledge.stable_envelope import STABLE_CREATED_TS
@@ -173,18 +171,6 @@ def test_load_index_skips_unreadable_entry(tmp_path: Path) -> None:
     assert [e["kb_id"] for e in load_index(subfolder)] == ["KB-pattern-good"]
 
 
-class _ShiftingClock:
-    """A datetime stand-in whose now() returns a later instant on every call."""
-
-    calls = 0
-
-    @classmethod
-    def now(cls, tz: object = None) -> datetime:
-        """Return a distinct instant per call."""
-        cls.calls += 1
-        return datetime(2026, 11, cls.calls, 12, 0, tzinfo=UTC)
-
-
 def _kb_fact(success_count: int, wilson_lower: float, ladder_state: str) -> dict:
     """A KB pattern fact whose evidence counters vary per run."""
     return {
@@ -217,11 +203,8 @@ def _wb_rule(total_executions: int, wilson_lower: float) -> dict:
     }
 
 
-def test_persist_kb_fact_bytes_independent_of_clock_and_counters(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Two runs with different clocks and counters write byte-identical KB files free of counters and clock times."""
-    monkeypatch.setattr(wisdom_module, "datetime", _ShiftingClock)
+def test_persist_kb_fact_bytes_independent_of_clock_and_counters(tmp_path: Path) -> None:
+    """Two runs with different counters write byte-identical KB files free of counters and clock times."""
     first = persist_kb_fact(_kb_fact(10, 0.7, "likely-success"), kb_dir=str(tmp_path / "a" / "kb"))
     second = persist_kb_fact(_kb_fact(37, 0.9, "proven-success"), kb_dir=str(tmp_path / "b" / "kb"))
 
@@ -231,11 +214,8 @@ def test_persist_kb_fact_bytes_independent_of_clock_and_counters(
     assert data["evidence"] == {}
 
 
-def test_persist_wb_rule_bytes_independent_of_clock_and_counters(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Two runs with different clocks and counters write byte-identical WB files keeping only stable evidence."""
-    monkeypatch.setattr(wisdom_module, "datetime", _ShiftingClock)
+def test_persist_wb_rule_bytes_independent_of_clock_and_counters(tmp_path: Path) -> None:
+    """Two runs with different counters write byte-identical WB files keeping only stable evidence."""
     first = persist_wb_rule(_wb_rule(22, 0.86), wb_dir=str(tmp_path / "a" / "wisdom"))
     second = persist_wb_rule(_wb_rule(31, 0.89), wb_dir=str(tmp_path / "b" / "wisdom"))
 

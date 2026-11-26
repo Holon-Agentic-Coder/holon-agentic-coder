@@ -107,13 +107,13 @@ def _already_promoted(conn: Any, sig: Any, kb_dir: str, wb_dir: str) -> bool:
     return os.path.exists(pattern_path) and os.path.exists(heuristic_path)
 
 
-def _fetch_recent_context_records(cur: Any, context_fingerprint: str) -> list[Any]:
+def _fetch_sample_context_records(cur: Any, context_fingerprint: str) -> list[Any]:
     cur.execute(
         """
         SELECT action, target, category, error_context, record_id
         FROM action_records
         WHERE context_fingerprint = ?
-        ORDER BY created_at DESC LIMIT 5;
+        ORDER BY created_at ASC, record_id ASC LIMIT 5;
         """,
         (context_fingerprint,),
     )
@@ -258,7 +258,7 @@ def promote_pending_candidates(
             if _already_promoted(conn, sig, kb_dir, wb_dir):
                 continue
             eval_res = evaluate_action_promotion(sig["signature_hash"], index_db=db)
-            records = _fetch_recent_context_records(cur, sig["context_fingerprint"])
+            records = _fetch_sample_context_records(cur, sig["context_fingerprint"])
 
             chatter = is_review_chatter_context(cur, sig, eval_res.failure_ladder_state)
             failure_item = None if chatter else _promote_failure_candidate(eval_res, records, kb_dir, dry_run)

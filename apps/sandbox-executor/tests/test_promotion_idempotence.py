@@ -284,3 +284,35 @@ def test_same_failure_context_promotes_identical_files_across_workspaces(tmp_pat
     assert file_a.read_bytes() == Path(ws_b.kb_dir, "failure_modes", "KB-failure-failsame.json").read_bytes()
     _assert_stable_file(file_a)
     assert [items_a[0]["evidence"]["failure_count"], items_b[0]["evidence"]["failure_count"]] == [3, 7]
+
+
+def _append_dated_failures(ws: _Workspace, fingerprint: str, rows: list[tuple[str, str, str]]) -> None:
+    """Append failure rows given as (created_at, action, error_context) and sync them into the index."""
+    offset = len(ws.ledger.read_text(encoding="utf-8").splitlines())
+    with open(ws.ledger, "a", encoding="utf-8") as f:
+        for i, (created_at, action, error_context) in enumerate(rows):
+            row = {
+                "action_id": f"act-{fingerprint}-failure-{offset + i}",
+                "context_fingerprint": fingerprint,
+                "action": action,
+                "target": f"src/{fingerprint}.py",
+                "verdict": "failure",
+                "error_context": error_context,
+                "created_at": created_at,
+            }
+            f.write(json.dumps(row) + "\n")
+    ws.db.sync_ledger(str(ws.ledger))
+
+
+def test_newer_divergent_failures_do_not_change_failure_file_bytes(tmp_path: Path) -> None:
+    """Flows sharing early failures but holding different newest rows write byte-identical KB-failure files."""
+    ws_a, ws_b = _two_workspaces(tmp_path)
+    shared = [(f"2026-11-0{i}T00:00:00+00:00", "Run the build", "RuntimeError: boom") for i in range(1, 4)]
+    _append_dated_failures(ws_a, "diverge1_fp", [*shared, ("2026-11-20T00:00:00+00:00", "Retry A", "KeyError: a")])
+    _append_dated_failures(ws_b, "diverge1_fp", [*shared, ("2026-11-21T00:00:00+00:00", "Retry B", "OSError: b")])
+
+    assert _ids(ws_a.promote()) == _ids(ws_b.promote()) == ["KB-failure-diverge1"]
+    file_a = Path(ws_a.kb_dir, "failure_modes", "KB-failure-diverge1.json")
+    assert file_a.read_bytes() == Path(ws_b.kb_dir, "failure_modes", "KB-failure-diverge1.json").read_bytes()
+    payload = json.loads(file_a.read_text(encoding="utf-8"))["payload"]
+    assert (payload["action"], payload["symptoms"]) == ("Run the build", ["RuntimeError: boom"])

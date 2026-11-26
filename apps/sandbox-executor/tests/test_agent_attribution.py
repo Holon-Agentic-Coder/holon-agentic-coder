@@ -1,7 +1,9 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
+from sandbox_executor import agent_attribution
 from sandbox_executor.agent_attribution import ATTRIBUTION_OFF, attribution_off_settings
 from sandbox_executor.agent_runner import get_runner
 
@@ -67,3 +69,28 @@ def test_bypass_flags_are_unchanged(claude_env: pytest.MonkeyPatch) -> None:
     cmd = get_runner("claude").build_cmd("m", None, None, "p")
     assert cmd.count("--permission-mode") == 1
     assert cmd[cmd.index("--permission-mode") + 1] == "bypassPermissions"
+
+
+def test_inline_env_settings_go_to_a_private_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    registered: list[str] = []
+    monkeypatch.setattr(agent_attribution.atexit, "register", lambda _fn, path: registered.append(path))
+    token = "sk-ant-oat01-FAKE-attribution-test-token"
+    value = attribution_off_settings(json.dumps({"env": {"CLAUDE_CODE_OAUTH_TOKEN": token}}))
+    assert token not in value
+    path = Path(value)
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        **ATTRIBUTION_OFF,
+        "env": {"CLAUDE_CODE_OAUTH_TOKEN": token},
+    }
+    assert registered == [value]
+    assert attribution_off_settings(json.dumps({"env": {"CLAUDE_CODE_OAUTH_TOKEN": token}})) == value
+    assert registered == [value]
+    agent_attribution._remove_quietly(value)
+    assert not os.path.exists(value)
+
+
+def test_env_free_and_unset_settings_stay_inline() -> None:
+    assert json.loads(attribution_off_settings('{"model": "x"}')) == {"model": "x", **ATTRIBUTION_OFF}
+    assert json.loads(attribution_off_settings('{"env": {}}')) == {"env": {}, **ATTRIBUTION_OFF}
+    assert json.loads(attribution_off_settings(None)) == ATTRIBUTION_OFF

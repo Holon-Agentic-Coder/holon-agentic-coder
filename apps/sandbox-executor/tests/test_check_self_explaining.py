@@ -64,6 +64,7 @@ def test_docstring_span_covers_every_line():
         "VALUE = 1  # noqa\n",
         "VALUE = 1  # noqa: E501\n",
         "VALUE: int = None  # type: ignore[assignment]\n",
+        "VALUES = []  # type: list[int]\n",
         "if VALUE:  # pragma: no cover\n    pass\n",
         "# fmt: off\nVALUE = 1\n# fmt: on\n",
         "# shellcheck disable=SC2086\nVALUE = 1\n",
@@ -91,6 +92,9 @@ def test_python_allowed_comments_and_strings_are_not_reported(source):
         ("deploy.sh", "cat <<EOF > notes.md\n# Heading\nEOF\necho hi # explains\n", [4]),
         ("deploy.sh", "cat <<-'EOF'\n\t# Heading\n\tEOF\n# explains\n", [4]),
         ("deploy.sh", 'read -r x <<< "$y" # explains\necho $((1<<2)) # explains\n', [1, 2]),
+        ("deploy.sh", "echo $(( y << shift ))\n(( x <<= bits ))\necho hi # explains\n", [3]),
+        ("Makefile", "all:\n\techo $$((y << shift)) <<EOF\n# explains\n", [3]),
+        ("ci.yml", 'msg: 5" screen # explains\nkey: "a # b"\n', [1]),
         ("ci.yml", "name: don't panic # explains\nother: it's 'x # y'\n", [1]),
         ("ci.yml", "body: |\n  # Heading\n  text # not a comment\nnext: 1 # explains\n", [4]),
         (

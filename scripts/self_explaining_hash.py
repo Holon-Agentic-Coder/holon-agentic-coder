@@ -5,10 +5,11 @@ from collections.abc import Iterable, Iterator
 
 SHELL_TOKEN = re.compile(
     r"\"(?:\\.|[^\"\\])*\"?|'[^']*'?|\\."
+    r"|\$?\(\((?:[^()]|\([^()]*\))*\)\)"
     r"|(?<!<)<<(?!<)-?\s*(?P<quote>['\"]?)(?P<heredoc>[A-Za-z_][\w.-]*)(?P=quote)"
     r"|(?:^|(?<=\s))#.*"
 )
-YAML_TOKEN = re.compile(r"\"(?:\\.|[^\"\\])*\"?|(?:^|(?<=[\s\[{,:]))'(?:''|[^'])*'?|(?:^|(?<=\s))#.*")
+YAML_TOKEN = re.compile(r"(?:^|(?<=[\s\[{,:]))(?:\"(?:\\.|[^\"\\])*\"?|'(?:''|[^'])*'?)|(?:^|(?<=\s))#.*")
 YAML_BLOCK_SCALAR_HEADER = re.compile(r"(?:^|[\s:])(?:(?P<key>[\w.-]+):\s+)?[|>][+-]?[1-9]?[+-]?\s*$")
 YAML_SHELL_KEYS = frozenset({"run"})
 TOML_TOKEN = re.compile(
@@ -27,7 +28,7 @@ def indentation(line: str) -> int:
     return len(line) - len(line.lstrip())
 
 
-def shell_comments(lines: Iterable[NumberedLine]) -> Iterator[NumberedLine]:
+def shell_comments(lines: Iterable[NumberedLine], *, heredocs: bool = True) -> Iterator[NumberedLine]:
     pending_heredocs: list[str] = []
     for number, line in lines:
         if pending_heredocs:
@@ -35,7 +36,7 @@ def shell_comments(lines: Iterable[NumberedLine]) -> Iterator[NumberedLine]:
                 pending_heredocs.pop(0)
             continue
         for match in SHELL_TOKEN.finditer(line):
-            if match.group("heredoc"):
+            if match.group("heredoc") and heredocs:
                 pending_heredocs.append(match.group("heredoc"))
             elif match.group().startswith("#"):
                 yield number, match.group()

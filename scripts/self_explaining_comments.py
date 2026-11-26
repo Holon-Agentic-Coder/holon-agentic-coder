@@ -14,7 +14,7 @@ except ImportError:
     from self_explaining_hash import numbered_lines, shell_comments, toml_comments, yaml_comments
 
 REASON_PREFIX = "why:"
-MACHINE_DIRECTIVE = re.compile(r"(?:noqa\b|type:\s*ignore\b|pragma:|fmt:\s*(?:off|on|skip)\b|shellcheck\s)")
+MACHINE_DIRECTIVE = re.compile(r"(?:noqa\b|type:\s*\S|pragma:|fmt:\s*(?:off|on|skip)\b|shellcheck\s)")
 ENCODING_DECLARATION = re.compile(r"coding[:=]")
 COMMENT_MARKER = re.compile(r"^\s*(?:#+|/{2,}|/\*+)\s*")
 BLOCK_COMMENT_END = re.compile(r"\s*\*+/\s*$")
@@ -22,6 +22,7 @@ SHELL_SHEBANG = re.compile(r"^#!.*\b(?:ba)?sh\b")
 SHELL_LIKE_SUFFIXES = frozenset({".sh", ".bash", ".mk", ".dockerfile"})
 YAML_SUFFIXES = frozenset({".yml", ".yaml"})
 SHELL_LIKE_NAMES = frozenset({"Makefile", "GNUmakefile", "Dockerfile"})
+MAKEFILE_NAMES = frozenset({"Makefile", "GNUmakefile"})
 JAVASCRIPT_SUFFIXES = frozenset({".js", ".mjs", ".cjs"})
 JAVASCRIPT_TOKEN = re.compile(
     r"\"(?:\\.|[^\"\\\n])*\"?|'(?:\\.|[^'\\\n])*'?|`(?:\\.|[^`\\])*`?|//[^\n]*|/\*.*?(?:\*/|\Z)",
@@ -108,6 +109,10 @@ def shell_findings(text: str) -> list[Finding]:
     return line_comment_findings(shell_comments(numbered_lines(text)))
 
 
+def makefile_findings(text: str) -> list[Finding]:
+    return line_comment_findings(shell_comments(numbered_lines(text), heredocs=False))
+
+
 def yaml_findings(text: str) -> list[Finding]:
     return line_comment_findings(yaml_comments(numbered_lines(text)))
 
@@ -143,6 +148,8 @@ def language_finder(path: str, text: str) -> Callable[[str], list[Finding]] | No
         return yaml_findings
     if pure_path.suffix == ".toml":
         return toml_findings
+    if pure_path.name in MAKEFILE_NAMES or pure_path.suffix == ".mk":
+        return makefile_findings
     return shell_findings if is_shell_like(pure_path, text) else None
 
 

@@ -193,8 +193,9 @@ against 3.2 minutes for the ubuntu leg on the same heads), so it sets how long e
 leg of a pull-request run skip its expensive steps when no changed file can behave differently on macOS. The job still
 starts, reports as `unit (macos-latest)` and ends green, so the required status check is satisfied; it has no job-level
 condition. The ubuntu leg, the bookkeeping gate and the Workspace survival job are unchanged. The rule lives in
-`scripts/macos_relevance_rules.py` and the git reads in `scripts/macos_relevance_git.py`; all three use the standard
-library only and run on the runner's own `python3`.
+`scripts/macos_relevance_rules.py` (its content patterns in `scripts/macos_relevance_patterns.py`), the decision rules
+and log lines in `scripts/macos_relevance_judgement.py` and the git reads in `scripts/macos_relevance_git.py`; all of
+them use the standard library only and run on the runner's own `python3`.
 
 ### When the leg runs
 
@@ -328,7 +329,7 @@ from #241 to #314 the rule would have skipped the leg on 1: flow code and its te
 - A macOS-only break in a file judged neutral (for example plain `open` on a path whose case differs, or behaviour that
   depends on a neutral operation) reaches `main` without a macOS run on the pull request. The push to `main` after the
   merge runs the leg in full and catches it; the maintainer then fixes the break and adds the missing pattern here and
-  in `scripts/macos_relevance_rules.py`.
+  in `scripts/macos_relevance_patterns.py`.
 - A change on the base branch is not part of the pull request's diff, so a base-only macOS break surfaces on `main`.
 - Skipped legs appear as very short points in the CI duration report.
 - A pull request without a merge commit (for example one with conflicts) has no checkout to judge; the gate then runs.

@@ -4,12 +4,12 @@
 empty text or 0, which the gate's rules turn into a full run. The three reads are one request each: ``compare`` (the
 paths changed between two commits and whether the head is strictly ahead of the base), ``list_earlier_runs`` (the
 earlier pull-request runs of one workflow on one branch, newest first) and ``list_jobs`` (the jobs of one run with their
-steps, latest attempt). For a push to ``main``, ``scripts.ci_main_push_gate`` adds three more reads: ``pulls_for_commit``
-(the pull requests associated with a commit), ``commit_tree`` (the tree of a commit) and ``list_head_runs`` (the
-pull-request runs of one workflow on one head commit, newest first); the context then also carries the pushed commit
-(``sha``) and the ref (``ref``). All network access goes through ``GateClient.opener``, which tests replace with a fake. The
-token is sent only through ``scripts.ci_timing_gate.build_request`` (an unredirected header) and is never part of a URL
-or of the client's repr.
+steps, latest attempt). For a push to ``main``, ``scripts.ci_main_push_gate`` adds three more reads:
+``pulls_for_commit`` (the pull requests associated with a commit), ``commit_tree`` (the tree of a commit) and
+``list_head_runs`` (the pull-request runs of one workflow on one head commit, newest first); the context then also
+carries the pushed commit (``sha``) and the ref (``ref``). All network access goes through ``GateClient.opener``, which
+tests replace with a fake. The token is sent only through ``scripts.ci_timing_gate.build_request`` (an unredirected
+header) and is never part of a URL or of the client's repr.
 
 An answer of an unexpected shape raises (``ValueError``, ``KeyError`` or ``TypeError``) and nothing here catches a
 network error: the gate turns every exception into a full run. Standard library only and Python 3.9 syntax, so the gate

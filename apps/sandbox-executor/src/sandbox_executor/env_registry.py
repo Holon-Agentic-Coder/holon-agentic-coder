@@ -901,6 +901,23 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         since="`holon-config/hygiene/module_budgets.json`",
         internal=True,
     ),
+    EnvironmentVariable(
+        name="HOLON_LEDGER_BOT_TOKEN",
+        area=Area.CI_ONLY,
+        purpose=(
+            "Repository secret a maintainer creates to enable `promote-ledger.yml`: the token that commits and pushes "
+            "promoted ledger rows to `main`. Never set outside CI."
+        ),
+        value_type="string (credential): a token with `Contents: Read and write` on this repository",
+        default="unset",
+        when_unset="the workflow logs why and skips promotion; the run stays green",
+        when_invalid="the checkout or push is rejected and the run fails",
+        read_side="ci",
+        since="`.github/workflows/README.md`",
+        forwarding="not forwarded",
+        secret=True,
+        internal=True,
+    ),
 )
 
 

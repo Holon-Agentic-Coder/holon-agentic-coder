@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-791e39cc",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T09:19:10.580193+00:00",
+  "updated_ts": "2026-11-26T09:19:10.580193+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795684035-56173513",
+      "ACT-FIND-1795684029-59c6a987"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795679415-tests-cpu-bound-redaction-ledger/P-1795681689-CLA-CO5.5/E-1795681881-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-01",
+    "symptoms": [
+      "The row-oracle equivalence check uses only no-filter and labels-single, so the re-implemented _entry_type_matches and the limit stop are never compared with the file oracle; add an entry-type filter and the limit filter to the tuple."
+    ]
+  }
+}

@@ -185,7 +185,7 @@ def test_agent_resolved_merge_never_carries_approval_and_preserves_scope_across_
         resolver_test_edits=("tests/test_app.py",),
     )
     monkeypatch.setattr(sync_points, "sync_review_head", lambda *a, **k: agent_merged)
-    monkeypatch.setattr(approval_carry_over, "approval_fingerprint_of", lambda *a, **k: "pf1:" + "e" * 40)
+    monkeypatch.setattr(approval_carry_over, "approval_fingerprint_of", lambda *a, **k: "pf2:" + "e" * 40)
     ctx = FlowContext(target_worktree=str(tmp_path), execution_branch=FLOW_BRANCH, token_reduce=False)
     exec_file = tmp_path / "gate.jsonl"
     post = MagicMock()
@@ -196,7 +196,7 @@ def test_agent_resolved_merge_never_carries_approval_and_preserves_scope_across_
             "approved": True,
             "base_branch": "main",
             "target_commit": "a" * 40,
-            "approval_fingerprint": "pf1:" + "e" * 40,
+            "approval_fingerprint": "pf2:" + "e" * 40,
         },
         proxy_env=None,
         reviewers=[],
@@ -223,7 +223,7 @@ def test_agent_resolved_merge_never_carries_approval_and_preserves_scope_across_
     restored.stage_results["review"] = StageResult(
         stage=FlowStage.REVIEW,
         status=StageStatus.APPROVED,
-        payload={"consensus": {"approved": True, "target_commit": "a" * 40, "approval_fingerprint": "pf1:" + "e" * 40}},
+        payload={"consensus": {"approved": True, "target_commit": "a" * 40, "approval_fingerprint": "pf2:" + "e" * 40}},
     )
     monkeypatch.setattr("sandbox_executor.flow.review_restart._execution_head", lambda *a, **k: "b" * 40)
     monkeypatch.setattr("sandbox_executor.flow.review_restart._git_bookkeeping_move", lambda *a, **k: lambda *_: False)
@@ -620,3 +620,151 @@ def test_calibrate_retry_sync_from_calibrated_branch_commits_carry_over_and_gate
     _git(work, "commit", "-m", "cal report")
     ctx.calibrated_branch = calibrated
     assert publish_calibration(ctx) is True
+
+
+def _code_merge() -> SyncResult:
+    """An agent-resolved (``CODE``) merge that resolved ``APP`` and edited a test, plus ledger and metadata paths."""
+    return SyncResult(
+        "merged",
+        "a" * 40,
+        "b" * 40,
+        "c" * 40,
+        resolutions=((APP, "code", "tier-1"), (LEDGER, "ledger", "mechanical")),
+        code_paths=(APP, LEDGER, "executions/E-1.md"),
+        resolver_tier="tier-1",
+        changed_paths=(APP, "tests/test_app.py", "src/target_only.py", LEDGER),
+        resolver_test_edits=("tests/test_app.py",),
+    )
+
+
+def _approve(ctx: FlowContext) -> FlowContext:
+    consensus = {"approved": True, "target_commit": "a" * 40, "approval_fingerprint": "pf2:" + "e" * 40}
+    ctx.stage_results["review"] = StageResult(FlowStage.REVIEW, StageStatus.APPROVED, payload={"consensus": consensus})
+    return ctx
+
+
+def _turn_ctx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, result: SyncResult) -> FlowContext:
+    monkeypatch.setattr(sync_points, "sync_review_head", lambda *a, **k: result)
+    return FlowContext(target_worktree=str(tmp_path), execution_branch=FLOW_BRANCH, token_reduce=False)
+
+
+def _iteration_sync(ctx: FlowContext) -> ReviewTarget | None:
+    target = ReviewTarget(raw=FLOW_BRANCH, head_branch=FLOW_BRANCH, head_sha="a" * 40)
+    updated, error = sync_points.sync_before_review_iteration(ctx, target, "main", 2)
+    assert error is None
+    return updated
+
+
+def test_code_merge_under_an_approval_records_only_the_resolved_code_and_tests(tmp_path, monkeypatch) -> None:
+    ctx = _approve(_turn_ctx(tmp_path, monkeypatch, _code_merge()))
+    updated = _iteration_sync(ctx)
+    assert ctx.review_scope_paths == [APP, "tests/test_app.py"]  # No ledger, metadata or target-only path.
+    assert updated is not None and updated.head_sha == "b" * 40
+
+
+def test_code_merge_unions_an_existing_scope(tmp_path, monkeypatch) -> None:
+    ctx = _turn_ctx(tmp_path, monkeypatch, _code_merge())
+    ctx.review_scope_paths = ["src/earlier.py"]
+    _iteration_sync(ctx)
+    assert ctx.review_scope_paths == [APP, "src/earlier.py", "tests/test_app.py"]
+
+
+@pytest.mark.parametrize("consensus", [None, {"approved": False, "target_commit": "a" * 40, "withdrawn": {}}])
+def test_code_merge_without_a_standing_approval_keeps_the_full_review(tmp_path, monkeypatch, consensus) -> None:
+    ctx = _turn_ctx(tmp_path, monkeypatch, _code_merge())
+    if consensus is not None:  # A withdrawn consensus is no longer approved.
+        ctx.stage_results["review"] = StageResult(
+            FlowStage.REVIEW, StageStatus.FAILED, payload={"consensus": consensus}
+        )
+    _iteration_sync(ctx)
+    assert ctx.review_scope_paths == []
+
+
+def test_mechanical_merge_never_records_a_scope(tmp_path, monkeypatch) -> None:
+    mech = SyncResult("merged", "a" * 40, "b" * 40, "c" * 40, resolutions=((LEDGER, "ledger", "mechanical"),))
+    ctx = _approve(_turn_ctx(tmp_path, monkeypatch, mech))
+    _iteration_sync(ctx)
+    assert ctx.review_scope_paths == []
+
+
+def test_record_rereview_scope_rule() -> None:
+    from sandbox_executor.flow.review import sync_scope
+
+    ctx = FlowContext(token_reduce=False)
+    assert sync_scope.record_rereview_scope(ctx, ()) == sync_scope.SCOPE_UNCHANGED
+    assert sync_scope.record_rereview_scope(ctx, ("b.py",)) == sync_scope.SCOPE_FULL_REVIEW
+    assert ctx.review_scope_paths == []
+    assert sync_scope.record_rereview_scope(ctx, ("b.py", "a.py"), approved=True) == sync_scope.SCOPE_RECORDED
+    assert ctx.review_scope_paths == ["a.py", "b.py"]
+    assert sync_scope.record_rereview_scope(ctx, ("c.py",), approved=False) == sync_scope.SCOPE_UNIONED
+    assert ctx.review_scope_paths == ["a.py", "b.py", "c.py"]
+
+
+def test_resolver_push_then_code_merge_keeps_the_full_review(tmp_path, monkeypatch) -> None:
+    from sandbox_executor.flow.review.resolver import ResolverOutcome
+
+    ctx = _turn_ctx(tmp_path, monkeypatch, _code_merge())
+    ctx.review_scope_paths = ["src/stale.py"]
+    target = ReviewTarget(raw=FLOW_BRANCH, head_branch=FLOW_BRANCH, head_sha="a" * 40)
+    final = sync_points.finalize_resolver_turn(ctx, target, 1, ResolverOutcome(dispositions=(), pushed=True))
+    assert final.error is None and final.head_sha == "b" * 40
+    assert ctx.review_scope_paths == []  # The resolver's own push needs the full review; nothing narrows it.
+
+
+def test_sync_scope_names_are_re_exported_from_sync_points() -> None:
+    from sandbox_executor.flow.review import sync_scope
+
+    assert sync_points.compute_rereview_scope is sync_scope.compute_rereview_scope
+    assert sync_points.format_conflict_block_reason is sync_scope.format_conflict_block_reason
+    assert sync_points.is_mechanical_only is sync_scope.is_mechanical_only
+    assert compute_rereview_scope is sync_scope.compute_rereview_scope
+
+
+def _stub_review_loop(monkeypatch: pytest.MonkeyPatch, head_sha: str) -> None:
+    """Stub every remote seam of ``run_review_loop`` around the pre-iteration sync."""
+    from sandbox_executor.review_target import DiffVerdict
+
+    loop = "sandbox_executor.flow.review.loop"
+    monkeypatch.setattr(f"{loop}.workspace_mounted", lambda: True)
+    monkeypatch.setattr("sandbox_executor.review_target.verify_review_diff", lambda *a, **k: (DiffVerdict.VERIFIED, ""))
+    target = ReviewTarget(raw=FLOW_BRANCH, head_branch=FLOW_BRANCH, head_sha=head_sha)
+    monkeypatch.setattr(f"{loop}._resolve_reviewed_target", lambda *a, **k: (target, None))
+    clean = {"mergeable": "MERGEABLE", "merge_state_status": "CLEAN", "is_dirty": False}
+    monkeypatch.setattr(f"{loop}.check_pr_mergeability", lambda *a, **k: clean)
+    checks = [{"name": "ci", "bucket": "pass"}]
+    ci = {"measured": True, "all_passed": True, "passed": 1, "failed": 0, "pending": 0, "checks": checks}
+    monkeypatch.setattr(f"{loop}.probe_ci_checks", lambda *a, **k: ci)
+    monkeypatch.setattr(f"{loop}.post_review_consensus", lambda *a, **k: (None, {"posted": True}))
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_pre_iteration_sync_records_the_scope_before_reviewers_run(tmp_path, monkeypatch, blocked) -> None:
+    from sandbox_executor.flow import run_review_loop
+
+    from tests.review_fakes import FakeEnsemble, fake_review_request
+
+    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n"})
+    head_sha = commit_on(work, FLOW_BRANCH, {APP: "x = 1\n"}, "flow edit")
+    merge = _code_merge() if not blocked else SyncResult("blocked", "", "", "", code_paths=(APP,), error="boom")
+    monkeypatch.setattr(sync_points, "sync_review_head", lambda *a, **k: merge)
+    _stub_review_loop(monkeypatch, head_sha)
+    requested: list[list[str]] = []
+
+    def _request(*args, review_paths=(), **kwargs):  # The reviewers' diff is scoped to ``review_paths``.
+        requested.append(list(review_paths))
+        return fake_review_request(*args, **kwargs)
+
+    monkeypatch.setattr(ensemble, "build_review_request", _request)
+    ctx, reviewers = _approve(_ctx(work)), FakeEnsemble()
+
+    run_review_loop(
+        ctx,
+        FLOW_BRANCH,
+        max_iterations=1,
+        ensemble_size=1,
+        run_ensemble_fn=reviewers,
+        github=MagicMock(available=False),
+    )
+
+    assert requested == ([] if blocked else [[APP, "tests/test_app.py"]])
+    assert len(reviewers.calls) == (0 if blocked else 1)  # A blocked sync never dispatches reviewers.

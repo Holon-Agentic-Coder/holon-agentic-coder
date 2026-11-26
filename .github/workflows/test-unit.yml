@@ -7,12 +7,18 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
+  # One full run a day, whatever the gate decided on the pushes to main; see "Pushes to main" in README.md.
+  schedule:
+    - cron: "23 3 * * *"
 
 permissions:
   contents: read
 
+# Pushes are keyed by SHA so a later main push never evicts a pending one.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group:
+    ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || format('{0}-{1}', github.ref,
+    github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -21,6 +27,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     strategy:
       fail-fast: false
       matrix:
@@ -96,7 +103,8 @@ jobs:
           name: ci-timing-test-unit-unit-${{ matrix.os }}
           path: ci-timing/record.json
           retention-days: 30
-          if-no-files-found: error
+          # A main push that the gate skipped writes no timing record; a full run without one still fails.
+          if-no-files-found: ${{ steps.bookkeeping.outputs.skip != 'true' && 'error' || 'ignore' }}
 
       - name: Full run completed
         if: steps.bookkeeping.outputs.skip != 'true' && steps.macos_relevance.outputs.skip != 'true'

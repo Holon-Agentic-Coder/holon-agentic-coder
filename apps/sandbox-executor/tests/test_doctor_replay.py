@@ -6,11 +6,12 @@ matrix's own ``_doctor`` without that replay and compares what the real ``cli_do
 in each of its eight call contexts. If production makes the section depend on the host configuration, the fetcher or
 ``--json``, it fails, and the replay must be removed from the matrix.
 
-The matrix also runs the environment report (``cli_doctor.report_budgets_and_envelope``) only once for the two doctor
-runs of one block of a case and replays its text and exit code for the second one. The second identity test runs
-``_doctor`` without that replay and compares everything the three real reports of each block do (the direct one and
-two doctor runs): the text, the exit code, the log lines, the gateway probes and any other output. If production
-makes the report depend on how often it ran or on who called it, it fails, and that replay must be removed.
+The matrix also runs the environment report (``cli_doctor.report_budgets_and_envelope``) only once for the direct call
+and the two doctor runs of one block of a case and replays its text and exit code for the others. The second identity
+test runs ``_doctor`` without that replay (and without the direct-call one) and compares everything the three real
+reports of each block do (the direct one and two doctor runs): the text, the exit code, the log lines, the gateway
+probes and any other output. If production makes the report depend on how often it ran or on who called it, it fails,
+and that replay must be removed.
 
 The invalid-value matrix of the same file (``_invalid_value_doctor``) uses both replays too, in another context: an
 isolated ``HOME``, a docker stand-in, an invalid value in a budget, envelope or host models setting, and a report on
@@ -258,6 +259,7 @@ def _recorded_environment_reports(monkeypatch) -> list[tuple[tuple, tuple]]:
         return code
 
     monkeypatch.setattr(redaction_matrix, "replayed_environment_report", contextlib.nullcontext)
+    monkeypatch.setattr(redaction_matrix, "replayed_direct_report", contextlib.nullcontext)
     # One recording fetcher per fetcher of a block, so the three calls of the block share it as they do in the matrix.
     monkeypatch.setattr(redaction_matrix, "_fetchers", lambda seen: tuple(map(probe_recording, real_fetchers(seen))))
     monkeypatch.setattr(redaction_matrix, "_empty_health", probe_recording(redaction_matrix._empty_health))
@@ -323,6 +325,7 @@ def test_environment_replay_changes_only_how_often_the_matrix_sees_a_text(
     for case_id, value in _sampled_values():
         with monkeypatch.context() as without_replay:
             without_replay.setattr(redaction_matrix, "replayed_environment_report", contextlib.nullcontext)
+            without_replay.setattr(redaction_matrix, "replayed_direct_report", contextlib.nullcontext)
             every_report_real = redaction_matrix._doctor(value)
         replayed = redaction_matrix._doctor(value)
         if _differs_in_more_than_repetition(replayed, every_report_real):
@@ -333,7 +336,7 @@ def test_environment_replay_changes_only_how_often_the_matrix_sees_a_text(
     assert bool(stderr_repetitions) == cli_log_handler, "without the CLI's handler both runs show the same set of texts"
 
 
-def test_matrix_doctor_runs_the_environment_report_twice_per_block(monkeypatch, empty_environment):
+def test_matrix_doctor_runs_the_environment_report_once_per_block(monkeypatch, empty_environment):
     real = cli_doctor.report_budgets_and_envelope
     ran: list[tuple[bool, bool]] = []
 
@@ -346,8 +349,8 @@ def test_matrix_doctor_runs_the_environment_report_twice_per_block(monkeypatch, 
     redaction_matrix._doctor("http://alice:FGJQVZFGJQVZ@localhost:8081/v1")
     redaction_matrix._doctor("http://alice:ZVQJGFZVQJGF@localhost:8081/v1")
 
-    # Per block: the direct call on stdout, then one report for the two doctor runs. Nothing is carried further.
-    per_block = [(True, True), (True, False)] * 2 + [(False, True), (False, False)] * 2
+    # Per block: one report, on a stream, for the direct call and the two doctor runs. Nothing is carried further.
+    per_block = [(True, False)] * 2 + [(False, False)] * 2
     assert ran == per_block * 2
 
 

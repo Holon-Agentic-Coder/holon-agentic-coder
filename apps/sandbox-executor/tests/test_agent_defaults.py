@@ -249,3 +249,27 @@ def test_default_models_per_runner_unchanged():
         "codex": "gpt-5-codex",
         "opencode": "anthropic/claude-opus-5-5",
     }
+
+
+def test_agent_tables_pinned_and_derived_from_runner_specs():
+    from sandbox_executor.agent_defaults import AGENT_TICKERS
+    from sandbox_executor.runners import RUNNER_SPECS
+
+    assert AGENT_IMAGE_MAPPING == {
+        "antigravity": "holon/agent-antigravity",
+        "claude": "holon/agent-claude",
+        "pi": "holon/agent-pi",
+        "codex": "holon/agent-codex",
+        "opencode": "holon/agent-opencode",
+    }
+    assert AGENT_TICKERS == {"claude": "CLA", "antigravity": "ANA", "pi": "PIA"}
+    assert DEFAULT_MODELS == {
+        "antigravity": "gemini-3.8-flash-medium",
+        "claude": "claude-opus-5-5",
+        "pi": "claude-opus-5-5",
+        "codex": "gpt-5-codex",
+        "opencode": "anthropic/claude-opus-5-5",
+    }
+    assert {agent_id: spec.image for agent_id, spec in RUNNER_SPECS.items()} == AGENT_IMAGE_MAPPING
+    assert {agent_id: spec.default_model for agent_id, spec in RUNNER_SPECS.items()} == DEFAULT_MODELS
+    assert {agent_id: spec.ticker for agent_id, spec in RUNNER_SPECS.items() if spec.ticker} == AGENT_TICKERS

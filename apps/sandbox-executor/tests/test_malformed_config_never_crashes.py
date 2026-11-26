@@ -25,15 +25,17 @@ import io
 import json
 import logging
 import os
+import subprocess
 import tempfile
 from collections.abc import Callable, Iterator
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from sandbox_executor import budget_limits, budgets, cli, local_llm
 from sandbox_executor.cli import doctor as cli_doctor
 from sandbox_executor.preflight import PreflightResult, PreflightStatus
 
 from tests import seeded_secrets
+from tests.fast_home import fast_home
 
 _FRAGMENT = 6
 _LOOPBACK = "http://127.0.0.1:8081/v1"
@@ -221,16 +223,46 @@ def _numeric_values(credential: str) -> list[str]:
     ]
 
 
-def _probe() -> PreflightResult:
-    return PreflightResult(
-        status=PreflightStatus.OK,
-        agent="pi-agent",
-        model="m",
-        image="holon/agent-pi",
-        exit_code=0,
-        output_excerpt="",
-        hint="",
-    )
+# Plain stand-ins built once, not per-call `MagicMock`s: building the mocks was a large share of each case's cost.
+# The probe result is a frozen dataclass, so one object serves every case.
+_PROBE = PreflightResult(
+    status=PreflightStatus.OK,
+    agent="pi-agent",
+    model="m",
+    image="holon/agent-pi",
+    exit_code=0,
+    output_excerpt="",
+    hint="",
+)
+
+
+def _probe(*_args, **_kwargs) -> PreflightResult:
+    """`cli_doctor.run_preflight_probe` stand-in: an OK probe for any runner and model."""
+    return _PROBE
+
+
+def _docker_only(name: str, *_args, **_kwargs) -> str | None:
+    """`shutil.which` stand-in: a docker binary and no other tool."""
+    return "/usr/bin/docker" if name == "docker" else None
+
+
+def _no_mounts(*_args, **_kwargs) -> list[str]:
+    return []
+
+
+def _no_token_reduction(*_args, **_kwargs) -> tuple[list[str], dict[str, str]]:
+    return [], {}
+
+
+class _DockerRun:
+    """`subprocess.run` stand-in: records the argv of the last call and reports success."""
+
+    def __init__(self) -> None:
+        self.argv: list[str] = []
+
+    def __call__(self, cmd, *_args, **_kwargs) -> subprocess.CompletedProcess:
+        self.argv = list(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
 
 
 class _Workspace:
@@ -294,7 +326,7 @@ def _run_doctor(ws: _Workspace, as_json: bool, fetch: Callable[[str, float], byt
     with (
         _captured_logs() as logs,
         patch.dict(os.environ, ws.env, clear=True),
-        patch.object(cli_doctor, "run_preflight_probe", return_value=_probe()),
+        patch.object(cli_doctor, "run_preflight_probe", _probe),
         contextlib.redirect_stdout(out),
         contextlib.redirect_stderr(err),
     ):
@@ -310,15 +342,16 @@ def _run_path(ws: _Workspace) -> tuple[int, str, list[str]]:
     out, err = _strict_stream(), _strict_stream()
     stage_dir = os.path.join(ws.root, "stage-agent-dir")
     os.makedirs(stage_dir, exist_ok=True)
+    docker = _DockerRun()
     with (
         _captured_logs() as logs,
         patch.dict(os.environ, ws.env, clear=True),
-        patch("shutil.which", side_effect=lambda name: "/usr/bin/docker" if name == "docker" else None),
-        patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
-        patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=[]),
-        patch.object(cli.git_flow, "sandbox_worktree_mounts", return_value=[]),
-        patch("sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs", return_value=([], {})),
-        patch.object(tempfile, "mkdtemp", return_value=stage_dir),
+        patch("shutil.which", _docker_only),
+        patch("subprocess.run", docker),
+        patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", _no_mounts),
+        patch.object(cli.git_flow, "sandbox_worktree_mounts", _no_mounts),
+        patch("sandbox_executor.launcher.sidecar.get_token_reduction_mounts_and_envs", _no_token_reduction),
+        patch.object(tempfile, "mkdtemp", lambda *_args, **_kwargs: stage_dir),
         contextlib.redirect_stdout(out),
         contextlib.redirect_stderr(err),
     ):
@@ -327,8 +360,7 @@ def _run_path(ws: _Workspace) -> tuple[int, str, list[str]]:
             code = cli.run_docker_container(
                 "planner", "holon/agent-pi", ["branch", "pi-agent", "m"], agent_id="pi", token_reduce=False
             )
-    argv = list(mock_run.call_args[0][0]) if mock_run.called else []
-    return code, ws.scrub(_text(out) + _text(err) + _text(logs)), argv
+    return code, ws.scrub(_text(out) + _text(err) + _text(logs)), docker.argv
 
 
 def _check(case: str, failures: list[str], body: Callable[[], None]) -> None:
@@ -356,7 +388,7 @@ def test_malformed_models_json_never_crashes_doctor_or_run_path():
     credential = _credential("malformed_models_json_never_crashes_doctor_or_run_path")
     failures: list[str] = []
     cases = 0
-    with tempfile.TemporaryDirectory() as root:
+    with fast_home() as root:
         for case, raw, must_reject in _documents(credential):
             cases += 1
             ws = _Workspace(root, raw, {}, credential)
@@ -390,7 +422,7 @@ def test_malformed_numeric_env_never_crashes_doctor_or_run_path():
     credential = _credential("malformed_numeric_env_never_crashes_doctor_or_run_path")
     failures: list[str] = []
     valid = json.dumps({"providers": {"p": _valid_provider(credential)}}).encode()
-    with tempfile.TemporaryDirectory() as root:
+    with fast_home() as root:
         for var in _NUMERIC_VARS:
             for index, value in enumerate(_numeric_values(credential)):
                 case = f"env:{var}:{index}"
@@ -454,7 +486,7 @@ def test_unencodable_string_env_never_crashes_doctor_or_run_path():
     credential = _credential("unencodable_string_env_never_crashes_doctor_or_run_path")
     failures: list[str] = []
     valid = json.dumps({"providers": {"p": _valid_provider(credential)}}).encode()
-    with tempfile.TemporaryDirectory() as root:
+    with fast_home() as root:
         for models in (None, valid):
             source = "synthesised" if models is None else "models.json"
             for var in (*_STRING_VARS, local_llm.ENV_LOCAL_MODE):

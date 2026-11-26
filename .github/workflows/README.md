@@ -60,8 +60,9 @@ The flow pushes plan files, execution reports and ledger rows to a pull request 
 a test result, yet every push used to run every job in full. `scripts/ci_bookkeeping_gate.py`, called through the
 composite action `.github/actions/bookkeeping-gate`, lets a job skip its expensive steps after such a push. Every job
 still starts, reports under its usual name and ends green, so required status checks are satisfied. The script uses the
-standard library only and runs on the runner's own `python3`, with two sibling modules: `ci_bookkeeping_api.py` (the
-event of the run and the REST reads) and `ci_bookkeeping_chain.py` (the walk through earlier runs). It also imports
+standard library only and runs on the runner's own `python3`, with three sibling modules: `ci_bookkeeping_api.py` (the
+event of the run and the REST reads), `ci_bookkeeping_chain.py` (the walk through earlier runs) and
+`ci_main_push_gate.py` (the decision for a push to `main`, see "Pushes to main"). It also imports
 `scripts/ci_timing_gate.py`, the source of the request builder, the opener, the override label name and the step-summary
 writer.
 
@@ -95,6 +96,49 @@ only on positive evidence, and every doubt or error runs the full job. All of th
   that commit and the new head is bookkeeping.
 - No run on the way names more than one pull request.
 
+### Pushes to main
+
+A merge to `main` used to run every job again, although the merged pull request's head had already passed the same jobs
+on the same tree. In `test-unit.yml` and `test-stress.yml` (the `GATED_WORKFLOWS` of `scripts/ci_main_push_gate.py`) a
+push to `main` is therefore decided by that module instead of the rules above. It says "skip" (`main-push-tested-tree`)
+only when all of the following hold, in this order:
+
+- The run is the first attempt and names the pushed commit, the workflow file, the job and its run number.
+- Exactly one pull request is associated with the pushed commit; it was merged, its base is `main` and its merge commit
+  is the pushed commit. For a rebase merge the merge commit is the rebased tip, so it skips only when the next rule
+  holds too.
+- The tree of the pushed commit equals the tree of the pull request's head commit. The head already contained `main`, so
+  the merge ref that the head's run tested had the same tree too. When `main` moved after the head's run, the trees
+  differ and the jobs run in full.
+- The newest pull-request run of the same workflow on the head commit (of the newest five) that holds exactly one job
+  with this job's name and runner label, and whose pull request list is empty or names the merged pull request with base
+  `main`, shows that job `completed` with conclusion `success`, and its `Full run completed` step succeeded (a real
+  success) or was skipped (the job's own gates, the bookkeeping gate or the macOS relevance gate, proved it on an
+  ancestor). The detail of the decision line says which of the two it was.
+
+Every missing piece of evidence runs the full job under a rule of its own, and every API error or unexpected answer is
+`api-error`, so the job runs in full. A re-run of a main push always runs in full. Reading the pull requests of a commit
+needs `pull-requests: read`, which both jobs hold beside `contents: read` and `actions: read`; no job holds a write
+permission. Both workflows also run once a day on a `schedule` trigger: the gate never skips a scheduled run
+(`event-not-pull-request`), so `main` is tested in full at least once a day whatever the pushes decided. A push to
+`main` in any other workflow keeps `event-not-pull-request` and runs in full.
+
+These rules belong to `scripts/ci_main_push_gate.py`:
+
+| rule                                | meaning                                                                                      |
+| ----------------------------------- | -------------------------------------------------------------------------------------------- |
+| `main-push-tested-tree`             | skip: the pushed tree was tested by this job on the merged pull request's head               |
+| `main-push-rerun-attempt`           | the run is a second or later attempt                                                         |
+| `main-push-incomplete-event`        | the environment lacks the pushed commit, the workflow file, the job name or the run number   |
+| `main-push-no-pull-request`         | no pull request is associated with the pushed commit (a direct push)                         |
+| `main-push-several-pull-requests`   | more than one pull request is associated with the pushed commit                              |
+| `main-push-pull-request-not-merged` | the pull request is not merged, its base is not `main` or its merge commit is another commit |
+| `main-push-tree-mismatch`           | the pushed tree differs from the tree of the pull request's head                             |
+| `main-push-head-job-missing`        | no run on the head commit holds exactly one job with this job's name and runner label        |
+| `main-push-head-job-not-finished`   | the job on the head commit is still queued or in progress                                    |
+| `main-push-head-job-not-successful` | the job on the head commit failed or was cancelled; the detail names the conclusion          |
+| `main-push-head-job-unverified`     | the job on the head commit succeeded but has no `Full run completed` step                    |
+
 ### The marker step
 
 A job that the gate skipped also concludes `success`, so the conclusion of an earlier job proves nothing. Every job
@@ -116,7 +160,8 @@ Rules that skip:
 
 Rules that run the full job:
 
-- `event-not-pull-request`: the run is a push to `main`, a manual run or any other event.
+- `event-not-pull-request`: the run is a scheduled or manual run, a push to `main` in a workflow other than the two of
+  "Pushes to main", or any other event.
 - `rerun-attempt`: the run is a second or later attempt.
 - `action-not-eligible`: the pull request was opened or reopened, or the action is unknown.
 - `result-affecting-label`: the label that was added or removed is one that a workflow reads.
@@ -152,15 +197,17 @@ job of a few seconds says nothing about a slow-down.
 
 - Re-run the job or the workflow: a second attempt always runs in full.
 - Close and reopen the pull request.
-- Start the workflow by hand (`workflow_dispatch`).
+- Start the workflow by hand (`workflow_dispatch`); this also runs a skipped main push's jobs in full on `main`.
+- Re-run a main push: a second attempt always runs in full.
 - Push any change that is not a bookkeeping path, for example a file outside the three roots.
 
 An empty commit does not force a full run: it changes no path, so it counts as bookkeeping-only.
 
 ### Limits
 
-- A skipped run does not test a base branch that moved since the last real success. The next push with another change, a
-  re-run and the push to `main` after the merge all run in full.
+- A skipped run does not test a base branch that moved since the last real success. The next push with another change
+  and a re-run run in full. The push to `main` after the merge runs in full unless its tree equals the tested head's
+  tree, and the daily scheduled run of `test-unit.yml` and `test-stress.yml` always runs in full.
 - Tests that read the real plans and ledgers do not run on a skipped push. They run on the next full run and on `main`.
 - The gate finds the earlier runs by workflow and head branch, not by pull request, so it assumes one open pull request
   per head branch. It runs in full when an earlier run names several pull requests (`shared-head-branch`), but the API
@@ -170,6 +217,14 @@ An empty commit does not force a full run: it changes no path, so it counts as b
   push can still skip on the strength of a real success against the old base. Close and reopen the pull request to test
   against the new one.
 - Skipped jobs appear as very short points in the CI duration report.
+- A main push that the gate skipped uploads no timing record ("Upload timing record" then ignores the missing file), so
+  the timing baselines come from the main pushes that still run in full. After a quiet month a job may have fewer than
+  five records; the timing gate then only warns and the 900 s ceiling still applies.
+- A head run whose pull request list is empty is accepted, because the API may drop a merged pull request from it. If
+  another pull request with the same head commit against another base ran the jobs and its run names no pull request, a
+  main push can skip on that run's merge ref; the tree check still requires the head to hold the pushed tree.
+- A main push skips on the pull-request head's judgement, including a head job that a gate skipped. A defect that only a
+  full run on `main` would catch can stay on `main` until the next daily scheduled run.
 - The marker step proves a real success only while no step of the job uses `continue-on-error`. The wiring test rejects
   that key in the six workflows.
 
@@ -179,6 +234,9 @@ An empty commit does not force a full run: it changes no path, so it counts as b
   (`id: bookkeeping`) directly after the checkout, the guard `if: steps.bookkeeping.outputs.skip != 'true'` on every
   later step that is not cheap, and `Full run completed` as its last step with exactly that guard. The job also needs
   `actions: read`. `apps/sandbox-executor/tests/test_ci_bookkeeping_wiring.py` enforces this.
+- A workflow whose jobs should skip on pushes to `main` must be added to `GATED_WORKFLOWS` in
+  `scripts/ci_main_push_gate.py`, hold `pull-requests: read` and a daily `schedule` trigger, and make its timing upload
+  ignore a missing record on a skip; the same test file checks the two workflows in that tuple.
 - A new label that a workflow reads must be added to `RESULT_AFFECTING_LABELS` in `scripts/ci_bookkeeping_gate.py`. The
   same test file scans the workflows for label names and fails on one that is missing. A label that a gate script reads
   from the event belongs there too: `ci-macos`, read by the macOS relevance gate below.
@@ -203,7 +261,8 @@ them use the standard library only and run on the runner's own `python3`.
 and only when the bookkeeping gate said "run". Its rules are checked in order; the first match decides and only the last
 one skips:
 
-- `event-not-pull-request`: a push to `main`, a manual run or any other event; `main` always runs the leg in full.
+- `event-not-pull-request`: a push to `main`, a manual run or any other event; on `main` the leg runs in full unless the
+  bookkeeping gate skipped the push ("Pushes to main").
 - `rerun-attempt`: the run is a second or later attempt.
 - `force-label`: the pull request carries the `ci-macos` label, compared without case.
 - `incomplete-event`: the environment lacks `GITHUB_SHA` or the run attempt.
@@ -313,7 +372,7 @@ on a later bookkeeping-only push it finds no real success to rely on, says "run"
 ### Timing
 
 A skipped leg runs neither "CI Timing Gate (compare with main)" nor any record step, so it records no timing sample and
-cannot fail the CI timing gate. Timing records are uploaded only on pushes to `main`, where the leg always runs, and the
+cannot fail the CI timing gate. Timing records are uploaded only on pushes to `main` that ran the leg in full, and the
 compare baseline comes only from `main` runs.
 
 ### Replay
@@ -328,8 +387,9 @@ from #241 to #314 the rule would have skipped the leg on 1: flow code and its te
 
 - A macOS-only break in a file judged neutral (for example plain `open` on a path whose case differs, or behaviour that
   depends on a neutral operation) reaches `main` without a macOS run on the pull request. The push to `main` after the
-  merge runs the leg in full and catches it; the maintainer then fixes the break and adds the missing pattern here and
-  in `scripts/macos_relevance_patterns.py`.
+  merge runs the leg in full unless its tree equals the tested head's (see "Pushes to main"), and the daily scheduled
+  run always does and catches it; the maintainer then fixes the break and adds the missing pattern here and in
+  `scripts/macos_relevance_patterns.py`.
 - A change on the base branch is not part of the pull request's diff, so a base-only macOS break surfaces on `main`.
 - Skipped legs appear as very short points in the CI duration report.
 - A pull request without a merge commit (for example one with conflicts) has no checkout to judge; the gate then runs.

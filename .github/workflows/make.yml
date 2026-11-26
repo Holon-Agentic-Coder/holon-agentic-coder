@@ -11,8 +11,11 @@ on:
 permissions:
   contents: read
 
+# Pushes are keyed by SHA so a later main push never evicts a pending one.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group:
+    ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || format('{0}-{1}', github.ref,
+    github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

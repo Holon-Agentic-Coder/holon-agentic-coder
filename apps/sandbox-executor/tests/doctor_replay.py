@@ -12,10 +12,15 @@ fetcher and the ``--json`` flag differ.
   direct call alone, runs the report for the first caller with a stream and hands every later one the text and the
   exit code of that run. Both doctor runs still format the text themselves.
 
-There are two users, and each has its own proofs in ``tests/test_doctor_replay.py``:
+:func:`replayed_direct_report`, entered inside :func:`replayed_environment_report`, hands a direct call a stream of its
+own and copies what was written to it onto stdout, so the direct call of a block becomes one more caller of that
+block's single report.
+
+There are two users, and each has its own proofs in ``tests/test_doctor_replay.py`` (the direct-call replay of the
+first one in ``tests/test_doctor_replay_users.py``):
 
 - ``_doctor``, the doctor entry point of the URL matrix: eight doctor runs and four direct reports on stdout per case,
-  in four blocks. The direct reports all run; one report runs for the two doctor runs of a block.
+  in four blocks. One report runs for the direct call and the two doctor runs of a block.
 - ``_invalid_value_doctor``, the doctor part of the invalid-value matrix: one report on a stream of its own, then the
   text and the ``--json`` doctor run, all with one environment, one host configuration and one fetcher. No call is on
   stdout, so one report runs for the three.
@@ -32,6 +37,7 @@ import contextlib
 import io
 import os
 import pickle
+import sys
 from collections.abc import Iterator
 from typing import Any, TextIO
 from unittest.mock import patch
@@ -90,4 +96,27 @@ def replayed_environment_report() -> Iterator[None]:
         return code
 
     with patch.object(cli_doctor, "report_budgets_and_envelope", replaying):
+        yield
+
+
+@contextlib.contextmanager
+def replayed_direct_report() -> Iterator[None]:
+    """Within the context, run a ``cli.report_budgets_and_envelope`` call without a stream on a stream of its own.
+
+    The report is run with a buffer as its stream, through whatever ``report_budgets_and_envelope`` is when the context
+    is entered, and the buffer's text is then written on stdout. Entered inside :func:`replayed_environment_report`,
+    the direct call of a block is thus answered by the block's one report, like the doctor runs of the block. A call
+    with a stream of its own is passed on unchanged.
+    """
+    report = cli_doctor.report_budgets_and_envelope
+
+    def on_a_stream(fetch: local_llm.Fetcher | None = None, out: TextIO | None = None) -> int:
+        if out is not None:
+            return report(fetch=fetch, out=out)
+        written = io.StringIO()
+        code = report(fetch=fetch, out=written)
+        sys.stdout.write(written.getvalue())
+        return code
+
+    with patch.object(cli_doctor, "report_budgets_and_envelope", on_a_stream):
         yield

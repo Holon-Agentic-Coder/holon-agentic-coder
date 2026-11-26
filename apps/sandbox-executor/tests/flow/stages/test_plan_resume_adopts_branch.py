@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -34,6 +34,7 @@ from tests.flow.helpers import (
     _push_child_branch,
     stage4_halts_at_consensus,
 )
+from tests.flow.stage_templates import StageStart
 
 
 def _plan_branches(repo: Path) -> list[str]:
@@ -44,6 +45,17 @@ def _plan_branches(repo: Path) -> list[str]:
         for line in raw.splitlines()
         if "/P-" in (name := line.strip()) and name.endswith("/_") and "/E-" not in name
     )
+
+
+def _after_stage_1(
+    stage_start: Callable[..., StageStart], checkpoint_path: Path | None = None
+) -> tuple[Path, Path, FlowContext]:
+    """The host, origin and context after the real Stage 1, from its stage-start template; these tests are about
+    Stage 2 (test_dispatch.py's Stage 1 tests and test_stage_templates.py prove the template's Stage 1)."""
+    start = stage_start("intent")
+    if checkpoint_path is not None:
+        start.ctx.checkpoint_path = str(checkpoint_path)
+    return start.host, start.origin, start.ctx
 
 
 @contextmanager
@@ -176,10 +188,8 @@ class TestKillWindowResume:
 class TestPlanCandidatesAndAdoption:
     """Step 2 unit tests: candidate discovery, completeness checks, numeric timestamp ordering and adoption."""
 
-    def test_branch_without_plans_jsonl_row_is_incomplete(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin))
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+    def test_branch_without_plans_jsonl_row_is_incomplete(self, stage_start, tmp_path):
+        host, origin, ctx = _after_stage_1(stage_start)
         intent_prefix = ctx.intent_branch.removesuffix("/_")
         stale = _push_child_branch(tmp_path, origin, ctx.intent_branch, "P-1000-CLA-CO5.5")
         _git(host, "fetch", "-q", "origin")
@@ -191,10 +201,8 @@ class TestPlanCandidatesAndAdoption:
         assert candidates[0].complete is False
         assert candidates[0].missing == "no plans.jsonl row"
 
-    def test_branch_whose_row_names_an_absent_plan_file_is_incomplete(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin))
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+    def test_branch_whose_row_names_an_absent_plan_file_is_incomplete(self, stage_start):
+        host, _origin, ctx = _after_stage_1(stage_start)
         intent_prefix = ctx.intent_branch.removesuffix("/_")
         plan_id = "P-1000-CLA-CO5.5"
         plan_branch = f"{intent_prefix}/{plan_id}/_"
@@ -217,11 +225,9 @@ class TestPlanCandidatesAndAdoption:
         )
         assert candidates[0].complete is False
 
-    def test_fake_planner_branch_is_complete_locally_and_when_pushed(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin)
-        ctx = _dispatch_context(host, agents)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+    def test_fake_planner_branch_is_complete_locally_and_when_pushed(self, stage_start):
+        host, _origin, ctx = _after_stage_1(stage_start)
+        agents = ctx.dispatcher
         intent_prefix = ctx.intent_branch.removesuffix("/_")
         agents("planner", ctx.agent, ctx.model, [ctx.intent_branch, ctx.agent, ctx.model], target_worktree=str(host))
 
@@ -236,10 +242,8 @@ class TestPlanCandidatesAndAdoption:
         assert pushed_cand.published is True
         assert pushed_cand.ref == f"refs/remotes/origin/{local_cand.branch}"
 
-    def test_candidates_order_by_numeric_timestamp_then_branch_name(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin))
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+    def test_candidates_order_by_numeric_timestamp_then_branch_name(self, stage_start):
+        host, _origin, ctx = _after_stage_1(stage_start)
         intent_prefix = ctx.intent_branch.removesuffix("/_")
         for plan_id in ("P-1000-CLA-CO5.5", "P-999-ZZZ-CO5.5", "P-1000-ANA-G4A"):
             _git(host, "branch", f"{intent_prefix}/{plan_id}/_", f"refs/remotes/origin/{ctx.intent_branch}")
@@ -253,12 +257,10 @@ class TestPlanCandidatesAndAdoption:
         ]
 
     def test_adopt_existing_plan_returns_empty_with_no_or_only_incomplete_candidates_or_replan_feedback(
-        self, flow_repos, tmp_path
+        self, stage_start, tmp_path
     ):
-        host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin)
-        ctx = _dispatch_context(host, agents)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        host, origin, ctx = _after_stage_1(stage_start)
+        agents = ctx.dispatcher
         intent_prefix = ctx.intent_branch.removesuffix("/_")
 
         assert adopt_existing_plan(ctx, intent_prefix) == ("", None)
@@ -271,13 +273,9 @@ class TestPlanCandidatesAndAdoption:
         ctx.intent_data["replan_feedback"] = "over budget: write a smaller plan"
         assert adopt_existing_plan(ctx, intent_prefix) == ("", None)
 
-    def test_adopt_existing_plan_publishes_local_only_complete_branch_and_reports_push_errors(
-        self, flow_repos, tmp_path
-    ):
-        host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin)
-        ctx = _dispatch_context(host, agents)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+    def test_adopt_existing_plan_publishes_local_only_complete_branch_and_reports_push_errors(self, stage_start):
+        host, origin, ctx = _after_stage_1(stage_start)
+        agents = ctx.dispatcher
         intent_prefix = ctx.intent_branch.removesuffix("/_")
         agents("planner", ctx.agent, ctx.model, [ctx.intent_branch, ctx.agent, ctx.model], target_worktree=str(host))
         (local_branch,) = _plan_branches(host)
@@ -330,27 +328,22 @@ class TestStage2AdoptionWiring:
         assert any(first_branch in line and second_branch in line for line in ctx.logs)
         assert any(second_branch in line and "newest complete" in line for line in ctx.logs)
 
-    def test_no_complete_plan_branch_dispatches_planner_and_succeeds(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin)
-        ctx = _dispatch_context(host, agents)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+    def test_no_complete_plan_branch_dispatches_planner_and_succeeds(self, stage_start, tmp_path):
+        _host, origin, ctx = _after_stage_1(stage_start)
+        agents = ctx.dispatcher
 
         stale = _push_child_branch(tmp_path, origin, ctx.intent_branch, "P-1000-CLA-CO5.5")
         res = run_plan_stage(ctx)
 
         assert res.status == StageStatus.SUCCESS
-        assert agents.roles() == ["intent-creator", "planner"]
+        # Stage 1 ran in the template; Stage 2 dispatched the planner once.
+        assert agents.roles() == ["planner"]
         assert ctx.plan_branch is not None and ctx.plan_branch != stale
         assert any(stale in line and "ignored" in line for line in ctx.logs)
 
-    def test_failed_push_of_local_only_complete_branch_fails_stage2_and_leaves_plan_branch_unset(
-        self, flow_repos, tmp_path
-    ):
-        host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin)
-        ctx = _dispatch_context(host, agents)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+    def test_failed_push_of_local_only_complete_branch_fails_stage2_and_leaves_plan_branch_unset(self, stage_start):
+        host, _origin, ctx = _after_stage_1(stage_start)
+        agents = ctx.dispatcher
         agents("planner", ctx.agent, ctx.model, [ctx.intent_branch, ctx.agent, ctx.model], target_worktree=str(host))
         agents.calls.clear()
         (local_branch,) = _plan_branches(host)
@@ -368,11 +361,9 @@ class TestStage2AdoptionWiring:
 class TestRecordPlanBranchBeforePush:
     """Step 4 tests: checkpoint records plan_branch before host push, restores live context and strips feedback."""
 
-    def test_checkpoint_records_plan_branch_before_failed_push(self, flow_repos, tmp_path):
-        host, origin = flow_repos
+    def test_checkpoint_records_plan_branch_before_failed_push(self, stage_start, tmp_path):
         cp_path = tmp_path / "checkpoint.json"
-        ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin), checkpoint_path=str(cp_path))
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        host, origin, ctx = _after_stage_1(stage_start, checkpoint_path=cp_path)
         _git(host, "config", "remote.origin.pushurl", "https://127.0.0.1:9/unreachable/repo.git")
 
         res = run_plan_stage(ctx)
@@ -387,12 +378,10 @@ class TestRecordPlanBranchBeforePush:
         assert "plan" not in recorded_cp.completed_stages
         assert ctx.plan_branch is None
 
-    def test_save_error_fails_stage2_before_push_and_next_run_adopts_without_planner(self, flow_repos, tmp_path):
-        host, origin = flow_repos
+    def test_save_error_fails_stage2_before_push_and_next_run_adopts_without_planner(self, stage_start, tmp_path):
         cp_path = tmp_path / "checkpoint.json"
-        agents = FakeRoleAgents(tmp_path, origin)
-        ctx = _dispatch_context(host, agents, checkpoint_path=str(cp_path))
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        host, origin, ctx = _after_stage_1(stage_start, checkpoint_path=cp_path)
+        agents = ctx.dispatcher
 
         with patch(
             "sandbox_executor.flow.stages.plan_resume.save_checkpoint",
@@ -414,11 +403,9 @@ class TestRecordPlanBranchBeforePush:
         assert ctx.plan_branch == local_branch
         assert _plan_branches(origin) == [local_branch]
 
-    def test_replan_record_never_persists_replan_feedback_and_restores_live_context(self, flow_repos, tmp_path):
-        host, origin = flow_repos
+    def test_replan_record_never_persists_replan_feedback_and_restores_live_context(self, stage_start, tmp_path):
         cp_path = tmp_path / "checkpoint.json"
-        ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin), checkpoint_path=str(cp_path))
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        _host, _origin, ctx = _after_stage_1(stage_start, checkpoint_path=cp_path)
         ctx.plan_branch = "I-1-old/P-1-CLA-CO5.5/_"
         ctx.stage_results["plan"] = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
         ctx.intent_data["replan_feedback"] = "over budget: shrink plan"
@@ -437,11 +424,9 @@ class TestRecordPlanBranchBeforePush:
         assert ctx.stage_results["plan"].status == StageStatus.SUCCESS
         assert ctx.intent_data["replan_feedback"] == "over budget: shrink plan"
 
-    def test_successful_stage2_leaves_live_context_with_plan_branch_and_success_result(self, flow_repos, tmp_path):
-        host, origin = flow_repos
+    def test_successful_stage2_leaves_live_context_with_plan_branch_and_success_result(self, stage_start, tmp_path):
         cp_path = tmp_path / "checkpoint.json"
-        ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin), checkpoint_path=str(cp_path))
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        _host, _origin, ctx = _after_stage_1(stage_start, checkpoint_path=cp_path)
 
         res = run_plan_stage(ctx)
 

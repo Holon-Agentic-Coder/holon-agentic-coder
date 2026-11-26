@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-f86c0b85",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T07:42:00.051754+00:00",
+  "updated_ts": "2026-11-26T07:42:00.051754+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795676825-ee6b56d8",
+      "ACT-FIND-1795676820-281b3296"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795665991-no-unneeded-full-review/P-1795666015-CLA-CO5.5--3-add-scoped-delta-review-new-flow/P-1795676003-CLA-CO5.5/E-1795676206-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R2-001-01",
+    "symptoms": [
+      "Gate mode now comes only from the delta decision, so a review_scope_paths conflict re-review records DiffGate.mode 'full' although the reviewers saw only the scoped paths; restore 'scoped' when review_scope_paths is set."
+    ]
+  }
+}

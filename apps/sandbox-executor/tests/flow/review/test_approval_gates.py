@@ -109,7 +109,15 @@ def test_an_unapproved_diff_gate_never_holds(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     ("ci_green", "ci_status", "state"),
-    [(True, {}, GREEN), (False, {"pending": 2}, RED), (None, {"pending": 1}, PENDING), (None, {}, UNKNOWN)],
+    [
+        (True, {}, GREEN),
+        (False, {"pending": 2}, RED),
+        (None, {"pending": 1}, PENDING),
+        (None, {}, UNKNOWN),
+        (None, {"all_passed": True}, GREEN),
+        (None, {"all_passed": True, "pending": 1}, PENDING),
+        (None, {"all_passed": False}, UNKNOWN),
+    ],
 )
 def test_pipeline_state_of(ci_green, ci_status, state):
     assert pipeline_state_of(ci_green, ci_status) == state
@@ -197,3 +205,18 @@ def test_a_scoped_re_review_records_a_scoped_diff_gate(tmp_path):
     facts = IterationGates(HEAD, 3, [clean_reviewer(1)], 1, True, [], True, {}, "main", None, mode="scoped")
     record_iteration_gates(ctx, facts, ConsensusVerdict.APPROVED)
     assert diff_gate_of(ctx).mode == "scoped"
+
+
+def test_a_red_state_without_a_failed_check_records_no_run_ids(tmp_path):
+    ctx = _ctx(tmp_path)
+    ci_status = {"checks": [{"bucket": "pass", "link": "https://github.com/o/r/actions/runs/7/job/1"}]}
+    record_iteration_gates(ctx, _facts([clean_reviewer(1)], False, ci_status), ConsensusVerdict.CHANGES_REQUESTED)
+    assert pipeline_gate_of(ctx).run_ids == ()
+
+
+def test_an_objecting_reviewer_still_records_a_green_pipeline(tmp_path):
+    ctx = _ctx(tmp_path)
+    critical = objecting_reviewer(2, "critical", ReviewerVerdict.CHANGES_REQUESTED)
+    facts = _facts([clean_reviewer(1), critical], None, {"all_passed": True, "pending": 0})
+    record_iteration_gates(ctx, facts, ConsensusVerdict.CHANGES_REQUESTED)
+    assert pipeline_gate_of(ctx).state == GREEN

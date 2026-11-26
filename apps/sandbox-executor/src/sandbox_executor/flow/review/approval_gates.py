@@ -94,12 +94,13 @@ class IterationGates:
 
 
 def pipeline_state_of(ci_green: bool | None, ci_status: Mapping[str, Any]) -> str:
-    """``green`` or ``red`` from the CI verdict; unknown is ``pending`` while checks run, else ``unknown``."""
-    if ci_green is True:
-        return GREEN
-    if ci_green is False:
-        return RED
-    return PENDING if ci_status.get("pending", 0) else UNKNOWN
+    """``green``/``red`` from the CI verdict, else from ``ci_status`` alone (the fast probe leaves the verdict None
+    unless CI failed), so the pipeline gate never depends on the reviewers: ``pending``, ``green`` or ``unknown``."""
+    if ci_green is not None:
+        return GREEN if ci_green else RED
+    if ci_status.get("pending", 0):
+        return PENDING
+    return GREEN if ci_status.get("all_passed") is True else UNKNOWN
 
 
 def _gates(context: FlowContext) -> dict[str, Any]:
@@ -173,8 +174,7 @@ def gates_summary(context: FlowContext) -> dict[str, Any]:
 
 def _run_ids(ci_status: Mapping[str, Any], state: str) -> tuple[str, ...]:
     checks = [c for c in ci_status.get("checks") or [] if isinstance(c, Mapping)]
-    failed = [c for c in checks if c.get("bucket") == "fail"]
-    ids = (parse_run_id(c.get("link")) for c in (failed if state == RED and failed else checks))
+    ids = (parse_run_id(c.get("link")) for c in checks if state != RED or c.get("bucket") == "fail")
     return tuple(dict.fromkeys(i for i in ids if i))
 
 

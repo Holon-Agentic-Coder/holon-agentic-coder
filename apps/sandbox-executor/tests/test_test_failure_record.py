@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import string
 
@@ -115,17 +116,16 @@ def test_signature_differs_for_other_ids_or_assertions() -> None:
 
 def _evidence(**overrides: object) -> TestFailureEvidence:
     ids = ("tests/test_a.py::test_alpha",)
-    fields: dict[str, object] = {
-        "run_id": "run-1",
-        "stage": STAGE_3,
-        "head_sha": "abc123",
-        "failing_ids": ids,
-        "excerpts": excerpts_by_test(_output(), ids),
-        "environment": environment_summary({"GIT_AUTHOR_NAME": "x"}),
-        "classification": "introduced",
-    }
-    fields.update(overrides)
-    return TestFailureEvidence(**fields)  # type: ignore[arg-type]
+    evidence = TestFailureEvidence(
+        run_id="run-1",
+        stage=STAGE_3,
+        head_sha="abc123",
+        failing_ids=ids,
+        excerpts=excerpts_by_test(_output(), ids),
+        environment=environment_summary({"GIT_AUTHOR_NAME": "x"}),
+        classification="introduced",
+    )
+    return dataclasses.replace(evidence, **overrides)
 
 
 def test_record_lands_in_the_flow_fragment(tmp_path) -> None:

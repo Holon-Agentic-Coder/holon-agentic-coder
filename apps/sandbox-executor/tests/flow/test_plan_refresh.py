@@ -33,6 +33,8 @@ from sandbox_executor.flow.checkpoint_discovery import get_default_checkpoint_pa
 from sandbox_executor.ledger import build_execution_id, read_merged_rows_at_ref
 from sandbox_executor.plan_paths import REFRESH_MERGE_PREFIX
 
+from tests.repo_templates import copy_template, shared_template
+
 INTENT = "I-1-x/_"
 PREFIX = "I-1-x/P-2-claude-agent-claude-opus-5-5"
 PLAN = f"{PREFIX}/_"
@@ -75,12 +77,14 @@ def commit_on(repo: Path, branch: str, files: dict[str, str], message: str, *, a
     return git(repo, "rev-parse", f"origin/{branch}")
 
 
-@pytest.fixture
-def host(tmp_path: Path) -> Path:
-    """The host worktree on main; origin holds main, the intent branch and the plan branch cut from it."""
-    origin = tmp_path / "origin.git"
+def _build_host(root: Path, *, main_moved: bool) -> str | None:
+    """The host worktree on main; origin holds main, the intent branch and the plan branch cut from it.
+
+    With ``main_moved``, ``move_main``'s default overlapping change follows; its sha is returned.
+    """
+    origin = root / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
-    repo = tmp_path / "host"
+    repo = root / "host"
     subprocess.run(["git", "clone", "-q", str(origin), str(repo)], check=True, capture_output=True)
     for key, value in (("user.email", "t@holon.com"), ("user.name", "T"), ("commit.gpgsign", "false")):
         git(repo, "config", key, value)
@@ -96,7 +100,31 @@ def host(tmp_path: Path) -> Path:
         git(repo, "push", "-q", "origin", f"refs/remotes/origin/{parent}:refs/heads/{branch}")
         git(repo, "fetch", "-q", "origin")
         commit_on(repo, branch, {path: "# doc\n"}, f"add {path}")
-    return repo
+    return move_main(repo) if main_moved else None
+
+
+def _host_copy(
+    tmp_path_factory: pytest.TempPathFactory, tmp_path: Path, *, main_moved: bool
+) -> tuple[Path, str | None]:
+    """A private copy of the fixed host and origin, built once per test run as a read-only template (git only)."""
+    name = f"plan-refresh-host{'-main-moved' if main_moved else ''}"
+    template, main_sha = shared_template(tmp_path_factory, name, lambda root: _build_host(root, main_moved=main_moved))
+    copy_template(template, tmp_path)
+    return tmp_path / "host", main_sha
+
+
+@pytest.fixture
+def host(tmp_path_factory: pytest.TempPathFactory, tmp_path: Path) -> Path:
+    """The host worktree on main; origin holds main, the intent branch and the plan branch cut from it."""
+    return _host_copy(tmp_path_factory, tmp_path, main_moved=False)[0]
+
+
+@pytest.fixture
+def moved_host(tmp_path_factory: pytest.TempPathFactory, tmp_path: Path) -> tuple[Path, str]:
+    """``host`` after ``move_main(host)``: the default overlapping change merged on main; and its sha."""
+    repo, main_sha = _host_copy(tmp_path_factory, tmp_path, main_moved=True)
+    assert main_sha is not None
+    return repo, main_sha
 
 
 def move_main(repo: Path, files: dict[str, str] | None = None) -> str:
@@ -175,9 +203,9 @@ def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     return subprocess.run(["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=repo).returncode == 0
 
 
-def test_ac1_a_flow_admitted_after_a_wait_gets_main_merged_before_dispatch(host: Path) -> None:
+def test_ac1_a_flow_admitted_after_a_wait_gets_main_merged_before_dispatch(moved_host: tuple[Path, str]) -> None:
+    host, main_sha = moved_host
     old_tip = git(host, "rev-parse", f"origin/{PLAN}")
-    main_sha = move_main(host)
     executor = FakeExecutor(host)
 
     result = run_stage(host, stage_context(host, BLOCKED), executor)
@@ -201,9 +229,9 @@ def test_ac1_a_flow_admitted_after_a_wait_gets_main_merged_before_dispatch(host:
     assert len(refresh_rows(host, f"refs/remotes/origin/{executor.branches[0]}")) == 1  # carried by the execution
 
 
-def test_ac2_a_flow_admitted_on_its_first_check_is_left_untouched(host: Path) -> None:
+def test_ac2_a_flow_admitted_on_its_first_check_is_left_untouched(moved_host: tuple[Path, str]) -> None:
+    host, _main_sha = moved_host
     old_tip = git(host, "rev-parse", f"origin/{PLAN}")
-    move_main(host)
     executor = FakeExecutor(host)
 
     result = run_stage(host, stage_context(host, None), executor)
@@ -267,8 +295,8 @@ def test_ac4_a_non_ledger_conflict_stops_stage_3_before_dispatch_and_stays_resum
     assert recorded["refreshed_to"] == main_sha and recorded["merge_commit"] is None
 
 
-def test_a_rerun_after_a_lost_checkpoint_write_records_no_second_row(host: Path) -> None:
-    main_sha = move_main(host)
+def test_a_rerun_after_a_lost_checkpoint_write_records_no_second_row(moved_host: tuple[Path, str]) -> None:
+    host, main_sha = moved_host
     waited = {"state": "admitted", "waited_since": WAITED_SINCE}
     assert plan_refresh_stage_failure(stage_context(host, dict(waited)), "t") is None
     tip = git(host, "rev-parse", f"origin/{PLAN}")
@@ -279,9 +307,9 @@ def test_a_rerun_after_a_lost_checkpoint_write_records_no_second_row(host: Path)
     assert saved_admission(host)["refreshed_to"] == main_sha
 
 
-def test_a_dry_run_only_logs_the_refresh(host: Path) -> None:
+def test_a_dry_run_only_logs_the_refresh(moved_host: tuple[Path, str]) -> None:
+    host, _main_sha = moved_host
     old_tip = git(host, "rev-parse", f"origin/{PLAN}")
-    move_main(host)
     ctx = stage_context(host, BLOCKED)
     ctx.dry_run = True
 
@@ -305,9 +333,9 @@ def test_a_plan_already_containing_main_is_recorded_without_a_merge_commit(host:
     assert plan_refresh_stage_failure(ctx, "t") is None and len(refresh_rows(host)) == 1  # not retried
 
 
-def test_a_re_planned_branch_is_refreshed_although_an_earlier_plan_was(host: Path) -> None:
+def test_a_re_planned_branch_is_refreshed_although_an_earlier_plan_was(moved_host: tuple[Path, str]) -> None:
     """A re-plan (touch_set_violation, over budget) cuts a new plan branch from the stale intent tip: refresh it too."""
-    main_sha = move_main(host)
+    host, main_sha = moved_host
     earlier = {**REFRESHED, "refreshed_to": main_sha, "refreshed_branch": "I-1-x/P-1-claude-agent-claude-opus-5-5/_"}
     ctx = stage_context(host, earlier)
     old_tip = git(host, "rev-parse", f"origin/{PLAN}")

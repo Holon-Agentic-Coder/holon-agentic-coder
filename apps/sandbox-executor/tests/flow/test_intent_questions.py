@@ -185,3 +185,8 @@ def test_a_clean_intent_still_passes():
 
 def test_hub_file_warnings_do_not_make_an_intent_unresolved():
     assert validate_intent_questions({**_clean_intent(), "scope": ["tests/conftest.py"]}) == (True, [])
+
+
+def test_stage_one_leaves_a_bare_existing_directory_to_intent_check(tmp_path):
+    (tmp_path / "src" / "pkg").mkdir(parents=True)
+    assert validate_intent_questions({**_clean_intent(), "scope": ["src/pkg"]}) == (True, [])

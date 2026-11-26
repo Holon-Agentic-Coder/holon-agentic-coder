@@ -188,6 +188,7 @@ def validate_intent_questions(intent_data: dict[str, Any]) -> tuple[bool, list[s
     Returns:
         tuple[bool, list[str]]: (is_valid, list_of_unresolved_question_descriptions)
     """
+    # why: Stage 1 runs before the target worktree exists, so a bare existing-directory entry is left to intent-check.
     rule_violations = check_intent_payload(intent_data).violations
     unresolved = [
         *IntentQuestions.from_intent(intent_data).unresolved(),

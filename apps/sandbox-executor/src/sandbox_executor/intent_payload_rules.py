@@ -65,7 +65,7 @@ def _hub_reason(path: str) -> str | None:
         return "re-exports the flow package"
     if pure.name == "conftest.py":
         return "shares fixtures with every test below it"
-    if pure.suffix == ".md" and pure.parent.name == "docs":
+    if pure.suffix == ".md" and pure.parent == PurePosixPath("docs"):
         return "is a shared documentation page"
     if path.endswith("scripts/pre_commit_check.py"):
         return "is the shared pre-commit gate"

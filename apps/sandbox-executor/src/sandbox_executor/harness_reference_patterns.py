@@ -11,7 +11,8 @@ _SCRATCH_DIRECTORY = "".join((_DOT, "scr", "atch"))
 _TRACKER_NOUN = "".join(("be", "an"))
 
 _SEGMENT_START = r"(?<![^\s\"'`(/])"
-_SEGMENT_END = r"(?![^/\s\"'`)])"
+# why: prose ends a name with sentence punctuation, so a run of .,;:!? before a boundary still ends the segment.
+_SEGMENT_END = r"(?=/|[.,;:!?]*(?:[\s\"'`)]|$))"
 _HOME_PREFIXES = r"(?<!~/)(?<!HOME/)"
 
 

@@ -143,3 +143,23 @@ def test_clean_intent_passes(tmp_path: Path) -> None:
     assert not findings.refused
     assert findings.violations == []
     assert findings.warnings == []
+
+
+@pytest.mark.parametrize("label", ["task-tracking directory", "scratch directory"])
+@pytest.mark.parametrize("punctuation", [".", ",", ";", ":", "!", "?", ".)"])
+def test_directory_names_followed_by_punctuation_are_found(label: str, punctuation: str) -> None:
+    name = sample_reference(label).split()[-1].split("/")[0]
+
+    assert find_references(f"see {name}{punctuation}") == [label]
+    assert find_references(f"see {name}{punctuation} then more") == [label]
+
+
+@pytest.mark.parametrize("label", ["task-tracking directory", "scratch directory"])
+def test_directory_names_with_a_suffix_are_not_found(label: str) -> None:
+    name = sample_reference(label).split()[-1].split("/")[0]
+
+    assert find_references(f"see {name}.json and {name}_old") == []
+
+
+def test_only_top_level_docs_pages_are_hub_files() -> None:
+    assert hub_file_warnings(["apps/x/docs/page.md"]) == []

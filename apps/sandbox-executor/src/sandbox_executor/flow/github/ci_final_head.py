@@ -205,7 +205,6 @@ def _bookkeeping_only(paths: list[str] | None) -> bool:
 
 
 def _code_unchanged(paths: list[str] | None) -> bool:
-    """No change at all, or bookkeeping records only; an unreadable diff (``None``) fails closed."""
     return paths is not None and all(path.startswith(BOOKKEEPING_PATH_PREFIXES) for path in paths)
 
 
@@ -265,7 +264,6 @@ def _dispatch_rerun(check: _FinalHeadCheck, run_id: str) -> bool:
 def _rerun_timing_once(
     check: _FinalHeadCheck, record: dict[str, Any], run_ids: list[str]
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    """Rerun the failed jobs of ``run_ids`` once and classify the settled head; ``None`` when a dispatch failed."""
     seams = check.seams
     rerun = seams.rerun_dispatcher or functools.partial(_dispatch_rerun, check)
     if not all(rerun(run_id) for run_id in run_ids):
@@ -278,11 +276,6 @@ def _rerun_timing_once(
 
 
 def _retry_timing_noise(check: _FinalHeadCheck, record: dict[str, Any], ci_status: dict[str, Any]) -> dict[str, Any]:
-    """Rerun a timing-gate-only failure on unchanged code at most ``MAX_TIMING_RERUNS`` times, in sequence.
-
-    Eligibility is re-checked before every attempt, so the loop stops at the first result that is not a timing-gate-only
-    failure on unchanged code (green, pending, a mixed failure or a code push). The caller decides on withdrawal.
-    """
     first_run_ids: list[str] = []
     outcomes: list[str] = []
     reason = ""

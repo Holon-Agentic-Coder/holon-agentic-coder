@@ -41,14 +41,15 @@ from sandbox_executor.ledger import LedgerRewriteError
 from sandbox_executor.local_llm import LocalLLMConfigError
 
 from tests.flow.helpers import FakeRoleAgents, _git
+from tests.repo_templates import copy_template, shared_template
 
 
-def _create_bare_origin_and_clone(tmp_path: Path) -> tuple[Path, Path]:
-    """Create a local bare ``origin.git`` and a seeded working repository ``repo`` on ``main``."""
-    origin = tmp_path / "origin.git"
+def _build_bare_origin_and_clone(root: Path) -> None:
+    """Build a local bare ``origin.git`` and a seeded working repository ``repo`` on ``main`` under ``root``."""
+    origin = root / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
 
-    repo = tmp_path / "repo"
+    repo = root / "repo"
     subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, capture_output=True)
     (repo / ".git" / "config").write_text(
         "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n"
@@ -67,7 +68,29 @@ def _create_bare_origin_and_clone(tmp_path: Path) -> tuple[Path, Path]:
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "seed main")
     _git(repo, "push", "-q", "-u", "origin", "main")
-    return repo, origin
+
+
+def _build_with_kept_branch(root: Path) -> None:
+    """The seeded repositories plus an unrelated ``I-999999-keep/_`` branch, local and on origin."""
+    _build_bare_origin_and_clone(root)
+    _git(root / "repo", "branch", "I-999999-keep/_", "main")
+    _git(root / "repo", "push", "-q", "origin", "I-999999-keep/_")
+
+
+_TEMPLATES = {"seeded": _build_bare_origin_and_clone, "with-kept-branch": _build_with_kept_branch}
+
+
+def _create_bare_origin_and_clone(
+    tmp_path: Path, factory: pytest.TempPathFactory, template: str = "seeded"
+) -> tuple[Path, Path]:
+    """This test's own copy of a local bare ``origin.git`` and a seeded working repository ``repo`` on ``main``.
+
+    The repositories are built once per run (no production code runs in the build) and copied into ``tmp_path``; the
+    copy's remote names the copy's ``origin.git``.
+    """
+    root, _ = shared_template(factory, f"e2e-harness-{template}", _TEMPLATES[template])
+    copy_template(root, tmp_path)
+    return tmp_path / "repo", tmp_path / "origin.git"
 
 
 def _local_branches(repo: Path) -> set[str]:
@@ -179,8 +202,10 @@ class TestPrefixScopingAndRefusal:
 class TestTeardownAndDeletionEnumeration:
     """Real local git repository teardown, deletion enumeration, and preservation of sibling refs/worktrees."""
 
-    def test_teardown_removes_scoped_worktree_and_local_remote_branches_only(self, tmp_path: Path) -> None:
-        repo, origin = _create_bare_origin_and_clone(tmp_path)
+    def test_teardown_removes_scoped_worktree_and_local_remote_branches_only(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        repo, origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         prefix = "I-123456-e2e-run"
 
         # Seed unrelated branches, including a string-prefix collision sibling I-123456-e2e-run-other/_.
@@ -249,8 +274,10 @@ class TestTeardownAndDeletionEnumeration:
             assert branch in remaining_local
             assert branch in remaining_remote
 
-    def test_teardown_refuses_candidate_refs_outside_prefix_without_deleting_anything(self, tmp_path: Path) -> None:
-        repo, origin = _create_bare_origin_and_clone(tmp_path)
+    def test_teardown_refuses_candidate_refs_outside_prefix_without_deleting_anything(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        repo, origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         prefix = "I-123456-e2e-run"
         _git(repo, "branch", f"{prefix}/_", "main")
         _git(repo, "push", "-q", "origin", f"{prefix}/_")
@@ -270,15 +297,17 @@ class TestTeardownAndDeletionEnumeration:
         assert "I-999999-other/_" in _local_branches(repo)
         assert "I-999999-other/_" in _remote_branches(origin)
 
-    def test_teardown_refuses_primary_repo_or_protected_worktree(self, tmp_path: Path) -> None:
-        repo, _origin = _create_bare_origin_and_clone(tmp_path)
+    def test_teardown_refuses_primary_repo_or_protected_worktree(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        repo, _origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         with pytest.raises(PrefixScopingError, match="primary repository directory"):
             teardown_e2e_intent(str(repo), "I-123456-e2e-run", disposable_worktree=str(repo))
 
     def test_teardown_refuses_worktree_on_out_of_prefix_branch_even_when_dir_ends_with_slug(
-        self, tmp_path: Path
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
     ) -> None:
-        repo, _origin = _create_bare_origin_and_clone(tmp_path)
+        repo, _origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         prefix = "I-123456-e2e-run"
         # Directory basename ends with the intent slug ('e2e-run'), but its checked-out branch is unrelated.
         unrelated_wt = tmp_path / "flow-e2e-run"
@@ -290,8 +319,10 @@ class TestTeardownAndDeletionEnumeration:
         assert unrelated_wt.is_dir()
         assert "feature-unrelated" in _local_branches(repo)
 
-    def test_teardown_discovers_remote_only_branches_even_when_local_tracking_ref_exists(self, tmp_path: Path) -> None:
-        repo, origin = _create_bare_origin_and_clone(tmp_path)
+    def test_teardown_discovers_remote_only_branches_even_when_local_tracking_ref_exists(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        repo, origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         prefix = "I-123456-e2e-run"
         tracked_branch = f"{prefix}/_"
         remote_only_branch = f"{prefix}/P-10-PI-M/_"
@@ -308,8 +339,10 @@ class TestTeardownAndDeletionEnumeration:
         assert tracked_branch not in _remote_branches(origin)
         assert remote_only_branch not in _remote_branches(origin)
 
-    def test_teardown_records_error_when_remote_push_delete_fails(self, tmp_path: Path) -> None:
-        repo, origin = _create_bare_origin_and_clone(tmp_path)
+    def test_teardown_records_error_when_remote_push_delete_fails(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        repo, origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         prefix = "I-123456-e2e-run"
         branch = f"{prefix}/_"
         _git(repo, "branch", branch, "main")
@@ -418,9 +451,9 @@ class TestZeroPRGuardAndNoSkipReview:
             enforce_zero_pr_guard(str(tmp_path), prefix, gh_runner=fake_gh)
 
     def test_enforce_zero_pr_guard_skips_default_gh_for_local_bare_origin(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        repo, _origin = _create_bare_origin_and_clone(tmp_path)
+        repo, _origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         gh_invoked = False
 
         class _BoomGitHubAdapter:
@@ -439,9 +472,9 @@ class TestZeroPRGuardAndNoSkipReview:
         assert gh_invoked is False
 
     def test_enforce_zero_pr_guard_fails_closed_for_github_origin_with_default_runner(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        repo, _origin = _create_bare_origin_and_clone(tmp_path)
+        repo, _origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         _git(repo, "remote", "set-url", "origin", "https://github.com/holon-test/example.git")
 
         class _FailingGitHubAdapter:
@@ -457,9 +490,9 @@ class TestZeroPRGuardAndNoSkipReview:
             enforce_zero_pr_guard(str(repo), "I-123456-e2e-run", gh_runner=None)
 
     def test_enforce_zero_pr_guard_fails_closed_when_gh_missing_for_github_origin(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        repo, _origin = _create_bare_origin_and_clone(tmp_path)
+        repo, _origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         _git(repo, "remote", "set-url", "origin", "https://github.com/holon-test/example.git")
         monkeypatch.setattr("sandbox_executor.flow.github.adapter.shutil.which", lambda _cmd: None)
 
@@ -544,8 +577,10 @@ class TestRetryClassificationAndUnconditionalTeardown:
             == FailureCategory.MACHINERY
         )
 
-    def test_run_e2e_with_retry_retries_model_output_with_teardown_per_attempt(self, tmp_path: Path) -> None:
-        repo, origin = _create_bare_origin_and_clone(tmp_path)
+    def test_run_e2e_with_retry_retries_model_output_with_teardown_per_attempt(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        repo, origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         fake_gh = FakeE2EGhRunner(prs=[])
         attempts_seen: list[str] = []
 
@@ -584,8 +619,10 @@ class TestRetryClassificationAndUnconditionalTeardown:
             assert f"{prefix}/_" not in _local_branches(repo)
             assert f"{prefix}/_" not in _remote_branches(origin)
 
-    def test_run_e2e_with_retry_exhausts_cap_on_persistent_model_output_failure(self, tmp_path: Path) -> None:
-        repo, origin = _create_bare_origin_and_clone(tmp_path)
+    def test_run_e2e_with_retry_exhausts_cap_on_persistent_model_output_failure(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        repo, origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         fake_gh = FakeE2EGhRunner(prs=[])
         prefixes: list[str] = []
 
@@ -610,8 +647,10 @@ class TestRetryClassificationAndUnconditionalTeardown:
             assert f"{prefix}/_" not in _local_branches(repo)
             assert f"{prefix}/_" not in _remote_branches(origin)
 
-    def test_run_e2e_with_retry_fails_immediately_on_machinery_error_and_still_tears_down(self, tmp_path: Path) -> None:
-        repo, origin = _create_bare_origin_and_clone(tmp_path)
+    def test_run_e2e_with_retry_fails_immediately_on_machinery_error_and_still_tears_down(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        repo, origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         fake_gh = FakeE2EGhRunner(prs=[])
         prefixes: list[str] = []
 
@@ -636,8 +675,10 @@ class TestRetryClassificationAndUnconditionalTeardown:
         assert f"{prefixes[0]}/_" not in _local_branches(repo)
         assert f"{prefixes[0]}/_" not in _remote_branches(origin)
 
-    def test_run_e2e_with_retry_tears_down_even_when_zero_pr_guard_raises(self, tmp_path: Path) -> None:
-        repo, origin = _create_bare_origin_and_clone(tmp_path)
+    def test_run_e2e_with_retry_tears_down_even_when_zero_pr_guard_raises(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        repo, origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         stray_prefix = "I-2000000-stray-pr"
         fake_gh = FakeE2EGhRunner(
             prs=[
@@ -669,8 +710,10 @@ class TestRetryClassificationAndUnconditionalTeardown:
         assert f"{stray_prefix}/_" not in _local_branches(repo)
         assert f"{stray_prefix}/_" not in _remote_branches(origin)
 
-    def test_zero_pr_guard_violation_takes_precedence_over_retryable_model_output_error(self, tmp_path: Path) -> None:
-        repo, origin = _create_bare_origin_and_clone(tmp_path)
+    def test_zero_pr_guard_violation_takes_precedence_over_retryable_model_output_error(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        repo, origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         stray_prefix = "I-2100000-stray-retry"
         fake_gh = FakeE2EGhRunner(
             prs=[
@@ -707,9 +750,9 @@ class TestRetryClassificationAndUnconditionalTeardown:
 
     @pytest.mark.parametrize("exc_factory", [KeyboardInterrupt, lambda: SystemExit(2)])
     def test_run_e2e_with_retry_reraises_base_exceptions_directly_after_teardown(
-        self, tmp_path: Path, exc_factory: Any
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, exc_factory: Any
     ) -> None:
-        repo, origin = _create_bare_origin_and_clone(tmp_path)
+        repo, origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         fake_gh = FakeE2EGhRunner(prs=[])
         created_prefixes: list[str] = []
 
@@ -738,11 +781,13 @@ class TestRetryClassificationAndUnconditionalTeardown:
 class TestPrePRPipelineExecutionAndLocalLLMEnv:
     """End-to-end execution of ``E2EPipelineEngine`` and ``run_e2e_flow_test`` against local bare remotes."""
 
-    def test_e2e_pipeline_engine_runs_stages_1_to_3_and_stops_at_stage_4_pre_pr_boundary(self, tmp_path: Path) -> None:
-        repo, origin = _create_bare_origin_and_clone(tmp_path)
-        # Preserve an unrelated branch on origin to verify teardown leaves it untouched.
-        _git(repo, "branch", "I-999999-keep/_", "main")
-        _git(repo, "push", "-q", "origin", "I-999999-keep/_")
+    def test_e2e_pipeline_engine_runs_stages_1_to_3_and_stops_at_stage_4_pre_pr_boundary(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        # An unrelated branch, local and on origin, to verify teardown leaves it untouched.
+        repo, origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory, "with-kept-branch")
+        # The repositories are a copy of a shared template: the remote must be this test's own origin copy.
+        assert _git(repo, "remote", "get-url", "origin") == str(origin)
 
         agents = FakeRoleAgents(tmp_path, origin, recorded_test_pass_rate=1.0)
         fake_gh = FakeE2EGhRunner(prs=[])
@@ -782,10 +827,10 @@ class TestPrePRPipelineExecutionAndLocalLLMEnv:
         assert _local_branches(repo) == {"main", "I-999999-keep/_"}
         assert _remote_branches(origin) == {"main", "I-999999-keep/_"}
 
-    def test_run_e2e_flow_test_tears_down_worktree_and_branches_when_attempt_raises(self, tmp_path: Path) -> None:
-        repo, origin = _create_bare_origin_and_clone(tmp_path)
-        _git(repo, "branch", "I-999999-keep/_", "main")
-        _git(repo, "push", "-q", "origin", "I-999999-keep/_")
+    def test_run_e2e_flow_test_tears_down_worktree_and_branches_when_attempt_raises(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        repo, origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory, "with-kept-branch")
 
         agents = FakeRoleAgents(tmp_path, origin, recorded_test_pass_rate=1.0)
         fake_gh = FakeE2EGhRunner(prs=[])
@@ -814,8 +859,10 @@ class TestPrePRPipelineExecutionAndLocalLLMEnv:
         assert _local_branches(repo) == {"main", "I-999999-keep/_"}
         assert _remote_branches(origin) == {"main", "I-999999-keep/_"}
 
-    def test_e2e_pipeline_engine_fails_cleanly_if_review_entered_without_execution_branch(self, tmp_path: Path) -> None:
-        repo, _origin = _create_bare_origin_and_clone(tmp_path)
+    def test_e2e_pipeline_engine_fails_cleanly_if_review_entered_without_execution_branch(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        repo, _origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         ctx = FlowContext(target_worktree=str(repo), intent_data={"slug": "no-exec", "goal": "g"})
         engine = E2EPipelineEngine(ctx)
         res = engine.execute_stage(FlowStage.REVIEW)

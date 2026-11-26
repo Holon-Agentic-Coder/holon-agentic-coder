@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -216,21 +217,29 @@ def test_stage_with_unverified_ci_is_never_reported_merge_ready(tmp_path: Path) 
     assert "Not merge-ready" in report
 
 
+def _commit_check_runs(*runs: dict) -> FakeGitHub:
+    stdout = "".join(json.dumps(run) + "\n" for run in runs)
+    return FakeGitHub(cli=lambda args, cwd: subprocess.CompletedProcess(["gh", *args], 0, stdout, ""))
+
+
 def test_stale_prior_head_checks_are_not_reported_as_success(tmp_path: Path) -> None:
     fakes = Fakes(_status([_check("hygiene", "pass")]))
-    heads = iter(["old", "old", "new"])
+    run = {"id": 1, "name": "unit", "status": "completed", "conclusion": "success", "head_sha": "new"}
+    github = _commit_check_runs(run, {**run, "id": 2, "conclusion": "failure", "head_sha": "old"})
     seams = FinalHeadSeams(
         policy=CiWaitPolicy(600.0, clock=lambda: fakes.now, sleep=fakes.sleep),
         probe=fakes.probe,
         detail_lookup=lambda check: None,
         registration_timeout=60,
         pushed_head=lambda: "new",
-        pr_head=lambda: next(heads),
+        pr_head=lambda: "old",
+        github=github,
     )
     record = check_final_head_ci(_ctx(tmp_path), str(tmp_path), BRANCH, seams)
     assert record["state"] == "success"
-    assert len(fakes.sleeps) == 2
-    assert fakes.probes >= 1
+    assert fakes.sleeps == []
+    assert fakes.probes == 0
+    assert github.methods() == ["gh"]
 
 
 def test_pr_head_never_matching_pushed_head_is_unknown(tmp_path: Path) -> None:
@@ -241,10 +250,13 @@ def test_pr_head_never_matching_pushed_head_is_unknown(tmp_path: Path) -> None:
         registration_timeout=20,
         pushed_head=lambda: "new",
         pr_head=lambda: "old",
+        github=_commit_check_runs(),
     )
     record = check_final_head_ci(_ctx(tmp_path), str(tmp_path), BRANCH, seams)
     assert record["state"] == "unknown"
+    assert "pull request head lagged the pushed head" in record["reason"]
     assert fakes.probes == 0
+    assert len(fakes.sleeps) == 1
 
 
 def test_failure_ends_the_wait_early_while_other_checks_are_pending(tmp_path: Path) -> None:
@@ -383,6 +395,9 @@ def test_a_fingerprint_carried_merged_head_is_not_eligible_for_the_automatic_tim
     # ci_final_head stays bookkeeping-only: a merge of main is not a bookkeeping move, even when the approval carried.
     assert ci_final_head._eligible_run_ids(carried, record, ci_status) is None
     assert ci_final_head._eligible_run_ids(bookkeeping, record, ci_status) == ["77"]  # The positive control.
+    assert ci_final_head._eligible_run_ids(_carried_timing_check(tmp_path, []), record, ci_status) == [
+        "77"
+    ]  # Unchanged.
 
 
 # --- 15-second poll ceiling, fail-early, and timing-rerun pending guard ---------------------------------------------

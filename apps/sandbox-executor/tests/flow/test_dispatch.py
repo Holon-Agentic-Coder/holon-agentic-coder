@@ -39,6 +39,8 @@ from tests.flow.helpers import (
 from tests.flow.lookup_patch import patch_lookup_sites
 
 _NO_PROXY = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
+# A summary row without the key at all: the container recorded no test result.
+_ABSENT = object()
 
 
 class TestFlowRoleDispatch:
@@ -46,7 +48,9 @@ class TestFlowRoleDispatch:
 
     def test_pipeline_dispatches_intent_plan_execute_with_resolved_runner(self, flow_repos, tmp_path):
         host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin)
+        # The container records a measured pass rate, which Stage 3 carries; a missing or malformed value is reported
+        # as not measured, which the summary-row validation cases below prove without a pipeline run.
+        agents = FakeRoleAgents(tmp_path, origin, recorded_test_pass_rate=0.75)
         ctx = _dispatch_context(host, agents)
 
         with stage4_halts_at_consensus():
@@ -65,8 +69,7 @@ class TestFlowRoleDispatch:
         assert ctx.plan_branch.startswith(ctx.intent_branch.removesuffix("/_") + "/P-")
         assert ctx.execution_branch.startswith(ctx.plan_branch.removesuffix("/_") + "/E-")
         assert results["execute"].payload["changed_files"] == 1
-        # The container recorded no test result, so Stage 3 reports it as not measured rather than passed.
-        assert results["execute"].payload["test_pass_rate"] is None
+        assert results["execute"].payload["test_pass_rate"] == 0.75
 
         # The flow authored nothing: every ledger row on origin came from a (simulated) container.
         exec_rows = _ledger_rows(host, f"origin/{ctx.execution_branch}", "executions.jsonl")
@@ -75,24 +78,15 @@ class TestFlowRoleDispatch:
         assert len(_ledger_rows(host, f"origin/{ctx.execution_branch}", "intents.jsonl")) == 1
         assert _git(host, "status", "--porcelain", "--untracked-files=no") == ""
 
-    @pytest.mark.parametrize(("recorded", "expected"), [(0.75, 0.75), (True, None)], ids=["measured", "malformed"])
-    def test_stage3_carries_container_recorded_test_pass_rate(self, flow_repos, tmp_path, recorded, expected):
-        host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin, recorded_test_pass_rate=recorded)
-        ctx = _dispatch_context(host, agents)
-
-        with stage4_halts_at_consensus():
-            results = PipelineEngine(ctx).run()
-
-        assert results["execute"].status == StageStatus.SUCCESS
-        assert results["execute"].payload["test_pass_rate"] == expected
-
     @pytest.mark.parametrize(
-        ("recorded", "expected"), [(0.75, 0.75), (1, 1.0), (0.0, 0.0), ("1.0", None), (True, None)]
+        ("recorded", "expected"),
+        [(0.75, 0.75), (1, 1.0), (0.0, 0.0), ("1.0", None), (True, None), pytest.param(_ABSENT, None, id="absent")],
     )
     def test_stage3_validates_the_recorded_test_pass_rate_of_the_summary_row(self, recorded, expected):
         # The fields Stage 3 copies from the container's summary row into its payload, as the run above carries them.
-        carried = _recorded_test_fields({"test_pass_rate": recorded})["test_pass_rate"]
+        # A container that recorded no test result is reported as not measured rather than passed.
+        row = {} if recorded is _ABSENT else {"test_pass_rate": recorded}
+        carried = _recorded_test_fields(row)["test_pass_rate"]
         assert (carried, type(carried)) == (expected, type(expected))
 
     def test_stage1_intent_dispatch_carries_resolved_payload(self, flow_repos, tmp_path):
@@ -210,11 +204,9 @@ class TestFlowRoleDispatch:
         assert not list(host.glob("plans/**/P-*.md"))
         assert (host / "holon-knowledge/ledger/plans.jsonl").read_text(encoding="utf-8") == ""
 
-    def test_stage2_adopts_planner_branch_and_metrics(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin)
-        ctx = _dispatch_context(host, agents)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+    def test_stage2_adopts_planner_branch_and_metrics(self, stage_start):
+        start = stage_start("intent")
+        host, ctx = start.host, start.ctx
 
         with patch("sandbox_executor.calibration.format_calibration_report") as mock_format:
             res = run_plan_stage(ctx)
@@ -340,18 +332,17 @@ class TestFlowRoleDispatch:
         assert ctx.execution_branch != sibling
         assert ctx.execution_branch.endswith(f"/{res.payload['execution_id']}/_")
 
-    def test_stage2_fails_closed_when_origin_cannot_be_snapshotted(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin)
-        ctx = _dispatch_context(host, agents)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+    def test_stage2_fails_closed_when_origin_cannot_be_snapshotted(self, stage_start):
+        start = stage_start("intent")
+        ctx = start.ctx
 
         with patch("sandbox_executor.flow.git_refs._fetch_branch_prefix", return_value=False):
             res = run_plan_stage(ctx)
 
         assert res.status == StageStatus.FAILED
         assert "before dispatching the planner" in (res.error or "")
-        assert agents.roles() == ["intent-creator"]
+        # The template ran Stage 1; this test's containers record no dispatch at all.
+        assert start.agents.roles() == []
 
     @staticmethod
     def _fail_fetch_after(agents: "FakeRoleAgents", role: str) -> Callable[..., subprocess.CompletedProcess[str]]:
@@ -415,11 +406,9 @@ class TestFlowRoleDispatch:
         assert "ghp_supersecret123" not in (res.error or "")
         assert agents.roles() == ["intent-creator"]
 
-    def test_stage2_reports_post_dispatch_fetch_failure(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin)
-        ctx = _dispatch_context(host, agents)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+    def test_stage2_reports_post_dispatch_fetch_failure(self, stage_start):
+        start = stage_start("intent")
+        agents, ctx = start.agents, start.ctx
 
         with patch_lookup_sites(
             "sandbox_executor.flow.git_refs.run_git",
@@ -436,12 +425,9 @@ class TestFlowRoleDispatch:
         assert "ghp_supersecret123" not in (res.error or "")
         assert ctx.plan_branch is None
 
-    def test_stage3_reports_post_dispatch_fetch_failure(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin)
-        ctx = _dispatch_context(host, agents)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+    def test_stage3_reports_post_dispatch_fetch_failure(self, stage_start):
+        start = stage_start("plan")
+        agents, ctx = start.agents, start.ctx
 
         with patch_lookup_sites(
             "sandbox_executor.flow.git_refs.run_git",
@@ -513,13 +499,10 @@ class TestFlowRoleDispatch:
         assert _git(host, "status", "--porcelain", "--untracked-files=no") == ""
         assert _git(host, "worktree", "list").count("\n") == 0
 
-    def test_empty_execution_already_failed_is_not_duplicated(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin, executor_mode="empty")
-        ctx = _dispatch_context(host, agents)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
-        agents.executor_mode = "agent_failure"
+    def test_empty_execution_already_failed_is_not_duplicated(self, stage_start):
+        start = stage_start("plan")
+        host, ctx = start.host, start.ctx
+        start.agents.executor_mode = "agent_failure"
 
         res = run_execute_stage(ctx)
 
@@ -533,12 +516,10 @@ class TestFlowRoleDispatch:
         assert res.payload["container_status"] == "failure"
         assert res.payload["superseding_row_recorded"] is False
 
-    def test_empty_execution_without_summary_row_reports_missing_row(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin, executor_mode="empty_no_row")
-        ctx = _dispatch_context(host, agents)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+    def test_empty_execution_without_summary_row_reports_missing_row(self, stage_start):
+        start = stage_start("plan")
+        host, origin, ctx = start.host, start.origin, start.ctx
+        start.agents.executor_mode = "empty_no_row"
 
         res = run_execute_stage(ctx)
 
@@ -553,12 +534,10 @@ class TestFlowRoleDispatch:
         assert "kept local and not pushed" in error
         assert _git(host, "ls-remote", str(origin), res.payload["execution_branch"]) == ""
 
-    def test_empty_execution_reports_failed_superseding_write(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin, executor_mode="empty")
-        ctx = _dispatch_context(host, agents)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+    def test_empty_execution_reports_failed_superseding_write(self, stage_start):
+        start = stage_start("plan")
+        host, ctx = start.host, start.ctx
+        start.agents.executor_mode = "empty"
         from sandbox_executor import flow as flow_module
 
         real_run_git = flow_module.run_git
@@ -587,12 +566,10 @@ class TestFlowRoleDispatch:
         assert [r["status"] for r in rows] == ["success"]
         assert _ledger_rows(host, ctx.execution_branch, "executions.jsonl") == rows
 
-    def test_superseding_row_leaves_diverged_local_branch_untouched(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin, executor_mode="empty")
-        ctx = _dispatch_context(host, agents)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+    def test_superseding_row_leaves_diverged_local_branch_untouched(self, stage_start):
+        start = stage_start("plan")
+        host, ctx = start.host, start.ctx
+        start.agents.executor_mode = "empty"
         from sandbox_executor import flow as flow_module
 
         real_track = flow_module._track_local_branch
@@ -682,13 +659,11 @@ class TestFlowRoleDispatch:
                 cli_main()
             assert mock_dispatch.call_args.kwargs["token_reduce"] is False
 
-    def test_stage3_agent_failure_status_fails_stage(self, flow_repos, tmp_path):
-        host, origin = flow_repos
+    def test_stage3_agent_failure_status_fails_stage(self, stage_start):
+        start = stage_start("plan")
+        host, ctx = start.host, start.ctx
         # The failed agent still edited a file, so the failure comes from the container's own status.
-        agents = FakeRoleAgents(tmp_path, origin, executor_mode="change_failure")
-        ctx = _dispatch_context(host, agents)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+        start.agents.executor_mode = "change_failure"
 
         res = run_execute_stage(ctx)
 

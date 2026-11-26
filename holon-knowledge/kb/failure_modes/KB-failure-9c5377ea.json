@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-9c5377ea",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T07:07:20.894702+00:00",
+  "updated_ts": "2026-11-26T07:07:20.894702+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795675593-ce0a6fcf",
+      "ACT-FIND-1795675583-005e1767"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795674185-timing-gate-runner-variance/P-1795674208-CLA-CO5.5/E-1795674400-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R1-001-01",
+    "symptoms": [
+      "Goal requires Workspace survival timing failures to be rerun, but its 'Timing gate' step does not match the 'CI Timing Gate' prefix, so it is never rerun; recognise that step name and add a test."
+    ]
+  }
+}

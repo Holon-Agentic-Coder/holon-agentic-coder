@@ -471,7 +471,8 @@ split from the former single `flow.py` by moving code only. Three tests guard th
   through their owning module); a new definition cannot join it, and an entry must be removed once it is re-exported.
   The test also fails if two submodules define the same public name.
 - `tests/flow/test_module_budgets.py` pins `scripts/check_module_budgets.py` and checks the live tree against the module
-  line budgets (see "Module line budgets" below).
+  line budgets; `tests/flow/test_module_budget_discovery.py` pins discovery, `exclude` and the ratchet-down notice (see
+  "Module line budgets" below).
 
 | Module                                 | Responsibility                                                                                                   |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
@@ -560,7 +561,7 @@ Rules that keep the package healthy:
 ### CLI module map
 
 The host CLI lives in the `sandbox_executor.cli` package (`apps/sandbox-executor/src/sandbox_executor/cli/`). Each
-implementation module stays within 200 lines:
+implementation module stays within its module line budget (see below):
 
 | Module                      | Responsibility                                                                                   |
 | --------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -584,16 +585,25 @@ that tests patch submodule-local symbols on their owning `sandbox_executor.cli.<
 
 The settings live in `holon-config/hygiene/module_budgets.json`, with exactly three keys:
 
-- `default_max_lines` (200): the limit of every module without an override, so a new module or a split needs no entry;
-- `packages`: the repository-relative directories whose `.py` modules are checked (today only
-  `apps/sandbox-executor/src/sandbox_executor/flow`);
-- `overrides`: repository-relative module paths mapped to their own limit, sorted, one per line, plain integers, for the
-  modules that were already over 200 lines when the budgets were frozen.
+- `default_max_lines` (400): the limit of every module without an override, so a new module, a new package or a split
+  needs no entry. The maintainer's schedule lowers it by 50 per pull request (350, 300, 250); each step splits the
+  modules over the new limit and drops the overrides it makes redundant, until 250 is reached;
+- `exclude`: a short list of `{"path", "reason"}` objects for generated or vendored code only (empty today). A path
+  ending in `/` excludes everything under it; an entry without a non-blank `reason` is a configuration error;
+- `overrides`: repository-relative module paths mapped to their own limit, sorted, one per line, plain integers, only
+  for modules above the default, each frozen at its exact line count when the budgets were frozen. The overrides at or
+  below the default were removed when the default was raised to 400; the rest still only ratchet down.
 
-`scripts/check_module_budgets.py` runs in `uv run task lint` and as its own step of the CI hygiene job. It is generic
-over the configured packages (`--config` and `--base` exist for tests). A module over its limit fails with "split the
-module into smaller modules - the budget is frozen and may not be changed". An override naming a missing module or a
-path outside every package, an override at or below the default, and unsorted overrides are `::warning::` only.
+`scripts/check_module_budgets.py` runs in `uv run task lint` (which the review loop runs before pushing) and as its own
+step of the CI hygiene job. It has no package allowlist: it measures every `.py` file that `git ls-files` lists under
+`apps/*/src/` or `scripts/`, `__init__.py` included, so a new package is budgeted from its first commit (outside a git
+repository it walks those roots and says so in a `::notice::`). Tests are not budgeted.
+`scripts/module_budget_config.py` parses and validates the configuration and `scripts/module_budget_freeze.py` owns the
+freeze comparison; `--config`, `--base` and `--root` exist for tests. A module over its limit fails with "split the
+module into smaller modules - the budget is frozen and may not be changed". Overrides only ratchet down: a module below
+its override passes with a `::notice::` to lower the override to its new count (or to remove it once within the
+default). An override naming a missing module, an excluded path or a path outside the source roots, an override at or
+below the default, unsorted overrides and an `exclude` entry matching no tracked module are `::warning::` only.
 
 Over the limit means split. The configuration is frozen: the check compares it byte for byte with the copy at
 `git merge-base HEAD origin/main` (skipped quietly with no merge base, and with a notice when the merge base has no

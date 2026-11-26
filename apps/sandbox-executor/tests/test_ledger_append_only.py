@@ -33,6 +33,7 @@ from sandbox_executor.ledger import route as route_module
 from sandbox_executor.ledger.merged import parse_jsonl_rows
 
 from tests.flow.helpers import FakeRoleAgents, _dispatch_context, _git
+from tests.repo_templates import copy_template, shared_template
 
 LEDGER_NAMES = ("intents", "plans", "executions")
 
@@ -245,17 +246,9 @@ class GuardedIntentAgents(FakeRoleAgents):
         return 0
 
 
-@pytest.fixture
-def seeded_repos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path, dict[str, bytes]]:
-    """Bare origin whose main holds the seeded ledgers, a host clone the flow runs in, and main's ledger bytes.
-
-    Git runs for real against the local origin; only the mergeability probe is stubbed, so ``gh`` is never asked.
-    """
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(
-        "sandbox_executor.flow.stage_conflicts.check_pr_mergeability", lambda *_a, **_k: {"mergeable": "MERGEABLE"}
-    )
-    origin, seed, host = tmp_path / "origin.git", tmp_path / "seed", tmp_path / "host"
+def _build_seeded_repos(root: Path) -> dict[str, bytes]:
+    """Bare origin whose main holds the seeded ledgers, and a host clone of it; returns main's ledger bytes."""
+    origin, seed, host = root / "origin.git", root / "seed", root / "host"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
     subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True, capture_output=True)
     main_bytes = _seed_ledgers(seed)
@@ -263,7 +256,25 @@ def seeded_repos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path,
     _git(seed, "commit", "-q", "-m", "seed")
     _git(seed, "push", "-q", str(origin), "main")
     subprocess.run(["git", "clone", "-q", str(origin), str(host)], check=True, capture_output=True)
-    return host, origin, main_bytes
+    return main_bytes
+
+
+@pytest.fixture
+def seeded_repos(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path, dict[str, bytes]]:
+    """Bare origin whose main holds the seeded ledgers, a host clone the flow runs in, and main's ledger bytes.
+
+    Git runs for real against the local origin; only the mergeability probe is stubbed, so ``gh`` is never asked. The
+    repositories are built once per run (no production code runs in the build) and each test works in its own copy.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "sandbox_executor.flow.stage_conflicts.check_pr_mergeability", lambda *_a, **_k: {"mergeable": "MERGEABLE"}
+    )
+    template, main_bytes = shared_template(tmp_path_factory, "ledger-append-only-seeded-repos", _build_seeded_repos)
+    copy_template(template, tmp_path, names=("origin.git", "host"))
+    return tmp_path / "host", tmp_path / "origin.git", main_bytes
 
 
 def _assert_host_untouched(host: Path, main_bytes: dict[str, bytes]) -> None:
@@ -317,6 +328,8 @@ class TestIntentStageLedgers:
 
     def test_dry_run_leaves_ledgers_identical_and_unstaged(self, seeded_repos, tmp_path: Path) -> None:
         host, origin, main_bytes = seeded_repos
+        # The host is a copy of a shared template: its origin must be this test's own copy, not the template's.
+        assert _git(host, "remote", "get-url", "origin") == str(origin)
         agents = GuardedIntentAgents(tmp_path, origin)
         ctx = _dispatch_context(host, agents, dry_run=True)
 

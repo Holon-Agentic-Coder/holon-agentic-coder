@@ -15,9 +15,11 @@ are checked in this order, and the first one that fails decides for a full run:
    on the current head), reached through a chain of runs that this gate skipped.
 5. When that real success is on an older commit, the checks of point 3 again, from that commit to the new head.
 
-Any exception is ``api-error``. The two rules that skip are ``bookkeeping-only`` and ``label-not-result-affecting``. The
-gate prints one line with the rule that decided and writes ``skip=true`` or ``skip=false`` to the step output. Standard
-library only and Python 3.9 syntax, so it runs on the runner's own ``python3``.
+A push to ``main`` in ``test-unit.yml`` or ``test-stress.yml`` is decided by ``scripts.ci_main_push_gate`` instead (rule
+``main-push-tested-tree`` skips). Any exception is ``api-error``. The two rules that skip are ``bookkeeping-only`` and
+``label-not-result-affecting``. The gate prints one line with the rule that decided and writes ``skip=true`` or
+``skip=false`` to the step output. Standard library only and Python 3.9 syntax, so it runs on the runner's own
+``python3``.
 """
 
 from __future__ import annotations
@@ -38,13 +40,15 @@ from scripts.ci_bookkeeping_chain import (
     JobQuery,
     find_real_success,
 )
+from scripts.ci_main_push_gate import decide_main_push, is_main_push
 from scripts.ci_timing_gate import OVERRIDE_LABEL, default_opener, write_step_summary
 
 BOOKKEEPING_ROOTS = ("plans", "executions", "holon-knowledge")
 # The file types a skipped hygiene job still checks (``make lint-md``, ``make lint-json``); any other type runs in full.
 BOOKKEEPING_SUFFIXES = (".md", ".json", ".jsonl")
-# Every label that a workflow reads belongs here: adding or removing one can change a job's result.
-RESULT_AFFECTING_LABELS = frozenset({OVERRIDE_LABEL, "module-budget-change"})
+# Every label that a workflow reads belongs here: adding or removing one can change a job's result. ``ci-macos`` is read
+# by ``scripts/macos_relevance.py`` (its ``FORCE_LABEL``) and forces the macOS unit leg to run.
+RESULT_AFFECTING_LABELS = frozenset({OVERRIDE_LABEL, "module-budget-change", "ci-macos"})
 ELIGIBLE_ACTIONS = ("synchronize", "labeled", "unlabeled")
 LABEL_ACTIONS = ("labeled", "unlabeled")
 
@@ -126,6 +130,8 @@ def diff_rule(client: GateClient, base: str, head: str) -> tuple[Decision | None
 
 def decide(context: GateContext, client: GateClient) -> Decision:
     """Apply the rules in order; only the last statement returns "skip". Exceptions are left to ``safe_decide``."""
+    if is_main_push(context):
+        return decide_main_push(context, client)
     blocked = event_rule(context)
     if blocked is not None:
         return blocked

@@ -11,8 +11,11 @@ on:
 permissions:
   contents: read
 
+# Pushes are keyed by SHA so a later main push never evicts a pending one.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group:
+    ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || format('{0}-{1}', github.ref,
+    github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -110,6 +113,10 @@ jobs:
 
       - name: Run Makefile lint
         if: steps.bookkeeping.outputs.skip != 'true'
+        env:
+          # make lint runs task lint, which re-runs the module budget check: it needs the same authorisation.
+          HOLON_ALLOW_MODULE_BUDGET_CHANGE:
+            ${{ contains(github.event.pull_request.labels.*.name, 'module-budget-change') && '1' || '0' }}
         run: make lint
 
       - name: Test clean task

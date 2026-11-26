@@ -1,94 +1,17 @@
-"""Tests of Stage 3 integration: the plan branch is merged into the parent execution branch for the combined PR."""
+"""Tests of Stage 3 integration: the plan branch is merged into the parent execution branch for the combined PR.
+
+The end-to-end integration runs share their pipeline scenario with other tests, which carry the integration assertions:
+the default decomposed run is test_children.py's ``test_children_nest_under_the_plan_branch_...``, and the APPROVED
+run is test_decomposition_approved.py's only test.
+"""
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import patch
 
-from sandbox_executor.flow import FlowContext, PipelineEngine, StageStatus
+from sandbox_executor.flow import FlowContext, StageStatus
 from sandbox_executor.flow.stages.integration import integrate_children
-
-from tests.flow.decomposition_fakes import decomposed_flow
-from tests.flow.helpers import SUB_INTENT_LIST, BudgetRoleAgents, _budget_context, _git, _ledger_rows
-
-
-def _run_decomposed(host: Path, origin: Path, tmp_path: Path):
-    agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")])
-    ctx = _budget_context(host, agents, 5.0)
-    with decomposed_flow(origin, tmp_path) as reviews:
-        results = PipelineEngine(ctx).run()
-    return ctx, results, reviews
-
-
-def test_the_parent_execution_branch_carries_every_record_stage_4_halts_at_main_and_a_resume_integrates_nothing(
-    flow_repos, tmp_path
-):
-    host, origin = flow_repos
-    ctx, results, reviews = _run_decomposed(host, origin, tmp_path)
-
-    execute = results["execute"]
-    assert execute.status == StageStatus.SUCCESS and execute.payload["integrated"] is True
-    exec_ref = f"refs/heads/{ctx.execution_branch}"
-    files = set(_git(origin, "ls-tree", "-r", "--name-only", exec_ref).splitlines())
-    # The parent plan file (an ancestor) and both child plan files (merged into the plan branch) are on the head.
-    parent_plan_file = f"plans/{ctx.plan_branch.removesuffix('/_').rsplit('/', 1)[-1]}.md"
-    child_plan_files = {
-        f"plans/{e['execution_branch'].removesuffix('/_').split('/')[-2]}.md"
-        for e in execute.payload["children_progress"]
-    }
-    assert {parent_plan_file, *child_plan_files} <= files
-    rows = _ledger_rows(origin, exec_ref, "executions.jsonl")
-    parent_rows = [r for r in rows if r.get("execution_id") == execute.payload["execution_id"]]
-    # The executor's decomposed row, then the superseding row listing the merged children.
-    assert [r.get("integrated", False) for r in parent_rows] == [False, True]
-    superseding = parent_rows[-1]
-    assert superseding["status"] == "decomposed" and superseding["ledger_revision"] == 2
-    assert superseding["plan_branch"] == ctx.plan_branch
-    assert [c["slug"] for c in superseding["children"]] == ["add-the-parser", "add-the-cli-flag"]
-    assert all(c["merge_commit"] and c["pr_number"] for c in superseding["children"])
-    # Both children's own execution rows reached the parent execution branch through the plan branch.
-    child_ids = {e["execution_branch"].removesuffix("/_").rsplit("/", 1)[-1] for e in execute.payload["children"]}
-    assert child_ids <= {r.get("execution_id") for r in rows}
-    # The plan branch is an ancestor of the combined head, and Stage 4 raised the combined PR into main and halted.
-    assert _git(origin, "merge-base", f"refs/heads/{ctx.plan_branch}", exec_ref) == _git(
-        origin, "rev-parse", f"refs/heads/{ctx.plan_branch}"
-    )
-    assert reviews.reviewed[-1] == {
-        "slug": "budget-test",
-        "head": ctx.execution_branch,
-        "base": "main",
-        "number": reviews.reviewed[-1]["number"],
-    }
-    assert results["review"].status == StageStatus.HALTED_FOR_HUMAN
-    assert any("Pipeline safely halted for human intervention at stage 'review'" in line for line in ctx.logs)
-    assert reviews.gh.prs[reviews.reviewed[-1]["number"]]["state"] == "OPEN"
-
-    # Integration is idempotent on a resume: the head stays where it is and no second superseding row is written.
-    head_before = _git(origin, "rev-parse", exec_ref)
-    again = integrate_children(ctx, "2026-11-09T00:00:00Z", dict(execute.payload))
-    assert again.status == StageStatus.SUCCESS
-    assert _git(origin, "rev-parse", exec_ref) == head_before
-    rows = _ledger_rows(origin, exec_ref, "executions.jsonl")
-    assert sum(bool(r.get("integrated")) for r in rows) == 1
-
-
-def test_the_parent_execution_branch_completes_with_approved_stage_4_at_main(flow_repos, tmp_path):
-    host, origin = flow_repos
-    agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")])
-    ctx = _budget_context(host, agents, 5.0)
-    ctx.skip_review = False
-    with decomposed_flow(origin, tmp_path, review_status=StageStatus.APPROVED) as reviews:
-        results = PipelineEngine(ctx).run()
-
-    assert results["execute"].status == StageStatus.SUCCESS
-    assert results["review"].status == StageStatus.APPROVED
-    assert results["review"].payload["halted_for_human"] is False
-    assert any(
-        "finished at the merge boundary: review approved, PR ready for maintainer merge (stage 'review')" in line
-        for line in ctx.logs
-    )
-    assert reviews.gh.prs[reviews.reviewed[-1]["number"]]["state"] == "OPEN"
 
 
 def test_a_failed_integration_merge_fails_stage_3_with_the_reason(tmp_path):

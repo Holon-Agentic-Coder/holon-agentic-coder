@@ -7,6 +7,7 @@ from tests.flow.helpers import SUB_INTENT_LIST, BudgetRoleAgents, _budget_contex
 
 
 def test_decomposed_flow_completes_when_stage_4_returns_approved(flow_repos, tmp_path):
+    """Also carries the assertions of test_integration.py's former APPROVED test, which ran this same scenario."""
     host, origin = flow_repos
     agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (2.0, "")])
     ctx = _budget_context(host, agents, 5.0)
@@ -23,4 +24,10 @@ def test_decomposed_flow_completes_when_stage_4_returns_approved(flow_repos, tmp
         "Pipeline finished at the merge boundary: review approved, PR ready for maintainer merge" in line
         for line in ctx.logs
     )
+    assert any(
+        "finished at the merge boundary: review approved, PR ready for maintainer merge (stage 'review')" in line
+        for line in ctx.logs
+    )
     assert [reviews.gh.prs[n]["state"] for n in (101, 102, 103)] == ["MERGED", "MERGED", "OPEN"]
+    # The parent execution branch's own combined PR, the one Stage 4 reviewed last, stays open for the maintainer.
+    assert reviews.gh.prs[reviews.reviewed[-1]["number"]]["state"] == "OPEN"

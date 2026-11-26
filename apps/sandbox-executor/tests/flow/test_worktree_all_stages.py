@@ -23,10 +23,14 @@ from sandbox_executor.flow.review.resolver import _push_resolver_head
 from sandbox_executor.flow.stages.intent import run_intent_stage
 from sandbox_executor.review_target import ReviewTarget
 
-from tests.flow.helpers import FakeRoleAgents, _configure_identity, _dispatch_context, _git, stage4_halts_at_consensus
+from tests.flow.helpers import FakeRoleAgents, _dispatch_context, _git, stage4_halts_at_consensus
 from tests.test_host_worktree_sandbox import _host_writable, _mount_pairs
+from tests.worktree_repo_templates import build_seeded_primary, copy_of
 
-ROLES = ["intent-creator", "planner", "executor", "review-loop"]
+#: The roles grouped by the launch path they take: production branches on the intent creator only (its intent file),
+#: so the other three run the same lines and arcs and share one case that checks each of them.
+ROLE_GROUPS = [("intent-creator",), ("planner", "executor", "review-loop")]
+ROLE_GROUP_IDS = ["intent-creator", "planner+executor+review-loop"]
 SSH_ORIGIN = "git@example.com:org/repo.git"
 REMOTE_VERBS = {"clone", "fetch", "pull", "push", "ls-remote", "remote"}
 #: Methods of ``GitRepository`` that speak to a remote.
@@ -36,16 +40,13 @@ APP_DIR = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
-def sandbox_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+def sandbox_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> tuple[Path, Path]:
     """A primary checkout on main plus its flow worktree and a sibling worktree, as a mounted run has them."""
     monkeypatch.setattr(git_flow, "SANDBOX_CONTAINER_UID", os.getuid())
     monkeypatch.setattr(git_flow, "SANDBOX_CONTAINER_GID", os.getgid())
-    main = tmp_path / "repo"
-    subprocess.run(["git", "init", "-q", "-b", "main", str(main)], check=True, capture_output=True)
-    _configure_identity(main)
-    (main / "README.md").write_text("seed\n", encoding="utf-8")
-    _git(main, "add", "-A")
-    _git(main, "commit", "-qm", "seed")
+    main = copy_of(tmp_path_factory, tmp_path, "worktree-all-stages-repo", build_seeded_primary) / "repo"
     flow = tmp_path / "flow-demo"
     _git(main, "worktree", "add", "-q", "-b", "flow-demo", str(flow))
     _git(main, "worktree", "add", "-q", "-b", "sibling", str(tmp_path / "sibling"))
@@ -112,16 +113,17 @@ def test_the_intent_and_plan_containers_mount_the_worktree_exactly_as_the_execut
     assert "clone" not in argv
 
 
-@pytest.mark.parametrize("role", ROLES)
-def test_no_container_gets_an_ssh_agent_a_credential_helper_or_a_repository_url(role, sandbox_repo, tmp_path):
+@pytest.mark.parametrize("roles", ROLE_GROUPS, ids=ROLE_GROUP_IDS)
+def test_no_container_gets_an_ssh_agent_a_credential_helper_or_a_repository_url(roles, sandbox_repo, tmp_path):
     _main, flow = sandbox_repo
 
-    argv, secrets = _docker_run(role, flow, tmp_path, env={"SSH_AUTH_SOCK": "/tmp/ssh-agent.sock"})
+    for role in roles:
+        argv, secrets = _docker_run(role, flow, tmp_path, env={"SSH_AUTH_SOCK": "/tmp/ssh-agent.sock"})
 
-    joined = " ".join(argv) + " " + " ".join(secrets)
-    assert "SSH_AUTH_SOCK" not in joined and "ssh-agent" not in joined and "ssh-auth.sock" not in joined
-    assert "GIT_CONFIG" not in joined
-    assert "REPO_URL" not in joined and "GH_REPO" not in joined
+        joined = " ".join(argv) + " " + " ".join(secrets)
+        assert "SSH_AUTH_SOCK" not in joined and "ssh-agent" not in joined and "ssh-auth.sock" not in joined, role
+        assert "GIT_CONFIG" not in joined, role
+        assert "REPO_URL" not in joined and "GH_REPO" not in joined, role
 
 
 # --- the sibling-worktree protections hold for the intent and plan mounts -----------------------------------------
@@ -302,17 +304,18 @@ def test_a_hostile_resolver_head_sha_is_refused_and_a_diverged_one_is_never_forc
 # --- a stale HOLON_REPO_URL changes nothing -----------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("role", ROLES)
-def test_a_stale_repository_url_in_the_environment_changes_nothing(role, sandbox_repo, tmp_path):
+@pytest.mark.parametrize("roles", ROLE_GROUPS, ids=ROLE_GROUP_IDS)
+def test_a_stale_repository_url_in_the_environment_changes_nothing(roles, sandbox_repo, tmp_path):
     _main, flow = sandbox_repo
     stale = {"HOLON_REPO_URL": "https://ci-user:stale-secret-value@github.com/old/repo.git"}
 
-    clean_argv, clean_secrets = _docker_run(role, flow, tmp_path)
-    stale_argv, stale_secrets = _docker_run(role, flow, tmp_path, env=stale)
+    for role in roles:
+        clean_argv, clean_secrets = _docker_run(role, flow, tmp_path)
+        stale_argv, stale_secrets = _docker_run(role, flow, tmp_path, env=stale)
 
-    assert stale_argv == clean_argv
-    assert stale_secrets == clean_secrets
-    assert "stale-secret-value" not in " ".join(stale_argv) + " ".join(stale_secrets.values())
+        assert stale_argv == clean_argv, role
+        assert stale_secrets == clean_secrets, role
+        assert "stale-secret-value" not in " ".join(stale_argv) + " ".join(stale_secrets.values()), role
 
 
 def test_a_stale_repository_url_leaves_the_intent_stage_outcome_unchanged(flow_repos, tmp_path, monkeypatch):

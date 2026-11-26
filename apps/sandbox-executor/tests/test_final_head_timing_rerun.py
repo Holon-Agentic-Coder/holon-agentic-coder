@@ -1,4 +1,4 @@
-"""The one automatic rerun of a timing-gate-only failure on a bookkeeping-only head, from FinalHeadSeams fakes only."""
+"""The bounded automatic rerun of a timing-gate-only failure on unchanged code, from FinalHeadSeams fakes only."""
 
 from __future__ import annotations
 
@@ -6,10 +6,11 @@ import dataclasses
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from sandbox_executor.flow import FlowContext
 from sandbox_executor.flow.context import FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.github import ci_reverify
-from sandbox_executor.flow.github.ci_failure_detail import STEP_LOOKUP_TIMEOUT_SECONDS
+from sandbox_executor.flow.github.ci_failure_detail import STEP_LOOKUP_TIMEOUT_SECONDS, failure_detail
 from sandbox_executor.flow.github.ci_final_head import FinalHeadSeams, check_final_head_ci
 from sandbox_executor.flow.github.ci_reverify import reverify_and_report, reverify_final_head
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy
@@ -21,6 +22,12 @@ GATE = "CI Timing Gate (compare with main)"
 APPROVED = "a" * 40
 FINAL = "b" * 40
 BOOKKEEPING = ["plans/P-1/plan.md", "executions/E-1.md", "holon-knowledge/notes/noise.md"]
+CODE_PATHS = [
+    "apps/sandbox-executor/src/sandbox_executor/flow/pipeline.py",
+    "apps/sandbox-executor/tests/test_pipeline.py",
+    ".github/workflows/test-unit.yml",
+    "scripts/ci_timing_gate.py",
+]
 
 
 def _status(checks: list[dict], source: str = "github_cli") -> dict:
@@ -44,7 +51,7 @@ def _check(name: str, bucket: str, link: str | None = None) -> dict:
 def _detail(name: str, steps: list[str] | None, seconds: float | None = 360.0) -> dict | None:
     if steps is None:
         return None
-    gate = bool(steps) and all(s.startswith("CI Timing Gate") for s in steps)
+    gate = failure_detail(name, {"steps": [{"name": s, "conclusion": "failure"} for s in steps]})["timing_gate"]
     return {"name": name, "failed_steps": steps, "duration_seconds": seconds, "timing_gate": gate}
 
 
@@ -132,7 +139,13 @@ def test_passing_rerun_turns_the_record_green_and_keeps_the_approval(tmp_path: P
     )
     record = _run(tmp_path, fakes)
     assert record["state"] == "success"
-    assert record["timing_rerun"] == {"attempted": True, "run_ids": ["42"], "outcome": "success"}
+    assert record["timing_rerun"] == {
+        "attempted": True,
+        "run_ids": ["42"],
+        "outcome": "success",
+        "attempts": 1,
+        "outcomes": ["success"],
+    }
     assert fakes.dispatched == ["42"]
     assert fakes.diff_calls == [(APPROVED, FINAL)]
     context = _ctx(tmp_path)
@@ -146,13 +159,22 @@ def test_passing_rerun_turns_the_record_green_and_keeps_the_approval(tmp_path: P
     invalidate.assert_not_called()
 
 
-def test_second_timing_failure_applies_the_existing_withdrawal(tmp_path: Path) -> None:
+def test_the_existing_withdrawal_applies_after_the_third_failed_rerun(tmp_path: Path) -> None:
     fakes = _timing_failure()
     record = _run(tmp_path, fakes)
+    unretried = _run(tmp_path, _timing_failure(paths=[*BOOKKEEPING, CODE_PATHS[0]]))
     assert record["state"] == "failed"
     assert record["failed_checks"] == ["macos-unit"]
-    assert record["timing_rerun"] == {"attempted": True, "run_ids": ["42"], "outcome": "failed"}
-    assert fakes.dispatched == ["42"]
+    for key in ("state", "failed_checks", "failed_details"):
+        assert record[key] == unretried[key]
+    assert record["timing_rerun"] == {
+        "attempted": True,
+        "run_ids": ["42"],
+        "outcome": "failed",
+        "attempts": 3,
+        "outcomes": ["failed", "failed", "failed"],
+    }
+    assert fakes.dispatched == ["42", "42", "42"]  # No fourth dispatch.
     context = _ctx(tmp_path)
     with (
         patch.object(ci_reverify, "published_head_of", return_value=FINAL),
@@ -163,12 +185,113 @@ def test_second_timing_failure_applies_the_existing_withdrawal(tmp_path: Path) -
     assert invalidate.assert_called_once() is None
 
 
-def test_code_changing_head_gets_no_rerun(tmp_path: Path) -> None:
-    fakes = _timing_failure(paths=[*BOOKKEEPING, "apps/sandbox-executor/src/sandbox_executor/flow/pipeline.py"])
+@pytest.mark.parametrize("paths", [*([path] for path in CODE_PATHS), [*BOOKKEEPING, CODE_PATHS[0]]])
+def test_a_head_with_a_changed_code_test_or_workflow_path_gets_no_rerun(tmp_path: Path, paths: list[str]) -> None:
+    fakes = _timing_failure(paths=paths)
     record = _run(tmp_path, fakes)
     assert record["state"] == "failed"
     assert "timing_rerun" not in record
     assert fakes.dispatched == []
+
+
+@pytest.mark.parametrize("paths", [BOOKKEEPING, []])
+def test_a_failed_then_passing_rerun_on_unchanged_code_is_green_after_two_attempts(
+    tmp_path: Path, paths: list[str]
+) -> None:
+    failed, passed = _status([_check("macos-unit", "fail")]), _status([_check("macos-unit", "pass")])
+    # Initial probe, then per attempt one rerun-start probe and one settled probe.
+    fakes = RerunFakes(failed, failed, failed, passed, steps={"macos-unit": [GATE]}, paths=paths)
+    record = _run(tmp_path, fakes)
+    assert record["state"] == "success"
+    assert record["timing_rerun"]["attempts"] == 2
+    assert record["timing_rerun"]["outcomes"] == ["failed", "success"]
+    assert record["timing_rerun"]["outcome"] == "success"
+    assert fakes.dispatched == ["42", "42"]
+    assert fakes.probes == 5
+
+
+def test_a_rerun_that_turns_into_a_mixed_failure_is_not_retried_again(tmp_path: Path) -> None:
+    timing = _status([_check("macos-unit", "fail")])
+    mixed = _status([_check("macos-unit", "fail"), _check("unit", "fail")])
+    fakes = RerunFakes(timing, timing, mixed, steps={"macos-unit": [GATE], "unit": ["Run unit tests"]})
+    record = _run(tmp_path, fakes)
+    assert record["state"] == "failed"
+    assert record["failed_checks"] == ["macos-unit", "unit"]
+    assert record["timing_rerun"]["attempts"] == 1
+    assert record["timing_rerun"]["outcomes"] == ["failed"]
+    assert fakes.dispatched == ["42"]
+
+
+def test_a_rerun_still_pending_at_the_budget_is_not_retried_again(tmp_path: Path) -> None:
+    failed = _status([_check("macos-unit", "fail")])
+    fakes = RerunFakes(failed, failed, _status([_check("macos-unit", "pending")]), steps={"macos-unit": [GATE]})
+    record = _run(tmp_path, fakes)
+    assert record["state"] == "unknown"
+    assert record["timing_rerun"]["outcome"] == "unknown"
+    assert record["timing_rerun"]["attempts"] == 1
+    assert fakes.dispatched == ["42"]
+
+
+def test_a_code_push_between_attempts_stops_the_loop(tmp_path: Path) -> None:
+    class MovingHead(RerunFakes):
+        def changed(self, approved: str, head: str) -> list[str] | None:
+            self.diff_calls.append((approved, head))
+            return BOOKKEEPING if len(self.diff_calls) == 1 else [CODE_PATHS[0]]
+
+    fakes = MovingHead(_status([_check("macos-unit", "fail")]), steps={"macos-unit": [GATE]})
+    record = _run(tmp_path, fakes)
+    assert record["state"] == "failed"
+    assert record["timing_rerun"]["attempts"] == 1
+    assert fakes.dispatched == ["42"]
+    assert len(fakes.diff_calls) == 2
+
+
+def test_a_failed_second_dispatch_keeps_the_first_attempt_record(tmp_path: Path) -> None:
+    class SecondDispatchFails(RerunFakes):
+        def rerun(self, run_id: str) -> bool:
+            self.dispatched.append(run_id)
+            return len(self.dispatched) == 1
+
+    fakes = SecondDispatchFails(_status([_check("macos-unit", "fail")]), steps={"macos-unit": [GATE]})
+    record = _run(tmp_path, fakes)
+    assert record["state"] == "failed"
+    assert record["timing_rerun"] == {
+        "attempted": True,
+        "run_ids": ["42"],
+        "outcome": "failed",
+        "attempts": 1,
+        "outcomes": ["failed"],
+        "reason": "the rerun could not be dispatched",
+    }
+    assert fakes.dispatched == ["42", "42"]
+    assert fakes.probes == 3  # No probe after the failed dispatch.
+
+
+def test_a_workspace_survival_timing_gate_failure_is_rerun(tmp_path: Path) -> None:
+    fakes = RerunFakes(
+        _status([_check("Workspace survival", "fail")]),
+        _status([_check("Workspace survival", "pass")]),
+        steps={"Workspace survival": ["Timing gate"]},
+    )
+    record = _run(tmp_path, fakes)
+    assert record["state"] == "success"
+    assert record["timing_rerun"]["outcomes"] == ["success"]
+    assert fakes.dispatched == ["42"]
+
+
+@pytest.mark.parametrize(
+    ("steps", "gate"),
+    [
+        (["Timing gate"], True),
+        (["CI Timing Gate (Check <= 5 min)"], True),
+        (["Timing gate", "Run stress tests"], False),
+        (["Timing gate check"], False),
+        ([], False),
+    ],
+)
+def test_failure_detail_recognises_both_timing_gate_step_names(steps: list[str], gate: bool) -> None:
+    job = {"steps": [{"name": s, "conclusion": "failure"} for s in steps]}
+    assert failure_detail("Workspace survival", job)["timing_gate"] is gate
 
 
 def test_non_timing_and_mixed_failures_get_no_rerun(tmp_path: Path) -> None:
@@ -206,10 +329,6 @@ def test_undecidable_inputs_are_fail_closed(tmp_path: Path) -> None:
     assert "timing_rerun" not in _run(tmp_path, unreadable_diff)
     assert unreadable_diff.dispatched == []
 
-    empty_diff = _timing_failure(paths=[])
-    assert "timing_rerun" not in _run(tmp_path, empty_diff)
-    assert empty_diff.dispatched == []
-
     no_run_id = RerunFakes(
         _status([_check("macos-unit", "fail", link="https://example.com/not-a-run")]),
         steps={"macos-unit": [GATE]},
@@ -228,14 +347,14 @@ def test_failed_dispatch_keeps_the_original_record_without_a_reprobe(tmp_path: P
     assert reverify_final_head(record, APPROVED, FINAL)["verdict"] == "red"
 
 
-def test_checks_that_never_reregister_get_no_second_dispatch(tmp_path: Path) -> None:
+def test_checks_that_never_reregister_stop_after_the_bounded_dispatches(tmp_path: Path) -> None:
     fakes = _timing_failure()
     record = _run(tmp_path, fakes, registration_timeout=60.0)
     assert record["state"] == "failed"
     assert record["timing_rerun"]["outcome"] == "failed"
-    assert fakes.dispatched == ["42"]
+    assert fakes.dispatched == ["42", "42", "42"]
     assert fakes.sleeps
-    assert fakes.now >= 60.0
+    assert fakes.now >= 180.0
 
 
 def test_an_injected_adapter_reads_the_pr_head_probes_ci_and_dispatches_the_rerun(tmp_path: Path) -> None:
@@ -248,7 +367,13 @@ def test_an_injected_adapter_reads_the_pr_head_probes_ci_and_dispatches_the_reru
     seams = dataclasses.replace(fakes.seams(), probe=None, pr_head=None, rerun_dispatcher=None, github=github)
     record = check_final_head_ci(_ctx(tmp_path), str(tmp_path), BRANCH, seams)
     assert record["state"] == "success"
-    assert record["timing_rerun"] == {"attempted": True, "run_ids": ["100"], "outcome": "success"}
+    assert record["timing_rerun"] == {
+        "attempted": True,
+        "run_ids": ["100"],
+        "outcome": "success",
+        "attempts": 1,
+        "outcomes": ["success"],
+    }
     assert ("pr_head_sha", (BRANCH, STEP_LOOKUP_TIMEOUT_SECONDS)) in github.calls
     assert ("rerun_failed", ("100", STEP_LOOKUP_TIMEOUT_SECONDS)) in github.calls
     assert fakes.diff_calls == [(APPROVED, FINAL)]

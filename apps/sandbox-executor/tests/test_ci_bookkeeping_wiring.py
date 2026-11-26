@@ -14,6 +14,8 @@ import pytest
 
 from scripts.ci_bookkeeping_chain import FULL_RUN_STEP
 from scripts.ci_bookkeeping_gate import BOOKKEEPING_ROOTS, RESULT_AFFECTING_LABELS, RUN_RULES, SKIP_RULES
+from scripts.ci_main_push_gate import GATED_WORKFLOWS, MAIN_PUSH_RUN_RULES, MAIN_PUSH_SKIP_RULES
+from tests.test_workflow_triggers import parse_triggers
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
@@ -28,7 +30,20 @@ JSON_STEP = "Check JSON and JSONL files (bookkeeping-only push)"
 MARKDOWN_STEP = "Check markdown formatting (bookkeeping-only push)"
 BEFORE_THE_GATE = ("Record job start time", "Checkout repository")
 UNGUARDED = {"CI Timing Gate (Start)", "Upload timing record"}
-UNGUARDED_IN = {"test-hygiene.yml": {"Set up Node.js", JSON_STEP, MARKDOWN_STEP}}
+# The unit workflow's macOS leg also skips on the macOS relevance gate; see test_macos_relevance_wiring.py.
+RELEVANCE_GATE_STEP = "macOS relevance gate"
+RELEVANCE_GUARD = f"{GUARD} && steps.macos_relevance.outputs.skip != 'true'"
+UNGUARDED_IN = {
+    "test-hygiene.yml": {"Set up Node.js", JSON_STEP, MARKDOWN_STEP},
+    "test-unit.yml": {RELEVANCE_GATE_STEP},
+}
+GUARDS_IN = {"test-unit.yml": (GUARD, RELEVANCE_GUARD)}
+
+
+def guards_of(workflow: str) -> tuple[str, ...]:
+    """Return the conditions that count as the bookkeeping guard in ``workflow``, plain and with ``always() && ``."""
+    guards = GUARDS_IN.get(workflow, (GUARD,))
+    return guards + tuple(f"always() && {guard}" for guard in guards)
 
 
 @dataclass(frozen=True)
@@ -190,7 +205,7 @@ def test_every_step_after_the_gate_is_guarded_or_on_the_allow_list(workflow: str
     allowed = UNGUARDED | UNGUARDED_IN.get(workflow, set())
     later = steps[gate_index(steps) + 1 :]
 
-    unguarded = [step.name for step in later if step.condition not in (GUARD, f"always() && {GUARD}")]
+    unguarded = [step.name for step in later if step.condition not in guards_of(workflow)]
 
     assert [name for name in unguarded if name not in allowed] == []
     assert len(later) - len(unguarded) >= 3, "the job has guarded steps besides the marker step"
@@ -202,7 +217,7 @@ def test_marker_step_is_the_last_step_and_never_runs_on_a_skip(workflow: str) ->
 
     assert [step.name for step in steps].count(FULL_RUN_STEP) == 1
     assert steps[-1].name == FULL_RUN_STEP
-    assert steps[-1].condition == GUARD
+    assert steps[-1].condition in GUARDS_IN.get(workflow, (GUARD,))
     assert "always()" not in steps[-1].text
     assert "continue-on-error" not in workflow_text(workflow)
 
@@ -276,3 +291,66 @@ def test_readme_documents_the_gate_the_roots_and_every_rule_it_prints() -> None:
     assert "### Forcing a full run" in section
     assert set(re.findall(r"^- `([a-z-]+)`: ", section, flags=re.MULTILINE)) == set(RUN_RULES + SKIP_RULES)
     assert "- `.github/actions/bookkeeping-gate/action.yml`: " in text.partition("\n## Composite Actions\n")[2]
+
+
+# --- pushes to main ---------------------------------------------------------------------------------------------------
+
+MAIN_PUSH_WORKFLOWS = pytest.mark.parametrize("workflow", GATED_WORKFLOWS)
+UPLOAD_STEP = "Upload timing record"
+UPLOAD_CONDITION = "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+SKIP_AWARE_UPLOAD = "if-no-files-found: ${{ steps.bookkeeping.outputs.skip != 'true' && 'error' || 'ignore' }}"
+
+
+def test_main_push_workflows_are_wired_to_the_gate() -> None:
+    assert set(GATED_WORKFLOWS) <= set(WIRING)
+
+
+@MAIN_PUSH_WORKFLOWS
+def test_main_push_workflow_runs_in_full_once_a_day(workflow: str) -> None:
+    text = workflow_text(workflow)
+    on_block = text.partition("\non:\n")[2].partition("\n\n")[0]
+
+    assert set(parse_triggers(text)) == {"push", "pull_request", "workflow_dispatch", "schedule"}
+    crons = re.findall(r'^    - cron: "([^"]+)"$', on_block, flags=re.MULTILINE)
+    assert len(crons) == 1
+    fields = crons[0].split()
+    assert len(fields) == 5
+    assert fields[0].isdigit() and fields[1].isdigit()
+    assert fields[2:] == ["*", "*", "*"]
+
+
+@MAIN_PUSH_WORKFLOWS
+def test_main_push_job_may_read_pull_requests_and_write_nothing(workflow: str) -> None:
+    text = workflow_text(workflow)
+    job = text.partition("\njobs:\n")[2].partition("\n    steps:\n")[0]
+    block = job.partition("\n    permissions:\n")[2].partition("\n    strategy:\n")[0]
+
+    assert block.splitlines() == ["      contents: read", "      actions: read", "      pull-requests: read"]
+    assert re.findall(r"^\s+[\w-]+: write\b", text, flags=re.MULTILINE) == []
+    assert "write-all" not in text
+
+
+@MAIN_PUSH_WORKFLOWS
+def test_a_skipped_main_push_cannot_fail_the_timing_upload(workflow: str) -> None:
+    upload = {step.name: step for step in steps_of(workflow)}[UPLOAD_STEP]
+
+    assert upload.condition == UPLOAD_CONDITION
+    assert re.findall(r"^          if-no-files-found: .+$", upload.text, flags=re.MULTILINE) == [
+        f"          {SKIP_AWARE_UPLOAD}"
+    ]
+
+
+def test_readme_documents_pushes_to_main_and_every_main_push_rule() -> None:
+    text = README.read_text(encoding="utf-8")
+    gate = text.partition("\n## Bookkeeping-Only Push Gate\n")[2].partition("\n## ")[0]
+    section = gate.partition("\n### Pushes to main\n")[2].partition("\n### ")[0]
+
+    assert section, "the gate section has the subsection about pushes to main"
+    for rule in MAIN_PUSH_RUN_RULES + MAIN_PUSH_SKIP_RULES:
+        assert f"| `{rule}` " in section
+    for workflow in GATED_WORKFLOWS:
+        assert f"`{workflow}`" in section
+    assert "`schedule`" in section
+    assert "`pull-requests: read`" in section
+    assert "`api-error`" in section
+    assert "runs in full" in section

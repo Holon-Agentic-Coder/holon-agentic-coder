@@ -23,9 +23,10 @@ from sandbox_executor.flow.checkpoint_discovery import get_default_checkpoint_pa
 from sandbox_executor.flow.child_progress import child_checkpoint_path, next_child_action
 from sandbox_executor.flow.github.merge import MergeResult
 from sandbox_executor.flow.stages.children import _build_child_intent, resume_children
+from sandbox_executor.flow.stages.integration import integrate_children
 
 from tests.flow.decomposition_fakes import ChildReviews, decomposed_flow, halted_review
-from tests.flow.helpers import SUB_INTENT_LIST, BudgetRoleAgents, _budget_context, _git
+from tests.flow.helpers import SUB_INTENT_LIST, BudgetRoleAgents, _budget_context, _git, _ledger_rows
 
 
 def _decomposed_context(host: Path, origin: Path, tmp_path: Path) -> tuple[FlowContext, BudgetRoleAgents]:
@@ -165,18 +166,108 @@ def test_a_resume_continues_the_failed_child_without_dispatching_anything_again(
     assert resumed["review"].status == StageStatus.HALTED_FOR_HUMAN
 
 
+def _assert_the_parent_branch_carries_every_record_and_stage_4_halts(
+    origin: Path, ctx: FlowContext, results: dict[str, StageResult], reviews: ChildReviews
+) -> None:
+    """The integration of a finished decomposed run: records on the combined head, the combined PR into main."""
+    execute = results["execute"]
+    assert execute.status == StageStatus.SUCCESS and execute.payload["integrated"] is True
+    exec_ref = f"refs/heads/{ctx.execution_branch}"
+    files = set(_git(origin, "ls-tree", "-r", "--name-only", exec_ref).splitlines())
+    # The parent plan file (an ancestor) and both child plan files (merged into the plan branch) are on the head.
+    parent_plan_file = f"plans/{ctx.plan_branch.removesuffix('/_').rsplit('/', 1)[-1]}.md"
+    child_plan_files = {
+        f"plans/{e['execution_branch'].removesuffix('/_').split('/')[-2]}.md"
+        for e in execute.payload["children_progress"]
+    }
+    assert {parent_plan_file, *child_plan_files} <= files
+    rows = _ledger_rows(origin, exec_ref, "executions.jsonl")
+    parent_rows = [r for r in rows if r.get("execution_id") == execute.payload["execution_id"]]
+    # The executor's decomposed row, then the superseding row listing the merged children.
+    assert [r.get("integrated", False) for r in parent_rows] == [False, True]
+    superseding = parent_rows[-1]
+    assert superseding["status"] == "decomposed" and superseding["ledger_revision"] == 2
+    assert superseding["plan_branch"] == ctx.plan_branch
+    assert [c["slug"] for c in superseding["children"]] == ["add-the-parser", "add-the-cli-flag"]
+    assert all(c["merge_commit"] and c["pr_number"] for c in superseding["children"])
+    # Both children's own execution rows reached the parent execution branch through the plan branch.
+    child_ids = {e["execution_branch"].removesuffix("/_").rsplit("/", 1)[-1] for e in execute.payload["children"]}
+    assert child_ids <= {r.get("execution_id") for r in rows}
+    # The plan branch is an ancestor of the combined head, and Stage 4 raised the combined PR into main and halted.
+    assert _is_ancestor(origin, f"refs/heads/{ctx.plan_branch}", exec_ref)
+    assert reviews.reviewed[-1] == {
+        "slug": "budget-test",
+        "head": ctx.execution_branch,
+        "base": "main",
+        "number": reviews.reviewed[-1]["number"],
+    }
+    assert results["review"].status == StageStatus.HALTED_FOR_HUMAN
+    assert any("Pipeline safely halted for human intervention at stage 'review'" in line for line in ctx.logs)
+    assert reviews.gh.prs[reviews.reviewed[-1]["number"]]["state"] == "OPEN"
+
+    # Integration is idempotent on a resume: the head stays where it is and no second superseding row is written.
+    head_before = _git(origin, "rev-parse", exec_ref)
+    again = integrate_children(ctx, "2026-11-09T00:00:00Z", dict(execute.payload))
+    assert again.status == StageStatus.SUCCESS
+    assert _git(origin, "rev-parse", exec_ref) == head_before
+    rows = _ledger_rows(origin, exec_ref, "executions.jsonl")
+    assert sum(bool(r.get("integrated")) for r in rows) == 1
+
+
+def _plan_rows_on_origin(origin: Path, plan_branch: str) -> list[dict[str, Any]]:
+    plan_id = plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
+    return [r for r in _ledger_rows(origin, f"refs/heads/{plan_branch}", "plans.jsonl") if r.get("plan_id") == plan_id]
+
+
+def _assert_stage_3_ran_the_children_the_plan_row_records(
+    origin: Path, ctx: FlowContext, execute: StageResult, parent_execution: dict[str, Any]
+) -> None:
+    """Goal 8 (a): the planner's plan row is the single record of the decision Stage 3 acted on."""
+    # The planner's row already recorded the decision, so the flow wrote no plan row (the children's rows carry their
+    # own plan ids).
+    (plan_row,) = _plan_rows_on_origin(origin, str(ctx.plan_branch))
+    assert plan_row["decomposition_decision"] == "decomposed"
+    assert [c["slug"] for c in execute.payload["children"]] == [i["slug"] for i in plan_row["sub_intents"]]
+    assert parent_execution["record"]["sub_intents"] == plan_row["sub_intents"]
+    assert parent_execution["record"]["plan_branch"] == ctx.plan_branch
+    # Later superseding summary rows follow as the children merge; the first is the one the executor wrote.
+    summaries = [
+        row
+        for row in _ledger_rows(origin, f"refs/heads/{parent_execution['branch']}", "executions.jsonl")
+        if row.get("entry_type") == "summary"
+    ]
+    assert summaries, "the execution branch carries no summary row"
+    assert summaries[0]["status"] == "decomposed"
+    assert "sub_intents" not in summaries[0]
+    assert summaries[0]["plan_decision"]["sub_intent_count"] == len(plan_row["sub_intents"])
+
+
 def test_children_nest_under_the_plan_branch_in_order_and_a_resume_after_a_crash_mid_child_reruns_none(
     flow_repos, tmp_path
 ):
+    """The single run of the default decomposed scenario, so it also carries the assertions of the tests that ran it:
+    test_integration.py's ``test_the_parent_execution_branch_carries_every_record_stage_4_halts_at_main_and_a_resume_
+    integrates_nothing`` and test_plan_decision.py's ``test_decomposed_plan_runs_the_children_the_plan_row_records``.
+    """
     host, origin = flow_repos
     ctx, agents = _decomposed_context(host, origin, tmp_path)
+    parent_execution: dict[str, Any] = {}
+    run_decomposed = flow_module._run_decomposed_plan
+
+    def spy(context, start_time, record, base_payload):
+        parent_execution.update(branch=context.execution_branch, record=record)
+        return run_decomposed(context, start_time, record, base_payload)
 
     with decomposed_flow(origin, tmp_path) as reviews:
-        finished = PipelineEngine(ctx).run()["execute"]
-        assert finished.status == StageStatus.SUCCESS
+        with patch("sandbox_executor.flow.stages.execute._run_decomposed_plan", side_effect=spy):
+            results = PipelineEngine(ctx).run()
+        finished = results["execute"]
+        assert finished.status == StageStatus.SUCCESS, finished.error
         _assert_children_nest_under_the_plan_branch_and_ran_one_after_another(
             origin, ctx.plan_branch, reviews, finished
         )
+        _assert_stage_3_ran_the_children_the_plan_row_records(origin, ctx, finished, parent_execution)
+        _assert_the_parent_branch_carries_every_record_and_stage_4_halts(origin, ctx, results, reviews)
         # Model a crash after the second child's review but before its merge was recorded.
         checkpoint = load_checkpoint(get_default_checkpoint_path(str(host), "budget-test"))
         context = checkpoint.context

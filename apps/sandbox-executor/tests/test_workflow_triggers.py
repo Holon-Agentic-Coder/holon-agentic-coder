@@ -225,3 +225,14 @@ def test_the_hygiene_job_checks_module_budgets_against_main_behind_the_maintaine
     assert "uv run python scripts/check_module_budgets.py" in text
     assert "contains(github.event.pull_request.labels.*.name, 'module-budget-change')" in text
     assert "export HOLON_ALLOW_MODULE_BUDGET_CHANGE=1" in text
+
+
+def test_every_hygiene_step_running_the_budget_check_honours_the_maintainer_label():
+    """``make lint`` runs ``task lint``, which re-runs the budget check: without the label export it fails alone."""
+    text = (_workflows_dir() / "test-hygiene.yml").read_text(encoding="utf-8")
+    steps = re.split(r"^\s+- name: ", text, flags=re.MULTILINE)
+    checking = [step for step in steps if re.search(r"(make lint|check_module_budgets\.py)\s*$", step, re.MULTILINE)]
+    assert len(checking) == 2
+    for step in checking:
+        assert "contains(github.event.pull_request.labels.*.name, 'module-budget-change')" in step
+        assert "HOLON_ALLOW_MODULE_BUDGET_CHANGE" in step

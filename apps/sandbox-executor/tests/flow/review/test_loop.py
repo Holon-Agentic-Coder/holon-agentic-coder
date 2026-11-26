@@ -492,6 +492,101 @@ class TestReviewLoopCommitsItsLedgerRows:
         assert len(ledger_commits(work)) == 3
 
 
+class TestScopedDeltaReviewInTheLoop:
+    """A resolver fix after a completed full pass is re-reviewed as a scoped delta; ``0`` keeps every pass full."""
+
+    @staticmethod
+    def _run(work: Path, severity: str = "important") -> tuple[dict, FlowContext, FakeEnsemble, list[str]]:
+        addressed: list[str] = []
+
+        def pushing_resolver(target, iteration, findings, action_ids, rejected_findings):
+            addressed.extend(f.id for f in findings)
+            (work / "src" / "app.py").write_text("x = 2\n", encoding="utf-8")
+            _git(work, "commit", "-q", "-am", "fix")
+            _git(work, "push", "-q", "origin", f"HEAD:refs/heads/{EXEC_TARGET}")
+            return {"dispositions": _applied(findings), "head_sha": _git(work, "rev-parse", "HEAD"), "pushed": True}
+
+        def real_head(repo_dir: str, review_target: str):
+            return ReviewTarget(review_target, review_target, _git(work, "rev-parse", "HEAD")), None
+
+        ctx = _ensemble_ctx(work)
+        first_pass = [objecting_reviewer(1, severity)]
+        ensemble = FakeEnsemble(lambda size: first_pass if not ensemble.calls[1:] else [clean_reviewer(1)])
+        with _LoopStubs(), patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", real_head):
+            res = run_review_loop(
+                ctx,
+                target=EXEC_TARGET,
+                max_iterations=2,
+                ensemble_size=1,
+                run_ensemble_fn=ensemble,
+                run_resolver_fn=pushing_resolver,
+            )
+        return res, ctx, ensemble, addressed
+
+    @staticmethod
+    def _modes(ctx: FlowContext) -> list[str]:
+        return [line.split("Review mode at iteration ")[1] for line in ctx.logs if "Review mode at iteration" in line]
+
+    def test_the_pass_after_a_resolver_fix_is_scoped(self, tmp_path, monkeypatch):
+        from sandbox_executor.flow.review.approval_gates import diff_gate_of
+
+        monkeypatch.delenv("HOLON_SCOPED_REVIEW_MAX_LINES", raising=False)
+        _, work = build_flow_worktree(tmp_path)
+
+        res, ctx, ensemble, addressed = self._run(work)
+
+        assert res["consensus"]["approved"] is True
+        assert self._modes(ctx) == ["1: full (last reviewed head unknown).", "2: scoped (delta 2 lines)."]
+        assert diff_gate_of(ctx).mode == "scoped"
+        first, second = (call["request"] for call in ensemble.calls)
+        assert "Scoped Delta Review" not in first.pr_body
+        assert "-x = 1" in second.diff_text and "+x = 2" in second.diff_text
+        assert "holon-knowledge" not in second.diff_text  # The ledger commit between passes is bookkeeping.
+        assert f"`{addressed[0]}`" in second.pr_body and "`src/app.py`:" in second.pr_body
+
+    def test_the_pass_after_a_critical_finding_is_full(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HOLON_SCOPED_REVIEW_MAX_LINES", raising=False)
+        _, work = build_flow_worktree(tmp_path)
+
+        res, ctx, ensemble, _addressed = self._run(work, "critical")
+
+        assert res["consensus"]["approved"] is True
+        assert self._modes(ctx)[1] == "2: full (critical finding on last pass)."
+        assert all("Scoped Delta Review" not in call["request"].pr_body for call in ensemble.calls)
+
+    def test_a_zero_limit_keeps_every_pass_full(self, tmp_path, monkeypatch):
+        from sandbox_executor.flow.review.approval_gates import diff_gate_of
+
+        monkeypatch.setenv("HOLON_SCOPED_REVIEW_MAX_LINES", "0")
+        _, work = build_flow_worktree(tmp_path)
+
+        res, ctx, ensemble, _addressed = self._run(work)
+
+        assert res["consensus"]["approved"] is True
+        assert self._modes(ctx) == ["1: full (disabled).", "2: full (disabled)."]
+        assert diff_gate_of(ctx).mode == "full"
+        assert all("Scoped Delta Review" not in call["request"].pr_body for call in ensemble.calls)
+
+    def test_a_conflict_scope_re_review_records_a_scoped_gate_even_when_the_delta_is_full(self, tmp_path, monkeypatch):
+        from sandbox_executor.flow.review.approval_gates import diff_gate_of
+
+        monkeypatch.setenv("HOLON_SCOPED_REVIEW_MAX_LINES", "0")
+        _, work = build_flow_worktree(tmp_path)
+
+        def real_head(repo_dir: str, review_target: str):
+            return ReviewTarget(review_target, review_target, _git(work, "rev-parse", "HEAD")), None
+
+        ctx = _ensemble_ctx(work)
+        ctx.review_scope_paths = ["src/app.py"]
+        ensemble = FakeEnsemble(lambda size: [clean_reviewer(1)])
+        with _LoopStubs(), patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", real_head):
+            res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1, ensemble_size=1, run_ensemble_fn=ensemble)
+
+        assert res["consensus"]["approved"] is True
+        assert self._modes(ctx) == ["1: full (disabled)."]
+        assert diff_gate_of(ctx).mode == "scoped"
+
+
 def test_an_injected_adapter_receives_every_github_call_of_the_loop(tmp_path):
     """``run_review_loop(github=...)`` routes PR, mergeability, CI and posting through that one adapter."""
     from sandbox_executor.review_target import DiffVerdict

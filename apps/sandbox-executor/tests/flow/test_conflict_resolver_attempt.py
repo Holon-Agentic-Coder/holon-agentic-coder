@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -14,28 +15,37 @@ from sandbox_executor.flow.conflict_resolver_attempt import (
     stage_resolution,
 )
 from sandbox_executor.flow.target_sync_merge import merge_in_progress, unmerged_paths
-from sandbox_executor.git import run_git
 
 from tests.flow.helpers import _git
-from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
+from tests.flow_repo_templates import FlowCommit, flow_history_copy
+from tests.ledger_conflict_repos import FLOW_BRANCH
 
+MERGE = ("merge", "--no-ff", "--no-commit", "origin/main")
 BASE = {"app.py": "value = 0\n", "keep.py": "keep = 0\n", "other.py": "other = 0\n", "tests/test_other.py": "x = 0\n"}
 
 
-def _merging(tmp_path: Path, ours: dict[str, str | None], theirs: dict[str, str | None]) -> Path:
-    """A flow worktree part-way through a ``--no-commit`` merge of ``origin/main`` that conflicts."""
-    _, work = build_flow_repos(tmp_path, BASE)
-    commit_on(work, "main", theirs, "target change")
-    commit_on(work, FLOW_BRANCH, ours, "flow change")
-    _git(work, "fetch", "-q", "origin")
-    run_git(["merge", "--no-ff", "--no-commit", "origin/main"], cwd=str(work), check=False)
-    assert merge_in_progress(str(work)) and unmerged_paths(str(work))
-    return work
+Merging = Callable[[dict[str, str | None], dict[str, str | None]], Path]
 
 
 @pytest.fixture
-def work(tmp_path: Path) -> Path:
-    return _merging(tmp_path, {"app.py": "value = 1\n"}, {"app.py": "value = 2\n"})
+def merging(tmp_path_factory: pytest.TempPathFactory, tmp_path: Path) -> Merging:
+    """Makes a flow worktree part-way through a ``--no-commit`` merge of ``origin/main`` that conflicts.
+
+    The merge state (``MERGE_HEAD``, the conflicted index) is built once per run as a template and copied here.
+    """
+
+    def make(ours: dict[str, str | None], theirs: dict[str, str | None]) -> Path:
+        commits = (FlowCommit("main", theirs, "target change"), FlowCommit(FLOW_BRANCH, ours, "flow change"))
+        work = flow_history_copy(tmp_path_factory, tmp_path, BASE, commits, then=MERGE).work
+        assert merge_in_progress(str(work)) and unmerged_paths(str(work))
+        return work
+
+    return make
+
+
+@pytest.fixture
+def work(merging: Merging) -> Path:
+    return merging({"app.py": "value = 1\n"}, {"app.py": "value = 2\n"})
 
 
 def _resolve(work: Path) -> None:
@@ -93,25 +103,21 @@ def test_new_untracked_file_is_removed_and_older_ones_are_kept(work):
     assert not (work / "stray.py").exists() and (work / "notes.txt").exists()
 
 
-def test_saved_diff_artefacts_are_not_new_files(work):
+def test_save_attempt_diff_sanitises_label_and_stays_inside_artefact_dir(work):
+    # One copy for every label: the labels are data the save does not branch on (identical lines and arcs per label).
+    # The plain label also carries test_saved_diff_artefacts_are_not_new_files: the saved diffs are no new files.
     before = snapshot_merge(str(work))
     _resolve(work)
-    saved = save_attempt_diff(str(work), ["app.py"], "attempt-1")
-    assert saved.endswith(f"{ARTEFACT_DIR}/attempt-1.diff") and "value = 3" in Path(saved).read_text(encoding="utf-8")
-    assert check_attempt(str(work), ["app.py"], before).ok
-
-
-@pytest.mark.parametrize("label", ["abc-attempt-1-anthropic/claude-opus-5-5", "../../escape", "../a/b..c"])
-def test_save_attempt_diff_sanitises_label_and_stays_inside_artefact_dir(work, label):
-    before = snapshot_merge(str(work))
-    _resolve(work)
-    saved = save_attempt_diff(str(work), ["app.py"], label)
     artefact_dir = (work / ARTEFACT_DIR).resolve()
-    saved_path = Path(saved).resolve()
-    assert saved_path.parent == artefact_dir and saved_path.suffix == ".diff"
-    assert (artefact_dir / ".gitignore").read_text(encoding="utf-8") == "*\n"
-    assert "value = 3" in saved_path.read_text(encoding="utf-8")
-    assert check_attempt(str(work), ["app.py"], before).ok
+    for label in ["attempt-1", "abc-attempt-1-anthropic/claude-opus-5-5", "../../escape", "../a/b..c"]:
+        saved = save_attempt_diff(str(work), ["app.py"], label)
+        saved_path = Path(saved).resolve()
+        assert saved_path.parent == artefact_dir and saved_path.suffix == ".diff", label
+        assert (artefact_dir / ".gitignore").read_text(encoding="utf-8") == "*\n", label
+        assert "value = 3" in saved_path.read_text(encoding="utf-8"), label
+        assert check_attempt(str(work), ["app.py"], before).ok, label
+        if label == "attempt-1":
+            assert saved.endswith(f"{ARTEFACT_DIR}/attempt-1.diff")
 
 
 @pytest.mark.parametrize(
@@ -149,8 +155,8 @@ def test_markers_left_behind_fail_the_attempt(work):
     ],
     ids=["content", "add-add", "modify-delete", "delete-modify"],
 )
-def test_reset_restores_the_merge_state_of_each_conflict_kind(tmp_path, ours, theirs, path, expect):
-    work = _merging(tmp_path, ours, theirs)
+def test_reset_restores_the_merge_state_of_each_conflict_kind(merging, ours, theirs, path, expect):
+    work = merging(ours, theirs)
     assert unmerged_paths(str(work)) == [path]
     before = snapshot_merge(str(work))
     (work / path).unlink()
@@ -161,8 +167,8 @@ def test_reset_restores_the_merge_state_of_each_conflict_kind(tmp_path, ours, th
     assert check_attempt(str(work), [path], before).tampered is False
 
 
-def test_deletion_is_staged_as_a_resolution(tmp_path):
-    work = _merging(tmp_path, {"keep.py": "keep = 1\n"}, {"keep.py": None})
+def test_deletion_is_staged_as_a_resolution(merging):
+    work = merging({"keep.py": "keep = 1\n"}, {"keep.py": None})
     before = snapshot_merge(str(work))
     (work / "keep.py").unlink()
     assert check_attempt(str(work), ["keep.py"], before).ok

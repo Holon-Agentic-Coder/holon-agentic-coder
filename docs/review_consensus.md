@@ -149,13 +149,120 @@ check run on exactly that SHA, read from the GitHub check-runs API for the commi
   a cancelled check with no Actions run, fails Stage 5 closed.
 - Checks still pending when the CI wait budget runs out, or no readable checks, also fail Stage 5 closed. Nothing is
   pushed and the approval is not withdrawn, because no check failed.
-- A failed check withdraws the consensus. A new ledger row (labels `consensus-withdrawn` and `merged-head-ci`) records
-  it, and no earlier row is edited. One PR comment per merged head says the approval was withdrawn. The pipeline then
-  restarts Stage 4 at iteration 1, with a fresh reviewer ensemble, for the new head. It does this at most 3 times; after
-  that, Stage 5 fails and nothing is calibrated.
+- A failed check is routed by its class (see [Post-approval CI failures](#post-approval-ci-failures)). Noise is rerun
+  once and only a fresh pass lets Stage 5 calibrate. A defect restarts Stage 4 with the resolver on the CI finding while
+  the diff approval stands. The consensus is withdrawn only when the diff gate does not hold on the merged head, or when
+  the scoped review of the fix does not approve. A withdrawal appends a new ledger row (labels `consensus-withdrawn` and
+  `merged-head-ci`), and no earlier row is edited. One PR comment per merged head says the approval was withdrawn, and
+  Stage 4 restarts at iteration 1 with a fresh reviewer ensemble. A withdrawal after a scoped review of the fix that did
+  not approve restarts nothing: the row and comment name the approved head and say the flow stopped at Stage 4, whose
+  iteration count and open findings are kept for a resume. Either kind of restart happens at most 3 times; after that,
+  Stage 5 fails and nothing is calibrated.
 
 The Stage 5 log names the head SHA, the run ids and the conclusions it relied on. Dry runs and `--skip-push` skip the
 gate.
+
+### Approval gates
+
+Each Stage 4 iteration records two independent gates in `context.review_state["gates"]`, checkpointed with the flow and
+reported as `consensus.gates` in the Stage 4 result. The gates are never reset, so when the last iteration recorded none
+(a dry run, an infrastructure error or an unresolved head) `consensus.gates` still shows the gates recorded by an
+earlier iteration or run; compare their `reviewed_head`/`head_sha` and `iteration` with the result before relying on
+them:
+
+- The diff gate (`consensus_on_diff`) says whether the reviewers approved the PR's own diff on the head they saw. It
+  applies every reviewer objection, consensus blocker and the mergeability result, but not CI, and it records the
+  approval fingerprint. It holds for a later head only when that head is the reviewed head, or the PR-own change
+  fingerprint is unchanged.
+- The pipeline gate (`pipeline_green_on_head`) records the CI state (`green`, `red`, `pending` or `unknown`) on exactly
+  the reviewed head. It holds only when it is `green` and its full SHA equals the head: there is no ancestry or prefix
+  match, so a green run on an older head never clears a new one.
+
+"Approved" means both gates hold on the same head (`approved` in `flow/review/approval_gates.py`). The iteration's
+consensus verdict is still that conjunction. A merged-head CI failure marks only the pipeline gate `red` for the merged
+head, with its failure class in `classification`. The diff gate stays as it was, so the restarted Stage 4 can tell "diff
+approved, pipeline red" apart from "nothing approved". A withdrawal because the PR-own change changed does not mark the
+pipeline gate.
+
+### Post-approval CI failures
+
+A red pipeline after the reviewers approved the diff is classified fail-safe (`flow/review/ci_failure_routing.py`):
+
+| class             | when                                                                                                |
+| ----------------- | --------------------------------------------------------------------------------------------------- |
+| `noise_timing`    | every failed job failed only in its `CI Timing Gate` step                                           |
+| `noise_infra`     | every failed job hit `startup_failure` or `timed_out`, or failed only setup or teardown steps       |
+| `noise_cancelled` | every failed run was cancelled or stale                                                             |
+| `defect`          | anything else: a failed test step, a mix of classes, an unreadable job, no run id, more than 5 jobs |
+
+Noise is rerun once per run id and head, and the diff approval stands. In Stage 4 the rerun happens inside the iteration
+that saw the red pipeline, after a clean review and before the verdict, so no further reviewer ensemble runs. In Stage 5
+the merged head is polled again after the rerun. A defect, or noise still red after its rerun, goes to the resolver with
+the CI finding; a repeated timing-gate failure keeps the finding that names the slowest tests. In Stage 5 a defect
+restarts Stage 4 with that finding carried and the delta-review anchor moved to the merged head, so the fix is reviewed
+scoped although the merged head holds a target merge commit.
+
+The consensus is withdrawn only when the reviewable diff changed (the diff gate does not hold on the merged head), or
+when the scoped review of the fix does not approve. The rerun budget and the last decision live in
+`context.review_state["ci_routing"]` and are checkpointed, so a resume never reruns twice. Each decision appends one
+ledger row with the label `ci-failure-routing`. A stop message names a noise class still red after its rerun, for
+example "CI failed: CI noise (runner failure) still red after 1 rerun: unit".
+
+## Scoped delta review
+
+A Stage 4 pass after a resolver fix does not have to review the whole PR again. When an earlier pass already reviewed an
+ancestor of the head, the next pass can review only the change since then (`flow/review/delta_review.py`). Every unknown
+or unsafe state falls back to a full review.
+
+Two heads anchor the chain, both kept in `context.review_state["delta"]` and checkpointed with the flow:
+
+- the last reviewed head: the head of the latest pass in which every reviewer completed, whether it approved or not. A
+  failed or missing reviewer clears it, so the next pass is full;
+- the anchor head: the head of the latest such pass that was full. Scoped passes count up from it, and a full pass
+  resets the count.
+
+Before each pass the loop decides the mode. The first rule that matches gives a full pass, with the reason shown:
+
+| Reason                          | When                                                                                    |
+| ------------------------------- | --------------------------------------------------------------------------------------- |
+| `disabled`                      | `HOLON_SCOPED_REVIEW_MAX_LINES` is `0`.                                                 |
+| `last reviewed head unknown`    | No completed pass is recorded, or no full pass anchors the chain.                       |
+| `head not moved`                | The head is the last reviewed head (approval and carry-over handle that case).          |
+| `critical finding on last pass` | A reviewer of the last reviewed pass reported a critical finding, or none was recorded. |
+| `scoped chain limit`            | 3 scoped passes in a row since the anchor; the next one is full.                        |
+| `history rewritten`             | The last reviewed head is not an ancestor of the head (a force-push or rebase).         |
+| `target merge in delta`         | The range contains a merge commit and no conflict-resolution scope is set.              |
+| `no reviewable change`          | Only bookkeeping files changed (`plans/`, `executions/`, `holon-knowledge/` records).   |
+| `delta N lines over limit L`    | The changed lines exceed the limit; a binary change counts as over it.                  |
+| `delta check failed`            | A git read failed, or the commit is unknown.                                            |
+
+Otherwise the pass is `scoped`, with the reason `delta N lines`. When an agent-resolved (code-conflict) target merge
+left `review_scope_paths` set, the delta covers only those paths and the paths changed by the PR branch's own
+(first-parent, non-merge) commits, never the files the target branch brought in. A mechanical merge sets no scope.
+
+A scoped pass sends the reviewers:
+
+- the diff `last_reviewed_head..head` over the reviewable pathspecs of the approval fingerprint, redacted;
+- a "Scoped Delta Review" section in the change description, which says that only that range is under review;
+- the findings the resolver was given since the last reviewed head (id, severity, location and summary, at most 50);
+- the full post-change content of every modified text file, redacted. Each file is cut at
+  `HOLON_SCOPED_REVIEW_CONTEXT_BYTES` (default `40000`, at least `1000`) with a visible truncation marker. The files
+  together stop at four times that, and later files are listed by name only.
+
+If the scoped request cannot be built, the pass is logged as `scoped request failed; falling back to full` and reviews
+the full diff.
+
+Every pass logs `[Review Loop] Review mode at iteration N: <mode> (<reason>).`, and the diff gate records the mode as
+`DiffGate.mode`. When reviewers run in the review-loop container, the host serialises the scoped decision to
+`.holon/review/delta_request.json` in the worktree (git-ignored) and passes it with `--delta-request`. It removes the
+file once the dispatch returns. The container uses the decision only when the head it resolves is the same head;
+otherwise the pass is full.
+
+`HOLON_SCOPED_REVIEW_MAX_LINES` (default `400`) is the largest delta, in added plus deleted lines, that a pass reviews
+scoped. `0` turns scoped review off. A scoped approval can miss a defect whose cause lies outside the delta, such as an
+unchanged caller of a changed function. The anchor full pass, the chain limit, CI on the exact head and the human merge
+review bound that risk. Both variables are listed in
+[the environment variable reference](environment_variables.md#review-loop).
 
 ## Approval carry-over across target merges
 
@@ -164,11 +271,14 @@ fingerprint with every approval, so a merge of the target branch that only resol
 back through a full review. The fingerprint never stands in for CI.
 
 The fingerprint (`flow/review/approval_fingerprint.py`) covers the diff from `merge-base(head, origin/<target>)` to the
-head. It excludes `holon-knowledge/**` (the ledgers and the knowledge base) and the Stage 5 calibration reports
-(`plans/**/*_calibration.md`). It hashes `git patch-id --stable` of that diff together with the sorted status, mode,
-blob and path of each changed file, so mode-only and binary changes count. It is written as `pf1:` and 40 hex
-characters; the `pf1` prefix keeps a later reduction from ever matching an old fingerprint. An empty PR-own change or
-unreadable git gives no fingerprint, and a missing fingerprint never matches.
+head. It excludes the bookkeeping files, with the same rule as the CI bookkeeping gate (`ci_final_head` and
+`scripts/ci_bookkeeping_gate.py`): a `.md`, `.json` or `.jsonl` file with a non-dot stem under `plans/`, `executions/`
+or `holon-knowledge/`. Any other file under those roots, such as a `plans/tool.py`, stays in the fingerprint. It hashes
+`git patch-id --stable` of that diff together with the sorted status, mode, blob and path of each changed file, so
+mode-only and binary changes count. It is written as `pf2:` and 40 hex characters; the version prefix keeps a later
+reduction from ever matching an old fingerprint, so an approval recorded with a `pf1` fingerprint (which excluded only
+`holon-knowledge/**` and the calibration reports) never carries over. An empty PR-own change or unreadable git gives no
+fingerprint, and a missing fingerprint never matches.
 
 The post-time conflict gate keeps the approval when:
 
@@ -191,16 +301,15 @@ No earlier row is edited, and a re-run on the merged head probes clean and write
 gate records the same row when its merge keeps the change.
 
 The approval stamp names the head, the fingerprint and the CI result at that head, for example "Covers head `def5678`;
-change fingerprint `pf1:0123456789ab`; carried over from `abc1234` (same change); CI at that commit: not measured." A
+change fingerprint `pf2:0123456789ab`; carried over from `abc1234` (same change); CI at that commit: not measured." A
 carried approval never shows the earlier head's green CI: its CI result is "not measured" until Stage 5 measures it.
 
 The consensus keeps `target_commit` as the SHA the reviewers saw and adds `carried_from` and `carried_to`, so the CI
-gate on the merged head still sees a moved head. It waits for every check on the new SHA, and withdraws the consensus
-and restarts Stage 4 when one fails, exactly as for any merged head. In Stage 5 a head whose fingerprint differs from
-the approved one is not covered: the consensus is withdrawn, with the reason "PR-own change changed since approval" in
-the ledger row and the PR comment, and Stage 4 reviews the change again, within the same limit of 3 restarts. The
-automatic timing-gate rerun of the final-head CI check stays limited to bookkeeping-only moves; a merged target branch
-is not one.
+gate on the merged head still sees a moved head. It waits for every check on the new SHA, and routes a failed check by
+class, exactly as for any merged head. In Stage 5 a head whose fingerprint differs from the approved one is not covered:
+the consensus is withdrawn, with the reason "PR-own change changed since approval" in the ledger row and the PR comment,
+and Stage 4 reviews the change again, within the same limit of 3 restarts. The automatic timing-gate rerun of the
+final-head CI check stays limited to bookkeeping-only moves; a merged target branch is not one.
 
 ## Calibration report staleness
 

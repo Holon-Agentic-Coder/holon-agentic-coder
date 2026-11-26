@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from sandbox_executor.claude_credential import resolve_claude_credential
+from sandbox_executor.runners import RUNNER_SPECS
 
 logger = logging.getLogger(__name__)
 
@@ -14,27 +15,13 @@ FALLBACK_AGENT = "antigravity-agent"
 LEGACY_DEFAULT_AGENT = "antigravity-agent"
 LEGACY_DEFAULT_MODEL = "gemini-3.8-flash-medium"
 
-AGENT_IMAGE_MAPPING: dict[str, str] = {
-    "antigravity": "holon/agent-antigravity",
-    "claude": "holon/agent-claude",
-    "pi": "holon/agent-pi",
-    "codex": "holon/agent-codex",
-    "opencode": "holon/agent-opencode",
-}
+AGENT_IMAGE_MAPPING: dict[str, str] = {agent_id: spec.image for agent_id, spec in RUNNER_SPECS.items()}
 
 AGENT_TICKERS: dict[str, str] = {
-    "claude": "CLA",
-    "antigravity": "ANA",
-    "pi": "PIA",
+    agent_id: spec.ticker for agent_id, spec in RUNNER_SPECS.items() if spec.ticker is not None
 }
 
-DEFAULT_MODELS: dict[str, str] = {
-    "antigravity": "gemini-3.8-flash-medium",
-    "claude": "claude-opus-5-5",
-    "pi": "claude-opus-5-5",
-    "codex": "gpt-5-codex",
-    "opencode": "anthropic/claude-opus-5-5",
-}
+DEFAULT_MODELS: dict[str, str] = {agent_id: spec.default_model for agent_id, spec in RUNNER_SPECS.items()}
 
 _VALID_EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high")
 _DEFAULT_SECRET_BUNDLE_PATH = "/run/secrets/holon_auth.json"

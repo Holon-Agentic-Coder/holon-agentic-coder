@@ -7,12 +7,18 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
+  # One full run a day, whatever the gate decided on the pushes to main; see "Pushes to main" in README.md.
+  schedule:
+    - cron: "23 3 * * *"
 
 permissions:
   contents: read
 
+# Pushes are keyed by SHA so a later main push never evicts a pending one.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group:
+    ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || format('{0}-{1}', github.ref,
+    github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -21,6 +27,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     strategy:
       fail-fast: false
       matrix:
@@ -56,21 +63,28 @@ jobs:
           job-name: unit
           os: ${{ matrix.os }}
 
+      # A pull request that changes no platform-sensitive path or content skips the macOS leg's steps below; see
+      # "macOS Relevance Gate" in .github/workflows/README.md.
+      - name: macOS relevance gate
+        id: macos_relevance
+        if: matrix.os == 'macos-latest' && steps.bookkeeping.outputs.skip != 'true'
+        uses: ./.github/actions/macos-relevance-gate
+
       - name: Install uv
-        if: steps.bookkeeping.outputs.skip != 'true'
+        if: steps.bookkeeping.outputs.skip != 'true' && steps.macos_relevance.outputs.skip != 'true'
         uses: astral-sh/setup-uv@v8.3.0
         with:
           python-version: "3.13"
           enable-cache: true
 
       - name: Run unit tests
-        if: steps.bookkeeping.outputs.skip != 'true'
+        if: steps.bookkeeping.outputs.skip != 'true' && steps.macos_relevance.outputs.skip != 'true'
         run: |
           uv sync --locked
           uv run pytest -n auto --dist worksteal -v -l --tb=short -m "not integration_test and not stress" --junitxml=unit-report.xml
 
       - name: CI Timing Gate (compare with main)
-        if: steps.bookkeeping.outputs.skip != 'true'
+        if: steps.bookkeeping.outputs.skip != 'true' && steps.macos_relevance.outputs.skip != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           TIMING_MODE: ${{ github.event_name == 'pull_request' && 'compare' || 'record' }}
@@ -89,8 +103,9 @@ jobs:
           name: ci-timing-test-unit-unit-${{ matrix.os }}
           path: ci-timing/record.json
           retention-days: 30
-          if-no-files-found: error
+          # A main push that the gate skipped writes no timing record; a full run without one still fails.
+          if-no-files-found: ${{ steps.bookkeeping.outputs.skip != 'true' && 'error' || 'ignore' }}
 
       - name: Full run completed
-        if: steps.bookkeeping.outputs.skip != 'true'
+        if: steps.bookkeeping.outputs.skip != 'true' && steps.macos_relevance.outputs.skip != 'true'
         run: echo "Every step of the full run passed."

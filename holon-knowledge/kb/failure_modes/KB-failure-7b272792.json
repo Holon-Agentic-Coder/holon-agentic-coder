@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-7b272792",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T07:07:20.895404+00:00",
+  "updated_ts": "2026-11-26T07:07:20.895404+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1795675593-8560a827",
+      "ACT-REV-1795675583-59385036"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795674185-timing-gate-runner-variance/P-1795674208-CLA-CO5.5/E-1795674400-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 reviewer 2 completed",
+    "symptoms": []
+  }
+}

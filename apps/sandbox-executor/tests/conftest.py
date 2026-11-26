@@ -4,6 +4,7 @@ import os
 import socket
 import subprocess
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from sandbox_executor import config_env
@@ -13,7 +14,7 @@ from sandbox_executor.flow.github import token_scopes
 from sandbox_executor.launcher import env_files, mounts
 
 from tests import fake_keychain as fake_keychain_helper
-from tests import network_guard
+from tests import fast_tmp_dirs, network_guard
 from tests.credential_env import CREDENTIAL_ENV_NAMES
 from tests.gh_write_guard import guarded_popen
 from tests.hermetic_fixtures import (
@@ -74,6 +75,21 @@ _GIT_ENV_CONFIG_NAMES = frozenset({"GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"})
 _GIT_ENV_CONFIG_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Make `tmp_path` and `tmp_path_factory.mktemp` constant-time for the session (see `tests.fast_tmp_dirs`)."""
+    config.add_cleanup(fast_tmp_dirs.install_fast_numbered_dirs())
+
+
+@pytest.fixture
+def _private_test_root(tmp_path_factory) -> Path:
+    """One new, empty, private directory for this test under the worker base temp's `isolated/` directory.
+
+    The autouse fixtures that only need an empty directory each create their own child in it, so a test adds no
+    entry to the base temp itself and the cost does not grow with the tests already run.
+    """
+    return fast_tmp_dirs.new_private_test_dir(tmp_path_factory.getbasetemp())
+
+
 @pytest.fixture(scope="session", autouse=True)
 def hermetic_git_config(tmp_path_factory) -> Iterator[str]:
     """Point every git process in the session at a test-only global config, never the developer's.
@@ -129,16 +145,17 @@ def no_ambient_credentials(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def isolated_claude_home(tmp_path_factory, monkeypatch):
+def isolated_claude_home(_private_test_root: Path, monkeypatch):
     """Keep every test off the real home, where a retired plaintext claude token file could still sit.
 
-    Points HOME at an empty temporary directory and makes the legacy token path (the one-time migration's input)
-    follow the test's own HOME when it sets one (and this directory when it clears the environment, where `~` would
-    otherwise fall back to the passwd home).
+    Points HOME at an empty `claude-home` directory in the test's private root and makes the legacy token path (the
+    one-time migration's input) follow the test's own HOME when it sets one (and this directory when it clears the
+    environment, where `~` would otherwise fall back to the passwd home).
     """
     from sandbox_executor import claude_token_migration
 
-    fake_home = str(tmp_path_factory.mktemp("claude-home"))
+    fake_home = str(_private_test_root / "claude-home")
+    os.mkdir(fake_home, 0o700)
     monkeypatch.setenv("HOME", fake_home)
 
     def legacy_token_file_path() -> str:
@@ -157,14 +174,15 @@ def fake_keychain(monkeypatch) -> fake_keychain_helper.FakeKeychain:
 
 
 @pytest.fixture(autouse=True)
-def isolated_env_file_dir(tmp_path_factory, monkeypatch):
+def isolated_env_file_dir(_private_test_root: Path, monkeypatch):
     """Keep credential env-files written by run_docker_container in a per-test temporary directory.
 
     Any test that reaches `run_docker_container` with a token in the environment would otherwise
-    write it under the real ~/.holon. The directory sits outside `tmp_path`, so tests that inspect
-    their own `tmp_path` never see it.
+    write it under the real ~/.holon. The directory is `env-files` in the test's private root, outside
+    `tmp_path`, so tests that inspect their own `tmp_path` never see it.
     """
-    env_dir = tmp_path_factory.mktemp("env-files")
+    env_dir = _private_test_root / "env-files"
+    env_dir.mkdir(mode=0o700)
     os.chmod(env_dir, 0o700)
     monkeypatch.setattr(env_files, "env_file_dir", lambda: str(env_dir))
     return env_dir
@@ -193,15 +211,17 @@ def _layered_config_env() -> dict[str, str]:
 
 @pytest.fixture(autouse=True)
 def isolated_layered_config(
-    _isolate_agent_defaults, tmp_path_factory, monkeypatch: pytest.MonkeyPatch
+    _isolate_agent_defaults, _private_test_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[None]:
     """Keep every test off the developer's `~/.holon/.env` and the checkout's `.env`, and undo what `cli.main` applies.
 
-    Both layer paths point into an empty temporary directory. `cli.main` folds the layered configuration into
-    `os.environ` directly, which no monkeypatch would undo, so the `HOLON_*` and `GITHUB_TOKEN` keys are restored
-    after the test and any key added during it is removed. The remembered resolution is reset on both sides.
+    Both layer paths point into an empty `layered-config` directory in the test's private root. `cli.main` folds the
+    layered configuration into `os.environ` directly, which no monkeypatch would undo, so the `HOLON_*` and
+    `GITHUB_TOKEN` keys are restored after the test and any key added during it is removed. The remembered resolution
+    is reset on both sides.
     """
-    layer_dir = tmp_path_factory.mktemp("layered-config")
+    layer_dir = _private_test_root / "layered-config"
+    layer_dir.mkdir(mode=0o700)
     monkeypatch.setattr(config_env, "user_env_path", lambda: layer_dir / "user.env")
     monkeypatch.setattr(config_env, "project_env_path", lambda start: layer_dir / "project.env")
     config_env.remember(None)

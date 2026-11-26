@@ -4,9 +4,12 @@
 empty text or 0, which the gate's rules turn into a full run. The three reads are one request each: ``compare`` (the
 paths changed between two commits and whether the head is strictly ahead of the base), ``list_earlier_runs`` (the
 earlier pull-request runs of one workflow on one branch, newest first) and ``list_jobs`` (the jobs of one run with their
-steps, latest attempt). All network access goes through ``GateClient.opener``, which tests replace with a fake. The
-token is sent only through ``scripts.ci_timing_gate.build_request`` (an unredirected header) and is never part of a URL
-or of the client's repr.
+steps, latest attempt). For a push to ``main``, ``scripts.ci_main_push_gate`` adds three more reads:
+``pulls_for_commit`` (the pull requests associated with a commit), ``commit_tree`` (the tree of a commit) and
+``list_head_runs`` (the pull-request runs of one workflow on one head commit, newest first); the context then also
+carries the pushed commit (``sha``) and the ref (``ref``). All network access goes through ``GateClient.opener``, which
+tests replace with a fake. The token is sent only through ``scripts.ci_timing_gate.build_request`` (an unredirected
+header) and is never part of a URL or of the client's repr.
 
 An answer of an unexpected shape raises (``ValueError``, ``KeyError`` or ``TypeError``) and nothing here catches a
 network error: the gate turns every exception into a full run. Standard library only and Python 3.9 syntax, so the gate
@@ -45,6 +48,14 @@ class GateClient:
             raise ValueError("the API answer is not a JSON object")
         return answer
 
+    def get_list(self, path: str) -> list[object]:
+        """Return the decoded JSON array of ``GET /repos/{repo}/{path}``; raise ``ValueError`` for any other JSON."""
+        url = f"{API_ROOT}/repos/{self.repo}/{path}"
+        answer = json.loads(self.opener(build_request(url, self.token)))
+        if not isinstance(answer, list):
+            raise ValueError("the API answer is not a JSON array")
+        return answer
+
 
 @dataclass(frozen=True)
 class Comparison:
@@ -57,13 +68,18 @@ class Comparison:
 
 @dataclass(frozen=True)
 class RunRef:
-    """One earlier workflow run: its id, number, pull-request head and status, and how many pull requests it names."""
+    """One earlier workflow run: its id, number, pull-request head and status, and the pull requests it names.
+
+    ``pull_requests`` holds the number and base branch of each named pull request; the base is empty when the entry
+    names none.
+    """
 
     run_id: int
     run_number: int
     head_sha: str
     status: str
     pull_request_count: int
+    pull_requests: tuple[tuple[int, str], ...] = ()
 
 
 def _quote(value: str) -> str:
@@ -93,6 +109,15 @@ def compare(client: GateClient, base: str, head: str) -> Comparison:
     return Comparison(status=str(answer.get("status", "")), paths=paths, truncated=len(files) >= COMPARE_FILE_CAP)
 
 
+def _run_pull(entry: object) -> tuple[int, str]:
+    """Return the number and base branch of one pull request entry of a workflow run; a missing number raises."""
+    if not isinstance(entry, dict):
+        raise ValueError("a workflow run names a pull request that is not an object")
+    base = entry.get("base")
+    base_ref = base.get("ref") if isinstance(base, dict) else None
+    return int(entry["number"]), base_ref if isinstance(base_ref, str) else ""
+
+
 def _run_ref(run: object) -> RunRef:
     """Build a ``RunRef`` from one ``workflow_runs`` entry; a missing field raises."""
     if not isinstance(run, dict):
@@ -107,6 +132,7 @@ def _run_ref(run: object) -> RunRef:
         head_sha=str(run["head_sha"]),
         status=str(run.get("status", "")),
         pull_request_count=len(pull_requests),
+        pull_requests=tuple(_run_pull(entry) for entry in pull_requests),
     )
 
 
@@ -124,6 +150,17 @@ def list_earlier_runs(client: GateClient, workflow_file: str, branch: str, befor
     return sorted(earlier, key=lambda ref: ref.run_number, reverse=True)
 
 
+def list_head_runs(client: GateClient, workflow_file: str, head_sha: str) -> list[RunRef]:
+    """Return the pull-request runs of ``workflow_file`` on the commit ``head_sha``, highest run number first."""
+    query = f"event=pull_request&head_sha={_quote(head_sha)}&per_page={PAGE_SIZE}"
+    answer = client.get_json(f"actions/workflows/{_quote(workflow_file)}/runs?{query}")
+    runs = answer.get("workflow_runs")
+    if not isinstance(runs, list):
+        raise ValueError("the runs answer has no run list")
+    on_head = [ref for ref in map(_run_ref, runs) if ref.head_sha == head_sha]
+    return sorted(on_head, key=lambda ref: ref.run_number, reverse=True)
+
+
 def list_jobs(client: GateClient, run_id: int) -> list[dict[str, object]]:
     """Return the jobs of run ``run_id`` with their steps: the latest attempt of each job, the API default."""
     answer = client.get_json(f"actions/runs/{run_id}/jobs?per_page={PAGE_SIZE}")
@@ -131,6 +168,46 @@ def list_jobs(client: GateClient, run_id: int) -> list[dict[str, object]]:
     if not isinstance(jobs, list) or not all(isinstance(job, dict) for job in jobs):
         raise ValueError("the jobs answer has no job list")
     return jobs
+
+
+@dataclass(frozen=True)
+class PullRef:
+    """One pull request associated with a commit: its number, whether it was merged, its base, head and merge commit."""
+
+    number: int
+    merged: bool
+    base_ref: str
+    head_sha: str
+    merge_commit_sha: str
+
+
+def _pull_ref(pull: object) -> PullRef:
+    """Build a ``PullRef`` from one pull request entry; a missing or mistyped field raises."""
+    if not isinstance(pull, dict) or not isinstance(pull["base"], dict) or not isinstance(pull["head"], dict):
+        raise ValueError("a pull request entry is not an object with a base and a head")
+    merged_at = pull.get("merged_at")
+    merge_commit = pull.get("merge_commit_sha")
+    return PullRef(
+        number=int(pull["number"]),
+        merged=isinstance(merged_at, str) and bool(merged_at),
+        base_ref=str(pull["base"]["ref"]),
+        head_sha=str(pull["head"]["sha"]),
+        merge_commit_sha=merge_commit if isinstance(merge_commit, str) else "",
+    )
+
+
+def pulls_for_commit(client: GateClient, sha: str) -> list[PullRef]:
+    """Return the pull requests associated with commit ``sha``: for a merge commit, the merged pull request."""
+    return [_pull_ref(pull) for pull in client.get_list(f"commits/{_quote(sha)}/pulls?per_page={PAGE_SIZE}")]
+
+
+def commit_tree(client: GateClient, sha: str) -> str:
+    """Return the tree id of commit ``sha``; raise ``ValueError`` when the answer names none."""
+    tree = client.get_json(f"git/commits/{_quote(sha)}").get("tree")
+    tree_sha = tree.get("sha") if isinstance(tree, dict) else None
+    if not isinstance(tree_sha, str) or not tree_sha:
+        raise ValueError("the commit answer has no tree")
+    return tree_sha
 
 
 @dataclass(frozen=True)
@@ -148,6 +225,8 @@ class GateContext:
     workflow_file: str
     job_name: str
     os_name: str
+    sha: str = ""
+    ref: str = ""
 
 
 def _text(value: object) -> str:
@@ -190,4 +269,6 @@ def context_from(environ: Mapping[str, str], payload: Mapping[str, object], job_
         workflow_file=workflow_file if workflow_file.endswith((".yml", ".yaml")) else "",
         job_name=job_name,
         os_name=os_name,
+        sha=_text(environ.get("GITHUB_SHA")),
+        ref=_text(environ.get("GITHUB_REF")),
     )

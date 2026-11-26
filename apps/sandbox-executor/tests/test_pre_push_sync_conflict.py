@@ -20,6 +20,8 @@ from sandbox_executor.flow.stages.review import run_review_stage
 from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
 from sandbox_executor.ledger import read_merged_rows, read_merged_text
 
+from tests.repo_templates import copy_template, shared_template
+
 LEDGER = "holon-knowledge/ledger/executions.jsonl"
 EXEC_BRANCH = "I-1-x/P-2-a-b/E-3-a-b/_"
 
@@ -35,14 +37,13 @@ def commit_file(repo: Path, name: str, text: str, message: str) -> None:
     git(repo, "commit", "-q", "-m", message)
 
 
-@pytest.fixture
-def repos(tmp_path: Path) -> tuple[Path, Path]:
+def _build_repos(root: Path) -> None:
     """A work clone on a feature branch and a peer clone, both of one bare remote whose main has a file and a ledger."""
-    remote = tmp_path / "remote.git"
+    remote = root / "remote.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
     clones = []
     for name in ("work", "peer"):
-        clone = tmp_path / name
+        clone = root / name
         subprocess.run(["git", "clone", "-q", str(remote), str(clone)], check=True, capture_output=True)
         for key, value in (("user.email", "t@holon.com"), ("user.name", "T"), ("commit.gpgsign", "false")):
             git(clone, "config", key, value)
@@ -54,7 +55,13 @@ def repos(tmp_path: Path) -> tuple[Path, Path]:
     git(work, "push", "-q", "origin", "main")
     git(peer, "pull", "-q", "origin", "main")
     git(work, "checkout", "-q", "-b", "feature")
-    return work, peer
+
+
+@pytest.fixture
+def repos(tmp_path: Path, tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
+    """A private copy of the work and peer clones and their remote, built once per run (``_build_repos``)."""
+    copy_template(shared_template(tmp_path_factory, "pre-push-sync-conflict", _build_repos)[0], tmp_path)
+    return tmp_path / "work", tmp_path / "peer"
 
 
 def advance_main(work: Path, peer: Path, name: str, text: str | None) -> None:

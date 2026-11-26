@@ -21,6 +21,7 @@ from sandbox_executor.git import run_git as real_run_git
 from sandbox_executor.ledger import LedgerRewriteError, validate_ledger_file_unique_ids
 
 from tests.flow.helpers import _git, _ledger_rows
+from tests.flow_repo_templates import derived_template, replace_with_copy
 
 BRANCH = "I-1-x/P-2-y/E-3-z/_"
 LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
@@ -61,16 +62,29 @@ class LedgerRepos:
         return _git(self.origin, "rev-parse", f"refs/heads/{BRANCH}")
 
 
-@pytest.fixture
-def ledger_repos(flow_repos, tmp_path, monkeypatch) -> LedgerRepos:
-    """An execution-shaped branch with one ledger row on origin, fetched by the host, and a hermetic temp directory."""
-    host, origin = flow_repos
+def _execution_branch_with_a_row(root: Path) -> None:
+    """Push an execution-shaped branch with one ledger row from the host, which goes back to main and fetches."""
+    host = root / "host"
     _git(host, "checkout", "-q", "-b", BRANCH)
     (host / LEDGER_REL).write_text(json.dumps(EARLIER_ROW) + "\n", encoding="utf-8")
     _git(host, "commit", "-qam", "execute: E-3-z completed")
     _git(host, "push", "-q", "origin", BRANCH)
     _git(host, "checkout", "-q", "main")
     _git(host, "fetch", "-q", "origin")
+
+
+@pytest.fixture
+def ledger_repos(flow_repos, tmp_path, monkeypatch, tmp_path_factory, _flow_repos_template) -> LedgerRepos:
+    """An execution-shaped branch with one ledger row on origin, fetched by the host, and a hermetic temp directory.
+
+    The branch is built once per run over the ``flow_repos`` template, and this test's copy replaces ``flow_repos``'s.
+    """
+    host, origin = flow_repos
+    names = ("origin.git", "host")
+    template = derived_template(
+        tmp_path_factory, "ledger-worktree-cleanup", _flow_repos_template, names, _execution_branch_with_a_row
+    )
+    replace_with_copy(template, tmp_path, names)
     temp_dir = tmp_path / "ledger-tmp"
     temp_dir.mkdir()
     # Ledger worktrees of this test land here and nowhere else, so leftovers can be listed under xdist.

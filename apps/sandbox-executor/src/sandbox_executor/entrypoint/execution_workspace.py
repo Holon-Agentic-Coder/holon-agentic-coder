@@ -36,6 +36,7 @@ ENGINE_OWNED_LEDGER_PATHS = (
 )
 ENGINE_OWNED_LEDGER_DIRS = (PENDING_DIR_REL,)
 ENGINE_OWNED_NOTES_GLOB = "executions/E-*.md"
+ENGINE_OWNED_PLAN_DIR_PREFIX = "plans/I-"
 _ENGINE_OWNED_EXCLUDES = (
     *(f":(exclude){path}" for path in (*ENGINE_OWNED_LEDGER_PATHS, *ENGINE_OWNED_LEDGER_DIRS)),
     f":(exclude){ENGINE_OWNED_NOTES_GLOB}",
@@ -94,12 +95,25 @@ def unstage_sidecar_scratch(repo: GitRepository) -> list[str]:
     return candidates
 
 
+def _is_untracked_engine_plan_entry(line: str) -> bool:
+    if not line.startswith("?? "):
+        return False
+    path = line[3:]
+    if len(path) >= 2 and path.startswith('"') and path.endswith('"'):
+        path = path[1:-1]
+    return path.startswith(ENGINE_OWNED_PLAN_DIR_PREFIX) and "/" in path[len(ENGINE_OWNED_PLAN_DIR_PREFIX) :]
+
+
+def _foreign_status_lines(stdout: str) -> list[str]:
+    return [line for line in stdout.splitlines() if line and not _is_untracked_engine_plan_entry(line)]
+
+
 def validate_mounted_workspace(repo: GitRepository, repo_dir: str, plan_branch: str) -> str:
     repo.run(["config", "--global", "--add", "safe.directory", repo_dir], check=False)
     if repo.rev_parse("HEAD^{commit}", verify=True).returncode != 0:
         raise RuntimeError(f"mounted workspace at '{repo_dir}' has no readable HEAD commit")
     status = repo.run(["status", "--porcelain", "--", ".", *_ENGINE_OWNED_EXCLUDES], check=False)
-    if status.returncode != 0 or (status.stdout or "").strip():
+    if status.returncode != 0 or _foreign_status_lines(status.stdout or ""):
         raise RuntimeError(
             f"mounted workspace at '{repo_dir}' has uncommitted changes, which are kept on the host; commit, stash or "
             "discard them in the host worktree before executing"

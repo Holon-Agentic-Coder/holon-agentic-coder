@@ -9,6 +9,7 @@ from typing import Any
 
 from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, ActionIndexDatabase
 from sandbox_executor.knowledge.promotion import evaluate_action_promotion
+from sandbox_executor.knowledge.promotion_rules import is_review_chatter_context
 
 logger = logging.getLogger(__name__)
 
@@ -167,13 +168,12 @@ def _promote_failure_candidate(
 
     sample_act = records[0]["action"] if records else "unknown action"
     sample_tgt = records[0]["target"] if records else "unknown target"
-    source_ids = [r["record_id"] for r in records]
     item = {
         "kb_id": kb_id,
         "kb_type": "failure_mode",
         "context_fingerprint": eval_res.context_fingerprint,
         "evidence": {
-            "ledger_refs": source_ids,
+            "ledger_refs": [r["record_id"] for r in records],
             "success_count": eval_res.success_count,
             "failure_count": eval_res.failure_count,
             "ladder_state": eval_res.failure_ladder_state,
@@ -289,11 +289,11 @@ def promote_pending_candidates(
         for sig in signatures:
             if _already_promoted(conn, sig, kb_dir, wb_dir):
                 continue
-            sig_hash = sig["signature_hash"]
-            eval_res = evaluate_action_promotion(sig_hash, index_db=db)
+            eval_res = evaluate_action_promotion(sig["signature_hash"], index_db=db)
             records = _fetch_recent_context_records(cur, sig["context_fingerprint"])
 
-            failure_item = _promote_failure_candidate(eval_res, records, kb_dir, dry_run)
+            chatter = is_review_chatter_context(cur, sig, eval_res.failure_ladder_state)
+            failure_item = None if chatter else _promote_failure_candidate(eval_res, records, kb_dir, dry_run)
             if failure_item and failure_item["kb_id"] in seen_promoted_ids:
                 failure_item = None
             if failure_item:

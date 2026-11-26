@@ -1,0 +1,27 @@
+name: "macOS Relevance Gate"
+description:
+  "Decides whether the macOS unit leg may skip its expensive steps because no changed file is platform-sensitive by path
+  or content"
+outputs:
+  skip:
+    description: "'true' when the leg may skip its expensive steps; 'false' in every other case, errors included"
+    value: ${{ steps.decide.outputs.skip }}
+runs:
+  using: "composite"
+  steps:
+    - name: macOS relevance gate (decide)
+      id: decide
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: |
+        # The checkout holds only the merge commit; its first parent is needed to diff and read the old contents.
+        # A failed fetch is tolerated: the script then reports changed-files-unreadable and the leg runs.
+        if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+          git fetch --no-tags --no-recurse-submodules --depth=2 origin "${GITHUB_SHA}" ||
+            echo "::warning::Could not fetch the parents of the merge commit; the macOS unit leg runs."
+        fi
+        # The script returns 0 for every decision. Anything else (no python3, a broken checkout) runs the macOS leg.
+        if ! python3 -m scripts.macos_relevance; then
+          echo "::warning::The macOS relevance gate could not decide; the macOS unit leg runs."
+          echo "skip=false" >> "${GITHUB_OUTPUT}"
+        fi

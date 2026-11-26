@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from sandbox_executor import claude_credential, claude_keychain
 from sandbox_executor.agent_runner import get_runner
+from sandbox_executor.runners import RUNNER_SPECS
 
 from tests.leak_assertions import assert_no_leak, make_probe
 
@@ -149,9 +150,11 @@ def test_discovery_has_no_file_tier_left():
 
 
 def test_claude_runner_no_longer_requires_holon_agent_key_but_others_do():
-    assert "HOLON_AGENT_KEY" not in get_runner("claude").required_keys
-    assert set(get_runner("claude").required_keys) == {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"}
-    assert "HOLON_AGENT_KEY" in get_runner("pi").required_keys
+    assert "HOLON_AGENT_KEY" not in RUNNER_SPECS["claude"].api_key_env_vars
+    assert set(RUNNER_SPECS["claude"].api_key_env_vars) == {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"}
+    assert "HOLON_AGENT_KEY" in RUNNER_SPECS["pi"].api_key_env_vars
+    # The runner exposes the spec's variables read-only; there is no second copy to drift.
+    assert get_runner("claude").required_keys == list(RUNNER_SPECS["claude"].api_key_env_vars)
 
 
 def test_claude_validation_ignores_holon_agent_key_and_names_the_keychain(home, monkeypatch, capsys):

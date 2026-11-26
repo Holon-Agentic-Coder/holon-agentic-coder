@@ -19,18 +19,13 @@ from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.git_refs import _resolve_review_commit
 from sandbox_executor.flow.github.adapter import GitHubAdapter
-from sandbox_executor.flow.github.ci import (
-    _ci_green,
-    _extract_failed_ci_check_names,
-    _wait_for_ci_registration,
-    probe_ci_checks,
-    resolve_ci_registration_timeout,
-)
-from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, CiWaitResult, settle_pending_ci
+from sandbox_executor.flow.github.ci import _extract_failed_ci_check_names, _wait_for_ci_registration, probe_ci_checks
+from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, CiWaitResult
 from sandbox_executor.flow.github.pr import check_pr_mergeability, create_or_update_pr, format_review_git_trailers
 from sandbox_executor.flow.github.pr_head import PR_HEAD_TIMEOUT_SECONDS
 from sandbox_executor.flow.github.review_post import post_pr_review_consensus
 from sandbox_executor.flow.ledger_warning import _warn_ledger_failure
+from sandbox_executor.flow.review import delta_review
 from sandbox_executor.flow.review.adjudication import (
     Adjudication,
     _augment_pr_text_with_rejected,
@@ -38,6 +33,7 @@ from sandbox_executor.flow.review.adjudication import (
     record_nit_rejections,
 )
 from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of, approval_record
+from sandbox_executor.flow.review.approval_gates import IterationGates, gates_summary, record_iteration_gates
 from sandbox_executor.flow.review.carried_findings import (
     CarriedPass,
     carried_blocker,
@@ -47,8 +43,9 @@ from sandbox_executor.flow.review.carried_findings import (
     serialize_open,
     undisposed,
 )
-from sandbox_executor.flow.review.ci_evidence import _apply_guarded_test_evidence
-from sandbox_executor.flow.review.ci_outcome import gate_ci_flags
+from sandbox_executor.flow.review.ci_failure_routing import apply_last_classification
+from sandbox_executor.flow.review.ci_inspection import CiInspectionInputs, inspect_ci
+from sandbox_executor.flow.review.ci_noise_rerun import rerun_noise_once
 from sandbox_executor.flow.review.ci_timing_finding import gh_timing_seams, timing_gate_finding
 from sandbox_executor.flow.review.ensemble import (
     _dispatch_review_ensemble,
@@ -102,6 +99,7 @@ from sandbox_executor.ledger import (
     try_append_ledger_line,
 )
 from sandbox_executor.resolver_evidence import OPEN
+from sandbox_executor.review_accounting import accounting_of
 from sandbox_executor.review_ensemble import (
     ConsensusVerdict,
     ReviewerResult,
@@ -280,9 +278,25 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     probe_ci = functools.partial(probe_ci_checks, repo_dir, review_target, proxy_env=proxy_env, github=github)
     ci_policy = CiWaitPolicy(ci_wait_budget_seconds, ci_poll_interval, clock=clock, sleep=sleep)
     ci_wait: CiWaitResult | None = None  # The first wait that spent its budget; recorded once, never waited out again.
+    ci_seams = CiInspectionInputs(
+        repo_dir,
+        review_target,
+        proxy_env,
+        github,
+        test_gate,
+        ci_policy,
+        probe_ci,
+        _wait_for_ci_registration,
+        pr_allowed,
+        ci_registration_timeout,
+        ci_poll_interval,
+        clock,
+        sleep,
+    )
     iteration_summaries: list[str] = []
     budget_breach: dict[str, Any] | None = None
     resolver_enabled = (run_resolver_fn is not None) or (not reviewers_sandboxed())
+    noise_rerun_enabled = (run_ensemble_fn is not None) or (not reviewers_sandboxed())
     finding_action_ids: dict[str, str] = {}
     recorded_disposition_keys: set[tuple[str, str, int | None, str]] = set()
     rejected_history: dict[tuple[str, str, int | None, str], FindingDisposition] = {}  # Rejected nits only.
@@ -310,6 +324,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     carried_block = ""  # Why approval was refused while a carried finding had no disposition.
     if carried_rows and resolver_enabled and resolved_target is not None and not effective_dry_run:
         carried_pass = CarriedPass(context, resolved_target, max(1, first_label - 1), run_resolver_fn, recorder)
+        delta_review.record_addressed_findings(context, carried_rows)
         carried_outcome, carried_rows, pending_dispositions = resolve_carried_first(
             carried_rows, finding_action_ids, carried_pass
         )
@@ -354,6 +369,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         reviewers, ensemble_verdict, container_verdict = [], None, None
         if not effective_dry_run and resolved_target is not None and infra_error is None:
             iter_pr_text = _augment_pr_text_with_rejected(pr_text, tuple(rejected_history.values()))
+            delta_review.begin_review_pass(context, repo_dir, resolved_target.head_sha, iteration)
             if run_ensemble_fn is not None or reviewers_sandboxed():
                 reviewers, infra_error = _ensemble_iteration(
                     context, resolved_target, target_branch, iteration, iter_pr_text, ensemble_fn, ensemble_size
@@ -370,63 +386,37 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         reviewer_findings = collect_review_data(reviewers).findings
         reviewer_objected = _any_reviewer_objects(reviewers) or bool(reviewer_findings) or bool(blockers)
 
-        # 3. CI status inspection: post-review gate or fast-path probe
-        if reviewer_objected:
-            # Fast path on reviewer findings: probe CI once without waiting on pending checks.
-            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env, github=github)
-            tests_failed, _ = _apply_guarded_test_evidence(
-                test_gate, last_ci_status, effective_dry_run, infra_error is not None or missing_ref, False
+        # 3. CI status inspection: post-review gate or fast-path probe (see ci_inspection.py)
+        ci_inputs = dataclasses.replace(
+            ci_seams,
+            iteration_timer=iteration_timer,
+            reviewer_objected=reviewer_objected,
+            is_dirty=is_dirty,
+            missing_ref=missing_ref,
+            effective_dry_run=effective_dry_run,
+            infra_failed=infra_error is not None,
+            ci_wait=ci_wait,
+        )
+        ci = inspect_ci(ci_inputs, context)  # A noise failure is rerun once here, keeping the diff approval.
+        if noise_rerun_enabled:  # The host reruns: a container's rerun budget and routing rows never reach it.
+            ci = rerun_noise_once(context, ci_inputs, ci, resolved_target.head_sha if resolved_target else None)
+        last_ci_status, ci_wait, tests_failed, ci_finding = ci.ci_status, ci.ci_wait, ci.tests_failed, ci.ci_finding
+        tests_not_measured |= ci.tests_not_measured
+        mergeable = None if missing_ref else not is_dirty
+        if ci.decides:
+            ensemble_verdict = decide_returned_consensus(reviewers, ensemble_size, mergeable, ci.ci_green, blockers)
+        if not effective_dry_run and infra_error is None and resolved_target is not None and resolved_target.head_sha:
+            gate_base = resolved_target.base_branch or target_branch
+            fingerprint_of = functools.partial(approval_fingerprint_of, repo_dir, base_branch=gate_base)
+            gate_facts = (reviewers, ensemble_size, mergeable, blockers, ci.ci_green, last_ci_status, gate_base)
+            scoped = delta_review.current_decision(context).scoped or bool(context.review_scope_paths)
+            gate_mode = "scoped" if scoped else "full"  # A conflict re-review saw only the scoped paths.
+            facts = IterationGates(
+                resolved_target.head_sha, iteration, *gate_facts, fingerprint_of=fingerprint_of, mode=gate_mode
             )
-            ci_wait = ci_wait if last_ci_status.get("pending", 0) else None  # Never keep a stale wait record.
-
-            # Include FIND-CI only if CI has already failed or local tests failed; pending checks are omitted.
-            ci_failed = last_ci_status.get("failed", 0) > 0 or tests_failed
-            ci_finding = ci_failed
-            ensemble_verdict = decide_returned_consensus(
-                reviewers, ensemble_size, None if missing_ref else not is_dirty, False if ci_failed else None, blockers
-            )
-        elif not is_dirty and not missing_ref and not effective_dry_run and infra_error is None:
-            # Post-review CI gate on clean review: wait for CI registration and pending checks to settle.
-            if pr_allowed and test_gate.needs_ci_registration() and github.available:
-                reg_timeout = iteration_timer.remaining_capped(resolve_ci_registration_timeout(ci_registration_timeout))
-                _wait_for_ci_registration(
-                    context,
-                    repo_dir,
-                    review_target,
-                    proxy_env,
-                    reg_timeout,
-                    ci_poll_interval,
-                    clock=clock,
-                    sleep=sleep,
-                    probe=probe_ci,
-                )
-
-            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env, github=github)
-            last_ci_status, waited = settle_pending_ci(context, probe_ci, last_ci_status, ci_policy, bool(ci_wait))
-            iteration_timer.credit(waited.waited_seconds if waited else 0.0)  # The wait has its own budget.
-            ci_wait = waited if waited and waited.exhausted else (ci_wait if last_ci_status.get("pending", 0) else None)
-            tests_failed, unmeasured = _apply_guarded_test_evidence(test_gate, last_ci_status, False, False, True)
-            tests_not_measured |= unmeasured
-            ci_green, ci_finding = gate_ci_flags(last_ci_status, tests_failed)
-            ensemble_verdict = decide_returned_consensus(reviewers, ensemble_size, True, ci_green, blockers)
-        else:
-            # Fallback for dry runs, dirty mergeability, or infra failures: probe once without waiting.
-            last_ci_status = probe_ci_checks(repo_dir, review_target, proxy_env=proxy_env, github=github)
-            tests_failed, unmeasured = _apply_guarded_test_evidence(
-                test_gate, last_ci_status, effective_dry_run, infra_error is not None or missing_ref, True
-            )
-            tests_not_measured |= unmeasured
-            ci_wait = ci_wait if last_ci_status.get("pending", 0) else None  # Never keep a stale wait record.
-
-            ci_finding = not last_ci_status.get("all_passed", False) or tests_failed
-            if not effective_dry_run:
-                ensemble_verdict = decide_returned_consensus(
-                    reviewers,
-                    ensemble_size,
-                    None if missing_ref else not is_dirty,
-                    _ci_green(last_ci_status, tests_failed),
-                    blockers,
-                )
+            record_iteration_gates(context, facts, ensemble_verdict)  # Both gates; the verdict stays the conjunction.
+            apply_last_classification(context, resolved_target.head_sha)
+            delta_review.end_review_pass(context, resolved_target.head_sha, reviewers, ensemble_size)
 
         # 4. Findings: mergeability and CI infrastructure ids, then every reviewer finding
         finding_ids = [
@@ -599,6 +589,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             )
             break
 
+        delta_review.record_addressed_findings(context, merge_findings(iter_findings, carried_rows))
         resolver_outcome = _invoke_resolver_pass(
             context,
             resolved_target,
@@ -649,8 +640,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             resolved_target = dataclasses.replace(resolved_target, head_sha=new_sha)
             ci_wait = None  # A spent wait belongs to the old head; the new head's pending checks get their own wait.
             context.log(
-                f"[Review Loop] Resolver pushed new head '{new_sha}' at iteration {iteration}; "
-                "proceeding to re-review in full."
+                f"[Review Loop] Resolver pushed new head '{new_sha}' at iteration {iteration}; proceeding to re-review."
             )
 
     if resolver_enabled and not effective_dry_run and pending_dispositions:
@@ -720,9 +710,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "intent_data": context.intent_data,
         "target_commit": current_commit_sha,
         "approval_fingerprint": fingerprint,
-        "pr_url": (
-            pr_res.get("pr_url") or (pr_res.get("output") if str(pr_res.get("output", "")).startswith("http") else None)
-        ),
+        "pr_url": pr_res.get("pr_url"),
         "pr_number": pr_res.get("pr_number"),
     }
 
@@ -868,6 +856,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             "max_review_iterations": last_label,
             "status": consensus_status,
             **approval_record(consensus_data),  # Stage 5 compares the head it calibrates with the approved one.
+            "gates": gates_summary(context),  # Latest recorded gates; may predate a dry-run/infra-failed iteration.
         },
         "halted_for_human": False,
         "human_merge_gate_enforced": consensus_reached,
@@ -934,7 +923,7 @@ def _run_engine_review_loop(context: FlowContext, *, github: GitHubAdapter | Non
         # iterations = label of the latest pass already run (the clamped checkpointed count); passes = 0 dispatches.
         done = first_label - 1
         consensus = {"approved": False, "score": 0.0, "iterations": done, "passes": 0, "status": "failed"}
-        return {"consensus": consensus, "total_iterations": done, "error": err}
+        return {"consensus": consensus, "total_iterations": done, "error": err, "accounting": accounting_of(context)}
     loop_res = run_review_loop(
         context=context,
         target=context.execution_branch,
@@ -947,4 +936,5 @@ def _run_engine_review_loop(context: FlowContext, *, github: GitHubAdapter | Non
     context.review_iterations_done = max(context.review_iterations_done, int(loop_res.get("total_iterations") or 0))
     if "open_findings" in loop_res:  # Saved with the checkpoint after Stage 4, so a resume resolves them first.
         context.carried_review_findings = list(loop_res["open_findings"])
+    loop_res["accounting"] = accounting_of(context)  # None (rendered "not recorded") when nothing was counted.
     return loop_res

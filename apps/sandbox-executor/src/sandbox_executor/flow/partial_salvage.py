@@ -42,11 +42,11 @@ from sandbox_executor.flow.git_refs import (
 )
 from sandbox_executor.flow.host_remote import push_branch, remote_error
 from sandbox_executor.flow.unrecorded_branch_adoption import (
-    UnrecordedBranch,
-    blocking_checkout_error,
-    checkout_blocking_paths,
-    find_unrecorded_branch,
-    resume_start,
+    _blocking_checkout_error,
+    _checkout_blocking_paths,
+    _find_unrecorded_branch,
+    _resume_start,
+    _UnrecordedBranch,
 )
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
@@ -252,7 +252,7 @@ def salvage_leftovers(context: FlowContext, plan_prefix: str, *, include_notes: 
     return SalvageResult(branch=branch, sha=sha, files=files)
 
 
-def _adopt_unrecorded(context: FlowContext, candidate: UnrecordedBranch, plan_prefix: str) -> None:
+def _adopt_unrecorded(context: FlowContext, candidate: _UnrecordedBranch, plan_prefix: str) -> None:
     """Record ``candidate``'s tip as its partial head with a superseding ``failure`` row (publishing it if needed)."""
     summary = (
         f"Interrupted run: {candidate.commits_past_plan} commit(s) past the plan tip adopted on resume (host stopped "
@@ -270,7 +270,9 @@ def _adopt_unrecorded(context: FlowContext, candidate: UnrecordedBranch, plan_pr
 
 def _salvage_and_adopt(context: FlowContext, plan_prefix: str, existing: set[str]) -> str | None:
     """Salvage leftovers and adopt the plan's unrecorded execution branch; the branch to resume from, if any."""
-    candidate = find_unrecorded_branch(context.target_worktree, context.plan_branch, plan_prefix, existing, context.log)
+    candidate = _find_unrecorded_branch(
+        context.target_worktree, context.plan_branch, plan_prefix, existing, context.log
+    )
     salvaged = salvage_leftovers(context, plan_prefix, include_notes=bool(candidate and candidate.checked_out))
     if salvaged.sha:
         context.log(
@@ -298,6 +300,6 @@ def salvage_for_resume(context: FlowContext, plan_prefix: str, existing: set[str
     if branch:
         context.execution_branch = branch
         existing = _snapshot_child_branches(repo_dir, plan_prefix, "E") or (existing | {branch})
-    start = resume_start(repo_dir, context.plan_branch, existing)
-    blocking = checkout_blocking_paths(repo_dir, start)
-    return existing, blocking_checkout_error(blocking, start or "") if blocking else None
+    start = _resume_start(repo_dir, context.plan_branch, existing)
+    blocking = _checkout_blocking_paths(repo_dir, start)
+    return existing, _blocking_checkout_error(blocking, start or "") if blocking else None

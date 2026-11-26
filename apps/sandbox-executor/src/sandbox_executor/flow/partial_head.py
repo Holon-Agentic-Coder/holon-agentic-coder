@@ -22,7 +22,7 @@ def failed_partial_head(repo_dir: str, ref: str, execution_id: str) -> str | Non
     return None
 
 
-def has_summary_row(repo_dir: str, ref: str, execution_id: str) -> bool:
+def _has_summary_row(repo_dir: str, ref: str, execution_id: str) -> bool:
     """Whether ``ref`` carries any summary row (success or failure) for ``execution_id``."""
     rows = _read_ledger_rows(repo_dir, ref, "executions.jsonl")
     return _latest_execution_summary(rows, execution_id, ref) is not None

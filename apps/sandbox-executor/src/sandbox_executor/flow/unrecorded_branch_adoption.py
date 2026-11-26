@@ -19,7 +19,7 @@ from sandbox_executor.flow.git_refs import (
     _resolve_branch_ref,
 )
 from sandbox_executor.flow.host_remote import new_local_child_branches
-from sandbox_executor.flow.partial_head import failed_partial_head, has_summary_row
+from sandbox_executor.flow.partial_head import _has_summary_row, failed_partial_head
 from sandbox_executor.git import changed_paths, run_git
 from sandbox_executor.redaction import redact_agent_secrets
 
@@ -28,7 +28,7 @@ _MAX_NAMED_PATHS = 20
 
 
 @dataclass(frozen=True)
-class UnrecordedBranch:
+class _UnrecordedBranch:
     """The plan's newest execution branch: commits past the plan tip and no summary row for its id.
 
     ``needs_publish`` is true when the local head is missing from origin or ahead of it; ``checked_out`` when the
@@ -96,13 +96,13 @@ def _work_past_plan(repo_dir: str, plan_ref: str, tip: str) -> int:
         return 0
 
 
-def find_unrecorded_branch(
+def _find_unrecorded_branch(
     repo_dir: str,
     plan_branch: str | None,
     plan_prefix: str,
     existing: set[str],
     log: Callable[[str], None] | None = None,
-) -> UnrecordedBranch | None:
+) -> _UnrecordedBranch | None:
     """The plan's newest execution branch when it carries real work past the plan tip and no summary row, else None.
 
     ``existing`` is the origin snapshot of the plan's execution branches; local-only branches are added to it. A
@@ -115,7 +115,7 @@ def find_unrecorded_branch(
     exec_id = _execution_id(branch)
     refs = (f"{ORIGIN_REF_PREFIX}{branch}", f"{LOCAL_HEAD_REF_PREFIX}{branch}")
     origin, local = (_commit_sha(repo_dir, ref) for ref in refs)
-    if any(sha and has_summary_row(repo_dir, ref, exec_id) for sha, ref in zip((origin, local), refs, strict=True)):
+    if any(sha and _has_summary_row(repo_dir, ref, exec_id) for sha, ref in zip((origin, local), refs, strict=True)):
         return None
     tip = _branch_tip(repo_dir, local, origin)
     if tip is None:
@@ -126,10 +126,10 @@ def find_unrecorded_branch(
     if commits == 0:
         return None
     checked_out = _git_stdout(repo_dir, ["symbolic-ref", "--short", "-q", "HEAD"]) == branch
-    return UnrecordedBranch(branch, exec_id, tip[0], tip[1], checked_out, commits)
+    return _UnrecordedBranch(branch, exec_id, tip[0], tip[1], checked_out, commits)
 
 
-def resume_start(repo_dir: str, plan_branch: str | None, branches: set[str]) -> str | None:
+def _resume_start(repo_dir: str, plan_branch: str | None, branches: set[str]) -> str | None:
     """Where the executor's checkout starts: the newest recorded partial head, else the plan tip."""
     for branch in sorted(branches, key=_execution_seq, reverse=True):
         head = failed_partial_head(repo_dir, f"{ORIGIN_REF_PREFIX}{branch}", _execution_id(branch))
@@ -138,7 +138,7 @@ def resume_start(repo_dir: str, plan_branch: str | None, branches: set[str]) -> 
     return _resolve_branch_ref(repo_dir, plan_branch) if plan_branch else None
 
 
-def checkout_blocking_paths(repo_dir: str, start: str | None) -> list[str]:
+def _checkout_blocking_paths(repo_dir: str, start: str | None) -> list[str]:
     """Tracked files with uncommitted changes that also differ between HEAD and ``start``: git refuses that checkout."""
     if not start:
         return []
@@ -149,7 +149,7 @@ def checkout_blocking_paths(repo_dir: str, start: str | None) -> list[str]:
     return sorted(set(dirty.splitlines()) & set(differing.splitlines()))
 
 
-def blocking_checkout_error(paths: list[str], start: str) -> str:
+def _blocking_checkout_error(paths: list[str], start: str) -> str:
     """A Stage 3 failure message naming the files that block checking out ``start`` (a ref or a commit)."""
     start_label = start.removeprefix(ORIGIN_REF_PREFIX) if start.startswith("refs/") else start[:12]
     named = ", ".join(redact_agent_secrets(path) for path in paths[:_MAX_NAMED_PATHS])

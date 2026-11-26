@@ -11,7 +11,7 @@ import pytest
 from sandbox_executor.flow import FlowContext, failed_partial_head
 from sandbox_executor.flow.partial_salvage import salvage_for_resume
 from sandbox_executor.flow.stages.execute import ExecuteStage
-from sandbox_executor.flow.unrecorded_branch_adoption import find_unrecorded_branch
+from sandbox_executor.flow.unrecorded_branch_adoption import _find_unrecorded_branch
 
 from tests.repo_templates import copy_template, shared_template
 from tests.test_partial_salvage import (
@@ -196,12 +196,12 @@ def test_diverged_local_and_origin_are_left_alone(work: Path) -> None:
     git(work, "reset", "-q", "--hard", "HEAD~1")
     code_commit(work, "other.py")
     ctx = context(work)
-    found = find_unrecorded_branch(str(work), PLAN, prefix(), {EXEC_BRANCH}, ctx.log)
+    found = _find_unrecorded_branch(str(work), PLAN, prefix(), {EXEC_BRANCH}, ctx.log)
     assert found is None and any("diverged" in line for line in ctx.logs)
 
 
 def test_local_only_branch_is_found_and_needs_publishing(work: Path) -> None:
     tip = code_commit(work)
-    found = find_unrecorded_branch(str(work), PLAN, prefix(), set())
+    found = _find_unrecorded_branch(str(work), PLAN, prefix(), set())
     assert found is not None and (found.branch, found.tip, found.needs_publish) == (EXEC_BRANCH, tip, True)
     assert found.checked_out and found.commits_past_plan == 1

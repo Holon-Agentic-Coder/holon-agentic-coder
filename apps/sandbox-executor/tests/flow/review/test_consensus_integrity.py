@@ -18,6 +18,7 @@ from sandbox_executor.flow.review.adjudication import (
     _filter_adjudicated_findings,
     record_nit_rejections,
 )
+from sandbox_executor.flow.review.approval_gates import approved
 from sandbox_executor.flow.review.verdict import (
     consensus_blockers,
     decide_returned_consensus,
@@ -36,7 +37,7 @@ from sandbox_executor.review_ensemble import (
 )
 from sandbox_executor.review_report import FindingDisposition, finding_signature, with_reviewer_detail
 
-from tests.review_fakes import FakeEnsemble, clean_reviewer, install_fake_reviewers
+from tests.review_fakes import FAKE_HEAD_SHA, FakeEnsemble, clean_reviewer, install_fake_reviewers
 from tests.test_review_dispatch import EXEC_TARGET
 from tests.test_review_loop import _ensemble_ctx, _LoopStubs
 
@@ -483,3 +484,44 @@ def test_stage4_mergeability_halts_also_name_each_final_verdict(tmp_path, mergea
     assert "Final verdicts: Reviewer 1 APPROVED (0/0/0)" in message
     assert "not approved: reviewer 3 final verdict CHANGES_REQUESTED" in message
     assert any(message in line for line in ctx.logs)
+
+
+_RED_CI = {"all_passed": False, "passed": 0, "failed": 1, "pending": 0, "total": 1, "source": "github_cli"}
+
+
+def test_an_open_critical_finding_with_green_ci_approves_neither_gate_nor_their_conjunction(tmp_path, monkeypatch):
+    fake = FakeEnsemble(
+        [clean_reviewer(1), _reviewer("critical", "Bind mount exposes the host Docker socket.", index=2)]
+    )
+    install_fake_reviewers(monkeypatch, fake)
+    with _LoopStubs():
+        res = run_review_loop(_ensemble_ctx(tmp_path), target=EXEC_TARGET, max_iterations=1, ensemble_size=2)
+
+    gates = res["consensus"]["gates"]
+    assert gates["diff"]["approved"] is False
+    assert res["consensus"]["approved"] is False
+
+
+def test_clean_reviewers_with_red_ci_approve_the_diff_but_not_the_review(tmp_path, monkeypatch):
+    install_fake_reviewers(monkeypatch, FakeEnsemble([clean_reviewer(1), clean_reviewer(2)]))
+    ctx = _ensemble_ctx(tmp_path)
+    with _LoopStubs(ci=_RED_CI):
+        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1, ensemble_size=2)
+
+    gates = res["consensus"]["gates"]
+    assert gates["diff"]["approved"] is True and gates["diff"]["verdicts"] == ["APPROVED", "APPROVED"]
+    assert gates["pipeline"]["state"] == "red"
+    assert gates["diff"]["reviewed_head"] == gates["pipeline"]["head_sha"] == FAKE_HEAD_SHA
+    assert res["consensus"]["approved"] is False and res["ensemble_verdict"] == "CHANGES_REQUESTED"
+    assert ctx.review_state["gates"] == gates  # Checkpointed with the context.
+
+
+def test_clean_reviewers_with_green_ci_hold_both_gates(tmp_path, monkeypatch):
+    install_fake_reviewers(monkeypatch, FakeEnsemble([clean_reviewer(1)]))
+    ctx = _ensemble_ctx(tmp_path)
+    with _LoopStubs():
+        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1, ensemble_size=1)
+
+    assert res["consensus"]["approved"] is True
+    assert approved(ctx, str(tmp_path), FAKE_HEAD_SHA) is True
+    assert not any("Gate drift" in line for line in ctx.logs)

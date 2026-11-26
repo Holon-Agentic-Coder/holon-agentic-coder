@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-51b4fcf0",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T06:21:04.017526+00:00",
+  "updated_ts": "2026-11-26T06:21:04.017526+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795673220-54ce84b7",
+      "ACT-FIND-1795673044-d4c22330"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795665991-no-unneeded-full-review/P-1795666015-CLA-CO5.5--2-split-the-stage-4-fused-verdict/P-1795670043-CLA-CO5.5/E-1795670213-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 3 finding detected: FIND-R2-003-01",
+    "symptoms": [
+      "gates_summary can report gates left by an earlier iteration or run when the last iteration skipped recording (dry run, infra error, no head), because review_state gates are never reset; reset them or reword the payload comment and docs."
+    ]
+  }
+}

@@ -24,6 +24,7 @@ from tests.test_ci_bookkeeping_wiring import (
 WORKFLOW = "test-unit.yml"
 ACTION_PATH = "./.github/actions/macos-relevance-gate"
 ACTION_FILE = REPO_ROOT / ".github" / "actions" / "macos-relevance-gate" / "action.yml"
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 GATE_CONDITION = f"matrix.os == 'macos-latest' && {GUARD}"
 EXPENSIVE_STEPS = ("Install uv", "Run unit tests", "CI Timing Gate (compare with main)", FULL_RUN_STEP)
 
@@ -77,12 +78,29 @@ def test_action_calls_the_gate_module_and_falls_back_to_a_run() -> None:
     assert "value: ${{ steps.decide.outputs.skip }}" in text
     assert "      id: decide\n" in text
     assert "      working-directory: ${{ github.workspace }}\n" in text
-    assert "        GITHUB_TOKEN: ${{ github.token }}\n" in text
+    assert "GITHUB_TOKEN" not in text, "the gate reads local git only"
     assert "if ! python3 -m scripts.macos_relevance; then" in script
     assert "::warning::" in script
     assert 'echo "skip=false" >> "${GITHUB_OUTPUT}"' in script
     assert "skip=true" not in text
     assert "${{" not in script
+
+
+def test_action_deepens_the_merge_commit_on_pull_requests_only_and_tolerates_a_failure() -> None:
+    script = ACTION_FILE.read_text(encoding="utf-8").partition("      run: |\n")[2]
+    fetch = 'git fetch --no-tags --no-recurse-submodules --depth=2 origin "${GITHUB_SHA}" ||'
+
+    assert 'if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then' in script
+    assert fetch in script
+    assert script.index(fetch) < script.index("python3 -m scripts.macos_relevance")
+
+
+def test_other_workflows_do_not_use_the_relevance_gate() -> None:
+    others = [path.name for path in WORKFLOWS_DIR.glob("*.yml") if path.name != WORKFLOW]
+
+    assert "test-stress.yml" in others
+    assert [name for name in others if "macos_relevance" in workflow_text(name)] == []
+    assert [name for name in others if "macos-relevance-gate" in workflow_text(name)] == []
 
 
 def test_readme_documents_the_gate_and_every_rule_it_prints() -> None:

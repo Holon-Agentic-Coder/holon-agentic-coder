@@ -84,7 +84,7 @@ CONTENT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("platform-check", r"\bos\.uname\(", 0),
         ("posix-module", _imports("signal|fcntl|termios|pty|tty|resource|pwd|grp|select"), 0),
         ("posix-module", r"\bsignal\.", 0),
-        ("home-or-temp", r"^(?=.*(environ|getenv)).*\bHOME\b", 0),
+        ("home-or-temp", r"^(?=.*(environ|getenv|setenv|putenv|delenv)).*\bHOME\b", 0),
         ("home-or-temp", r"\bexpanduser\(", 0),
         ("home-or-temp", r"\bPath\.home\(", 0),
         ("home-or-temp", r"\bTMPDIR\b", 0),
@@ -97,7 +97,7 @@ CONTENT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("filesystem", r"\bshutil\.", 0),
         ("filesystem", rf"\.({_FS_PATHLIB})\(", 0),
         ("keychain-or-launcher", r"keychain", re.IGNORECASE),
-        ("keychain-or-launcher", r"\bsecurity\s+find-generic-password\b", 0),
+        ("keychain-or-launcher", r"\bfind-generic-password\b", 0),
         ("keychain-or-launcher", r"\bsandbox_executor\.launcher\b", 0),
         ("keychain-or-launcher", r"^\s*from\s+\.+launcher\b", 0),
     )

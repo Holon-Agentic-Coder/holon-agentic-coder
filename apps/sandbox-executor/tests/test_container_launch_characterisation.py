@@ -3,9 +3,9 @@
 Every scenario drives a public entry point re-exported by `sandbox_executor.cli` and patches only stdlib module
 attributes (`subprocess.run`, `shutil.which`, `socket.create_connection`, `tempfile.mkstemp`, `sys.stdin`,
 `sys.platform`) or domain modules (`git_flow`, `launcher.root_ca`, `launcher.run_tracking`), never a `cli.<function>`
-name, so the
-same assertions hold wherever the launch code lives. Each launch pins the docker argv (the redacted `Executing:` line
-included), the sorted `--env-file` lines and the exit code, after run-specific paths are swapped for placeholders.
+name, so the same assertions hold wherever the launch code lives. Each launch pins the docker argv (the redacted
+`Executing:` line included), the sorted `--env-file` lines and the exit code, after run-specific paths are swapped for
+placeholders.
 """
 
 import io

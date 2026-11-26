@@ -140,21 +140,43 @@ def acquire_flow_run_lock(target_worktree: str, slug: str, run_id: str) -> HeldR
     if path in _held:
         return _held[path][1]
     holder = RunLockHolder.current(slug, target_worktree, run_id)
-    stale: RunLockHolder | None = None
-    for attempt in range(2):
-        descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
-        if _try_lock(descriptor, path):
-            return _locked(descriptor, path, holder, stale)
-        current = _read_holder(descriptor)
-        dead = attempt == 0 and current is not None and current.is_dead_here() and _same_file(descriptor, path)
-        os.close(descriptor)
-        if not dead:
-            raise FlowRunLockHeld(slug, path, current)
-        _log_takeover(path, current, "its pid is dead but a process it started still holds the lock")
-        stale = current
+    held = _attempt(slug, path, holder, None)
+    if isinstance(held, HeldRunLock):
+        return held
+    # Contenders for a dead holder's lock take it over one at a time under a guard lock and re-check the file there, so
+    # none can unlink a lock file another has just created and locked.
+    guard = os.open(f"{path}.takeover", os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(guard, fcntl.LOCK_EX)
+        stale = _attempt(slug, path, holder, None)
+        if isinstance(stale, HeldRunLock):
+            return stale
+        _log_takeover(path, stale, "its pid is dead but a process it started still holds the lock")
         with contextlib.suppress(FileNotFoundError):
             os.unlink(path)
-    raise FlowRunLockHeld(slug, path, None)
+        retaken = _attempt(slug, path, holder, stale)
+        if isinstance(retaken, HeldRunLock):
+            return retaken
+        raise FlowRunLockHeld(slug, path, retaken)
+    finally:
+        os.close(guard)
+
+
+def _attempt(slug: str, path: str, holder: RunLockHolder, stale: RunLockHolder | None) -> HeldRunLock | RunLockHolder:
+    """Take the lock at ``path``, or return its recorded holder when that holder is dead on this host.
+
+    Raises:
+        FlowRunLockHeld: A live, remote or unidentified process holds it.
+    """
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    if _try_lock(descriptor, path):
+        return _locked(descriptor, path, holder, stale)
+    current = _read_holder(descriptor)
+    dead = current is not None and current.is_dead_here() and _same_file(descriptor, path)
+    os.close(descriptor)
+    if current is None or not dead:
+        raise FlowRunLockHeld(slug, path, current)
+    return current
 
 
 def held_run_lock_paths() -> list[str]:

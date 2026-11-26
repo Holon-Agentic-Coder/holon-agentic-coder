@@ -12,7 +12,6 @@ process group, and does nothing in a forked child.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 import shutil
@@ -164,10 +163,18 @@ def _signal(pid: int, own_group: bool, signum: int, seams: ReapSeams) -> bool:
     return True
 
 
+def _zombie(pid: int) -> bool:
+    """Whether ``pid`` has exited but not been collected; read from ``/proc`` so its ``Popen`` keeps the exit status."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as handle:
+            return handle.read().rpartition(")")[2].split()[:1] == ["Z"]
+    except OSError:
+        return False
+
+
 def _alive(pid: int, own_group: bool, seams: ReapSeams) -> bool:
-    with contextlib.suppress(ChildProcessError, OSError):
-        os.waitpid(pid, os.WNOHANG)
-    return _signal(pid, own_group, 0, seams)
+    """Probe without reaping: a group counts while any member answers signal 0; a lone zombie counts as gone."""
+    return _signal(pid, own_group, 0, seams) and (own_group or not _zombie(pid))
 
 
 def _end_processes(targets: dict[int, bool], owner_pid: int, seams: ReapSeams) -> int:

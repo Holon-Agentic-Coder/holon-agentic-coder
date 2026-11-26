@@ -37,7 +37,6 @@ BASELINE_SNAPSHOT: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("sandbox_executor/agent_runner.py", ("C901",)),
     ("sandbox_executor/agent_runner.py", ("PLR0913",)),
     ("sandbox_executor/budgets.py", ("PLR0913",)),
-    ("sandbox_executor/calibration/actual.py", ("C901", "PLR0912", "PLR0915")),
     ("sandbox_executor/calibration/generate.py", ("C901", "PLR0915")),
     ("sandbox_executor/calibration/run.py", ("C901", "PLR0912", "PLR0915")),
     ("sandbox_executor/calibration/run.py", ("PLR0913",)),

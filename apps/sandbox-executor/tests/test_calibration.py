@@ -583,7 +583,7 @@ class TestActualMetricsIntegrity(unittest.TestCase):
         diff_res = MagicMock(returncode=0, stdout="3 files changed, 100 insertions(+), 10 deletions(-)\n")
 
         with (
-            patch("sandbox_executor.calibration.actual.read_git_file", side_effect=mock_read_git_file),
+            patch("sandbox_executor.calibration.actual_evidence.read_git_file", side_effect=mock_read_git_file),
             patch("subprocess.run", return_value=diff_res),
         ):
             actual, _meta = parse_actual_metrics("E-prov-1", "I-test/P-test/_", PredictedMetrics(), "exec-sha")
@@ -624,7 +624,7 @@ class TestActualMetricsIntegrity(unittest.TestCase):
             return MagicMock(returncode=0, stdout="")
 
         with (
-            patch("sandbox_executor.calibration.actual.read_git_file", side_effect=mock_read_git_file),
+            patch("sandbox_executor.calibration.actual_evidence.read_git_file", side_effect=mock_read_git_file),
             patch("subprocess.run", side_effect=mock_subp),
         ):
             actual, meta = parse_actual_metrics("E-merge-1", "I-test/P-test/_", predicted, "exec-branch")
@@ -687,7 +687,7 @@ class TestActualMetricsIntegrity(unittest.TestCase):
             return MagicMock(returncode=0, stdout="")
 
         with (
-            patch("sandbox_executor.calibration.actual.read_git_file", side_effect=mock_read_git_file),
+            patch("sandbox_executor.calibration.actual_evidence.read_git_file", side_effect=mock_read_git_file),
             patch("subprocess.run", side_effect=mock_subp),
         ):
             actual, meta = parse_actual_metrics("E-linear-1", "I-test/P-test/_", predicted, "exec-linear")
@@ -1060,7 +1060,7 @@ class TestCalibrationInterleavedActionLedger(unittest.TestCase):
         diff_res = MagicMock(returncode=0, stdout="1 file changed, 10 insertions(+), 0 deletions(-)\n")
 
         with (
-            patch("sandbox_executor.calibration.actual.read_git_file", side_effect=mock_read_git_file),
+            patch("sandbox_executor.calibration.actual_evidence.read_git_file", side_effect=mock_read_git_file),
             patch("subprocess.run", return_value=diff_res),
         ):
             actual, meta = parse_actual_metrics("E-interleave", "I-test/P-test/_", PredictedMetrics(), "exec-sha")

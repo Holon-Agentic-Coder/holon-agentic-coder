@@ -115,7 +115,7 @@ class TestCalibrationDualEV(unittest.TestCase):
             return MagicMock(returncode=0, stdout="")
 
         with (
-            patch("sandbox_executor.calibration.actual.read_git_file", return_value=jsonl),
+            patch("sandbox_executor.calibration.actual_evidence.read_git_file", return_value=jsonl),
             patch("subprocess.run", side_effect=mock_subp),
         ):
             actual, _meta = parse_actual_metrics("E-dec-1", "I-t/P-t/_", predicted)
@@ -140,7 +140,7 @@ class TestCalibrationDualEV(unittest.TestCase):
                 return MagicMock(returncode=0, stdout="")
 
             with (
-                patch("sandbox_executor.calibration.actual.read_git_file", return_value=jsonl),
+                patch("sandbox_executor.calibration.actual_evidence.read_git_file", return_value=jsonl),
                 patch("subprocess.run", side_effect=mock_subp),
             ):
                 actual, _meta = parse_actual_metrics("E-dec-2", "I-t/P-t/_", predicted)
@@ -283,7 +283,7 @@ class TestCalibrationDualEV(unittest.TestCase):
             return MagicMock(returncode=0, stdout="")
 
         with (
-            patch("sandbox_executor.calibration.actual.read_git_file", return_value=jsonl),
+            patch("sandbox_executor.calibration.actual_evidence.read_git_file", return_value=jsonl),
             patch("subprocess.run", side_effect=mock_subp),
         ):
             actual, _meta = parse_actual_metrics("E-int-1", "I-t/P-t/_", predicted)
@@ -318,7 +318,7 @@ class TestCalibrationDualEV(unittest.TestCase):
             return MagicMock(returncode=0, stdout="")
 
         with (
-            patch("sandbox_executor.calibration.actual.read_git_file", return_value=jsonl),
+            patch("sandbox_executor.calibration.actual_evidence.read_git_file", return_value=jsonl),
             patch("subprocess.run", side_effect=mock_subp),
         ):
             actual, _meta = parse_actual_metrics("E-int-2", "I-t/P-t/_", predicted)

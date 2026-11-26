@@ -129,25 +129,16 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
     if not skip_commit:
         calibrated_branch = report.calibrated_branch
         local_check = run_git(
-            ["rev-parse", "--verify", f"refs/heads/{calibrated_branch}"],
-            cwd=target_worktree,
-            check=False,
+            ["rev-parse", "--verify", f"refs/heads/{calibrated_branch}"], cwd=target_worktree, check=False
         )
         remote_check = run_git(
-            ["rev-parse", "--verify", f"refs/remotes/origin/{calibrated_branch}"],
-            cwd=target_worktree,
-            check=False,
+            ["rev-parse", "--verify", f"refs/remotes/origin/{calibrated_branch}"], cwd=target_worktree, check=False
         )
         local_exists = local_check.returncode == 0
         remote_exists = remote_check.returncode == 0
 
         if local_exists:
-            res_co = run_git(
-                ["checkout", calibrated_branch],
-                cwd=target_worktree,
-                check=False,
-                timeout=30,
-            )
+            res_co = run_git(["checkout", calibrated_branch], cwd=target_worktree, check=False, timeout=30)
             if res_co.returncode != 0:
                 raise RuntimeError(
                     f"Failed to checkout existing calibrated branch '{calibrated_branch}': {res_co.stderr.strip()}"
@@ -179,10 +170,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
                 or execution_branch
             )
             res_co = run_git(
-                ["checkout", "-b", calibrated_branch, start_point],
-                cwd=target_worktree,
-                check=False,
-                timeout=30,
+                ["checkout", "-b", calibrated_branch, start_point], cwd=target_worktree, check=False, timeout=30
             )
             if res_co.returncode != 0:
                 err_msg = res_co.stderr.strip()
@@ -221,10 +209,7 @@ def run_calibrate(  # noqa: C901, PLR0912, PLR0915
 
             commit_msg = f"chore(calibration): add calibration report for {report.plan_id}"
             commit_res = run_git(
-                ["commit", "-m", commit_msg, "--", *commit_paths],
-                cwd=target_worktree,
-                env=commit_env,
-                check=False,
+                ["commit", "-m", commit_msg, "--", *commit_paths], cwd=target_worktree, env=commit_env, check=False
             )
         except Exception as e:
             detail = redact_agent_secrets(str(e))

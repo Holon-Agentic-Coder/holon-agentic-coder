@@ -32,6 +32,17 @@ class PredictedMetrics:
     def to_dict(self) -> dict[str, float]:
         return dataclasses.asdict(self)
 
+    @classmethod
+    def from_plan(
+        cls, plan_branch: str, target_worktree: str = ".", *, execution_id: str = ""
+    ) -> tuple[PredictedMetrics, dict[str, Any]]:
+        """The plan's plans.jsonl row, else its plan file, else the defaults: ``(metrics, plan metadata)``."""
+        return (
+            _parse_predicted_from_plans_ledger(plan_branch, target_worktree, execution_id)
+            or _parse_predicted_from_plan_markdown(plan_branch, target_worktree)
+            or (cls(), {})
+        )
+
 
 def _parse_plan_markdown_content(content: str, predicted: PredictedMetrics) -> None:
     row_pat = re.compile(r"\|\s*([a-zA-Z_0-9]+)\s*\|\s*([0-9\.\-]+)\s*\|")
@@ -83,8 +94,4 @@ def parse_predicted_metrics(
     plan_branch: str, target_worktree: str = ".", *, execution_id: str = ""
 ) -> tuple[PredictedMetrics, dict[str, Any]]:
     """Parse predicted metrics of the plan on ``plan_branch`` (or below it) from its plans.jsonl row or plan file."""
-    return (
-        _parse_predicted_from_plans_ledger(plan_branch, target_worktree, execution_id)
-        or _parse_predicted_from_plan_markdown(plan_branch, target_worktree)
-        or (PredictedMetrics(), {})
-    )
+    return PredictedMetrics.from_plan(plan_branch, target_worktree, execution_id=execution_id)

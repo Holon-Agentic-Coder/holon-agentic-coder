@@ -104,11 +104,7 @@ def generate_calibration(  # noqa: C901, PLR0915
         plan_branch, target_worktree=target_worktree, execution_id="" if execution_id == "E-unknown" else execution_id
     )
     actual, exec_meta = parse_actual_metrics(
-        execution_id,
-        resolved_plan_ref,
-        predicted,
-        execution_branch=resolved_exec_ref,
-        target_worktree=target_worktree,
+        execution_id, resolved_plan_ref, predicted, execution_branch=resolved_exec_ref, target_worktree=target_worktree
     )
 
     deltas, ratings, biases = compute_calibration_deltas(predicted, actual)
@@ -122,13 +118,7 @@ def generate_calibration(  # noqa: C901, PLR0915
 
     ssa_fallback = 0.0 if actual.files_changed == 0 else max(0.2, actual.files_changed * 0.1)
     ssa_obs = exec_meta.get("ssa_obs", round(ssa_fallback, 1))
-    ef = EntropyFactors(
-        ssa=(0.6, round(ssa_obs, 1)),
-        irr=(0.0, 0.0),
-        cl=(0.1, 0.0),
-        ser=(0.0, 0.0),
-        nov=(0.4, 0.4),
-    )
+    ef = EntropyFactors(ssa=(0.6, round(ssa_obs, 1)), irr=(0.0, 0.0), cl=(0.1, 0.0), ser=(0.0, 0.0), nov=(0.4, 0.4))
 
     base_sha = exec_meta.get("base_sha")
     merge_base_sha = exec_meta.get("merge_base_sha")

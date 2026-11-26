@@ -32,12 +32,7 @@ def fetch_remote_ref_if_needed(ref_name: str, target_worktree: str = ".") -> boo
     ]
     for cmd in fetch_commands:
         try:
-            res = run_git(
-                cmd,
-                cwd=target_worktree,
-                check=False,
-                timeout=30,
-            )
+            res = run_git(cmd, cwd=target_worktree, check=False, timeout=30)
             if res.returncode == 0:
                 return True
         except Exception as e:
@@ -66,10 +61,7 @@ def resolve_commit_sha(ref: str, target_worktree: str = ".") -> str:
         raise RuntimeError("Empty reference provided for commit SHA resolution.")
     try:
         res = run_git(
-            ["rev-parse", "--verify", f"{clean_ref}^{{commit}}"],
-            cwd=target_worktree,
-            check=False,
-            timeout=15,
+            ["rev-parse", "--verify", f"{clean_ref}^{{commit}}"], cwd=target_worktree, check=False, timeout=15
         )
         if res.returncode == 0 and res.stdout.strip():
             return res.stdout.strip()
@@ -89,10 +81,7 @@ def _as_commit_sha(clean_ref: str, target_worktree: str) -> str | None:
         return None
     try:
         res = run_git(
-            ["rev-parse", "--verify", f"{clean_ref}^{{commit}}"],
-            cwd=target_worktree,
-            check=False,
-            timeout=15,
+            ["rev-parse", "--verify", f"{clean_ref}^{{commit}}"], cwd=target_worktree, check=False, timeout=15
         )
         if res.returncode == 0 and res.stdout.strip():
             return res.stdout.strip()
@@ -105,10 +94,7 @@ def _as_local_branch(clean_ref: str, target_worktree: str) -> str | None:
     """A local branch (``refs/heads/<ref>``), after fetching its origin update when tracking exists."""
     try:
         res = run_git(
-            ["rev-parse", "--verify", f"refs/heads/{clean_ref}"],
-            cwd=target_worktree,
-            check=False,
-            timeout=30,
+            ["rev-parse", "--verify", f"refs/heads/{clean_ref}"], cwd=target_worktree, check=False, timeout=30
         )
         if res.returncode == 0:
             # Check if origin has an updated ref and fetch it if tracking exists
@@ -125,12 +111,7 @@ def _as_qualified_ref(clean_ref: str, target_worktree: str) -> str | None:
     if not (clean_ref.startswith("origin/") or clean_ref.startswith("refs/")):
         return None
     try:
-        res = run_git(
-            ["rev-parse", "--verify", clean_ref],
-            cwd=target_worktree,
-            check=False,
-            timeout=30,
-        )
+        res = run_git(["rev-parse", "--verify", clean_ref], cwd=target_worktree, check=False, timeout=30)
         if res.returncode == 0:
             return clean_ref
     except Exception as e:
@@ -142,12 +123,7 @@ def _as_remote_tracking(clean_ref: str, target_worktree: str) -> str | None:
     """``origin/<ref>`` when ``origin/<ref>`` or ``refs/remotes/origin/<ref>`` exists."""
     for remote_candidate in [f"origin/{clean_ref}", f"refs/remotes/origin/{clean_ref}"]:
         try:
-            res = run_git(
-                ["rev-parse", "--verify", remote_candidate],
-                cwd=target_worktree,
-                check=False,
-                timeout=30,
-            )
+            res = run_git(["rev-parse", "--verify", remote_candidate], cwd=target_worktree, check=False, timeout=30)
             if res.returncode == 0:
                 return f"origin/{clean_ref}"
         except Exception as e:
@@ -161,18 +137,12 @@ def _after_remote_fetch(clean_ref: str, target_worktree: str) -> str | None:
         return None
     try:
         res = run_git(
-            ["rev-parse", "--verify", f"refs/heads/{clean_ref}"],
-            cwd=target_worktree,
-            check=False,
-            timeout=30,
+            ["rev-parse", "--verify", f"refs/heads/{clean_ref}"], cwd=target_worktree, check=False, timeout=30
         )
         if res.returncode == 0:
             return clean_ref
         res_remote = run_git(
-            ["rev-parse", "--verify", f"origin/{clean_ref}"],
-            cwd=target_worktree,
-            check=False,
-            timeout=30,
+            ["rev-parse", "--verify", f"origin/{clean_ref}"], cwd=target_worktree, check=False, timeout=30
         )
         if res_remote.returncode == 0:
             return f"origin/{clean_ref}"
@@ -208,10 +178,7 @@ def _as_pull_request(clean_ref: str, target_worktree: str) -> str | None:
     pr_target = f"pr-{pr_num}"
     try:
         res = run_git(
-            ["fetch", "origin", f"+pull/{pr_num}/head:{pr_target}"],
-            cwd=target_worktree,
-            check=False,
-            timeout=30,
+            ["fetch", "origin", f"+pull/{pr_num}/head:{pr_target}"], cwd=target_worktree, check=False, timeout=30
         )
         if res.returncode == 0:
             return pr_target
@@ -223,12 +190,7 @@ def _as_pull_request(clean_ref: str, target_worktree: str) -> str | None:
 def _as_direct_ref(clean_ref: str, target_worktree: str) -> str | None:
     """The ref as given, when ``git rev-parse --verify`` accepts it."""
     try:
-        res = run_git(
-            ["rev-parse", "--verify", clean_ref],
-            cwd=target_worktree,
-            check=False,
-            timeout=15,
-        )
+        res = run_git(["rev-parse", "--verify", clean_ref], cwd=target_worktree, check=False, timeout=15)
         if res.returncode == 0 and res.stdout.strip():
             return clean_ref
     except Exception as e:
@@ -301,12 +263,7 @@ def read_git_file(
     if not clean_ref:
         return None
     try:
-        res = run_git(
-            ["show", f"{clean_ref}:{rel_path}"],
-            cwd=target_worktree,
-            check=False,
-            timeout=15,
-        )
+        res = run_git(["show", f"{clean_ref}:{rel_path}"], cwd=target_worktree, check=False, timeout=15)
         if res.returncode == 0:
             return res.stdout
         logger.debug("git show %s:%s returned %d: %s", clean_ref, rel_path, res.returncode, res.stderr.strip())

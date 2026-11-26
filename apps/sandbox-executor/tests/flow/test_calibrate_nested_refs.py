@@ -152,7 +152,7 @@ def test_parse_actual_metrics_diff_argv_ends_with_a_separator(
         patch("sandbox_executor.calibration.refs.run_git", side_effect=fake_git),
         patch("sandbox_executor.calibration_diff.run_git", side_effect=fake_git),
         patch("sandbox_executor.git_revisions.run_git", side_effect=fake_git),
-        patch("sandbox_executor.calibration.actual.read_git_file", return_value=None),
+        patch("sandbox_executor.calibration.actual_evidence.read_git_file", return_value=None),
         patch("os.path.exists", return_value=False),
     ):
         _actual, meta = parse_actual_metrics(EXEC_ID, plan_ref, PredictedMetrics(), execution_branch=EXEC)

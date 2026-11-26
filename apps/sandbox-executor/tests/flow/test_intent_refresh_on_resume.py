@@ -135,6 +135,14 @@ def test_a_resume_whose_intent_goal_lacks_the_sentence_is_refused(tmp_path, work
     assert checkpoint.read_bytes() == before
 
 
+def test_a_malformed_intent_file_is_refused_with_a_contract_error(tmp_path):
+    path = tmp_path / "intent.json"
+    path.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(intent_refresh.IntentContractError, match="is not valid JSON"):
+        intent_refresh.read_intent_file(str(path))
+
+
 def test_a_resume_without_an_intent_file_keeps_the_stored_intent(worktree, checkpoint):
     context, *_ = _resolve_checkpoint_and_intent(_args(None, worktree, checkpoint))
 

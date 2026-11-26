@@ -30,7 +30,11 @@ def read_intent_file(path: str) -> dict[str, Any]:
     if not os.path.isfile(path):
         raise IntentContractError(f"Intent file '{path}' does not exist; the resume is refused.")
     with open(path, encoding="utf-8") as f:
-        payload = json.load(f)
+        try:
+            payload = json.load(f)
+        except json.JSONDecodeError as exc:
+            message = f"Intent file '{path}' is not valid JSON ({exc}); the resume is refused."
+            raise IntentContractError(message) from exc
     if not isinstance(payload, dict):
         raise IntentContractError(f"Intent file '{path}' does not hold a JSON object; the resume is refused.")
     return payload

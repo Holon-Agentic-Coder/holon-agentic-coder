@@ -7,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from sandbox_executor.flow import host_remote
+from sandbox_executor.flow import conflict_resolver_role, host_remote
 from sandbox_executor.flow.conflict_resolver_attempt import ARTEFACT_DIR
 from sandbox_executor.flow.conflict_resolver_role import conflict_code_resolver
 from sandbox_executor.flow.context import FlowContext
@@ -229,6 +229,43 @@ def test_a_container_without_a_verdict_counts_as_agent_failure(work, pushes):
     result = _sync(work, dispatcher)
     assert result.status == "blocked" and dispatcher.tiers() == [HAIKU, SONNET, OPUS]
     assert result.test_result.startswith("agent_failed")
+
+
+class Raising(FakeDispatcher):
+    """Every dispatch records its tier and raises ``error``, as a launcher that aborts or crashes would."""
+
+    def __init__(self, error: BaseException) -> None:
+        super().__init__([])
+        self.error = error
+
+    def __call__(self, role, runner, model, positional_args, **kwargs) -> int:
+        self.calls.append({"tier": positional_args[2]})
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (SystemExit(1), "dispatch failed: launcher aborted with exit code 1"),
+        (RuntimeError("boom"), "dispatch failed: boom"),
+    ],
+)
+def test_a_launcher_abort_counts_as_agent_failure(work, pushes, monkeypatch, error, reason):
+    verdicts: list[dict] = []
+    describe = conflict_resolver_role._describe
+    monkeypatch.setattr(conflict_resolver_role, "_describe", lambda v, r="": verdicts.append(v) or describe(v, r))
+    dispatcher = Raising(error)
+    result = _sync(work, dispatcher)
+    assert result.status == "blocked" and dispatcher.tiers() == [HAIKU, SONNET, OPUS]
+    assert result.test_result.startswith("agent_failed") and not _merging(work) and pushes == []
+    assert verdicts == [{"verdict": "agent_failed", "reason": reason}] * 3
+
+
+def test_a_keyboard_interrupt_is_never_swallowed(work, pushes):
+    dispatcher = Raising(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        _sync(work, dispatcher)
+    assert dispatcher.tiers() == [HAIKU] and pushes == []
 
 
 def test_resolver_test_edits_propagate_to_sync_result(tmp_path, pushes):

@@ -3,11 +3,11 @@
 ``conflict_code_resolver(context)`` returns a ``CodeResolver`` for ``SyncRequest.code_resolver``. Each call walks the
 runner's tier ladder: dispatch one attempt, check it with the host guard (``conflict_resolver_attempt``), and stage it
 only when the container verdict is ``resolved`` and the guard finds nothing wrong. Failed lint, failed tests,
-cannot-decide, an agent failure or a rejected edit saves the attempt's diff, resets the merge and moves up exactly one
-tier. Tampering (a git write by the agent; a moved ``HEAD`` is reset to the pre-attempt head), a failed reset or a
-failed staging stops at once. The top tier failing returns ``resolved=False``, so ``merge_target`` aborts the merge,
-records the blocked ``target_sync`` row and pushes nothing. A conflict set holding the frozen module budget file is
-blocked before any dispatch unless the intent carries ``module_budget_change``.
+cannot-decide, an agent failure, a launcher abort or a rejected edit saves the attempt's diff, resets the merge and
+moves up exactly one tier. Tampering (a git write by the agent; a moved ``HEAD`` is reset to the pre-attempt head), a
+failed reset or a failed staging stops at once. The top tier failing returns ``resolved=False``, so ``merge_target``
+aborts the merge, records the blocked ``target_sync`` row and pushes nothing. A conflict set holding the frozen module
+budget file is blocked before any dispatch unless the intent carries ``module_budget_change``.
 """
 
 from __future__ import annotations
@@ -134,6 +134,8 @@ class _ConflictCodeResolver:
                 tier_context, CONFLICT_RESOLVER_ROLE, args, result_file=path, target_worktree=attempt.worktree
             )
             return _read_verdict(path, code)
+        except SystemExit as exc:  # A launcher abort is an environment failure, never the end of the flow.
+            return {"verdict": "agent_failed", "reason": f"dispatch failed: launcher aborted with exit code {exc.code}"}
         except Exception as exc:
             return {"verdict": "agent_failed", "reason": f"dispatch failed: {exc}"}
         finally:

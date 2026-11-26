@@ -3,8 +3,8 @@
 
 Coordinates the multi-pass review loop within an isolated container:
 - Proactive conflict detection and resolution.
-- Git identity 'Holon Review Loop Agent' set per process through the GIT_AUTHOR_* and GIT_COMMITTER_* environment
-  (from REVIEW_GIT_ENV), never written to git config.
+- Git identity 'Holon Review Loop Agent' applied only to the resolver commit, through a per-call environment copy
+  of REVIEW_GIT_ENV; never in the process environment, never in git config.
 - Independent reviewer agent turns on the real diff (the container is the sandbox they must run in), plus CI
   status probing and mergeability inspection; the exit code is 0 only for an APPROVED ensemble verdict.
 - Automated PR creation or update via GitHub API / gh CLI.
@@ -51,7 +51,7 @@ from sandbox_executor.entrypoint.review_verification import (
 from sandbox_executor.entrypoint.uv_lock import LockfileMismatchError, check_lockfile, frozen_env
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.review.delta_review_forwarding import load_forwarded_decision
-from sandbox_executor.flow.review.git_identity import _review_git_identity
+from sandbox_executor.flow.review.git_identity import _review_git_env
 from sandbox_executor.flow.review.loop import run_review_loop
 from sandbox_executor.flow.review.records import _bounded_error_context
 from sandbox_executor.flow.review.verdict import review_loop_approved, review_summary_lines
@@ -539,7 +539,7 @@ def _commit_resolution(
     )
     commit_cmd = ["git", "commit", "-m", commit_msg]
     _assert_safe_git_args(commit_cmd)
-    commit_res = run_cmd(commit_cmd, cwd=repo_dir, check=False)
+    commit_res = run_cmd(commit_cmd, cwd=repo_dir, env=_review_git_env(os.environ), check=False)
     if commit_res.returncode != 0:
         err = _bounded_error_context((commit_res.stderr or commit_res.stdout or "").strip() or "git commit failed")
         return dispositions, initial_head, True, True, f"Resolver commit failed: {err}"
@@ -678,9 +678,8 @@ def _run_resolver_mode(
 
 
 def main() -> None:
-    """Run the review loop with its git identity in the process environment, restored when main() leaves."""
-    with _review_git_identity(os.environ):
-        _run_main()
+    """Run the review loop; its git identity reaches only the resolver commit, never the process environment."""
+    _run_main()
 
 
 def _run_main() -> None:  # noqa: C901, PLR0915

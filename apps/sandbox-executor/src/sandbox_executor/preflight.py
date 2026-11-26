@@ -173,6 +173,10 @@ def matching_statuses(text: str) -> set[PreflightStatus]:
     return {status for status, pattern in _PATTERNS if pattern.search(text)}
 
 
+def is_model_error(text: str) -> bool:
+    return _MODEL_ERROR_RE.search(text) is not None
+
+
 def preflight_skipped_by_env(environ: Mapping[str, str] | None = None) -> bool:
     env = os.environ if environ is None else environ
     return str(env.get(SKIP_ENV_VAR, "")).strip().lower() in _TRUTHY_ENV_VALUES
@@ -400,7 +404,7 @@ class _ProbeTarget:
 
 
 def _is_retryable_unknown(result: PreflightResult) -> bool:
-    return result.status is PreflightStatus.UNKNOWN and _MODEL_ERROR_RE.search(result.output_excerpt) is None
+    return result.status is PreflightStatus.UNKNOWN and not is_model_error(result.output_excerpt)
 
 
 def _with_container_name(docker_cmd: list[str], container_name: str) -> list[str]:

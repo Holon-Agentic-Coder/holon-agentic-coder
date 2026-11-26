@@ -12,7 +12,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
-from sandbox_executor.preflight import _MODEL_ERROR_RE, PreflightResult, PreflightStatus, matching_statuses
+from sandbox_executor.preflight import PreflightResult, PreflightStatus, is_model_error, matching_statuses
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class OutageOutcome:
 def _never_waits(result: PreflightResult) -> bool:
     if matching_statuses(f"{result.output_excerpt}\n{result.hint}"):
         return True
-    if _MODEL_ERROR_RE.search(result.output_excerpt):
+    if is_model_error(result.output_excerpt):
         return True
     return result.hint.startswith(_NEVER_WAIT_HINT_PREFIXES)
 

@@ -51,6 +51,7 @@ def _write_private_file(path: str, content: str) -> None:
     with handle:
         handle.write(content)
 
+
 # Directory cleanup and root protection helpers
 ALLOWED_PARENTS = {
     "/home",
@@ -383,7 +384,9 @@ class StandardAgentRunner(AgentRunner):
                     if self._ephemeral_files:
                         atexit.register(self.cleanup_ephemeral_credentials)
             except Exception as e:
-                logger.warning("Failed to process secret bundle %s: %s", secret_bundle_path, redact_agent_secrets(str(e)))
+                logger.warning(
+                    "Failed to process secret bundle %s: %s", secret_bundle_path, redact_agent_secrets(str(e))
+                )
 
     def cleanup_ephemeral_credentials(self) -> None:
         """Securely wipe temporary secret bundles or session artifacts generated during the run."""

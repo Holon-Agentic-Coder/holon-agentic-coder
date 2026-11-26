@@ -1,7 +1,8 @@
-"""Tests for ledger-only merge conflict resolution: base prefix kept, appended rows interleaved on ``created_at``."""
+"""Tests for ledger-only merge conflict resolution: ours kept in place, theirs' rows inserted on ``created_at``."""
 
 from __future__ import annotations
 
+import difflib
 import json
 import subprocess
 from pathlib import Path
@@ -23,14 +24,50 @@ def _row(name: str, created_at: str | None = None) -> str:
 BASE = [_row("b1", "2026-11-01T00:00:00Z"), _row("b2", "2026-11-02T00:00:00Z")]
 
 
-def test_base_prefix_is_kept_byte_for_byte_and_tails_interleave_on_created_at():
+def _ids(lines: list[str]) -> list[str]:
+    return [json.loads(line)["id"] for line in lines]
+
+
+def _is_ordered_subsequence(kept: list[str], merged: list[str]) -> bool:
+    remaining = iter(merged)
+    return all(line in remaining for line in kept)
+
+
+def _only_additions(before: list[str], after: list[str]) -> bool:
+    return not any(line.startswith("- ") for line in difflib.ndiff(before, after))
+
+
+def test_ours_is_kept_in_place_and_theirs_rows_are_inserted_on_created_at():
     ours = [*BASE, _row("o1", "2026-11-03T00:00:00Z"), _row("o2", "2026-11-05T00:00:00Z")]
     theirs = [*BASE, _row("t1", "2026-11-04T00:00:00Z"), _row("t2", "2026-11-06T00:00:00+00:00")]
 
     merged = interleave_ledger_rows(BASE, ours, theirs)
 
-    assert merged[:2] == BASE
-    assert [json.loads(line)["id"] for line in merged[2:]] == ["o1", "t1", "o2", "t2"]
+    assert _is_ordered_subsequence(ours, merged)
+    assert _ids(merged) == ["b1", "b2", "o1", "t1", "o2", "t2"]
+
+
+def test_an_incoming_row_older_than_the_base_tail_is_inserted_not_appended():
+    ours = [*BASE, _row("o1", "2026-11-03T00:00:00Z")]
+    theirs = [*BASE, _row("t-old", "2026-11-01T12:00:00Z")]
+
+    merged = interleave_ledger_rows(BASE, ours, theirs)
+
+    assert _ids(merged) == ["b1", "t-old", "b2", "o1"]
+    assert [line for line in merged if line in ours] == ours
+    assert _only_additions(ours, merged)
+
+
+def test_sorted_sides_merge_sorted_and_as_additions_only():
+    ours = [*BASE, _row("o1", "2026-11-03T00:00:00Z"), _row("o2", "2026-11-05T00:00:00.000000+00:00")]
+    theirs = [*BASE, _row("t0", "2026-11-01T06:00:00Z"), _row("t1", "2026-11-04T00:00:00Z"), _row("t3", "2026-11-07")]
+
+    merged = interleave_ledger_rows(BASE, ours, theirs)
+
+    assert _ids(merged) == ["b1", "t0", "b2", "o1", "t1", "o2", "t3"]
+    assert _is_ordered_subsequence(ours, merged)
+    assert _is_ordered_subsequence(theirs[len(BASE) :], merged)
+    assert _only_additions(ours, merged)
 
 
 def test_each_side_keeps_its_own_order_and_ours_wins_a_tie():
@@ -49,8 +86,8 @@ def test_rows_without_created_at_follow_the_timed_rows_in_side_order():
 
     merged = interleave_ledger_rows(BASE, ours, theirs)
 
-    # An untimed head waits for the other side's timed rows; neither side's own order changes.
-    assert merged[2:] == [theirs[2], ours[2], ours[3], theirs[3], theirs[4]]
+    # Ours never moves; theirs' untimed row stays glued after the timed row it followed.
+    assert merged[2:] == [ours[2], ours[3], theirs[2], theirs[3], theirs[4]]
 
 
 def test_a_row_both_sides_appended_is_kept_once():

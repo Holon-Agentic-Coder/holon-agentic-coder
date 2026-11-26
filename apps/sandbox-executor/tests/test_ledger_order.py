@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 
 import pytest
-from sandbox_executor.ledger.order import _order_appended_rows, merge_by_instant, parse_created_at
+from sandbox_executor.ledger.order import merge_by_instant, parse_created_at
 
 
 def _ids(rows: list[dict]) -> list[str]:
@@ -82,12 +81,3 @@ def test_canonical_order_is_untouched_even_when_canonical_rows_are_out_of_order(
 def test_no_fragment_rows_returns_the_canonical_rows() -> None:
     canonical = [{"id": "c2", "created_at": "2026-11-25T12:00:00Z"}, {"id": "c1", "created_at": "2026-11-25T08:00:00Z"}]
     assert merge_by_instant(canonical, []) == canonical
-
-
-def test_appended_row_ordering_still_treats_z_and_plus_zero_alike() -> None:
-    lines = [
-        json.dumps({"id": "b", "created_at": "2026-11-25T10:00:01Z"}),
-        "not json",
-        json.dumps({"id": "a", "created_at": "2026-11-25T10:00:00+00:00"}),
-    ]
-    assert _order_appended_rows(lines) == [lines[2], lines[1], lines[0]]

@@ -11,6 +11,7 @@ from typing import Any
 
 from sandbox_executor.knowledge.consult_filters import ConsultQuery, build_where, clean_labels, row_to_record
 from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, ActionIndexDatabase
+from sandbox_executor.knowledge.ledger_fragment_sync import sync_ledger_and_fragments
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +74,8 @@ class ConsultEngine:
         self.ledgers = auto_sync_ledgers if auto_sync_ledgers is not None else list(DEFAULT_LEDGERS)
 
     def _sync_if_needed(self) -> None:
-        for ledger_path in self.ledgers:
-            try:
-                self.db.sync_ledger(ledger_path)
-            except Exception as e:
-                logger.debug("Failed incremental sync for %s: %s", ledger_path, e)
+        for ledger in self.ledgers:
+            sync_ledger_and_fragments(self.db.db_path, ledger)
 
     def consult_records(self, **filters: Any) -> ConsultResult:
         query = ConsultQuery(**filters)

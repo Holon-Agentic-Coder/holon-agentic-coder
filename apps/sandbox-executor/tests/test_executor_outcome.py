@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from sandbox_executor.entrypoint import executor
+from sandbox_executor.ledger import read_merged_rows, read_merged_rows_at_ref
 
 from tests.executor_fixtures import (
     _agent_turns_use_run_cmd,  # noqa: F401  (autouse fixture)
@@ -59,8 +60,7 @@ class TestExecutor(unittest.TestCase):
             patch("sys.argv", ["executor.py", "I-456/P-123/_", "antigravity-agent", "gemini-3.5-flash"]),
         ):
             executor.main()
-            with open(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl")) as ef:
-                rows = [json.loads(line) for line in ef if line.strip()]
+            rows = read_merged_rows(os.path.join(tmp_dir, "holon-knowledge/ledger/executions.jsonl"))
             argv = [c.args[0] for c in mock_run_cmd.call_args_list if c.args]
         return [r for r in rows if r.get("entry_type") == "summary"], argv
 
@@ -151,10 +151,8 @@ class TestExecutor(unittest.TestCase):
             with self.assertRaises(SystemExit) as refused:
                 executor.main()
             ledger_dir = os.path.join(tmp_dir, "holon-knowledge/ledger")
-            with open(os.path.join(ledger_dir, "executions.jsonl")) as ef:
-                rows = [json.loads(line) for line in ef if line.strip()]
-            with open(os.path.join(ledger_dir, "intents.jsonl")) as inf:
-                intent_slugs = [json.loads(line)["slug"] for line in inf if line.strip()]
+            rows = read_merged_rows(os.path.join(ledger_dir, "executions.jsonl"))
+            intent_slugs = [row["slug"] for row in read_merged_rows(os.path.join(ledger_dir, "intents.jsonl"))]
         return refused.exception.code, stderr.getvalue().splitlines(), rows, intent_slugs, mock_runner
 
     def test_main_over_budget_flow_writes_no_intent_rows(self):
@@ -282,8 +280,7 @@ class TestExecutor(unittest.TestCase):
                 workspace, "for-each-ref", "--format=%(refname:short)", "refs/heads/I-456/P-123/"
             ).stdout.split()
             local = [ref for ref in heads if ref != plan_branch]
-            ledger = git(workspace, "show", f"{local[0]}:holon-knowledge/ledger/executions.jsonl").stdout
-            rows = [json.loads(line) for line in ledger.splitlines() if line.strip()]
+            rows = read_merged_rows_at_ref(workspace, local[0], "executions.jsonl")
             origin_after = git(origin, "for-each-ref", "--format=%(refname)").stdout
 
         mock_runner.build_cmd.assert_not_called()
@@ -421,6 +418,13 @@ def test_main_non_execute_row_summary_action_and_commit(tmp_path, monkeypatch, p
     (recorded,) = [r for r in rows if r.get("event_type") == "plan_decomposition"]
     assert recorded["action"] == action
     # Only the executions ledger is staged; the commit carries the outcome-specific message.
-    assert ["git", "add", "holon-knowledge/ledger/executions.jsonl"] in commands
-    assert not any(cmd[:2] == ["git", "add"] and "holon-knowledge/ledger/intents.jsonl" in cmd for cmd in commands)
+    assert ["git", "add", "holon-knowledge/ledger/pending/executions"] in commands
+    assert not any(
+        cmd[:2] == ["git", "add"]
+        and any(
+            arg.startswith(("holon-knowledge/ledger/intents.jsonl", "holon-knowledge/ledger/pending/intents"))
+            for arg in cmd
+        )
+        for cmd in commands
+    )
     assert ["git", "commit", "-m", commit] in commands

@@ -21,6 +21,7 @@ from sandbox_executor.flow.target_probe import TargetProbe
 from sandbox_executor.flow.target_sync_record import append_sync_row
 from sandbox_executor.flow.target_sync_result import SyncRequest, SyncResult
 from sandbox_executor.git import run_git
+from sandbox_executor.ledger.fragments import ledger_commit_paths
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,10 @@ def _resolve(request: SyncRequest, probe: TargetProbe, result: SyncResult) -> Sy
     return replace(result, resolutions=resolutions + code_resolutions)
 
 
+def _ledger_paths(request: SyncRequest) -> list[str]:
+    return ledger_commit_paths(request.worktree, "executions.jsonl")
+
+
 def _commit_message(probe: TargetProbe, result: SyncResult) -> str:
     classes = sorted({cls for _, cls, _ in result.resolutions}) or ["clean"]
     return f"{SYNC_MERGE_PREFIX}{probe.target_ref} at {probe.target_sha[:12]} ({', '.join(classes)})"
@@ -94,7 +99,7 @@ def _commit_and_push(request: SyncRequest, probe: TargetProbe, result: SyncResul
     failure is reported by the returned ``blocked`` result and its error, not by the row.
     """
     result = append_sync_row(request, replace(result, status="merged"))
-    run_git(["add", "--", request.ledger_path], cwd=request.worktree, check=False)
+    run_git(["add", "--", *_ledger_paths(request)], cwd=request.worktree, check=False)
     commit = run_git(["commit", "--no-edit", "-m", _commit_message(probe, result)], cwd=request.worktree, check=False)
     if commit.returncode != 0:
         raise RuntimeError(f"merge commit failed: {(commit.stderr or '').strip()}")
@@ -155,8 +160,12 @@ def _guarded(request: SyncRequest, probe: TargetProbe, step: _Step, *, record_bl
 def _commit_blocked_row(request: SyncRequest, result: SyncResult) -> SyncResult:
     """Commit the blocked row alone (not pushed), so the next merge of a target that changed the ledger can start."""
     message = f"sync: record blocked target sync of {result.target_sha[:12]}"
-    run_git(["add", "--", request.ledger_path], cwd=request.worktree, check=False)  # the row may create the ledger
-    commit = run_git(["commit", "-q", "-m", message, "--", request.ledger_path], cwd=request.worktree, check=False)
+    ledger_paths = _ledger_paths(request)  # the row may create its fragment
+    if not ledger_paths:  # an empty pathspec would make ``git commit --`` commit the whole index
+        logger.warning("Could not commit the blocked target_sync row: no ledger path exists")
+        return result
+    run_git(["add", "--", *ledger_paths], cwd=request.worktree, check=False)
+    commit = run_git(["commit", "-q", "-m", message, "--", *ledger_paths], cwd=request.worktree, check=False)
     if commit.returncode != 0:
         logger.warning("Could not commit the blocked target_sync row: %s", (commit.stderr or "").strip())
         return result

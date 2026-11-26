@@ -20,17 +20,16 @@ degrades the measurement to the merge-base with a fallback branch (the intent br
 
 from __future__ import annotations
 
-import json
 import logging
 import subprocess
 from typing import Any
 
 from sandbox_executor.git import run_git
 from sandbox_executor.git_revisions import qualify_branch_revision, revision_args
+from sandbox_executor.ledger import read_merged_rows_at_ref
 
 logger = logging.getLogger(__name__)
 
-INTENTS_LEDGER_REL = "holon-knowledge/ledger/intents.jsonl"
 DEFAULT_TARGET_BRANCH = "main"
 
 DIFF_BASE_TARGET_MERGE_BASE = "target_merge_base"
@@ -45,16 +44,11 @@ def intent_target_branch(intent_branch: str, head_rev: str, target_worktree: str
     A decomposed child intent targets its parent's plan branch, so its patch is measured against that branch.
     """
     intent = intent_branch.removesuffix("/_").strip()
-    res = run_git(["show", f"{head_rev}:{INTENTS_LEDGER_REL}"], cwd=target_worktree, check=False, timeout=30)
-    if not intent or res.returncode != 0:
+    if not intent:
         return DEFAULT_TARGET_BRANCH
     target = ""
-    for line in res.stdout.splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict) and str(row.get("branch") or "").removesuffix("/_") == intent:
+    for row in read_merged_rows_at_ref(target_worktree, head_rev, "intents.jsonl", git=run_git):
+        if str(row.get("branch") or "").removesuffix("/_") == intent:
             target = str(row.get("target_branch") or "") or target
     return target or DEFAULT_TARGET_BRANCH
 

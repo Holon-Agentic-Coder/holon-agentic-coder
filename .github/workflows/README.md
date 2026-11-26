@@ -29,6 +29,11 @@ This directory contains the CI/CD workflows for the `holon-agentic-coder` projec
   Buildx caching.
 - `ci-durations.yml`: Runs daily at 04:23 UTC and on manual dispatch, with read-only permissions (`actions: read`,
   `contents: read`). It builds the CI duration report described below and uploads it as the `ci-durations` artefact.
+- `promote-ledger.yml`: Runs on pushes to `main`, daily at 03:41 UTC and on manual dispatch (with a boolean `force`
+  input), under the `promote-ledger` concurrency group. It runs `holon ledger promote` (see
+  [Promotion](../../docs/ledger_fragments.md#promotion)) and pushes the ledger-only result with the maintainer-provided
+  `HOLON_LEDGER_BOT_TOKEN` secret; without the secret it is a green no-op. See "Ledger Promotion" below. It has no
+  `pull_request` trigger, so it is not one of the six pull-request workflows and has no bookkeeping gate.
 
 ### Pull requests into any branch
 
@@ -298,6 +303,42 @@ Each run makes one request per 100 runs plus one per run for its jobs. `--max-ru
 the `GITHUB_TOKEN` limit of 1000 requests an hour. When it, or the API's cap of 1000 results per listing, cuts the
 window short, the report and the summary say so with a warning. Runs whose jobs cannot be read (for example once the
 rate limit is hit) are merged into one warning that counts them and names the first five.
+
+## Ledger Promotion
+
+`promote-ledger.yml` runs `holon ledger promote` on `main`. The command appends the pending fragment rows under
+`holon-knowledge/ledger/pending/` to the canonical ledgers, additions only, once enough root intents have fragments (see
+[Promotion](../../docs/ledger_fragments.md#promotion)); a manual dispatch with `force` set promotes whatever the count.
+The job then commits and pushes the result to `main` as `holon-ledger-bot`:
+
+- **Green no-op without the secret.** The job-level environment carries `HOLON_LEDGER_BOT_TOKEN` from the repository
+  secret. When it is empty, the `Explain a missing bot token` step prints a `::notice::` and writes the same reason to
+  the job summary, every later step is skipped and the run stays green. The secret reaches only the job environment and
+  the checkout `token` input, never a `run:` script, and no step prints it.
+- **Never its own commit.** The promotion commit message is `chore(ledger): promote pending fragments [ledger-promote]`.
+  A push whose head commit message contains `[ledger-promote]` skips the job, so a promotion never triggers another one.
+  Runs queue in the `promote-ledger` concurrency group with `cancel-in-progress: false`, so no run is killed mid-push.
+- **Ledger paths only.** Before committing, the `Fail on changes outside holon-knowledge/ledger/` step lists every
+  changed, deleted and untracked path, with a rename counted under both names. It fails the run if any path lies outside
+  `holon-knowledge/ledger/`, and logs "Nothing to promote" when nothing changed (below the threshold or no pending
+  fragments). The commit stages `holon-knowledge/ledger` only.
+- **Push race.** The push to `main` is tried at most 3 times. After a rejected push the job fetches `origin/main` and
+  rebases the promotion commit onto it. A rebase conflict aborts the rebase and fails the run: nothing is resolved by
+  hand. Re-run the workflow once `main` settles.
+- **Timing gate.** When the secret is set, the job starts and ends with the CI timing regression gate (600 s ceiling).
+
+`apps/sandbox-executor/tests/test_promote_ledger_workflow.py` pins these properties on a structural parse of the
+workflow. A live push cannot run in CI, so the first run after a maintainer sets the secret is the real check.
+
+### Maintainer-provided secret
+
+- Create a fine-grained personal access token or a GitHub App installation token limited to this repository with
+  `Contents: Read and write`, and store it as the repository secret `HOLON_LEDGER_BOT_TOKEN` (Settings, "Secrets and
+  variables", "Actions"). The workflow's own `GITHUB_TOKEN` stays read-only (`contents: read`) and never pushes.
+- If branch protection on `main` requires pull requests or status checks, allow the token's identity to push to `main`,
+  or every push is rejected and the run fails after 3 attempts.
+- Start the first enabled run by hand ("Run workflow" on "Promote Ledger", or `gh workflow run promote-ledger.yml`) and
+  watch it. Deleting the secret disables promotion again.
 
 ## Branch Protection Status Checks
 

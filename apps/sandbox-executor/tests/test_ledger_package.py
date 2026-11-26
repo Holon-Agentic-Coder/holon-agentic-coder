@@ -37,6 +37,13 @@ def test_package_reexports_all_core_symbols() -> None:
         "resolve_append_only_conflict",
         "try_append_action_record",
         "try_append_ledger_line",
+        "read_merged_rows",
+        "read_merged_rows_at_ref",
+        "read_merged_text",
+        "with_ref_fragments",
+        "merged_jsonl_text",
+        "parse_created_at",
+        "PENDING_DIR_REL",
     ]
     for sym in expected_symbols:
         assert hasattr(ledger, sym), f"sandbox_executor.ledger is missing symbol '{sym}'"

@@ -22,6 +22,7 @@ from sandbox_executor.flow import (
     undisposed,
 )
 from sandbox_executor.flow.review.loop import _run_engine_review_loop
+from sandbox_executor.ledger import read_merged_rows
 from sandbox_executor.review_ensemble import (
     ConsensusVerdict,
     ParsedTrailer,
@@ -145,7 +146,7 @@ def _engine_pass(ctx) -> dict:
 
 def _res_rows(tmp_path: Path) -> list[dict]:
     ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
-    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = read_merged_rows(str(ledger))
     return [r for r in rows if str(r.get("action_id", "")).startswith("ACT-RES-") and r.get("review_finding_ids")]
 
 

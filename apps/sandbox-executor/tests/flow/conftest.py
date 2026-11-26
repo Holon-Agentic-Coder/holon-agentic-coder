@@ -33,7 +33,7 @@ def _no_real_prettier(monkeypatch):
 
     The calibrate stage formats its report through ``calibration._prettier_failure``; faking that seam to report a
     passing check keeps the flow tests independent of npx being installed. Tests of the formatter itself live in
-    test_calibration.py.
+    test_calibration_commit.py.
 
     The same wrapper answers the mergeability probe's ``gh pr view`` read in-process with the failure the host's real
     ``gh`` gives in a temporary repository (``tests/gh_probe_stub.py``), so the local git fallback decides as before

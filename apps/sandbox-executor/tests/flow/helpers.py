@@ -15,6 +15,7 @@ from sandbox_executor.budgets import resolve_entropy_budget
 from sandbox_executor.decomposition_rule import DecompositionDecision, should_decompose
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
+from sandbox_executor.ledger import read_merged_rows, read_merged_rows_at_ref
 from sandbox_executor.naming import model_code, ticker_for
 from sandbox_executor.review_ensemble import (
     ParsedTrailer,
@@ -98,8 +99,7 @@ def _append_jsonl(path: Path, row: dict[str, Any]) -> None:
 
 
 def _ledger_rows(repo: Path, ref: str, name: str) -> list[dict[str, Any]]:
-    content = _git(repo, "show", f"{ref}:holon-knowledge/ledger/{name}")
-    return [json.loads(line) for line in content.splitlines() if line.strip()]
+    return read_merged_rows_at_ref(str(repo), ref, name)
 
 
 PLAN_MARKDOWN = """# Plan for {intent}
@@ -367,7 +367,7 @@ def _ledger_fingerprint(path: Path) -> tuple[int, str]:
 
 
 def _read_rows(ledger: Path) -> list[dict]:
-    return [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return read_merged_rows(str(ledger))
 
 
 def _prefix(row: dict) -> str:

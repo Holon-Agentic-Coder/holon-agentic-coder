@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from sandbox_executor.flow import FlowContext, StageStatus, run_calibrate_stage
+from sandbox_executor.ledger import read_merged_text
 
 from tests.flow.helpers import _append_jsonl, _configure_identity
 from tests.flow.sleep_patch import scoped_sleep_patch
@@ -177,7 +178,7 @@ class TestStage5PromotedArtifactsCommit:
         assert "holon-knowledge/kb/KB-fail.json" not in status
         assert "holon-knowledge/wisdom/WB-fail.json" not in status
         assert git("rev-parse", execution_branch).strip() == execution_tip
-        rows = [line for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+        rows = [line for line in (read_merged_text(str(ledger)) or "").splitlines() if line.strip()]
         assert len(rows) == 1
         assert '"outcome": "failure"' in rows[0]
         assert "ACT-CAL-" in rows[0]

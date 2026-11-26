@@ -27,6 +27,7 @@ from sandbox_executor.flow.review import approval_carry_over, ensemble, sync_poi
 from sandbox_executor.flow.review.posting import PostRequest, post_review_consensus
 from sandbox_executor.flow.review_restart import stage5_merged_head_gate
 from sandbox_executor.flow.target_sync_result import SyncResult
+from sandbox_executor.ledger import read_merged_rows_at_ref
 from sandbox_executor.review_ensemble import build_review_request
 from sandbox_executor.review_target import ReviewTarget
 
@@ -278,7 +279,7 @@ def test_stage5_entry_and_retry_sync_resolve_conflicts_and_block_cleanly(tmp_pat
 
     # Stage 5 entry sync resolves mechanical ledger conflict.
     assert sync_before_calibration(ctx, "2026-11-24T00:00:00Z") is None
-    rows = [json.loads(line) for line in _git(work, "show", f"origin/{FLOW_BRANCH}:{LEDGER}").splitlines()]
+    rows = read_merged_rows_at_ref(str(work), f"origin/{FLOW_BRANCH}", "executions.jsonl")
     assert any(r.get("action") == "target_sync" and r.get("boundary") == "calibrate" for r in rows)
 
     # Stage 5 calibration retry sync runs before retry attempt 2.
@@ -594,7 +595,7 @@ def test_calibrate_retry_sync_from_calibrated_branch_commits_carry_over_and_gate
     assert _git(work, "status", "--porcelain") == ""
     assert _git(work, "rev-parse", f"refs/heads/{calibrated}") == updated[0]
     assert _git(work, "rev-parse", f"origin/{FLOW_BRANCH}") == updated[0]
-    rows = [json.loads(line) for line in _git(work, "show", f"origin/{FLOW_BRANCH}:{LEDGER}").splitlines()]
+    rows = read_merged_rows_at_ref(str(work), f"origin/{FLOW_BRANCH}", "executions.jsonl")
     assert any(str(r.get("action_id", "")).startswith("ACT-CARRY") for r in rows)
 
     # A second retry sync with HEAD on /calibrated and failing CI raises _CalibrateRestartRequired cleanly.

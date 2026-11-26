@@ -19,6 +19,7 @@ from sandbox_executor.entrypoint.review_loop import (
     main as review_loop_main,
 )
 from sandbox_executor.flow.github.adapter_runner import GhResult
+from sandbox_executor.ledger import read_merged_rows
 from sandbox_executor.turns import TurnResult
 
 from tests.flow.github.fake_github import (
@@ -765,10 +766,7 @@ def _fake_gh(head_branch: str = "feature/x"):
 
 
 def _ledger_rows(repo_dir: Path) -> list[dict]:
-    ledger = repo_dir / "holon-knowledge" / "ledger" / "executions.jsonl"
-    if not ledger.exists():
-        return []
-    return [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return read_merged_rows(str(repo_dir / "holon-knowledge" / "ledger" / "executions.jsonl"))
 
 
 def _run_entrypoint(repo_dir: Path, target: str, fake_git: FakeGitCommands, *extra: str):

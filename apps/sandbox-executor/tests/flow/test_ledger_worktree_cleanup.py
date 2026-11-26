@@ -24,6 +24,8 @@ from tests.flow.helpers import _git, _ledger_rows
 
 BRANCH = "I-1-x/P-2-y/E-3-z/_"
 LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
+PENDING_REL = "holon-knowledge/ledger/pending/executions"
+FRAGMENT_REL = f"{PENDING_REL}/I-1-x.jsonl"
 EARLIER_ROW: dict[str, Any] = {"entry_type": "summary", "execution_id": "E-3-z", "plan_branch": "I-1-x/P-2-y/_"}
 NEW_ROW: dict[str, Any] = {**EARLIER_ROW, "status": "success", "ledger_revision": 2}
 MESSAGE = "execute: record success row for E-3-z"
@@ -159,6 +161,12 @@ def _registered_path(tmp_root: Path) -> str:
     return os.path.join(os.path.realpath(tmp_root), "worktree")
 
 
+def _unstamped(row: dict[str, Any]) -> dict[str, Any]:
+    """``row`` without the ``created_at`` the append funnel stamps on a row that has none, which must be a Z stamp."""
+    assert str(row.get("created_at", "")).endswith("Z")
+    return {key: value for key, value in row.items() if key != "created_at"}
+
+
 def _show(repo: Path, spec: str) -> str:
     """The exact output of ``git show <spec>`` (the shared ``_git`` helper strips it)."""
     return subprocess.run(["git", "show", spec], cwd=repo, check=True, capture_output=True, text=True).stdout
@@ -188,9 +196,11 @@ def test_a_successful_ledger_step_makes_the_same_commit_and_push(ledger_repos):
         identity["GIT_COMMITTER_NAME"],
         identity["GIT_COMMITTER_EMAIL"],
     ]
-    assert _git(origin, "diff", "--name-only", previous_tip, tip).splitlines() == [LEDGER_REL]
-    assert _show(origin, f"{tip}:{LEDGER_REL}") == previous_content + json.dumps(NEW_ROW) + "\n"
-    assert _ledger_rows(origin, tip, "executions.jsonl") == [EARLIER_ROW, NEW_ROW]
+    assert _git(origin, "diff", "--name-only", previous_tip, tip).splitlines() == [FRAGMENT_REL]
+    assert _show(origin, f"{tip}:{LEDGER_REL}") == previous_content
+    [written] = [json.loads(line) for line in _show(origin, f"{tip}:{FRAGMENT_REL}").splitlines()]
+    assert _unstamped(written) == NEW_ROW
+    assert _ledger_rows(origin, tip, "executions.jsonl") == [EARLIER_ROW, written]
     # The host's view of origin and its local branch follow the pushed commit.
     assert _git(host, "rev-parse", f"refs/remotes/origin/{BRANCH}") == tip
     assert _git(host, "rev-parse", f"refs/heads/{BRANCH}") == tip
@@ -218,7 +228,7 @@ def test_a_successful_ledger_step_runs_the_same_git_commands_in_its_worktree(led
     in_worktree = [(args, options) for args, options in git.calls if options.get("cwd") == worktree]
     commit_env = {**git_refs.EXECUTOR_GIT_ENV, **os.environ, "DOCKER_CLI_HINTS": "false"}
     assert in_worktree == [
-        (["add", LEDGER_REL], {"cwd": worktree}),
+        (["add", LEDGER_REL, PENDING_REL], {"cwd": worktree}),
         (["commit", "-m", MESSAGE], {"cwd": worktree, "env": commit_env}),
         (["rev-parse", "HEAD"], {"cwd": worktree}),
         (["push", "origin", f"HEAD:refs/heads/{BRANCH}"], {"cwd": worktree, "timeout": 300}),
@@ -263,7 +273,7 @@ def test_a_failed_worktree_removal_neither_fails_the_pushed_row_nor_leaves_a_reg
 
     assert ledger_repos.append() is None
 
-    assert _ledger_rows(ledger_repos.origin, ledger_repos.origin_tip(), "executions.jsonl")[-1] == NEW_ROW
+    assert _unstamped(_ledger_rows(ledger_repos.origin, ledger_repos.origin_tip(), "executions.jsonl")[-1]) == NEW_ROW
     # The removal never ran: only deleting the directory first and pruning afterwards clears the registration.
     assert _ledger_worktrees(ledger_repos.host) == []
     assert _ledger_temp_entries(ledger_repos.temp_dir) == []
@@ -442,7 +452,7 @@ def test_a_step_that_starts_while_another_is_running_leaves_the_running_steps_wo
     assert ledger_repos.append() is None
 
     assert registered_after_the_other_step == [_registered_path(Path(running[0]).parent)]
-    assert _ledger_rows(ledger_repos.origin, ledger_repos.origin_tip(), "executions.jsonl")[-1] == NEW_ROW
+    assert _unstamped(_ledger_rows(ledger_repos.origin, ledger_repos.origin_tip(), "executions.jsonl")[-1]) == NEW_ROW
     assert _ledger_worktrees(host) == []
     assert _ledger_temp_entries(ledger_repos.temp_dir) == []
 
@@ -479,7 +489,7 @@ def test_a_sweep_that_cannot_list_worktrees_does_not_fail_the_ledger_step(ledger
 
     assert ledger_repos.append() is None
 
-    assert _ledger_rows(ledger_repos.origin, ledger_repos.origin_tip(), "executions.jsonl")[-1] == NEW_ROW
+    assert _unstamped(_ledger_rows(ledger_repos.origin, ledger_repos.origin_tip(), "executions.jsonl")[-1]) == NEW_ROW
     assert _ledger_worktrees(ledger_repos.host) == []
     assert _ledger_temp_entries(ledger_repos.temp_dir) == []
 

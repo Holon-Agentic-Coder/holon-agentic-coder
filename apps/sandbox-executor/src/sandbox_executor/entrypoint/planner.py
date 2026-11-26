@@ -30,8 +30,10 @@ from sandbox_executor.ledger import (
     _sanitize_model_name,
     atomic_ledger_append,
     build_plan_id,
+    read_merged_rows,
     validate_ledger_file_unique_ids,
 )
+from sandbox_executor.ledger.fragments import ledger_commit_paths
 from sandbox_executor.module_budget_guard import module_budget_change_authorised, refusal_message, without_budget_config
 from sandbox_executor.plan_attempt import clear_failure_detail, discard_untracked_plan_file, write_failure_detail
 from sandbox_executor.plan_paths import plan_file_rel
@@ -200,7 +202,7 @@ def _record_plan_budget_failure(  # noqa: PLR0913
         clock_elapsed=stage_timer.elapsed(),
         reason=reason,
     )
-    add_targets = [ledger_rel]
+    add_targets = ledger_commit_paths(repo_dir, "executions.jsonl")
     if os.path.exists(os.path.join(repo_dir, plan_md_rel)):
         add_targets.append(plan_md_rel)
     run_cmd(["git", "add", *add_targets], cwd=repo_dir, check=False)
@@ -371,20 +373,14 @@ def main():  # noqa: C901, PLR0912, PLR0915
     # Get intent data
     intents_file_path = os.path.join(repo_dir, "holon-knowledge/ledger/intents.jsonl")
     intent_data = None
-    if os.path.exists(intents_file_path):
-        with open(intents_file_path) as f:
-            for line_no, line in enumerate(f, start=1):
-                if not line.strip():
-                    continue
-                try:
-                    data = json.loads(line)
-                    # Match branch name prefix (e.g. branch == "I-timestamp-slug")
-                    if data.get("branch") == intent_branch_prefix or data.get("intent_id") == intent_branch_prefix:
-                        intent_data = data
-                except json.JSONDecodeError as e:
-                    print(f"Warning: skipping invalid JSON in {intents_file_path} at line {line_no}: {e}")
-                except Exception as e:
-                    print(f"Warning: error processing line in {intents_file_path} at line {line_no}: {e}")
+
+    def warn(line_no: int, e: Exception) -> None:
+        print(f"Warning: skipping unreadable row in {intents_file_path} at line {line_no}: {e}")
+
+    for data in read_merged_rows(intents_file_path, on_bad_line=warn):
+        # Match branch name prefix (e.g. branch == "I-timestamp-slug")
+        if data.get("branch") == intent_branch_prefix or data.get("intent_id") == intent_branch_prefix:
+            intent_data = data
 
     if not intent_data:
         print(f"Error: No intent found for branch prefix '{intent_branch_prefix}' in '{intents_file_path}'")
@@ -646,7 +642,7 @@ Include metrics in this format:
     validate_ledger_file_unique_ids(plans_ledger_path, id_key="plan_id", parent_key="intent_branch")
 
     # Git commit; the host pushes the branch after this container returns.
-    run_cmd(["git", "add", plan_md_rel, "holon-knowledge/ledger/plans.jsonl"], cwd=repo_dir)
+    run_cmd(["git", "add", plan_md_rel, *ledger_commit_paths(repo_dir, "plans.jsonl")], cwd=repo_dir)
     run_cmd(
         [*PLANNER_GIT_IDENTITY, "commit", "-m", f"plan: {plan_id} created by {agent_name} ({model_name})"], cwd=repo_dir
     )

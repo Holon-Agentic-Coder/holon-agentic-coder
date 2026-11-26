@@ -23,6 +23,7 @@ from sandbox_executor.ledger import (
     generate_action_id,
     parse_commit_trailers,
     query_ledger,
+    read_merged_rows,
 )
 from sandbox_executor.ledger.query import LedgerQuery
 from sandbox_executor.ledger.query_filters import (
@@ -271,8 +272,7 @@ class TestLedgerAppend(unittest.TestCase):
             )
             append_summary_record(ledger_file, summ)
 
-            with open(ledger_file, encoding="utf-8") as f:
-                lines = [json.loads(line) for line in f if line.strip()]
+            lines = read_merged_rows(ledger_file)
 
             self.assertEqual(len(lines), 2)
             self.assertEqual(lines[0]["entry_type"], "action")

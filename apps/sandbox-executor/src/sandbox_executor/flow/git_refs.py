@@ -11,7 +11,13 @@ from sandbox_executor.flow.combined_base import _combined_diff_verdict, _integra
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.ledger_worktree import _ledger_worktree
 from sandbox_executor.git import changed_paths, empty_diff_summary, run_git
-from sandbox_executor.ledger import LedgerRewriteError, atomic_ledger_append, validate_ledger_file_unique_ids
+from sandbox_executor.ledger import (
+    LedgerRewriteError,
+    atomic_ledger_append,
+    read_merged_rows_at_ref,
+    validate_ledger_file_unique_ids,
+)
+from sandbox_executor.ledger.fragments import ledger_commit_paths
 from sandbox_executor.plan_paths import is_row_of_execution
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_target import ReviewTargetError, is_pr_reference, resolve_review_target
@@ -221,18 +227,7 @@ def _git_show_text(repo_dir: str, ref: str, path: str) -> str | None:
 
 
 def _read_ledger_rows(repo_dir: str, ref: str, ledger_name: str) -> list[dict[str, Any]]:
-    content = _git_show_text(repo_dir, ref, f"{LEDGER_DIR_PREFIX}{ledger_name}") or ""
-    rows: list[dict[str, Any]] = []
-    for line in content.splitlines():
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(row, dict):
-            rows.append(row)
-    return rows
+    return read_merged_rows_at_ref(repo_dir, ref, ledger_name, git=run_git)
 
 
 def _parse_ledger_revision(row: dict[str, Any]) -> int:
@@ -280,7 +275,7 @@ def _append_ledger_row(context: FlowContext, branch: str, ledger: str, row: dict
                 handle.write(json.dumps(row) + "\n")
             id_key, parent_key = _ledger_unique_id_keys(ledger)
             validate_ledger_file_unique_ids(ledger_path, id_key=id_key, parent_key=parent_key)
-            run_git(["add", ledger_rel], cwd=worktree)
+            run_git(["add", *ledger_commit_paths(worktree, ledger)], cwd=worktree)
             commit_env = {**EXECUTOR_GIT_ENV, **os.environ, "DOCKER_CLI_HINTS": "false"}
             run_git(["commit", "-m", msg], cwd=worktree, env=commit_env)
             pushed_sha = run_git(["rev-parse", "HEAD"], cwd=worktree).stdout.strip()

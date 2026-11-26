@@ -103,3 +103,12 @@ def test_fallback_on_a_dirty_merge_still_reports_ci(tmp_path):
 def test_fallback_counts_failed_local_tests(tmp_path):
     result = inspect_ci(_inputs(GREEN, is_dirty=True, test_gate=_TestGate(tests_failed=True)), _ctx(tmp_path))
     assert (result.tests_failed, result.ci_green, result.ci_finding) == (True, False, True)
+
+
+def test_the_noise_rerun_seams_default_to_none_and_change_nothing(tmp_path):
+    inputs = _inputs(RED)
+    assert inputs.detail_lookup is None and inputs.rerun_failed is None
+    seamed = _inputs(RED, detail_lookup=MagicMock(), rerun_failed=MagicMock())
+    assert inspect_ci(seamed, _ctx(tmp_path)) == inspect_ci(inputs, _ctx(tmp_path))
+    seamed.detail_lookup.assert_not_called()
+    seamed.rerun_failed.assert_not_called()

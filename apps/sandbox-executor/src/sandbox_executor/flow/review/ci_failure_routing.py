@@ -24,7 +24,7 @@ from typing import Any
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.github.ci_failure_detail import DetailLookup, parse_run_id
 from sandbox_executor.flow.github.ci_head_checks import CANCELLED_CONCLUSIONS, PASSING_CONCLUSIONS, PENDING_STATUSES
-from sandbox_executor.flow.review.approval_gates import pipeline_gate_of, record_pipeline_gate
+from sandbox_executor.flow.review.approval_gates import RED, pipeline_gate_of, record_pipeline_gate
 from sandbox_executor.flow.review.ci_timing_finding import MAX_JOBS_DESCRIBED
 from sandbox_executor.ledger import generate_action_id
 
@@ -157,9 +157,9 @@ def last_routing(context: FlowContext) -> dict[str, Any] | None:
 
 
 def apply_last_classification(context: FlowContext, head: str | None) -> None:
-    """Set the pipeline gate's classification from the last routing decision on the same ``head``."""
+    """Set the red pipeline gate's classification from the last routing decision on the same ``head``."""
     last, gate = last_routing(context), pipeline_gate_of(context)
-    if last and gate is not None and head and gate.head_sha == head == last.get("head_sha"):
+    if last and gate is not None and gate.state == RED and head and gate.head_sha == head == last.get("head_sha"):
         record_pipeline_gate(context, replace(gate, classification=str(last.get("classification"))))
 
 

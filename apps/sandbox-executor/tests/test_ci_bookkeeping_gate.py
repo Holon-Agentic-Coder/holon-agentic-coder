@@ -449,7 +449,9 @@ def test_rerun_of_a_bookkeeping_only_push_runs_in_full() -> None:
 
 
 @pytest.mark.parametrize("action", ["labeled", "unlabeled"])
-@pytest.mark.parametrize("label", ["timing-regression-accepted", "module-budget-change", "Module-Budget-Change"])
+@pytest.mark.parametrize(
+    "label", ["timing-regression-accepted", "module-budget-change", "Module-Budget-Change", "ci-macos", "CI-MacOS"]
+)
 def test_result_affecting_label_runs_without_an_api_call(action: str, label: str) -> None:
     fake = FakeGitHub().add_run(49, SHA_C, real_success_job())
 
@@ -457,8 +459,8 @@ def test_result_affecting_label_runs_without_an_api_call(action: str, label: str
     assert fake.urls == []
 
 
-def test_result_affecting_labels_are_the_two_the_workflows_read() -> None:
-    assert sorted(RESULT_AFFECTING_LABELS) == ["module-budget-change", "timing-regression-accepted"]
+def test_result_affecting_labels_are_the_ones_the_workflows_and_the_macos_relevance_gate_read() -> None:
+    assert sorted(RESULT_AFFECTING_LABELS) == ["ci-macos", "module-budget-change", "timing-regression-accepted"]
 
 
 @pytest.mark.parametrize("action", ["labeled", "unlabeled"])

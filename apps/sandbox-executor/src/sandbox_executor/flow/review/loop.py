@@ -848,7 +848,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             "max_review_iterations": last_label,
             "status": consensus_status,
             **approval_record(consensus_data),  # Stage 5 compares the head it calibrates with the approved one.
-            "gates": gates_summary(context),  # The diff and pipeline gates recorded by the last iteration.
+            "gates": gates_summary(context),  # Latest recorded gates; may predate a dry-run/infra-failed iteration.
         },
         "halted_for_human": False,
         "human_merge_gate_enforced": consensus_reached,

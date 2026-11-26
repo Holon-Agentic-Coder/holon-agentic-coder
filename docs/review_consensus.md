@@ -160,7 +160,10 @@ gate.
 ### Approval gates
 
 Each Stage 4 iteration records two independent gates in `context.review_state["gates"]`, checkpointed with the flow and
-reported as `consensus.gates` in the Stage 4 result:
+reported as `consensus.gates` in the Stage 4 result. The gates are never reset, so when the last iteration recorded none
+(a dry run, an infrastructure error or an unresolved head) `consensus.gates` still shows the gates recorded by an
+earlier iteration or run; compare their `reviewed_head`/`head_sha` and `iteration` with the result before relying on
+them:
 
 - The diff gate (`consensus_on_diff`) says whether the reviewers approved the PR's own diff on the head they saw. It
   applies every reviewer objection, consensus blocker and the mergeability result, but not CI, and it records the

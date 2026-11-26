@@ -4,20 +4,25 @@ import ast
 import io
 import re
 import tokenize
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
+try:
+    from scripts.self_explaining_hash import numbered_lines, shell_comments, toml_comments, yaml_comments
+except ImportError:
+    from self_explaining_hash import numbered_lines, shell_comments, toml_comments, yaml_comments
+
 REASON_PREFIX = "why:"
-MACHINE_DIRECTIVE_PREFIXES = ("noqa", "type:", "pragma", "fmt:", "shellcheck")
+MACHINE_DIRECTIVE = re.compile(r"(?:noqa\b|type:\s*ignore\b|pragma:|fmt:\s*(?:off|on|skip)\b|shellcheck\s)")
 ENCODING_DECLARATION = re.compile(r"coding[:=]")
 COMMENT_MARKER = re.compile(r"^\s*(?:#+|/{2,}|/\*+)\s*")
 BLOCK_COMMENT_END = re.compile(r"\s*\*+/\s*$")
 SHELL_SHEBANG = re.compile(r"^#!.*\b(?:ba)?sh\b")
-HASH_LANGUAGE_SUFFIXES = frozenset({".sh", ".bash", ".mk", ".dockerfile", ".yml", ".yaml", ".toml"})
-HASH_LANGUAGE_NAMES = frozenset({"Makefile", "GNUmakefile", "Dockerfile"})
+SHELL_LIKE_SUFFIXES = frozenset({".sh", ".bash", ".mk", ".dockerfile"})
+YAML_SUFFIXES = frozenset({".yml", ".yaml"})
+SHELL_LIKE_NAMES = frozenset({"Makefile", "GNUmakefile", "Dockerfile"})
 JAVASCRIPT_SUFFIXES = frozenset({".js", ".mjs", ".cjs"})
-HASH_LINE_TOKEN = re.compile(r"\"(?:\\.|[^\"\\])*\"?|'[^']*'?|\\.|(?:^|(?<=\s))#.*")
 JAVASCRIPT_TOKEN = re.compile(
     r"\"(?:\\.|[^\"\\\n])*\"?|'(?:\\.|[^'\\\n])*'?|`(?:\\.|[^`\\])*`?|//[^\n]*|/\*.*?(?:\*/|\Z)",
     re.DOTALL,
@@ -39,7 +44,7 @@ class Finding:
 
 
 def comment_body(comment: str) -> str:
-    return BLOCK_COMMENT_END.sub("", COMMENT_MARKER.sub("", comment, count=1)).strip().lower()
+    return BLOCK_COMMENT_END.sub("", COMMENT_MARKER.sub("", comment, count=1)).strip()
 
 
 def is_allowed_comment(comment: str, line: int) -> bool:
@@ -48,17 +53,17 @@ def is_allowed_comment(comment: str, line: int) -> bool:
     if line <= 2 and ENCODING_DECLARATION.search(comment):
         return True
     body = comment_body(comment)
-    return body.startswith(REASON_PREFIX) or body.startswith(MACHINE_DIRECTIVE_PREFIXES)
+    return body.lower().startswith(REASON_PREFIX) or MACHINE_DIRECTIVE.match(body) is not None
 
 
 def has_shell_shebang(text: str) -> bool:
     return SHELL_SHEBANG.match(text.partition("\n")[0]) is not None
 
 
-def is_hash_language(path: PurePosixPath, text: str) -> bool:
-    if path.name in HASH_LANGUAGE_NAMES or path.name.startswith("Dockerfile."):
+def is_shell_like(path: PurePosixPath, text: str) -> bool:
+    if path.name in SHELL_LIKE_NAMES or path.name.startswith("Dockerfile."):
         return True
-    if path.suffix in HASH_LANGUAGE_SUFFIXES:
+    if path.suffix in SHELL_LIKE_SUFFIXES:
         return True
     return path.suffix == "" and has_shell_shebang(text)
 
@@ -95,13 +100,20 @@ def python_findings(text: str) -> list[Finding]:
     return python_docstrings(text) + python_comments(text)
 
 
-def hash_language_findings(text: str) -> list[Finding]:
-    findings = []
-    for number, line in enumerate(text.splitlines(), start=1):
-        for match in HASH_LINE_TOKEN.finditer(line):
-            if match.group().startswith("#"):
-                findings.append(Finding(number, number, "comment", match.group()))
-    return findings
+def line_comment_findings(comments: Iterable[tuple[int, str]]) -> list[Finding]:
+    return [Finding(number, number, "comment", comment) for number, comment in comments]
+
+
+def shell_findings(text: str) -> list[Finding]:
+    return line_comment_findings(shell_comments(numbered_lines(text)))
+
+
+def yaml_findings(text: str) -> list[Finding]:
+    return line_comment_findings(yaml_comments(numbered_lines(text)))
+
+
+def toml_findings(text: str) -> list[Finding]:
+    return line_comment_findings(toml_comments(text))
 
 
 def javascript_comment_kind(comment: str) -> str:
@@ -127,7 +139,11 @@ def language_finder(path: str, text: str) -> Callable[[str], list[Finding]] | No
         return python_findings
     if pure_path.suffix in JAVASCRIPT_SUFFIXES:
         return javascript_findings
-    return hash_language_findings if is_hash_language(pure_path, text) else None
+    if pure_path.suffix in YAML_SUFFIXES:
+        return yaml_findings
+    if pure_path.suffix == ".toml":
+        return toml_findings
+    return shell_findings if is_shell_like(pure_path, text) else None
 
 
 def find_comments_and_docstrings(path: str, text: str) -> list[Finding]:

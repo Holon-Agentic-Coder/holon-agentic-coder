@@ -88,10 +88,42 @@ def test_python_allowed_comments_and_strings_are_not_reported(source):
         ("Dockerfile.sandbox", "FROM base\n# explains\n", [2]),
         ("pyproject.toml", '[tool]\nkey = "#value" # explains\n', [2]),
         ("deploy.sh", "#!/usr/bin/env bash\n# shellcheck disable=SC2086\n# why: CI has no TTY\necho hi\n", []),
+        ("deploy.sh", "cat <<EOF > notes.md\n# Heading\nEOF\necho hi # explains\n", [4]),
+        ("deploy.sh", "cat <<-'EOF'\n\t# Heading\n\tEOF\n# explains\n", [4]),
+        ("deploy.sh", 'read -r x <<< "$y" # explains\necho $((1<<2)) # explains\n', [1, 2]),
+        ("ci.yml", "name: don't panic # explains\nother: it's 'x # y'\n", [1]),
+        ("ci.yml", "body: |\n  # Heading\n  text # not a comment\nnext: 1 # explains\n", [4]),
+        (
+            "ci.yml",
+            "steps:\n  - body: >-\n      # Heading\n\n      more\n"
+            "  - run: |\n      # explains\n      cat <<EOF\n      # Heading\n      EOF\n",
+            [7],
+        ),
+        (
+            "pyproject.toml",
+            "text = \"\"\"\n# inside\n\"\"\" # explains\nraw = '''\n# inside\n'''\nkey=1# explains\n",
+            [3, 7],
+        ),
     ],
 )
 def test_hash_language_comments_are_reported_outside_quotes(path, source, expected_lines):
     assert [line for _, line in kinds_and_lines(path, source)] == expected_lines
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "VALUE = 1  # pragmatically chosen\n",
+        "VALUE = 1  # pragmatic: chosen\n",
+        "VALUE = 1  # Type: explains\n",
+        "VALUE = 1  # NOQA explains\n",
+        "VALUE = 1  # noqarecord explains\n",
+        "VALUE = 1  # fmt: the value\n",
+        "VALUE = 1  # shellchecked by hand\n",
+    ],
+)
+def test_explanatory_comments_resembling_directives_are_reported(source):
+    assert kinds_and_lines("module.py", source) == [("comment", 1)]
 
 
 def test_javascript_comments_are_reported_and_strings_ignored():

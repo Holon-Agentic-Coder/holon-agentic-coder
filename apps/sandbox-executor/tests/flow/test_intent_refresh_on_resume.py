@@ -101,13 +101,16 @@ def test_refresh_replaces_the_intent_text_and_keeps_identity_and_stage_keys(tmp_
     assert "branch" not in context.intent_data
     assert context.intent_data["replan_feedback"] == "keep me"
     assert {name: getattr(context, name) for name in BRANCHES} == BRANCHES
-    for field in REFRESHED_INTENT_FIELDS:
-        assert caplog.text.count(f"Resume refreshed intent {field} from {path}") == 1
+    refreshed = [record.getMessage() for record in caplog.records if record.name == _REFRESH_LOGGER]
+    assert refreshed == [
+        f"Resume refreshed intent {field} from {path}: the checkpoint held an older text."
+        for field in REFRESHED_INTENT_FIELDS
+    ]
 
     caplog.clear()
     with caplog.at_level(logging.INFO, logger=_REFRESH_LOGGER):
         assert refresh_intent_text(context, str(path)) == []
-    assert caplog.text == ""
+    assert [record for record in caplog.records if record.name == _REFRESH_LOGGER] == []
 
 
 @pytest.mark.parametrize(

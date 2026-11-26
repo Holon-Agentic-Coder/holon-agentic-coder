@@ -34,6 +34,10 @@ MAX_REASON_CHARS = 300
 
 BOOKKEEPING_PATH_PREFIXES = ("plans/", "executions/", "holon-knowledge/")
 
+MAX_TIMING_RERUNS = 3
+
+RERUN_NOT_DISPATCHED = "the rerun could not be dispatched"
+
 
 @dataclass(frozen=True)
 class FinalHeadSeams:
@@ -200,6 +204,11 @@ def _bookkeeping_only(paths: list[str] | None) -> bool:
     return bool(paths) and all(path.startswith(BOOKKEEPING_PATH_PREFIXES) for path in paths)
 
 
+def _code_unchanged(paths: list[str] | None) -> bool:
+    """No change at all, or bookkeeping records only; an unreadable diff (``None``) fails closed."""
+    return paths is not None and all(path.startswith(BOOKKEEPING_PATH_PREFIXES) for path in paths)
+
+
 def _timing_gate_only(details: list[dict[str, Any]]) -> bool:
     return bool(details) and all(detail.get("timing_gate") for detail in details)
 
@@ -232,7 +241,7 @@ def _eligible_run_ids(check: _FinalHeadCheck, record: dict[str, Any], ci_status:
     paths = (check.seams.changed_paths or _git_changed_paths(check.repo_dir, check.seams.proxy_env))(
         approved, measured_head
     )
-    if not _bookkeeping_only(paths):
+    if not _code_unchanged(paths):
         return None
     return _failed_run_ids(ci_status, record["failed_checks"])
 
@@ -253,22 +262,50 @@ def _dispatch_rerun(check: _FinalHeadCheck, run_id: str) -> bool:
         return False
 
 
-def _retry_timing_noise(check: _FinalHeadCheck, record: dict[str, Any], ci_status: dict[str, Any]) -> dict[str, Any]:
-    run_ids = _eligible_run_ids(check, record, ci_status)
-    if not run_ids:
-        return record
-    check.context.log(f"Final-head CI: rerunning timing-gate failure on a bookkeeping-only head: {', '.join(run_ids)}")
+def _rerun_timing_once(
+    check: _FinalHeadCheck, record: dict[str, Any], run_ids: list[str]
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Rerun the failed jobs of ``run_ids`` once and classify the settled head; ``None`` when a dispatch failed."""
     seams = check.seams
     rerun = seams.rerun_dispatcher or functools.partial(_dispatch_rerun, check)
-    all_reruns_dispatched = all(rerun(run_id) for run_id in run_ids)
-    if not all_reruns_dispatched:
-        return {**record, "timing_rerun": {"attempted": False, "reason": "the rerun could not be dispatched"}}
+    if not all(rerun(run_id) for run_id in run_ids):
+        return None
     probe = seams.probe or check.default_probe()
     policy = seams.policy or CiWaitPolicy(resolve_review_ci_wait_seconds(os.environ))
     registration_timeout = resolve_ci_registration_timeout(seams.registration_timeout)
     _wait_for_rerun_start(probe, record["failed_checks"], policy, registration_timeout)
-    retried, _ = _classify_settled(check)
-    return {**retried, "timing_rerun": {"attempted": True, "run_ids": run_ids, "outcome": retried["state"]}}
+    return _classify_settled(check)
+
+
+def _retry_timing_noise(check: _FinalHeadCheck, record: dict[str, Any], ci_status: dict[str, Any]) -> dict[str, Any]:
+    """Rerun a timing-gate-only failure on unchanged code at most ``MAX_TIMING_RERUNS`` times, in sequence.
+
+    Eligibility is re-checked before every attempt, so the loop stops at the first result that is not a timing-gate-only
+    failure on unchanged code (green, pending, a mixed failure or a code push). The caller decides on withdrawal.
+    """
+    first_run_ids: list[str] = []
+    outcomes: list[str] = []
+    reason = ""
+    while len(outcomes) < MAX_TIMING_RERUNS:
+        run_ids = _eligible_run_ids(check, record, ci_status)
+        if not run_ids:
+            break
+        attempt = f"attempt {len(outcomes) + 1} of {MAX_TIMING_RERUNS}"
+        check.context.log(
+            f"Final-head CI: rerunning timing-gate failure on unchanged code ({attempt}): {', '.join(run_ids)}"
+        )
+        retried = _rerun_timing_once(check, record, run_ids)
+        if retried is None:
+            reason = RERUN_NOT_DISPATCHED
+            break
+        record, ci_status = retried
+        first_run_ids = first_run_ids or run_ids
+        outcomes.append(record["state"])
+    if not outcomes:
+        return {**record, "timing_rerun": {"attempted": False, "reason": reason}} if reason else record
+    summary = {"attempted": True, "run_ids": first_run_ids, "outcome": outcomes[-1]}
+    summary.update(attempts=len(outcomes), outcomes=outcomes, **({"reason": reason} if reason else {}))
+    return {**record, "timing_rerun": summary}
 
 
 def check_final_head_ci(

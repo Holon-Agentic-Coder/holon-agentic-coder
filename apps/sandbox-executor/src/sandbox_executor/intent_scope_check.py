@@ -14,10 +14,11 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from sandbox_executor.intent_payload_rules import check_intent_payload
 from sandbox_executor.intent_scope_graph import (
     build_module_index,
     co_changed,
@@ -54,6 +55,7 @@ class DraftIntent:
 
     scope: list[ScopeEntry]
     acceptance_criteria: list[str]
+    payload: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,7 @@ class IntentScopeReport:
     missing: list[str]
     proposed: list[Proposal]
     warnings: list[str]
+    violations: list[str] = field(default_factory=list)
 
     @property
     def has_proposals(self) -> bool:
@@ -90,7 +93,7 @@ def load_intent(path: str) -> DraftIntent:
     if not isinstance(criteria, list):
         raise ValueError(f"intent file {path} has an 'acceptance_criteria' value that is not a list")
     scope = [ScopeEntry.parse(str(entry)) for entry in payload["scope"] if str(entry).strip()]
-    return DraftIntent(scope=scope, acceptance_criteria=[str(item) for item in criteria])
+    return DraftIntent(scope=scope, acceptance_criteria=[str(item) for item in criteria], payload=payload)
 
 
 def _exists(worktree: str, path: str) -> bool:
@@ -164,8 +167,13 @@ def check_intent_scope(intent: DraftIntent, worktree: str) -> IntentScopeReport:
     existing = [path for path in listed if _exists(worktree, path)]
     missing = sorted({entry.path for entry in intent.scope if not entry.marked_new and entry.path not in existing})
     candidates = [*_import_proposals(worktree, existing), *_co_change_proposals(worktree, listed)]
+    payload = intent.payload or {"scope": listed, "acceptance_criteria": intent.acceptance_criteria}
+    findings = check_intent_payload(payload, worktree)
     return IntentScopeReport(
-        missing=missing, proposed=_merge(candidates, set(listed)), warnings=_criteria_warnings(intent)
+        missing=missing,
+        proposed=_merge(candidates, set(listed)),
+        warnings=[*_criteria_warnings(intent), *findings.warnings],
+        violations=findings.violations,
     )
 
 
@@ -177,6 +185,7 @@ def render_text(report: IntentScopeReport) -> str:
     """Render the report as plain text with Missing, Proposed companions and Warnings sections."""
     proposed = [f"{item.path} ({item.reason}; from {item.source})" for item in report.proposed]
     lines = [
+        *(_section("Violations", report.violations) if report.violations else []),
         *_section("Missing", report.missing),
         *_section("Proposed companions", proposed),
         *_section("Warnings", report.warnings),
@@ -186,9 +195,13 @@ def render_text(report: IntentScopeReport) -> str:
 
 
 def to_json(report: IntentScopeReport) -> dict[str, Any]:
-    """Return the report as a dict with exactly the keys ``missing``, ``proposed`` and ``warnings``."""
-    return {
+    """Return the report as a dict with the keys ``missing``, ``proposed`` and ``warnings``, plus ``violations`` when
+    the intent breaks a payload rule."""
+    data: dict[str, Any] = {
         "missing": list(report.missing),
         "proposed": [{"path": item.path, "reason": item.reason, "source": item.source} for item in report.proposed],
         "warnings": list(report.warnings),
     }
+    if report.violations:
+        data["violations"] = list(report.violations)
+    return data

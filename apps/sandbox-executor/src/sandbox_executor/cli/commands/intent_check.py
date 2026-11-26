@@ -21,7 +21,8 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help=(
             "Check a draft intent's scope without changing anything: report missing paths, propose companion files "
             "and warn about files no acceptance criterion names. Mark a file the intent creates with a trailing "
-            "' (new)' or a leading 'new:'. Exits 1 when companions are proposed, 0 otherwise."
+            "' (new)' or a leading 'new:'. Exits 1 when companions are proposed, 0 otherwise. Exits 2 when a scope "
+            "entry is a directory or glob or the intent text names a control-plane path."
         ),
     )
     parser.add_argument("intent_file", help="Path to the draft intent JSON file (e.g. intents/my-task.json)")
@@ -46,4 +47,6 @@ def run(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return _INVALID_INPUT_EXIT_CODE
     print(json.dumps(to_json(report), indent=2) if args.json else render_text(report))
+    if report.violations:
+        return _INVALID_INPUT_EXIT_CODE
     return 1 if report.has_proposals else 0

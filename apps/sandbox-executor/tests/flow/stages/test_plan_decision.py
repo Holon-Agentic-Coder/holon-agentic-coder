@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import patch
@@ -16,19 +17,15 @@ from sandbox_executor.flow.stages import plan_decision
 from sandbox_executor.git import run_git
 
 from tests.flow.helpers import SUB_INTENT_LIST, BudgetRoleAgents, _budget_context, _git, _ledger_rows
+from tests.flow.stage_templates import AgentsSpec, StageStart
 
 PLANS_LEDGER = "holon-knowledge/ledger/plans.jsonl"
 
 
-def _planned(host: Path, origin: Path, tmp_path: Path, plan: tuple[float, str], *, records: bool) -> FlowContext:
-    """Run Stages 1 and 2 against the fixture origin; the fake planner records the decision unless ``records`` is
-    False (an older planner image)."""
-    agents = BudgetRoleAgents(tmp_path, origin, plans=[plan])
-    agents.planner_records_decision = records
-    ctx = _budget_context(host, agents, 5.0)
-    assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-    assert run_plan_stage(ctx).status == StageStatus.SUCCESS
-    return ctx
+def _planned(stage_start: Callable[..., StageStart], plan: tuple[float, str], *, records: bool) -> StageStart:
+    """The flow after the real Stages 1 and 2 (a stage-start template); the fake planner records the decision unless
+    ``records`` is False (an older planner image). These tests are about Stage 3's read of the plan row."""
+    return stage_start("plan", AgentsSpec(plans=(plan,), planner_records_decision=records))
 
 
 def _origin_tip(host: Path, branch: str) -> str:
@@ -51,9 +48,9 @@ def _origin_ledger_bytes(host: Path, ctx: FlowContext) -> str:
 class TestRecordedPlanDecision:
     """Goal 8 (a), flow side: a recorded decision is read as is and nothing is written."""
 
-    def test_recorded_decomposed_row_is_returned_without_a_write(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        ctx = _planned(host, origin, tmp_path, (9.0, SUB_INTENT_LIST), records=True)
+    def test_recorded_decomposed_row_is_returned_without_a_write(self, stage_start):
+        start = _planned(stage_start, (9.0, SUB_INTENT_LIST), records=True)
+        host, ctx = start.host, start.ctx
         tip = _origin_tip(host, str(ctx.plan_branch))
         (row,) = _origin_plan_rows(host, ctx)
 
@@ -64,10 +61,10 @@ class TestRecordedPlanDecision:
         assert [item["slug"] for item in decision.sub_intents] == ["add-the-parser", "add-the-cli-flag"]
         assert _origin_tip(host, str(ctx.plan_branch)) == tip
 
-    def test_recorded_decision_is_never_re_decided_from_the_plan_file(self, flow_repos, tmp_path):
+    def test_recorded_decision_is_never_re_decided_from_the_plan_file(self, stage_start):
         """A row recording ``execute`` is executed even though its plan file lists sub-intents."""
-        host, origin = flow_repos
-        agents_ctx = _planned(host, origin, tmp_path, (2.0, ""), records=True)
+        start = _planned(stage_start, (2.0, ""), records=True)
+        agents_ctx = start.ctx
         with patch.object(plan_decision, "_git_show_text", return_value="# Plan\n" + SUB_INTENT_LIST) as show:
             decision = plan_decision._plan_budget_decision(agents_ctx)
         assert decision is not None and decision.decision == "execute"
@@ -100,9 +97,9 @@ class TestRecordedPlanDecision:
 class TestPlanDecisionBackfill:
     """An older planner image's row is decided by the same rule and back-filled exactly once."""
 
-    def test_older_row_gains_exactly_one_superseding_row(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        ctx = _planned(host, origin, tmp_path, (9.0, SUB_INTENT_LIST), records=False)
+    def test_older_row_gains_exactly_one_superseding_row(self, stage_start):
+        start = _planned(stage_start, (9.0, SUB_INTENT_LIST), records=False)
+        host, ctx = start.host, start.ctx
         planner_ledger = _origin_ledger_bytes(host, ctx)
         (planner_row,) = _origin_plan_rows(host, ctx)
         assert "decomposition_decision" not in planner_row
@@ -130,9 +127,9 @@ class TestPlanDecisionBackfill:
         assert _git(host, "rev-parse", f"refs/heads/{ctx.plan_branch}") == tip
         assert len(_git(host, "worktree", "list").splitlines()) == 1
 
-    def test_failed_back_fill_is_logged_and_the_decision_still_applies(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        ctx = _planned(host, origin, tmp_path, (12.6, ""), records=False)
+    def test_failed_back_fill_is_logged_and_the_decision_still_applies(self, stage_start):
+        start = _planned(stage_start, (12.6, ""), records=False)
+        host, ctx = start.host, start.ctx
         tip = _origin_tip(host, str(ctx.plan_branch))
 
         def refuse_push(args: list[str], **kwargs: Any) -> Any:
@@ -149,9 +146,9 @@ class TestPlanDecisionBackfill:
         assert _origin_tip(host, str(ctx.plan_branch)) == tip
         assert len(_git(host, "worktree", "list").splitlines()) == 1
 
-    def test_superseding_row_increments_a_recorded_revision(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        ctx = _planned(host, origin, tmp_path, (2.0, ""), records=False)
+    def test_superseding_row_increments_a_recorded_revision(self, stage_start):
+        start = _planned(stage_start, (2.0, ""), records=False)
+        host, ctx = start.host, start.ctx
         (planner_row,) = _origin_plan_rows(host, ctx)
         decision = should_decompose(planner_row, "# Plan\n", ctx.intent_data)
 
@@ -206,15 +203,12 @@ class TestStage3ExecutesThePlanRowsDecision:
         "test_source",
     }
 
-    def test_executor_disagreeing_with_the_plan_row_fails_without_children(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(2.0, "")])
+    def test_executor_disagreeing_with_the_plan_row_fails_without_children(self, stage_start):
+        start = stage_start("plan", AgentsSpec(plans=((2.0, ""),)))
+        agents, ctx = start.agents, start.ctx
         agents.executor_decision = DecompositionDecision(
             "decomposed", [{"slug": "rogue", "description": "Rogue", "goal": "Rogue"}], 2.0, 5.0
         )
-        ctx = _budget_context(host, agents, 5.0)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
 
         res = run_execute_stage(ctx)
 
@@ -223,17 +217,16 @@ class TestStage3ExecutesThePlanRowsDecision:
             "Execute stage failed: the executor reported 'decomposed' but the plan row records 'execute'."
         )
         assert "children" not in res.payload
-        assert agents.roles() == ["intent-creator", "planner", "executor"]
-        assert len(agents.intent_payloads) == 1
+        # The executor ran once (Stages 1 and 2 ran in the template) and no child intent was created.
+        assert agents.roles() == ["executor"]
+        assert agents.intent_payloads == []
 
-    def test_decomposed_report_without_a_readable_plan_row_runs_no_child_at_the_depth_limit(self, flow_repos, tmp_path):
+    def test_decomposed_report_without_a_readable_plan_row_runs_no_child_at_the_depth_limit(self, stage_start):
         # The code does not branch on the depth here, so the top-level case (identical line and branch coverage) is
         # covered by this edge case.
-        host, origin = flow_repos
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(2.0, SUB_INTENT_LIST)])
-        ctx = _budget_context(host, agents, 5.0, sub_intent_depth=MAX_SUB_INTENT_DEPTH)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+        spec = AgentsSpec(plans=((2.0, SUB_INTENT_LIST),), intent_extra=(("sub_intent_depth", MAX_SUB_INTENT_DEPTH),))
+        start = stage_start("plan", spec)
+        agents, ctx = start.agents, start.ctx
 
         # With no pre-dispatch decision the executor's decomposed row carries no list (the plan row is the only
         # record), so the stage fails without running any child: the depth bound holds trivially.
@@ -244,24 +237,21 @@ class TestStage3ExecutesThePlanRowsDecision:
         assert "the plan row records 'no readable decision'" in (res.error or "")
         assert "children" not in res.payload
         assert flow_module.format_decomposition_summary(res) == []
-        # The executor ran once and no child intent was created.
-        assert agents.roles() == ["intent-creator", "planner", "executor"]
-        assert len(agents.intent_payloads) == 1
+        # The executor ran once (Stages 1 and 2 ran in the template) and no child intent was created.
+        assert agents.roles() == ["executor"]
+        assert agents.intent_payloads == []
 
     @pytest.mark.parametrize("planner_records_decision", [True, False], ids=["recorded", "older-planner-image"])
-    def test_in_budget_plan_executes_exactly_as_before(self, flow_repos, tmp_path, planner_records_decision):
-        host, origin = flow_repos
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(5.0, "")])
-        agents.planner_records_decision = planner_records_decision
-        ctx = _budget_context(host, agents, 5.0)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+    def test_in_budget_plan_executes_exactly_as_before(self, stage_start, planner_records_decision):
+        start = _planned(stage_start, (5.0, ""), records=planner_records_decision)
+        host, agents, ctx = start.host, start.agents, start.ctx
 
         res = run_execute_stage(ctx)
 
         assert res.status == StageStatus.SUCCESS, res.error
         assert set(res.payload) == self.EXECUTED_PAYLOAD_KEYS
-        assert agents.roles() == ["intent-creator", "planner", "executor"]
+        # Stages 1 and 2 ran in the template; Stage 3 dispatched the executor once.
+        assert agents.roles() == ["executor"]
         summary = _summary_on_origin(host, str(ctx.execution_branch))
         assert summary["status"] == "success"
         assert "plan_decision" not in summary and "sub_intents" not in summary

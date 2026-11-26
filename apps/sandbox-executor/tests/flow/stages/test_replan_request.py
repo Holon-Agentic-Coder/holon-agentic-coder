@@ -16,12 +16,12 @@ from sandbox_executor.flow import (
     StageResult,
     StageStatus,
     run_execute_stage,
-    run_intent_stage,
     run_plan_stage,
 )
 
 from tests.flow.helpers import BudgetRoleAgents, _budget_context, stage4_halts_at_consensus
 from tests.flow.lookup_patch import patch_lookup_sites
+from tests.flow.stage_templates import AgentsSpec
 
 
 @pytest.mark.usefixtures("no_origin_reconcile")
@@ -118,14 +118,10 @@ class TestReplanRequestInFlow:
             for line in ctx.logs
         )
 
-    def test_replan_feedback_variable_is_restored_when_the_planner_dispatch_raises(
-        self, flow_repos, tmp_path, monkeypatch
-    ):
-        host, origin = flow_repos
+    def test_replan_feedback_variable_is_restored_when_the_planner_dispatch_raises(self, stage_start, monkeypatch):
         monkeypatch.delenv("HOLON_REPLAN_FEEDBACK", raising=False)
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(2.0, "")])
-        ctx = _budget_context(host, agents, 5.0)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
+        # Stage 1 comes from its stage-start template; this test is about Stage 2's environment variable.
+        ctx = stage_start("intent", AgentsSpec(plans=((2.0, ""),))).ctx
         ctx.intent_data["replan_feedback"] = "smaller please"
         seen: list[str | None] = []
 
@@ -139,12 +135,10 @@ class TestReplanRequestInFlow:
         assert seen == ["smaller please"]
         assert "HOLON_REPLAN_FEEDBACK" not in os.environ
 
-    def test_refused_plan_exit_code_with_another_row_fails_the_stage(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(2.0, "")])
-        ctx = _budget_context(host, agents, 5.0)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+    def test_refused_plan_exit_code_with_another_row_fails_the_stage(self, stage_start):
+        # Stages 1 and 2 come from their stage-start template; this test is about Stage 3's exit-code reading.
+        start = stage_start("plan", AgentsSpec(plans=((2.0, ""),)))
+        agents, ctx = start.agents, start.ctx
         real_execute = agents._execute
 
         def execute_then_exit_refused(work: Path, args: list[str], kwargs: dict[str, Any]) -> int:
@@ -161,12 +155,10 @@ class TestReplanRequestInFlow:
         assert res.payload["execution_branch"] == ctx.execution_branch is not None
         assert "over_budget" not in res.payload
 
-    def test_refused_plan_exit_code_names_itself_when_the_fetch_fails(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        agents = BudgetRoleAgents(tmp_path, origin, plans=[(12.6, "")])
-        ctx = _budget_context(host, agents, 5.0)
-        assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        assert run_plan_stage(ctx).status == StageStatus.SUCCESS
+    def test_refused_plan_exit_code_names_itself_when_the_fetch_fails(self, stage_start):
+        # Stages 1 and 2 come from their stage-start template; this test is about Stage 3's exit-code reading.
+        start = stage_start("plan", AgentsSpec(plans=((12.6, ""),)))
+        agents, ctx = start.agents, start.ctx
 
         real_fetch = flow_module._fetch_branch_prefix_error
 

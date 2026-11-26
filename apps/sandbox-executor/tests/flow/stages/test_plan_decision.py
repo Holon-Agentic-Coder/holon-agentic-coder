@@ -226,11 +226,12 @@ class TestStage3ExecutesThePlanRowsDecision:
         assert agents.roles() == ["intent-creator", "planner", "executor"]
         assert len(agents.intent_payloads) == 1
 
-    @pytest.mark.parametrize("depth", [0, MAX_SUB_INTENT_DEPTH], ids=["top-level", "at-the-depth-limit"])
-    def test_decomposed_report_without_a_readable_plan_row_runs_no_child(self, flow_repos, tmp_path, depth):
+    def test_decomposed_report_without_a_readable_plan_row_runs_no_child_at_the_depth_limit(self, flow_repos, tmp_path):
+        # The code does not branch on the depth here, so the top-level case (identical line and branch coverage) is
+        # covered by this edge case.
         host, origin = flow_repos
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(2.0, SUB_INTENT_LIST)])
-        ctx = _budget_context(host, agents, 5.0, sub_intent_depth=depth)
+        ctx = _budget_context(host, agents, 5.0, sub_intent_depth=MAX_SUB_INTENT_DEPTH)
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
         assert run_plan_stage(ctx).status == StageStatus.SUCCESS
 

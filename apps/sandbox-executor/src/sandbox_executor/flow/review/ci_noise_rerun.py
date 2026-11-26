@@ -19,12 +19,12 @@ from sandbox_executor.flow.review.ci_failure_routing import (
     CLASS_LABELS,
     RERUN,
     RESOLVE,
-    FailedRun,
-    classify_failure,
-    failed_runs_from_status,
-    note_rerun,
-    record_routing,
-    route_failure,
+    _classify_failure,
+    _failed_runs_from_status,
+    _FailedRun,
+    _note_rerun,
+    _record_routing,
+    _route_failure,
 )
 from sandbox_executor.flow.review.ci_inspection import CiInspection, CiInspectionInputs, inspect_ci
 
@@ -49,16 +49,16 @@ def _dispatch(inputs: CiInspectionInputs, run_id: str, whole_run: bool) -> bool:
         return False
 
 
-def _dispatch_all(context: FlowContext, inputs: CiInspectionInputs, head: str, runs: Sequence[FailedRun]) -> bool:
+def _dispatch_all(context: FlowContext, inputs: CiInspectionInputs, head: str, runs: Sequence[_FailedRun]) -> bool:
     """Dispatch one rerun per run id and count it against the budget; False when any dispatch failed."""
     dispatched = []
     for run_id in dict.fromkeys(run.run_id for run in runs if run.run_id):
         whole = all(run.conclusion in CANCELLED_CONCLUSIONS for run in runs if run.run_id == run_id)
         if not _dispatch(inputs, run_id, whole):
-            note_rerun(context, head, dispatched)
+            _note_rerun(context, head, dispatched)
             return False
         dispatched.append(run_id)
-    note_rerun(context, head, dispatched)
+    _note_rerun(context, head, dispatched)
     return True
 
 
@@ -66,7 +66,7 @@ def _wait_for_rerun_start(inputs: CiInspectionInputs, names: set[str]) -> None:
     """Poll until no rerun check is still reported failed, at most the registration timeout; the wait is credited."""
     start = inputs.clock()
     deadline = start + resolve_ci_registration_timeout(inputs.ci_registration_timeout)
-    while {run.name for run in failed_runs_from_status(inputs.probe_ci())} & names:
+    while {run.name for run in _failed_runs_from_status(inputs.probe_ci())} & names:
         remaining = deadline - inputs.clock()
         if remaining <= 0:
             break
@@ -75,19 +75,19 @@ def _wait_for_rerun_start(inputs: CiInspectionInputs, names: set[str]) -> None:
         inputs.iteration_timer.credit(max(0.0, inputs.clock() - start))  # The CI wait has its own budget.
 
 
-def rerun_noise_once(
+def _rerun_noise_once(
     context: FlowContext, inputs: CiInspectionInputs, ci: CiInspection, head: str | None
 ) -> CiInspection:
     """The inspection after one noise rerun, or ``ci`` unchanged when nothing is rerun."""
-    runs = failed_runs_from_status(ci.ci_status) if head and _eligible(inputs, ci, head) else []
+    runs = _failed_runs_from_status(ci.ci_status) if head and _eligible(inputs, ci, head) else []
     if not head or not runs:
         return ci
-    cls = classify_failure(runs, inputs.detail_lookup or gh_detail_lookup(inputs.repo_dir, inputs.proxy_env))
-    decision = route_failure(context, head, cls, runs)
+    cls = _classify_failure(runs, inputs.detail_lookup or gh_detail_lookup(inputs.repo_dir, inputs.proxy_env))
+    decision = _route_failure(context, head, cls, runs)
     if decision == RERUN and not _dispatch_all(context, inputs, head, runs):
         context.log(f"[Review Loop] CI noise rerun on {short_sha(head)} could not be dispatched; resolving instead.")
         decision = RESOLVE
-    last = record_routing(context, head, cls, decision, runs)
+    last = _record_routing(context, head, cls, decision, runs)
     if decision != RERUN:
         context.log(f"[Review Loop] CI failure on {short_sha(head)} classified {cls}: sent to the resolver.")
         return ci

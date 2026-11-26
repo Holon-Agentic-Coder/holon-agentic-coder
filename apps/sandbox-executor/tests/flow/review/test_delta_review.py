@@ -14,6 +14,7 @@ import pytest
 from sandbox_executor.flow import FlowContext
 from sandbox_executor.flow.review.delta_review import (
     SCOPED_CHAIN_LIMIT,
+    _adopt_reviewed_head,
     addressed_findings,
     begin_review_pass,
     current_decision,
@@ -172,6 +173,20 @@ def test_target_merge_in_delta_is_full(repo):
     _commit(repo, {APP: "fixed\n"})
     assert _git(repo, "merge-base", "--is-ancestor", base, "HEAD") == ""
     assert _decide(context, repo).reason == "target merge in delta"
+
+
+def test_a_fix_on_an_adopted_merged_head_is_scoped(repo):
+    _commit(repo, {"src/base.py": "b = 1\n"}, "reviewed")
+    context = _reviewed(repo)
+    delta_state_of(context).update(scoped_chain=2)
+    _merge_side_branch(repo)
+    merged = _git(repo, "rev-parse", "HEAD")
+    _adopt_reviewed_head(context, merged)  # The diff approval holds on the merged head (same PR-own change).
+    assert delta_state_of(context)["anchor_head"] == merged and delta_state_of(context)["scoped_chain"] == 0
+    assert delta_state_of(context)["last_critical"] is False
+    _commit(repo, {APP: "fixed\n"}, "fix the CI defect")
+    decision = _decide(context, repo)
+    assert decision.mode == SCOPED and decision.paths == (APP,)
 
 
 def test_mechanical_merge_scope_restricts_the_delta(repo):

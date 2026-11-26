@@ -8,9 +8,9 @@ from unittest.mock import MagicMock
 
 from sandbox_executor.flow import FlowContext
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy
-from sandbox_executor.flow.review.ci_failure_routing import DEFECT, NOISE_TIMING, RESOLVE, last_routing, reruns_spent
+from sandbox_executor.flow.review.ci_failure_routing import DEFECT, NOISE_TIMING, RESOLVE, _last_routing, _reruns_spent
 from sandbox_executor.flow.review.ci_inspection import CiInspectionInputs, inspect_ci
-from sandbox_executor.flow.review.ci_noise_rerun import rerun_noise_once
+from sandbox_executor.flow.review.ci_noise_rerun import _rerun_noise_once
 
 HEAD = "a" * 40
 LINK = "https://github.com/o/r/actions/runs/11/job/5"
@@ -110,30 +110,30 @@ def _ctx(tmp_path: Path) -> FlowContext:
 def test_a_timing_failure_after_a_clean_review_is_rerun_once_and_inspected_again(tmp_path: Path) -> None:
     ctx, ci = _ctx(tmp_path), _Ci(GREEN)
     inputs = _inputs(ci)
-    after = rerun_noise_once(ctx, inputs, inspect_ci(inputs, ctx), HEAD)
+    after = _rerun_noise_once(ctx, inputs, inspect_ci(inputs, ctx), HEAD)
     assert ci.reruns == ["11"]
     assert after.ci_green is True and not after.ci_finding
-    assert reruns_spent(ctx, HEAD, "11") == 1
+    assert _reruns_spent(ctx, HEAD, "11") == 1
     assert any("CI noise (timing gate)" in line and "the diff approval stands" in line for line in ctx.logs)
 
 
 def test_noise_still_red_after_its_rerun_is_returned_red_and_the_budget_is_spent(tmp_path: Path) -> None:
     ctx, ci = _ctx(tmp_path), _Ci(RED)
     inputs = _inputs(ci)
-    after = rerun_noise_once(ctx, inputs, inspect_ci(inputs, ctx), HEAD)
+    after = _rerun_noise_once(ctx, inputs, inspect_ci(inputs, ctx), HEAD)
     assert ci.reruns == ["11"] and after.ci_green is False and after.ci_finding
-    again = rerun_noise_once(ctx, inputs, after, HEAD)
+    again = _rerun_noise_once(ctx, inputs, after, HEAD)
     assert ci.reruns == ["11"] and again is after
-    assert last_routing(ctx) == {**(last_routing(ctx) or {}), "classification": NOISE_TIMING, "decision": RESOLVE}
+    assert _last_routing(ctx) == {**(_last_routing(ctx) or {}), "classification": NOISE_TIMING, "decision": RESOLVE}
 
 
 def test_a_defect_is_never_rerun(tmp_path: Path) -> None:
     ctx, ci = _ctx(tmp_path), _Ci(GREEN)
     inputs = _inputs(ci, ["Run tests"])
     first = inspect_ci(inputs, ctx)
-    assert rerun_noise_once(ctx, inputs, first, HEAD) is first
+    assert _rerun_noise_once(ctx, inputs, first, HEAD) is first
     assert ci.reruns == []
-    assert (last_routing(ctx) or {}).get("classification") == DEFECT
+    assert (_last_routing(ctx) or {}).get("classification") == DEFECT
 
 
 def test_a_reviewer_objection_local_test_failure_or_dry_run_never_reruns(tmp_path: Path) -> None:
@@ -141,17 +141,17 @@ def test_a_reviewer_objection_local_test_failure_or_dry_run_never_reruns(tmp_pat
     for flags in ({"reviewer_objected": True}, {"test_gate": _TestGate(True)}, {"effective_dry_run": True}):
         inputs = _inputs(ci, **flags)
         first = inspect_ci(inputs, ctx)
-        assert rerun_noise_once(ctx, inputs, first, HEAD) is first
-    assert rerun_noise_once(ctx, _inputs(ci), inspect_ci(_inputs(ci), ctx), None).ci_green is False
-    assert ci.reruns == [] and last_routing(ctx) is None
+        assert _rerun_noise_once(ctx, inputs, first, HEAD) is first
+    assert _rerun_noise_once(ctx, _inputs(ci), inspect_ci(_inputs(ci), ctx), None).ci_green is False
+    assert ci.reruns == [] and _last_routing(ctx) is None
 
 
 def test_a_failed_dispatch_falls_back_to_the_resolver(tmp_path: Path) -> None:
     ctx, ci = _ctx(tmp_path), _Ci(GREEN, ok=False)
     inputs = _inputs(ci)
     first = inspect_ci(inputs, ctx)
-    assert rerun_noise_once(ctx, inputs, first, HEAD) is first
-    assert (last_routing(ctx) or {}).get("decision") == RESOLVE
+    assert _rerun_noise_once(ctx, inputs, first, HEAD) is first
+    assert (_last_routing(ctx) or {}).get("decision") == RESOLVE
     assert any("could not be dispatched" in line for line in ctx.logs)
 
 
@@ -161,5 +161,5 @@ def test_the_rerun_start_wait_is_credited_to_the_iteration_timer(tmp_path: Path)
     inputs = _inputs(ci, iteration_timer=timer)
     first = inspect_ci(inputs, ctx)
     late = _inputs(ci, probe_ci=lambda: dict(next(probes, GREEN)), iteration_timer=timer, rerun_failed=ci.rerun)
-    assert rerun_noise_once(ctx, late, first, HEAD).ci_green is True
+    assert _rerun_noise_once(ctx, late, first, HEAD).ci_green is True
     timer.credit.assert_any_call(10.0)

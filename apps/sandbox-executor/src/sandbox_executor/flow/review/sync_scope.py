@@ -1,7 +1,10 @@
-"""The re-review scope a target merge leaves behind, and the one rule every post-merge writer records it with.
+"""The re-review scope a target merge leaves behind, and the rule the Stage 4 sync records it with.
 
 An empty ``context.review_scope_paths`` means "review everything", so a resolved code conflict only narrows the next
 pass when an approval stands; otherwise the pending full review already covers the resolved paths.
+
+Two post-merge writers set the scope themselves: ``end_of_flow_sync`` unions it without an approval check, and
+``approval_carry_over.record_stage5_carry_over`` replaces it with the Stage 5 conflict gate's scope.
 """
 
 from __future__ import annotations

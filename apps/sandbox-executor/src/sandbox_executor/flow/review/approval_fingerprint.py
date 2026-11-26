@@ -3,8 +3,8 @@
 The fingerprint covers the PR's reviewable own diff: ``merge-base(head, origin/<target>)`` to ``head``, without the
 bookkeeping files. Those are the shared CI definition (``ci_final_head.BOOKKEEPING_PATH_PREFIXES`` and
 ``scripts/ci_bookkeeping_gate.py``): a ``.md``, ``.json`` or ``.jsonl`` file under ``plans/``, ``executions/`` or
-``holon-knowledge/``. Any other file under those roots (a ``plans/tool.py``) still counts as reviewable code. It
-hashes two reductions of that diff together:
+``holon-knowledge/`` with a non-dot stem. Any other file under those roots (a ``plans/tool.py``, a ``plans/.json``)
+still counts as reviewable code. It hashes two reductions of that diff together:
 
 - ``git patch-id --stable`` over the full-index binary diff, which ignores line numbers and hunk order, so a merge of a
   target branch that only touched other files leaves it unchanged;
@@ -39,8 +39,10 @@ FINGERPRINT_VERSION = "pf2"
 FINGERPRINT_HEX_CHARS = 40
 # Mirrors ``scripts/ci_bookkeeping_gate.BOOKKEEPING_SUFFIXES``; a parity test keeps the two equal.
 BOOKKEEPING_PATH_SUFFIXES = (".md", ".json", ".jsonl")
+# ``*[!.]*`` needs a non-dot character before the suffix, like ``posixpath.splitext``: a ``plans/.json`` or
+# ``plans/..json`` has no extension, so ``is_bookkeeping_path`` and the CI gate treat it as reviewable, as does this.
 FINGERPRINT_EXCLUDED_PATHSPECS = tuple(
-    f":(exclude,glob){prefix}**/*{suffix}"
+    f":(exclude,glob){prefix}**/*[!.]*{suffix}"
     for prefix in BOOKKEEPING_PATH_PREFIXES
     for suffix in BOOKKEEPING_PATH_SUFFIXES
 )

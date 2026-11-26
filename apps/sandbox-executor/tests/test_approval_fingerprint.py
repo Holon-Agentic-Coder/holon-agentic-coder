@@ -12,6 +12,7 @@ another file (the fingerprint is kept).
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -176,6 +177,10 @@ def test_version_is_pf2_and_never_matches_pf1() -> None:
         ("docs/x.md", False),
         ("planning/x.md", False),
         ("executions", False),
+        ("plans/.json", False),
+        ("plans/..json", False),
+        ("plans/a..json", True),
+        ("plans/.x.json", True),
     ],
 )
 def test_is_bookkeeping_path(path: str, bookkeeping: bool) -> None:
@@ -190,10 +195,28 @@ def test_bookkeeping_definition_matches_the_shared_ci_definition() -> None:
 
     assert tuple(prefix.rstrip("/") for prefix in BOOKKEEPING_PATH_PREFIXES) == BOOKKEEPING_ROOTS
     assert BOOKKEEPING_PATH_SUFFIXES == BOOKKEEPING_SUFFIXES
-    expected = {f":(exclude,glob){root}/**/*{suffix}" for root in BOOKKEEPING_ROOTS for suffix in BOOKKEEPING_SUFFIXES}
+    expected = {
+        f":(exclude,glob){root}/**/*[!.]*{suffix}" for root in BOOKKEEPING_ROOTS for suffix in BOOKKEEPING_SUFFIXES
+    }
     assert set(reviewable_pathspecs()[2:]) == expected and reviewable_pathspecs()[:2] == ("--", ".")
     for path in ("executions/E-1.md", "plans/a/b.json", "plans/tool.py", "docs/x.md", "holon-knowledge/l.jsonl"):
         assert is_bookkeeping_path(path) is ci_is_bookkeeping_path(path)
+    for path in ("plans/.json", "plans/..json", "plans/a/.md", "plans/a..json", "plans/.x.json"):
+        assert is_bookkeeping_path(path) is ci_is_bookkeeping_path(path)
+
+
+def test_excluded_pathspecs_select_exactly_the_bookkeeping_paths(tmp_path: Path) -> None:
+    paths = ["plans/.json", "plans/..json", "plans/a.json", "plans/a..json", "plans/.x.json", "plans/x/.md"]
+    paths.append("plans/t.py")
+    for path in paths:
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text("1\n")
+    subprocess.run(["git", "init", "-q", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    listed = subprocess.run(
+        ["git", "ls-files", *reviewable_pathspecs()], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.split()
+    assert sorted(listed) == sorted(path for path in paths if not is_bookkeeping_path(path))
 
 
 def test_mode_only_change_changes_the_fingerprint(repos_template: Path, tmp_path: Path) -> None:

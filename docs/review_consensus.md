@@ -149,9 +149,12 @@ check run on exactly that SHA, read from the GitHub check-runs API for the commi
   a cancelled check with no Actions run, fails Stage 5 closed.
 - Checks still pending when the CI wait budget runs out, or no readable checks, also fail Stage 5 closed. Nothing is
   pushed and the approval is not withdrawn, because no check failed.
-- A failed check withdraws the consensus. A new ledger row (labels `consensus-withdrawn` and `merged-head-ci`) records
-  it, and no earlier row is edited. One PR comment per merged head says the approval was withdrawn. The pipeline then
-  restarts Stage 4 at iteration 1, with a fresh reviewer ensemble, for the new head. It does this at most 3 times; after
+- A failed check is routed by its class (see [Post-approval CI failures](#post-approval-ci-failures)). Noise is rerun
+  once and only a fresh pass lets Stage 5 calibrate. A defect restarts Stage 4 with the resolver on the CI finding while
+  the diff approval stands. The consensus is withdrawn only when the diff gate does not hold on the merged head, or when
+  the scoped review of the fix does not approve. A withdrawal appends a new ledger row (labels `consensus-withdrawn` and
+  `merged-head-ci`), and no earlier row is edited. One PR comment per merged head says the approval was withdrawn, and
+  Stage 4 restarts at iteration 1 with a fresh reviewer ensemble. Either kind of restart happens at most 3 times; after
   that, Stage 5 fails and nothing is calibrated.
 
 The Stage 5 log names the head SHA, the run ids and the conclusions it relied on. Dry runs and `--skip-push` skip the
@@ -174,10 +177,34 @@ them:
   match, so a green run on an older head never clears a new one.
 
 "Approved" means both gates hold on the same head (`approved` in `flow/review/approval_gates.py`). The iteration's
-consensus verdict is still that conjunction. A merged-head CI failure withdraws the consensus and marks only the
-pipeline gate `red` for the merged head. The diff gate stays as it was, so the restarted Stage 4 can tell "diff
+consensus verdict is still that conjunction. A merged-head CI failure marks only the pipeline gate `red` for the merged
+head, with its failure class in `classification`. The diff gate stays as it was, so the restarted Stage 4 can tell "diff
 approved, pipeline red" apart from "nothing approved". A withdrawal because the PR-own change changed does not mark the
 pipeline gate.
+
+### Post-approval CI failures
+
+A red pipeline after the reviewers approved the diff is classified fail-safe (`flow/review/ci_failure_routing.py`):
+
+| class             | when                                                                                                   |
+| ----------------- | ------------------------------------------------------------------------------------------------------ |
+| `noise_timing`    | every failed job failed only in its `CI Timing Gate` step                                              |
+| `noise_infra`     | every failed job did not start (`startup_failure`, `timed_out`) or failed only setup or teardown steps |
+| `noise_cancelled` | every failed run was cancelled or stale                                                                |
+| `defect`          | anything else: a failed test step, a mix of classes, an unreadable job, no run id, more than 5 jobs    |
+
+Noise is rerun once per run id and head, and the diff approval stands. In Stage 4 the rerun happens inside the iteration
+that saw the red pipeline, after a clean review and before the verdict, so no further reviewer ensemble runs. In Stage 5
+the merged head is polled again after the rerun. A defect, or noise still red after its rerun, goes to the resolver with
+the CI finding; a repeated timing-gate failure keeps the finding that names the slowest tests. In Stage 5 a defect
+restarts Stage 4 with that finding carried and the delta-review anchor moved to the merged head, so the fix is reviewed
+scoped although the merged head holds a target merge commit.
+
+The consensus is withdrawn only when the reviewable diff changed (the diff gate does not hold on the merged head), or
+when the scoped review of the fix does not approve. The rerun budget and the last decision live in
+`context.review_state["ci_routing"]` and are checkpointed, so a resume never reruns twice. Each decision appends one
+ledger row with the label `ci-failure-routing`. A stop message names a noise class still red after its rerun, for
+example "CI failed: CI noise (runner failure) still red after 1 rerun: unit".
 
 ## Scoped delta review
 
@@ -273,12 +300,11 @@ change fingerprint `pf1:0123456789ab`; carried over from `abc1234` (same change)
 carried approval never shows the earlier head's green CI: its CI result is "not measured" until Stage 5 measures it.
 
 The consensus keeps `target_commit` as the SHA the reviewers saw and adds `carried_from` and `carried_to`, so the CI
-gate on the merged head still sees a moved head. It waits for every check on the new SHA, and withdraws the consensus
-and restarts Stage 4 when one fails, exactly as for any merged head. In Stage 5 a head whose fingerprint differs from
-the approved one is not covered: the consensus is withdrawn, with the reason "PR-own change changed since approval" in
-the ledger row and the PR comment, and Stage 4 reviews the change again, within the same limit of 3 restarts. The
-automatic timing-gate rerun of the final-head CI check stays limited to bookkeeping-only moves; a merged target branch
-is not one.
+gate on the merged head still sees a moved head. It waits for every check on the new SHA, and routes a failed check by
+class, exactly as for any merged head. In Stage 5 a head whose fingerprint differs from the approved one is not covered:
+the consensus is withdrawn, with the reason "PR-own change changed since approval" in the ledger row and the PR comment,
+and Stage 4 reviews the change again, within the same limit of 3 restarts. The automatic timing-gate rerun of the
+final-head CI check stays limited to bookkeeping-only moves; a merged target branch is not one.
 
 ## Calibration report staleness
 

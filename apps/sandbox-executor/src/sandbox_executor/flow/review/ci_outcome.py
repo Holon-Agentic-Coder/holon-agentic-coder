@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from sandbox_executor.flow.github.ci import _ci_green, _extract_failed_ci_check_names
 from sandbox_executor.flow.github.ci_wait import is_pending_only, pending_check_names
+from sandbox_executor.flow.review.ci_failure_routing import CLASS_LABELS
 
 NO_BLOCKER_RECORDED = "Autonomous review consensus failed: no specific blocker was recorded."
 
@@ -17,10 +19,25 @@ def gate_ci_flags(ci_status: dict[str, Any], tests_failed: bool) -> tuple[bool |
     return (None if pending_only else _ci_green(ci_status, tests_failed)), finding
 
 
-def describe_ci_outcome(ci_status: dict[str, Any], ci_wait: dict[str, Any] | None, tests_failed: bool) -> str:
+def _routed(routing: Mapping[str, Any] | None) -> str:
+    """``CI noise (timing gate) still red after 1 rerun: `` when the last routing reran noise, else empty."""
+    label, reruns = CLASS_LABELS.get(str((routing or {}).get("classification"))), (routing or {}).get("reruns")
+    if not label or not isinstance(reruns, int) or reruns < 1:
+        return ""
+    return f"CI noise ({label}) still red after {reruns} rerun{'s' if reruns > 1 else ''}: "
+
+
+def describe_ci_outcome(
+    ci_status: dict[str, Any],
+    ci_wait: dict[str, Any] | None,
+    tests_failed: bool,
+    *,
+    routing: Mapping[str, Any] | None = None,
+) -> str:
     """Wording for the CI outcome that blocked approval: failed, then pending, else no recorded blocker.
 
     Tests not measured has its own stage message (``TESTS_NOT_MEASURED_ERROR``) and is checked before this.
+    ``routing`` is the last CI failure routing decision; a noise class rerun without success is named.
     """
     failed = _extract_failed_ci_check_names(ci_status, tests_failed)
     if not failed and ci_status.get("failed", 0) > 0:
@@ -28,7 +45,7 @@ def describe_ci_outcome(ci_status: dict[str, Any], ci_wait: dict[str, Any] | Non
     if failed:
         if tests_failed and failed == ["local_tests"]:
             return "Autonomous review consensus failed: test suite reported failures."
-        return f"Autonomous review consensus failed: CI failed: {', '.join(failed)}."
+        return f"Autonomous review consensus failed: CI failed: {_routed(routing)}{', '.join(failed)}."
     if not (ci_wait and ci_wait.get("state") == "pending") and is_pending_only(ci_status):
         # Pending that no wait explains (a probe source the loop does not wait on): still pending, never "no blocker".
         names = ", ".join(pending_check_names(ci_status)) or "checks"

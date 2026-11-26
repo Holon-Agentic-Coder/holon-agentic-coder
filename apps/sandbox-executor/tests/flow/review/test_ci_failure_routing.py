@@ -23,7 +23,6 @@ from sandbox_executor.flow.review.ci_failure_routing import (
     _note_rerun,
     _record_routing,
     _reruns_spent,
-    _resolve_ci_noise_reruns,
     _route_failure,
 )
 from sandbox_executor.ledger import read_merged_rows
@@ -106,21 +105,15 @@ def test_failed_runs_from_the_stage4_and_stage5_shapes() -> None:
     assert _failed_runs_from_record(record) == [_run()]
 
 
-@pytest.mark.parametrize(("raw", "expected"), [(None, 1), ("", 1), ("0", 0), ("3", 3), ("-1", 1), ("x", 1)])
-def test_rerun_budget_from_the_environment(raw: str | None, expected: int) -> None:
-    env = {} if raw is None else {"HOLON_CI_NOISE_RERUNS": raw}
-    assert _resolve_ci_noise_reruns(env) == expected
-
-
 def test_one_rerun_per_run_id_and_head(tmp_path: Path) -> None:
     ctx, runs = _ctx(tmp_path), [_run()]
-    assert _route_failure(ctx, HEAD, NOISE_TIMING, runs, {}) == RERUN
+    assert _route_failure(ctx, HEAD, NOISE_TIMING, runs) == RERUN
     _note_rerun(ctx, HEAD, ["11"])
     assert _reruns_spent(ctx, HEAD, "11") == 1
-    assert _route_failure(ctx, HEAD, NOISE_TIMING, runs, {}) == RESOLVE
-    assert _route_failure(ctx, "b" * 40, NOISE_TIMING, runs, {}) == RERUN
-    assert _route_failure(ctx, HEAD, DEFECT, [_run(run_id="99")], {}) == RESOLVE
-    assert _route_failure(ctx, "b" * 40, NOISE_INFRA, runs, {"HOLON_CI_NOISE_RERUNS": "0"}) == RESOLVE
+    assert _route_failure(ctx, HEAD, NOISE_TIMING, runs) == RESOLVE
+    assert _route_failure(ctx, "b" * 40, NOISE_TIMING, runs) == RERUN
+    assert _route_failure(ctx, HEAD, DEFECT, [_run(run_id="99")]) == RESOLVE
+    assert _route_failure(ctx, HEAD, NOISE_INFRA, [_run(run_id=None)]) == RESOLVE
     assert FlowContext.from_dict(ctx.to_dict()).review_state["ci_routing"]["reruns"][HEAD] == {"11": 1}
 
 

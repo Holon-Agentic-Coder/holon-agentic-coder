@@ -2661,3 +2661,17 @@ def test_review_loop_does_not_advance_head_when_pushed_is_false(tmp_path, monkey
     assert res["consensus"]["approved"] is False
     assert not any("Resolver pushed new head" in log for log in ctx.logs)
     assert res.get("head_sha") != "new_unpushed_sha_9999"
+
+
+def test_the_stop_message_names_a_noise_class_still_red_after_its_rerun():
+    from sandbox_executor.flow.review.ci_outcome import describe_ci_outcome
+
+    red = _one_check("fail", "FAILURE")
+    plain = "Autonomous review consensus failed: CI failed: unit."
+    assert describe_ci_outcome(red, None, False) == plain
+    routed = {"classification": "noise_infra", "decision": "resolve", "reruns": 1}
+    assert describe_ci_outcome(red, None, False, routing=routed) == (
+        "Autonomous review consensus failed: CI failed: CI noise (runner failure) still red after 1 rerun: unit."
+    )
+    assert describe_ci_outcome(red, None, False, routing={"classification": "defect", "reruns": 0}) == plain
+    assert describe_ci_outcome(red, None, False, routing={"classification": "noise_timing", "reruns": 0}) == plain

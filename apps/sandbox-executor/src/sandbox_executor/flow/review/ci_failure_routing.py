@@ -2,11 +2,11 @@
 
 A red pipeline after the reviewers approved is either noise (``noise_timing``: only the CI timing gate failed;
 ``noise_infra``: the runner failed to start or only setup and teardown steps failed; ``noise_cancelled``: every failed
-run was cancelled or stale) or a ``defect``. Noise is rerun once per run id and head while the diff approval stands
-(``HOLON_CI_NOISE_RERUNS``, default 1, ``0`` disables reruns); a defect, or noise still red after its rerun, goes to
-the resolver. The rule fails safe: no run, a run without an Actions run id, more than ``MAX_JOBS_DESCRIBED`` failed
-jobs, an unreadable job detail, a failed test step or any mix of classes is a ``defect``. A repeated timing-gate
-failure keeps the slowest-tests finding (:mod:`sandbox_executor.flow.review.ci_timing_finding`).
+run was cancelled or stale) or a ``defect``. Noise is rerun once per run id and head (``CI_NOISE_RERUNS``) while the
+diff approval stands; a defect, or noise still red after its rerun, goes to the resolver. The rule fails safe: no run,
+a run without an Actions run id, more than ``MAX_JOBS_DESCRIBED`` failed jobs, an unreadable job detail, a failed test
+step or any mix of classes is a ``defect``. A repeated timing-gate failure keeps the slowest-tests finding
+(:mod:`sandbox_executor.flow.review.ci_timing_finding`).
 
 The budget and the last decision live in ``context.review_state["ci_routing"]``, checkpointed with the context, so a
 resume never reruns twice.
@@ -14,7 +14,6 @@ resume never reruns twice.
 
 from __future__ import annotations
 
-import logging
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -28,15 +27,12 @@ from sandbox_executor.flow.review.approval_gates import RED, pipeline_gate_of, r
 from sandbox_executor.flow.review.ci_timing_finding import MAX_JOBS_DESCRIBED
 from sandbox_executor.ledger import generate_action_id
 
-logger = logging.getLogger(__name__)
-
 NOISE_TIMING, NOISE_INFRA, NOISE_CANCELLED, DEFECT = "noise_timing", "noise_infra", "noise_cancelled", "defect"
 NOISE_CLASSES = frozenset({NOISE_TIMING, NOISE_INFRA, NOISE_CANCELLED})
 RERUN, RESOLVE = "rerun", "resolve"
 INFRA_CONCLUSIONS = frozenset({"startup_failure", "timed_out"})
 INFRA_STEP_PREFIXES = ("Set up job", "Checkout", "Install uv", "Set up Python", "Post ", "Complete job")
-ENV_CI_NOISE_RERUNS = "HOLON_CI_NOISE_RERUNS"
-DEFAULT_CI_NOISE_RERUNS = 1
+CI_NOISE_RERUNS = 1  # Reruns of one run id on one head before the failure goes to the resolver.
 CLASS_LABELS = {NOISE_TIMING: "timing gate", NOISE_INFRA: "runner failure", NOISE_CANCELLED: "cancelled run"}
 
 
@@ -99,21 +95,6 @@ def _classify_failure(runs: Sequence[_FailedRun], lookup: DetailLookup) -> str:
     return classes.pop() if len(classes) == 1 else DEFECT
 
 
-def _resolve_ci_noise_reruns(env: Mapping[str, str] | None = None) -> int:
-    """Reruns allowed per run id and head for a noise failure; ``0`` disables reruns, invalid keeps 1."""
-    raw = (os.environ if env is None else env).get(ENV_CI_NOISE_RERUNS)
-    if raw is None or not str(raw).strip():
-        return DEFAULT_CI_NOISE_RERUNS
-    try:
-        value = int(str(raw).strip())
-    except ValueError:
-        value = -1
-    if value < 0:
-        logger.warning("Ignoring %s: '%s' is not an integer of at least 0; keeping 1.", ENV_CI_NOISE_RERUNS, raw)
-        return DEFAULT_CI_NOISE_RERUNS
-    return value
-
-
 def _routing_state(context: FlowContext) -> dict[str, Any]:
     state = context.review_state.get("ci_routing")
     if not isinstance(state, dict):
@@ -140,14 +121,12 @@ def _note_rerun(context: FlowContext, head: str, run_ids: Iterable[str]) -> None
         spent[run_id] = _reruns_spent(context, head, run_id) + 1
 
 
-def _route_failure(
-    context: FlowContext, head: str, cls: str, runs: Sequence[_FailedRun], env: Mapping[str, str] | None = None
-) -> str:
+def _route_failure(context: FlowContext, head: str, cls: str, runs: Sequence[_FailedRun]) -> str:
     """``rerun`` for noise whose every run id is under the budget on ``head``, else ``resolve``."""
-    budget, run_ids = _resolve_ci_noise_reruns(env), _run_ids(runs)
+    run_ids = _run_ids(runs)
     if cls not in NOISE_CLASSES or not run_ids or not head:
         return RESOLVE
-    return RERUN if all(_reruns_spent(context, head, run_id) < budget for run_id in run_ids) else RESOLVE
+    return RERUN if all(_reruns_spent(context, head, run_id) < CI_NOISE_RERUNS for run_id in run_ids) else RESOLVE
 
 
 def _last_routing(context: FlowContext) -> dict[str, Any] | None:

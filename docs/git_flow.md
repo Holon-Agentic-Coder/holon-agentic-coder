@@ -553,6 +553,21 @@ A job that exceeds its time limit is a failed check, so a timing-gate failure fa
 The job's failed steps and duration come from one extra `gh run view` call and only annotate the failure, for example
 `final head CI: failed: macos-unit (CI Timing Gate, 6 min)`.
 
+A runner can be slow on identical code, so a timing-gate failure on unchanged code is rerun before consensus is
+withdrawn. When every failing check failed only in its timing-gate step, no check is pending, and every path changed
+between the approved head and the measured head is a bookkeeping record (`plans/`, `executions/`, `holon-knowledge/`) or
+nothing changed, Stage 5 reruns the failed jobs up to three times in sequence. Each attempt starts only when the
+previous one is still a timing-gate-only failure on unchanged code, and the first green result ends the loop. Any
+changed code, test or workflow path, an unreadable diff, any other failing check or any pending check means no rerun.
+The record `final_head_ci.timing_rerun` keeps `attempted`, `run_ids` (of the first attempt), `outcome` (of the last
+attempt), `attempts` and `outcomes` (one state per attempt), and `reason` when a rerun could not be dispatched.
+Consensus is withdrawn only when the last attempt still fails.
+
+The rule applies to every check whose failed steps are all timing-gate steps: a step whose name starts with
+`CI Timing Gate` or a step named exactly `Timing gate`. That covers the `unit` jobs on `ubuntu-latest` and
+`macos-latest` (`CI Timing Gate (compare with main)`), the `Workspace survival` and build-images jobs (`Timing gate`),
+and the hygiene, integration, make, docker-build, CI durations and promote-ledger jobs (`CI Timing Gate (Check ...)`).
+
 Stage 5 then re-verifies the head it published and records `ci_verdict` in the stage result, with the approved head, the
 final head and whether the head moved:
 
@@ -571,8 +586,8 @@ at that commit (for example "11 of 11 checks passed"), so a re-approval on a lat
 When the only failing check is a timing gate, the resolver finding names the slowest tests of the failing job (five at
 most, from the `ci-timing-*` artefact or the job log's `--durations` section) and says to speed them up or split the
 job. It never offers a rerun. When the tests cannot be fetched, the finding says so and points at
-`pytest --durations=10`. Stage 5 never reruns CI, never changes the 300 s timing limit, and the merge stays with the
-human maintainer.
+`pytest --durations=10`. Apart from the bounded rerun on unchanged code, Stage 5 never reruns CI; it never changes the
+300 s timing limit, and the merge stays with the human maintainer.
 
 #### Approval & Merge Boundary
 

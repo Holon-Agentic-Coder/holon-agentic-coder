@@ -60,13 +60,16 @@ def rows(data: bytes) -> list[bytes]:
 
 
 def compare_rows(path: str, base_rows: list[bytes], head_rows: list[bytes]) -> list[str]:
+    # why: the ledger conflict resolver inserts head rows by created_at between kept rows, so only their order is fixed.
     head_set = set(head_rows)
     problems: list[str] = []
+    cursor = 0
     for index, row in enumerate(base_rows):
-        if index >= len(head_rows):
-            problems.append(f"{path}:{index + 1}: deleted")
-        elif head_rows[index] != row:
-            problems.append(f"{path}:{index + 1}: {'moved' if row in head_set else 'changed'}")
+        try:
+            cursor = head_rows.index(row, cursor) + 1
+        except ValueError:
+            gone = "deleted" if cursor >= len(head_rows) else "changed"
+            problems.append(f"{path}:{index + 1}: {'moved' if row in head_set else gone}")
     if len(problems) > MAX_PROBLEMS_PER_FILE:
         hidden = len(problems) - MAX_PROBLEMS_PER_FILE
         problems = [*problems[:MAX_PROBLEMS_PER_FILE], f"{path}: ... and {hidden} more"]
@@ -110,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         problems, checked = check_append_only(args.repo, args.base, args.head)
     except (UnreadableBase, OSError) as error:
-        print(f"cannot read the base ledgers: {error}", file=sys.stderr)
+        print(f"cannot read the ledgers: {error}", file=sys.stderr)
         return 2
     for problem in problems:
         print(problem, file=sys.stderr)

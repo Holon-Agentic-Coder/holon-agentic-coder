@@ -54,6 +54,9 @@ PASSING_EDITS = {
         f"{LEDGER}/pending/intents/I-1795000002-beta.jsonl": '{"id": "I-3"}\n',
         f"{LEDGER}/pending/executions/_unscoped.jsonl": '{"id": "E-3"}\n',
     },
+    "rows inserted between base rows": {
+        f"{LEDGER}/plans.jsonl": '{"id": "P-0"}\n{"id": "P-1"}\n{"id": "P-1b"}\n{"id": "P-2"}\n{"id": "P-3"}\n',
+    },
     "promotion": {
         f"{LEDGER}/plans.jsonl": BASE_FILES[f"{LEDGER}/plans.jsonl"] + BASE_FILES[FRAGMENT],
         FRAGMENT: None,
@@ -79,7 +82,7 @@ def test_additions_new_fragments_and_promotion_pass(base: tuple[Path, str], edit
         ),
         (
             {f"{LEDGER}/executions.jsonl": '{"id": "E-2"}\n{"id": "E-1"}\n'},
-            [f"{LEDGER}/executions.jsonl:1: moved", f"{LEDGER}/executions.jsonl:2: moved"],
+            [f"{LEDGER}/executions.jsonl:2: moved"],
         ),
         ({f"{LEDGER}/intents.jsonl": None}, [f"{LEDGER}/intents.jsonl: deleted"]),
         ({FRAGMENT: None}, [f"{FRAGMENT}: fragment removed"]),
@@ -127,7 +130,7 @@ def test_an_unknown_base_fails_closed(base: tuple[Path, str], capsys: pytest.Cap
     repo, _ = base
 
     assert main(["--repo", str(repo), "--base", "0" * 40, "--head", "HEAD"]) == 2
-    assert "cannot read the base ledgers" in capsys.readouterr().err
+    assert "cannot read the ledgers" in capsys.readouterr().err
 
 
 def test_a_base_without_common_history_fails_closed(base: tuple[Path, str]) -> None:

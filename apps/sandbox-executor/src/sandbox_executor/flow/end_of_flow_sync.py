@@ -21,6 +21,7 @@ from sandbox_executor.flow.review_restart import approval_stands, calibrate_with
 from sandbox_executor.flow.target_probe import TargetProbeError
 from sandbox_executor.flow.target_sync import sync_with_target
 from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest, SyncResult
+from sandbox_executor.review_accounting import restart_review_passes
 
 MAX_END_OF_FLOW_REENTRIES = 3
 MAX_UNKNOWN_MERGEABILITY_PROBES = 3
@@ -159,7 +160,7 @@ def _run_flow_end_sync(
 
 def _reenter_review_and_calibrate(context: FlowContext, run_stage: _RunStage, record: _RecordStage) -> str | None:
     """Re-enter Stage 4 and (when enabled) Stage 5 on the merged head; return an error reason if not clean."""
-    context.review_iterations_done, context.carried_review_findings = 0, []
+    restart_review_passes(context)
     review = run_stage(FlowStage.REVIEW)
     record(FlowStage.REVIEW, review)
     if review.status != StageStatus.APPROVED:
@@ -181,8 +182,7 @@ def finish_flow(
         why = "dry run" if context.dry_run else "push skipped" if context.skip_push else "no execution branch"
         return EndOfFlowSyncResult(clean=True, skipped=True, reason=why)
     active_seams = seams or EndOfFlowSeams()
-    branch, target_branch = str(context.execution_branch), base_branch_name(context)
-    rounds = 0
+    branch, target_branch, rounds = str(context.execution_branch), base_branch_name(context), 0
     while True:
         verdict = _probe_mergeability(context, branch, target_branch, active_seams)
         if (outcome := _non_conflicting_outcome(rounds, verdict)) is not None:

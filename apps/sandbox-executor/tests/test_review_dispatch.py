@@ -312,7 +312,7 @@ def test_every_stage4_dispatch_reviews_the_flow_worktree_in_place(tmp_path: Path
     No dispatch carries a workspace volume, and the loop runs no docker command of its own (no volume create, no
     root chown init container, no volume teardown).
     """
-    from sandbox_executor.flow import run_review_loop
+    from sandbox_executor.flow import ReviewMode, run_review_loop
     from sandbox_executor.flow.target_sync_result import SyncResult
 
     monkeypatch.delenv("HOLON_IN_SANDBOX", raising=False)
@@ -337,6 +337,11 @@ def test_every_stage4_dispatch_reviews_the_flow_worktree_in_place(tmp_path: Path
             ),
             # So does the approval fingerprint; tests/test_approval_fingerprint.py covers it with real git.
             patch("sandbox_executor.flow.review.loop.approval_fingerprint_of", return_value=None),
+            # So does the scoped-review decision; tests/flow/review/test_delta_review.py covers it with real git.
+            patch(
+                "sandbox_executor.flow.review.delta_review._decide_from_git",
+                return_value=ReviewMode("full", "delta check stubbed"),
+            ),
         ):
             # The old stubs had no gh but GitHub-sourced CI; without auto_pr the fake opens no PR, as before.
             res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=5, auto_pr=False)

@@ -179,6 +179,62 @@ pipeline gate `red` for the merged head. The diff gate stays as it was, so the r
 approved, pipeline red" apart from "nothing approved". A withdrawal because the PR-own change changed does not mark the
 pipeline gate.
 
+## Scoped delta review
+
+A Stage 4 pass after a resolver fix does not have to review the whole PR again. When an earlier pass already reviewed an
+ancestor of the head, the next pass can review only the change since then (`flow/review/delta_review.py`). Every unknown
+or unsafe state falls back to a full review.
+
+Two heads anchor the chain, both kept in `context.review_state["delta"]` and checkpointed with the flow:
+
+- the last reviewed head: the head of the latest pass in which every reviewer completed, whether it approved or not. A
+  failed or missing reviewer clears it, so the next pass is full;
+- the anchor head: the head of the latest such pass that was full. Scoped passes count up from it, and a full pass
+  resets the count.
+
+Before each pass the loop decides the mode. The first rule that matches gives a full pass, with the reason shown:
+
+| Reason                          | When                                                                                    |
+| ------------------------------- | --------------------------------------------------------------------------------------- |
+| `disabled`                      | `HOLON_SCOPED_REVIEW_MAX_LINES` is `0`.                                                 |
+| `last reviewed head unknown`    | No completed pass is recorded, or no full pass anchors the chain.                       |
+| `head not moved`                | The head is the last reviewed head (approval and carry-over handle that case).          |
+| `critical finding on last pass` | A reviewer of the last reviewed pass reported a critical finding, or none was recorded. |
+| `scoped chain limit`            | 3 scoped passes in a row since the anchor; the next one is full.                        |
+| `history rewritten`             | The last reviewed head is not an ancestor of the head (a force-push or rebase).         |
+| `target merge in delta`         | The range contains a merge commit and no mechanical-merge scope is set.                 |
+| `no reviewable change`          | Only bookkeeping files changed (`plans/`, `executions/`, `holon-knowledge/` records).   |
+| `delta N lines over limit L`    | The changed lines exceed the limit; a binary change counts as over it.                  |
+| `delta check failed`            | A git read failed, or the commit is unknown.                                            |
+
+Otherwise the pass is `scoped`, with the reason `delta N lines`. When a mechanical target merge left
+`review_scope_paths` set, the delta covers only those paths and the paths changed by the PR branch's own (first-parent,
+non-merge) commits, never the files the target branch brought in.
+
+A scoped pass sends the reviewers:
+
+- the diff `last_reviewed_head..head` over the reviewable pathspecs of the approval fingerprint, redacted;
+- a "Scoped Delta Review" section in the change description, which says that only that range is under review;
+- the findings the resolver was given since the last reviewed head (id, severity, location and summary, at most 50);
+- the full post-change content of every modified text file, redacted. Each file is cut at
+  `HOLON_SCOPED_REVIEW_CONTEXT_BYTES` (default `40000`, at least `1000`) with a visible truncation marker. The files
+  together stop at four times that, and later files are listed by name only.
+
+If the scoped request cannot be built, the pass is logged as `scoped request failed; falling back to full` and reviews
+the full diff.
+
+Every pass logs `[Review Loop] Review mode at iteration N: <mode> (<reason>).`, and the diff gate records the mode as
+`DiffGate.mode`. When reviewers run in the review-loop container, the host serialises the scoped decision to
+`.holon/review/delta_request.json` in the worktree (git-ignored) and passes it with `--delta-request`. It removes the
+file once the dispatch returns. The container uses the decision only when the head it resolves is the same head;
+otherwise the pass is full.
+
+`HOLON_SCOPED_REVIEW_MAX_LINES` (default `400`) is the largest delta, in added plus deleted lines, that a pass reviews
+scoped. `0` turns scoped review off. A scoped approval can miss a defect whose cause lies outside the delta, such as an
+unchanged caller of a changed function. The anchor full pass, the chain limit, CI on the exact head and the human merge
+review bound that risk. Both variables are listed in
+[the environment variable reference](environment_variables.md#review-loop).
+
 ## Approval carry-over across target merges
 
 An approval is bound to the PR's own change as well as to the SHA the reviewers saw. Stage 4 records a change

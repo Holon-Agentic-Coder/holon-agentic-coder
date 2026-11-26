@@ -23,7 +23,7 @@ def _is_permanent(exc: HostRemoteError) -> bool:
     return any(marker in detail for marker in _PERMANENT_DETAILS)
 
 
-def fetch_execution_branch_with_retry(
+def _fetch_execution_branch_with_retry(
     context: FlowContext,
     branch: str,
     *,

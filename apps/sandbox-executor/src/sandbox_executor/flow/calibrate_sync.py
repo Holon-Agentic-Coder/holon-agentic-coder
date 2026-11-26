@@ -9,7 +9,7 @@ be replaced, and on origin only with a lease (calibrate_rebuild.py).
 
 from __future__ import annotations
 
-from sandbox_executor.flow.calibrate_fetch_retry import fetch_execution_branch_with_retry
+from sandbox_executor.flow.calibrate_fetch_retry import _fetch_execution_branch_with_retry
 from sandbox_executor.flow.calibrate_rebuild import (
     CalibrationSyncError,
     holds_only_calibration_commits,
@@ -43,7 +43,7 @@ def _divergence_message(repo_dir: str, branch: str, local_sha: str, origin_sha: 
 
 def _fetch_execution_branch(context: FlowContext, branch: str) -> None:
     try:
-        fetch_execution_branch_with_retry(context, branch)
+        _fetch_execution_branch_with_retry(context, branch)
     except HostRemoteError as exc:
         if _rev(context.target_worktree, f"refs/remotes/{DEFAULT_REMOTE}/{branch}") and not context.skip_push:
             raise CalibrationSyncError(f"could not fetch origin/{branch} ({exc}); its ref may be stale.") from exc

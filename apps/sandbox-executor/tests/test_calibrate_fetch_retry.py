@@ -11,12 +11,13 @@ from sandbox_executor.flow import FlowContext
 from sandbox_executor.flow.calibrate_fetch_retry import (
     FETCH_ATTEMPTS,
     FETCH_BACKOFF_SECONDS,
-    fetch_execution_branch_with_retry,
+    _fetch_execution_branch_with_retry,
 )
 from sandbox_executor.flow.calibrate_rebuild import CalibrationSyncError
 from sandbox_executor.flow.calibrate_sync import sync_execution_ref
 from sandbox_executor.flow.host_remote import HostRemoteError, fetch_base
 
+from tests.flow.sleep_patch import scoped_sleep_patch
 from tests.test_calibrate_sync import EXEC, git, make_repos
 
 TRANSIENT = "ssh: connect to host github.com port 22: Connection timed out"
@@ -56,7 +57,7 @@ def warning_lines(context: FlowContext) -> list[str]:
 def run_sync(context: FlowContext, fetch: ScriptedFetch, sleeps: list[float]) -> str | None:
     with (
         patch("sandbox_executor.flow.calibrate_fetch_retry.fetch_base", fetch),
-        patch("sandbox_executor.flow.calibrate_fetch_retry.time.sleep", sleeps.append),
+        scoped_sleep_patch("sandbox_executor.flow.calibrate_fetch_retry", sleeps.append),
     ):
         return sync_execution_ref(context)
 
@@ -135,7 +136,7 @@ def test_a_permanent_fetch_failure_is_not_retried(tmp_path: Path, detail: str) -
     fetch = ScriptedFetch([HostRemoteError("fetch", EXEC, "origin", detail)])
     sleeps: list[float] = []
     with pytest.raises(HostRemoteError) as raised:
-        fetch_execution_branch_with_retry(context, EXEC, fetch=fetch, sleep=sleeps.append)
+        _fetch_execution_branch_with_retry(context, EXEC, fetch=fetch, sleep=sleeps.append)
     assert raised.value.detail == detail
     assert fetch.calls == 1
     assert sleeps == []
@@ -152,6 +153,6 @@ def test_non_host_remote_errors_propagate_without_retry(tmp_path: Path) -> None:
     fetch = ScriptedFetch([RuntimeError("bug")])
     sleeps: list[float] = []
     with pytest.raises(RuntimeError, match="bug"):
-        fetch_execution_branch_with_retry(context, EXEC, fetch=fetch, sleep=sleeps.append)
+        _fetch_execution_branch_with_retry(context, EXEC, fetch=fetch, sleep=sleeps.append)
     assert fetch.calls == 1
     assert sleeps == []

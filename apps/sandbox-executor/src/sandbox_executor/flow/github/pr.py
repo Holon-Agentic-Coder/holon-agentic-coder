@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 _GH_MERGEABILITY_MAX_ATTEMPTS = 3
 _GH_MERGEABILITY_RETRY_DELAY_SECONDS = 2
+_PR_URL_PATTERN = re.compile(r"https://\S+")
 
 
 def _resolve_commit_ref(repo_dir: str, ref: str) -> tuple[str | None, str]:
@@ -151,7 +153,7 @@ def create_or_update_pr(  # noqa: PLR0913
     clean_branch = branch.strip() if branch else ""
     github = github or GitHubAdapter(repo_dir, proxy_env)
     if not clean_branch or not github.available:
-        return {"attempted": False, "success": False, "action": "none", "pr_number": None, "output": ""}
+        return {"attempted": False, "success": False, "action": "none", "pr_number": None, "output": "", "pr_url": None}
 
     try:
         action, pr_num, result = github.open_or_update(clean_branch, target_branch, title, body)
@@ -159,8 +161,23 @@ def create_or_update_pr(  # noqa: PLR0913
         return _pr_error(redact_agent_secrets(str(exc)))
     if result.error:
         return _pr_error(result.error)
-    return {"attempted": True, "success": result.ok, "action": action, "pr_number": pr_num, "output": result.output}
+    return {
+        "attempted": True,
+        "success": result.ok,
+        "action": action,
+        "pr_number": pr_num,
+        "output": result.output,
+        "pr_url": _pr_url_from_stdout(result.stdout),
+    }
+
+
+def _pr_url_from_stdout(stdout: str) -> str | None:
+    for line in stdout.splitlines() if isinstance(stdout, str) else []:
+        match = _PR_URL_PATTERN.search(line.strip())
+        if match:
+            return redact_agent_secrets(match.group(0))
+    return None
 
 
 def _pr_error(output: str) -> dict[str, Any]:
-    return {"attempted": True, "success": False, "action": "error", "pr_number": None, "output": output}
+    return {"attempted": True, "success": False, "action": "error", "pr_number": None, "output": output, "pr_url": None}

@@ -9,6 +9,7 @@ from typing import Any
 
 from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, ActionIndexDatabase
 from sandbox_executor.knowledge.promotion import evaluate_action_promotion
+from sandbox_executor.knowledge.promotion_rules import is_single_flow_review_chatter
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +160,7 @@ def _promote_failure_candidate(
     kb_dir: str,
     dry_run: bool,
 ) -> dict[str, Any] | None:
-    if eval_res.failure_ladder_state not in ("repeated", "proven-fail"):
+    if eval_res.failure_ladder_state not in ("repeated", "proven-fail") or is_single_flow_review_chatter(records):
         return None
     kb_id = f"KB-failure-{eval_res.context_fingerprint[:8]}"
     if os.path.exists(os.path.join(kb_dir, "failure_modes", f"{kb_id}.json")):
@@ -167,13 +168,12 @@ def _promote_failure_candidate(
 
     sample_act = records[0]["action"] if records else "unknown action"
     sample_tgt = records[0]["target"] if records else "unknown target"
-    source_ids = [r["record_id"] for r in records]
     item = {
         "kb_id": kb_id,
         "kb_type": "failure_mode",
         "context_fingerprint": eval_res.context_fingerprint,
         "evidence": {
-            "ledger_refs": source_ids,
+            "ledger_refs": [r["record_id"] for r in records],
             "success_count": eval_res.success_count,
             "failure_count": eval_res.failure_count,
             "ladder_state": eval_res.failure_ladder_state,

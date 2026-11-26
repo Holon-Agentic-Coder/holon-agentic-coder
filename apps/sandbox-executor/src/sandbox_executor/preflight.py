@@ -281,8 +281,11 @@ def _reference_secret_args(runner_cmd: list[str], secret_env: Mapping[str, str])
     binary, *args = runner_cmd
     if not any(arg in by_value for arg in args):
         return runner_cmd
-    script = " ".join(f'"${{{by_value[arg]}}}"' if arg in by_value else shlex.quote(arg) for arg in args)
-    return ["sh", "-c", f"exec {shlex.quote(binary)} {script}"]
+    files = [i for i, arg in enumerate(args) if arg in by_value and i and args[i - 1] == "--settings"]
+    prelude = "".join(f'umask 077; s{i}=$(mktemp); printf %s "${{{by_value[args[i]]}}}" >"$s{i}"; ' for i in files)
+    refs = [f'"${{{by_value[a]}}}"' if a in by_value else shlex.quote(a) for a in args]
+    refs = [f'"$s{i}"' if i in files else ref for i, ref in enumerate(refs)]
+    return ["sh", "-c", f"{prelude}exec {shlex.quote(binary)} {' '.join(refs)}"]
 
 
 def _result(  # noqa: PLR0913

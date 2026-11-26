@@ -176,7 +176,8 @@ def test_probe_keeps_credentials_off_the_docker_argv(probe_env, monkeypatch, iso
     # The runner's `--settings` flag reads the variable inside the container instead of carrying the value.
     tail = seen["cmd"][seen["cmd"].index("holon/agent-claude") + 1 :]
     assert tail[:2] == ["sh", "-c"]
-    assert '--settings "${HOLON_AGENT_SETTINGS}"' in tail[2]
+    assert 'printf %s "${HOLON_AGENT_SETTINGS}" >"$s' in tail[2]
+    assert '--settings "$s' in tail[2]
     assert not os.path.exists(seen["path"])
 
 
@@ -256,7 +257,7 @@ def test_probe_names_a_multiline_settings_json_bare_and_hands_its_value_to_docke
     assert_no_leak(sample, seen["cmd"])
     assert seen["cmd"][seen["cmd"].index("HOLON_AGENT_SETTINGS") - 1] == "-e"
     assert seen["env"]["HOLON_AGENT_SETTINGS"] == settings
-    assert '--settings "${HOLON_AGENT_SETTINGS}"' in seen["cmd"][-1]
+    assert '--settings "$s' in seen["cmd"][-1]
 
 
 def test_probe_passes_a_credential_free_single_line_settings_json_in_the_env_file(
@@ -273,8 +274,9 @@ def test_probe_passes_a_credential_free_single_line_settings_json_in_the_env_fil
     # The runner flag filled from the variable reads it inside the container; the binary stays literal.
     tail = seen["cmd"][seen["cmd"].index("holon/agent-claude") + 1 :]
     assert tail[:2] == ["sh", "-c"]
-    assert tail[2].startswith("exec claude ")
-    assert '--settings "${HOLON_AGENT_SETTINGS}"' in tail[2]
+    assert "exec claude " in tail[2]
+    assert 'printf %s "${HOLON_AGENT_SETTINGS}" >"$s' in tail[2]
+    assert '--settings "$s' in tail[2]
 
 
 def test_probe_passes_a_bare_credential_under_a_plain_holon_name_only_in_the_env_file(

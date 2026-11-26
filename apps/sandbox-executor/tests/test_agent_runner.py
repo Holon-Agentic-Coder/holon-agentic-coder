@@ -1,5 +1,7 @@
 import json
+import logging
 import os
+import stat
 import subprocess
 import unittest
 from pathlib import Path
@@ -766,3 +768,67 @@ def test_validate_prints_spec_message_and_exits_1(agent_id, monkeypatch, tmp_pat
         get_runner(agent_id).validate()
     assert exc.value.code == 1
     assert capsys.readouterr().err == RUNNER_SPECS[agent_id].check_credentials() + "\n"
+
+
+@pytest.fixture
+def permissive_umask():
+    """Run the test under umask 0o000 and restore the previous umask afterwards."""
+    previous = os.umask(0o000)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
+def _unpack_bundle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, config_files: dict[str, str]
+) -> StandardAgentRunner:
+    """Unpack a bundle for the test agent into a temporary home and return the runner."""
+    home = Path(os.path.realpath(tmp_path)) / "home"
+    home.mkdir(exist_ok=True)
+    bundle = tmp_path / "bundle.json"
+    bundle.write_text(json.dumps({"agent_id": "test-agent", "config_files": config_files}))
+    monkeypatch.setenv("HOLON_SECRET_BUNDLE_PATH", str(bundle))
+    monkeypatch.setenv("HOME", str(home))
+    runner = StandardAgentRunner("test-agent", "binary", "-m")
+    runner.resolve_credentials()
+    return runner
+
+
+def test_secret_bundle_files_are_owner_only(monkeypatch, tmp_path, permissive_umask):
+    home = Path(os.path.realpath(tmp_path)) / "home"
+    home.mkdir()
+    home_mode = stat.S_IMODE(home.stat().st_mode)
+    runner = _unpack_bundle(monkeypatch, tmp_path, {"~/.config/holon/nested/a.json": '{"k": 1}'})
+    target = home / ".config" / "holon" / "nested" / "a.json"
+    assert target.read_text() == '{"k": 1}'
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    for directory in (home / ".config", home / ".config" / "holon", home / ".config" / "holon" / "nested"):
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700, directory
+    assert stat.S_IMODE(home.stat().st_mode) == home_mode
+    runner.cleanup_ephemeral_credentials()
+    assert not target.exists()
+
+
+def test_secret_bundle_overwrites_existing_file_owner_only(monkeypatch, tmp_path, permissive_umask):
+    existing = Path(os.path.realpath(tmp_path)) / "home" / ".config" / "claude" / "config.json"
+    existing.parent.mkdir(parents=True)
+    existing.write_text("old")
+    os.chmod(existing, 0o644)
+    runner = _unpack_bundle(monkeypatch, tmp_path, {"~/.config/claude/config.json": "new"})
+    assert existing.read_text() == "new"
+    assert stat.S_IMODE(existing.stat().st_mode) == 0o600
+    runner.cleanup_ephemeral_credentials()
+
+
+def test_secret_bundle_failure_warning_is_redacted(monkeypatch, tmp_path, caplog):
+    secret = "ghp_" + "A" * 36
+
+    def failing_write(_path: str, _content: str) -> None:
+        raise ValueError(f"bad token {secret}")
+
+    monkeypatch.setattr("sandbox_executor.agent_runner._write_private_file", failing_write)
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.agent_runner"):
+        _unpack_bundle(monkeypatch, tmp_path, {"~/.config/claude/config.json": "x"})
+    assert any("Failed to process secret bundle" in r.getMessage() for r in caplog.records)
+    assert secret not in caplog.text

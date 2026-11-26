@@ -20,11 +20,11 @@ two-parent merge of the base branch into the previous head is decided by ``scrip
 ``merge-push-clean-main-merge`` skips); a push whose new head is not a merge commit keeps the decision of point 3,
 except that the ``hygiene`` job (or ``test-hygiene.yml``) always reports ``merge-push-hygiene-never-skipped``.
 
-A push to ``main`` in ``test-unit.yml`` or ``test-stress.yml`` is decided by ``scripts.ci_main_push_gate`` instead (rule
-``main-push-tested-tree`` skips). Any exception is ``api-error``. The two rules that skip are ``bookkeeping-only`` and
-``label-not-result-affecting``. The gate prints one line with the rule that decided and writes ``skip=true`` or
-``skip=false`` to the step output. Standard library only and Python 3.9 syntax, so it runs on the runner's own
-``python3``.
+A push to ``main`` in ``test-unit.yml`` or ``test-stress.yml`` is decided by ``scripts.ci_main_push_gate`` instead
+(rules ``main-push-superseded`` and ``main-push-tested-tree`` skip). Any exception is ``api-error``. The two rules that
+skip are ``bookkeeping-only`` and ``label-not-result-affecting``. The gate prints one line with the rule that decided
+and writes ``skip=true`` or ``skip=false`` to the step output. Standard library only and Python 3.9 syntax, so it runs
+on the runner's own ``python3``.
 """
 
 from __future__ import annotations

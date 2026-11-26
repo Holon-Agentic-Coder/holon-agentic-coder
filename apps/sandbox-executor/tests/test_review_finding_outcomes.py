@@ -9,6 +9,7 @@ from sandbox_executor.review_finding_outcomes import (
     returned_verdict_count,
     undisposed_finding_ids,
     verdict_count_ok,
+    with_commit,
 )
 from sandbox_executor.review_report import FindingDisposition, FindingRow
 
@@ -83,3 +84,20 @@ def test_a_failed_reviewer_returns_no_verdict() -> None:
     reviewers = [clean_reviewer(1), clean_reviewer(2), failed_reviewer(3)]
 
     assert returned_verdict_count(reviewers) == 2
+
+
+def test_with_commit_stamps_only_applied_fixes_that_lack_a_commit() -> None:
+    applied, kept, rejected = with_commit(
+        [
+            outcome(NIT, "applied"),
+            outcome(MUTANT, "applied", commit_sha="own"),
+            outcome(LATER, "rejected", rejection_reason="inaccurate"),
+        ],
+        "pushed",
+    )
+
+    assert (applied.commit_sha, kept.commit_sha, rejected.commit_sha) == ("pushed", "own", None)
+
+
+def test_with_commit_leaves_an_unpushed_fix_without_a_commit() -> None:
+    assert not is_disposed(*with_commit([outcome(NIT, "applied")], None))

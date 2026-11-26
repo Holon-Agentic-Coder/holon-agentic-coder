@@ -407,3 +407,32 @@ def test_conflict_resolver_template_carries_the_shared_rules_and_forbids_git_wri
     for command in ("git add", "git commit", "git merge", "git checkout", "git reset", "git stash"):
         assert f"`{command}`" in text
     assert "cannot_decide: <reason>" in text
+
+
+SELF_EXPLAINING_RULE_PHRASES = (
+    "code is self-explaining",
+    "names state the intent of every statement",
+    "extracted into a function whose name says what it does",
+    "no docstrings and no explanatory comments",
+    "the only allowed comment is a `# why:` comment",
+    "never what the code does",
+    "machine directives stay allowed",
+    "shellcheck directives",
+    "scripts/check_self_explaining.py",
+)
+
+
+@pytest.mark.parametrize(
+    "render",
+    [rendered_planner, rendered_executor, lambda: MARKDOWN_TEMPLATE, lambda: CONFLICT_RESOLVER_PROMPT],
+    ids=["planner", "executor", "review_loop", "conflict_resolver"],
+)
+def test_templates_state_the_self_explaining_code_invariant(render: Callable[[], str]) -> None:
+    text = normalised(render())
+    missing = [phrase for phrase in SELF_EXPLAINING_RULE_PHRASES if phrase not in text]
+    assert missing == [], f"self-explaining code phrases missing: {missing}"
+
+
+def test_review_loop_template_reports_added_docstrings_and_comments_as_important() -> None:
+    text = normalised(MARKDOWN_TEMPLATE)
+    assert "report any added docstring or explanatory comment as an important finding" in text

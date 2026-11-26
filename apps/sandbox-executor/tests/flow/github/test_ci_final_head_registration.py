@@ -131,6 +131,38 @@ def test_lagging_head_without_commit_checks_retries_once_then_reports_the_lag(tm
     assert "success" not in format_final_head_ci(record)
 
 
+def test_lagging_head_failed_check_keeps_its_real_details_url(tmp_path: Path) -> None:
+    scenario = Scenario([_run("unit", conclusion="failure")])
+    record, ci_status = ci_final_head._classify_settled(
+        ci_final_head._FinalHeadCheck(
+            FlowContext(repo_dir=str(tmp_path), execution_branch=BRANCH, agent="a", model="m"),
+            str(tmp_path),
+            BRANCH,
+            scenario.seams(),
+            scenario.github,
+        )
+    )
+    assert record["state"] == "failed"
+    assert ci_status["checks"][0]["link"] == "https://github.com/o/r/actions/runs/7/job/1"
+
+
+def test_lagging_head_gh_failure_reports_a_lookup_failure_not_missing_checks(tmp_path: Path) -> None:
+    scenario = Scenario([])
+    calls: list[list[str]] = []
+
+    def failing_cli(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(["gh", *args], 1, "", "HTTP 403: API rate limit exceeded\nmore")
+
+    scenario.github = FakeGitHub(cli=failing_cli)
+    record = _check(tmp_path, scenario)
+    assert record["state"] == "unknown"
+    assert LAGGED in record["reason"]
+    assert "check-runs lookup failed for the pushed head: HTTP 403: API rate limit exceeded" in record["reason"]
+    assert NO_CHECKS not in record["reason"]
+    assert len(calls) == 2
+
+
 def test_lagging_head_that_caught_up_on_the_fresh_read_takes_the_branch_path(tmp_path: Path) -> None:
     scenario = Scenario([], pr_heads=[STALE, PUSHED])
     record = _check(tmp_path, scenario)

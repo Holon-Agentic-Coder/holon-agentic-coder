@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import json
 import os
 import subprocess
 from collections.abc import Callable, Mapping
@@ -47,6 +48,7 @@ BOOKKEEPING_PATH_PREFIXES = ("plans/", "executions/", "holon-knowledge/")
 
 PR_HEAD_LAGGED_REASON = "pull request head lagged the pushed head"
 NO_CHECKS_REASON = "no checks registered for the pushed head"
+LOOKUP_FAILED_REASON = "check-runs lookup failed for the pushed head"
 _UNREGISTERED = {"source": "unregistered", "total": 0, "pending": 0, "checks": []}
 
 Probe = Callable[[], dict[str, Any]]
@@ -115,11 +117,20 @@ def _pr_bucket(head_check: HeadCheck) -> tuple[str, str]:
     return "fail", "FAILURE"
 
 
-def _as_pr_check(head_check: HeadCheck) -> dict[str, Any]:
+def _details_urls(output: str) -> dict[int, str]:
+    raws = [json.loads(line) for line in output.splitlines() if line.strip()]
+    return {int(raw.get("id") or 0): str(raw.get("details_url") or "") for raw in raws}
+
+
+def _as_pr_check(head_check: HeadCheck, links: Mapping[int, str]) -> dict[str, Any]:
     bucket, state = _pr_bucket(head_check)
-    run_id = head_check.get("run_id")
-    link = f"https://github.com/actions/runs/{run_id}" if run_id else ""
+    link = links.get(int(head_check.get("check_run_id") or 0), "")
     return {"name": head_check.get("name"), "bucket": bucket, "state": state, "link": link}
+
+
+def _lookup_failed(detail: str) -> dict[str, Any]:
+    head = CredentialRedactor.redact_text(detail.strip().splitlines()[0] if detail.strip() else "")[:200]
+    return {**_UNREGISTERED, "unknown_reason": f"{LOOKUP_FAILED_REASON}: {head}".rstrip(": ")}
 
 
 def _commit_probe(check: _FinalHeadCheck, sha: str) -> Probe:
@@ -128,10 +139,13 @@ def _commit_probe(check: _FinalHeadCheck, sha: str) -> Probe:
     def probe() -> dict[str, Any]:
         try:
             proc = check.github.gh(argv, check.repo_dir)
-            checks = latest_checks_for_head(parse_check_runs(proc.stdout), sha) if proc.returncode == 0 else []
-        except Exception:
-            checks = []
-        return summarise_ci_checks([_as_pr_check(c) for c in checks]) if checks else dict(_UNREGISTERED)
+        except Exception as exc:
+            return _lookup_failed(str(exc))
+        if proc.returncode != 0:
+            return _lookup_failed(proc.stderr or f"gh exited {proc.returncode}")
+        checks = latest_checks_for_head(parse_check_runs(proc.stdout), sha)
+        links = _details_urls(proc.stdout)
+        return summarise_ci_checks([_as_pr_check(c, links) for c in checks]) if checks else dict(_UNREGISTERED)
 
     return probe
 
@@ -208,9 +222,7 @@ def _branch_status(check: _FinalHeadCheck, probe: Probe, policy: CiWaitPolicy) -
     return ci_status if _registered(ci_status) else {**ci_status, "unknown_reason": NO_CHECKS_REASON}
 
 
-def _lagged_status(
-    check: _FinalHeadCheck, probe: Probe, lagged: str, policy: CiWaitPolicy
-) -> tuple[Probe, dict[str, Any]]:
+def _lagged_status(check: _FinalHeadCheck, probe: Probe, policy: CiWaitPolicy) -> tuple[Probe, dict[str, Any]]:
     ci_status = probe()
     if _registered(ci_status):
         return probe, ci_status
@@ -221,7 +233,8 @@ def _lagged_status(
     ci_status = probe()
     if _registered(ci_status):
         return probe, ci_status
-    return probe, {**ci_status, "unknown_reason": f"{still_lagged}; {NO_CHECKS_REASON}"}
+    cause = ci_status.get("unknown_reason") or NO_CHECKS_REASON
+    return probe, {**ci_status, "unknown_reason": f"{still_lagged}; {cause}"}
 
 
 def _settled_status(check: _FinalHeadCheck) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -230,7 +243,7 @@ def _settled_status(check: _FinalHeadCheck) -> tuple[dict[str, Any], dict[str, A
     if lagged is None:
         ci_status = _branch_status(check, probe, policy)
     else:
-        probe, ci_status = _lagged_status(check, probe, lagged, policy)
+        probe, ci_status = _lagged_status(check, probe, policy)
     if not _registered(ci_status) or ci_status.get("pending", 0) <= 0:
         return ci_status, None
     ci_status, waited = wait_for_pending_ci(check.context, probe, ci_status, policy, stop_on_failure=True)

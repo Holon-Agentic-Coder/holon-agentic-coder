@@ -32,15 +32,15 @@ def _sandboxed_clean_reviewers(monkeypatch):
 def _no_real_prettier(monkeypatch):
     """Fake the Stage 5 report formatter and fail any test that would still start the real npx (no Node, no network).
 
-    The calibrate stage formats its report through ``calibration._prettier_failure``; faking that seam to report a
-    passing check keeps the flow tests independent of npx being installed. Tests of the formatter itself live in
+    The calibrate stage formats its report through ``calibration_format._prettier_failure``; faking that seam to report
+    a passing check keeps the flow tests independent of npx being installed. Tests of the formatter itself live in
     test_calibration_commit.py.
 
     The same wrapper answers the mergeability probe's ``gh pr view`` read in-process with the failure the host's real
     ``gh`` gives in a temporary repository (``tests/gh_probe_stub.py``), so the local git fallback decides as before
     and no ``gh`` process starts. A test's own fake ``gh`` on ``PATH`` or its own ``subprocess.run`` patch still wins.
     """
-    monkeypatch.setattr("sandbox_executor.calibration._prettier_failure", lambda report_rel, repo_dir: None)
+    monkeypatch.setattr("sandbox_executor.calibration_format._prettier_failure", lambda report_rel, repo_dir: None)
     real_run = subprocess.run
 
     def guarded_run(cmd, *args, **kwargs):

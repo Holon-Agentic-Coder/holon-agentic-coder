@@ -15,7 +15,7 @@ import pytest
 from sandbox_executor.calibration_execution_owner import unique_plan_branch_of_execution
 from sandbox_executor.calibration_predicted import execution_predicted_metrics, read_plans_rows, select_plans_row
 from sandbox_executor.entrypoint.execution_args import _read_intent_row, _read_plan_row
-from sandbox_executor.entrypoint.taken_ids import _plan_ids_in_ledger
+from sandbox_executor.entrypoint.plan_id_unique import _ledger_plan_ids
 from sandbox_executor.ledger import query_ledger, read_merged_rows, read_merged_text, validate_stage_ledger
 from sandbox_executor.ledger.fragments import LEDGER_NAMES, root_intent_id
 
@@ -101,7 +101,7 @@ def _answers(repo: Path) -> dict[str, Any]:
         "predicted_a": execution_predicted_metrics(str(ledger / "executions.jsonl"), "E-100-a", PLAN_A),
         "admission_plan_row": _read_plan_row(str(repo), PLAN_A),
         "admission_intent_row": _read_intent_row(str(repo), "I-2-b/_"),
-        "taken_plan_ids": _plan_ids_in_ledger(str(repo), "I-1-a"),
+        "taken_plan_ids": _ledger_plan_ids(str(repo)),
         "actions": query_ledger(str(ledger / "executions.jsonl"), entry_type="action"),
     }
 
@@ -114,7 +114,7 @@ def test_calibration_and_admission_are_identical_in_every_form(tmp_path: Path, f
     assert expected["plans_row_a"]["ev_pred"] == 3.0
     assert expected["predicted_a"] == {"ev": 9.5}
     assert expected["owner"] == PLAN_B
-    assert expected["taken_plan_ids"] == {"P-10-a", "P-11-a"}
+    assert expected["taken_plan_ids"] == {"P-10-a", "P-11-a", "P-20-b"}
     assert _answers(tmp_path / form) == expected
     for name in LEDGER_NAMES:
         canonical_rows = read_merged_rows(str(tmp_path / "canonical" / LEDGER_REL / name))

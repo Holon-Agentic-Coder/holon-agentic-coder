@@ -41,6 +41,7 @@ from sandbox_executor.entrypoint.rejected_attempt import (
     read_saved_patch,
 )
 from sandbox_executor.entrypoint.review_failure_detail import clear_full_output, with_short_summary
+from sandbox_executor.entrypoint.review_loop_args import build_parser
 from sandbox_executor.entrypoint.review_markdown_gate import run_markdown_gate
 from sandbox_executor.entrypoint.review_verification import (
     missing_tool_result,
@@ -48,6 +49,7 @@ from sandbox_executor.entrypoint.review_verification import (
 )
 from sandbox_executor.entrypoint.uv_lock import LockfileMismatchError, check_lockfile, frozen_env
 from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.flow.review.delta_review_forwarding import load_forwarded_decision
 from sandbox_executor.flow.review.loop import run_review_loop
 from sandbox_executor.flow.review.records import _bounded_error_context
 from sandbox_executor.flow.review.verdict import review_loop_approved, review_summary_lines
@@ -64,7 +66,6 @@ from sandbox_executor.plan_paths import is_row_of_plan, plan_branch_of
 from sandbox_executor.redaction import redact_agent_secrets, redact_command
 from sandbox_executor.ref_names import INTENT_SUFFIX
 from sandbox_executor.resolver_result import RESOLVER_RESULT_MARKER, bounded_output_tail
-from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZE_HELP
 from sandbox_executor.review_report import (
     VALID_REJECTION_REASONS,
     FindingDisposition,
@@ -122,6 +123,12 @@ def _run_git_cmd(
 
 def _log_stderr(message: str) -> None:
     print(message, file=sys.stderr)
+
+
+def _load_delta_request(context: FlowContext, repo_dir: str, rel_path: str | None) -> None:
+    """Load the host's scoped decision for this pass; an invalid one is ignored, so the pass is full."""
+    if rel_path and not load_forwarded_decision(context, repo_dir, rel_path):
+        _log_stderr(f"Ignoring --delta-request={rel_path}: not a valid scoped decision; reviewing in full.")
 
 
 class ReviewPreparationError(RuntimeError):
@@ -670,123 +677,7 @@ def _run_resolver_mode(
 
 def main() -> None:  # noqa: C901, PLR0915
     """Parse CLI arguments and execute containerised review loop."""
-    parser = argparse.ArgumentParser(
-        prog="review_loop",
-        description="Holon Review Loop Agent container entrypoint.",
-    )
-    parser.add_argument("target", help="Target execution branch name, PR number, or PR URL.")
-    parser.add_argument("pos_agent", nargs="?", default=None, help="Agent runner (positional fallback).")
-    parser.add_argument("pos_model", nargs="?", default=None, help="Model name (positional fallback).")
-    parser.add_argument(
-        "--agent",
-        default=None,
-        help="Agent runner to execute (default: the fallback runner, antigravity-agent).",
-    )
-    parser.add_argument(
-        "--model",
-        default=None,
-        help="Model name to pass to agent (default: the runner's default model).",
-    )
-    parser.add_argument(
-        "--max-iterations",
-        type=int,
-        default=25,
-        help="Maximum review loop iterations (default: 25).",
-    )
-    parser.add_argument(
-        "--iteration",
-        type=int,
-        default=1,
-        help=(
-            "Label of the first pass (default: 1), used for the ledger review_iteration fields and the posted "
-            "'Iteration {n}' heading. The flow engine owns the counter, saves it in the flow checkpoint "
-            "(review_iterations_done), and on a resume from the review stage passes the continued count as this "
-            "label so ledger review_iteration values and posted 'Iteration {n}' headings form one monotonic sequence "
-            "across halts and resumes; it is never a loop limit and is never set by operators."
-        ),
-    )
-    parser.add_argument(
-        "--resolve",
-        action="store_true",
-        default=False,
-        help=(
-            "Run in resolver mode: read findings from --findings-file (or --result-file), adjudicate every finding "
-            "to applied or rejected, verify with lint and tests before pushing, and write the resolver outcome JSON."
-        ),
-    )
-    parser.add_argument(
-        "--findings-file",
-        default=None,
-        help="Path to input findings JSON for --resolve mode (defaults to --result-file).",
-    )
-    parser.add_argument(
-        "--ensemble-size",
-        type=int,
-        default=DEFAULT_ENSEMBLE_SIZE,
-        help=ENSEMBLE_SIZE_HELP,
-    )
-    parser.add_argument(
-        "--auto-pr",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            "Automatically create PR if only a branch exists (default: True). The empty-diff guard runs either way; "
-            "the exit code is 0 only when the consensus is approved and posted."
-        ),
-    )
-    parser.add_argument(
-        "--skip-push",
-        action="store_true",
-        default=False,
-        help="Skip pushing git commits or branches to remote.",
-    )
-    parser.add_argument(
-        "--skip-post",
-        action="store_true",
-        default=False,
-        help="Skip posting review consensus to GitHub.",
-    )
-    parser.add_argument(
-        "--result-file",
-        default=None,
-        help="Path to write structured review outcome JSON for host transport.",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        default=False,
-        help="Run review evaluation without applying changes or git commits.",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        default=False,
-        help="Output review loop results in structured JSON format.",
-    )
-    parser.add_argument(
-        "--token-reduce",
-        action="store_true",
-        default=False,
-        help="Enable proxy-based token reduction.",
-    )
-    parser.add_argument(
-        "--mitm-web",
-        action="store_true",
-        default=False,
-        help="Enable mitmweb proxy dashboard.",
-    )
-    parser.add_argument(
-        "--target-worktree",
-        default=None,
-        help="Target worktree directory override.",
-    )
-    parser.add_argument(
-        "--review-paths",
-        action="append",
-        default=None,
-        help="Comma-separated or repeated repository paths to scope a conflict-resolution re-review.",
-    )
-
+    parser = build_parser()
     args = parser.parse_args()
     if args.iteration < 1:
         parser.error(f"--iteration must be at least 1, got {args.iteration}.")
@@ -851,6 +742,7 @@ def main() -> None:  # noqa: C901, PLR0915
         mitm_web=args.mitm_web,
         review_scope_paths=review_scope_paths,
     )
+    _load_delta_request(context, repo_dir, args.delta_request)
 
     # A reviewer turn runs in the mounted worktree; the guard names and repairs one that leaves HEAD off the branch.
     with head_guard(

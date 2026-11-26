@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-1ab2854e",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T10:41:01.939968+00:00",
+  "updated_ts": "2026-11-26T10:41:01.939968+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795688894-86afd1eb",
+      "ACT-FIND-1795688787-1d2057f4"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795665991-no-unneeded-full-review/P-1795666015-CLA-CO5.5--5-count-full-reviews-scoped/P-1795685564-CLA-CO5.5/E-1795685676-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 4 finding detected: FIND-R1-004-01",
+    "symptoms": [
+      "tests/test_calibration.py is already over 1,000 lines and grows from 1,134 to 1,171; move the new review-churn test into tests/test_calibration_review_churn.py."
+    ]
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-0f7cc2ec",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T12:04:26.212534+00:00",
+  "updated_ts": "2026-11-26T12:04:26.212534+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795692899-62c0fcfd",
+      "ACT-FIND-1795692895-5bbae98c"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795665991-no-unneeded-full-review/P-1795666015-CLA-CO5.5/E-1795666317-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R2-001-01",
+    "symptoms": [
+      "rerun_noise_once also runs in the sandboxed review-loop container, whose rerun budget and routing rows are not persisted to the host, so a noise run can be rerun twice on one head and routing rows duplicated; skip it in container mode."
+    ]
+  }
+}

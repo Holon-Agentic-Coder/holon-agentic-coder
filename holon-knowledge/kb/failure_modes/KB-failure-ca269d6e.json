@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-ca269d6e",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T12:04:26.180477+00:00",
+  "updated_ts": "2026-11-26T12:04:26.180477+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1795692899-661ad3d3",
+      "ACT-REV-1795692895-f9d833d9",
+      "ACT-REV-1795690253-622e99ff",
+      "ACT-REV-1795690143-5459e3a4"
+    ],
+    "success_count": 0,
+    "failure_count": 4,
+    "ladder_state": "proven-fail"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795665991-no-unneeded-full-review/P-1795666015-CLA-CO5.5/E-1795666317-CLA-CO5.5/_",
+    "description": "Reproduced failure across 4 executions with identical context.",
+    "action": "Review Loop iteration 1 reviewer 3 completed",
+    "symptoms": []
+  }
+}

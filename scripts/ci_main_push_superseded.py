@@ -2,8 +2,10 @@
 
 When several pull requests merge back to back, every push to ``main`` starts the gated workflows, and each pushed tree
 is a subset of the next one. A pushed commit that is a strict ancestor of the current tip of ``main`` when the gate job
-starts relies on the tip's own push run, which tests a superset tree. ``decide_main_push`` asks this check right after
-its event check, so a re-run attempt or an incomplete event never reaches it.
+starts relies on the tip's own push run, which tests a superset tree. The check does not confirm that this run exists
+(a ``[skip ci]`` tip has none); the daily ``schedule`` run, which the gate never skips, is the backstop.
+``decide_main_push`` asks this check right after its event check, so a re-run attempt or an incomplete event never
+reaches it.
 
 Only positive evidence skips: the compare ``pushed...tip`` must answer ``ahead``. The pushed commit being the tip,
 any other compare status, and any exception (the tip cannot be read, the compare fails) return no opinion, and the

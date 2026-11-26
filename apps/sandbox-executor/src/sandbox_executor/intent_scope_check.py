@@ -146,7 +146,7 @@ def _merge(proposals: Iterable[Proposal], in_scope: set[str]) -> list[Proposal]:
 def _mentions(text: str, path: str) -> bool:
     pure = PurePosixPath(path)
     names = {path, pure.name, pure.stem, module_name(path) or ""} - {""}
-    return any(re.search(rf"(?<!\w){re.escape(name)}(?![\w])", text) for name in names)
+    return any(re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text) for name in names)
 
 
 def _criteria_warnings(intent: DraftIntent) -> list[str]:

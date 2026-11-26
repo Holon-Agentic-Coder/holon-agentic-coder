@@ -135,6 +135,35 @@ def test_an_older_head_run_holds_the_job_when_the_newest_lacks_it() -> None:
     assert f"run {HEAD_RUN} " in decision.detail
 
 
+def test_a_head_run_of_another_pull_request_is_passed_over() -> None:
+    fake = merged_scene(real_success_job())
+    fake.add_run(HEAD_RUN + 1, HEAD, real_success_job(), pull_requests=[{"number": 8, "base": {"ref": "main"}}])
+    fake.add_run(HEAD_RUN + 2, HEAD, real_success_job(), pull_requests=[{"number": 7, "base": {"ref": "release"}}])
+
+    decision = judge(push_context(), fake)
+
+    assert decision.skip is True
+    assert f"run {HEAD_RUN} " in decision.detail
+
+
+def test_a_head_run_of_another_pull_request_alone_runs_in_full() -> None:
+    fake = FakeGitHub()
+    fake.pulls[MERGE] = [pull(7, HEAD, MERGE)]
+    fake.trees.update({MERGE: TREE, HEAD: TREE})
+    fake.add_run(HEAD_RUN, HEAD, real_success_job(), pull_requests=[{"number": 7, "base": {"ref": "release"}}])
+
+    assert judge(push_context(), fake).rule == "main-push-head-job-missing"
+
+
+def test_a_head_run_naming_no_pull_request_still_counts() -> None:
+    fake = FakeGitHub()
+    fake.pulls[MERGE] = [pull(7, HEAD, MERGE)]
+    fake.trees.update({MERGE: TREE, HEAD: TREE})
+    fake.add_run(HEAD_RUN, HEAD, real_success_job(), pull_requests=None)
+
+    assert judge(push_context(), fake).rule == "main-push-tested-tree"
+
+
 # --- every rule that runs the full job --------------------------------------------------------------------------------
 
 

@@ -14,8 +14,9 @@ in this order, and the first one that fails decides for a full run:
 4. ``main-push-tree-mismatch``: the pushed commit's tree is the tree of the pull request's head commit.
 5. ``main-push-head-job-missing``, ``main-push-head-job-not-finished``, ``main-push-head-job-not-successful``,
    ``main-push-head-job-unverified``: the newest pull-request run of this workflow on the head commit that holds this
-   job (same name and runner label) shows it completed with success and a ``Full run completed`` marker that succeeded
-   (a real success) or was skipped (the job's own gates proved it on an ancestor).
+   job (same name and runner label) and names no pull request but the merged one into ``main`` shows it completed with
+   success and a ``Full run completed`` marker that succeeded (a real success) or was skipped (the job's own gates
+   proved it on an ancestor).
 
 The one rule that skips is ``main-push-tested-tree``. No exception is caught here: the gate turns every exception into
 ``api-error`` and a full run. Standard library only and Python 3.9 syntax, so it runs on the runner's own ``python3``.
@@ -27,6 +28,7 @@ from scripts.ci_bookkeeping_api import (
     GateClient,
     GateContext,
     PullRef,
+    RunRef,
     commit_tree,
     list_head_runs,
     list_jobs,
@@ -116,9 +118,22 @@ def _tree_check(context: GateContext, client: GateClient, pull: PullRef) -> Deci
     return None
 
 
-def _head_job(context: GateContext, client: GateClient, head_sha: str) -> tuple[int, dict[str, object] | None]:
-    """Return the run number and the job of the newest head run that holds exactly one matching job."""
-    for run in list_head_runs(client, context.workflow_file, head_sha)[:MAX_HEAD_RUNS]:
+def _ran_for(run: RunRef, pull: PullRef) -> bool:
+    """Return false when the run names pull requests and none of them is ``pull`` against ``main``.
+
+    The API may answer an empty list for a merged pull request's run, so an empty list does not exclude the run; a base
+    left out of an entry is not held against it either.
+    """
+    if not run.pull_requests:
+        return True
+    return any(number == pull.number and base in ("", MAIN_BRANCH) for number, base in run.pull_requests)
+
+
+def _head_job(context: GateContext, client: GateClient, pull: PullRef) -> tuple[int, dict[str, object] | None]:
+    """Return the run number and the job of the newest head run of ``pull`` that holds exactly one matching job."""
+    for run in list_head_runs(client, context.workflow_file, pull.head_sha)[:MAX_HEAD_RUNS]:
+        if not _ran_for(run, pull):
+            continue
         job = match_job(list_jobs(client, run.run_id), context.job_name, context.os_name)
         if job is not None:
             return run.run_number, job
@@ -127,7 +142,7 @@ def _head_job(context: GateContext, client: GateClient, head_sha: str) -> tuple[
 
 def _head_job_check(context: GateContext, client: GateClient, pull: PullRef) -> Decision:
     """Judge the job on the head commit; the decision skips only for a real success or a gate-skipped success."""
-    run_number, job = _head_job(context, client, pull.head_sha)
+    run_number, job = _head_job(context, client, pull)
     if job is None:
         return Decision(False, RULE_HEAD_JOB_MISSING, f"no single matching job on {pull.head_sha[:12]}")
     where = f"run {run_number}"

@@ -68,13 +68,18 @@ class Comparison:
 
 @dataclass(frozen=True)
 class RunRef:
-    """One earlier workflow run: its id, number, pull-request head and status, and how many pull requests it names."""
+    """One earlier workflow run: its id, number, pull-request head and status, and the pull requests it names.
+
+    ``pull_requests`` holds the number and base branch of each named pull request; the base is empty when the entry
+    names none.
+    """
 
     run_id: int
     run_number: int
     head_sha: str
     status: str
     pull_request_count: int
+    pull_requests: tuple[tuple[int, str], ...] = ()
 
 
 def _quote(value: str) -> str:
@@ -104,6 +109,15 @@ def compare(client: GateClient, base: str, head: str) -> Comparison:
     return Comparison(status=str(answer.get("status", "")), paths=paths, truncated=len(files) >= COMPARE_FILE_CAP)
 
 
+def _run_pull(entry: object) -> tuple[int, str]:
+    """Return the number and base branch of one pull request entry of a workflow run; a missing number raises."""
+    if not isinstance(entry, dict):
+        raise ValueError("a workflow run names a pull request that is not an object")
+    base = entry.get("base")
+    base_ref = base.get("ref") if isinstance(base, dict) else None
+    return int(entry["number"]), base_ref if isinstance(base_ref, str) else ""
+
+
 def _run_ref(run: object) -> RunRef:
     """Build a ``RunRef`` from one ``workflow_runs`` entry; a missing field raises."""
     if not isinstance(run, dict):
@@ -118,6 +132,7 @@ def _run_ref(run: object) -> RunRef:
         head_sha=str(run["head_sha"]),
         status=str(run.get("status", "")),
         pull_request_count=len(pull_requests),
+        pull_requests=tuple(_run_pull(entry) for entry in pull_requests),
     )
 
 

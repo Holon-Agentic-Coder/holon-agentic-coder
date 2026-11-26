@@ -110,9 +110,10 @@ only when all of the following hold, in this order:
   the merge ref that the head's run tested had the same tree too. When `main` moved after the head's run, the trees
   differ and the jobs run in full.
 - The newest pull-request run of the same workflow on the head commit (of the newest five) that holds exactly one job
-  with this job's name and runner label shows that job `completed` with conclusion `success`, and its
-  `Full run completed` step succeeded (a real success) or was skipped (the job's own gates, the bookkeeping gate or the
-  macOS relevance gate, proved it on an ancestor). The detail of the decision line says which of the two it was.
+  with this job's name and runner label, and whose pull request list is empty or names the merged pull request with base
+  `main`, shows that job `completed` with conclusion `success`, and its `Full run completed` step succeeded (a real
+  success) or was skipped (the job's own gates, the bookkeeping gate or the macOS relevance gate, proved it on an
+  ancestor). The detail of the decision line says which of the two it was.
 
 Every missing piece of evidence runs the full job under a rule of its own, and every API error or unexpected answer is
 `api-error`, so the job runs in full. A re-run of a main push always runs in full. Reading the pull requests of a commit
@@ -218,6 +219,9 @@ An empty commit does not force a full run: it changes no path, so it counts as b
 - A main push that the gate skipped uploads no timing record ("Upload timing record" then ignores the missing file), so
   the timing baselines come from the main pushes that still run in full. After a quiet month a job may have fewer than
   five records; the timing gate then only warns and the 900 s ceiling still applies.
+- A head run whose pull request list is empty is accepted, because the API may drop a merged pull request from it. If
+  another pull request with the same head commit against another base ran the jobs and its run names no pull request, a
+  main push can skip on that run's merge ref; the tree check still requires the head to hold the pushed tree.
 - A main push skips on the pull-request head's judgement, including a head job that a gate skipped. A defect that only a
   full run on `main` would catch can stay on `main` until the next daily scheduled run.
 - The marker step proves a real success only while no step of the job uses `continue-on-error`. The wiring test rejects

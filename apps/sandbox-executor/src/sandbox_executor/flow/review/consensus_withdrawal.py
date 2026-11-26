@@ -167,6 +167,7 @@ def withdraw_consensus(
 
     ``restart`` is False at the review restart cap, so the comment and the row say the flow stopped instead.
     """
+    from sandbox_executor.flow.review.approval_gates import mark_pipeline_red  # Lazy: gates import verdict, records.
     from sandbox_executor.flow.review.records import record_review_action  # Lazy: records imports review_report.
 
     approved, merged = approved_head_of(context), str(record.get("head_sha") or "")
@@ -182,6 +183,8 @@ def withdraw_consensus(
     if fingerprint := approved_fingerprint_of(context):  # Named only when the approval recorded one.
         withdrawn["approval_fingerprint"] = fingerprint
     _reset_review(context, withdrawn)
+    if not reason:  # A CI failure turns only the pipeline gate red; the diff gate survives it.
+        mark_pipeline_red(context, merged, failed)
     context.log(
         f"Consensus withdrawn: the approval of {short_sha(approved)} no longer stands because {_why(merged, reason)}; "
         f"ledger row {action_id or 'not written'}, comment {comment['reason']}."

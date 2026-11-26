@@ -157,6 +157,25 @@ check run on exactly that SHA, read from the GitHub check-runs API for the commi
 The Stage 5 log names the head SHA, the run ids and the conclusions it relied on. Dry runs and `--skip-push` skip the
 gate.
 
+### Approval gates
+
+Each Stage 4 iteration records two independent gates in `context.review_state["gates"]`, checkpointed with the flow and
+reported as `consensus.gates` in the Stage 4 result:
+
+- The diff gate (`consensus_on_diff`) says whether the reviewers approved the PR's own diff on the head they saw. It
+  applies every reviewer objection, consensus blocker and the mergeability result, but not CI, and it records the
+  approval fingerprint. It holds for a later head only when that head is the reviewed head, or the PR-own change
+  fingerprint is unchanged.
+- The pipeline gate (`pipeline_green_on_head`) records the CI state (`green`, `red`, `pending` or `unknown`) on exactly
+  the reviewed head. It holds only when it is `green` and its full SHA equals the head: there is no ancestry or prefix
+  match, so a green run on an older head never clears a new one.
+
+"Approved" means both gates hold on the same head (`approved` in `flow/review/approval_gates.py`). The iteration's
+consensus verdict is still that conjunction. A merged-head CI failure withdraws the consensus and marks only the
+pipeline gate `red` for the merged head. The diff gate stays as it was, so the restarted Stage 4 can tell "diff
+approved, pipeline red" apart from "nothing approved". A withdrawal because the PR-own change changed does not mark the
+pipeline gate.
+
 ## Approval carry-over across target merges
 
 An approval is bound to the PR's own change as well as to the SHA the reviewers saw. Stage 4 records a change

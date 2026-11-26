@@ -32,7 +32,23 @@ def attribution_off_settings(
     if default_env:
         _merge_default_env(merged, default_env)
     text = json.dumps(merged)
-    return _private_temp_file(text) if from_file else text
+    # An env block may hold credentials (CLAUDE_CODE_OAUTH_TOKEN), so it goes into a private file, never onto argv.
+    return _private_temp_file(text) if from_file or _carries_env(merged) else text
+
+
+def place_settings_arg(cmd: list[str], model_flag: str, value: str) -> list[str]:
+    """Set the ``--settings`` value in ``cmd``, inserting the flag after the model argument when absent."""
+    if "--settings" in cmd:
+        cmd[cmd.index("--settings") + 1] = value
+    else:
+        at = cmd.index(model_flag) + 2
+        cmd[at:at] = ["--settings", value]
+    return cmd
+
+
+def _carries_env(merged: Mapping[str, Any]) -> bool:
+    env = merged.get("env")
+    return isinstance(env, dict) and bool(env)
 
 
 def _is_inline_json(value: str) -> bool:

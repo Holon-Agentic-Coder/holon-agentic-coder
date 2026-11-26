@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-09bd7b32",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T09:13:51.708765+00:00",
+  "updated_ts": "2026-11-26T09:13:51.708765+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1795682392-eaf66f81",
+      "ACT-REV-1795682306-5ac6c78d"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795665991-no-unneeded-full-review/P-1795666015-CLA-CO5.5--4-route-post-approval-ci-failures/P-1795679071-CLA-CO5.5/E-1795679354-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 4 reviewer 3 completed",
+    "symptoms": []
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-59ddf3c0",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T10:41:01.938710+00:00",
+  "updated_ts": "2026-11-26T10:41:01.938710+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795687639-1f32dc8d",
+      "ACT-FIND-1795687627-57c0b37b"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795665991-no-unneeded-full-review/P-1795666015-CLA-CO5.5--5-count-full-reviews-scoped/P-1795685564-CLA-CO5.5/E-1795685676-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-R3-002-01",
+    "symptoms": [
+      "calibration_review_churn imports the private _accounting_of and constants from flow.review.review_accounting, so importing sandbox_executor.calibration (including for the holon calibrate CLI) now loads 28 flow modules and forms a stage5 -> calibration -> flow.review import cycle; move the accounting schema and validator to a flow-independent module."
+    ]
+  }
+}

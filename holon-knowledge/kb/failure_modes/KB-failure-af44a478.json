@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-af44a478",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T10:41:01.936705+00:00",
+  "updated_ts": "2026-11-26T10:41:01.936705+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795686382-de448977",
+      "ACT-FIND-1795686376-db307838"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795665991-no-unneeded-full-review/P-1795666015-CLA-CO5.5--5-count-full-reviews-scoped/P-1795685564-CLA-CO5.5/E-1795685676-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R2-001-03",
+    "symptoms": [
+      "A flow resumed from a pre-change checkpoint starts counters at zero and reports partial counts as complete; mark them partial or not recorded."
+    ]
+  }
+}

@@ -132,3 +132,21 @@ def test_render_counts():
         "  Pipelines      : 1 run(s), 1 rerun(s)",
         "  Non-defect churn: target merge 0, bookkeeping 0, CI noise 1",
     ]
+
+
+def test_a_record_started_after_passes_already_ran_is_partial():
+    context = FlowContext(review_iterations_done=2)  # A resumed checkpoint that predates the record.
+    _count(context, "full_reviews")
+    accounting = _accounting_of(FlowContext.from_dict(context.to_dict()))
+    assert accounting is not None and accounting["partial"] is True
+    assert _render_accounting_lines(accounting)[0] == "  Review churn   : partial: counting began after a resume"
+
+
+def test_a_record_started_before_any_pass_is_complete():
+    context = FlowContext()
+    _count(context, "full_reviews")
+    context.review_iterations_done = 3
+    _count(context, "scoped_reviews")
+    accounting = _accounting_of(context)
+    assert accounting is not None and accounting["partial"] is False
+    assert not any("partial" in line for line in _render_accounting_lines(accounting))

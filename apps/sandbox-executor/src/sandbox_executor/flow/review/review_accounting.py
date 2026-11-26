@@ -6,7 +6,8 @@ merge the approval was carried across, a bookkeeping-only move the approval stil
 ``seen_events`` (the events already counted, so a resumed pass or a re-inspected run is never counted twice).
 
 A missing or malformed record (a legacy checkpoint or payload, or a run with no flow context) reads as None and renders
-"not recorded", never as zeros: an unknown count must not read as "no churn".
+"not recorded", never as zeros: an unknown count must not read as "no churn". A record first created after review passes
+already ran (a flow resumed from a checkpoint that predates the record) is marked ``partial`` and rendered as such.
 """
 
 from __future__ import annotations
@@ -19,13 +20,20 @@ CHURN_REASONS = ("target_merge", "bookkeeping", "ci_noise")
 NON_DEFECT_CHURN = "non_defect_churn"
 SEEN_EVENTS_LIMIT = 200
 NOT_RECORDED = "not recorded"
+PARTIAL = "partial"
+PARTIAL_NOTE = "partial: counting began after a resume"
 
 
 def _accounting_state(context: Any) -> dict[str, Any]:
-    """The mutable accounting record, created (every counter at zero) when absent or malformed."""
+    """The mutable accounting record, created (every counter at zero) when absent or malformed.
+
+    A record created once review passes already ran missed their counts, so it is marked ``partial``.
+    """
     state = context.review_state.get("accounting")
     if not isinstance(state, dict):
         state = context.review_state["accounting"] = {}
+        if _int(getattr(context, "review_iterations_done", 0)) > 0:
+            state[PARTIAL] = True
     for key in COUNTER_KEYS:
         state.setdefault(key, 0)
     churn = state.get(NON_DEFECT_CHURN)
@@ -84,7 +92,7 @@ def _raw_record(source: Any) -> Any:
 
 
 def _accounting_of(source: Any) -> dict[str, Any] | None:
-    """A copy of the counters (no ``seen_events``) a context or a mapping carries; None when absent or malformed."""
+    """A copy of the counters and ``partial`` flag a context or a mapping carries; None when absent or malformed."""
     record = _raw_record(source)
     if not isinstance(record, Mapping) or not isinstance(record.get(NON_DEFECT_CHURN), Mapping):
         return None
@@ -92,7 +100,7 @@ def _accounting_of(source: Any) -> dict[str, Any] | None:
     churn = _valid_counts(record[NON_DEFECT_CHURN], CHURN_REASONS)
     if counters is None or churn is None:
         return None
-    return {**counters, NON_DEFECT_CHURN: churn}
+    return {**counters, NON_DEFECT_CHURN: churn, PARTIAL: record.get(PARTIAL) is True}
 
 
 def _render_accounting_lines(accounting: Mapping[str, Any] | None) -> list[str]:
@@ -100,7 +108,9 @@ def _render_accounting_lines(accounting: Mapping[str, Any] | None) -> list[str]:
     if accounting is None:
         return [f"  Review churn   : {NOT_RECORDED}"]
     churn = accounting[NON_DEFECT_CHURN]
+    partial = [f"  Review churn   : {PARTIAL_NOTE}"] if accounting.get(PARTIAL) else []
     return [
+        *partial,
         f"  Reviews        : {accounting['full_reviews']} full, {accounting['scoped_reviews']} scoped; "
         f"carry-overs: {accounting['approval_carry_overs']}",
         f"  Pipelines      : {accounting['pipeline_runs']} run(s), {accounting['pipeline_reruns']} rerun(s)",

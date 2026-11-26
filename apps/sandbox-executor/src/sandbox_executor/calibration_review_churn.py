@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from sandbox_executor.flow.review.review_accounting import NON_DEFECT_CHURN, NOT_RECORDED, _accounting_of
+from sandbox_executor.flow.review.review_accounting import (
+    NON_DEFECT_CHURN,
+    NOT_RECORDED,
+    PARTIAL,
+    PARTIAL_NOTE,
+    _accounting_of,
+)
 
 COUNTER_LABELS = (
     ("full_reviews", "Full reviews"),
@@ -28,8 +34,10 @@ def review_churn_report_lines(report_data: dict[str, Any]) -> list[str]:
     if accounting is None:
         return [*lines, f"- **Review churn:** {NOT_RECORDED}", ""]
     churn = accounting[NON_DEFECT_CHURN]
+    partial = [f"- **Review churn:** {PARTIAL_NOTE}"] if accounting.get(PARTIAL) else []
     return [
         *lines,
+        *partial,
         *(f"- **{label}:** `{accounting[key]}`" for key, label in COUNTER_LABELS),
         *(f"- **Non-defect churn ({label}):** `{churn[key]}`" for key, label in CHURN_LABELS),
         "",

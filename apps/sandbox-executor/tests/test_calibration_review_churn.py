@@ -48,3 +48,9 @@ def test_a_missing_or_legacy_accounting_is_not_recorded_never_zero(report_data):
     lines = review_churn_report_lines(report_data)
     assert lines == ["## 6. Review Churn", "", "- **Review churn:** not recorded", ""]
     assert not re.search(r"\b0\b", "\n".join(lines))
+
+
+def test_partial_accounting_is_marked():
+    lines = review_churn_report_lines({"review_accounting": {**ACCOUNTING, "partial": True}})
+    assert lines[2] == "- **Review churn:** partial: counting began after a resume"
+    assert "- **Full reviews:** `2`" in lines

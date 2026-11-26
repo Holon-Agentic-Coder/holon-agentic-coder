@@ -873,6 +873,28 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         since="`docs/review_consensus.md`",
         internal=True,
     ),
+    EnvironmentVariable(
+        name="HOLON_SCOPED_REVIEW_CONTEXT_BYTES",
+        area=Area.REVIEW_LOOP,
+        purpose="Bytes of each modified file's full content shown to a scoped delta review; four times it in total.",
+        value_type="integer of at least `1000`",
+        default="`40000`",
+        when_unset="`40000`",
+        when_invalid="warning naming the variable; `40000` is kept",
+        read_side="host",
+        since="`docs/review_consensus.md` (scoped delta review)",
+    ),
+    EnvironmentVariable(
+        name="HOLON_SCOPED_REVIEW_MAX_LINES",
+        area=Area.REVIEW_LOOP,
+        purpose="Largest reviewable delta, in changed lines, a follow-up pass reviews scoped instead of in full.",
+        value_type="integer, zero or positive; `0` disables scoped review",
+        default="`400`",
+        when_unset="`400`",
+        when_invalid="warning naming the variable; `400` is kept",
+        read_side="host",
+        since="`docs/review_consensus.md` (scoped delta review)",
+    ),
     # --- logging ----------------------------------------------------------------------------------------------------
     EnvironmentVariable(
         name="HOLON_AGENT_LOG_BYTES",

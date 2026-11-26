@@ -25,6 +25,7 @@ from sandbox_executor.flow.github.pr import check_pr_mergeability, create_or_upd
 from sandbox_executor.flow.github.pr_head import PR_HEAD_TIMEOUT_SECONDS
 from sandbox_executor.flow.github.review_post import post_pr_review_consensus
 from sandbox_executor.flow.ledger_warning import _warn_ledger_failure
+from sandbox_executor.flow.review import delta_review
 from sandbox_executor.flow.review.adjudication import (
     Adjudication,
     _augment_pr_text_with_rejected,
@@ -319,6 +320,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     carried_block = ""  # Why approval was refused while a carried finding had no disposition.
     if carried_rows and resolver_enabled and resolved_target is not None and not effective_dry_run:
         carried_pass = CarriedPass(context, resolved_target, max(1, first_label - 1), run_resolver_fn, recorder)
+        delta_review.record_addressed_findings(context, carried_rows)
         carried_outcome, carried_rows, pending_dispositions = resolve_carried_first(
             carried_rows, finding_action_ids, carried_pass
         )
@@ -363,6 +365,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         reviewers, ensemble_verdict, container_verdict = [], None, None
         if not effective_dry_run and resolved_target is not None and infra_error is None:
             iter_pr_text = _augment_pr_text_with_rejected(pr_text, tuple(rejected_history.values()))
+            delta_review.begin_review_pass(context, repo_dir, resolved_target.head_sha, iteration)
             if run_ensemble_fn is not None or reviewers_sandboxed():
                 reviewers, infra_error = _ensemble_iteration(
                     context, resolved_target, target_branch, iteration, iter_pr_text, ensemble_fn, ensemble_size
@@ -402,11 +405,13 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             gate_base = resolved_target.base_branch or target_branch
             fingerprint_of = functools.partial(approval_fingerprint_of, repo_dir, base_branch=gate_base)
             gate_facts = (reviewers, ensemble_size, mergeable, blockers, ci.ci_green, last_ci_status, gate_base)
-            gate_mode = "scoped" if context.review_scope_paths else "full"
+            scoped = delta_review.current_decision(context).scoped or bool(context.review_scope_paths)
+            gate_mode = "scoped" if scoped else "full"  # A conflict re-review saw only the scoped paths.
             facts = IterationGates(
                 resolved_target.head_sha, iteration, *gate_facts, fingerprint_of=fingerprint_of, mode=gate_mode
             )
             record_iteration_gates(context, facts, ensemble_verdict)  # Both gates; the verdict stays the conjunction.
+            delta_review.end_review_pass(context, resolved_target.head_sha, reviewers, ensemble_size)
 
         # 4. Findings: mergeability and CI infrastructure ids, then every reviewer finding
         finding_ids = [
@@ -579,6 +584,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             )
             break
 
+        delta_review.record_addressed_findings(context, merge_findings(iter_findings, carried_rows))
         resolver_outcome = _invoke_resolver_pass(
             context,
             resolved_target,
@@ -629,8 +635,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             resolved_target = dataclasses.replace(resolved_target, head_sha=new_sha)
             ci_wait = None  # A spent wait belongs to the old head; the new head's pending checks get their own wait.
             context.log(
-                f"[Review Loop] Resolver pushed new head '{new_sha}' at iteration {iteration}; "
-                "proceeding to re-review in full."
+                f"[Review Loop] Resolver pushed new head '{new_sha}' at iteration {iteration}; proceeding to re-review."
             )
 
     if resolver_enabled and not effective_dry_run and pending_dispositions:

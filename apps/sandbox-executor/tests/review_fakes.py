@@ -71,7 +71,13 @@ def fake_resolved_target(repo_dir: str, review_target: str) -> tuple[ReviewTarge
 
 
 def fake_review_request(  # noqa: PLR0913
-    target: ReviewTarget, base_ref: str, iteration: int, pr_title: str, pr_body: str, repo_dir: str
+    target: ReviewTarget,
+    base_ref: str,
+    iteration: int,
+    pr_title: str,
+    pr_body: str,
+    repo_dir: str,
+    review_paths: list[str] | None = None,
 ) -> ReviewRequest:
     """A request with a fixed diff, built without git."""
     return ReviewRequest(repo_dir, target.head_sha, base_ref, pr_title, pr_body, "diff --git a/x b/x\n", iteration)

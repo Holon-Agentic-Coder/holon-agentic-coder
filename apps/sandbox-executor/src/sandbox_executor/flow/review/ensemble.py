@@ -14,6 +14,8 @@ from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.dispatch import _dispatch_role
 from sandbox_executor.flow.git_refs import _resolve_branch_ref
 from sandbox_executor.flow.github.pr import generate_semantic_pr_metadata
+from sandbox_executor.flow.review.delta_review_forwarding import discard_forwarded_decision, forward_scoped_decision
+from sandbox_executor.flow.review.delta_review_request import scoped_review_request
 from sandbox_executor.flow.review.records import _attach_transported_detail, render_reviewer_summary_line
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_ensemble import ConsensusVerdict, ReviewerResult, build_review_request
@@ -56,11 +58,15 @@ def _ensemble_iteration(  # noqa: PLR0913
     ensemble_fn: Callable[..., list[ReviewerResult]],
     ensemble_size: int,
 ) -> tuple[list[ReviewerResult], str | None]:
-    """Build the request from the real diff and run the ensemble; ``([], error)`` on an infrastructure failure."""
+    """Build the request from the real diff and run the ensemble; ``([], error)`` on an infrastructure failure.
+
+    A scoped pass reviews the delta since the last reviewed head; a scoped request that cannot be built is full.
+    """
+    request = scoped_review_request(context, target, iteration, pr_text)
     base_ref = _review_base_ref(context.target_worktree, target, target_branch)
     kwargs = {"review_paths": context.review_scope_paths} if context.review_scope_paths else {}
     try:
-        request = build_review_request(
+        request = request or build_review_request(
             target, base_ref, iteration, pr_text[0], pr_text[1], context.target_worktree, **kwargs
         )
     except (RuntimeError, OSError) as exc:
@@ -114,6 +120,11 @@ def _dispatch_review_ensemble(
         container_args.append("--skip-push")
     if context.review_scope_paths:
         container_args.append(f"--review-paths={','.join(context.review_scope_paths)}")
+    # The host records the requested mode: a container that falls back to full still counts as scoped, which only
+    # understates coverage (the gate reads scoped and the scoped chain advances) and never overstates it.
+    delta_request = forward_scoped_decision(context)
+    if delta_request:
+        container_args.append(f"--delta-request={delta_request}")
 
     try:
         exit_code = _dispatch_role(context, "review-loop", container_args, result_file=result_file)
@@ -137,5 +148,6 @@ def _dispatch_review_ensemble(
     except Exception as exc:
         return [], None, f"Reviewer ensemble container dispatch failed: {redact_agent_secrets(str(exc))}"
     finally:
+        discard_forwarded_decision(context)
         with contextlib.suppress(OSError):
             os.remove(result_file)

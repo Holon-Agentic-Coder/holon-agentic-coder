@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -20,12 +21,19 @@ from sandbox_executor.git import run_git
 from sandbox_executor.ledger import read_merged_rows
 
 from tests.flow.helpers import _git
-from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
+from tests.flow_repo_templates import FlowCommit, FlowRepos, flow_history_copy
+from tests.ledger_conflict_repos import FLOW_BRANCH, commit_on
 
 LEDGER = "holon-knowledge/ledger/executions.jsonl"
 FRAGMENT = "holon-knowledge/ledger/pending/executions/I-1-x.jsonl"
 BUDGETS = Path(__file__).resolve().parents[4] / "holon-config/hygiene/module_budgets.json"
 BASE_ROW = json.dumps({"execution_id": "E-base", "created_at": "2026-11-01T00:00:00Z"}) + "\n"
+BASE_FILES = {LEDGER: BASE_ROW, "src/app.py": "x = 0\n"}
+TARGET_MOVE = FlowCommit("main", {"docs/new.md": "n\n"}, "target")
+CODE_CONFLICT = (
+    FlowCommit("main", {"src/app.py": "x = 1\n"}, "target"),
+    FlowCommit(FLOW_BRANCH, {"src/app.py": "x = 2\n"}, "flow"),
+)
 
 
 @pytest.fixture
@@ -43,8 +51,19 @@ def git_calls(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 
 
 @pytest.fixture
-def repos(tmp_path: Path) -> tuple[Path, Path]:
-    return build_flow_repos(tmp_path, {LEDGER: BASE_ROW, "src/app.py": "x = 0\n"})
+def repos_with(tmp_path_factory: pytest.TempPathFactory, tmp_path: Path) -> Callable[..., FlowRepos]:
+    """Makes the bare ``origin`` and flow clone with ``commits`` already pushed: a copy of a template built once."""
+
+    def make(*commits: FlowCommit, base: dict[str, str] = BASE_FILES) -> FlowRepos:
+        return flow_history_copy(tmp_path_factory, tmp_path, base, commits)
+
+    return make
+
+
+@pytest.fixture
+def repos(repos_with) -> tuple[Path, Path]:
+    copy = repos_with()
+    return copy.origin, copy.work
 
 
 class RecordingResolver:
@@ -92,9 +111,8 @@ def test_an_unchanged_target_does_nothing(repos, git_calls):
     assert not [call for call in git_calls if call[0] in ("merge", "push")]
 
 
-def test_a_clean_target_move_is_deferred_at_a_turn(repos):
-    _, work = repos
-    commit_on(work, "main", {"docs/new.md": "n\n"}, "target")
+def test_a_clean_target_move_is_deferred_at_a_turn(repos_with):
+    work = repos_with(TARGET_MOVE).work
     head = _git(work, "rev-parse", "HEAD")
 
     result = sync_with_target(_request(work, SyncBoundary.TURN))
@@ -103,9 +121,8 @@ def test_a_clean_target_move_is_deferred_at_a_turn(repos):
     assert _git(work, "rev-parse", "HEAD") == head
 
 
-def test_a_clean_target_move_is_merged_and_pushed_at_a_stage_start(repos, git_calls):
-    _, work = repos
-    commit_on(work, "main", {"docs/new.md": "n\n"}, "target")
+def test_a_clean_target_move_is_merged_and_pushed_at_a_stage_start(repos_with, git_calls):
+    work = repos_with(TARGET_MOVE).work
     before = _git(BUDGETS.parent, "hash-object", str(BUDGETS)) if BUDGETS.exists() else ""
 
     result = sync_with_target(_request(work))
@@ -122,12 +139,13 @@ def test_a_clean_target_move_is_merged_and_pushed_at_a_stage_start(repos, git_ca
     assert before == after
 
 
-def test_a_ledger_only_conflict_merges_with_one_row_and_no_agent(repos):
-    _, work = repos
+def test_a_ledger_only_conflict_merges_with_one_row_and_no_agent(repos_with):
     main_ledger = BASE_ROW + json.dumps({"execution_id": "E-main", "created_at": "2026-11-04T00:00:00Z"}) + "\n"
     flow_row = json.dumps({"execution_id": "E-flow", "created_at": "2026-11-03T00:00:00Z"}) + "\n"
-    commit_on(work, "main", {LEDGER: main_ledger}, "target row")
-    commit_on(work, FLOW_BRANCH, {LEDGER: BASE_ROW + flow_row}, "flow row")
+    work = repos_with(
+        FlowCommit("main", {LEDGER: main_ledger}, "target row"),
+        FlowCommit(FLOW_BRANCH, {LEDGER: BASE_ROW + flow_row}, "flow row"),
+    ).work
     resolver = RecordingResolver()
 
     result = sync_with_target(_request(work, resolver=resolver))
@@ -141,14 +159,8 @@ def test_a_ledger_only_conflict_merges_with_one_row_and_no_agent(repos):
     assert _git(work, "status", "--porcelain") == ""
 
 
-def _code_conflict(work: Path) -> None:
-    commit_on(work, "main", {"src/app.py": "x = 1\n"}, "target")
-    commit_on(work, FLOW_BRANCH, {"src/app.py": "x = 2\n"}, "flow")
-
-
-def test_a_code_conflict_with_the_default_resolver_blocks_cleanly(repos):
-    _, work = repos
-    _code_conflict(work)
+def test_a_code_conflict_with_the_default_resolver_blocks_cleanly(repos_with):
+    work = repos_with(*CODE_CONFLICT).work
     head, pushed = _git(work, "rev-parse", "HEAD"), _origin_flow_sha(work)
 
     result = sync_with_target(_request(work))
@@ -163,9 +175,8 @@ def test_a_code_conflict_with_the_default_resolver_blocks_cleanly(repos):
     assert _git(work, "status", "--porcelain") == ""
 
 
-def test_a_blocked_row_that_creates_the_ledger_is_committed(tmp_path: Path):
-    _, work = build_flow_repos(tmp_path, {"src/app.py": "x = 0\n"})
-    _code_conflict(work)
+def test_a_blocked_row_that_creates_the_ledger_is_committed(repos_with):
+    work = repos_with(*CODE_CONFLICT, base={"src/app.py": "x = 0\n"}).work
 
     result = sync_with_target(_request(work))
 
@@ -175,9 +186,8 @@ def test_a_blocked_row_that_creates_the_ledger_is_committed(tmp_path: Path):
     assert _git(work, "status", "--porcelain") == ""
 
 
-def test_uncommitted_ledger_rows_block_the_sync_before_it_merges_or_commits(repos, git_calls):
-    _, work = repos
-    commit_on(work, "main", {"docs/new.md": "n\n"}, "target")
+def test_uncommitted_ledger_rows_block_the_sync_before_it_merges_or_commits(repos_with, git_calls):
+    work = repos_with(TARGET_MOVE).work
     head = _git(work, "rev-parse", "HEAD")
     stage_row = json.dumps({"execution_id": "E-3-z", "created_at": "2026-11-05T00:00:00Z"}) + "\n"
     (work / LEDGER).write_text(BASE_ROW + stage_row, encoding="utf-8")
@@ -191,9 +201,8 @@ def test_uncommitted_ledger_rows_block_the_sync_before_it_merges_or_commits(repo
     assert _sync_rows(work) == []
 
 
-def test_a_sync_after_a_blocked_one_merges_a_target_that_changed_the_ledger(repos):
-    _, work = repos
-    _code_conflict(work)
+def test_a_sync_after_a_blocked_one_merges_a_target_that_changed_the_ledger(repos_with):
+    work = repos_with(*CODE_CONFLICT).work
     assert sync_with_target(_request(work)).status == "blocked"
     target_row = json.dumps({"execution_id": "E-main", "created_at": "2026-11-04T00:00:00Z"}) + "\n"
     commit_on(work, "main", {LEDGER: BASE_ROW + target_row}, "target row")
@@ -205,16 +214,16 @@ def test_a_sync_after_a_blocked_one_merges_a_target_that_changed_the_ledger(repo
     assert (work / LEDGER).read_text(encoding="utf-8").startswith(BASE_ROW + target_row)
 
 
-def test_marker_like_lines_outside_the_conflicted_paths_do_not_block(repos):
-    _, work = repos
-    commit_on(work, "main", {"docs/markers.md": "<<<<<<< not a conflict\n>>>>>>> either\n"}, "target")
+def test_marker_like_lines_outside_the_conflicted_paths_do_not_block(repos_with):
+    work = repos_with(
+        FlowCommit("main", {"docs/markers.md": "<<<<<<< not a conflict\n>>>>>>> either\n"}, "target")
+    ).work
 
     assert sync_with_target(_request(work)).status == "merged"
 
 
-def test_an_injected_resolver_that_resolves_merges_with_its_tier(repos):
-    _, work = repos
-    _code_conflict(work)
+def test_an_injected_resolver_that_resolves_merges_with_its_tier(repos_with):
+    work = repos_with(*CODE_CONFLICT).work
     resolver = RecordingResolver(resolve=True)
 
     result = sync_with_target(_request(work, resolver=resolver))
@@ -226,9 +235,8 @@ def test_an_injected_resolver_that_resolves_merges_with_its_tier(repos):
     assert _sync_rows(work)[0]["resolver_tier"] == "fake"
 
 
-def test_a_resolver_error_aborts_the_merge_and_blocks(repos):
-    _, work = repos
-    _code_conflict(work)
+def test_a_resolver_error_aborts_the_merge_and_blocks(repos_with):
+    work = repos_with(*CODE_CONFLICT).work
 
     result = sync_with_target(_request(work, resolver=RecordingResolver(error=RuntimeError("boom"))))
 
@@ -238,40 +246,40 @@ def test_a_resolver_error_aborts_the_merge_and_blocks(repos):
     assert _git(work, "status", "--porcelain") == ""
 
 
-@pytest.mark.parametrize(
-    "error",
-    [host_remote.HostRemoteError("push", FLOW_BRANCH, "origin", "rejected"), TimeoutError("push rejected: timed out")],
-)
-def test_a_push_failure_keeps_the_local_merge_and_blocks_with_one_row(repos, monkeypatch, error):
-    _, work = repos
-    commit_on(work, "main", {"docs/new.md": "n\n"}, "target")
+def test_a_push_failure_keeps_the_local_merge_and_blocks_with_one_row(tmp_path_factory, tmp_path, monkeypatch):
+    # The sync reads only the error's text: a refused push and a timed-out one take the same path, each on its own copy.
+    errors = [
+        host_remote.HostRemoteError("push", FLOW_BRANCH, "origin", "rejected"),
+        TimeoutError("push rejected: timed out"),
+    ]
+    for case, error in enumerate(errors):
+        work = flow_history_copy(tmp_path_factory, tmp_path / f"case-{case}", BASE_FILES, [TARGET_MOVE]).work
 
-    def refuse(*_args, **_kwargs):
-        raise error
+        def refuse(*_args, error=error, **_kwargs):
+            raise error
 
-    monkeypatch.setattr(target_sync_merge, "push_commit", refuse)
+        monkeypatch.setattr(target_sync_merge, "push_commit", refuse)
 
-    result = sync_with_target(_request(work))
+        result = sync_with_target(_request(work))
 
-    assert result.status == "blocked" and "rejected" in result.error
-    assert result.head_after == _git(work, "rev-parse", "HEAD") != result.head_before
-    assert len(_sync_rows(work)) == 1
+        assert result.status == "blocked" and "rejected" in result.error, error
+        assert result.head_after == _git(work, "rev-parse", "HEAD") != result.head_before, error
+        assert len(_sync_rows(work)) == 1, error
 
 
-def test_a_merged_sync_supersedes_the_latest_sync_conflict_row(repos):
-    _, work = repos
+def test_a_merged_sync_supersedes_the_latest_sync_conflict_row(repos_with):
     conflict_row = {"execution_id": "E-3-z", "status": "sync_conflict", "ledger_revision": 2}
-    commit_on(work, FLOW_BRANCH, {LEDGER: BASE_ROW + json.dumps(conflict_row) + "\n"}, "sync conflict")
-    commit_on(work, "main", {"docs/new.md": "n\n"}, "target")
+    work = repos_with(
+        FlowCommit(FLOW_BRANCH, {LEDGER: BASE_ROW + json.dumps(conflict_row) + "\n"}, "sync conflict"), TARGET_MOVE
+    ).work
 
     sync_with_target(_request(work))
 
     assert _sync_rows(work)[0]["supersedes"] == "E-3-z@r2"
 
 
-def test_an_error_after_the_merge_commit_adds_no_second_row(repos, monkeypatch):
-    _, work = repos
-    commit_on(work, "main", {"docs/new.md": "n\n"}, "target")
+def test_an_error_after_the_merge_commit_adds_no_second_row(repos_with, monkeypatch):
+    work = repos_with(TARGET_MOVE).work
 
     def crash(*_args, **_kwargs):
         raise RuntimeError("unexpected push crash")

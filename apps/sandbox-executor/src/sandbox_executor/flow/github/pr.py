@@ -172,7 +172,6 @@ def create_or_update_pr(  # noqa: PLR0913
 
 
 def _pr_url_from_stdout(stdout: str) -> str | None:
-    """Return the first https URL on a line of gh stdout, never reading stderr hint text."""
     for line in stdout.splitlines() if isinstance(stdout, str) else []:
         match = _PR_URL_PATTERN.search(line.strip())
         if match:

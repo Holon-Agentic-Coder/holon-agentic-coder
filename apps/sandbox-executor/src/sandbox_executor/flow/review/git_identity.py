@@ -18,7 +18,7 @@ REVIEW_GIT_ENV: dict[str, str] = {
 }
 
 
-def review_git_env(environ: Mapping[str, str]) -> dict[str, str]:
+def _review_git_env(environ: Mapping[str, str]) -> dict[str, str]:
     """Return a new environment: ``environ`` overlaid with the ``REVIEW_GIT_ENV`` identity.
 
     The result is meant for the ``env`` argument of one review-loop git commit. ``environ`` is never mutated;

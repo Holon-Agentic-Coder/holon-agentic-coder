@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from sandbox_executor.entrypoint import review_loop
 from sandbox_executor.entrypoint.review_loop import CommitOptions
-from sandbox_executor.flow.review.git_identity import REVIEW_GIT_ENV, review_git_env
+from sandbox_executor.flow.review.git_identity import REVIEW_GIT_ENV, _review_git_env
 from sandbox_executor.review_report import FindingDisposition
 
 from tests.test_review_loop import FakeGitCommands, _run_entrypoint
@@ -51,7 +51,7 @@ def test_review_git_env_overlays_the_identity_on_a_copy_of_the_environment():
     environ = {"PATH": "/usr/bin", "HOME": "/home/someone"}
     before = dict(environ)
 
-    env = review_git_env(environ)
+    env = _review_git_env(environ)
 
     assert env == {**before, **REVIEW_GIT_ENV}
     assert env is not environ
@@ -61,7 +61,7 @@ def test_review_git_env_overlays_the_identity_on_a_copy_of_the_environment():
 def test_review_git_env_overrides_an_existing_identity_only_in_the_copy():
     environ = {"GIT_AUTHOR_NAME": "Someone Else", "PATH": "/usr/bin"}
 
-    env = review_git_env(environ)
+    env = _review_git_env(environ)
 
     assert env["GIT_AUTHOR_NAME"] == REVIEW_GIT_ENV["GIT_AUTHOR_NAME"]
     assert environ == {"GIT_AUTHOR_NAME": "Someone Else", "PATH": "/usr/bin"}

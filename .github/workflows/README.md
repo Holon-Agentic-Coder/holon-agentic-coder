@@ -229,7 +229,9 @@ path is one of:
 
 - any `pyproject.toml` or `uv.lock`, at any depth;
 - every path under `.github/` (workflows, actions, this README);
-- the gate itself: `scripts/macos_relevance*.py` and `apps/sandbox-executor/tests/test_macos_relevance*.py`;
+- the gate itself and the CI gates it runs with: `scripts/macos_relevance*.py`, `scripts/ci_bookkeeping_gate.py`,
+  `scripts/ci_bookkeeping_api.py`, `scripts/ci_bookkeeping_chain.py`, `scripts/ci_timing_gate.py` and
+  `apps/sandbox-executor/tests/test_macos_relevance*.py`;
 - shell: `*.sh`, `*.bash`, `Makefile`, the repository launcher `holon`, and any Python or extension-less file whose
   first line is a `#!` shebang naming `sh`, `bash` or `zsh`;
 - containers: `Dockerfile`, `Dockerfile.*`, `*.Dockerfile`, `docker-bake.hcl`;
@@ -245,18 +247,20 @@ comment, is matched against these regular expressions; the first match decides a
 
 - Processes (`process`): `^\s*(import|from)\s+([\w.]+\s*,\s*)*(subprocess)\b`, `\bsubprocess\.`,
   `\bos\.(system|popen|fork|exec\w*|spawn\w*|kill|killpg|getpgid|setsid|wait\w*)\(`, `\bpexpect\b`,
-  `\basyncio\.create_subprocess_`
+  `\basyncio\.create_subprocess_`, `^\s*(import|from)\s+([\w.]+\s*,\s*)*(multiprocessing)\b`, `\bmultiprocessing\.`,
+  `\bProcessPoolExecutor\b` (process start methods differ: `spawn` on macOS, `fork` on Linux)
 - Platform checks (`platform-check`): `\bsys\.platform\b`, `^\s*(import|from)\s+([\w.]+\s*,\s*)*(platform)\b`,
   `\bplatform\.`, `\bos\.name\b`, `\bos\.uname\(`
 - POSIX-only modules (`posix-module`):
-  `^\s*(import|from)\s+([\w.]+\s*,\s*)*(signal|fcntl|termios|pty|tty|resource|pwd|grp|select)\b`, `\bsignal\.`
+  `^\s*(import|from)\s+([\w.]+\s*,\s*)*(signal|fcntl|termios|pty|tty|resource|pwd|grp|select)\b`, `\bsignal\.`,
+  `\bos\.sched_\w+\(` (Linux-only scheduler calls), `\bAF_UNIX\b` (Unix sockets: 104-byte path limit on macOS)
 - Home and temporary directories (`home-or-temp`): `^(?=.*(environ|getenv|setenv|putenv|delenv)).*\bHOME\b`,
   `\bexpanduser\(`, `\bPath\.home\(`, `\bTMPDIR\b`, `^\s*(import|from)\s+([\w.]+\s*,\s*)*(tempfile)\b`, `\bgettempdir\(`
 - Filesystem operations beyond joining paths (`filesystem`):
-  `\bos\.path\.(realpath|abspath|samefile|islink|ismount|expanduser|getmtime|getctime|getatime)\(`,
-  `\bos\.(chmod|chown|lchown|symlink|link|readlink|rename|replace|scandir|listdir|walk|stat|lstat|access|getcwd|chdir|umask|statvfs)\(`,
+  `\bos\.path\.(realpath|abspath|samefile|islink|ismount|expanduser|getmtime|getctime|getatime|exists|lexists|isfile|isdir|getsize)\(`,
+  `\bos\.(chmod|chown|lchown|symlink|link|readlink|rename|replace|scandir|listdir|walk|stat|lstat|access|getcwd|chdir|umask|statvfs|makedirs|mkdir|remove|unlink|rmdir|removedirs)\(`,
   `^\s*from\s+os(\.path)?\s+import\b`, `^\s*(import|from)\s+([\w.]+\s*,\s*)*(shutil)\b`, `\bshutil\.`,
-  `\.(resolve|absolute|samefile|is_symlink|symlink_to|hardlink_to|readlink|chmod|lchmod|stat|lstat|owner|iterdir|glob|rglob|walk|rename|expanduser|cwd)\(`,
+  `\.(resolve|absolute|samefile|is_symlink|symlink_to|hardlink_to|readlink|chmod|lchmod|stat|lstat|owner|iterdir|glob|rglob|walk|rename|expanduser|cwd|exists|is_file|is_dir|mkdir|unlink|rmdir|touch)\(`,
   `\.replace\(\s*([^,=()\s]|\([^()]*\))([^,=()]|\([^()]*\))*\)` (`Path.replace(target)` with one positional argument)
 - Keychain and launcher code (`keychain-or-launcher`): `keychain` (any case), `\bfind-generic-password\b`,
   `\bsandbox_executor\.launcher\b`, `^\s*from\s+\.+launcher\b`
@@ -269,8 +273,8 @@ docstring still matches: a false "sensitive" only costs one macOS run.
 Every other file: markdown, JSON and JSONL, YAML outside `.github/`, TOML other than `pyproject.toml`, templates, and
 Python without a match. Neutral on purpose, and so part of the accepted risk below: pure joining and naming
 (`os.path.join`, `basename`, `dirname`, `splitext`, `PurePath`, the `/` operator, `.name`, `.suffix`, `.parent`), plain
-content I/O (`open`, `read_text`, `write_text`, `read_bytes`, `write_bytes`, `mkdir`, `exists`, `is_file`, `is_dir`,
-`unlink`, `rmdir`, `touch`), `str.replace`, `datetime.replace(tzinfo=...)` and `re.Match.group`.
+content I/O (`open`, `read_text`, `write_text`, `read_bytes`, `write_bytes`), thread pools, `AF_INET` sockets,
+`str.replace`, `datetime.replace(tzinfo=...)` and `re.Match.group`.
 
 ### Reading the gate output
 

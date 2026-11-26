@@ -5,7 +5,9 @@ judged first, the new path and, for a rename or a deletion, the old path:
 
 - dependency manifests and lock files: any ``pyproject.toml`` or ``uv.lock`` at any depth;
 - every path under ``.github/`` (workflows, actions, this gate's action);
-- the gate itself: ``scripts/macos_relevance*.py`` and ``apps/sandbox-executor/tests/test_macos_relevance*.py``;
+- the gate itself and the CI gates it runs with: ``scripts/macos_relevance*.py``, ``scripts/ci_bookkeeping_gate.py``,
+  ``scripts/ci_bookkeeping_api.py``, ``scripts/ci_bookkeeping_chain.py``, ``scripts/ci_timing_gate.py`` and
+  ``apps/sandbox-executor/tests/test_macos_relevance*.py``;
 - shell: ``*.sh``, ``*.bash``, ``Makefile``, the repository launcher ``holon`` and any file whose first line is a
   ``#!`` shebang naming ``sh``, ``bash`` or ``zsh``;
 - containers: ``Dockerfile``, ``Dockerfile.*``, ``*.Dockerfile``, ``docker-bake.hcl``;
@@ -15,11 +17,12 @@ judged first, the new path and, for a rename or a deletion, the old path:
 - test-wide configuration: every ``conftest.py``.
 
 Then the content of a Python file (``.py``), its new and its old version, tests included: each line, without its ``#``
-comment, is matched against ``CONTENT_PATTERNS`` (processes, platform checks, POSIX-only modules, home and temporary
-directories, filesystem operations beyond joining paths and plain reads and writes, keychain and launcher names).
-Pure path joining and naming and plain content I/O (``open``, ``read_text``, ``write_text``, ``mkdir``, ``exists``,
-``unlink`` and the like) stay neutral. Content that is larger than ``CONTENT_CAP`` bytes, not UTF-8 or unreadable is
-sensitive. Standard library only and Python 3.9 syntax.
+comment, is matched against ``CONTENT_PATTERNS`` (processes and process pools, platform checks, POSIX-only modules and
+calls, home and temporary directories, filesystem operations beyond joining paths, keychain and launcher names).
+Pure path joining and naming and plain content I/O (``open``, ``read_text``, ``write_text``, ``read_bytes``,
+``write_bytes``) stay neutral; ``mkdir``, ``exists``, ``unlink`` and the like touch the filesystem and are sensitive.
+Content that is larger than ``CONTENT_CAP`` bytes, not UTF-8 or unreadable is sensitive. Standard library only and
+Python 3.9 syntax.
 """
 
 from __future__ import annotations
@@ -45,7 +48,14 @@ SENSITIVE_PREFIXES = (
     "apps/sandbox-executor/entrypoint/",
 )
 SENSITIVE_NAME_FRAGMENTS = ("keychain", "launcher", "credential")
-GATE_PATH_PATTERNS = ("scripts/macos_relevance*.py", "apps/sandbox-executor/tests/test_macos_relevance*.py")
+GATE_PATH_PATTERNS = (
+    "scripts/macos_relevance*.py",
+    "scripts/ci_bookkeeping_gate.py",
+    "scripts/ci_bookkeeping_api.py",
+    "scripts/ci_bookkeeping_chain.py",
+    "scripts/ci_timing_gate.py",
+    "apps/sandbox-executor/tests/test_macos_relevance*.py",
+)
 CONTENT_SUFFIX = ".py"
 SHEBANG = re.compile(r"^#!.*\b(sh|bash|zsh)\b")
 UNREADABLE_CONTENT = "unreadable-content"
@@ -59,16 +69,19 @@ def _imports(modules: str) -> str:
     return rf"^\s*(import|from)\s+([\w.]+\s*,\s*)*({modules})\b"
 
 
-_FS_OS_PATH = r"realpath|abspath|samefile|islink|ismount|expanduser|getmtime|getctime|getatime"
+_FS_OS_PATH = (
+    r"realpath|abspath|samefile|islink|ismount|expanduser|getmtime|getctime|getatime|exists|lexists|isfile|isdir"
+    r"|getsize"
+)
 _FS_OS = (
     r"chmod|chown|lchown|symlink|link|readlink|rename|replace|scandir|listdir|walk|stat|lstat|access|getcwd|chdir"
-    r"|umask|statvfs"
+    r"|umask|statvfs|makedirs|mkdir|remove|unlink|rmdir|removedirs"
 )
 # ``Path.group`` and ``Path.replace`` are left out: ``.group(`` is mostly ``re.Match.group`` and ``.replace(`` mostly
 # ``str.replace`` or ``datetime.replace``; ``Path.replace(target)`` is matched by its single positional argument.
 _FS_PATHLIB = (
     r"resolve|absolute|samefile|is_symlink|symlink_to|hardlink_to|readlink|chmod|lchmod|stat|lstat|owner"
-    r"|iterdir|glob|rglob|walk|rename|expanduser|cwd"
+    r"|iterdir|glob|rglob|walk|rename|expanduser|cwd|exists|is_file|is_dir|mkdir|unlink|rmdir|touch"
 )
 # (reason, pattern) pairs; the README's "macOS Relevance Gate" section lists the same table.
 CONTENT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
@@ -79,6 +92,9 @@ CONTENT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("process", r"\bos\.(system|popen|fork|exec\w*|spawn\w*|kill|killpg|getpgid|setsid|wait\w*)\(", 0),
         ("process", r"\bpexpect\b", 0),
         ("process", r"\basyncio\.create_subprocess_", 0),
+        ("process", _imports("multiprocessing"), 0),
+        ("process", r"\bmultiprocessing\.", 0),
+        ("process", r"\bProcessPoolExecutor\b", 0),
         ("platform-check", r"\bsys\.platform\b", 0),
         ("platform-check", _imports("platform"), 0),
         ("platform-check", r"\bplatform\.", 0),
@@ -86,6 +102,8 @@ CONTENT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("platform-check", r"\bos\.uname\(", 0),
         ("posix-module", _imports("signal|fcntl|termios|pty|tty|resource|pwd|grp|select"), 0),
         ("posix-module", r"\bsignal\.", 0),
+        ("posix-module", r"\bos\.sched_\w+\(", 0),
+        ("posix-module", r"\bAF_UNIX\b", 0),
         ("home-or-temp", r"^(?=.*(environ|getenv|setenv|putenv|delenv)).*\bHOME\b", 0),
         ("home-or-temp", r"\bexpanduser\(", 0),
         ("home-or-temp", r"\bPath\.home\(", 0),

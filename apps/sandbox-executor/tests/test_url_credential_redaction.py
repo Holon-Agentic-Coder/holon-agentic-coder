@@ -42,6 +42,7 @@ from sandbox_executor.launcher import env_files, proxy_readiness, root_ca
 
 from tests import seeded_secrets
 from tests.doctor_replay import replayed_configuration_section, replayed_direct_report, replayed_environment_report
+from tests.fast_home import fast_home
 from tests.url_redaction_matrix import HEALTH_TIGHT_BYTES, doctor_args, probe_stand_in
 
 FRAGMENT_LEN = 4
@@ -672,30 +673,32 @@ def _invalid_value_doctor(out: list[str]) -> list[int]:
 def test_credential_in_invalid_envelope_value_never_echoed(monkeypatch, tmp_path):
     """Doctor (environment section, text and `--json`) and the run path withhold an invalid value.
 
-    The isolated `HOME` is `tmp_path`, and the pi-agent session dir is created under it; its parent `pytest-<N>` and the
-    temp name can share a 4-character run with the credential, so what keeps the `HOME` path from reading as a fragment
-    is that the whole pi-agent mount path is masked, not the choice of `tmp_path` basename.
+    The isolated `HOME` comes from `fast_home` (memory-backed when the host has it, else under `tmp_path`), and the
+    pi-agent session dir is created under it per case; the `HOME` path and the temp name can share a 4-character run
+    with the credential, so what keeps the `HOME` path from reading as a fragment is that the whole pi-agent mount path
+    is masked, not the choice of `HOME`.
     """
     _isolate_invalid_value_process(monkeypatch)
     failures: list[str] = []
     collided: list[str] = []
     cases = list(_invalid_value_cases(seeded_secrets.generator("url-redaction:invalid-envelope")))
-    for case_id, env, host_config, credential in cases:
-        # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variable to the
-        # container unchanged: through the env-file, so neither the argv nor the echo may hold a fragment of it.
-        rejected = "TIMEOUT" not in case_id and "BUDGET" not in case_id
-        with _invalid_value_case(case_id, env, host_config, credential, str(tmp_path)) as (out, docker):
-            codes = _invalid_value_doctor(out)
-            codes.append(cli.run_docker_container("planner", "img", [], agent_id="pi"))
-        if _leaks(_without_fixture_paths(out, docker.argv, str(tmp_path)), credential):
-            failures.append(case_id)
-        if rejected and (codes != [1, 1, 1, 1] or docker.argv):
-            failures.append(f"{case_id}:not-rejected")
-        if not rejected:
-            forwarded = _forwarded_run_failures(env, docker, credential, str(tmp_path))
-            failures.extend(f"{case_id}:{where}" for where in forwarded)
-            if _leaks(out, credential) and _leaks([" ".join(docker.argv)], credential):
-                collided.append(case_id)
+    with fast_home(str(tmp_path)) as home:
+        for case_id, env, host_config, credential in cases:
+            # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variable to
+            # the container unchanged: through the env-file, so neither the argv nor the echo may hold a fragment of it.
+            rejected = "TIMEOUT" not in case_id and "BUDGET" not in case_id
+            with _invalid_value_case(case_id, env, host_config, credential, home) as (out, docker):
+                codes = _invalid_value_doctor(out)
+                codes.append(cli.run_docker_container("planner", "img", [], agent_id="pi"))
+            if _leaks(_without_fixture_paths(out, docker.argv, home), credential):
+                failures.append(case_id)
+            if rejected and (codes != [1, 1, 1, 1] or docker.argv):
+                failures.append(f"{case_id}:not-rejected")
+            if not rejected:
+                forwarded = _forwarded_run_failures(env, docker, credential, home)
+                failures.extend(f"{case_id}:{where}" for where in forwarded)
+                if _leaks(out, credential) and _leaks([" ".join(docker.argv)], credential):
+                    collided.append(case_id)
     assert len(cases) == (len(INVALID_VALUE_ENV) + len(INVALID_VALUE_HOST_FIELDS)) * MATRIX_SIZE // (
         len(HOSTS) * len(SUFFIXES)
     )

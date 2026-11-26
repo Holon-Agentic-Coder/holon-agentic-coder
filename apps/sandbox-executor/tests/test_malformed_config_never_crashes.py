@@ -35,6 +35,7 @@ from sandbox_executor.cli import doctor as cli_doctor
 from sandbox_executor.preflight import PreflightResult, PreflightStatus
 
 from tests import seeded_secrets
+from tests.fast_home import fast_home
 
 _FRAGMENT = 6
 _LOOPBACK = "http://127.0.0.1:8081/v1"
@@ -387,7 +388,7 @@ def test_malformed_models_json_never_crashes_doctor_or_run_path():
     credential = _credential("malformed_models_json_never_crashes_doctor_or_run_path")
     failures: list[str] = []
     cases = 0
-    with tempfile.TemporaryDirectory() as root:
+    with fast_home() as root:
         for case, raw, must_reject in _documents(credential):
             cases += 1
             ws = _Workspace(root, raw, {}, credential)
@@ -421,7 +422,7 @@ def test_malformed_numeric_env_never_crashes_doctor_or_run_path():
     credential = _credential("malformed_numeric_env_never_crashes_doctor_or_run_path")
     failures: list[str] = []
     valid = json.dumps({"providers": {"p": _valid_provider(credential)}}).encode()
-    with tempfile.TemporaryDirectory() as root:
+    with fast_home() as root:
         for var in _NUMERIC_VARS:
             for index, value in enumerate(_numeric_values(credential)):
                 case = f"env:{var}:{index}"
@@ -485,7 +486,7 @@ def test_unencodable_string_env_never_crashes_doctor_or_run_path():
     credential = _credential("unencodable_string_env_never_crashes_doctor_or_run_path")
     failures: list[str] = []
     valid = json.dumps({"providers": {"p": _valid_provider(credential)}}).encode()
-    with tempfile.TemporaryDirectory() as root:
+    with fast_home() as root:
         for models in (None, valid):
             source = "synthesised" if models is None else "models.json"
             for var in (*_STRING_VARS, local_llm.ENV_LOCAL_MODE):

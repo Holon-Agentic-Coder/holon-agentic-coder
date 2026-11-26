@@ -208,6 +208,23 @@ def test_fragment_changed_between_plan_and_apply_raises(tmp_path: Path) -> None:
     assert fragment.exists()
 
 
+def test_race_on_a_later_ledger_appends_to_no_ledger(tmp_path: Path) -> None:
+    seeded = _seed_repo(tmp_path)
+    exec_row = {"execution_id": "E-1", "plan_branch": "I-1-a/P-1/_", "created_at": "2026-02-01T00:00:00Z"}
+    intent_row = {"branch": "I-1-a/_", "intent_id": "I-1-a", "created_at": "2026-02-01T00:00:00Z"}
+    _write_fragment(tmp_path, "executions", "I-1-a", [json.dumps(exec_row)])
+    _write_fragment(tmp_path, "intents", "I-1-a", [json.dumps(intent_row)])
+    _write_fragment(tmp_path, "plans", "I-1-a", [json.dumps(_plan_row("P-1", "I-1-a"))])
+    plan = plan_promotion(str(tmp_path))
+    last = plan.ledgers[-1]
+    _write_fragment(tmp_path, last.ledger_name.removesuffix(".jsonl"), "I-1-a", ["{}"])
+    with pytest.raises(PromotionRaceError, match=last.ledger_name):
+        apply_promotion(plan)
+    for name, data in seeded.items():
+        assert _canonical(tmp_path, name) == data
+    assert len(_pending_files(tmp_path)) == 3
+
+
 def test_empty_pending_directories_are_removed_and_others_kept(tmp_path: Path) -> None:
     _seed_repo(tmp_path)
     _write_fragment(tmp_path, "plans", "I-1-a", [json.dumps(_plan_row("P-1", "I-1-a"))])

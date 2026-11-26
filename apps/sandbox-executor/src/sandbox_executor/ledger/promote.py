@@ -109,7 +109,9 @@ def plan_promotion(repo_root: str) -> PromotionPlan:
 def _check_snapshots(ledger: LedgerPromotion) -> None:
     for snapshot in ledger.promoted:
         if _read_ledger_bytes(snapshot.path) != snapshot.data:
-            raise PromotionRaceError(f"Pending fragment {snapshot.path} changed during promotion; nothing appended")
+            raise PromotionRaceError(
+                f"Pending {ledger.ledger_name} fragment {snapshot.path} changed during promotion; nothing appended"
+            )
 
 
 def _append_lines(canonical_path: str, lines: tuple[str, ...]) -> None:
@@ -134,9 +136,10 @@ def apply_promotion(plan: PromotionPlan) -> tuple[dict[str, int], tuple[str, ...
     appended: dict[str, int] = {}
     deleted: list[str] = []
     for ledger in plan.ledgers:
+        _check_snapshots(ledger)
+    for ledger in plan.ledgers:
         if not ledger.promoted:
             continue
-        _check_snapshots(ledger)
         if ledger.lines:
             _append_lines(ledger.canonical_path, ledger.lines)
         appended[ledger.ledger_name] = len(ledger.lines)

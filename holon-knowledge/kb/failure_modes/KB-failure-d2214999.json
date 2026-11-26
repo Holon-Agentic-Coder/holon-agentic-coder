@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-d2214999",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T12:04:26.215312+00:00",
+  "updated_ts": "2026-11-26T12:04:26.215312+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795693460-8087be04",
+      "ACT-FIND-1795693362-db00e19f"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795665991-no-unneeded-full-review/P-1795666015-CLA-CO5.5/E-1795666317-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 finding detected: FIND-R2-002-01",
+    "symptoms": [
+      "The carry-over section still documents the pf1 fingerprint excluding only holon-knowledge/** and calibration reports (lines 272-277, and pf1 in the example at line 301); update it to pf2 and the shared bookkeeping exclusion."
+    ]
+  }
+}

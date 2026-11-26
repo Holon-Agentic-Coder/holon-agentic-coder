@@ -97,10 +97,10 @@ def _blocked_stage_failure(
 def _after_boundary_merge(context: FlowContext, stage: FlowStage, branch: str, result: SyncResult) -> None:
     _track_local_branch(context, branch)
     setattr(context, _NOTICE_ATTR, format_target_merge_notice(result.target_sha, result.changed_paths))
-    if stage is FlowStage.REVIEW and getattr(context, "review_scope_paths", None):
-        from sandbox_executor.flow.review.sync_points import compute_rereview_scope
+    if stage is FlowStage.REVIEW:
+        from sandbox_executor.flow.review.sync_scope import compute_rereview_scope, record_rereview_scope
 
-        context.review_scope_paths = sorted(set(context.review_scope_paths) | set(compute_rereview_scope(result)))
+        record_rereview_scope(context, compute_rereview_scope(result))
 
 
 def _run_boundary_sync(

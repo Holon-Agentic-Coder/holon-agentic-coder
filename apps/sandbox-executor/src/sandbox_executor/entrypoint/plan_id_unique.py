@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 
-from sandbox_executor.entrypoint.taken_ids import taken_plan_ids
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import build_plan_id, read_merged_rows
 from sandbox_executor.naming import parse_stage_id
@@ -63,7 +62,7 @@ def mint_plan_id(
     repo: GitRepository, repo_dir: str, intent_branch_prefix: str, plan_seq: int, agent_model: tuple[str, str]
 ) -> str:
     agent, model = agent_model
-    taken = taken_plan_ids(repo, repo_dir, intent_branch_prefix) | repository_plan_ids(repo, repo_dir)
+    taken = repository_plan_ids(repo, repo_dir)
     while True:
         candidate = build_plan_id(plan_seq, intent_branch_prefix, agent, model, taken=taken)
         if _claim(repo, candidate):

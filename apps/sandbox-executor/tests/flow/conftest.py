@@ -12,6 +12,7 @@ from sandbox_executor.knowledge import index as knowledge_index
 from sandbox_executor.knowledge.consult import DEFAULT_LEDGERS
 
 from tests.flow.helpers import _git
+from tests.flow.stage_templates import DEFAULT_SPEC, AgentsSpec, StageStart, StageTemplates
 from tests.gh_probe_stub import stubbed_mergeability_read
 from tests.repo_templates import copy_template, shared_template
 from tests.review_fakes import install_fake_reviewers
@@ -120,3 +121,19 @@ def flow_repos(tmp_path, monkeypatch, _flow_repos_template):
     ledger_dir = host / "holon-knowledge" / "ledger"
     monkeypatch.setattr(consult, "DEFAULT_LEDGERS", [str(ledger_dir / Path(path).name) for path in DEFAULT_LEDGERS])
     return host, origin
+
+
+@pytest.fixture
+def stage_start(tmp_path_factory, tmp_path, monkeypatch, _flow_repos_template) -> Callable[..., StageStart]:
+    """Start a test at a later stage from a template of the flow after its real earlier stages ran.
+
+    ``stage_start(through, spec)`` copies the template whose Stages 1 to ``through`` ran with the fake containers of
+    ``spec`` (``tests.flow.stage_templates``) into ``tmp_path``, or into ``target`` when given. Function-scoped: the
+    build runs production code under this test's autouse guards.
+    """
+    templates = StageTemplates(tmp_path_factory, _flow_repos_template)
+
+    def start(through: str, spec: AgentsSpec = DEFAULT_SPEC, target: Path | None = None) -> StageStart:
+        return templates.start(target or tmp_path, monkeypatch, through, spec)
+
+    return start

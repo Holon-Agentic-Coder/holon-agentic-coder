@@ -25,11 +25,20 @@ from sandbox_executor.flow.target_sync_result import SyncBoundary
 from sandbox_executor.ledger import read_merged_rows_at_ref
 
 from tests.flow.helpers import _git
-from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
+from tests.flow.sync_boundary_repos import (
+    APP,
+    CLEAN_TARGET_MOVE,
+    CODE_BASE,
+    FLOW_CODE,
+    LEDGER,
+    TARGET_CODE,
+    ledger_conflict,
+    sync_conflict_commit,
+    sync_work,
+)
+from tests.flow.sync_boundary_repos import BASE_ROW as BASE_ROW  # re-exported for review/test_sync_points.py
+from tests.ledger_conflict_repos import FLOW_BRANCH, commit_on
 
-LEDGER = "holon-knowledge/ledger/executions.jsonl"
-APP = "src/app.py"
-BASE_ROW = json.dumps({"execution_id": "E-base", "created_at": "2026-11-01T00:00:00Z"}) + "\n"
 Edit = Callable[[Path], None]
 
 
@@ -66,6 +75,9 @@ def _sync_rows(work: Path, branch: str = FLOW_BRANCH) -> list[dict]:
 
 
 def _inject_ledger_conflict(work: Path, branch: str, idx: int) -> None:
+    """A newer row on ``main`` and an older one on ``branch``, appended to what each holds now (also used by
+    review/test_sync_points.py on repositories whose ledgers have moved on); fixed scenarios use
+    ``sync_boundary_repos.ledger_conflict`` instead."""
     main_row = json.dumps({"execution_id": f"E-main-{idx}", "created_at": f"2026-11-0{idx}T02:00:00Z"}) + "\n"
     flow_row = json.dumps({"execution_id": f"E-flow-{idx}", "created_at": f"2026-11-0{idx}T01:00:00Z"}) + "\n"
     main_current = _git(work, "show", f"origin/main:{LEDGER}") + "\n"
@@ -95,13 +107,20 @@ def _context_for(work: Path, stage: FlowStage, dispatcher: FakeResolverDispatche
     return ctx
 
 
-@pytest.mark.parametrize("stage", [FlowStage.INTENT, FlowStage.PLAN, FlowStage.EXECUTE])
-@pytest.mark.parametrize("boundary", [SyncBoundary.FLOW_START, SyncBoundary.STAGE_START, SyncBoundary.STAGE_END])
+# The code branches on the FLOW_START boundary only (``at_flow_start``); the stage and the other two boundaries are
+# data written into the recorded row. Three cases keep both code paths and round-trip every stage and every boundary.
+@pytest.mark.parametrize(
+    ("boundary", "stage"),
+    [
+        (SyncBoundary.FLOW_START, FlowStage.EXECUTE),
+        (SyncBoundary.STAGE_START, FlowStage.PLAN),
+        (SyncBoundary.STAGE_END, FlowStage.INTENT),
+    ],
+)
 def test_stage_and_flow_start_boundaries_resolve_injected_conflicts(
-    tmp_path: Path, stage: FlowStage, boundary: SyncBoundary
+    tmp_path_factory: pytest.TempPathFactory, tmp_path: Path, stage: FlowStage, boundary: SyncBoundary
 ) -> None:
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n"})
-    _inject_ledger_conflict(work, FLOW_BRANCH, 2)
+    work = sync_work(tmp_path_factory, tmp_path, ledger_conflict(2))
     ctx = _context_for(work, stage)
 
     if boundary is SyncBoundary.FLOW_START:
@@ -122,9 +141,10 @@ def test_stage_and_flow_start_boundaries_resolve_injected_conflicts(
 
 
 @pytest.mark.parametrize("stage", [FlowStage.PLAN, FlowStage.EXECUTE])
-def test_non_conflicting_target_move_at_turn_boundary_is_deferred(tmp_path: Path, stage: FlowStage) -> None:
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n"})
-    commit_on(work, "main", {"docs/clean.md": "clean\n"}, "clean target move")
+def test_non_conflicting_target_move_at_turn_boundary_is_deferred(
+    tmp_path_factory: pytest.TempPathFactory, tmp_path: Path, stage: FlowStage
+) -> None:
+    work = sync_work(tmp_path_factory, tmp_path, (CLEAN_TARGET_MOVE,))
     head_before = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
     ctx = _context_for(work, stage)
 
@@ -147,10 +167,9 @@ def test_non_conflicting_target_move_at_turn_boundary_is_deferred(tmp_path: Path
 
 @pytest.mark.parametrize("stage", [FlowStage.PLAN, FlowStage.EXECUTE])
 def test_conflicting_target_move_at_turn_boundary_merges_and_sets_prompt_notice(
-    tmp_path: Path, stage: FlowStage
+    tmp_path_factory: pytest.TempPathFactory, tmp_path: Path, stage: FlowStage
 ) -> None:
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n"})
-    _inject_ledger_conflict(work, FLOW_BRANCH, 3)
+    work = sync_work(tmp_path_factory, tmp_path, ledger_conflict(3))
     ctx = _context_for(work, stage)
 
     failure = at_turn_boundary(ctx, stage, turn_index=1)
@@ -169,11 +188,9 @@ def test_conflicting_target_move_at_turn_boundary_merges_and_sets_prompt_notice(
 
 @pytest.mark.parametrize("stage", [FlowStage.PLAN, FlowStage.EXECUTE])
 def test_code_conflict_at_stage_boundary_resolves_through_conflict_resolver_role(
-    tmp_path: Path, stage: FlowStage
+    tmp_path_factory: pytest.TempPathFactory, tmp_path: Path, stage: FlowStage
 ) -> None:
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
-    commit_on(work, "main", {APP: "y = 2\n"}, "target code")
-    commit_on(work, FLOW_BRANCH, {APP: "x = 1\n"}, "flow code")
+    work = sync_work(tmp_path_factory, tmp_path, (TARGET_CODE, FLOW_CODE), CODE_BASE)
     dispatcher = FakeResolverDispatcher([(_resolve_app, "resolved")])
     ctx = _context_for(work, stage, dispatcher=dispatcher)
 
@@ -190,10 +207,10 @@ def test_code_conflict_at_stage_boundary_resolves_through_conflict_resolver_role
 
 
 @pytest.mark.parametrize("stage", [FlowStage.PLAN, FlowStage.EXECUTE])
-def test_unresolvable_code_conflict_fails_stage_closed(tmp_path: Path, stage: FlowStage) -> None:
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
-    commit_on(work, "main", {APP: "y = 2\n"}, "target code")
-    commit_on(work, FLOW_BRANCH, {APP: "x = 1\n"}, "flow code")
+def test_unresolvable_code_conflict_fails_stage_closed(
+    tmp_path_factory: pytest.TempPathFactory, tmp_path: Path, stage: FlowStage
+) -> None:
+    work = sync_work(tmp_path_factory, tmp_path, (TARGET_CODE, FLOW_CODE), CODE_BASE)
     dispatcher = FakeResolverDispatcher([(None, "cannot_decide"), (None, "cannot_decide"), (None, "cannot_decide")])
     ctx = _context_for(work, stage, dispatcher=dispatcher)
 
@@ -205,9 +222,9 @@ def test_unresolvable_code_conflict_fails_stage_closed(tmp_path: Path, stage: Fl
     assert failure.payload["conflicted_paths"] == [APP]
 
 
-def test_stage3_sync_conflict_row_triggers_host_sync_and_records_supersedes(tmp_path: Path) -> None:
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
-    commit_on(work, "main", {APP: "y = 2\n"}, "target code")
+def test_stage3_sync_conflict_row_triggers_host_sync_and_records_supersedes(
+    tmp_path_factory: pytest.TempPathFactory, tmp_path: Path
+) -> None:
     conflict_row = {
         "entry_type": "summary",
         "execution_id": "E-3-z",
@@ -215,12 +232,7 @@ def test_stage3_sync_conflict_row_triggers_host_sync_and_records_supersedes(tmp_
         "conflicted_paths": [APP],
         "ledger_revision": 2,
     }
-    commit_on(
-        work,
-        FLOW_BRANCH,
-        {APP: "x = 1\n", LEDGER: BASE_ROW + json.dumps(conflict_row) + "\n"},
-        "executor sync_conflict commit",
-    )
+    work = sync_work(tmp_path_factory, tmp_path, (TARGET_CODE, sync_conflict_commit(conflict_row)), CODE_BASE)
     dispatcher = FakeResolverDispatcher([(_resolve_app, "resolved")])
     ctx = _context_for(work, FlowStage.EXECUTE, dispatcher=dispatcher)
     base_payload = {"execution_id": "E-3-z", "execution_branch": FLOW_BRANCH, "status": SYNC_CONFLICT_STATUS}
@@ -242,9 +254,9 @@ def test_stage3_sync_conflict_row_triggers_host_sync_and_records_supersedes(tmp_
     assert summaries[-1]["ledger_revision"] == 3
 
 
-def test_stage3_sync_conflict_row_fails_closed_when_host_sync_is_blocked(tmp_path: Path) -> None:
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
-    commit_on(work, "main", {APP: "y = 2\n"}, "target code")
+def test_stage3_sync_conflict_row_fails_closed_when_host_sync_is_blocked(
+    tmp_path_factory: pytest.TempPathFactory, tmp_path: Path
+) -> None:
     conflict_row = {
         "entry_type": "summary",
         "execution_id": "E-3-z",
@@ -252,12 +264,7 @@ def test_stage3_sync_conflict_row_fails_closed_when_host_sync_is_blocked(tmp_pat
         "conflicted_paths": [APP],
         "ledger_revision": 2,
     }
-    commit_on(
-        work,
-        FLOW_BRANCH,
-        {APP: "x = 1\n", LEDGER: BASE_ROW + json.dumps(conflict_row) + "\n"},
-        "executor sync_conflict commit",
-    )
+    work = sync_work(tmp_path_factory, tmp_path, (TARGET_CODE, sync_conflict_commit(conflict_row)), CODE_BASE)
     dispatcher = FakeResolverDispatcher([(None, "cannot_decide"), (None, "cannot_decide"), (None, "cannot_decide")])
     ctx = _context_for(work, FlowStage.EXECUTE, dispatcher=dispatcher)
     base_payload = {"execution_id": "E-3-z", "execution_branch": FLOW_BRANCH, "status": SYNC_CONFLICT_STATUS}
@@ -315,11 +322,12 @@ def test_target_merge_notice_reaches_planner_and_executor_turn_prompts(tmp_path:
     assert "`docs/readme.md`" in prompts[1]
 
 
-def test_make_turn_boundary_hook_merges_conflict_and_returns_notice(tmp_path: Path) -> None:
+def test_make_turn_boundary_hook_merges_conflict_and_returns_notice(
+    tmp_path_factory: pytest.TempPathFactory, tmp_path: Path
+) -> None:
     from sandbox_executor.flow import make_turn_boundary_hook
 
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n"})
-    _inject_ledger_conflict(work, FLOW_BRANCH, 4)
+    work = sync_work(tmp_path_factory, tmp_path, ledger_conflict(4))
     hook = make_turn_boundary_hook(str(work), FLOW_BRANCH, "main", FlowStage.PLAN)
 
     notice = hook(1)
@@ -331,13 +339,11 @@ def test_make_turn_boundary_hook_merges_conflict_and_returns_notice(tmp_path: Pa
 
 
 def test_make_turn_boundary_hook_raises_on_blocked_sync_and_skips_in_container(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path_factory: pytest.TempPathFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from sandbox_executor.flow.target_sync_hooks import TurnBoundarySyncError, make_turn_boundary_hook
 
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
-    commit_on(work, "main", {APP: "y = 2\n"}, "target code")
-    commit_on(work, FLOW_BRANCH, {APP: "x = 1\n"}, "flow code")
+    work = sync_work(tmp_path_factory, tmp_path, (TARGET_CODE, FLOW_CODE), CODE_BASE)
     dispatcher = FakeResolverDispatcher([(None, "cannot_decide"), (None, "cannot_decide"), (None, "cannot_decide")])
     ctx = _context_for(work, FlowStage.PLAN, dispatcher=dispatcher)
     hook = make_turn_boundary_hook(str(work), FLOW_BRANCH, "main", FlowStage.PLAN, context=ctx)
@@ -353,10 +359,12 @@ def test_make_turn_boundary_hook_raises_on_blocked_sync_and_skips_in_container(
     assert exc_info.value.failure.payload["conflicted_paths"] == [APP]
 
 
-def test_checkout_active_branch_preserves_unpushed_local_commits(tmp_path: Path) -> None:
+def test_checkout_active_branch_preserves_unpushed_local_commits(
+    tmp_path_factory: pytest.TempPathFactory, tmp_path: Path
+) -> None:
     from sandbox_executor.flow.target_sync_hooks import _checkout_active_branch
 
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n"})
+    work = sync_work(tmp_path_factory, tmp_path)
     _git(work, "checkout", "-q", FLOW_BRANCH)
     (work / "local_only.txt").write_text("unpushed\n", encoding="utf-8")
     _git(work, "add", "local_only.txt")
@@ -373,11 +381,12 @@ def test_checkout_active_branch_preserves_unpushed_local_commits(tmp_path: Path)
     assert (work / "local_only.txt").exists()
 
 
-def test_child_turn_boundary_syncs_plan_branch_and_propagates_notice(tmp_path: Path) -> None:
+def test_child_turn_boundary_syncs_plan_branch_and_propagates_notice(
+    tmp_path_factory: pytest.TempPathFactory, tmp_path: Path
+) -> None:
     from sandbox_executor.flow.stages.children import _child_context, _sync_sub_intent_plan_branch
 
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n"})
-    _inject_ledger_conflict(work, FLOW_BRANCH, 5)
+    work = sync_work(tmp_path_factory, tmp_path, ledger_conflict(5))
     ctx = FlowContext(
         target_worktree=str(work),
         intent_data={"intent_id": "I-1", "slug": "x", "target_branch": "main"},
@@ -397,12 +406,14 @@ def test_child_turn_boundary_syncs_plan_branch_and_propagates_notice(tmp_path: P
     assert consume_target_merge_notice(ctx) == ""
 
 
-def test_stage5_resume_flow_start_syncs_execution_branch_not_calibrated(tmp_path: Path) -> None:
+def test_stage5_resume_flow_start_syncs_execution_branch_not_calibrated(
+    tmp_path_factory: pytest.TempPathFactory, tmp_path: Path
+) -> None:
     from sandbox_executor.flow.calibrate_sync import prepare_calibrated_branch
     from sandbox_executor.flow.target_sync_hooks import active_flow_branch
     from sandbox_executor.ref_names import calibration_branch
 
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n"})
+    work = sync_work(tmp_path_factory, tmp_path)
     calibrated = calibration_branch(FLOW_BRANCH)
     exec_before = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
     _git(work, "branch", "--no-track", calibrated, exec_before)

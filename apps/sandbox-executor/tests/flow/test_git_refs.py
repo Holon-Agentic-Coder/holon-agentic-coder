@@ -3,6 +3,7 @@
 import os
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -31,9 +32,9 @@ from tests.flow.helpers import (
     _git,
     _init_mergeability_repo,
     _verified_diff,
-    stage4_halts_at_consensus,
 )
 from tests.flow.lookup_patch import patch_lookup_sites
+from tests.flow.stage_templates import StageStart
 
 
 class TestStageTargetsIgnoreOperatorHead:
@@ -46,14 +47,16 @@ class TestStageTargetsIgnoreOperatorHead:
             yield which
 
     @staticmethod
-    def _run_stages_1_to_3(host: Path, origin: Path, tmp_path: Path) -> FlowContext:
-        ctx = _dispatch_context(host, FakeRoleAgents(tmp_path, origin))
-        with stage4_halts_at_consensus():
-            results = PipelineEngine(ctx).run()
-        assert results["execute"].status == StageStatus.SUCCESS
+    def _after_stages_1_to_3(stage_start: Callable[..., StageStart]) -> tuple[Path, Path, FlowContext]:
+        """The host, origin and context after the real Stages 1 to 3, copied from their stage-start template.
+
+        These tests are about Stages 4 and 5; test_pipeline_dispatches_intent_plan_execute_with_resolved_runner proves
+        the run of Stages 1 to 3 itself, and test_stage_templates.py that the template equals a fresh run.
+        """
+        start = stage_start("execute")
         # The executor container leaves the worktree on its execution branch; the operator's checkout is main.
-        _git(host, "checkout", "-q", "main")
-        return ctx
+        _git(start.host, "checkout", "-q", "main")
+        return start.host, start.origin, start.ctx
 
     @staticmethod
     def _run_loop_capturing_consensus(ctx: FlowContext, target: str) -> dict[str, Any]:
@@ -81,9 +84,8 @@ class TestStageTargetsIgnoreOperatorHead:
         assert github.methods().count("post_review") == 1
         return captured
 
-    def test_review_target_commit_is_execution_tip_not_operator_head(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        ctx = self._run_stages_1_to_3(host, origin, tmp_path)
+    def test_review_target_commit_is_execution_tip_not_operator_head(self, stage_start):
+        host, _origin, ctx = self._after_stages_1_to_3(stage_start)
         exec_tip = _git(host, "rev-parse", f"refs/remotes/origin/{ctx.execution_branch}")
         assert exec_tip != _git(host, "rev-parse", "HEAD")
 
@@ -91,9 +93,8 @@ class TestStageTargetsIgnoreOperatorHead:
 
         assert consensus["target_commit"] == exec_tip
 
-    def test_review_target_commit_follows_origin_when_local_refs_are_stale(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        ctx = self._run_stages_1_to_3(host, origin, tmp_path)
+    def test_review_target_commit_follows_origin_when_local_refs_are_stale(self, stage_start, tmp_path):
+        host, origin, ctx = self._after_stages_1_to_3(stage_start)
         stale = _git(host, "rev-parse", f"refs/remotes/origin/{ctx.execution_branch}")
         # A resolver pushes a fix from elsewhere; the operator's local and tracking refs are now stale.
         work = tmp_path / "resolver-clone"
@@ -119,9 +120,8 @@ class TestStageTargetsIgnoreOperatorHead:
 
         assert consensus["target_commit"] == _git(host, "rev-parse", "HEAD")
 
-    def test_review_stage_checks_out_execution_branch_and_probes_it(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        ctx = self._run_stages_1_to_3(host, origin, tmp_path)
+    def test_review_stage_checks_out_execution_branch_and_probes_it(self, stage_start):
+        host, _origin, ctx = self._after_stages_1_to_3(stage_start)
         loop_res = {"consensus": {"approved": True}, "mergeability": {}, "halted_for_human": False, "approved": True}
 
         from sandbox_executor.flow.context import FlowStage
@@ -139,9 +139,8 @@ class TestStageTargetsIgnoreOperatorHead:
         mock_probe.assert_called_once_with(ctx, FlowStage.REVIEW, SyncBoundary.STAGE_START)
         assert mock_loop.call_args.kwargs["target"] == ctx.execution_branch
 
-    def test_review_stage_fails_when_execution_branch_cannot_be_checked_out(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        ctx = self._run_stages_1_to_3(host, origin, tmp_path)
+    def test_review_stage_fails_when_execution_branch_cannot_be_checked_out(self, stage_start):
+        host, _origin, ctx = self._after_stages_1_to_3(stage_start)
         ctx.execution_branch = ctx.execution_branch.replace("/E-", "/E-missing-")
 
         with patch("sandbox_executor.flow.review.loop.run_review_loop") as mock_loop:
@@ -152,9 +151,8 @@ class TestStageTargetsIgnoreOperatorHead:
         mock_loop.assert_not_called()
         assert _git(host, "rev-parse", "--abbrev-ref", "HEAD") == "main"
 
-    def test_calibrate_stage_alone_checks_out_execution_branch_from_main(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        ctx = self._run_stages_1_to_3(host, origin, tmp_path)
+    def test_calibrate_stage_alone_checks_out_execution_branch_from_main(self, stage_start):
+        host, _origin, ctx = self._after_stages_1_to_3(stage_start)
         ctx.skip_push = True
         main_tip = _git(host, "rev-parse", "main")
 
@@ -176,9 +174,8 @@ class TestStageTargetsIgnoreOperatorHead:
         assert not list((host / "plans").rglob("P-*_calibration.md")), "a failed calibration must write no report"
         assert _git(host, "log", "-1", "--format=%H", "main") == main_tip
 
-    def test_calibrate_stage_fails_cleanly_when_execution_branch_cannot_be_checked_out(self, flow_repos, tmp_path):
-        host, origin = flow_repos
-        ctx = self._run_stages_1_to_3(host, origin, tmp_path)
+    def test_calibrate_stage_fails_cleanly_when_execution_branch_cannot_be_checked_out(self, stage_start):
+        host, _origin, ctx = self._after_stages_1_to_3(stage_start)
         ctx.execution_branch = ctx.execution_branch.replace("/E-", "/E-missing-")
         status_before = _git(host, "status", "--porcelain")
 

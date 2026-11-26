@@ -27,6 +27,7 @@ from sandbox_executor.flow.github.ci_failure_detail import (
     parse_run_id,
 )
 from sandbox_executor.flow.github.ci_reverify import approved_head_of
+from sandbox_executor.flow.github.ci_timing_rerun import _dispatch_rerun, _retry_timing_noise, _wait_for_rerun_start
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, wait_for_pending_ci
 from sandbox_executor.knowledge import CredentialRedactor
 
@@ -200,6 +201,10 @@ def _bookkeeping_only(paths: list[str] | None) -> bool:
     return bool(paths) and all(path.startswith(BOOKKEEPING_PATH_PREFIXES) for path in paths)
 
 
+def _code_unchanged(paths: list[str] | None) -> bool:
+    return paths is not None and all(path.startswith(BOOKKEEPING_PATH_PREFIXES) for path in paths)
+
+
 def _timing_gate_only(details: list[dict[str, Any]]) -> bool:
     return bool(details) and all(detail.get("timing_gate") for detail in details)
 
@@ -232,43 +237,23 @@ def _eligible_run_ids(check: _FinalHeadCheck, record: dict[str, Any], ci_status:
     paths = (check.seams.changed_paths or _git_changed_paths(check.repo_dir, check.seams.proxy_env))(
         approved, measured_head
     )
-    if not _bookkeeping_only(paths):
+    if not _code_unchanged(paths):
         return None
     return _failed_run_ids(ci_status, record["failed_checks"])
 
 
-def _wait_for_rerun_start(probe: Callable[[], dict[str, Any]], names: list[str], policy: Any, timeout: float) -> None:
-    deadline = policy.clock() + timeout
-    while set(_extract_failed_ci_check_names(probe())) & set(names):
-        remaining = deadline - policy.clock()
-        if remaining <= 0:
-            return
-        policy.sleep(max(0.0, min(CI_REGISTRATION_POLL_SECONDS, remaining)))
-
-
-def _dispatch_rerun(check: _FinalHeadCheck, run_id: str) -> bool:
-    try:
-        return check.github.rerun_failed(run_id, timeout=STEP_LOOKUP_TIMEOUT_SECONDS)
-    except Exception:
-        return False
-
-
-def _retry_timing_noise(check: _FinalHeadCheck, record: dict[str, Any], ci_status: dict[str, Any]) -> dict[str, Any]:
-    run_ids = _eligible_run_ids(check, record, ci_status)
-    if not run_ids:
-        return record
-    check.context.log(f"Final-head CI: rerunning timing-gate failure on a bookkeeping-only head: {', '.join(run_ids)}")
+def _rerun_timing_once(
+    check: _FinalHeadCheck, record: dict[str, Any], run_ids: list[str]
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
     seams = check.seams
-    rerun = seams.rerun_dispatcher or functools.partial(_dispatch_rerun, check)
-    all_reruns_dispatched = all(rerun(run_id) for run_id in run_ids)
-    if not all_reruns_dispatched:
-        return {**record, "timing_rerun": {"attempted": False, "reason": "the rerun could not be dispatched"}}
+    rerun = seams.rerun_dispatcher or functools.partial(_dispatch_rerun, check.github)
+    if not all(rerun(run_id) for run_id in run_ids):
+        return None
     probe = seams.probe or check.default_probe()
     policy = seams.policy or CiWaitPolicy(resolve_review_ci_wait_seconds(os.environ))
     registration_timeout = resolve_ci_registration_timeout(seams.registration_timeout)
     _wait_for_rerun_start(probe, record["failed_checks"], policy, registration_timeout)
-    retried, _ = _classify_settled(check)
-    return {**retried, "timing_rerun": {"attempted": True, "run_ids": run_ids, "outcome": retried["state"]}}
+    return _classify_settled(check)
 
 
 def check_final_head_ci(
@@ -283,7 +268,9 @@ def check_final_head_ci(
         record, ci_status = _classify_settled(check)
         if record["state"] != "failed":
             return record
-        return _retry_timing_noise(check, record, ci_status)
+        eligible = functools.partial(_eligible_run_ids, check)
+        rerun_once = functools.partial(_rerun_timing_once, check)
+        return _retry_timing_noise(context.log, record, ci_status, eligible, rerun_once)
     except Exception as exc:
         return _record("unknown", CredentialRedactor.redact_text(str(exc))[:MAX_REASON_CHARS])
 

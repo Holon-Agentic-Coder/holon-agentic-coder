@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,7 @@ from sandbox_executor.flow.stages import touch_set_guard
 from sandbox_executor.ledger import query_ledger, read_merged_rows_at_ref
 
 from tests.flow.helpers import OTHER_HEAD, OTHER_PLAN, FakeGh, _git, make_plan_branch, no_worktrees, seed_base_files
+from tests.flow_repo_templates import derived_template, replace_with_copy, template_name
 
 THIRD_PLAN = "I-300-third/P-301-eeeeeeee-claude-agent-claude-opus-5-5/_"
 
@@ -45,16 +47,40 @@ def other_pr(diff: list[str] | str) -> FakeGh:
 
 
 @pytest.fixture
-def own_plan(flow_repos):
+def own_plan_with(flow_repos, tmp_path, tmp_path_factory, _flow_repos_template) -> Callable[..., Path]:
+    """Makes the host whose own plan branch declares ``touch_set`` and is pushed, so an override row can be appended.
+
+    ``before`` and ``after`` are files committed and pushed on main before and after the plan branch is cut. The
+    whole state is a template derived once per run from ``flow_repos``'s; the test's copy replaces ``flow_repos``'s.
+    """
+    names = ("origin.git", "host")
+
+    def make(touch_set: list[dict], before: tuple[str, ...] = (), after: tuple[str, ...] = ()) -> Path:
+        def scenario(root: Path) -> None:
+            host = root / "host"
+            if before:
+                seed_base_files(host, list(before))
+            make_plan_branch(host, OWN_PLAN, touch_set)
+            _git(host, "push", "-q", "origin", OWN_PLAN)
+            if after:
+                seed_base_files(host, list(after))
+
+        name = template_name("admission-own-plan", touch_set, before, after)
+        replace_with_copy(
+            derived_template(tmp_path_factory, name, _flow_repos_template, names, scenario), tmp_path, names
+        )
+        return flow_repos[0]
+
+    return make
+
+
+@pytest.fixture
+def own_plan(own_plan_with):
     """The run's own plan branch (declaring src/app.py and docs/), pushed so an override row can be appended.
 
     The base branch holds src/app.py and docs/guide.md, so both entries name an existing file.
     """
-    host, _origin = flow_repos
-    seed_base_files(host, ["docs/guide.md"])
-    make_plan_branch(host, OWN_PLAN, [{"path": "src/app.py"}, {"path": "docs/"}])
-    _git(host, "push", "-q", "origin", OWN_PLAN)
-    return host
+    return own_plan_with([{"path": "src/app.py"}, {"path": "docs/"}], before=("docs/guide.md",))
 
 
 def test_a_pull_request_is_compared_by_its_diff_not_its_planned_touch_set(own_plan):
@@ -329,24 +355,17 @@ NEW_TESTS = ["tests/test_new.py", "tests/flow/a/test_new.py", "apps/x/tests/test
 BASE_TESTS = ["tests/test_old.py", "tests/flow/a/test_old.py", "apps/x/tests/test_old.py"]
 
 
-def _own_plan(host: Path, touch_set: list[dict]) -> Path:
-    make_plan_branch(host, OWN_PLAN, touch_set)
-    _git(host, "push", "-q", "origin", OWN_PLAN)
-    return host
-
-
-def test_new_files_never_overlap_folder_or_wildcard_entries(flow_repos, tmp_path):
+def test_new_files_never_overlap_folder_or_wildcard_entries(own_plan_with, tmp_path):
     """AC1: a pull request, or a local flow, adding new files under our wildcard and folder entries is admitted."""
-    host = _own_plan(flow_repos[0], WILDCARDS)
-    seed_base_files(host, BASE_TESTS)  # the wildcards match existing files too, just not the new ones
+    host = own_plan_with(WILDCARDS, after=tuple(BASE_TESTS))  # the wildcards match existing files too, not new ones
     assert check_admission(own_context(host), other_pr(NEW_TESTS), no_worktrees).admitted
     _local_flow(host, tmp_path, [{"path": path} for path in NEW_TESTS])
     decision = check_admission(own_context(host), other_pr([]))
     assert decision == AdmissionDecision(admitted=True)
 
 
-def test_an_identical_new_literal_path_still_overlaps(flow_repos, tmp_path):
-    host = _own_plan(flow_repos[0], [{"path": "src/new.py"}, {"path": "apps/x/tests/"}])
+def test_an_identical_new_literal_path_still_overlaps(own_plan_with, tmp_path):
+    host = own_plan_with([{"path": "src/new.py"}, {"path": "apps/x/tests/"}])
     assert check_admission(own_context(host), other_pr(["src/new.py"]), no_worktrees).conflicts[0].files == (
         "src/new.py",
     )
@@ -355,11 +374,10 @@ def test_an_identical_new_literal_path_still_overlaps(flow_repos, tmp_path):
     assert not decision.admitted and [c.files for c in decision.conflicts] == [("src/new.py",)]
 
 
-def test_an_existing_file_under_a_folder_entry_still_overlaps(flow_repos, tmp_path):
+def test_an_existing_file_under_a_folder_entry_still_overlaps(own_plan_with, tmp_path):
     """AC3 and AC4: a pull request or a local flow touching an existing file below our folder entry is refused, and
     the refusal names the concrete file, never the bare folder pattern."""
-    host = _own_plan(flow_repos[0], [{"path": "apps/x/tests/"}])
-    seed_base_files(host, BASE_TESTS)
+    host = own_plan_with([{"path": "apps/x/tests/"}], after=tuple(BASE_TESTS))
     by_pr = check_admission(own_context(host), other_pr(["apps/x/tests/test_old.py"]), no_worktrees)
     assert not by_pr.admitted and by_pr.conflicts[0].files == ("apps/x/tests/test_old.py",)
     _local_flow(host, tmp_path, [{"path": "apps/x/tests/test_old.py"}, {"path": "apps/x/tests/test_new.py"}])
@@ -372,11 +390,10 @@ def test_an_existing_file_under_a_folder_entry_still_overlaps(flow_repos, tmp_pa
     assert "apps/x/tests/," not in message and "(its entry" not in message
 
 
-def test_a_folder_against_folder_refusal_lists_twenty_files_and_counts_the_rest(flow_repos, tmp_path):
+def test_a_folder_against_folder_refusal_lists_twenty_files_and_counts_the_rest(own_plan_with, tmp_path):
     """AC4: the message names at most 20 concrete files per flow; the payload and blocked_by keep all of them."""
-    host = _own_plan(flow_repos[0], [{"path": "lib/"}])
     seeded = [f"lib/m{n:02d}.py" for n in range(25)]
-    seed_base_files(host, seeded)
+    host = own_plan_with([{"path": "lib/"}], after=tuple(seeded))
     _local_flow(host, tmp_path, [{"path": "lib/"}, {"path": "lib/brand_new.py"}])
     decision = check_admission(own_context(host), other_pr([]))
     assert decision.conflicts[0].files == tuple(seeded) and decision.blocked_by[0].files == tuple(seeded)
@@ -410,10 +427,9 @@ def test_with_nothing_in_flight_the_base_is_never_listed(own_plan):
     assert check_admission(context, FakeGh([], {}), no_worktrees) == AdmissionDecision(admitted=True)
 
 
-def test_a_pull_request_renaming_a_file_out_of_a_folder_entry_overlaps(flow_repos):
+def test_a_pull_request_renaming_a_file_out_of_a_folder_entry_overlaps(own_plan_with):
     """The rename's source is on the base, so it overlaps our folder entry although its destination is new."""
-    host = _own_plan(flow_repos[0], [{"path": "apps/x/tests/"}])
-    seed_base_files(host, BASE_TESTS)
+    host = own_plan_with([{"path": "apps/x/tests/"}], after=tuple(BASE_TESTS))
     rename = (
         "diff --git a/apps/x/tests/test_old.py b/lib/test_old.py\nsimilarity index 100%\n"
         "rename from apps/x/tests/test_old.py\nrename to lib/test_old.py\n"

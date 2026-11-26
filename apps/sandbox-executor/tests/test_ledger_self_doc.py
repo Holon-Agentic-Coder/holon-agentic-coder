@@ -17,6 +17,8 @@ SCOPED_LEDGER_FILES: tuple[str, ...] = (
     "lock.py",
     "merged.py",
     "order.py",
+    "promote.py",
+    "promote_threshold.py",
     "query.py",
     "query_filters.py",
     "reconcile.py",

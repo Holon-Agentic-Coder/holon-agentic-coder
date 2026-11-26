@@ -354,3 +354,13 @@ def test_failing_id_rerun_that_cannot_start_is_not_run() -> None:
         raise FileNotFoundError("uv")
 
     assert run_failing_ids((ALPHA,), {}, "/nonexistent", session) == NOT_RUN
+
+
+def test_a_fix_turn_that_raises_is_blocked_with_the_reason() -> None:
+    def moving_fix(request: FixRequest) -> bool:
+        raise RuntimeError("fix turn moved HEAD branch")
+
+    outcome = _loop(FakeSuite(), FakeRerun(FAIL, FAIL), fix_turn=moving_fix).run(*_failing())
+
+    assert outcome.status == "blocked"
+    assert outcome.blocked_reason == "fix turn failed: fix turn moved HEAD branch"

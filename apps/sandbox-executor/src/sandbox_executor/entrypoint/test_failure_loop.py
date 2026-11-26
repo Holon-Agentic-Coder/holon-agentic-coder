@@ -250,30 +250,31 @@ class TestFailureLoop:
         if self.ports.fix_turn is None:
             return self._finish("blocked", case, "no fix runner available")
         while self.fix_turns < MAX_FIX_TURNS and self.ports.remaining_seconds() > 0:
-            self.fix_turns += 1
-            self.ports.fix_turn(
-                FixRequest(
-                    case.diagnosis.classification.value if case.diagnosis else FailureClass.INTRODUCED.value,
-                    case.failing_ids,
-                    case.excerpts,
-                    case.signature,
-                    self.tier,
-                    self.fix_turns,
-                )
-            )
-            measurement, output = self.ports.run_selection()
-            if measurement_passed(measurement):
-                case.measurement = measurement
-                self._record(case, FailureClass.INTRODUCED.value, "success")
-                return self._finish("passed", case)
-            if measurement.rate is None:
-                return self._unmeasured(measurement)
-            after = _case_of(measurement, output)
-            after.diagnosis = case.diagnosis
-            self._record(after, FailureClass.INTRODUCED.value)
-            if after.signature != case.signature:
+            after = self._fix_once(case, self.ports.fix_turn)
+            if isinstance(after, LoopOutcome) or after.signature != case.signature:
                 return after
             if (tier := next_tier(self.ports.ladder, self.tier)) is None:
                 return self._finish("exhausted", after, "the failure repeats and the model ladder is exhausted")
             self.tier, case = tier, after
         return self._finish("exhausted", case, "fix turn or time bound reached")
+
+    def _fix_once(self, case: _Case, fix_turn: FixTurn) -> LoopOutcome | _Case:
+        self.fix_turns += 1
+        request = FixRequest(
+            FailureClass.INTRODUCED.value, case.failing_ids, case.excerpts, case.signature, self.tier, self.fix_turns
+        )
+        try:
+            fix_turn(request)
+        except Exception as exc:
+            return self._finish("blocked", case, f"fix turn failed: {exc}")
+        measurement, output = self.ports.run_selection()
+        if measurement_passed(measurement):
+            case.measurement = measurement
+            self._record(case, FailureClass.INTRODUCED.value, "success")
+            return self._finish("passed", case)
+        if measurement.rate is None:
+            return self._unmeasured(measurement)
+        after = _case_of(measurement, output)
+        after.diagnosis = case.diagnosis
+        self._record(after, FailureClass.INTRODUCED.value)
+        return after

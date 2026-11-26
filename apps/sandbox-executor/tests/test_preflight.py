@@ -20,6 +20,7 @@ from sandbox_executor.preflight import (
     resolve_timeout,
     run_preflight_probe,
 )
+from sandbox_executor.preflight_secret_args import reference_secret_args
 
 from tests.flow.lookup_patch import patch_lookup_sites
 from tests.leak_assertions import CREDENTIAL_FREE_URLS, assert_no_leak, make_probe, make_url_probe, url_userinfo_cases
@@ -277,6 +278,15 @@ def test_probe_passes_a_credential_free_single_line_settings_json_in_the_env_fil
     assert "exec claude " in tail[2]
     assert 'printf %s "${HOLON_AGENT_SETTINGS}" >"$s' in tail[2]
     assert '--settings "$s' in tail[2]
+
+
+def test_probe_keeps_a_file_path_settings_value_as_a_variable_reference():
+    """Only inline JSON is materialised to a file; a path value already names the file claude should read."""
+    path = "/run/secrets/" + make_probe("settings") + ".json"
+
+    cmd = reference_secret_args(["claude", "--settings", path, "-p", "hi"], {"HOLON_AGENT_SETTINGS": path})
+
+    assert cmd == ["sh", "-c", 'exec claude --settings "${HOLON_AGENT_SETTINGS}" -p hi']
 
 
 def test_probe_passes_a_bare_credential_under_a_plain_holon_name_only_in_the_env_file(

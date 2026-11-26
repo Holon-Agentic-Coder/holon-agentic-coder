@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,8 @@ from sandbox_executor.flow.target_sync_resume import adopt_merge_in_progress
 from sandbox_executor.ledger import read_merged_rows
 
 from tests.flow.helpers import _git
-from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
+from tests.flow_repo_templates import FlowCommit, FlowRepos, flow_history_copy
+from tests.ledger_conflict_repos import FLOW_BRANCH, commit_on
 
 LEDGER = "holon-knowledge/ledger/executions.jsonl"
 BASE_ROW = json.dumps({"execution_id": "E-base", "created_at": "2026-11-01T00:00:00Z"}) + "\n"
@@ -38,19 +40,37 @@ def _sync_rows(work: Path) -> list[dict]:
     return [row for row in read_merged_rows(str(work / LEDGER)) if row.get("action") == "target_sync"]
 
 
+CODE_CONFLICT = (
+    FlowCommit("main", {"src/app.py": "x = 1\n"}, "target"),
+    FlowCommit(FLOW_BRANCH, {"src/app.py": "x = 2\n"}, "flow"),
+)
+
+
 @pytest.fixture
-def work(tmp_path: Path) -> Path:
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, "src/app.py": "x = 0\n"})
-    commit_on(work, FLOW_BRANCH, {LEDGER: BASE_ROW + _row("E-flow", 3)}, "flow row")
-    return work
+def repos_with(tmp_path_factory: pytest.TempPathFactory, tmp_path: Path) -> Callable[..., FlowRepos]:
+    """Makes the flow clone with its own ledger row and then ``commits`` pushed: a copy of a template built once."""
+
+    def make(*commits: FlowCommit) -> FlowRepos:
+        flow_row = FlowCommit(FLOW_BRANCH, {LEDGER: BASE_ROW + _row("E-flow", 3)}, "flow row")
+        return flow_history_copy(
+            tmp_path_factory, tmp_path, {LEDGER: BASE_ROW, "src/app.py": "x = 0\n"}, (flow_row, *commits)
+        )
+
+    return make
+
+
+@pytest.fixture
+def work(repos_with) -> Path:
+    return repos_with().work
 
 
 def test_no_merge_in_progress_is_nothing_to_adopt(work: Path):
     assert adopt_merge_in_progress(_request(work)) is None
 
 
-def test_a_ledger_only_merge_of_the_current_target_is_completed_with_one_row(work: Path):
-    target = commit_on(work, "main", {LEDGER: BASE_ROW + _row("E-main", 4)}, "target row")
+def test_a_ledger_only_merge_of_the_current_target_is_completed_with_one_row(repos_with):
+    repos = repos_with(FlowCommit("main", {LEDGER: BASE_ROW + _row("E-main", 4)}, "target row"))
+    work, target = repos.work, repos.shas[-1]
     _interrupted_merge(work, "origin/main")
 
     adoption = adopt_merge_in_progress(_request(work))
@@ -62,9 +82,11 @@ def test_a_ledger_only_merge_of_the_current_target_is_completed_with_one_row(wor
     assert _git(work, "ls-remote", "origin", f"refs/heads/{FLOW_BRANCH}").split()[0] == _git(work, "rev-parse", "HEAD")
 
 
-def test_a_merge_of_an_older_target_is_aborted_for_a_redo(work: Path):
-    commit_on(work, "main", {LEDGER: BASE_ROW + _row("E-main", 4)}, "target row")
-    commit_on(work, "main", {"docs/more.md": "m\n"}, "target moves again")
+def test_a_merge_of_an_older_target_is_aborted_for_a_redo(repos_with):
+    work = repos_with(
+        FlowCommit("main", {LEDGER: BASE_ROW + _row("E-main", 4)}, "target row"),
+        FlowCommit("main", {"docs/more.md": "m\n"}, "target moves again"),
+    ).work
     head = _git(work, "rev-parse", "HEAD")
     _interrupted_merge(work, "origin/main~1")
 
@@ -76,9 +98,8 @@ def test_a_merge_of_an_older_target_is_aborted_for_a_redo(work: Path):
     assert _git(work, "status", "--porcelain") == ""
 
 
-def test_a_code_conflict_with_the_fail_closed_resolver_leaves_a_clean_worktree(work: Path):
-    commit_on(work, "main", {"src/app.py": "x = 1\n"}, "target")
-    commit_on(work, FLOW_BRANCH, {"src/app.py": "x = 2\n"}, "flow")
+def test_a_code_conflict_with_the_fail_closed_resolver_leaves_a_clean_worktree(repos_with):
+    work = repos_with(*CODE_CONFLICT).work
     _interrupted_merge(work, "origin/main")
 
     adoption = adopt_merge_in_progress(_request(work))
@@ -115,9 +136,8 @@ def test_a_hand_merge_of_a_branch_already_in_the_target_is_left_untouched(work: 
     assert merge_in_progress(str(work))
 
 
-def test_markers_staged_before_the_interruption_block_the_resumed_merge(work: Path):
-    commit_on(work, "main", {"src/app.py": "x = 1\n"}, "target")
-    commit_on(work, FLOW_BRANCH, {"src/app.py": "x = 2\n"}, "flow")
+def test_markers_staged_before_the_interruption_block_the_resumed_merge(repos_with):
+    work = repos_with(*CODE_CONFLICT).work
     head = _git(work, "rev-parse", "HEAD")
     _interrupted_merge(work, "origin/main")
     _git(work, "add", "src/app.py")  # a code resolver staged the file, markers and all, then the flow was interrupted

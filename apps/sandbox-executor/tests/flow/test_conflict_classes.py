@@ -15,7 +15,8 @@ from sandbox_executor.flow.conflict_classes_resolve import resolve_mechanical
 from sandbox_executor.ledger import read_merged_rows
 
 from tests.flow.helpers import _git
-from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
+from tests.flow_repo_templates import FlowCommit, build_flow_history
+from tests.ledger_conflict_repos import FLOW_BRANCH
 
 LEDGER = "holon-knowledge/ledger/executions.jsonl"
 FRAGMENT = "holon-knowledge/ledger/pending/executions/I-1.jsonl"
@@ -25,9 +26,8 @@ INIT = "pkg/__init__.py"
 
 def _conflicted(tmp_path: Path, base: dict[str, str], flow: dict, target: dict) -> tuple[Path, list[str]]:
     """A flow worktree midway through a conflicting merge of ``origin/main``, and its unmerged paths."""
-    _, work = build_flow_repos(tmp_path, base)
-    commit_on(work, "main", target, "target")
-    commit_on(work, FLOW_BRANCH, flow, "flow")
+    commits = [FlowCommit("main", target, "target"), FlowCommit(FLOW_BRANCH, flow, "flow")]
+    work = build_flow_history(tmp_path, base, commits).work
     merge = subprocess.run(["git", "merge", "--no-ff", "--no-edit", "origin/main"], cwd=work, capture_output=True)
     assert merge.returncode == 1
     unmerged = _git(work, "diff", "--name-only", "--diff-filter=U").splitlines()
@@ -299,19 +299,12 @@ def test_a_failed_delete_resolution_restores_the_unmerged_stages(tmp_path: Path,
     assert (work / "old.py").exists()
 
 
-def _commit_bytes(work: Path, branch: str, rel: str, data: bytes) -> None:
-    _git(work, "checkout", "-q", "-B", branch, f"origin/{branch}")
-    (work / rel).write_bytes(data)
-    _git(work, "add", "--", rel)
-    _git(work, "commit", "-q", "-m", f"{branch} bytes")
-    _git(work, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
-
-
 def test_a_non_utf8_conflict_is_code(tmp_path: Path):
-    _, work = build_flow_repos(tmp_path, {"blob.py": "x = 0\n"})
-    _commit_bytes(work, "main", "blob.py", b"x = '\xff\xfe main'\n")
-    _commit_bytes(work, FLOW_BRANCH, "blob.py", b"x = '\xff\xfe flow'\n")
-    _git(work, "fetch", "-q", "origin")
+    commits = [
+        FlowCommit("main", {"blob.py": b"x = '\xff\xfe main'\n"}, "main bytes"),
+        FlowCommit(FLOW_BRANCH, {"blob.py": b"x = '\xff\xfe flow'\n"}, f"{FLOW_BRANCH} bytes"),
+    ]
+    work = build_flow_history(tmp_path, {"blob.py": "x = 0\n"}, commits).work
     merge = subprocess.run(["git", "merge", "--no-ff", "--no-edit", "origin/main"], cwd=work, capture_output=True)
     assert merge.returncode == 1
 

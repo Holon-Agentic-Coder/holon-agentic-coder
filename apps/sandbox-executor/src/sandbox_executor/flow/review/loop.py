@@ -708,9 +708,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "intent_data": context.intent_data,
         "target_commit": current_commit_sha,
         "approval_fingerprint": fingerprint,
-        "pr_url": (
-            pr_res.get("pr_url") or (pr_res.get("output") if str(pr_res.get("output", "")).startswith("http") else None)
-        ),
+        "pr_url": pr_res.get("pr_url"),
         "pr_number": pr_res.get("pr_number"),
     }
 

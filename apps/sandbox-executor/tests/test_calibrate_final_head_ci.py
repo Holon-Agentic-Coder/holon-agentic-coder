@@ -383,6 +383,9 @@ def test_a_fingerprint_carried_merged_head_is_not_eligible_for_the_automatic_tim
     # ci_final_head stays bookkeeping-only: a merge of main is not a bookkeeping move, even when the approval carried.
     assert ci_final_head._eligible_run_ids(carried, record, ci_status) is None
     assert ci_final_head._eligible_run_ids(bookkeeping, record, ci_status) == ["77"]  # The positive control.
+    assert ci_final_head._eligible_run_ids(_carried_timing_check(tmp_path, []), record, ci_status) == [
+        "77"
+    ]  # Unchanged.
 
 
 # --- 15-second poll ceiling, fail-early, and timing-rerun pending guard ---------------------------------------------

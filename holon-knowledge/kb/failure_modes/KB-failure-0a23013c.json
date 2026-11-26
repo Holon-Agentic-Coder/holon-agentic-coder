@@ -1,0 +1,29 @@
+{
+  "kb_id": "KB-failure-0a23013c",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T04:46:48.716244+00:00",
+  "updated_ts": "2026-11-26T04:46:48.716244+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1795667735-4328fd0d",
+      "ACT-REV-1795667577-0a76bca6"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795647400-macos-unit-only-when-relevant/P-1795666532-CLA-CO5.5/E-1795666668-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 2 reviewer 3 completed",
+    "symptoms": []
+  }
+}

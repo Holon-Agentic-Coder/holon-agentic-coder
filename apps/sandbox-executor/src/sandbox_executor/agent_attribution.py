@@ -28,7 +28,7 @@ def attribution_off_settings(
             logger.warning("HOLON_AGENT_SETTINGS is not a JSON object or readable file; using attribution-off only.")
         else:
             merged = {**base, **ATTRIBUTION_OFF}
-            from_file = not _is_inline_json(existing)
+            from_file = not is_inline_json(existing)
     if default_env:
         _merge_default_env(merged, default_env)
     text = json.dumps(merged)
@@ -49,7 +49,7 @@ def _carries_env(merged: Mapping[str, Any]) -> bool:
     return isinstance(env, dict) and bool(env)
 
 
-def _is_inline_json(value: str) -> bool:
+def is_inline_json(value: str) -> bool:
     return value.lstrip().startswith("{")
 
 
@@ -83,7 +83,7 @@ def _remove_quietly(path: str) -> None:
 
 def _load_settings(value: str) -> dict[str, Any] | None:
     text = value
-    if not _is_inline_json(value) and os.path.isfile(value):
+    if not is_inline_json(value) and os.path.isfile(value):
         try:
             with open(value, encoding="utf-8") as handle:
                 text = handle.read()

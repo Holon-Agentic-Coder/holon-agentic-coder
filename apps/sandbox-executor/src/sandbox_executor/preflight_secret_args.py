@@ -3,7 +3,7 @@ from __future__ import annotations
 import shlex
 from collections.abc import Mapping
 
-from sandbox_executor.agent_attribution import _is_inline_json
+from sandbox_executor.agent_attribution import is_inline_json
 
 
 def reference_secret_args(runner_cmd: list[str], secret_env: Mapping[str, str]) -> list[str]:
@@ -12,9 +12,7 @@ def reference_secret_args(runner_cmd: list[str], secret_env: Mapping[str, str]) 
     if not any(arg in by_value for arg in args):
         return runner_cmd
     files = [
-        i
-        for i, arg in enumerate(args)
-        if arg in by_value and i and args[i - 1] == "--settings" and _is_inline_json(arg)
+        i for i, arg in enumerate(args) if arg in by_value and i and args[i - 1] == "--settings" and is_inline_json(arg)
     ]
     prelude = "".join(f'umask 077; s{i}=$(mktemp); printf %s "${{{by_value[args[i]]}}}" >"$s{i}"; ' for i in files)
     refs = [f'"${{{by_value[a]}}}"' if a in by_value else shlex.quote(a) for a in args]

@@ -45,8 +45,7 @@ class PrePushEnvironmentRecordingGit(FakeGitCommands):
     def __call__(self, args, cwd=None, env=None, check=True):
         if not self.verification_started:
             self.verification_started = True
-            # why: _run_entrypoint fakes the review loop itself, so verification is driven from inside main() to
-            # observe the process environment main() actually runs under.
+            # why: _run_entrypoint fakes the loop, so main()'s real process environment is observed from in here
             review_loop._verify_before_push(str(self.repo))
         if list(args) == PRE_PUSH_TEST_COMMAND:
             self.pre_push_env = dict(env)
@@ -69,13 +68,11 @@ def review_loop_child_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
 def run_canaries_under(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     child_env = dict(env)
-    # why: these belong to the parent pytest runner, not to the review loop, and would make the child mistake
-    # itself for an xdist worker.
+    # why: the parent runner's variables would make the child mistake itself for an xdist worker
     for name in PARENT_RUNNER_VARIABLES:
         child_env.pop(name, None)
     child_env[CHILD_SUITE_SENTINEL] = "1"
-    # why: the conftest may point HOME at a throwaway directory where uv can neither find the project environment
-    # nor may it reach the network.
+    # why: under a throwaway HOME uv can neither find the project environment nor may it reach the network
     child_env["UV_PROJECT_ENVIRONMENT"] = project_environment()
     child_env["UV_OFFLINE"] = "1"
     child_env["UV_PYTHON_DOWNLOADS"] = "never"

@@ -19,6 +19,8 @@ from sandbox_executor.flow import (
 from sandbox_executor.flow.partial_salvage import SalvageError, leftover_paths, salvage_leftovers
 from sandbox_executor.ledger import read_merged_rows_at_ref
 
+from tests.repo_templates import copy_template, shared_template
+
 PLAN = "I-1-x/P-2-claude-agent-claude-opus-5-5/_"
 EXEC_ID = "E-100-claude-agent-claude-opus-5-5"
 EXEC_BRANCH = f"I-1-x/P-2-claude-agent-claude-opus-5-5/{EXEC_ID}/_"
@@ -35,12 +37,11 @@ def commit_all(repo: Path, message: str) -> None:
     git(repo, "commit", "-q", "-m", message)
 
 
-@pytest.fixture
-def work(tmp_path: Path) -> Path:
+def _build_work(root: Path) -> None:
     """A clone of a local bare origin, on a fresh local execution branch of the plan (as a killed run leaves it)."""
-    origin = tmp_path / "origin.git"
+    origin = root / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
-    repo = tmp_path / "work"
+    repo = root / "work"
     subprocess.run(["git", "clone", "-q", str(origin), str(repo)], check=True, capture_output=True)
     for key, value in (("user.email", "t@holon.com"), ("user.name", "T"), ("commit.gpgsign", "false")):
         git(repo, "config", key, value)
@@ -55,7 +56,13 @@ def work(tmp_path: Path) -> Path:
     git(repo, "checkout", "-q", "-b", PLAN)
     git(repo, "push", "-q", "origin", PLAN)
     git(repo, "checkout", "-q", "-b", EXEC_BRANCH)
-    return repo
+
+
+@pytest.fixture
+def work(tmp_path: Path, tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A private copy of the clone ``_build_work`` builds once per run, and its origin."""
+    copy_template(shared_template(tmp_path_factory, "partial-salvage", _build_work)[0], tmp_path)
+    return tmp_path / "work"
 
 
 def context(repo: Path) -> FlowContext:

@@ -12,6 +12,7 @@ SCOPED_MODULES = (
     "ci_final_head.py",
     "ci_head_checks.py",
     "ci_reverify.py",
+    "ci_timing_rerun.py",
     "ci_wait.py",
 )
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 from sandbox_executor.entrypoint import review_loop
-from sandbox_executor.flow.review.git_identity import REVIEW_GIT_ENV, review_git_identity
+from sandbox_executor.flow.review.git_identity import REVIEW_GIT_ENV, _review_git_identity
 
 from tests.test_review_loop import FakeGitCommands, _run_entrypoint
 
@@ -47,7 +47,7 @@ def test_identity_is_in_the_environment_inside_the_block_and_removed_after(monke
     for key in REVIEW_GIT_ENV:
         monkeypatch.delenv(key, raising=False)
 
-    with review_git_identity(os.environ):
+    with _review_git_identity(os.environ):
         assert {key: os.environ.get(key) for key in REVIEW_GIT_ENV} == REVIEW_GIT_ENV
 
     assert not any(key in os.environ for key in REVIEW_GIT_ENV)
@@ -58,7 +58,7 @@ def test_identity_restores_previous_values_even_when_the_block_exits(monkeypatch
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("GIT_AUTHOR_NAME", "Someone Else")
 
-    with pytest.raises(SystemExit), review_git_identity(os.environ):
+    with pytest.raises(SystemExit), _review_git_identity(os.environ):
         assert os.environ["GIT_AUTHOR_NAME"] == REVIEW_GIT_ENV["GIT_AUTHOR_NAME"]
         raise SystemExit(1)
 
@@ -124,7 +124,7 @@ def test_commit_through_entrypoint_helpers_is_authored_as_the_review_loop_agent(
     control_env["GIT_CONFIG_VALUE_0"] = "true"
     assert _commit(repo, env=control_env, check=False).returncode != 0
 
-    with review_git_identity(os.environ):
+    with _review_git_identity(os.environ):
         _commit(repo)
 
     log = review_loop.run_cmd(["git", "log", "-1", "--format=%an%n%ae%n%cn%n%ce"], cwd=str(repo))
@@ -139,7 +139,7 @@ def test_commit_through_entrypoint_helpers_is_authored_as_the_review_loop_agent(
 def test_commit_leaves_no_user_section_in_local_or_global_config(identityless_repo):
     repo, global_config = identityless_repo
 
-    with review_git_identity(os.environ):
+    with _review_git_identity(os.environ):
         _commit(repo)
 
     local = subprocess.run(

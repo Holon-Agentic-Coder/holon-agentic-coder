@@ -51,7 +51,7 @@ from sandbox_executor.entrypoint.review_verification import (
 from sandbox_executor.entrypoint.uv_lock import LockfileMismatchError, check_lockfile, frozen_env
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.review.delta_review_forwarding import load_forwarded_decision
-from sandbox_executor.flow.review.git_identity import review_git_identity
+from sandbox_executor.flow.review.git_identity import _review_git_identity
 from sandbox_executor.flow.review.loop import run_review_loop
 from sandbox_executor.flow.review.records import _bounded_error_context
 from sandbox_executor.flow.review.verdict import review_loop_approved, review_summary_lines
@@ -679,7 +679,7 @@ def _run_resolver_mode(
 
 def main() -> None:
     """Run the review loop with its git identity in the process environment, restored when main() leaves."""
-    with review_git_identity(os.environ):
+    with _review_git_identity(os.environ):
         _run_main()
 
 

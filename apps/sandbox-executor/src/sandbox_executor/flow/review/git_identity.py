@@ -18,7 +18,7 @@ REVIEW_GIT_ENV: dict[str, str] = {
 }
 
 
-def apply_review_git_identity(environ: MutableMapping[str, str]) -> dict[str, str | None]:
+def _apply_review_git_identity(environ: MutableMapping[str, str]) -> dict[str, str | None]:
     """Write the ``REVIEW_GIT_ENV`` entries into ``environ`` in place.
 
     Returns the previous value of each key, ``None`` where the key was absent, so the caller can restore them.
@@ -29,13 +29,13 @@ def apply_review_git_identity(environ: MutableMapping[str, str]) -> dict[str, st
 
 
 @contextlib.contextmanager
-def review_git_identity(environ: MutableMapping[str, str]) -> Iterator[None]:
+def _review_git_identity(environ: MutableMapping[str, str]) -> Iterator[None]:
     """Overlay the review-loop identity on ``environ`` for the block, then restore the previous values.
 
     Keys that were absent before are deleted again; restoring also happens when the block raises, including
     ``SystemExit``, so an in-process caller never keeps the identity.
     """
-    previous = apply_review_git_identity(environ)
+    previous = _apply_review_git_identity(environ)
     try:
         yield
     finally:

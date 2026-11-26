@@ -18,7 +18,8 @@ from sandbox_executor.ledger import read_merged_rows
 from sandbox_executor.module_budget_guard import MODULE_BUDGET_CONFIG
 
 from tests.flow.helpers import _git
-from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
+from tests.flow_repo_templates import FlowCommit, build_flow_history, flow_history_copy
+from tests.ledger_conflict_repos import FLOW_BRANCH
 
 LEDGER = "holon-knowledge/ledger/executions.jsonl"
 FRAGMENT = "holon-knowledge/ledger/pending/executions/I-1-x.jsonl"
@@ -65,13 +66,28 @@ def _app(work: Path) -> str:
     return (work / APP).read_text(encoding="utf-8") if (work / APP).exists() else ""
 
 
+BASE_FILES = {
+    LEDGER: json.dumps({"execution_id": "E-base"}) + "\n",
+    APP: "x = 0\n",
+    "src/other.py": "o = 0\n",
+    ".gitignore": "tmp/\n",
+}
+APP_CONFLICT = (FlowCommit("main", {APP: "y = 2\n"}, "target"), FlowCommit(FLOW_BRANCH, {APP: "x = 1\n"}, "flow"))
+
+
 @pytest.fixture
-def work(tmp_path: Path) -> Path:
-    files = {LEDGER: json.dumps({"execution_id": "E-base"}) + "\n", APP: "x = 0\n", "src/other.py": "o = 0\n"}
-    _, work = build_flow_repos(tmp_path, {**files, ".gitignore": "tmp/\n"})
-    commit_on(work, "main", {APP: "y = 2\n"}, "target")
-    commit_on(work, FLOW_BRANCH, {APP: "x = 1\n"}, "flow")
-    return work
+def work_with(tmp_path_factory: pytest.TempPathFactory, tmp_path: Path) -> Callable[..., Path]:
+    """Makes the flow clone with ``commits`` pushed after the app conflict: a copy of a template built once per run."""
+
+    def make(*commits: FlowCommit, base: dict[str, str] = BASE_FILES) -> Path:
+        return flow_history_copy(tmp_path_factory, tmp_path, base, (*APP_CONFLICT, *commits)).work
+
+    return make
+
+
+@pytest.fixture
+def work(work_with) -> Path:
+    return work_with()
 
 
 @pytest.fixture
@@ -186,9 +202,11 @@ def test_exhaustion_fails_closed_without_a_push(work, pushes):
     assert _git(work, "status", "--porcelain") == ""
 
 
-def test_the_module_budget_file_blocks_before_any_dispatch(work, pushes):
-    commit_on(work, "main", {MODULE_BUDGET_CONFIG: "{}\n"}, "target budget")
-    commit_on(work, FLOW_BRANCH, {MODULE_BUDGET_CONFIG: '{"x": 1}\n'}, "flow budget")
+def test_the_module_budget_file_blocks_before_any_dispatch(work_with, pushes):
+    work = work_with(
+        FlowCommit("main", {MODULE_BUDGET_CONFIG: "{}\n"}, "target budget"),
+        FlowCommit(FLOW_BRANCH, {MODULE_BUDGET_CONFIG: '{"x": 1}\n'}, "flow budget"),
+    )
     dispatcher = FakeDispatcher([])
     result = _sync(work, dispatcher)
     assert result.status == "blocked" and dispatcher.calls == []
@@ -219,9 +237,11 @@ def test_resolver_test_edits_propagate_to_sync_result(tmp_path, pushes):
         APP: "x = 0\n",
         "tests/test_app.py": "assert True\n",
     }
-    _, work = build_flow_repos(tmp_path, {**files, ".gitignore": "tmp/\n"})
-    commit_on(work, "main", {APP: "y = 2\n", "src/target_only.py": "t = 1\n"}, "target")
-    commit_on(work, FLOW_BRANCH, {APP: "x = 1\n"}, "flow")
+    commits = [
+        FlowCommit("main", {APP: "y = 2\n", "src/target_only.py": "t = 1\n"}, "target"),
+        FlowCommit(FLOW_BRANCH, {APP: "x = 1\n"}, "flow"),
+    ]
+    work = build_flow_history(tmp_path, {**files, ".gitignore": "tmp/\n"}, commits).work
 
     def resolve_with_test_edit(w: Path) -> None:
         _resolve(w)

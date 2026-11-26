@@ -26,18 +26,17 @@ from scripts.ci_bookkeeping_gate import RUN_RULES, SKIP_RULES, main, safe_decide
 from scripts.ci_main_push_gate import MAIN_PUSH_RUN_RULES, MAIN_PUSH_SKIP_RULES
 from scripts.ci_merge_push_gate import (
     CONFLICT,
-    MAX_BLOB_READS,
     MERGE_PUSH_RUN_RULES,
     MERGE_PUSH_SKIP_RULES,
     MergeTrees,
     changed_paths,
+    config_coupling,
     conflict_path,
     expected_entry,
-    imports_of,
-    is_test_pair,
-    module_names,
+    is_config_path,
     overlap,
 )
+from scripts.ci_merge_push_imports import MAX_BLOB_READS, imports_of, is_test_pair, module_names
 from tests.ci_bookkeeping_fakes import (
     BASE_HEAD_SHA,
     BASE_PUSH_RUN,
@@ -230,6 +229,28 @@ def test_root_level_files_on_both_sides_share_the_root_directory() -> None:
     fake = scene(pr={**PR_CHANGES, "Makefile": "a\n"}, base={**BASE_CHANGES, "pyproject.toml": "b\n"})
 
     assert gate(fake) == Decision(False, "merge-push-overlapping-change", "./")
+
+
+@pytest.mark.parametrize(
+    ("pr", "base", "detail"),
+    [
+        (PR_CHANGES, {**BASE_CHANGES, "uv.lock": "version = 2\n"}, "uv.lock"),
+        (PR_CHANGES, {**BASE_CHANGES, "pyproject.toml": "[tool.ruff]\n"}, "pyproject.toml"),
+        (
+            PR_CHANGES,
+            {**BASE_CHANGES, "apps/sandbox-executor/pyproject.toml": "b\n"},
+            "apps/sandbox-executor/pyproject.toml",
+        ),
+        ({**PR_CHANGES, ".github/workflows/test-unit.yml": "a\n"}, BASE_CHANGES, ".github/workflows/test-unit.yml"),
+        ({**PR_CHANGES, "Makefile": "a\n"}, {"docs/a.md": "b\n"}, "Makefile"),
+    ],
+)
+def test_configuration_change_on_one_side_with_any_change_on_the_other_runs(
+    pr: dict[str, str | None], base: dict[str, str | None], detail: str
+) -> None:
+    fake = scene(pr=pr, base=base)
+
+    assert gate(fake) == Decision(False, "merge-push-config-change", detail)
 
 
 # --- (c) no real success on the previous head -----------------------------------------------------------------------
@@ -430,7 +451,7 @@ def test_unrelated_python_files_in_the_related_roots_skip_after_reading_their_bl
 @pytest.mark.parametrize(
     ("changes", "detail"),
     [
-        ({"apps/sandbox-executor/pyproject.toml": "x\n"}, "apps/sandbox-executor/pyproject.toml"),
+        ({"apps/sandbox-executor/tests/data.json": "{}\n"}, "apps/sandbox-executor/tests/data.json"),
         ({ROWS: "def (:\n"}, f"{ROWS} does not parse"),
         ({"apps/sandbox-executor/tests/conftest.py": "VALUE = 1\n"}, "apps/sandbox-executor/tests/conftest.py"),
     ],
@@ -555,7 +576,9 @@ def test_main_prints_one_line_writes_skip_true_and_keeps_the_token_out_of_urls(
 # --- Python 3.9 and the standard library ----------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("module", ["ci_merge_push_gate", "ci_bookkeeping_api", "ci_bookkeeping_gate"])
+@pytest.mark.parametrize(
+    "module", ["ci_merge_push_gate", "ci_merge_push_imports", "ci_bookkeeping_api", "ci_bookkeeping_gate"]
+)
 def test_gate_module_is_python_3_9_syntax_and_standard_library_only(module: str) -> None:
     syntax = ast.parse((ROOT / "scripts" / f"{module}.py").read_text(encoding="utf-8"), feature_version=(3, 9))
 
@@ -566,6 +589,30 @@ def test_gate_module_is_python_3_9_syntax_and_standard_library_only(module: str)
 
 
 # --- pure helpers ---------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("uv.lock", True),
+        ("pyproject.toml", True),
+        ("Makefile", True),
+        ("apps/sandbox-executor/pyproject.toml", True),
+        (".github/workflows/test-unit.yml", True),
+        ("apps/sandbox-executor/src/pyproject.toml", False),
+        ("docs/uv.lock", False),
+        ("scripts/ci_x.py", False),
+    ],
+)
+def test_is_config_path(path: str, expected: bool) -> None:
+    assert is_config_path(path) is expected
+
+
+def test_config_coupling_needs_a_change_on_the_other_side() -> None:
+    assert config_coupling(["uv.lock"], []) is None
+    assert config_coupling([], ["uv.lock"]) is None
+    assert config_coupling(["scripts/x.py"], ["uv.lock"]) == "uv.lock"
+
 
 A = ("100644", "blob", "a" * 40)
 B = ("100644", "blob", "b" * 40)

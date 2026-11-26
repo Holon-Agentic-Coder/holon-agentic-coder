@@ -160,7 +160,9 @@ following hold, in this order:
 - A merge base exists, and the trees of the merge base, both parents and the head are complete.
 - Every path of the head holds the file-level three-way merge: no conflict was resolved by hand.
 - The two sides changed no common path and no path in a common parent directory. Bookkeeping paths are left out of this
-  rule and the next one.
+  rule and the next two.
+- Neither side changed `pyproject.toml`, `uv.lock`, `Makefile` or `.python-version` at the root, an app's
+  `pyproject.toml` or a workflow file while the other side changed any path.
 - When both sides changed files under `apps/` or `scripts/`, every such file is a regular Python file other than
   `conftest.py` that parses, and no file of one side imports a module of the other or is its `test_<stem>.py`.
 
@@ -181,6 +183,7 @@ These rules belong to `scripts/ci_merge_push_gate.py`:
 | `merge-push-tree-truncated`                 | the API cut a tree of the merge base, a parent or the head short                           |
 | `merge-push-conflict-resolution`            | a path of the head differs from the three-way merge of its parents                         |
 | `merge-push-overlapping-change`             | both sides changed the same path or paths in the same directory                            |
+| `merge-push-config-change`                  | one side changed a dependency, tool or workflow file and the other side changed any path   |
 | `merge-push-unanalysable-change`            | a file both sides could couple through is not a regular Python file that parses            |
 | `merge-push-scan-too-large`                 | the import scan needs more blob reads than the module allows                               |
 | `merge-push-related-change`                 | a file of one side imports a module of the other side or is its test                       |

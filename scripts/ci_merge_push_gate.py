@@ -16,16 +16,19 @@ positive evidence skips; the rules run cheapest first, and the first that fails 
 6. ``-conflict-resolution``: every path of the new head holds the file-level three-way merge; a path both sides changed
    differently never counts as clean.
 7. ``-overlapping-change``: the two sides' changed paths since the merge base share no path and no parent directory.
-   Bookkeeping paths are left out of 7 and 8: every flow pull request adds siblings in the same ``executions/``,
+   Bookkeeping paths are left out of 7 to 9: every flow pull request adds siblings in the same ``executions/``,
    ``plans/`` and ledger directories and they cannot change a test result; rule 6 and the hygiene job still cover them.
-8. ``-unanalysable-change``, ``-scan-too-large``, ``-related-change``: when both sides changed a file under the roots
+8. ``-config-change``: neither side changed a configuration file (``CONFIG_FILES`` at the root, an app
+   ``pyproject.toml`` or a workflow file) while the other side changed any path, since no job ran one side's code
+   under the other side's dependencies, tool settings or steps.
+9. ``-unanalysable-change``, ``-scan-too-large``, ``-related-change``: when both sides changed a file under the roots
    of ``RELATED_ROOTS`` (one pool, since tests under ``apps/`` import ``scripts.*``), every such file is a regular
    ``.py`` file (not ``conftest.py``) that parses with the running grammar, and no file of one side imports a module of
    the other (a dotted prefix counts) or is its ``test_<stem>.py``, in both directions. Content comes from the local
    checkout when its blob id matches, else from ``MAX_BLOB_READS`` reads.
 
 Every rule name starts with ``merge-push``; the one that skips is ``merge-push-clean-main-merge`` (about 11 requests
-and the blob reads of rule 8). After the merge is confirmed, any exception is ``merge-push-api-error`` with its class
+and the blob reads of rule 9). After the merge is confirmed, any exception is ``merge-push-api-error`` with its class
 name and HTTP status. No job ran the merged tree, so this skip is never evidence for a later ``main`` push:
 ``scripts.ci_main_push_gate`` runs a gate-skipped merge head in full (``main-push-head-skip-unproven``) unless only
 bookkeeping changed since a real success. A coupling other than a direct import or a test name (a transitive import, a
@@ -35,9 +38,6 @@ library only and Python 3.9 syntax, so it runs on the runner's own ``python3``.
 
 from __future__ import annotations
 
-import ast
-import hashlib
-import os
 import posixpath
 import urllib.error
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -47,7 +47,6 @@ from scripts.ci_bookkeeping_api import (
     CommitRef,
     GateClient,
     GateContext,
-    blob_bytes,
     commit_ref,
     list_jobs,
     list_push_runs,
@@ -64,11 +63,14 @@ from scripts.ci_bookkeeping_chain import (
     find_real_success,
     match_job,
 )
+from scripts.ci_merge_push_imports import MAX_BLOB_READS, BlobReader, imports_of, related_pair
 
 HYGIENE_JOB = "hygiene"
 HYGIENE_WORKFLOW = "test-hygiene.yml"
 RELATED_ROOTS = ("apps", "scripts")
-MAX_BLOB_READS = 40
+# Files that change how every job installs, configures or runs the code: a change to one couples with any other change.
+CONFIG_FILES = ("pyproject.toml", "uv.lock", "Makefile", ".python-version")
+CONFIG_DIRECTORY = ".github/workflows"
 MAX_BASE_RUNS = 5
 SYMLINK_MODE = "120000"
 
@@ -84,6 +86,7 @@ RULE_NO_MERGE_BASE = "merge-push-no-merge-base"
 RULE_TREE_TRUNCATED = "merge-push-tree-truncated"
 RULE_CONFLICT_RESOLUTION = "merge-push-conflict-resolution"
 RULE_OVERLAPPING_CHANGE = "merge-push-overlapping-change"
+RULE_CONFIG_CHANGE = "merge-push-config-change"
 RULE_UNANALYSABLE_CHANGE = "merge-push-unanalysable-change"
 RULE_SCAN_TOO_LARGE = "merge-push-scan-too-large"
 RULE_RELATED_CHANGE = "merge-push-related-change"
@@ -102,6 +105,7 @@ MERGE_PUSH_RUN_RULES = (
     RULE_TREE_TRUNCATED,
     RULE_CONFLICT_RESOLUTION,
     RULE_OVERLAPPING_CHANGE,
+    RULE_CONFIG_CHANGE,
     RULE_UNANALYSABLE_CHANGE,
     RULE_SCAN_TOO_LARGE,
     RULE_RELATED_CHANGE,
@@ -166,96 +170,20 @@ def overlap(pr_paths: Iterable[str], base_paths: Iterable[str]) -> str | None:
     return f"{directories[0] or '.'}/" if directories else None
 
 
-def module_names(path: str) -> tuple[str, ...]:
-    """Return the names ``path`` imports as: after ``src``, from ``scripts`` or ``tests``, bare; ``__init__`` too."""
-    parts = path[: -len(".py")].split("/") if path.endswith(".py") else path.split("/")
-    if parts[-1:] == ["__init__"]:
-        parts = parts[:-1]
-    candidates = [parts[-1:]]
-    for anchor, offset in (("src", 1), ("tests", 0)):
-        if anchor in parts:
-            candidates.append(parts[len(parts) - parts[::-1].index(anchor) - 1 + offset :])
-    if parts[:1] == ["scripts"]:
-        candidates.append(parts)
-    return tuple(sorted({".".join(candidate) for candidate in candidates if candidate}))
+def is_config_path(path: str) -> bool:
+    """Return true for a root build or tool file, an app ``pyproject.toml`` or a workflow file."""
+    parts = path.split("/")
+    app_project = len(parts) == 3 and parts[0] == "apps" and parts[2] == "pyproject.toml"
+    return path in CONFIG_FILES or app_project or posixpath.dirname(path) == CONFIG_DIRECTORY
 
 
-def _from_modules(node: ast.ImportFrom, packages: Sequence[str]) -> list[str]:
-    """Return the absolute module names of a ``from`` import; a relative one resolves against each package."""
-    if node.level == 0:
-        return [node.module or ""]
-    resolved = []
-    for package in packages:
-        parts = package.split(".") if package else []
-        if node.level - 1 <= len(parts):
-            prefix = parts[: len(parts) - (node.level - 1)]
-            resolved.append(".".join([*prefix, node.module] if node.module else prefix))
-    return resolved
-
-
-def imports_of(path: str, source: bytes) -> frozenset[str] | None:
-    """Return the dotted names a file imports (``from a import b`` gives ``a`` and ``a.b``); ``None`` if unparsable."""
-    try:
-        syntax = ast.parse(source)
-    except (SyntaxError, ValueError):
-        return None
-    init = path.endswith("/__init__.py")
-    packages = [name if init else name.rpartition(".")[0] for name in module_names(path)]
-    names: set[str] = set()
-    for node in ast.walk(syntax):
-        if isinstance(node, ast.Import):
-            names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            for module in _from_modules(node, packages):
-                names.add(module)
-                names.update(f"{module}.{alias.name}" for alias in node.names)
-    return frozenset(name.strip(".") for name in names if name.strip("."))
-
-
-def _imports_any(imports: Iterable[str], names: Sequence[str]) -> bool:
-    """Return true when an import equals a module name or one is a dotted prefix of the other."""
-    return any(i == n or n.startswith(f"{i}.") or i.startswith(f"{n}.") for i in imports for n in names)
-
-
-def is_test_pair(first: str, second: str) -> bool:
-    """Return true when one file is ``test_<stem>.py`` and the other ``<stem>.py``."""
-    first_name, second_name = posixpath.basename(first), posixpath.basename(second)
-    return first_name == f"test_{second_name}" or second_name == f"test_{first_name}"
-
-
-def related_pair(
-    pr: Sequence[str], base: Sequence[str], imports: Mapping[str, frozenset[str]]
-) -> tuple[str, str] | None:
-    """Return the first pull-request and base-side file that import or test each other, in either direction."""
-    for pr_path in pr:
-        for base_path in base:
-            if (
-                is_test_pair(pr_path, base_path)
-                or _imports_any(imports[pr_path], module_names(base_path))
-                or _imports_any(imports[base_path], module_names(pr_path))
-            ):
-                return pr_path, base_path
+def config_coupling(pr_paths: Sequence[str], base_paths: Sequence[str]) -> str | None:
+    """Return the first configuration path one side changed while the other side changed any path, else ``None``."""
+    for own, other in ((pr_paths, base_paths), (base_paths, pr_paths)):
+        found = next((path for path in own if is_config_path(path)), None)
+        if found is not None and other:
+            return found
     return None
-
-
-@dataclass
-class BlobReader:
-    """Read content from the local checkout when its blob id matches, else from at most ``MAX_BLOB_READS`` reads."""
-
-    client: GateClient
-    reads: int = 0
-
-    def source(self, path: str, sha: str) -> bytes | None:
-        """Return the content of blob ``sha`` at ``path``; ``None`` once the blob-read budget is spent."""
-        if os.path.isfile(path):
-            with open(path, "rb") as handle:
-                data = handle.read()
-            if hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest() == sha:
-                return data
-        if self.reads >= MAX_BLOB_READS:
-            return None
-        self.reads += 1
-        return blob_bytes(self.client, sha)
 
 
 def _is_analysable(path: str, entry: Entry | None) -> bool:
@@ -294,7 +222,7 @@ def _relation_check(trees: MergeTrees, pr: list[str], base: list[str], client: G
 
 
 def _tree_rules(trees: MergeTrees, is_bookkeeping_path: Callable[[str], bool], client: GateClient) -> Decision | None:
-    """Apply the clean-merge, overlap and relation rules; ``None`` when every one holds."""
+    """Apply the clean-merge, overlap, configuration and relation rules; ``None`` when every one holds."""
     conflict = conflict_path(trees)
     if conflict is not None:
         return Decision(False, RULE_CONFLICT_RESOLUTION, conflict)
@@ -303,6 +231,9 @@ def _tree_rules(trees: MergeTrees, is_bookkeeping_path: Callable[[str], bool], c
     shared = overlap(pr_paths, base_paths)
     if shared is not None:
         return Decision(False, RULE_OVERLAPPING_CHANGE, shared)
+    config = config_coupling(pr_paths, base_paths)
+    if config is not None:
+        return Decision(False, RULE_CONFIG_CHANGE, config)
     return _relation_check(trees, pr_paths, base_paths, client)
 
 
@@ -370,7 +301,7 @@ def _trees(client: GateClient, head: CommitRef) -> MergeTrees | Decision:
 
 
 def _evidence(context: GateContext, client: GateClient, head: CommitRef, rules: GateRules) -> Decision:
-    """Apply rules 3 to 8 in order; only the last statement returns "skip". Exceptions reach the caller."""
+    """Apply rules 3 to 9 in order; only the last statement returns "skip". Exceptions reach the caller."""
     merged_in = head.parents[1]
     blocked = _previous_head_check(context, client, rules) or _base_run_check(context, client, merged_in)
     if blocked is not None:

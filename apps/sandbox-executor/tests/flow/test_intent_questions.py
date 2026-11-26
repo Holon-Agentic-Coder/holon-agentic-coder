@@ -12,6 +12,7 @@ from sandbox_executor.flow.intent_questions import (
     is_marked_open,
     validate_intent_questions,
 )
+from sandbox_executor.harness_reference_patterns import find_references, sample_reference
 
 
 @pytest.mark.parametrize(
@@ -138,3 +139,49 @@ def test_intent_questions_reports_groups_in_order_and_ignores_other_shapes():
         "Scope? (unresolved open_question)",
         "Which DB? (unanswered clarification)",
     ]
+
+
+def _clean_intent() -> dict[str, object]:
+    return {
+        "goal": "Reject directory scope entries.",
+        "scope": ["src/pkg/core.py", "tests/test_core.py (new)"],
+        "acceptance_criteria": ["core.py rejects a directory entry."],
+    }
+
+
+def test_a_glob_scope_entry_is_an_unresolved_intent_rule():
+    valid, items = validate_intent_questions({**_clean_intent(), "scope": ["src/pkg/*.py"]})
+    assert not valid
+    assert len(items) == 1
+    assert items[0].startswith("scope entry 'src/pkg/*.py' contains a glob character")
+    assert items[0].endswith(" (unresolved intent rule)")
+
+
+def test_a_harness_reference_in_the_rationale_is_refused_without_echoing_it():
+    sample = sample_reference("scratch directory")
+    valid, items = validate_intent_questions({**_clean_intent(), "rationale": f"Copied from {sample}"})
+    assert not valid
+    assert items == [
+        "intent field 'rationale' names a control-plane scratch directory; the intent text is copied into the "
+        "append-only intents ledger, so remove it (unresolved intent rule)"
+    ]
+    assert find_references(items[0]) == []
+
+
+def test_intent_rules_follow_unresolved_questions():
+    intent = {**_clean_intent(), "scope": ["src/pkg/"], "questions": {"Which DB?": None}}
+    valid, items = validate_intent_questions(intent)
+    assert not valid
+    assert items[0] == "Which DB? (unanswered question)"
+    assert items[1].endswith(
+        "ends in a slash: list each file on its own; a directory or glob widens the touch set "
+        "and blocks every other flow at Stage 3 admission (unresolved intent rule)"
+    )
+
+
+def test_a_clean_intent_still_passes():
+    assert validate_intent_questions(_clean_intent()) == (True, [])
+
+
+def test_hub_file_warnings_do_not_make_an_intent_unresolved():
+    assert validate_intent_questions({**_clean_intent(), "scope": ["tests/conftest.py"]}) == (True, [])

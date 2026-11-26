@@ -1,9 +1,10 @@
 """A fake GitHub REST API and payload builders for the bookkeeping-only push gate tests.
 
-``FakeGitHub`` is passed as the opener of ``GateClient``. It serves the three URL shapes the gate reads (compare, the
-runs of a workflow, the jobs of a run) from data given by the test, records every requested URL and its
-``Authorization`` header, and raises ``AssertionError`` for any other URL, so nothing reaches the network. The builders
-return recorded-shape entries with defaults: a run, a job, and the three shapes of a successful job (a real success, a
+``FakeGitHub`` is passed as the opener of ``GateClient``. It serves the URL shapes the gate reads (compare, the runs
+of a workflow by branch or by head commit, the jobs of a run, and for a push to ``main`` the pull requests of a commit
+and the tree of a commit) from data given by the test, records every requested URL and its ``Authorization`` header,
+and raises ``AssertionError`` for any other URL, so nothing reaches the network. The builders return recorded-shape
+entries with defaults: a run, a merged pull request, a job, and the three shapes of a successful job (a real success, a
 job the gate skipped, and a success from before the gate existed).
 """
 
@@ -28,6 +29,8 @@ MACOS_JOB = "unit (macos-latest)"
 _COMPARE = re.compile(r"^compare/([^/?]+)\.\.\.([^/?]+)$")
 _RUNS = re.compile(r"^actions/workflows/([^/?]+)/runs\?(.+)$")
 _JOBS = re.compile(r"^actions/runs/(\d+)/jobs\?per_page=100$")
+_PULLS = re.compile(r"^commits/([^/?]+)/pulls\?per_page=100$")
+_COMMIT = re.compile(r"^git/commits/([^/?]+)$")
 
 
 def run(run_number: int, head_sha: str, **overrides: object) -> dict[str, object]:
@@ -41,6 +44,19 @@ def run(run_number: int, head_sha: str, **overrides: object) -> dict[str, object
         "status": "completed",
         "path": f".github/workflows/{WORKFLOW}",
         "pull_requests": [{"number": 7}],
+    }
+    return {**base, **overrides}
+
+
+def pull(number: int, head_sha: str, merge_commit_sha: str, **overrides: object) -> dict[str, object]:
+    """Return a recorded-shape pull request entry: merged into ``main`` with ``merge_commit_sha``."""
+    base: dict[str, object] = {
+        "number": number,
+        "state": "closed",
+        "merged_at": "2026-11-26T10:00:00Z",
+        "merge_commit_sha": merge_commit_sha,
+        "base": {"ref": "main", "sha": "f" * 40},
+        "head": {"ref": BRANCH, "sha": head_sha},
     }
     return {**base, **overrides}
 
@@ -90,6 +106,8 @@ class FakeGitHub:
         self.compares: dict[tuple[str, str], object] = dict(compares or {})
         self.runs: list[dict[str, object]] = []
         self.jobs: dict[int, object] = {}
+        self.pulls: dict[str, list[dict[str, object]]] = {}
+        self.trees: dict[str, str] = {}
         self.errors: dict[str, Exception] = {}
         self.bodies: dict[str, bytes] = {}
         self.urls: list[str] = []
@@ -129,8 +147,20 @@ class FakeGitHub:
         if runs:
             query = urllib.parse.parse_qs(runs[2], strict_parsing=True)
             assert query["event"] == ["pull_request"] and query["per_page"] == ["100"], f"unexpected query: {path}"
+            workflow_path = f".github/workflows/{urllib.parse.unquote(runs[1])}"
+            if "head_sha" in query:
+                found = [r for r in self.runs if (r["path"], r["head_sha"]) == (workflow_path, query["head_sha"][0])]
+                return {"workflow_runs": found}
             wanted = (f".github/workflows/{urllib.parse.unquote(runs[1])}", query["branch"][0])
             return {"workflow_runs": [r for r in self.runs if (r["path"], r["head_branch"]) == wanted]}
+        pulls = _PULLS.match(path)
+        if pulls:
+            assert pulls[1] in self.pulls, f"no pull requests for {pulls[1]}"
+            return self.pulls[pulls[1]]
+        commit = _COMMIT.match(path)
+        if commit:
+            assert commit[1] in self.trees, f"no tree for {commit[1]}"
+            return {"sha": commit[1], "tree": {"sha": self.trees[commit[1]]}}
         jobs = _JOBS.match(path)
         assert jobs and int(jobs[1]) in self.jobs, f"unexpected request: {path}"
         return {"jobs": self.jobs[int(jobs[1])]}

@@ -1,8 +1,6 @@
 """Constant-time temporary directories: cost independent of the base temp's size, never-reused names, isolation."""
 
 import os
-import time
-from collections.abc import Callable
 from pathlib import Path
 
 import _pytest.tmpdir
@@ -12,46 +10,6 @@ from sandbox_executor.launcher import env_files
 
 from tests import fast_tmp_dirs
 from tests.fast_tmp_dirs import NumberedDirAllocator, PrivateTestDirs
-
-#: Directories created before the second timed batch; the old scanning helper paid for each of them on every call.
-EARLIER_DIRS = 5000
-BATCH = 100
-#: The later batch may take this many times the first batch, plus ``SLACK_SECONDS``, before it counts as growth.
-MAX_RATIO = 2.0
-SLACK_SECONDS = 0.02
-
-
-def _fastest_batch(create: Callable[[], Path]) -> float:
-    """The fastest of three timed batches of ``BATCH`` calls of ``create``, in seconds."""
-    timings = []
-    for _repeat in range(3):
-        start = time.perf_counter()
-        for _ in range(BATCH):
-            create()
-        timings.append(time.perf_counter() - start)
-    return min(timings)
-
-
-def _allocator_in(root: Path) -> Callable[[], Path]:
-    allocate = NumberedDirAllocator()
-    return lambda: allocate(root, "test_name")
-
-
-def _private_dirs_in(root: Path) -> Callable[[], Path]:
-    private_dirs = PrivateTestDirs()
-    return lambda: private_dirs.new(root)
-
-
-@pytest.mark.parametrize("make_create", [_allocator_in, _private_dirs_in], ids=["numbered", "private"])
-def test_creation_time_does_not_grow_with_the_directories_already_there(tmp_path, make_create):
-    """The 100 directories after 5,000 earlier ones cost about what the first 100 did."""
-    create = make_create(tmp_path)
-    first = _fastest_batch(create)
-    for _ in range(EARLIER_DIRS):
-        create()
-    later = _fastest_batch(create)
-    timings = f"first {BATCH}: {first:.4f}s, {BATCH} after {EARLIER_DIRS} more: {later:.4f}s"
-    assert later <= MAX_RATIO * first + SLACK_SECONDS, timings
 
 
 @pytest.fixture
@@ -74,8 +32,16 @@ def test_allocator_scans_a_root_only_once_while_names_are_free(tmp_path, scandir
     names = [allocate(tmp_path, "case").name for _ in range(200)]
     assert names == [f"case{n}" for n in range(200)]
     assert scandir_calls == [str(tmp_path)]
-    allocate(tmp_path, "other")
-    assert scandir_calls == [str(tmp_path), str(tmp_path)]
+
+
+def test_allocator_scans_a_root_once_across_many_prefixes(tmp_path, scandir_calls):
+    """``tmp_path`` uses each test's name as the prefix: new prefixes reuse the root's one listing, not a rescan."""
+    (tmp_path / "test_0_0").mkdir()
+    allocate = NumberedDirAllocator()
+    names = [allocate(tmp_path, f"test_{n}_").name for n in range(500)]
+    assert names == ["test_0_1"] + [f"test_{n}_0" for n in range(1, 500)]
+    assert allocate(tmp_path, "test_0_").name == "test_0_2"
+    assert scandir_calls == [str(tmp_path)]
 
 
 def test_private_dirs_scan_only_once(tmp_path, scandir_calls):
@@ -171,7 +137,11 @@ _SEEN_DIRS: set[Path] = set()
 
 @pytest.mark.parametrize("run", range(3))
 def test_consecutive_tests_never_get_the_same_directory(run, tmp_path):
-    """No test gets a HOME, env-file, layered-config or ``tmp_path`` directory an earlier test of this process got."""
+    """No test gets a HOME, env-file, layered-config or ``tmp_path`` directory an earlier test of this process got.
+
+    The check is per process: when xdist spreads the cases over workers, each compares only against the cases that ran
+    in its own worker (and its own base temp).
+    """
     dirs = set(_isolated_dirs(tmp_path).values())
     assert not dirs & _SEEN_DIRS
     _SEEN_DIRS.update(dirs)

@@ -1,9 +1,12 @@
 """Fixtures for the flow package tests: sandboxed fake reviewers, no real npx, a knowledge index that does not wait
 for the disk and the template flow repositories."""
 
+import os
+import select
 import sqlite3
 import subprocess
-from collections.abc import Callable
+import sys
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -137,3 +140,54 @@ def stage_start(tmp_path_factory, tmp_path, monkeypatch, _flow_repos_template) -
         return templates.start(target or tmp_path, monkeypatch, through, spec)
 
     return start
+
+
+#: A child that takes the run lock of ``argv[2]`` in ``argv[1]`` (``hold``: through ``hold_flow_run_lock``, so with the
+#: reaper and the exit hook), prints ``ready`` and keeps it until its stdin closes.
+_LOCK_HOLDER = """
+import sys
+from sandbox_executor.flow import run_lock
+if sys.argv[3] == "hold":
+    run_lock.hold_flow_run_lock(sys.argv[1], sys.argv[2])
+else:
+    run_lock.acquire_flow_run_lock(sys.argv[1], sys.argv[2], "holder0run")
+print("ready", flush=True)
+sys.stdin.readline()
+"""
+
+
+def child_python_env() -> dict[str, str]:
+    """This environment with the test process's import path, so a spawned interpreter imports the code under test."""
+    return {**os.environ, "PYTHONPATH": os.pathsep.join(path for path in sys.path if path)}
+
+
+def wait_for_line(proc: subprocess.Popen[str], timeout: float = 10.0) -> str:
+    """The next stdout line of ``proc``, failing the test after ``timeout`` seconds instead of hanging."""
+    assert proc.stdout is not None
+    ready, _, _ = select.select([proc.stdout], [], [], timeout)
+    assert ready, f"no output from pid {proc.pid} within {timeout:g} s"
+    return proc.stdout.readline().strip()
+
+
+@pytest.fixture
+def lock_holder() -> Iterator[Callable[..., subprocess.Popen[str]]]:
+    """Spawn processes that hold a flow run lock; each is killed when the test ends."""
+    spawned: list[subprocess.Popen[str]] = []
+
+    def spawn(target: Path, slug: str, mode: str = "acquire") -> subprocess.Popen[str]:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _LOCK_HOLDER, str(target), slug, mode],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            env=child_python_env(),
+        )
+        spawned.append(proc)
+        assert wait_for_line(proc) == "ready"
+        return proc
+
+    yield spawn
+    for proc in spawned:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)

@@ -1,7 +1,6 @@
 import contextlib
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -9,7 +8,7 @@ from typing import TypedDict, Unpack
 
 from sandbox_executor import agent_runner, git_flow, local_llm
 from sandbox_executor.agent_runner import HOST_WORKTREE_ROLES, SANDBOX_WORKSPACE_MOUNT
-from sandbox_executor.launcher import container_env, env_files, messages, proxy_paths, sidecar
+from sandbox_executor.launcher import container_env, env_files, messages, proxy_paths, run_tracking, sidecar
 from sandbox_executor.launcher import mounts as mount_args
 from sandbox_executor.redaction import redact_command
 
@@ -73,10 +72,9 @@ class ContainerLaunch:
             self.argv()
             self.env_file()
             messages.print_encodable(f"Executing: {redact_command(self.docker_cmd)}")
-            result = subprocess.run(
+            return run_tracking.run_tracked(
                 self.docker_cmd, env={**os.environ, **self.passthrough_env, "DOCKER_CLI_HINTS": "false"}
             )
-            return result.returncode
         except _LaunchAborted as aborted:
             return aborted.exit_code
         finally:
@@ -94,7 +92,7 @@ class ContainerLaunch:
 
     def credentials(self) -> None:
         tty_flag = ["-it"] if sys.stdin.isatty() else ["-i"]
-        self.docker_cmd = ["docker", "run", "--rm", *tty_flag]
+        self.docker_cmd = ["docker", "run", "--rm", *tty_flag, *run_tracking.container_identity_args(self.role)]
         self.docker_cmd.extend(["-e", "DOCKER_CLI_HINTS=false"])
         self.forwarded_env = container_env.forwarded_env(
             self.role, self.agent_id, pin_workspace=bool(self.workspace_mounts)

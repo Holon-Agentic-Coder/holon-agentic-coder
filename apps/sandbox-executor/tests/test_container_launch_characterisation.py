@@ -2,9 +2,10 @@
 
 Every scenario drives a public entry point re-exported by `sandbox_executor.cli` and patches only stdlib module
 attributes (`subprocess.run`, `shutil.which`, `socket.create_connection`, `tempfile.mkstemp`, `sys.stdin`,
-`sys.platform`) or domain modules (`git_flow`, `launcher.root_ca`), never a `cli.<function>` name, so the
-same assertions hold wherever the launch code lives. Each launch pins the docker argv (the redacted `Executing:` line
-included), the sorted `--env-file` lines and the exit code, after run-specific paths are swapped for placeholders.
+`sys.platform`) or domain modules (`git_flow`, `launcher.root_ca`, `launcher.run_tracking`), never a `cli.<function>`
+name, so the same assertions hold wherever the launch code lives. Each launch pins the docker argv (the redacted
+`Executing:` line included), the sorted `--env-file` lines and the exit code, after run-specific paths are swapped for
+placeholders.
 """
 
 import io
@@ -24,7 +25,7 @@ import pytest
 from sandbox_executor import cli, git_flow
 from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 from sandbox_executor.budgets import StageTimer, active_stage_timer
-from sandbox_executor.launcher import root_ca
+from sandbox_executor.launcher import root_ca, run_tracking
 
 # Synthetic credentials only: a fixed filler after each real-looking prefix.
 GITHUB_TOKEN = "ghp_" + "A1b2C3d4" * 5
@@ -102,6 +103,8 @@ def launch_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any
         return str(home / ".holon" / "certs" / "ca.crt"), str(home / ".holon" / "certs" / "ca.key"), False
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    # The role container's client is tracked through `run_tracked`; route it to the recording `subprocess.run`.
+    monkeypatch.setattr(run_tracking, "run_tracked", lambda cmd, env=None: subprocess.run(cmd, env=env).returncode)
     monkeypatch.setattr(git_flow, "sandbox_worktree_mounts", fake_worktree_mounts)
     monkeypatch.setattr(root_ca, "_ensure_root_ca", fake_ca)
     return state
@@ -366,6 +369,33 @@ def test_executor_with_result_file(launch_env, capsys, monkeypatch, tmp_path):
     )
     _check("executor_result_file", launch)
     _assert_no_secret_on_argv(launch, GITHUB_TOKEN)
+
+
+def test_a_launch_during_a_flow_run_is_named_and_labelled(launch_env, capsys, monkeypatch, tmp_path):
+    monkeypatch.setenv("GITHUB_TOKEN", GITHUB_TOKEN)
+    run_tracking.start_run("x", "abc123")
+    try:
+        launch = _launch(
+            launch_env,
+            capsys,
+            lambda: cli.run_docker_container(
+                "executor",
+                "holon/agent-codex",
+                ["exec-branch", "codex-agent", "gpt"],
+                agent_id="codex",
+                target_worktree=WORKTREE,
+                result_file=str(tmp_path / "result.json"),
+            ),
+        )
+        run = run_tracking.active_run()
+        assert run is not None and run.container_names == ["holon-x-executor-abc123-1"]
+    finally:
+        run_tracking.end_run()
+    identity = "--name holon-x-executor-abc123-1 --label holon.flow.run=abc123"
+    expected = _EXECUTOR_RESULT_FILE_ARGV.replace("--rm -i ", f"--rm -i {identity} ")
+    assert launch.docker_runs == [_argv(expected)]
+    assert launch.docker_runs[0][2] == "--env-file"
+    assert launch.stdout == _executing(expected)
 
 
 def test_intent_creator_with_intent_file(launch_env, capsys, tmp_path):

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from sandbox_executor import config_env
 from sandbox_executor.agent_defaults import detected_harness_markers
+from sandbox_executor.flow import process_reaper, run_lock
 from sandbox_executor.flow.admission import AdmissionDecision
 from sandbox_executor.flow.github import token_scopes
 from sandbox_executor.launcher import env_files, mounts
@@ -374,6 +375,7 @@ _FEATURE_WORKTREE_CWD_TESTS = frozenset(
         ("test_calibration.py", "TestCLICalibrateCommand"),
         ("test_review_loop.py", "TestCLIDispatchReviewLoop"),
         ("flow/test_pipeline.py", "TestFlowCLI.test_cli_flow_dry_run_dispatch"),
+        ("flow/test_pipeline_touch_set.py", "TestAllowOverlapCLI"),
     }
 )
 
@@ -440,3 +442,21 @@ def stub_review_workspace_head(monkeypatch: pytest.MonkeyPatch) -> None:
 
     head = MagicMock(returncode=0, stdout="stage3-head\n")
     monkeypatch.setattr("sandbox_executor.flow.review.local_tests.run_git", lambda *_a, **_k: head)
+
+
+@pytest.fixture(autouse=True)
+def release_flow_run_state() -> Iterator[None]:
+    """Release the flow run locks a test took in-process and end its reaper run, restoring the signal handlers.
+
+    ``holon flow`` holds its run lock until the process exits; the test process outlives each in-process run, so
+    without this a later test in the same worker would re-enter a stale run, or a lock left on a test repository.
+    A test that takes a run lock in the real checkout's git directory fails: list it in ``_FEATURE_WORKTREE_CWD_TESTS``
+    or give it a temporary ``--target-worktree``.
+    """
+    yield
+    process_reaper.reset_reaper()
+    held = run_lock.held_run_lock_paths()
+    real_git_dir = os.path.dirname(run_lock.run_lock_path(REPO_ROOT, "probe") or "/") if held else None
+    in_checkout = [path for path in held if os.path.dirname(path) == real_git_dir]
+    run_lock.release_flow_run_lock()
+    assert not in_checkout, f"a test took a flow run lock in the real repository: {in_checkout}"

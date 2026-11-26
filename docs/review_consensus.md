@@ -271,11 +271,14 @@ fingerprint with every approval, so a merge of the target branch that only resol
 back through a full review. The fingerprint never stands in for CI.
 
 The fingerprint (`flow/review/approval_fingerprint.py`) covers the diff from `merge-base(head, origin/<target>)` to the
-head. It excludes `holon-knowledge/**` (the ledgers and the knowledge base) and the Stage 5 calibration reports
-(`plans/**/*_calibration.md`). It hashes `git patch-id --stable` of that diff together with the sorted status, mode,
-blob and path of each changed file, so mode-only and binary changes count. It is written as `pf1:` and 40 hex
-characters; the `pf1` prefix keeps a later reduction from ever matching an old fingerprint. An empty PR-own change or
-unreadable git gives no fingerprint, and a missing fingerprint never matches.
+head. It excludes the bookkeeping files, with the same rule as the CI bookkeeping gate (`ci_final_head` and
+`scripts/ci_bookkeeping_gate.py`): a `.md`, `.json` or `.jsonl` file with a non-dot stem under `plans/`, `executions/`
+or `holon-knowledge/`. Any other file under those roots, such as a `plans/tool.py`, stays in the fingerprint. It hashes
+`git patch-id --stable` of that diff together with the sorted status, mode, blob and path of each changed file, so
+mode-only and binary changes count. It is written as `pf2:` and 40 hex characters; the version prefix keeps a later
+reduction from ever matching an old fingerprint, so an approval recorded with a `pf1` fingerprint (which excluded only
+`holon-knowledge/**` and the calibration reports) never carries over. An empty PR-own change or unreadable git gives no
+fingerprint, and a missing fingerprint never matches.
 
 The post-time conflict gate keeps the approval when:
 
@@ -298,7 +301,7 @@ No earlier row is edited, and a re-run on the merged head probes clean and write
 gate records the same row when its merge keeps the change.
 
 The approval stamp names the head, the fingerprint and the CI result at that head, for example "Covers head `def5678`;
-change fingerprint `pf1:0123456789ab`; carried over from `abc1234` (same change); CI at that commit: not measured." A
+change fingerprint `pf2:0123456789ab`; carried over from `abc1234` (same change); CI at that commit: not measured." A
 carried approval never shows the earlier head's green CI: its CI result is "not measured" until Stage 5 measures it.
 
 The consensus keeps `target_commit` as the SHA the reviewers saw and adds `carried_from` and `carried_to`, so the CI

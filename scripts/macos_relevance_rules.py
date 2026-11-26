@@ -64,9 +64,11 @@ _FS_OS = (
     r"chmod|chown|lchown|symlink|link|readlink|rename|replace|scandir|listdir|walk|stat|lstat|access|getcwd|chdir"
     r"|umask|statvfs"
 )
+# ``Path.group`` and ``Path.replace`` are left out: ``.group(`` is mostly ``re.Match.group`` and ``.replace(`` mostly
+# ``str.replace`` or ``datetime.replace``; ``Path.replace(target)`` is matched by its single positional argument.
 _FS_PATHLIB = (
-    r"resolve|absolute|samefile|is_symlink|symlink_to|hardlink_to|readlink|chmod|lchmod|stat|lstat|owner|group"
-    r"|iterdir|glob|rglob|walk|rename|replace|expanduser|cwd"
+    r"resolve|absolute|samefile|is_symlink|symlink_to|hardlink_to|readlink|chmod|lchmod|stat|lstat|owner"
+    r"|iterdir|glob|rglob|walk|rename|expanduser|cwd"
 )
 # (reason, pattern) pairs; the README's "macOS Relevance Gate" section lists the same table.
 CONTENT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
@@ -96,6 +98,7 @@ CONTENT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("filesystem", _imports("shutil"), 0),
         ("filesystem", r"\bshutil\.", 0),
         ("filesystem", rf"\.({_FS_PATHLIB})\(", 0),
+        ("filesystem", r"\.replace\(\s*([^,=()\s]|\([^()]*\))([^,=()]|\([^()]*\))*\)", 0),
         ("keychain-or-launcher", r"keychain", re.IGNORECASE),
         ("keychain-or-launcher", r"\bfind-generic-password\b", 0),
         ("keychain-or-launcher", r"\bsandbox_executor\.launcher\b", 0),

@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-96fa1603",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T07:08:41.515982+00:00",
+  "updated_ts": "2026-11-26T07:08:41.515982+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795672808-943efcfd",
+      "ACT-FIND-1795672802-2f16813e"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795669458-module-line-budget-all-packages/P-1795669483-CLA-CO5.5/E-1795669728-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 6 finding detected: FIND-CI-006",
+    "symptoms": [
+      "Findings detected: ['FIND-CI-006']"
+    ]
+  }
+}

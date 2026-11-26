@@ -9,7 +9,8 @@ from enum import StrEnum
 from typing import Any, ClassVar
 
 from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, sync_ledger_incremental
-from sandbox_executor.ledger import atomic_ledger_append, generate_action_id
+from sandbox_executor.ledger import atomic_ledger_append, generate_action_id, read_merged_text
+from sandbox_executor.ledger.order import utc_now_z
 from sandbox_executor.redaction import redact_credential_shapes
 
 logger = logging.getLogger(__name__)
@@ -146,7 +147,7 @@ def append_action_event(
     rec["outcome"] = verdict_enum.value
 
     if "created_at" not in rec or not rec["created_at"]:
-        rec["created_at"] = datetime.now(UTC).isoformat()
+        rec["created_at"] = utc_now_z()
 
     redacted_rec = CredentialRedactor.redact_structure(rec)
 
@@ -171,15 +172,14 @@ def reconcile_records(  # noqa: C901, PLR0912, PLR0913
         return {"reconciled": 0, "expired": 0, "total_scanned": 0}
 
     scanned_records: list[dict[str, Any]] = []
-    with open(ledger_path, encoding="utf-8") as f:
-        for line in f:
-            line_str = line.strip()
-            if not line_str:
-                continue
-            try:
-                scanned_records.append(json.loads(line_str))
-            except Exception:
-                continue
+    for line in (read_merged_text(ledger_path) or "").splitlines():
+        line_str = line.strip()
+        if not line_str:
+            continue
+        try:
+            scanned_records.append(json.loads(line_str))
+        except Exception:
+            continue
 
     reconciled_count = 0
     expired_count = 0

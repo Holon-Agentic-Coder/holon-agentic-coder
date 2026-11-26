@@ -23,10 +23,14 @@ from sandbox_executor.ledger import (
     LedgerRewriteError,
     assert_ledger_prefix,
     atomic_ledger_append,
+    read_merged_rows,
+    read_merged_rows_at_ref,
     suppress_ledger_failures,
     try_append_action_record,
     try_append_ledger_line,
 )
+from sandbox_executor.ledger import route as route_module
+from sandbox_executor.ledger.merged import parse_jsonl_rows
 
 from tests.flow.helpers import FakeRoleAgents, _dispatch_context, _git
 
@@ -144,17 +148,24 @@ class TestPrefixGuard:
         with pytest.raises(LedgerRewriteError, match="first divergence at byte"):
             assert_ledger_prefix(str(ledger), before)
 
-    def test_rewrite_inside_append_context_raises(self, tmp_path: Path) -> None:
+    def test_rewrite_inside_append_context_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         ledger = tmp_path / "intents.jsonl"
         ledger.write_bytes(b'{"slug":"b"}\n{"slug":"a"}\n')
+        read_before = route_module._read_ledger_bytes
+
+        def read_then_rewrite(path: str) -> bytes:
+            before = read_before(path)
+            ledger.write_bytes(b'{"slug":"a"}\n')  # a rewrite inside the locked append window
+            return before
+
+        monkeypatch.setattr(route_module, "_read_ledger_bytes", read_then_rewrite)
         with pytest.raises(LedgerRewriteError), atomic_ledger_append(str(ledger)) as f:
-            ledger.write_bytes(b'{"slug":"a"}\n')
             f.write('{"slug":"c"}\n')
 
     def test_try_append_action_record_propagates_rewrite_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr("sandbox_executor.ledger.lock.assert_ledger_prefix", _report_rewrite)
+        monkeypatch.setattr("sandbox_executor.ledger.route.assert_ledger_prefix", _report_rewrite)
         reported: list[str] = []
         with pytest.raises(LedgerRewriteError):
             try_append_action_record(
@@ -165,7 +176,7 @@ class TestPrefixGuard:
     def test_try_append_ledger_line_propagates_rewrite_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr("sandbox_executor.ledger.lock.assert_ledger_prefix", _report_rewrite)
+        monkeypatch.setattr("sandbox_executor.ledger.route.assert_ledger_prefix", _report_rewrite)
         reported: list[str] = []
         with pytest.raises(LedgerRewriteError):
             try_append_ledger_line(
@@ -278,12 +289,16 @@ class TestIntentStageLedgers:
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
 
         _git(host, "fetch", "-q", "origin")
+        branch_ref = f"origin/{ctx.intent_branch}"
         for name in LEDGER_NAMES:
-            branch_bytes = _origin_ledger(host, f"origin/{ctx.intent_branch}", name)
+            branch_bytes = _origin_ledger(host, branch_ref, name)
             assert branch_bytes.startswith(main_bytes[name]), name
-        new_intents = _origin_ledger(host, f"origin/{ctx.intent_branch}", "intents")[len(main_bytes["intents"]) :]
-        assert new_intents.count(b"\n") == 1
-        assert json.loads(new_intents)["slug"] == "dispatch-test"
+        # The appended row lands in the intent's pending fragment; the canonical file keeps main's bytes.
+        assert _origin_ledger(host, branch_ref, "intents") == main_bytes["intents"]
+        main_rows = read_merged_rows_at_ref(str(host), "main", "intents.jsonl")
+        new_intents = [r for r in read_merged_rows_at_ref(str(host), branch_ref, "intents.jsonl") if r not in main_rows]
+        assert len(new_intents) == 1
+        assert new_intents[0]["slug"] == "dispatch-test"
         # The flow worktree is where the container committed, so main itself and the index stay untouched.
         for name in LEDGER_NAMES:
             assert _origin_ledger(host, "main", name) == main_bytes[name], name
@@ -409,9 +424,10 @@ class TestPrePushMerge:
         return (peer / rel_path).read_bytes()
 
     def _branch_with_intent_row(self, host: Path) -> Path:
+        """A branch that appended to the canonical file before pending fragments existed (merge-time repair input)."""
         _git(host, "checkout", "-q", "-b", "feature")
         ledger = host / "holon-knowledge" / "ledger" / "intents.jsonl"
-        with atomic_ledger_append(str(ledger)) as f:
+        with ledger.open("a", encoding="utf-8") as f:
             f.write('{"slug":"branch-row","created_at":"2026-09-01"}\n')
         _git(host, "commit", "-qam", "branch row")
         return ledger
@@ -483,7 +499,10 @@ def test_repository_ledgers_survive_precheck_and_reconcile_byte_for_byte(tmp_pat
 
     with atomic_ledger_append(str(copy_dir / "intents.jsonl")) as f:
         f.write('{"slug":"appended"}\n')
-    assert (copy_dir / "intents.jsonl").read_bytes() == before["intents"] + b'{"slug":"appended"}\n'
+    assert (copy_dir / "intents.jsonl").read_bytes() == before["intents"]
+    merged = read_merged_rows(str(copy_dir / "intents.jsonl"))
+    assert merged[:-1] == parse_jsonl_rows(before["intents"].decode("utf-8"))
+    assert merged[-1]["slug"] == "appended"
     assert {n: _digest(REPO_LEDGER_DIR / f"{n}.jsonl") for n in LEDGER_NAMES} == originals
 
 
@@ -536,7 +555,7 @@ def test_executor_rewrite_stops_before_commit(
 ) -> None:
     """The summary-row write and the best-effort action-record writes both fail closed."""
     monkeypatch.setenv("HOLON_ACTION_LOGGING", action_logging)
-    monkeypatch.setattr("sandbox_executor.ledger.lock.assert_ledger_prefix", _report_rewrite)
+    monkeypatch.setattr("sandbox_executor.ledger.route.assert_ledger_prefix", _report_rewrite)
     commands = _run_executor_main(tmp_path, monkeypatch)
     assert not any(c[:2] == ["git", "commit"] for c in commands)
 
@@ -610,7 +629,7 @@ def _flow_context(tmp_path: Path, **kwargs: Any) -> flow.FlowContext:
 def test_superseding_row_rewrite_propagates_before_push(
     tmp_path: Path, fake_git: FakeGit, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("sandbox_executor.ledger.lock.assert_ledger_prefix", _report_rewrite)
+    monkeypatch.setattr("sandbox_executor.ledger.route.assert_ledger_prefix", _report_rewrite)
     with pytest.raises(LedgerRewriteError):
         flow._append_superseding_execution_row(_flow_context(tmp_path), "I-1/P-2/E-3/_", {"execution_id": "E-3"})
     assert not any(c[:1] in (["commit"], ["push"]) for c in fake_git.calls)

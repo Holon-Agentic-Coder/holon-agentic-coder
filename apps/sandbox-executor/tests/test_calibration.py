@@ -42,6 +42,7 @@ from sandbox_executor.calibration import (
     verify_calibration_freshness,
 )
 from sandbox_executor.cli import main as cli_main
+from sandbox_executor.ledger import merged_jsonl_text, read_merged_rows_at_ref, read_merged_text
 
 
 class TestCalibrationDataModels(unittest.TestCase):
@@ -1211,6 +1212,19 @@ def calibration_repo(tmp_path, monkeypatch, guard_real_ledger):
     return tmp_path, git
 
 
+_FRAGMENT_REL = "holon-knowledge/ledger/pending/executions/I-1-cal.jsonl"
+
+
+def _merged_ledger_text(repo: Path) -> str:
+    """The logical executions ledger of the working tree: canonical rows plus pending fragments."""
+    return read_merged_text(str(repo / "holon-knowledge" / "ledger" / "executions.jsonl")) or ""
+
+
+def _ref_ledger_text(repo: Path, ref: str) -> str:
+    """The logical executions ledger committed at ``ref``."""
+    return merged_jsonl_text(read_merged_rows_at_ref(str(repo), ref, "executions.jsonl"))
+
+
 def _cal_rows(ledger_text: str) -> list[dict]:
     rows = [json.loads(line) for line in ledger_text.splitlines() if line.strip()]
     return [r for r in rows if str(r.get("action_id", "")).startswith("ACT-CAL-")]
@@ -1255,7 +1269,6 @@ def test_run_calibrate_rejected_report_commit_raises(calibration_repo, capsys):
     """A pre-commit hook that rejects the report commit makes run_calibrate fail, redacted."""
     repo, git = calibration_repo
     _install_rejecting_pre_commit_hook(repo, git)
-    ledger_rel = "holon-knowledge/ledger/executions.jsonl"
     with (
         patch("sandbox_executor.calibration.format_calibration_report"),
         pytest.raises(CalibrationCommitError) as excinfo,
@@ -1272,7 +1285,7 @@ def test_run_calibrate_rejected_report_commit_raises(calibration_repo, capsys):
         ["git", "-C", str(repo), "cat-file", "-e", f"HEAD:{_REPORT_REL}"], capture_output=True
     )
     assert head_has_report.returncode != 0
-    assert _cal_rows(git("show", f"HEAD:{ledger_rel}")) == []
+    assert _cal_rows(_ref_ledger_text(repo, "HEAD")) == []
     assert git("log", "--format=%s", "-1").strip() == "feature"
 
 
@@ -1301,7 +1314,7 @@ def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
         report = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
 
     ledger_rel = "holon-knowledge/ledger/executions.jsonl"
-    rows = _cal_rows((repo / ledger_rel).read_text(encoding="utf-8"))
+    rows = _cal_rows(_merged_ledger_text(repo))
     assert len(rows) == 1
     row = rows[0]
     assert list(row.keys()) == [
@@ -1338,12 +1351,12 @@ def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
     assert row["calibration_report_path"] == "plans/I-1-cal/P-2_calibration.md"
 
     # The ACT-CAL row is committed with the report on the calibrated branch, and nothing else is.
-    assert _cal_rows(git("show", f"HEAD:{ledger_rel}")) == rows
+    assert _cal_rows(_ref_ledger_text(repo, "HEAD")) == rows
     committed = sorted(git("show", "--name-only", "--pretty=format:", "HEAD").split())
-    assert committed == [ledger_rel, "plans/I-1-cal/P-2_calibration.md"]
+    assert committed == [_FRAGMENT_REL, "plans/I-1-cal/P-2_calibration.md"]
     assert "untracked_scratch.txt" in git("status", "--porcelain")
     # Exactly one summary row, unchanged: no duplicate summary was written.
-    all_rows = [json.loads(line) for line in git("show", f"HEAD:{ledger_rel}").splitlines() if line.strip()]
+    all_rows = read_merged_rows_at_ref(str(repo), "HEAD", "executions.jsonl")
     assert [r for r in all_rows if r.get("entry_type") == "summary"] == [
         json.loads((repo / ledger_rel).read_text(encoding="utf-8").splitlines()[0])
     ]
@@ -1362,10 +1375,11 @@ def test_run_calibrate_metrics_unaffected_by_act_cal_rows(calibration_repo):
 def test_run_calibrate_skip_commit_appends_nothing(calibration_repo):
     repo, _ = calibration_repo
     ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
-    before = ledger.read_bytes()
+    before, merged_before = ledger.read_bytes(), _merged_ledger_text(repo)
     with patch("sandbox_executor.calibration.format_calibration_report"):
         run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
     assert ledger.read_bytes() == before
+    assert _merged_ledger_text(repo) == merged_before
 
 
 def test_run_calibrate_ledger_failure_warns_and_still_commits_report(calibration_repo, caplog):
@@ -1414,7 +1428,7 @@ def test_record_calibration_action_accepts_failure_dict(tmp_path, guard_real_led
     assert row["outcome"] == "failure"
     assert row["action"] == "Calibration failed for plan P-9; nothing committed, row left uncommitted"
     assert row["predicted_metrics"] is None
-    written = (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").read_text(encoding="utf-8")
+    written = _merged_ledger_text(tmp_path)
     assert json.loads(written) == row
     assert logs == []
 
@@ -1430,7 +1444,7 @@ def test_record_calibration_action_redacts_error_context(tmp_path, guard_real_le
     )
     assert row is not None
     assert row["error_context"] == "Calibration run failed: remote rejected [REDACTED_SECRET]"
-    written = (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").read_text(encoding="utf-8")
+    written = _merged_ledger_text(tmp_path)
     assert sample_value not in written
     assert json.loads(written) == row
 
@@ -1455,11 +1469,12 @@ def test_stage5_dry_run_leaves_executions_ledger_unchanged(calibration_repo):
 
     repo, _ = calibration_repo
     ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
-    before = ledger.read_bytes()
+    before, merged_before = ledger.read_bytes(), _merged_ledger_text(repo)
     with patch("sandbox_executor.calibration.format_calibration_report"):
         res = run_calibrate_stage(_stage5_context(repo, dry_run=True))
     assert res.status == StageStatus.SUCCESS
     assert ledger.read_bytes() == before
+    assert _merged_ledger_text(repo) == merged_before
 
 
 def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
@@ -1469,7 +1484,6 @@ def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
 
     repo, git = calibration_repo
     _install_rejecting_pre_commit_hook(repo, git)
-    ledger_rel = "holon-knowledge/ledger/executions.jsonl"
     calibrated = "I-1-cal/P-2/E-3/calibrated"
     exec_head_before = git("rev-parse", _EXEC_BRANCH).strip()
     ctx = _stage5_context(repo, dry_run=False)
@@ -1493,9 +1507,9 @@ def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
     assert git("rev-parse", _EXEC_BRANCH).strip() == exec_head_before
     assert git("branch", "--list", calibrated).strip() == ""
     assert git("rev-parse", "--abbrev-ref", "HEAD").strip() == _EXEC_BRANCH
-    assert _cal_rows(git("show", f"{_EXEC_BRANCH}:{ledger_rel}")) == []
+    assert _cal_rows(_ref_ledger_text(repo, _EXEC_BRANCH)) == []
     # The ACT-CAL rows stay in the working tree: the rejected success row, then the failure row.
-    working = (repo / ledger_rel).read_text(encoding="utf-8")
+    working = _merged_ledger_text(repo)
     assert [r["outcome"] for r in _cal_rows(working)] == ["success", "failure"]
     failure = _cal_rows(working)[-1]
     assert "Git commit of calibration report plans/I-1-cal/P-2_calibration.md failed" in failure["error_context"]
@@ -1503,7 +1517,7 @@ def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
     assert _HOOK_SECRET not in working
     recon = [json.loads(line) for line in working.splitlines() if line.strip()]
     assert not [r for r in recon if r.get("event_type") == "reconciliation"]
-    assert ledger_rel in git("status", "--porcelain")
+    assert "holon-knowledge/ledger/pending/" in git("status", "--porcelain")
     joined = "\n".join(ctx.logs)
     assert _HOOK_SECRET not in joined
     assert _HOOK_SECRET not in (res.error or "")
@@ -1527,20 +1541,21 @@ def test_stage5_commits_reconciliation_row_on_calibrated_branch(calibration_repo
     calibrated = "I-1-cal/P-2/E-3/calibrated"
     assert ctx.calibrated_branch == calibrated
     # The ledger has no uncommitted rows left behind.
-    assert ledger_rel not in git("status", "--porcelain")
+    status = git("status", "--porcelain")
+    assert ledger_rel not in status and "holon-knowledge/ledger/pending/" not in status
     for ref in (calibrated, _EXEC_BRANCH):
-        rows = [json.loads(line) for line in git("show", f"{ref}:{ledger_rel}").splitlines() if line.strip()]
+        rows = read_merged_rows_at_ref(str(repo), ref, "executions.jsonl")
         recon = [r for r in rows if r.get("event_type") == "reconciliation"]
         assert len(recon) == 1
         assert recon[0]["parent_action_id"] == _EXEC_BRANCH
         assert recon[0]["verdict"] == "success"
-        assert len(_cal_rows(git("show", f"{ref}:{ledger_rel}"))) == 1
+        assert len(_cal_rows(_ref_ledger_text(repo, ref))) == 1
     subjects = git("log", "--format=%s", "-2", calibrated).splitlines()
     assert subjects == [
         "chore(calibration): record stage 5 reconciliation",
         "chore(calibration): add calibration report for P-2",
     ]
-    assert git("show", "--name-only", "--pretty=format:", calibrated).split() == [ledger_rel]
+    assert git("show", "--name-only", "--pretty=format:", calibrated).split() == [_FRAGMENT_REL]
 
 
 # A calibration paragraph that the old pinned prettier@3.8.4 accepts as formatted (its `--check` passes) but the
@@ -1752,6 +1767,7 @@ class TestFormatCalibrationReport:
         mock_record.assert_not_called()
         assert not [c for c in git_calls if c[:1] in (["add"], ["commit"], ["push"])]
         assert (repo / ledger_rel).read_bytes() == ledger_before
+        assert not (repo / "holon-knowledge" / "ledger" / "pending").exists()
         assert git("rev-parse", "HEAD").strip() == head_before
 
     def test_run_calibrate_skip_commit_only_warns(self, calibration_repo, caplog):

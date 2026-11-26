@@ -133,6 +133,39 @@ Every reader of a canonical ledger reads the logical ledger: the canonical file 
   text for text-based parsers), in file order, skipping blank and malformed lines as before. A path outside
   `holon-knowledge/ledger/` (for example a scratch ledger in `/tmp`) never reads fragments.
 
+#### Pending fragments: write path
+
+Every append goes through `sandbox_executor.ledger.atomic_ledger_append` (the `rows.py` append functions,
+`knowledge.records.append_action_event` and the stage writers all call it), and no append writes a canonical ledger
+file.
+
+- **Buffered, routed on close.** The handle buffers the written lines and routes them when the `with` block exits
+  normally. An exception inside the block writes nothing. A line for a canonical ledger
+  (`holon-knowledge/ledger/<name>.jsonl`) goes to `pending/<stem>/<root-intent-id>.jsonl`, with the root intent id taken
+  from the row's branch fields as above. A row without branch fields (most action rows) goes to the root intent of the
+  branch checked out in that repository, read from its `HEAD` file. It goes to `_unscoped` when `HEAD` is detached or
+  the branch is not an `I-...` intent branch. A line that is not a JSON object also goes to `_unscoped`. One handle may
+  write rows of several root intents: each target gets its rows in their written order.
+- **Lock and prefix check per target.** Each fragment is appended under its own `LedgerLock`, followed by
+  `assert_ledger_prefix`. A path outside `holon-knowledge/ledger/` (a scratch ledger, a test file) receives the buffered
+  text unchanged, under the same lock and check.
+- **Z timestamps.** A routed row without `created_at` is stamped with the current UTC instant as
+  `YYYY-MM-DDTHH:MM:SS.ffffffZ` (`ledger.order.utc_now_z`). A parseable `created_at` with an offset is rewritten as the
+  same instant in that form. A value that already ends in `Z`, or does not parse, is kept, and the line is then written
+  byte for byte. `ActionRecord` and `SummaryRecord` default to the same form.
+- **Uniqueness on the merged view.** `validate_ledger_file_unique_ids` reads `read_merged_rows`, so the post-append
+  checks (`append_summary_record`, the planner and `flow/git_refs.py`) see canonical plus fragment rows, also when no
+  canonical file exists yet.
+- **Committing fragments.** Engine commits stage `ledger_commit_paths(repo_dir, *ledger_names)` from
+  `ledger/fragments.py`: each named ledger's canonical file and `pending/<stem>/` directory, only those that exist. The
+  planner, intent creator, executor, `sync_conflict`, `flow/git_refs.py`, Stage 4's ledger commit, Stage 5 and
+  target-sync commits use it. Agent-side pathspecs exclude the pending directory (`PENDING_EXCLUDE_PATHSPEC`,
+  `ENGINE_OWNED_LEDGER_DIRS`), so an agent or resolver commit never carries engine-owned fragments.
+- **Canonical files change only through promotion or merge-time repair.** Conflict resolution of a canonical file
+  (`ledger/reconcile.py`, `flow/ledger_interleave.py`) still rewrites it under the lock as described above.
+  `tests/test_ledger_no_canonical_write.py` checks that the append APIs leave canonical bytes unchanged, and that no
+  module outside the ledger package uses `LedgerLock` or opens a ledger for append.
+
 #### Flow Stage Record Matrix
 
 Every `holon flow` stage writes to the target repository's own `holon-knowledge/ledger/`. In Stages 1-3 the rows are

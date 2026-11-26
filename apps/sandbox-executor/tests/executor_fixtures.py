@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from sandbox_executor.entrypoint import executor
+from sandbox_executor.ledger import read_merged_rows
 from sandbox_executor.turns import TurnResult
 
 
@@ -241,10 +242,8 @@ def _run_executor_main(  # noqa: PLR0913
             exit_code = exc.code
     runner.build_cmd.assert_not_called()
     ledger = os.path.join(repo, "holon-knowledge/ledger")
-    with open(os.path.join(ledger, "intents.jsonl")) as f:
-        assert [json.loads(line) for line in f if line.strip()] == [intent_row]
-    with open(os.path.join(ledger, "executions.jsonl")) as f:
-        rows = [json.loads(line) for line in f if line.strip()]
+    assert read_merged_rows(os.path.join(ledger, "intents.jsonl")) == [intent_row]
+    rows = read_merged_rows(os.path.join(ledger, "executions.jsonl"))
     statuses = [r.get("status") for r in rows if r.get("entry_type") == "summary"]
     assert exit_code == (executor.OVER_BUDGET_EXIT_CODE if statuses == ["over_budget"] else 0)
     return rows
@@ -303,8 +302,7 @@ class IncrementalNotesHarness:
                 executor.main()
             except SystemExit as exc:
                 exit_code = exc.code
-        with open(os.path.join(tmp.name, "holon-knowledge/ledger/executions.jsonl")) as f:
-            entries = [json.loads(line) for line in f if line.strip()]
+        entries = read_merged_rows(os.path.join(tmp.name, "holon-knowledge/ledger/executions.jsonl"))
         return {
             "exit_code": exit_code,
             "entries": entries,

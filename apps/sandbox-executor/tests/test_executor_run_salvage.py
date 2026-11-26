@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 from sandbox_executor.budgets import BudgetBreach
 from sandbox_executor.entrypoint import executor
+from sandbox_executor.ledger import read_merged_rows_at_ref
 from sandbox_executor.turns import TurnResult
 
 from tests.executor_fixtures import (
@@ -139,8 +140,7 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         self.git(self.workspace, "push", "-q", self.bare, f"{branch}:refs/heads/{branch}")
 
     def summary(self, branch):
-        ledger = self.git(self.workspace, "show", f"{branch}:holon-knowledge/ledger/executions.jsonl")
-        rows = [json.loads(line) for line in ledger.splitlines() if line.strip()]
+        rows = read_merged_rows_at_ref(str(self.workspace), branch, "executions.jsonl")
         return [r for r in rows if r.get("entry_type") == "summary"][-1]
 
     def files_in(self, commit):
@@ -156,7 +156,7 @@ class TestExecutorPartialWorkSalvage(unittest.TestCase):
         partial = self.files_in(f"{branch}~1")
         self.assertEqual(partial, {"src/codebase.py", "src/obsolete.py", "src/new_module.py"})
         failure = self.files_in(branch)
-        self.assertIn("holon-knowledge/ledger/executions.jsonl", failure)
+        self.assertIn("holon-knowledge/ledger/pending/executions/I-456.jsonl", failure)
         self.assertTrue(all(f.startswith(("executions/", "holon-knowledge/ledger/")) for f in failure))
         tree = self.git(self.workspace, "ls-tree", "-r", "--name-only", branch).split()
         self.assertNotIn("scratch.ignored", tree)

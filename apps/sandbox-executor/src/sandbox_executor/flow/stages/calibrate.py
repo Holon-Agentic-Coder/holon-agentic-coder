@@ -48,6 +48,7 @@ from sandbox_executor.flow.stages.review import _checkout_execution_branch
 from sandbox_executor.git import run_git
 from sandbox_executor.knowledge import promote_pending_candidates, reconcile_records
 from sandbox_executor.ledger import LedgerRewriteError
+from sandbox_executor.ledger.fragments import ledger_commit_paths
 from sandbox_executor.plan_paths import calibration_report_for_branch, legacy_calibration_report_rel, split_plan_branch
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.ref_names import calibration_branch
@@ -76,9 +77,10 @@ def _commit_stage5_reconciliation(context: FlowContext, repo_dir: str) -> None:
                 f"HEAD is not the calibrated branch '{branch}'."
             )
             return
-        run_git(["add", LEDGER_EXECUTIONS_REL], cwd=repo_dir, check=False)
+        ledger_paths = ledger_commit_paths(repo_dir, "executions.jsonl")
+        run_git(["add", *ledger_paths], cwd=repo_dir, check=False)
         commit_res = run_git(
-            ["commit", "-m", "chore(calibration): record stage 5 reconciliation", "--", LEDGER_EXECUTIONS_REL],
+            ["commit", "-m", "chore(calibration): record stage 5 reconciliation", "--", *ledger_paths],
             cwd=repo_dir,
             env=calibration_commit_env(),
             check=False,

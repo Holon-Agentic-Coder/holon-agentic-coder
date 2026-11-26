@@ -6,6 +6,7 @@ and the row). No network, container or real remote is used.
 """
 
 import json
+import os
 import subprocess
 from collections.abc import Callable
 from functools import partial
@@ -28,6 +29,7 @@ from sandbox_executor.flow import (
 )
 from sandbox_executor.flow.admission import AdmissionDecision
 from sandbox_executor.git import GitRepository
+from sandbox_executor.ledger import read_merged_rows_at_ref
 from sandbox_executor.plan_paths import REFRESH_MERGE_PREFIX
 
 from tests.repo_templates import copy_template, shared_template
@@ -125,8 +127,8 @@ def test_resume_under_a_repeated_override_continues_the_partial_head(host: Path,
     for start in ("2026-11-20T00:00:00Z", "2026-11-20T01:00:00Z"):
         ctx = FlowContext(target_worktree=str(host), plan_branch=PLAN, intent_branch=INTENT, allow_overlap=True)
         assert admission.admission_stage_failure(ctx, start) is None
-    plan_rows = git(host, "show", f"refs/remotes/origin/{PLAN}:{LEDGER}").splitlines()
-    assert sum('"admission_override"' in line for line in plan_rows) == 1
+    plan_rows = read_merged_rows_at_ref(str(host), f"refs/remotes/origin/{PLAN}", os.path.basename(LEDGER))
+    assert sum('"admission_override"' in json.dumps(row) for row in plan_rows) == 1
     plan_tip = git(host, "rev-parse", f"refs/remotes/origin/{PLAN}")
     assert git(host, "rev-parse", f"{plan_tip}~1") == git(host, "rev-parse", f"{FAILED}~3")  # one record commit
 

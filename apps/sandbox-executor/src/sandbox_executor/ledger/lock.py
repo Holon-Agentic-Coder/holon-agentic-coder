@@ -154,16 +154,11 @@ def atomic_ledger_append(
     initial_delay: float = 0.02,
     max_delay: float = 0.5,
 ) -> Iterator[TextIO]:
-    with LedgerLock(
-        filepath=filepath,
-        timeout=timeout,
-        initial_delay=initial_delay,
-        max_delay=max_delay,
-    ) as f:
-        before = _read_ledger_bytes(filepath)
-        yield f
-        f.flush()
-        assert_ledger_prefix(filepath, before)
+    from sandbox_executor.ledger.route import RoutedLedgerBuffer, flush_routed
+
+    buffer = RoutedLedgerBuffer(filepath, {"timeout": timeout, "initial_delay": initial_delay, "max_delay": max_delay})
+    yield buffer
+    flush_routed(buffer)
 
 
 @contextlib.contextmanager

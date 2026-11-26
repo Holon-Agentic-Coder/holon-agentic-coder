@@ -10,6 +10,7 @@ import pytest
 from sandbox_executor.flow.target_sync_merge import SYNC_MERGE_PREFIX, merge_in_progress
 from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest
 from sandbox_executor.flow.target_sync_resume import adopt_merge_in_progress
+from sandbox_executor.ledger import read_merged_rows
 
 from tests.flow.helpers import _git
 from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
@@ -34,8 +35,7 @@ def _request(work: Path) -> SyncRequest:
 
 
 def _sync_rows(work: Path) -> list[dict]:
-    lines = (work / LEDGER).read_text(encoding="utf-8").splitlines()
-    return [row for row in map(json.loads, lines) if row.get("action") == "target_sync"]
+    return [row for row in read_merged_rows(str(work / LEDGER)) if row.get("action") == "target_sync"]
 
 
 @pytest.fixture

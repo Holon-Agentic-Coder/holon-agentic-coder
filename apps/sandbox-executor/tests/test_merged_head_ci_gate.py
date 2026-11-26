@@ -20,6 +20,7 @@ from sandbox_executor.flow.github.ci_wait import CiWaitPolicy
 from sandbox_executor.flow.review.consensus_withdrawal import WithdrawalSeams
 from sandbox_executor.flow.review.merged_head_gate import MergedHeadSeams, format_merged_head_ci, gate_merged_head_ci
 from sandbox_executor.flow.review_restart import stage5_merged_head_gate
+from sandbox_executor.ledger import read_merged_rows
 
 BRANCH = "I-1-x/P-1-A/E-1-A/_"
 APPROVED = "a" * 40
@@ -478,9 +479,7 @@ def test_a_changed_pr_own_change_withdraws_the_approval_without_waiting_for_ci(
     assert "changed since approval" in record["withdrawal_reason"]
     assert FINGERPRINT in record["withdrawal_reason"] and OTHER_FINGERPRINT in record["withdrawal_reason"]
     assert "changed since approval" in posted[0] and "CI failed" not in posted[0]
-    rows = [
-        json.loads(line) for line in (tmp_path / "holon-knowledge/ledger/executions.jsonl").read_text().splitlines()
-    ]
+    rows = read_merged_rows(str(tmp_path / "holon-knowledge/ledger/executions.jsonl"))
     (row,) = rows
     assert row["action_id"].startswith("ACT-WITHDRAW-") and "changed since approval" in row["action"]
     assert ctx.stage_results["review"].payload["consensus"]["approved"] is False

@@ -73,19 +73,6 @@ def _slot_incoming_lines(
 
 
 def insert_incoming_lines(kept_lines: list[str], incoming_lines: list[str]) -> list[str]:
-    """Return every kept line in its relative order with each new incoming line inserted at its ``created_at`` slot.
-
-    Args:
-        kept_lines: The side whose rows never move (lines without newlines).
-        incoming_lines: The other side's lines; a line already kept, or repeated, is inserted once at most.
-
-    Returns:
-        list[str]: The kept lines, unmoved relative to each other, with each new incoming line placed after every kept
-        row whose instant (running maximum) is not later than its own (kept row first on a tie). Incoming rows of
-        one slot are ordered by ``(instant, input order)``; an untimed incoming row inherits the instant of the
-        incoming row before it, or goes last. On a sorted kept and a sorted incoming side the result is sorted and
-        is pure additions relative to the kept side.
-    """
     slots, untimed = _slot_incoming_lines(kept_lines, incoming_lines)
     merged: list[str] = []
     for position in range(len(kept_lines) + 1):
@@ -101,7 +88,6 @@ def _keeps_lines_in_order(kept_lines: list[str], resolved_lines: list[str]) -> b
 
 
 def assert_resolution_keeps_rows(path: str, kept: str, resolved: str) -> None:
-    """Raise LedgerRewriteError unless ``path`` holds ``resolved`` and it keeps every ``kept`` line in order."""
     with open(path, encoding="utf-8", newline="") as f:
         written = f.read()
     if written != resolved or not _keeps_lines_in_order(kept.splitlines(), written.splitlines()):
@@ -148,7 +134,6 @@ class LedgerReconciler:
 
     @staticmethod
     def _append_only_union(prefix_lines: list[str], other_lines: list[str]) -> str:
-        """Legacy pure append, kept for ``flow/conflict_classes_resolve.py``, whose guard needs a byte prefix."""
         prefix = "".join(prefix_lines)
         if prefix and not prefix.endswith("\n"):
             prefix += "\n"

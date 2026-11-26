@@ -178,9 +178,111 @@ An empty commit does not force a full run: it changes no path, so it counts as b
   later step that is not cheap, and `Full run completed` as its last step with exactly that guard. The job also needs
   `actions: read`. `apps/sandbox-executor/tests/test_ci_bookkeeping_wiring.py` enforces this.
 - A new label that a workflow reads must be added to `RESULT_AFFECTING_LABELS` in `scripts/ci_bookkeeping_gate.py`. The
-  same test file scans the workflows for label names and fails on one that is missing.
+  same test file scans the workflows for label names and fails on one that is missing. A label that a gate script reads
+  from the event belongs there too: `ci-macos`, read by the macOS relevance gate below.
 - A new rule name must be described in the list above. The same test file compares the list with the constants of the
   scripts.
+
+## macOS Relevance Gate
+
+The `macos-latest` leg of `test-unit.yml` is the slowest job of the pipeline: over 74 recent pull-request heads its
+median was 7.0 minutes against 3.2 minutes for the ubuntu leg, so it sets how long every pull request waits for CI. Most
+changes cannot behave differently on macOS than on Linux. `scripts/macos_relevance.py`, called through the composite
+action `.github/actions/macos-relevance-gate`, lets the macOS leg of a pull-request run skip its expensive steps when
+every file the pull request changes is platform-neutral. The job still starts, reports as `unit (macos-latest)` and ends
+green, so the required status check is satisfied; the ubuntu leg is unchanged. The script uses the standard library only
+and reuses the request helpers of the bookkeeping gate.
+
+### The rule and why this form
+
+The rule is an allow-list with a default of "run": the leg skips only when every changed file is on the short list of
+platform-neutral paths below. The other possible form, a list of platform-sensitive paths, can never be complete: a new
+module that calls `subprocess`, a test that uses a temporary directory or compares paths without case would be missing
+from it, and the leg would skip exactly the change it exists to catch. With the allow-list an unknown, new or renamed
+file runs the leg. Dependencies and lock files, workflows, composite actions, the gate itself, shell scripts and all
+Python, including code that uses `subprocess`, `os`, signals, `sys.platform`, the keychain or the launcher, are not on
+the list, so they always run the leg.
+
+### Neutral paths
+
+- Bookkeeping files exactly as the bookkeeping gate defines them (see "Bookkeeping paths" above): markdown, JSON or
+  JSONL files under `plans/`, `executions/` or `holon-knowledge/`.
+- Any markdown file whose name ends in `.md` (lower case) outside `.github/`, for example `docs/safety.md` or
+  `README.md`.
+- `LICENSE`.
+
+Everything under `.github/` is sensitive, the README of the workflows included. A rename counts with both of its names.
+The changed files are those of the comparison of the pull request's base commit with its head (`base...head`): the pull
+request's own changes since the merge base, so merging the base branch into a docs-only pull request does not make it
+sensitive.
+
+### When the leg skips
+
+"macOS relevance gate" is the step directly after "Bookkeeping gate" in `test-unit.yml`. It runs only on the macOS leg
+and only when the bookkeeping gate said "run". The rules are checked in order and the first match decides for a run: the
+event is a pull request, the run is the first attempt, the pull request does not carry the `ci-macos` label, the event
+names the base and head commits, the comparison lists fewer than 300 files, it lists at least one file, and every listed
+file is neutral. Any error runs the leg.
+
+### Reading the gate output
+
+The gate prints one decision line, then one line per changed file with its class, in the step log and the step summary:
+
+```text
+macos-relevance-gate: decision=SKIP rule=all-platform-neutral detail=2 changed files
+  neutral   docs/safety.md
+  neutral   plans/I-1/P-1.md
+The macOS unit leg is skipped: every changed file is platform-neutral; add the 'ci-macos' label or re-run the job to force it.
+```
+
+Rule that skips:
+
+- `all-platform-neutral`: every file the pull request changes is platform-neutral; the detail gives the count.
+
+Rules that run the macOS leg:
+
+- `event-not-pull-request`: a push to `main`, a manual run or any other event; `main` always runs the leg in full.
+- `rerun-attempt`: the run is a second or later attempt.
+- `force-label`: the pull request carries the `ci-macos` label, compared without case.
+- `incomplete-event`: the event lacks the base or head commit, or the environment lacks the run attempt.
+- `diff-too-large`: the comparison lists 300 files or more, so the list may be cut short.
+- `no-changed-files`: the comparison lists no file, so there is nothing to judge.
+- `platform-sensitive-change`: a changed file is not neutral; the detail names the first such file.
+- `api-error`: the API call failed or answered in an unexpected shape, or the gate itself failed; the detail names the
+  error class and never its text. The action also falls back to "run" when the script cannot start.
+
+### Forcing the macOS leg
+
+- Add the `ci-macos` label to the pull request. The label is in `RESULT_AFFECTING_LABELS`, so the bookkeeping gate runs
+  on the label event and the relevance gate then sees the label.
+- Re-run the job or the workflow: a second attempt always runs.
+- Start the workflow by hand (`workflow_dispatch`).
+- Change any file that is not neutral.
+
+### Interaction with the bookkeeping gate
+
+The relevance gate runs only when the bookkeeping gate said "run", and every expensive step carries both guards:
+`steps.bookkeeping.outputs.skip != 'true' && steps.macos_relevance.outputs.skip != 'true'`. Both are written with
+`!= 'true'`, because on the ubuntu leg the relevance gate never runs and its output is empty. A relevance skip leaves
+`Full run completed` skipped, so the bookkeeping gate treats such a run like one it skipped itself and never counts it
+as a real success. On the next bookkeeping-only push the bookkeeping gate walks back to an earlier real success of the
+macOS leg; when it finds none, it says "run" and the relevance gate decides again.
+
+### Timing
+
+The step "CI Timing Gate (compare with main)" carries both guards, so a skipped leg neither compares nor records a
+timing sample and cannot fail the gate. Record mode runs only on pushes to `main`, where the relevance gate always says
+"run".
+
+### Limits
+
+- A docs-only or plan-only pull request no longer runs the macOS suite on its heads. The push to `main` after the merge
+  runs it in full.
+- The gate judges the pull request's own changes since the merge base, so a change on the base branch that matters only
+  on macOS surfaces on `main`, not on the pull request.
+- Skipped legs appear as very short points in the CI duration report.
+- A docstring-only change to a Python file still runs the leg. A replay of 74 recent merged pull requests found none
+  that a docstring-only tier would have skipped, so it was not built.
 
 ## CI Timing Regression Gate
 
@@ -378,6 +480,18 @@ Repository maintainers configuring branch protection rulesets on `main` should r
     - Guards are written as `steps.bookkeeping.outputs.skip != 'true'`, never as `== 'false'`, so a missing output runs
       the step. A step that must also run after a failure combines both:
       `if: always() && steps.bookkeeping.outputs.skip != 'true'`.
+- `.github/actions/macos-relevance-gate/action.yml`: Asks `scripts/macos_relevance.py` whether the macOS unit leg may
+  skip its expensive steps (see "macOS Relevance Gate" above). It never fails a job: when the script cannot run, the
+  action prints a warning and the leg runs.
+  - **Inputs:** none; the script reads the event file, `GITHUB_RUN_ATTEMPT` and the token from the environment.
+  - **Outputs:**
+    - `skip`: `true` when the leg may skip its expensive steps, `false` in every other case.
+  - **Prerequisites & Requirements:**
+    - Calling workflows must execute `actions/checkout` before invoking this local composite action, and the step needs
+      `id: macos_relevance`.
+    - The job must grant `contents: read`.
+    - Guards are written as `steps.macos_relevance.outputs.skip != 'true'`, never as `== 'false'`, so a missing output
+      runs the step.
 
 ## Standards Alignment
 

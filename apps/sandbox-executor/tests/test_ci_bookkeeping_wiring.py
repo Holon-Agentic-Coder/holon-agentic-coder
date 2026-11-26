@@ -28,7 +28,20 @@ JSON_STEP = "Check JSON and JSONL files (bookkeeping-only push)"
 MARKDOWN_STEP = "Check markdown formatting (bookkeeping-only push)"
 BEFORE_THE_GATE = ("Record job start time", "Checkout repository")
 UNGUARDED = {"CI Timing Gate (Start)", "Upload timing record"}
-UNGUARDED_IN = {"test-hygiene.yml": {"Set up Node.js", JSON_STEP, MARKDOWN_STEP}}
+# The unit workflow's macOS leg also skips on the macOS relevance gate; see test_macos_relevance_wiring.py.
+RELEVANCE_GATE_STEP = "macOS relevance gate"
+RELEVANCE_GUARD = f"{GUARD} && steps.macos_relevance.outputs.skip != 'true'"
+UNGUARDED_IN = {
+    "test-hygiene.yml": {"Set up Node.js", JSON_STEP, MARKDOWN_STEP},
+    "test-unit.yml": {RELEVANCE_GATE_STEP},
+}
+GUARDS_IN = {"test-unit.yml": (GUARD, RELEVANCE_GUARD)}
+
+
+def guards_of(workflow: str) -> tuple[str, ...]:
+    """Return the conditions that count as the bookkeeping guard in ``workflow``, plain and with ``always() && ``."""
+    guards = GUARDS_IN.get(workflow, (GUARD,))
+    return guards + tuple(f"always() && {guard}" for guard in guards)
 
 
 @dataclass(frozen=True)
@@ -190,7 +203,7 @@ def test_every_step_after_the_gate_is_guarded_or_on_the_allow_list(workflow: str
     allowed = UNGUARDED | UNGUARDED_IN.get(workflow, set())
     later = steps[gate_index(steps) + 1 :]
 
-    unguarded = [step.name for step in later if step.condition not in (GUARD, f"always() && {GUARD}")]
+    unguarded = [step.name for step in later if step.condition not in guards_of(workflow)]
 
     assert [name for name in unguarded if name not in allowed] == []
     assert len(later) - len(unguarded) >= 3, "the job has guarded steps besides the marker step"
@@ -202,7 +215,7 @@ def test_marker_step_is_the_last_step_and_never_runs_on_a_skip(workflow: str) ->
 
     assert [step.name for step in steps].count(FULL_RUN_STEP) == 1
     assert steps[-1].name == FULL_RUN_STEP
-    assert steps[-1].condition == GUARD
+    assert steps[-1].condition in GUARDS_IN.get(workflow, (GUARD,))
     assert "always()" not in steps[-1].text
     assert "continue-on-error" not in workflow_text(workflow)
 

@@ -779,6 +779,20 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         internal=True,
     ),
     EnvironmentVariable(
+        name="HOLON_LEDGER_PROMOTE_EVERY",
+        area=Area.LEDGER_AND_ACTIONS,
+        purpose=(
+            "Minimum number of root intents with pending ledger fragments before `holon ledger promote` promotes; "
+            "`--force` ignores it."
+        ),
+        value_type="positive integer",
+        default="`10`",
+        when_unset="`10`",
+        when_invalid="non-integer or below 1 is an error (exit 2)",
+        read_side="host",
+        since="`docs/ledger_fragments.md`",
+    ),
+    EnvironmentVariable(
         name="HOLON_RECORD_ACTIONS",
         area=Area.LEDGER_AND_ACTIONS,
         purpose="Alias of `HOLON_ACTION_LOGGING`, read only when that is unset.",

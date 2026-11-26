@@ -73,7 +73,7 @@ def test_an_untracked_plan_directory_from_an_aborted_attempt_is_accepted(repo: P
     assert (repo / _PLAN_DIR / "P-1-x.md").read_text(encoding="utf-8") == "leftover\n"
 
 
-@pytest.mark.parametrize("rel_path", ["notes.txt", "plans/scratch.md"])
+@pytest.mark.parametrize("rel_path", ["notes.txt", "plans/scratch.md", "plans/I-notes.md"])
 def test_an_untracked_file_outside_the_plan_directories_is_refused(repo: Path, rel_path: str) -> None:
     _write(repo, rel_path)
 
@@ -98,6 +98,14 @@ def test_a_foreign_untracked_file_beside_a_leftover_plan_directory_is_refused(re
 
 
 def test_the_porcelain_filter_keeps_tracked_codes_and_strips_quoted_plan_paths() -> None:
-    stdout = '?? "plans/I-1-a b/x.md"\n?? plans/I-2-y/\n M plans/I-3-z/P-1.md\nA  plans/I-4-w/P-2.md\n?? plans/\n'
+    stdout = (
+        '?? "plans/I-1-a b/x.md"\n?? plans/I-2-y/\n M plans/I-3-z/P-1.md\nA  plans/I-4-w/P-2.md\n?? plans/\n'
+        "?? plans/I-5.md\n"
+    )
 
-    assert _foreign_status_lines(stdout) == [" M plans/I-3-z/P-1.md", "A  plans/I-4-w/P-2.md", "?? plans/"]
+    assert _foreign_status_lines(stdout) == [
+        " M plans/I-3-z/P-1.md",
+        "A  plans/I-4-w/P-2.md",
+        "?? plans/",
+        "?? plans/I-5.md",
+    ]

@@ -101,7 +101,7 @@ def _is_untracked_engine_plan_entry(line: str) -> bool:
     path = line[3:]
     if len(path) >= 2 and path.startswith('"') and path.endswith('"'):
         path = path[1:-1]
-    return path.startswith(ENGINE_OWNED_PLAN_DIR_PREFIX)
+    return path.startswith(ENGINE_OWNED_PLAN_DIR_PREFIX) and "/" in path[len(ENGINE_OWNED_PLAN_DIR_PREFIX) :]
 
 
 def _foreign_status_lines(stdout: str) -> list[str]:

@@ -78,3 +78,13 @@ def is_single_flow_review_chatter(records: Sequence[Mapping[str, Any]]) -> bool:
     if not records or not all(str(r["record_id"] or "").startswith(REVIEW_ACTION_ID_PREFIXES) for r in records):
         return False
     return len({_flow_key(r["target"]) for r in records}) == 1
+
+
+def is_review_chatter_context(cur: Any, signature: Mapping[str, Any], failure_ladder_state: str) -> bool:
+    if failure_ladder_state not in ("repeated", "proven-fail"):
+        return False
+    cur.execute(
+        "SELECT record_id, target FROM action_records WHERE context_fingerprint = ?;",
+        (signature["context_fingerprint"],),
+    )
+    return is_single_flow_review_chatter(cur.fetchall())

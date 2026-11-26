@@ -102,10 +102,10 @@ You will be eliminated from the selection process if you:
 - Use intention-revealing names in the domain language (`intent`, `plan`, `execution`, `review`, `calibration`,
   `ledger`).
 - Add no new imports from entrypoints into the host flow engine.
-- A module over its line limit (default 200 lines; overrides in `holon-config/hygiene/module_budgets.json`, checked by
-  `uv run task lint`) is split into smaller modules. The module budget configuration is frozen: never list it in the
-  touch set and never plan to change it, unless the intent carries `module_budget_change` quoting the maintainer's
-  instruction.
+- A module over its line limit (`default_max_lines` and per-module overrides in
+  `holon-config/hygiene/module_budgets.json`, checked by `uv run task lint`) is split into smaller modules. The module
+  budget configuration is frozen: never list it in the touch set and never plan to change it, unless the intent carries
+  `module_budget_change` quoting the maintainer's instruction.
 - The plan lists its touch set at module granularity and prefers adding focused modules over growing existing files past
   ~400 lines. The touch set goes in a `## Touch Set` section placed after `## Plan Description & Strategy`: one
   backticked repository-relative path or glob per top-level bullet (a trailing `/` means a whole directory, `*` stays

@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-dd1e00a7",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T09:47:39.911776+00:00",
+  "updated_ts": "2026-11-26T09:47:39.911776+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-REV-1795683995-d8f3d60e",
+      "ACT-REV-1795683991-d1afb689"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795681868-module-budget-default-400/P-1795681900-CLA-CO5.5/E-1795682065-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 3 evaluation for I-1795681868-module-budget-default-400/P-1795681900-CLA-CO5.5/E-1795682065-CLA-CO5.5/_",
+    "symptoms": [
+      "Findings detected: ['FIND-CI-003']"
+    ]
+  }
+}

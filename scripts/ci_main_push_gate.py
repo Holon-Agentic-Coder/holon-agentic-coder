@@ -27,8 +27,9 @@ in this order, and the first one that fails decides for a full run:
    since it is a bookkeeping path. A merge-push skip (``merge-push-clean-main-merge``) proves the two parents, not the
    merged tree, so it is never evidence here and the push to ``main`` runs in full.
 
-The two rules that skip are ``main-push-superseded`` and ``main-push-tested-tree``. No exception is caught here: the gate turns every exception into
-``api-error`` and a full run. Standard library only and Python 3.9 syntax, so it runs on the runner's own ``python3``.
+The two rules that skip are ``main-push-superseded`` and ``main-push-tested-tree``. No exception of the evidence chain
+is caught here: the gate turns every exception into ``api-error`` and a full run. Standard library only and Python 3.9
+syntax, so it runs on the runner's own ``python3``.
 """
 
 from __future__ import annotations

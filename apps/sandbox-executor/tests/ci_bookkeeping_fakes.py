@@ -2,12 +2,12 @@
 
 ``FakeGitHub`` is passed as the opener of ``GateClient``. It serves the URL shapes the gate reads (compare, the runs
 of a workflow by branch or by head commit, the jobs of a run, for a push to ``main`` the pull requests of a commit and
-the tree of a commit and the tip of ``main``, and for a merge push the parents of a commit, the merge base of a compare, recursive trees, blobs
-and the push runs of a commit) from data given by the test, records every requested URL and its ``Authorization``
-header, and raises ``AssertionError`` for any other URL, so nothing reaches the network. The builders return
-recorded-shape entries with defaults: a run, a push run, a merged pull request, a job, the three shapes of a successful
-job (a real success, a job the gate skipped, and a success from before the gate existed), a recursive tree, and a whole
-merge scene (``merge_scene``).
+the tree of a commit and the tip of ``main``, and for a merge push the parents of a commit, the merge base of a
+compare, recursive trees, blobs and the push runs of a commit) from data given by the test, records every requested URL
+and its ``Authorization`` header, and raises ``AssertionError`` for any other URL, so nothing reaches the network. The
+builders return recorded-shape entries with defaults: a run, a push run, a merged pull request, a job, the three shapes
+of a successful job (a real success, a job the gate skipped, and a success from before the gate existed), a recursive
+tree, and a whole merge scene (``merge_scene``).
 """
 
 from __future__ import annotations

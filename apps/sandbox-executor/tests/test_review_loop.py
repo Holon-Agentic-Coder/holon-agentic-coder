@@ -818,14 +818,14 @@ def test_branch_target_is_validated_in_place_without_any_destructive_git_command
     assert mock_loop.call_args.kwargs["target"] == "feature/y"
 
 
-def test_git_identity_goes_to_the_container_global_config_never_the_shared_repository_config(tmp_path):
+def test_git_identity_is_never_written_to_any_git_config(tmp_path):
     fake_git = FakeGitCommands(branch="feature/y")
 
     code, _loop, _post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
 
     assert code == 0
     identity = [c for c in fake_git.calls if c[1] == "config" and any(a.startswith("user.") for a in c)]
-    assert [c[2] for c in identity] == ["--global", "--global"]
+    assert identity == []
 
 
 def test_stale_mounted_head_is_refused_rather_than_reviewed_as_the_pr_head(tmp_path, capsys):

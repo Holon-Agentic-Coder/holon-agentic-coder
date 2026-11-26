@@ -1,4 +1,4 @@
-"""Ledger-only conflicts merge fast: the target rows stay a byte prefix, head-only rows follow in created_at order.
+"""Ledger-only conflicts merge fast: the target rows keep their places, head-only rows are inserted by created_at.
 
 Real git against a local bare ``origin`` (a filesystem remote, allowed by the network guard); no test command runs.
 """
@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 from sandbox_executor.flow import reconcile_jsonl_ledger_conflict
 from sandbox_executor.flow.review import conflict_gate, conflict_merge
-from sandbox_executor.ledger.order import _order_appended_rows
 
 from tests.flow.helpers import _git
 from tests.ledger_conflict_repos import BRANCH, LEDGER, _commit, _row, build_conflicting_repos, refuse_test_runs
@@ -27,16 +26,12 @@ def no_test_run(monkeypatch: pytest.MonkeyPatch) -> None:
     refuse_test_runs(monkeypatch)
 
 
-def test_order_appended_rows_sorts_timestamped_rows_and_keeps_the_rest_in_place():
-    rows = [_row("B", "2026-11-05T00:00:00Z"), "not json\n", _row("A", "2026-11-03"), _row("C", None)]
-    rows.append(_row("A2", "2026-11-03T00:00:00+00:00"))
-
-    ordered = _order_appended_rows(rows)
-
-    assert ordered == [rows[2], "not json\n", rows[4], rows[3], rows[0]]
+def _is_ordered_subsequence(kept: list[str], merged: list[str]) -> bool:
+    remaining = iter(merged)
+    return all(line in remaining for line in kept)
 
 
-def test_conflict_resolution_keeps_the_prefix_and_orders_only_the_appended_tail():
+def test_conflict_resolution_keeps_the_prefix_rows_in_place_and_only_inserts():
     prefix = _row("P-late", "2026-11-09T00:00:00Z") + _row("P-early", "2026-11-01T00:00:00Z")
     content = (
         "<<<<<<< HEAD\n"
@@ -49,16 +44,17 @@ def test_conflict_resolution_keeps_the_prefix_and_orders_only_the_appended_tail(
 
     resolved = reconcile_jsonl_ledger_conflict(content)
 
-    assert resolved.startswith(prefix)
+    assert _is_ordered_subsequence(prefix.splitlines(), resolved.splitlines())
+    # The unsorted prefix never moves; both head rows predate its running maximum, so they go before it.
     assert [json.loads(line)["execution_id"] for line in resolved.splitlines()] == [
-        "P-late",
-        "P-early",
         "H-early",
         "H-late",
+        "P-late",
+        "P-early",
     ]
 
 
-def test_ledger_only_conflict_merges_with_the_target_prefix_and_created_at_tail(repos, no_test_run):
+def test_ledger_only_conflict_keeps_the_target_rows_and_inserts_head_rows_by_created_at(repos, no_test_run):
     origin, work = repos
     target_bytes = _git(work, "show", f"refs/remotes/origin/main:{LEDGER}") + "\n"
 
@@ -66,9 +62,10 @@ def test_ledger_only_conflict_merges_with_the_target_prefix_and_created_at_tail(
 
     assert (outcome.merged, outcome.ledger_only, outcome.conflicting_paths) == (True, True, (LEDGER,))
     merged = _git(origin, "show", f"refs/heads/{BRANCH}:{LEDGER}") + "\n"
-    assert merged.startswith(target_bytes)
+    assert _is_ordered_subsequence(target_bytes.splitlines(), merged.splitlines())
+    assert len(merged.splitlines()) == len(target_bytes.splitlines()) + 2
     ids = [json.loads(line)["execution_id"] for line in merged.splitlines()]
-    assert ids == ["E-base", "E-main", "E-early", "E-late"]
+    assert ids == ["E-base", "E-early", "E-main", "E-late"]
     assert _git(origin, "show", f"refs/heads/{BRANCH}:src/feature.py") == "x = 1"
     assert len(_git(origin, "rev-list", "--parents", "-n", "1", f"refs/heads/{BRANCH}").split()) == 3
     assert _git(work, "worktree", "list").count("\n") == 0

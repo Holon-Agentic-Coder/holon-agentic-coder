@@ -4,10 +4,11 @@ import contextlib
 import json
 import logging
 import os
+from datetime import datetime
 from typing import Any, Literal, TextIO
 
-from sandbox_executor.ledger.lock import LedgerLock, LedgerRewriteError, assert_ledger_prefix
-from sandbox_executor.ledger.order import _order_appended_rows
+from sandbox_executor.ledger.lock import LedgerLock, LedgerRewriteError
+from sandbox_executor.ledger.order import interleave_by_instant, parse_created_at
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,43 @@ LEDGER_REL_PATHS = (
     os.path.join("holon-knowledge", "ledger", "plans.jsonl"),
     os.path.join("holon-knowledge", "ledger", "executions.jsonl"),
 )
+
+
+def _line_instant(line: str) -> datetime | None:
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return None
+    return parse_created_at(row.get("created_at")) if isinstance(row, dict) else None
+
+
+def insert_incoming_lines(kept_lines: list[str], incoming_lines: list[str]) -> list[str]:
+    seen = set(kept_lines)
+    timed: list[tuple[datetime, str]] = []
+    untimed: list[str] = []
+    previous: datetime | None = None
+    for line in incoming_lines:
+        previous = _line_instant(line) or previous
+        if line in seen:
+            continue
+        seen.add(line)
+        if previous is None:
+            untimed.append(line)
+        else:
+            timed.append((previous, line))
+    return interleave_by_instant(kept_lines, [_line_instant(line) for line in kept_lines], timed) + untimed
+
+
+def _keeps_lines_in_order(kept_lines: list[str], resolved_lines: list[str]) -> bool:
+    remaining = iter(resolved_lines)
+    return all(line in remaining for line in kept_lines if line.strip())
+
+
+def assert_resolution_keeps_rows(path: str, kept: str, resolved: str) -> None:
+    with open(path, encoding="utf-8", newline="") as f:
+        written = f.read()
+    if written != resolved or not _keeps_lines_in_order(kept.splitlines(), written.splitlines()):
+        raise LedgerRewriteError(f"Ledger {path} was rewritten: a kept row was dropped or moved")
 
 
 class LedgerReconciler:
@@ -70,21 +108,17 @@ class LedgerReconciler:
         return ours, theirs
 
     @staticmethod
-    def _append_only_union(prefix_lines: list[str], other_lines: list[str]) -> str:
-        prefix = "".join(prefix_lines)
-        if prefix and not prefix.endswith("\n"):
-            prefix += "\n"
-        seen = {line.rstrip("\r\n") for line in prefix_lines}
-        missing = (line.rstrip("\r\n") for line in other_lines if line.strip())
-        extra = _order_appended_rows([line + "\n" for line in dict.fromkeys(missing) if line not in seen])
-        return prefix + "".join(extra)
+    def _insertion_union(prefix_lines: list[str], other_lines: list[str]) -> str:
+        kept = [line.rstrip("\r\n") for line in prefix_lines]
+        incoming = [line.rstrip("\r\n") for line in other_lines if line.strip()]
+        return "".join(f"{line}\n" for line in insert_incoming_lines(kept, incoming))
 
     def resolve_append_only_conflict(self, content: str, prefix_side: PrefixSide = "ours") -> tuple[str, str]:
         if prefix_side not in _VALID_PREFIX_SIDES:
             raise ValueError(f"prefix_side must be 'ours' or 'theirs', not {prefix_side!r}")
         ours, theirs = self._split_conflict_sides(content)
         prefix_lines, other_lines = (theirs, ours) if prefix_side == "theirs" else (ours, theirs)
-        return "".join(prefix_lines), self._append_only_union(prefix_lines, other_lines)
+        return "".join(prefix_lines), self._insertion_union(prefix_lines, other_lines)
 
     def reconcile_jsonl_ledger_conflict(self, content: str, prefix_side: PrefixSide = "ours") -> str:
         if not self._has_conflict_marker_lines(content):
@@ -95,13 +129,13 @@ class LedgerReconciler:
         return self.reconcile_jsonl_ledger_conflict(content, prefix_side)
 
     def _write_resolved_ledger(self, locked: TextIO, file_path: str, prefix: str, resolved: str) -> None:
-        if not resolved.startswith(prefix):
-            raise LedgerRewriteError(f"Resolution of {file_path} does not keep the prefix side byte for byte")
+        if not _keeps_lines_in_order(prefix.splitlines(), resolved.splitlines()):
+            raise LedgerRewriteError(f"Resolution of {file_path} drops or moves a row of the kept side")
         locked.flush()
         locked.buffer.truncate(0)
         locked.buffer.write(resolved.encode("utf-8"))
         locked.flush()
-        assert_ledger_prefix(file_path, prefix.encode("utf-8"))
+        assert_resolution_keeps_rows(file_path, prefix, resolved)
 
     def _resolve_ledger_under_lock(self, file_path: str, prefix_side: PrefixSide) -> None:
         with LedgerLock(file_path) as locked:
@@ -156,7 +190,7 @@ _DEFAULT_RECONCILER = LedgerReconciler()
 extract_valid_ledger_rows = _DEFAULT_RECONCILER.extract_valid_ledger_rows
 _has_conflict_marker_lines = _DEFAULT_RECONCILER._has_conflict_marker_lines
 _split_conflict_sides = _DEFAULT_RECONCILER._split_conflict_sides
-_append_only_union = _DEFAULT_RECONCILER._append_only_union
+_insertion_union = _DEFAULT_RECONCILER._insertion_union
 resolve_append_only_conflict = _DEFAULT_RECONCILER.resolve_append_only_conflict
 reconcile_jsonl_ledger_conflict = _DEFAULT_RECONCILER.reconcile_jsonl_ledger_conflict
 reconcile_ledger_content = _DEFAULT_RECONCILER.reconcile_ledger_content

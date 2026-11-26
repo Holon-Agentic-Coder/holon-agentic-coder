@@ -122,7 +122,7 @@ LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.ledger_warning": "_warn_ledger_failure",
     "sandbox_executor.flow.ledger_reconcile": (
         "_CONFLICT_MARKERS _SECTION_AFTER_MARKER LEDGER_REL_PATHS ConflictResolutionError PrefixSide "
-        "_append_only_union _has_conflict_marker_lines _ledgers_with_conflict_markers _resolve_conflicting_ledger "
+        "_has_conflict_marker_lines _ledgers_with_conflict_markers _resolve_conflicting_ledger "
         "_resolve_ledger_under_lock _split_conflict_sides _write_resolved_ledger extract_valid_ledger_rows "
         "reconcile_jsonl_ledger_conflict reconcile_ledger_file resolve_append_only_conflict"
     ),
@@ -136,9 +136,15 @@ LAZY_EXPORTS: dict[str, str] = {
         "refresh_due refresh_payload refresh_plan_branch"
     ),
     "sandbox_executor.flow.review.head_test_evidence": ("HeadEvidenceDecisionInput choose_evidence has_pass_marker"),
+    "sandbox_executor.flow.process_reaper": "ReapSeams reap_flow_run reset_reaper start_reaper_run",
     "sandbox_executor.flow.review_restart": (
         "approval_stands calibrate_with_review_restart is_review_restart stage5_merged_head_gate"
     ),
+    "sandbox_executor.flow.run_lock": (
+        "FlowRunLockHeld HeldRunLock acquire_flow_run_lock held_run_lock_paths hold_flow_run_lock "
+        "release_flow_run_lock run_lock_path"
+    ),
+    "sandbox_executor.flow.run_lock_record": "RunLockHolder",
     "sandbox_executor.flow.stage5": "Stage5Outcome Stage5Steps run_stage5 standalone_context",
     "sandbox_executor.flow.stage5_ledger": "already_reconciled recorded_verdicts",
     "sandbox_executor.flow.stage5_verdict": "resolve_execution_verdict",

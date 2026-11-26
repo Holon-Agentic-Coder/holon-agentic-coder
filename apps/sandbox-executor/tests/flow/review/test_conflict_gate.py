@@ -1,7 +1,8 @@
 """The conflict gate: no approved consensus is posted, and Stage 5 never starts, on a CONFLICTING or DIRTY head.
 
 The mergeability reads and the post are answered by an injected ``FakeGitHub``, and the merge either is a recorded
-fake or runs real git against a local bare ``origin``; no test reaches GitHub.
+fake or runs real git against a local bare ``origin``; no test reaches GitHub. The conflict-resolver role dispatch is
+stubbed, so no test reaches the container launcher.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from sandbox_executor.agent_runner import CONFLICT_RESOLVER_ROLE
 from sandbox_executor.flow import FlowContext, StageResult, StageStatus, run_review_loop
 from sandbox_executor.flow.review import conflict_gate, sync_points
 from sandbox_executor.flow.review.posting import PostRequest, post_review_consensus
@@ -181,7 +183,7 @@ def test_ledger_only_conflict_is_merged_and_pushed_but_the_approval_is_not_poste
     assert posting_res["conflict_gate"]["ledger_only"] is True
     assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") != before
     merged_rows = read_merged_rows_at_ref(str(origin), f"refs/heads/{BRANCH}", "executions.jsonl")
-    assert [r["execution_id"] for r in merged_rows[:4]] == ["E-base", "E-main", "E-early", "E-late"]
+    assert [r["execution_id"] for r in merged_rows[:4]] == ["E-base", "E-early", "E-main", "E-late"]
     assert merged_rows[-1]["action"] == "target_sync"
     message = _git(origin, "log", "-1", "--format=%B", f"refs/heads/{BRANCH}")
     assert "sync: merge target" in message
@@ -264,7 +266,7 @@ def test_a_conflict_merge_starts_from_a_clean_tree_with_pending_rows_committed_a
     assert _git(work, "rev-parse", "HEAD") == merged  # The local branch followed the pushed merge.
     assert _git(work, "status", "--porcelain") == ""
     ids = [json.loads(line)["execution_id"] for line in _git(origin, "show", f"{merged}:{LEDGER}").splitlines()]
-    assert ids[:5] == ["E-base", "E-main", "E-early", "E-late", "E-pending"]
+    assert ids[:5] == ["E-base", "E-early", "E-main", "E-late", "E-pending"]
 
 
 def _unpushable_rows_repos(tmp_path: Path) -> tuple[Path, Path]:
@@ -499,10 +501,16 @@ def test_a_code_conflict_still_aborts_with_a_fingerprinted_approval(tmp_path, mo
     _git(work, "commit", "-q", "-m", "main edits the PR's file")
     _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
     exec_file = tmp_path / "gate-ledger.jsonl"
+    # A failing exit code, never a raise: the resolver would record a raised assertion as agent_failed and hide it.
+    dispatch = MagicMock(return_value=1)
+    monkeypatch.setattr("sandbox_executor.flow.conflict_resolver_role._dispatch_role", dispatch)
 
     post_error, _, post = _post_through_gate(work, exec_file, consensus_data)
 
     post.assert_not_called()
+    assert dispatch.call_count >= 1  # The code-conflict path ran through the resolver.
+    assert {call.args[1] for call in dispatch.call_args_list} == {CONFLICT_RESOLVER_ROLE}
+    assert all(call.kwargs["target_worktree"] for call in dispatch.call_args_list)
     assert post_error is not None and "code conflicts with main in:" in post_error and "src/feature.py" in post_error
     assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") == before
     assert [row["action_id"].split("-")[1] for row in _gate_rows(exec_file)] == ["GATE"]

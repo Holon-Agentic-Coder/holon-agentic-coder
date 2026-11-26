@@ -52,7 +52,7 @@ from sandbox_executor.flow.review.loop import run_review_loop
 from sandbox_executor.flow.review.records import _bounded_error_context
 from sandbox_executor.flow.review.verdict import review_loop_approved, review_summary_lines
 from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
-from sandbox_executor.ledger import generate_action_id, try_append_action_record
+from sandbox_executor.ledger import generate_action_id, read_merged_rows, try_append_action_record
 from sandbox_executor.module_budget_guard import (
     MODULE_BUDGET_CONFIG,
     module_budget_change_authorised,
@@ -282,6 +282,7 @@ _RESOLVER_PATHSPEC = ["--", ".", ":(exclude)holon-knowledge/ledger/executions.js
 #: Where a host-dispatched pass (one given --result-file) appends its ledger rows. The host loop owns the canonical
 #: ledger of the bind-mounted worktree and records every pass from the result file, so writing there would duplicate.
 _SCRATCH_LEDGER = "/tmp/holon-review-executions.jsonl"
+_PLANS_LEDGER_REL = "holon-knowledge/ledger/plans.jsonl"
 
 
 def _assert_safe_git_args(args: list[str]) -> None:
@@ -544,21 +545,11 @@ def _commit_resolution(
 def _intent_row(repo_dir: str, head_branch: str) -> dict[str, Any]:
     """Return the last ``intents.jsonl`` row whose branch is ``head_branch`` or a ``/``-bounded prefix of it, or {}."""
     intent_data: dict[str, Any] = {}
-    intents_path = os.path.join(repo_dir, "holon-knowledge/ledger/intents.jsonl")
-    if not os.path.exists(intents_path):
-        return intent_data
     try:
-        with open(intents_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        d = json.loads(line)
-                        b = d.get("branch", "")
-                        if b and (head_branch == b or head_branch.startswith(f"{b}/")):
-                            intent_data = d
-                    except json.JSONDecodeError:
-                        continue
+        for d in read_merged_rows(os.path.join(repo_dir, "holon-knowledge/ledger/intents.jsonl")):
+            b = d.get("branch", "")
+            if b and (head_branch == b or head_branch.startswith(f"{b}/")):
+                intent_data = d
     except Exception as exc:
         logger.debug("Non-fatal error reading intents ledger: %s", exc)
     return intent_data
@@ -676,7 +667,7 @@ def _run_resolver_mode(
     sys.exit(exit_code)
 
 
-def main() -> None:  # noqa: C901, PLR0912, PLR0915
+def main() -> None:  # noqa: C901, PLR0915
     """Parse CLI arguments and execute containerised review loop."""
     parser = argparse.ArgumentParser(
         prog="review_loop",
@@ -837,22 +828,12 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     with_module_budget_flag(os.environ, intent_data)
     plan_branch: str | None = None
 
-    plans_path = os.path.join(repo_dir, "holon-knowledge/ledger/plans.jsonl")
-    if os.path.exists(plans_path):
-        try:
-            with open(plans_path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            d = json.loads(line)
-                            # Keyed on the intent and plan id together, never the plan id alone.
-                            if is_row_of_plan(d, head_branch):
-                                plan_branch = plan_branch_of(head_branch) + INTENT_SUFFIX
-                        except json.JSONDecodeError:
-                            continue
-        except Exception as exc:
-            logger.debug("Non-fatal error reading plans ledger: %s", exc)
+    try:
+        # Keyed on the intent and plan id together, never the plan id alone.
+        if any(is_row_of_plan(d, head_branch) for d in read_merged_rows(os.path.join(repo_dir, _PLANS_LEDGER_REL))):
+            plan_branch = plan_branch_of(head_branch) + INTENT_SUFFIX
+    except Exception as exc:
+        logger.debug("Non-fatal error reading plans ledger: %s", exc)
 
     review_scope_paths = [p.strip() for raw in (args.review_paths or []) for p in raw.split(",") if p.strip()]
     context = FlowContext(

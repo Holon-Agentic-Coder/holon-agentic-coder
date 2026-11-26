@@ -30,6 +30,7 @@ from sandbox_executor.ledger import (
     _sanitize_model_name,
     atomic_ledger_append,
     build_plan_id,
+    read_merged_rows,
     validate_ledger_file_unique_ids,
 )
 from sandbox_executor.module_budget_guard import module_budget_change_authorised, refusal_message, without_budget_config
@@ -371,20 +372,14 @@ def main():  # noqa: C901, PLR0912, PLR0915
     # Get intent data
     intents_file_path = os.path.join(repo_dir, "holon-knowledge/ledger/intents.jsonl")
     intent_data = None
-    if os.path.exists(intents_file_path):
-        with open(intents_file_path) as f:
-            for line_no, line in enumerate(f, start=1):
-                if not line.strip():
-                    continue
-                try:
-                    data = json.loads(line)
-                    # Match branch name prefix (e.g. branch == "I-timestamp-slug")
-                    if data.get("branch") == intent_branch_prefix or data.get("intent_id") == intent_branch_prefix:
-                        intent_data = data
-                except json.JSONDecodeError as e:
-                    print(f"Warning: skipping invalid JSON in {intents_file_path} at line {line_no}: {e}")
-                except Exception as e:
-                    print(f"Warning: error processing line in {intents_file_path} at line {line_no}: {e}")
+
+    def warn(line_no: int, e: Exception) -> None:
+        print(f"Warning: skipping unreadable row in {intents_file_path} at line {line_no}: {e}")
+
+    for data in read_merged_rows(intents_file_path, on_bad_line=warn):
+        # Match branch name prefix (e.g. branch == "I-timestamp-slug")
+        if data.get("branch") == intent_branch_prefix or data.get("intent_id") == intent_branch_prefix:
+            intent_data = data
 
     if not intent_data:
         print(f"Error: No intent found for branch prefix '{intent_branch_prefix}' in '{intents_file_path}'")

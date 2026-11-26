@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
 import os
 
 from sandbox_executor.git import GitRepository
+from sandbox_executor.ledger import read_merged_rows
 from sandbox_executor.plan_paths import plan_file_rel
 
 
@@ -28,19 +28,11 @@ def _plan_ids_on_disk(repo_dir: str, prefix: str) -> set[str]:
 
 
 def _plan_ids_in_ledger(repo_dir: str, prefix: str) -> set[str]:
-    ledger_path = os.path.join(repo_dir, "holon-knowledge/ledger/plans.jsonl")
-    if not os.path.exists(ledger_path):
-        return set()
     taken: set[str] = set()
-    with open(ledger_path, encoding="utf-8") as f:
-        for line in f:
-            try:
-                row = json.loads(line) if line.strip() else {}
-            except json.JSONDecodeError:
-                continue
-            recorded = str(row.get("intent_branch") or "").removesuffix("/_").rstrip("/")
-            if recorded == prefix and isinstance(row.get("plan_id"), str):
-                taken.add(row["plan_id"])
+    for row in read_merged_rows(os.path.join(repo_dir, "holon-knowledge/ledger/plans.jsonl")):
+        recorded = str(row.get("intent_branch") or "").removesuffix("/_").rstrip("/")
+        if recorded == prefix and isinstance(row.get("plan_id"), str):
+            taken.add(row["plan_id"])
     return taken
 
 

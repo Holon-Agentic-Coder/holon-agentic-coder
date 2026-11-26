@@ -1,4 +1,3 @@
-import json
 import os
 import re
 import sys
@@ -6,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Self
 
 from sandbox_executor.agent_defaults import FALLBACK_AGENT, default_model_for
+from sandbox_executor.ledger import read_merged_rows
 from sandbox_executor.plan_paths import is_row_of_plan
 
 _PLANS_LEDGER_RELPATH = "holon-knowledge/ledger/plans.jsonl"
@@ -14,38 +14,22 @@ _FINDING_ID_SPLIT_RE = re.compile(r"[,;\s]+")
 
 
 def _read_plan_row(repo_dir: str, plan_branch_prefix: str) -> dict[str, Any] | None:
-    plans_file_path = os.path.join(repo_dir, _PLANS_LEDGER_RELPATH)
-    latest_plan_row = None
-    if os.path.exists(plans_file_path):
-        with open(plans_file_path) as f:
-            for line_no, line in enumerate(f, start=1):
-                if not line.strip():
-                    continue
-                try:
-                    data = json.loads(line)
-                    if is_row_of_plan(data, plan_branch_prefix):
-                        latest_plan_row = data
-                except Exception as e:
-                    print(f"Warning: skipping line {line_no} in plans.jsonl: {e}", file=sys.stderr)
-    return latest_plan_row
+    def warn(line_no: int, exc: Exception) -> None:
+        print(f"Warning: skipping line {line_no} in plans.jsonl: {exc}", file=sys.stderr)
+
+    rows = read_merged_rows(os.path.join(repo_dir, _PLANS_LEDGER_RELPATH), on_bad_line=warn)
+    return next((row for row in reversed(rows) if is_row_of_plan(row, plan_branch_prefix)), None)
 
 
 def _read_intent_row(repo_dir: str, target_intent_branch: str) -> dict[str, Any] | None:
-    intents_file_path = os.path.join(repo_dir, _INTENTS_LEDGER_RELPATH)
-    if not os.path.exists(intents_file_path):
-        return None
+    def warn(_line_no: int, exc: Exception) -> None:
+        print(f"Warning: skipping unparseable line in intents.jsonl: {exc}", file=sys.stderr)
+
     normalized_target_branch = target_intent_branch.rstrip("/_")
-    with open(intents_file_path) as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                data = json.loads(line)
-                branch = data.get("branch")
-                if isinstance(branch, str) and normalized_target_branch == branch.rstrip("/_"):
-                    return data
-            except Exception as e:
-                print(f"Warning: skipping unparseable line in intents.jsonl: {e}", file=sys.stderr)
+    for row in read_merged_rows(os.path.join(repo_dir, _INTENTS_LEDGER_RELPATH), on_bad_line=warn):
+        branch = row.get("branch")
+        if isinstance(branch, str) and normalized_target_branch == branch.rstrip("/_"):
+            return row
     return None
 
 

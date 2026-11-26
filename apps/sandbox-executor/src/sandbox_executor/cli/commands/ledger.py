@@ -29,12 +29,15 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     )
     query_parser = ledger_subparsers.add_parser(
         "query",
-        help="Query action and summary records from execution ledger.",
+        help="Query action and summary records from execution ledger, including its pending fragments.",
     )
     query_parser.add_argument(
         "--ledger-file",
         default=_DEFAULT_LEDGER_RELATIVE_PATH,
-        help="Path to execution ledger JSONL file (default: holon-knowledge/ledger/executions.jsonl).",
+        help=(
+            "Path to execution ledger JSONL file (default: holon-knowledge/ledger/executions.jsonl); a canonical "
+            "ledger also reads its holon-knowledge/ledger/pending/<ledger>/*.jsonl fragments."
+        ),
     )
     query_parser.add_argument(
         "--entry-type",

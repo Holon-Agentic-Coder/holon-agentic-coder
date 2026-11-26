@@ -12,9 +12,44 @@ from typing import Any
 
 from sandbox_executor import local_llm
 from sandbox_executor.agent_attribution import attribution_off_settings, place_settings_arg
+from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.runners import runner_spec_for
 
 logger = logging.getLogger(__name__)
+
+_OWNER_ONLY_DIR_MODE = 0o700
+_OWNER_ONLY_FILE_MODE = 0o600
+
+
+def _make_private_dirs(directory: str) -> None:
+    """Create the missing ancestors of ``directory`` owner-only, leaving existing directories untouched."""
+    missing: list[str] = []
+    current = directory
+    while current and not os.path.lexists(current):
+        missing.append(current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    for path in reversed(missing):
+        try:
+            os.mkdir(path, _OWNER_ONLY_DIR_MODE)
+        except FileExistsError:
+            continue
+        os.chmod(path, _OWNER_ONLY_DIR_MODE)
+
+
+def _write_private_file(path: str, content: str) -> None:
+    """Write ``content`` to ``path`` with owner-only mode, also when the file already exists."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, _OWNER_ONLY_FILE_MODE)
+    os.fchmod(fd, _OWNER_ONLY_FILE_MODE)
+    try:
+        handle = os.fdopen(fd, "w")
+    except BaseException:
+        os.close(fd)
+        raise
+    with handle:
+        handle.write(content)
 
 # Directory cleanup and root protection helpers
 ALLOWED_PARENTS = {
@@ -325,8 +360,6 @@ class StandardAgentRunner(AgentRunner):
         secret_bundle_path = os.getenv("HOLON_SECRET_BUNDLE_PATH", "/run/secrets/holon_auth.json")
         if os.path.exists(secret_bundle_path):
             try:
-                import json
-
                 with open(secret_bundle_path) as f:
                     bundle = json.load(f)
                 target_agent = bundle.get("agent_id", "")
@@ -344,14 +377,13 @@ class StandardAgentRunner(AgentRunner):
                         full_dest = os.path.realpath(os.path.expanduser(rel_path))
                         if not full_dest.startswith(base_home):
                             raise ValueError(f"Path traversal detected in config_files path: {rel_path}")
-                        os.makedirs(os.path.dirname(full_dest), exist_ok=True)
-                        with open(full_dest, "w") as sf:
-                            sf.write(content)
+                        _make_private_dirs(os.path.dirname(full_dest))
+                        _write_private_file(full_dest, content)
                         self._ephemeral_files.append(full_dest)
                     if self._ephemeral_files:
                         atexit.register(self.cleanup_ephemeral_credentials)
             except Exception as e:
-                logger.warning(f"Failed to process secret bundle {secret_bundle_path}: {e}")
+                logger.warning("Failed to process secret bundle %s: %s", secret_bundle_path, redact_agent_secrets(str(e)))
 
     def cleanup_ephemeral_credentials(self) -> None:
         """Securely wipe temporary secret bundles or session artifacts generated during the run."""

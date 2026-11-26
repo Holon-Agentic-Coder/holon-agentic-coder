@@ -200,8 +200,8 @@ def test_diverged_local_and_origin_are_left_alone(work: Path) -> None:
     assert found is None and any("diverged" in line for line in ctx.logs)
 
 
-def test_local_only_branch_is_found_and_needs_publishing(work: Path) -> None:
+def test_local_only_branch_is_found(work: Path) -> None:
     tip = code_commit(work)
     found = _find_unrecorded_branch(str(work), PLAN, prefix(), set())
-    assert found is not None and (found.branch, found.tip, found.needs_publish) == (EXEC_BRANCH, tip, True)
+    assert found is not None and (found.branch, found.tip) == (EXEC_BRANCH, tip)
     assert found.checked_out and found.commits_past_plan == 1

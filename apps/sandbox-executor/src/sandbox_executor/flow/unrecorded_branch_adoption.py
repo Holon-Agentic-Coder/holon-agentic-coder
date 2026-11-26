@@ -8,7 +8,6 @@ failure, is never touched, and any git read that fails means "nothing to adopt",
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -19,11 +18,10 @@ from sandbox_executor.flow.git_refs import (
     _resolve_branch_ref,
 )
 from sandbox_executor.flow.host_remote import new_local_child_branches
-from sandbox_executor.flow.partial_head import _has_summary_row, failed_partial_head
+from sandbox_executor.flow.partial_head import _execution_id, _execution_seq, _has_summary_row, _newest_partial_head
 from sandbox_executor.git import changed_paths, run_git
 from sandbox_executor.redaction import redact_agent_secrets
 
-_EXECUTION_SEQ = re.compile(r"/E-(\d+)-[^/]+/_$")
 _MAX_NAMED_PATHS = 20
 
 
@@ -31,25 +29,14 @@ _MAX_NAMED_PATHS = 20
 class _UnrecordedBranch:
     """The plan's newest execution branch: commits past the plan tip and no summary row for its id.
 
-    ``needs_publish`` is true when the local head is missing from origin or ahead of it; ``checked_out`` when the
-    worktree HEAD is on the branch.
+    ``checked_out`` is true when the worktree HEAD is on the branch.
     """
 
     branch: str
     execution_id: str
     tip: str
-    needs_publish: bool
     checked_out: bool
     commits_past_plan: int
-
-
-def _execution_seq(branch: str) -> int:
-    match = _EXECUTION_SEQ.search(branch)
-    return int(match.group(1)) if match else -1
-
-
-def _execution_id(branch: str) -> str:
-    return branch.removesuffix("/_").rsplit("/", 1)[-1]
 
 
 def _git_stdout(repo_dir: str, args: list[str]) -> str | None:
@@ -72,16 +59,14 @@ def _newest_execution_branch(repo_dir: str, plan_prefix: str, existing: set[str]
     return max(candidates, key=_execution_seq, default=None)
 
 
-def _branch_tip(repo_dir: str, local: str | None, origin: str | None) -> tuple[str, bool] | None:
-    """The tip to adopt and whether it still has to reach origin; None when there is none or the two diverged."""
+def _branch_tip(repo_dir: str, local: str | None, origin: str | None) -> str | None:
+    """The tip to adopt: the newer of the local head and the origin tip; None when there is none or the two diverged."""
     if not origin:
-        return (local, True) if local else None
-    if not local or local == origin:
-        return origin, False
-    if _is_ancestor_commit(repo_dir, local, origin):
-        return origin, False
+        return local
+    if not local or local == origin or _is_ancestor_commit(repo_dir, local, origin):
+        return origin
     if _is_ancestor_commit(repo_dir, origin, local):
-        return local, True
+        return local
     return None
 
 
@@ -122,19 +107,17 @@ def _find_unrecorded_branch(
         if origin and local and log is not None:
             log(f"Stage 3 resume: unrecorded execution branch {branch} not adopted: local and origin diverged.")
         return None
-    commits = _work_past_plan(repo_dir, plan_ref, tip[0])
+    commits = _work_past_plan(repo_dir, plan_ref, tip)
     if commits == 0:
         return None
     checked_out = _git_stdout(repo_dir, ["symbolic-ref", "--short", "-q", "HEAD"]) == branch
-    return _UnrecordedBranch(branch, exec_id, tip[0], tip[1], checked_out, commits)
+    return _UnrecordedBranch(branch, exec_id, tip, checked_out, commits)
 
 
 def _resume_start(repo_dir: str, plan_branch: str | None, branches: set[str]) -> str | None:
     """Where the executor's checkout starts: the newest recorded partial head, else the plan tip."""
-    for branch in sorted(branches, key=_execution_seq, reverse=True):
-        head = failed_partial_head(repo_dir, f"{ORIGIN_REF_PREFIX}{branch}", _execution_id(branch))
-        if head:
-            return head
+    if newest := _newest_partial_head(repo_dir, branches):
+        return newest[1]
     return _resolve_branch_ref(repo_dir, plan_branch) if plan_branch else None
 
 

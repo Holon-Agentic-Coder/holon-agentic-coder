@@ -484,7 +484,7 @@ split from the former single `flow.py` by moving code only. Three tests guard th
 | `flow/checkpoint_store.py`             | The `CheckpointStore` protocol and the `FileCheckpointStore` adapter that persists a `FlowCheckpoint`.           |
 | `flow/ledger_reconcile.py`             | Compatibility shim re-exporting the ledger conflict resolution that now lives in `ledger/reconcile.py`.          |
 | `flow/ledger_warning.py`               | Reports a non-fatal ledger failure, redacted, to the log and the operator-facing context log.                    |
-| `flow/ledger_interleave.py`            | Resolves ledger-only merge conflicts: merge-base rows kept as a prefix, appended rows interleaved.               |
+| `flow/ledger_interleave.py`            | Resolves ledger-only merge conflicts: ours' rows kept in place, theirs' appended rows inserted by `created_at`.  |
 | `flow/child_progress.py`               | Per-child progress of a decomposed Stage 3, origin reconciliation and the next-action decision.                  |
 | `flow/stage_conflicts.py`              | The proactive conflict check a stage runs before it pushes: `detect_stage_conflicts`, then classify and resolve. |
 | `flow/stage_conflict_resolution.py`    | Classifies each conflicting path (code, ledger, deferred ledger) and append-merges the conflicted ledgers.       |
@@ -539,8 +539,8 @@ engine:
 | `ledger/lock.py`      | `LedgerLock`, atomic appends and the `assert_ledger_prefix` append-only check.                   |
 | `ledger/rows.py`      | Action and summary records, identifier builders and the append operations for the ledgers.       |
 | `ledger/query.py`     | `LedgerQuery`: filtering, table formatting and identifier uniqueness validation.                 |
-| `ledger/order.py`     | Chronological order for the rows a conflict resolution appends after the untouched prefix.       |
-| `ledger/reconcile.py` | `LedgerReconciler`: resolves a ledger conflict by keeping a prefix and appending the other rows. |
+| `ledger/order.py`     | Chronological slots for the rows a conflict resolution inserts among the kept rows.              |
+| `ledger/reconcile.py` | `LedgerReconciler`: resolves a ledger conflict by keeping one side and inserting the other rows. |
 
 Rules that keep the package healthy:
 

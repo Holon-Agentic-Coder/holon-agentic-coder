@@ -28,8 +28,9 @@ class CalibrationDeltas:
         return dataclasses.asdict(self)
 
 
-# Accuracy rating per metric: (absolute error key, error limit for the "High" label, that label). A zero error is
-# "Exact", an error above the limit "Moderate"; learning value has no limit, so any non-zero error is "High".
+# Accuracy rating per metric: (rated metric, absolute error key, error limit for the "High" label, that label).
+# A zero error is "Exact", an error above the limit "Moderate"; learning value has no limit, so any non-zero error
+# is "High".
 _RATING_THRESHOLDS: tuple[tuple[str, str, float | None, str], ...] = (
     ("p_success", "p_success", 0.05, "High (≤ 0.05)"),
     ("entropy", "entropy", 1.0, "High (≤ 1.0)"),

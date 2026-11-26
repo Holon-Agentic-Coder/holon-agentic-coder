@@ -6,8 +6,11 @@ markdown calibration reports written beside the plan file at `plans/{intent}/{pl
 
 The package re-exports every name importable from the former single ``calibration`` module. Its modules:
 ``predicted`` (``PredictedMetrics.from_plan``), ``actual`` (``ActualMetrics.from_execution`` and the per-metric
-extractor table), ``deltas`` (pure delta computation), ``report`` (report model and rendering), ``generate`` (one
-execution's calibration) and ``run`` (the I/O shell that reads ledgers and git and writes the report).
+extractor table), ``actual_evidence`` (the ledger summary rows and patch size actual metrics are measured from),
+``physics`` (the target worktree's EV physics constants), ``deltas`` (pure delta computation), ``report`` (report
+model and rendering), ``generate`` (one execution's calibration), ``branches`` (execution branch-name components and
+report freshness), ``refs`` (git fetches, SHAs, branch/PR refs and file reads at a ref), ``checkout`` (switching to
+an execution's ``/calibrated`` branch) and ``run`` (the I/O shell that reads ledgers and git and writes the report).
 """
 
 from __future__ import annotations

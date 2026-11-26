@@ -5,8 +5,9 @@ carries ``withdrawal_reason``) or the diff gate does not hold on the merged head
 (:mod:`.ci_failure_routing`): noise under its rerun budget is rerun once and the head polled again, and only a fresh
 ``passed`` lets Stage 5 calibrate. A defect, or noise still red, restarts Stage 4 scoped: the CI finding is carried to
 the resolver, the diff approval stands, and the delta-review anchor moves to the merged head so the fix delta (no merge
-commit) is reviewed scoped. A scoped restart whose Stage 4 does not approve withdraws the consensus then. Anything
-unsettled still fails Stage 5 closed. Resuming a restart asked for before a checkpoint is :mod:`.merged_head_resume`.
+commit) is reviewed scoped. A scoped restart whose Stage 4 does not approve withdraws the consensus then; at the
+review restart cap the consensus is withdrawn instead, saying the flow stopped. Anything unsettled still fails Stage 5
+closed. Resuming a restart asked for before a checkpoint is :mod:`.merged_head_resume`.
 """
 
 from __future__ import annotations
@@ -151,9 +152,16 @@ def route_merged_head_failure(
     if record.get("withdrawal_reason") or not diff_gate_holds(context, context.target_worktree, head):
         return _withdraw(context, start, record, seams, withdraw), record
     runs = failed_runs_from_record(record)
+
+    def restart_or_withdraw(failed: dict[str, Any]) -> Any:
+        """At the review restart cap the consensus is withdrawn: Stage 5 must not stop on a standing approval."""
+        if not context.merged_head_restart_allowed:
+            return _withdraw(context, start, failed, seams, withdraw)
+        return _scoped_restart(context, start, failed, cls, seams)
+
     cls = classify_ci_failure(runs, seams.detail_lookup or gh_detail_lookup(context.target_worktree, seams.proxy_env))
     if route_failure(context, head, cls, runs) != RERUN:
-        return _scoped_restart(context, start, record, cls, seams), record
+        return restart_or_withdraw(record), record
     context.log(
         f"CI noise ({CLASS_LABELS[cls]}) on merged head {short_sha(head)}: rerunning once; the diff approval stands."
     )
@@ -163,7 +171,7 @@ def route_merged_head_failure(
         record_pipeline_gate(context, PipelineGate(head, GREEN, source="merged_head"))
         return None, retried
     if retried["state"] == FAILED:
-        restart = _scoped_restart(context, start, retried, cls, seams)
+        restart = restart_or_withdraw(retried)
         note_rerun(context, head, partial)  # Counted after recording, as Stage 4 does.
         return restart, retried
     return refuse_calibration(context, start, retried), retried

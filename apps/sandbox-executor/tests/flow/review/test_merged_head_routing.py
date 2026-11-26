@@ -130,6 +130,25 @@ def test_a_defect_restarts_stage4_scoped_keeping_the_diff_approval(tmp_path: Pat
     assert pipeline is not None and pipeline.classification == "defect"
 
 
+def test_a_defect_at_the_restart_cap_withdraws_saying_the_flow_stopped(tmp_path: Path) -> None:
+    ctx, fakes = _ctx(tmp_path), Fakes([_check("failure")], steps=TEST_STEP)
+    ctx.merged_head_restart_allowed = False
+    stopped, _ = route_merged_head_failure(ctx, START, _red(), fakes.seams())
+    assert stopped is not None and "scoped_restart" not in stopped.payload
+    withdrawal = stopped.payload["consensus_withdrawal"]
+    assert withdrawal["review_restarted"] is False and withdrawn_consensus_of(ctx) is not None
+    assert len(fakes.comments) == 1 and "restart cap was reached" in fakes.comments[0]
+    assert len(_rows(tmp_path, "consensus-withdrawn")) == 1 and pending_scoped_restart(ctx) is None
+
+
+def test_noise_still_red_at_the_restart_cap_withdraws(tmp_path: Path) -> None:
+    ctx, fakes = _ctx(tmp_path), Fakes([_check("failure")])
+    ctx.merged_head_restart_allowed = False
+    stopped, _ = route_merged_head_failure(ctx, START, _red(), fakes.seams())
+    assert stopped is not None and stopped.payload["consensus_withdrawal"]["review_restarted"] is False
+    assert fakes.reruns == ["11"] and len(fakes.comments) == 1
+
+
 def test_a_changed_reviewable_diff_still_withdraws(tmp_path: Path) -> None:
     ctx, fakes = _ctx(tmp_path), Fakes([_check("failure")])
     record = {**_red(), "runs": [], "withdrawal_reason": "PR-own change changed since approval"}

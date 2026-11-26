@@ -1,0 +1,31 @@
+{
+  "kb_id": "KB-failure-c6e99907",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-26T07:05:37.621876+00:00",
+  "updated_ts": "2026-11-26T07:05:37.621876+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "ACT-FIND-1795675460-67606baf",
+      "ACT-FIND-1795675451-eb9ab6af"
+    ],
+    "success_count": 0,
+    "failure_count": 2,
+    "ladder_state": "repeated"
+  },
+  "tags": [
+    "code",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795674200-preflight-outage-wait-resume/P-1795674223-CLA-CO5.5/E-1795674407-CLA-CO5.5/_",
+    "description": "Reproduced failure across 2 executions with identical context.",
+    "action": "Review Loop iteration 1 finding detected: FIND-R3-001-01",
+    "symptoms": [
+      "Imports the private _MODEL_ERROR_RE from sandbox_executor.preflight; expose a public is_model_error() predicate instead so the never-wait guard cannot silently break."
+    ]
+  }
+}

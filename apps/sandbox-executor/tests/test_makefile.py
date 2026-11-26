@@ -15,6 +15,10 @@ import shutil
 import subprocess
 import typing
 
+import pytest
+
+from tests.make_dry_run import SharedMakeRuns
+
 
 def _get_repo_root() -> pathlib.Path:
     """Return the absolute path to the repository root directory containing Makefile."""
@@ -48,6 +52,24 @@ def _run_make(
     )
 
 
+@pytest.fixture(scope="module")
+def default_make(tmp_path_factory: pytest.TempPathFactory) -> SharedMakeRuns:
+    """``make`` in the default mock environment (``_setup_mock_env(..., mock_docker=False)``), run once per argv.
+
+    The environment is built on first use, inside a test, so it is the one the autouse guards leave, as it was when
+    each test built its own; its tools live in a directory of this module.
+    """
+    env_dir = tmp_path_factory.mktemp("default-make-env")
+    env: dict[str, str] = {}
+
+    def run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if not env:
+            env.update(_setup_mock_env(env_dir, mock_docker=False))
+        return _run_make(args, env=env)
+
+    return SharedMakeRuns("default", run)
+
+
 OS_LINUX = "DETECTED_OS=Linux"
 OS_DARWIN = "DETECTED_OS=Darwin"
 
@@ -64,12 +86,13 @@ PREREQUISITE_HELP_LIST = (
 )
 
 
-def test_makefile_help_lists_core_targets(tmp_path: pathlib.Path) -> None:
+def test_makefile_help_lists_core_targets(default_make: SharedMakeRuns) -> None:
     """Verify that make help documents all core targets and the fatal/advisory split."""
     # Run with the test-owned environment: `make help` inherits PATH, CI, MAKEFLAGS and
     # MAKELEVEL from the caller otherwise, which made the module's hermeticity claim false
     # for this one test even though its output does not depend on them today.
-    result = _run_make(["help"], env=_setup_mock_env(tmp_path, mock_docker=False), check=True)
+    result = default_make(["help"])
+    assert result.returncode == 0, result.stderr
     stdout = result.stdout
 
     expected_targets = [
@@ -96,7 +119,7 @@ def test_makefile_help_lists_core_targets(tmp_path: pathlib.Path) -> None:
     )
 
 
-def test_makefile_detects_the_host_platform_without_an_os_override(tmp_path: pathlib.Path) -> None:
+def test_makefile_detects_the_host_platform_without_an_os_override(default_make: SharedMakeRuns) -> None:
     """Pin `DETECTED_OS := $(shell uname -s)`, which every other test overrides away.
 
     Each prerequisite test passes OS_LINUX or OS_DARWIN on the command line, so nothing
@@ -106,8 +129,7 @@ def test_makefile_detects_the_host_platform_without_an_os_override(tmp_path: pat
     whether install-docker/install-homebrew fire - a developer on macOS would have been told
     to run `sudo apt install gh` with nothing reported red.
     """
-    env = _setup_mock_env(tmp_path, mock_docker=False)
-    result = _run_make(["-n", "check-prerequisites"], env=env)
+    result = default_make(["-n", "check-prerequisites"])
     assert result.returncode == 0, result.stderr
     host_os = os.uname().sysname
     assert f"OS: {host_os} |" in result.stdout, (
@@ -117,7 +139,7 @@ def test_makefile_detects_the_host_platform_without_an_os_override(tmp_path: pat
     )
 
 
-def test_makefile_dry_run_core_targets(tmp_path: pathlib.Path) -> None:
+def test_makefile_dry_run_core_targets(default_make: SharedMakeRuns) -> None:
     """Verify that dry-run mode (make -n) exits 0 without running recipes across core targets.
 
     The PATH contains no docker/gh/openssl, so a recipe that actually executed its checks would
@@ -131,7 +153,6 @@ def test_makefile_dry_run_core_targets(tmp_path: pathlib.Path) -> None:
     (``help``, ``build-images``, ``install-homebrew``) are inert under ``-n`` regardless of the
     guard, since their recipes echo or delegate without running prerequisite probes.
     """
-    env = _setup_mock_env(tmp_path, mock_docker=False)
     guard_regression_targets = [
         "check-prerequisites",
         "check-docker",
@@ -147,16 +168,15 @@ def test_makefile_dry_run_core_targets(tmp_path: pathlib.Path) -> None:
     inert_under_dry_run_targets = ["help", "build-images", "build-image", "install-homebrew"]
     core_targets = guard_regression_targets + inert_under_dry_run_targets
     for target in core_targets:
-        result = _run_make(["-n", target, OS_LINUX], env=env)
+        result = default_make(["-n", target, OS_LINUX])
         msg = f"make -n {target} failed with code {result.returncode}. stdout: {result.stdout} stderr: {result.stderr}"
         assert result.returncode == 0, msg
 
 
-def test_makefile_build_image_alias(tmp_path: pathlib.Path) -> None:
+def test_makefile_build_image_alias(default_make: SharedMakeRuns) -> None:
     """Verify that build-image is an alias for build-images and delegates identically under dry-run."""
-    env = _setup_mock_env(tmp_path, mock_docker=False)
-    res_images = _run_make(["-n", "build-images", OS_LINUX], env=env)
-    res_image = _run_make(["-n", "build-image", OS_LINUX], env=env)
+    res_images = default_make(["-n", "build-images", OS_LINUX])
+    res_image = default_make(["-n", "build-image", OS_LINUX])
     assert res_images.returncode == 0
     assert res_image.returncode == 0
     assert "./apps/sandbox-executor/build_all_images.sh" in res_image.stdout
@@ -403,7 +423,7 @@ def test_check_prerequisites_darwin_install_instructions(tmp_path: pathlib.Path)
     assert "brew install openssl" in result.stdout
 
 
-def test_prerequisite_list_is_identical_in_make_help_and_readme(tmp_path: pathlib.Path) -> None:
+def test_prerequisite_list_is_identical_in_make_help_and_readme(default_make: SharedMakeRuns) -> None:
     """Assert the sync claim instead of merely asserting it in a comment.
 
     The constant's comment says it keeps `make help` and README from drifting apart. Until
@@ -411,7 +431,9 @@ def test_prerequisite_list_is_identical_in_make_help_and_readme(tmp_path: pathli
     hand at the Quick Start block and nothing compared the two, so either could change and
     stay green.
     """
-    help_stdout = _run_make(["help"], env=_setup_mock_env(tmp_path, mock_docker=False), check=True).stdout
+    help_result = default_make(["help"])
+    assert help_result.returncode == 0, help_result.stderr
+    help_stdout = help_result.stdout
     assert PREREQUISITE_HELP_LIST in help_stdout
     readme_text = (_get_repo_root() / "README.md").read_text(encoding="utf-8")
     assert PREREQUISITE_HELP_LIST in readme_text, "README's prerequisite list drifted from the list `make help` prints"

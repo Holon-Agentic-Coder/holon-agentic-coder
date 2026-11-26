@@ -115,6 +115,9 @@ only when all of the following hold, in this order:
   `main`, shows that job `completed` with conclusion `success`, and its `Full run completed` step succeeded (a real
   success) or was skipped (the job's own gates, the bookkeeping gate or the macOS relevance gate, proved it on an
   ancestor). The detail of the decision line says which of the two it was.
+- When that step was skipped and the head commit is a merge commit, the walk through the skipped runs on the head branch
+  reaches a real success, and every path changed between that commit and the head is bookkeeping. A merge-push skip
+  (`merge-push-clean-main-merge`) is never enough: it proves both parents, but no job ran the merged tree.
 
 Every missing piece of evidence runs the full job under a rule of its own, and every API error or unexpected answer is
 `api-error`, so the job runs in full. A re-run of a main push always runs in full. Reading the pull requests of a commit
@@ -138,6 +141,7 @@ These rules belong to `scripts/ci_main_push_gate.py`:
 | `main-push-head-job-not-finished`   | the job on the head commit is still queued or in progress                                    |
 | `main-push-head-job-not-successful` | the job on the head commit failed or was cancelled; the detail names the conclusion          |
 | `main-push-head-job-unverified`     | the job on the head commit succeeded but has no `Full run completed` step                    |
+| `main-push-head-skip-unproven`      | the job on a merge head was skipped; no real success has only bookkeeping changes since      |
 
 ### The marker step
 

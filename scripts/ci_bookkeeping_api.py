@@ -187,13 +187,17 @@ def list_jobs(client: GateClient, run_id: int) -> list[dict[str, object]]:
 
 @dataclass(frozen=True)
 class PullRef:
-    """One pull request associated with a commit: its number, whether it was merged, its base, head and merge commit."""
+    """One pull request associated with a commit: its number, whether it was merged, its base, head and merge commit.
+
+    ``head_ref`` is the pull request's head branch, empty when the answer names none.
+    """
 
     number: int
     merged: bool
     base_ref: str
     head_sha: str
     merge_commit_sha: str
+    head_ref: str = ""
 
 
 def _pull_ref(pull: object) -> PullRef:
@@ -208,6 +212,7 @@ def _pull_ref(pull: object) -> PullRef:
         base_ref=str(pull["base"]["ref"]),
         head_sha=str(pull["head"]["sha"]),
         merge_commit_sha=merge_commit if isinstance(merge_commit, str) else "",
+        head_ref=_text(pull["head"].get("ref")),
     )
 
 

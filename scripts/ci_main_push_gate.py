@@ -17,6 +17,10 @@ in this order, and the first one that fails decides for a full run:
    job (same name and runner label) and names no pull request but the merged one into ``main`` shows it completed with
    success and a ``Full run completed`` marker that succeeded (a real success) or was skipped (the job's own gates
    proved it on an ancestor).
+6. ``main-push-head-skip-unproven``: when that job was skipped and the head commit is a merge commit, the walk of
+   ``scripts.ci_bookkeeping_chain`` from that run on the head branch reaches a real success, and every path changed
+   since it is a bookkeeping path. A merge-push skip (``merge-push-clean-main-merge``) proves the two parents, not the
+   merged tree, so it is never evidence here and the push to ``main`` runs in full.
 
 The one rule that skips is ``main-push-tested-tree``. No exception is caught here: the gate turns every exception into
 ``api-error`` and a full run. Standard library only and Python 3.9 syntax, so it runs on the runner's own ``python3``.
@@ -29,6 +33,7 @@ from scripts.ci_bookkeeping_api import (
     GateContext,
     PullRef,
     RunRef,
+    commit_ref,
     commit_tree,
     list_head_runs,
     list_jobs,
@@ -40,9 +45,12 @@ from scripts.ci_bookkeeping_chain import (
     REAL_SUCCESS,
     UNVERIFIED,
     Decision,
+    JobQuery,
     classify_job,
+    find_real_success,
     match_job,
 )
+from scripts.ci_merge_push_gate import GateRules
 
 MAIN_REF = "refs/heads/main"
 MAIN_BRANCH = "main"
@@ -61,6 +69,7 @@ RULE_HEAD_JOB_MISSING = "main-push-head-job-missing"
 RULE_HEAD_JOB_NOT_FINISHED = "main-push-head-job-not-finished"
 RULE_HEAD_JOB_NOT_SUCCESSFUL = "main-push-head-job-not-successful"
 RULE_HEAD_JOB_UNVERIFIED = "main-push-head-job-unverified"
+RULE_HEAD_SKIP_UNPROVEN = "main-push-head-skip-unproven"
 RULE_TESTED_TREE = "main-push-tested-tree"
 MAIN_PUSH_RUN_RULES = (
     RULE_RERUN_ATTEMPT,
@@ -73,6 +82,7 @@ MAIN_PUSH_RUN_RULES = (
     RULE_HEAD_JOB_NOT_FINISHED,
     RULE_HEAD_JOB_NOT_SUCCESSFUL,
     RULE_HEAD_JOB_UNVERIFIED,
+    RULE_HEAD_SKIP_UNPROVEN,
 )
 MAIN_PUSH_SKIP_RULES = (RULE_TESTED_TREE,)
 
@@ -140,8 +150,28 @@ def _head_job(context: GateContext, client: GateClient, pull: PullRef) -> tuple[
     return 0, None
 
 
-def _head_job_check(context: GateContext, client: GateClient, pull: PullRef) -> Decision:
-    """Judge the job on the head commit; the decision skips only for a real success or a gate-skipped success."""
+def _skip_check(context: GateContext, client: GateClient, pull: PullRef, run_number: int, rules: GateRules) -> str:
+    """Return why a gate-skipped job on a merge head is not proven, or empty text when its tree is.
+
+    A merge-push skip leaves a gate-skipped job on a tree no job ran, so a merge head needs the walk to a real success
+    and bookkeeping-only changes since; the head run itself is the first run of the walk.
+    """
+    if len(commit_ref(client, pull.head_sha).parents) < 2:
+        return ""
+    if not pull.head_ref:
+        return f"#{pull.number} names no head branch"
+    query = JobQuery(
+        context.workflow_file, pull.head_ref, context.job_name, context.os_name, run_number + 1, pull.head_sha
+    )
+    chain = find_real_success(client, query)
+    if chain.real_sha is None:
+        return f"{chain.rule} {chain.detail}"
+    blocked = rules.diff_rule(client, chain.real_sha, pull.head_sha)[0] if chain.real_sha != pull.head_sha else None
+    return f"{blocked.rule} {blocked.detail} since {chain.real_sha[:12]}" if blocked else ""
+
+
+def _head_job_check(context: GateContext, client: GateClient, pull: PullRef, rules: GateRules) -> Decision:
+    """Judge the job on the head commit; the decision skips only for a real success or a proven gate-skipped one."""
     run_number, job = _head_job(context, client, pull)
     if job is None:
         return Decision(False, RULE_HEAD_JOB_MISSING, f"no single matching job on {pull.head_sha[:12]}")
@@ -153,12 +183,18 @@ def _head_job_check(context: GateContext, client: GateClient, pull: PullRef) -> 
         return Decision(False, RULE_HEAD_JOB_UNVERIFIED, f"no '{FULL_RUN_STEP}' step in {where}")
     if kind not in (REAL_SUCCESS, GATE_SKIPPED):
         return Decision(False, RULE_HEAD_JOB_NOT_SUCCESSFUL, f"{job.get('conclusion') or 'unknown'} in {where}")
+    unproven = _skip_check(context, client, pull, run_number, rules) if kind == GATE_SKIPPED else ""
+    if unproven:
+        return Decision(False, RULE_HEAD_SKIP_UNPROVEN, f"gate-skipped merge head in {where}: {unproven}")
     proof = "real success" if kind == REAL_SUCCESS else "gate-skipped"
     return Decision(True, RULE_TESTED_TREE, f"#{pull.number} head {pull.head_sha[:12]} {where} {proof}")
 
 
-def decide_main_push(context: GateContext, client: GateClient) -> Decision:
-    """Apply the main-push rules in order; only the head-job check can return "skip". Exceptions reach the caller."""
+def decide_main_push(context: GateContext, client: GateClient, rules: GateRules) -> Decision:
+    """Apply the main-push rules in order; only the head-job check can return "skip". Exceptions reach the caller.
+
+    ``rules`` carries the gate's diff rule, which judges the changes since a real success behind a gate-skipped head.
+    """
     blocked = _event_check(context)
     if blocked is not None:
         return blocked
@@ -168,4 +204,4 @@ def decide_main_push(context: GateContext, client: GateClient) -> Decision:
     blocked = _tree_check(context, client, pull)
     if blocked is not None:
         return blocked
-    return _head_job_check(context, client, pull)
+    return _head_job_check(context, client, pull, rules)

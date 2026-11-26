@@ -145,7 +145,7 @@ def merge_push_or(blocked: Decision, context: GateContext, client: GateClient) -
 def decide(context: GateContext, client: GateClient) -> Decision:
     """Apply the rules in order; only the last statement returns "skip". Exceptions are left to ``safe_decide``."""
     if is_main_push(context):
-        return decide_main_push(context, client)
+        return decide_main_push(context, client, GateRules(diff_rule, is_bookkeeping_path))
     blocked = event_rule(context)
     if blocked is not None:
         return blocked

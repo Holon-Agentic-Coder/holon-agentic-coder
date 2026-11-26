@@ -20,7 +20,15 @@ import pytest
 from scripts import ci_main_push_gate
 from scripts.ci_bookkeeping_api import GateClient, GateContext
 from scripts.ci_bookkeeping_chain import Decision
-from scripts.ci_bookkeeping_gate import RUN_RULES, SKIP_RULES, decide, main, safe_decide
+from scripts.ci_bookkeeping_gate import (
+    RUN_RULES,
+    SKIP_RULES,
+    decide,
+    diff_rule,
+    is_bookkeeping_path,
+    main,
+    safe_decide,
+)
 from scripts.ci_main_push_gate import (
     GATED_WORKFLOWS,
     MAIN_PUSH_RUN_RULES,
@@ -29,6 +37,7 @@ from scripts.ci_main_push_gate import (
     decide_main_push,
     is_main_push,
 )
+from scripts.ci_merge_push_gate import GateRules
 from tests.ci_bookkeeping_fakes import (
     API,
     MACOS_JOB,
@@ -36,6 +45,7 @@ from tests.ci_bookkeeping_fakes import (
     TOKEN,
     UNIT_JOB,
     FakeGitHub,
+    comparison,
     gate_skipped_job,
     job,
     legacy_success_job,
@@ -46,6 +56,8 @@ from tests.ci_bookkeeping_fakes import (
 MERGE = "e" * 40
 HEAD = "c" * 40
 OTHER = "d" * 40
+PRE_MERGE = "b" * 40
+MAIN_TIP = "f" * 40
 TREE = "1" * 40
 OTHER_TREE = "2" * 40
 CURRENT_RUN = 90
@@ -106,11 +118,50 @@ def test_a_merge_commit_with_the_tested_tree_skips() -> None:
 
 
 def test_a_gate_skipped_head_job_skips_and_says_so() -> None:
-    decision = judge(push_context(), merged_scene(gate_skipped_job()))
+    fake = merged_scene(gate_skipped_job())
+    fake.commits[HEAD] = (TREE, [OTHER])
+
+    decision = judge(push_context(), fake)
 
     assert decision.skip is True
     assert decision.rule == "main-push-tested-tree"
     assert decision.detail.endswith("gate-skipped")
+
+
+def merge_head_scene(*changed: str) -> FakeGitHub:
+    """Return a fake whose head merged ``main`` into ``PRE_MERGE`` and whose job the gate skipped there.
+
+    The job really succeeded on ``PRE_MERGE`` in the run before; ``changed`` are the paths of ``PRE_MERGE...HEAD``.
+    """
+    fake = merged_scene(gate_skipped_job()).add_run(HEAD_RUN - 1, PRE_MERGE, real_success_job())
+    fake.commits[HEAD] = (TREE, [PRE_MERGE, MAIN_TIP])
+    fake.compares[(PRE_MERGE, HEAD)] = comparison(*changed)
+    return fake
+
+
+def test_a_merge_push_skip_on_the_head_is_no_evidence_and_main_runs() -> None:
+    decision = judge(push_context(), merge_head_scene("scripts/from_main.py", "plans/x.md"))
+
+    assert (decision.skip, decision.rule) == (False, "main-push-head-skip-unproven")
+    assert "non-bookkeeping-change scripts/from_main.py" in decision.detail
+    assert f"since {PRE_MERGE[:12]}" in decision.detail
+
+
+def test_a_gate_skipped_merge_head_with_only_bookkeeping_since_a_real_success_skips() -> None:
+    decision = judge(push_context(), merge_head_scene("plans/x.md", "executions/E-1.md"))
+
+    assert (decision.skip, decision.rule) == (True, "main-push-tested-tree")
+    assert decision.detail.endswith("gate-skipped")
+
+
+def test_a_gate_skipped_merge_head_without_a_real_success_runs() -> None:
+    fake = merge_head_scene("plans/x.md")
+    fake.runs.pop()
+
+    decision = judge(push_context(), fake)
+
+    assert (decision.skip, decision.rule) == (False, "main-push-head-skip-unproven")
+    assert "only gate-skipped runs on the branch" in decision.detail
 
 
 def test_the_macos_leg_skips_on_its_own_job() -> None:
@@ -185,6 +236,12 @@ def _without_runs() -> FakeGitHub:
     return fake
 
 
+def _without_head_branch() -> FakeGitHub:
+    fake = merge_head_scene("plans/x.md")
+    fake.pulls[MERGE] = [pull(7, HEAD, MERGE, head={"sha": HEAD})]
+    return fake
+
+
 RUN_SCENES = [
     pytest.param("main-push-rerun-attempt", lambda: (push_context(run_attempt=2), merged_scene()), id="rerun"),
     pytest.param("main-push-incomplete-event", lambda: (push_context(sha=""), merged_scene()), id="no sha"),
@@ -236,6 +293,16 @@ RUN_SCENES = [
         "main-push-head-job-unverified",
         lambda: (push_context(), merged_scene(legacy_success_job())),
         id="no marker step",
+    ),
+    pytest.param(
+        "main-push-head-skip-unproven",
+        lambda: (push_context(), merge_head_scene("scripts/from_main.py")),
+        id="merge-push skip on the head",
+    ),
+    pytest.param(
+        "main-push-head-skip-unproven",
+        lambda: (push_context(), _without_head_branch()),
+        id="no head branch",
     ),
 ]
 
@@ -352,7 +419,7 @@ def test_the_route_decides_like_the_module() -> None:
     context = push_context()
 
     assert decide(context, client(merged_scene(real_success_job()))) == decide_main_push(
-        context, client(merged_scene(real_success_job()))
+        context, client(merged_scene(real_success_job())), GateRules(diff_rule, is_bookkeeping_path)
     )
 
 

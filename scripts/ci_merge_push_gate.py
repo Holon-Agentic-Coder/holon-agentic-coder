@@ -26,10 +26,11 @@ positive evidence skips; the rules run cheapest first, and the first that fails 
 
 Every rule name starts with ``merge-push``; the one that skips is ``merge-push-clean-main-merge`` (about 11 requests
 and the blob reads of rule 8). After the merge is confirmed, any exception is ``merge-push-api-error`` with its class
-name and HTTP status. A later ``main`` push may skip under ``main-push-tested-tree`` on this evidence. A coupling other
-than a direct import or a test name (a transitive import, a data file, a fixture) is not seen; the daily full runs and
-the flow's final-head CI check remain the backstop. Standard library only and Python 3.9 syntax, so it runs on the
-runner's own ``python3``.
+name and HTTP status. No job ran the merged tree, so this skip is never evidence for a later ``main`` push:
+``scripts.ci_main_push_gate`` runs a gate-skipped merge head in full (``main-push-head-skip-unproven``) unless only
+bookkeeping changed since a real success. A coupling other than a direct import or a test name (a transitive import, a
+data file, a fixture) is not seen; the daily full runs and the flow's final-head CI check remain the backstop. Standard
+library only and Python 3.9 syntax, so it runs on the runner's own ``python3``.
 """
 
 from __future__ import annotations

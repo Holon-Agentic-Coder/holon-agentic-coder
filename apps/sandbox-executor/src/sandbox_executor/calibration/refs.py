@@ -6,6 +6,7 @@ import contextlib
 import logging
 import re
 import subprocess
+from collections.abc import Callable
 
 from sandbox_executor.git import run_git
 
@@ -82,10 +83,175 @@ def resolve_commit_sha(ref: str, target_worktree: str = ".") -> str:
         raise RuntimeError(f"Error resolving commit SHA for '{ref}': {e}") from e
 
 
-def resolve_git_ref(ref_name: str, target_worktree: str = ".") -> str:  # noqa: C901, PLR0911, PLR0912, PLR0915
+def _as_commit_sha(clean_ref: str, target_worktree: str) -> str | None:
+    """A hex commit SHA (7 to 40 hex chars) that names a commit object: its full SHA."""
+    if not re.fullmatch(r"[0-9a-fA-F]{7,40}", clean_ref):
+        return None
+    try:
+        res = run_git(
+            ["rev-parse", "--verify", f"{clean_ref}^{{commit}}"],
+            cwd=target_worktree,
+            check=False,
+            timeout=15,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+    except Exception as e:
+        logger.debug("rev-parse commit check failed: %s", e)
+    return None
+
+
+def _as_local_branch(clean_ref: str, target_worktree: str) -> str | None:
+    """A local branch (``refs/heads/<ref>``), after fetching its origin update when tracking exists."""
+    try:
+        res = run_git(
+            ["rev-parse", "--verify", f"refs/heads/{clean_ref}"],
+            cwd=target_worktree,
+            check=False,
+            timeout=30,
+        )
+        if res.returncode == 0:
+            # Check if origin has an updated ref and fetch it if tracking exists
+            with contextlib.suppress(Exception):
+                fetch_remote_ref_if_needed(clean_ref, target_worktree=target_worktree)
+            return clean_ref
+    except Exception as e:
+        logger.debug("rev-parse local branch check failed: %s", e)
+    return None
+
+
+def _as_qualified_ref(clean_ref: str, target_worktree: str) -> str | None:
+    """A ref that already starts with ``origin/`` or ``refs/`` and verifies as given."""
+    if not (clean_ref.startswith("origin/") or clean_ref.startswith("refs/")):
+        return None
+    try:
+        res = run_git(
+            ["rev-parse", "--verify", clean_ref],
+            cwd=target_worktree,
+            check=False,
+            timeout=30,
+        )
+        if res.returncode == 0:
+            return clean_ref
+    except Exception as e:
+        logger.debug("rev-parse direct ref check failed: %s", e)
+    return None
+
+
+def _as_remote_tracking(clean_ref: str, target_worktree: str) -> str | None:
+    """``origin/<ref>`` when ``origin/<ref>`` or ``refs/remotes/origin/<ref>`` exists."""
+    for remote_candidate in [f"origin/{clean_ref}", f"refs/remotes/origin/{clean_ref}"]:
+        try:
+            res = run_git(
+                ["rev-parse", "--verify", remote_candidate],
+                cwd=target_worktree,
+                check=False,
+                timeout=30,
+            )
+            if res.returncode == 0:
+                return f"origin/{clean_ref}"
+        except Exception as e:
+            logger.debug("rev-parse remote tracking check failed: %s", e)
+    return None
+
+
+def _after_remote_fetch(clean_ref: str, target_worktree: str) -> str | None:
+    """The local branch, else ``origin/<ref>``, once a fetch from origin succeeded."""
+    if not fetch_remote_ref_if_needed(clean_ref, target_worktree=target_worktree):
+        return None
+    try:
+        res = run_git(
+            ["rev-parse", "--verify", f"refs/heads/{clean_ref}"],
+            cwd=target_worktree,
+            check=False,
+            timeout=30,
+        )
+        if res.returncode == 0:
+            return clean_ref
+        res_remote = run_git(
+            ["rev-parse", "--verify", f"origin/{clean_ref}"],
+            cwd=target_worktree,
+            check=False,
+            timeout=30,
+        )
+        if res_remote.returncode == 0:
+            return f"origin/{clean_ref}"
+    except Exception as e:
+        logger.debug("rev-parse after fetch failed: %s", e)
+    return None
+
+
+def _pull_request_head_via_gh(pr_num: str, target_worktree: str) -> str | None:
+    """The head commit SHA of pull request ``pr_num`` as reported by ``gh pr view``."""
+    try:
+        res = subprocess.run(
+            ["gh", "pr", "view", pr_num, "--json", "headRefOid", "-q", ".headRefOid"],
+            cwd=target_worktree,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+    except Exception as e:
+        logger.debug("gh pr view failed: %s", e)
+    return None
+
+
+def _as_pull_request(clean_ref: str, target_worktree: str) -> str | None:
+    """A PR ref (``pull/<n>/head``, ``refs/pull/<n>/head`` or ``pr-<n>``): fetched to ``pr-<n>``, else its gh head."""
+    pr_match = re.search(r"pull/(\d+)/head", clean_ref) or re.search(r"pr-(\d+)", clean_ref)
+    if not pr_match:
+        return None
+    pr_num = pr_match.group(1)
+    pr_target = f"pr-{pr_num}"
+    try:
+        res = run_git(
+            ["fetch", "origin", f"+pull/{pr_num}/head:{pr_target}"],
+            cwd=target_worktree,
+            check=False,
+            timeout=30,
+        )
+        if res.returncode == 0:
+            return pr_target
+    except Exception as e:
+        logger.debug("fetch PR ref failed: %s", e)
+    return _pull_request_head_via_gh(pr_num, target_worktree)
+
+
+def _as_direct_ref(clean_ref: str, target_worktree: str) -> str | None:
+    """The ref as given, when ``git rev-parse --verify`` accepts it."""
+    try:
+        res = run_git(
+            ["rev-parse", "--verify", clean_ref],
+            cwd=target_worktree,
+            check=False,
+            timeout=15,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return clean_ref
+    except Exception as e:
+        logger.debug("Final rev-parse failed: %s", e)
+    return None
+
+
+# Lookup stages of resolve_git_ref in order; the first non-None result wins.
+_REF_RESOLVERS: tuple[Callable[[str, str], str | None], ...] = (
+    _as_commit_sha,
+    _as_local_branch,
+    _as_qualified_ref,
+    _as_remote_tracking,
+    _after_remote_fetch,
+    _as_pull_request,
+    _as_direct_ref,
+)
+
+
+def resolve_git_ref(ref_name: str, target_worktree: str = ".") -> str:
     """Resolve execution or plan ref across commit SHAs, local branches, and remote refs.
 
-    Lookup order:
+    Lookup order (``_REF_RESOLVERS``):
     1. Commit SHA (40-char or short hex matching valid commit object).
     2. Local branch ref (`refs/heads/<ref_name>`).
     3. Remote tracking ref (`origin/<ref_name>` or `refs/remotes/origin/<ref_name>`).
@@ -105,131 +271,10 @@ def resolve_git_ref(ref_name: str, target_worktree: str = ".") -> str:  # noqa: 
     clean_ref = ref_name.strip().strip("/")
     if not clean_ref:
         raise RuntimeError("Cannot resolve empty git ref.")
-
-    # 1. Check if clean_ref is a hex commit SHA (7 to 40 hex chars)
-    if re.fullmatch(r"[0-9a-fA-F]{7,40}", clean_ref):
-        try:
-            res = run_git(
-                ["rev-parse", "--verify", f"{clean_ref}^{{commit}}"],
-                cwd=target_worktree,
-                check=False,
-                timeout=15,
-            )
-            if res.returncode == 0 and res.stdout.strip():
-                return res.stdout.strip()
-        except Exception as e:
-            logger.debug("rev-parse commit check failed: %s", e)
-
-    # 2. Check if clean_ref is a valid local branch
-    try:
-        res = run_git(
-            ["rev-parse", "--verify", f"refs/heads/{clean_ref}"],
-            cwd=target_worktree,
-            check=False,
-            timeout=30,
-        )
-        if res.returncode == 0:
-            # Check if origin has an updated ref and fetch it if tracking exists
-            with contextlib.suppress(Exception):
-                fetch_remote_ref_if_needed(clean_ref, target_worktree=target_worktree)
-            return clean_ref
-    except Exception as e:
-        logger.debug("rev-parse local branch check failed: %s", e)
-
-    # Check if clean_ref already starts with origin/ or refs/
-    if clean_ref.startswith("origin/") or clean_ref.startswith("refs/"):
-        try:
-            res = run_git(
-                ["rev-parse", "--verify", clean_ref],
-                cwd=target_worktree,
-                check=False,
-                timeout=30,
-            )
-            if res.returncode == 0:
-                return clean_ref
-        except Exception as e:
-            logger.debug("rev-parse direct ref check failed: %s", e)
-
-    # 3. Check if origin/<clean_ref> or refs/remotes/origin/<clean_ref> exists
-    for remote_candidate in [f"origin/{clean_ref}", f"refs/remotes/origin/{clean_ref}"]:
-        try:
-            res = run_git(
-                ["rev-parse", "--verify", remote_candidate],
-                cwd=target_worktree,
-                check=False,
-                timeout=30,
-            )
-            if res.returncode == 0:
-                return f"origin/{clean_ref}"
-        except Exception as e:
-            logger.debug("rev-parse remote tracking check failed: %s", e)
-
-    # 4. Attempt remote fetch if not found locally
-    if fetch_remote_ref_if_needed(clean_ref, target_worktree=target_worktree):
-        try:
-            res = run_git(
-                ["rev-parse", "--verify", f"refs/heads/{clean_ref}"],
-                cwd=target_worktree,
-                check=False,
-                timeout=30,
-            )
-            if res.returncode == 0:
-                return clean_ref
-            res_remote = run_git(
-                ["rev-parse", "--verify", f"origin/{clean_ref}"],
-                cwd=target_worktree,
-                check=False,
-                timeout=30,
-            )
-            if res_remote.returncode == 0:
-                return f"origin/{clean_ref}"
-        except Exception as e:
-            logger.debug("rev-parse after fetch failed: %s", e)
-
-    # 5. Check if clean_ref matches PR ref (e.g. pull/<n>/head or refs/pull/<n>/head or pr-<n>)
-    pr_match = re.search(r"pull/(\d+)/head", clean_ref) or re.search(r"pr-(\d+)", clean_ref)
-    if pr_match:
-        pr_num = pr_match.group(1)
-        pr_target = f"pr-{pr_num}"
-        try:
-            res = run_git(
-                ["fetch", "origin", f"+pull/{pr_num}/head:{pr_target}"],
-                cwd=target_worktree,
-                check=False,
-                timeout=30,
-            )
-            if res.returncode == 0:
-                return pr_target
-        except Exception as e:
-            logger.debug("fetch PR ref failed: %s", e)
-
-        try:
-            res = subprocess.run(
-                ["gh", "pr", "view", pr_num, "--json", "headRefOid", "-q", ".headRefOid"],
-                cwd=target_worktree,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=15,
-            )
-            if res.returncode == 0 and res.stdout.strip():
-                return res.stdout.strip()
-        except Exception as e:
-            logger.debug("gh pr view failed: %s", e)
-
-    # Final direct check with git rev-parse --verify clean_ref
-    try:
-        res = run_git(
-            ["rev-parse", "--verify", clean_ref],
-            cwd=target_worktree,
-            check=False,
-            timeout=15,
-        )
-        if res.returncode == 0 and res.stdout.strip():
-            return clean_ref
-    except Exception as e:
-        logger.debug("Final rev-parse failed: %s", e)
-
+    for resolver in _REF_RESOLVERS:
+        resolved = resolver(clean_ref, target_worktree)
+        if resolved is not None:
+            return resolved
     raise RuntimeError(f"Target git reference '{ref_name}' could not be resolved locally or remotely.")
 
 

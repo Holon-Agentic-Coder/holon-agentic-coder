@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -229,3 +230,89 @@ def test_dry_run_counts_a_sibling_fingerprint_once(tmp_path: Path) -> None:
     real = ws.promote()
 
     assert _ids(dry) == _ids(real) == ["KB-failure-sibling2"]
+
+
+_RUN_VARYING_KEYS = ("wilson_lower", "total_executions", "success_count", "failure_count", "ledger_refs")
+
+
+def _assert_stable_file(path: Path) -> None:
+    """A promoted file carries no counters, ledger refs or counter-bearing advisory text."""
+    text = path.read_text(encoding="utf-8")
+    assert not any(f'"{key}"' in text for key in _RUN_VARYING_KEYS)
+    payload = json.loads(text)["payload"]
+    advisory = str(payload.get("description") or payload.get("advisory"))
+    assert not re.search(r"\d+\s*/\s*\d+", advisory)
+    assert not re.search(r"\d+ executions", advisory)
+
+
+def _two_workspaces(tmp_path: Path) -> tuple[_Workspace, _Workspace]:
+    """Two independent flow workspaces under one tmp directory."""
+    for name in ("flow_a", "flow_b"):
+        (tmp_path / name).mkdir()
+    return _Workspace(tmp_path / "flow_a"), _Workspace(tmp_path / "flow_b")
+
+
+def test_same_context_promotes_identical_files_across_workspaces(tmp_path: Path) -> None:
+    """Two flows promoting one fingerprint with different execution counts write byte-identical KB and WB files."""
+    ws_a, ws_b = _two_workspaces(tmp_path)
+    ws_a.seed("ascend02_fp", "success", PROVEN_SUCCESS_TRIALS)
+    ws_b.seed("ascend02_fp", "success", PROVEN_SUCCESS_TRIALS + 9)
+
+    items_a, items_b = ws_a.promote(), ws_b.promote()
+
+    assert _ids(items_a) == _ids(items_b) == ["KB-pattern-ascend02", "WB-heuristic-ascend02"]
+    for file_a, file_b in (
+        (Path(ws.kb_dir, "patterns", "KB-pattern-ascend02.json") for ws in (ws_a, ws_b)),
+        (Path(ws.wb_dir, "heuristics", "WB-heuristic-ascend02.json") for ws in (ws_a, ws_b)),
+    ):
+        assert file_a.read_bytes() == file_b.read_bytes()
+        _assert_stable_file(file_a)
+    counts = [next(i for i in items if "kb_id" in i)["evidence"]["success_count"] for items in (items_a, items_b)]
+    assert counts == [PROVEN_SUCCESS_TRIALS, PROVEN_SUCCESS_TRIALS + 9]
+
+
+def test_same_failure_context_promotes_identical_files_across_workspaces(tmp_path: Path) -> None:
+    """Two flows promoting one failing fingerprint with different failure counts write byte-identical KB files."""
+    ws_a, ws_b = _two_workspaces(tmp_path)
+    ws_a.seed("failsame_fp", "failure", 3)
+    ws_b.seed("failsame_fp", "failure", 7)
+
+    items_a, items_b = ws_a.promote(), ws_b.promote()
+
+    assert _ids(items_a) == _ids(items_b) == ["KB-failure-failsame"]
+    file_a = Path(ws_a.kb_dir, "failure_modes", "KB-failure-failsame.json")
+    assert file_a.read_bytes() == Path(ws_b.kb_dir, "failure_modes", "KB-failure-failsame.json").read_bytes()
+    _assert_stable_file(file_a)
+    assert [items_a[0]["evidence"]["failure_count"], items_b[0]["evidence"]["failure_count"]] == [3, 7]
+
+
+def _append_dated_failures(ws: _Workspace, fingerprint: str, rows: list[tuple[str, str, str]]) -> None:
+    """Append failure rows given as (created_at, action, error_context) and sync them into the index."""
+    offset = len(ws.ledger.read_text(encoding="utf-8").splitlines())
+    with open(ws.ledger, "a", encoding="utf-8") as f:
+        for i, (created_at, action, error_context) in enumerate(rows):
+            row = {
+                "action_id": f"act-{fingerprint}-failure-{offset + i}",
+                "context_fingerprint": fingerprint,
+                "action": action,
+                "target": f"src/{fingerprint}.py",
+                "verdict": "failure",
+                "error_context": error_context,
+                "created_at": created_at,
+            }
+            f.write(json.dumps(row) + "\n")
+    ws.db.sync_ledger(str(ws.ledger))
+
+
+def test_newer_divergent_failures_do_not_change_failure_file_bytes(tmp_path: Path) -> None:
+    """Flows sharing early failures but holding different newest rows write byte-identical KB-failure files."""
+    ws_a, ws_b = _two_workspaces(tmp_path)
+    shared = [(f"2026-11-0{i}T00:00:00+00:00", "Run the build", "RuntimeError: boom") for i in range(1, 4)]
+    _append_dated_failures(ws_a, "diverge1_fp", [*shared, ("2026-11-20T00:00:00+00:00", "Retry A", "KeyError: a")])
+    _append_dated_failures(ws_b, "diverge1_fp", [*shared, ("2026-11-21T00:00:00+00:00", "Retry B", "OSError: b")])
+
+    assert _ids(ws_a.promote()) == _ids(ws_b.promote()) == ["KB-failure-diverge1"]
+    file_a = Path(ws_a.kb_dir, "failure_modes", "KB-failure-diverge1.json")
+    assert file_a.read_bytes() == Path(ws_b.kb_dir, "failure_modes", "KB-failure-diverge1.json").read_bytes()
+    payload = json.loads(file_a.read_text(encoding="utf-8"))["payload"]
+    assert (payload["action"], payload["symptoms"]) == ("Run the build", ["RuntimeError: boom"])

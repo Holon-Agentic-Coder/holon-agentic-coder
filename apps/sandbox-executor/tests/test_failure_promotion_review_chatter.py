@@ -90,6 +90,15 @@ def test_review_failures_across_two_flows_still_promote(tmp_path: Path) -> None:
     assert payload["symptoms"] == ["Reviewer flagged a defect"]
 
 
+def test_review_failures_across_flows_promote_beyond_recent_sample(tmp_path: Path) -> None:
+    ws = _Workspace(tmp_path)
+    ws.append_rows([_row(f"ACT-FIND-A{i}", FLOW_A, i) for i in range(2)])
+    ws.append_rows([_row(f"ACT-FIND-B{i}", FLOW_B, 10 + i) for i in range(5)])
+
+    assert [item["kb_id"] for item in _failure_items(ws.promote())] == [KB_FAILURE_ID]
+    assert ws.failure_file().exists()
+
+
 def test_non_review_repeated_failure_still_promotes(tmp_path: Path) -> None:
     ws = _Workspace(tmp_path)
     ws.append_rows([_row("act-x-1", "src/x.py", 1), _row("act-x-2", "src/x.py", 2)])

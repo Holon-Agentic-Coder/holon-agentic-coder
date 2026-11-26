@@ -154,13 +154,22 @@ def _fetch_recent_context_records(cur: Any, context_fingerprint: str) -> list[An
     return cur.fetchall()
 
 
+def _is_review_chatter_context(cur: Any, context_fingerprint: str) -> bool:
+    cur.execute(
+        "SELECT record_id, target FROM action_records WHERE context_fingerprint = ?;",
+        (context_fingerprint,),
+    )
+    return is_single_flow_review_chatter(cur.fetchall())
+
+
 def _promote_failure_candidate(
     eval_res: Any,
     records: list[Any],
     kb_dir: str,
     dry_run: bool,
+    review_chatter: bool = False,
 ) -> dict[str, Any] | None:
-    if eval_res.failure_ladder_state not in ("repeated", "proven-fail") or is_single_flow_review_chatter(records):
+    if eval_res.failure_ladder_state not in ("repeated", "proven-fail") or review_chatter:
         return None
     kb_id = f"KB-failure-{eval_res.context_fingerprint[:8]}"
     if os.path.exists(os.path.join(kb_dir, "failure_modes", f"{kb_id}.json")):
@@ -293,7 +302,8 @@ def promote_pending_candidates(
             eval_res = evaluate_action_promotion(sig_hash, index_db=db)
             records = _fetch_recent_context_records(cur, sig["context_fingerprint"])
 
-            failure_item = _promote_failure_candidate(eval_res, records, kb_dir, dry_run)
+            review_chatter = _is_review_chatter_context(cur, sig["context_fingerprint"])
+            failure_item = _promote_failure_candidate(eval_res, records, kb_dir, dry_run, review_chatter)
             if failure_item and failure_item["kb_id"] in seen_promoted_ids:
                 failure_item = None
             if failure_item:

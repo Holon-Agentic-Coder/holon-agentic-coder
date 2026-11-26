@@ -12,7 +12,8 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
-from sandbox_executor.preflight import PreflightResult, PreflightStatus, is_model_error, matching_statuses
+from sandbox_executor.preflight import PreflightResult, PreflightStatus, matching_statuses
+from sandbox_executor.preflight_model_error import is_model_error
 
 logger = logging.getLogger(__name__)
 

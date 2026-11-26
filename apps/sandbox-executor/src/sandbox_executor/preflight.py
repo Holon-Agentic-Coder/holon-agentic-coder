@@ -18,6 +18,7 @@ from typing import Any
 from sandbox_executor import claude_token_migration, local_llm
 from sandbox_executor.agent_defaults import AGENT_IMAGE_MAPPING, normalise_agent_id
 from sandbox_executor.claude_credential import pin_claude_credential, resolve_claude_credential_with_lookup
+from sandbox_executor.preflight_model_error import is_model_error
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +38,6 @@ _REDACTION_PLACEHOLDER = "***REDACTED***"
 _DOCKER_RUN_ENV_FILE_INSERT_INDEX = 2
 _PROBE_CONTAINER_PREFIX = "holon-preflight-"
 _PROBE_CONTAINER_ID_LENGTH = 12
-_MODEL_ERROR_RE = re.compile(
-    r"invalid[\s_-]+model|unknown[\s_-]+model|unsupported[\s_-]+model|no\s+such\s+model"
-    r"|model[\s_-]+not[\s_-]+found|model\b[^\n]{0,80}\b(?:not\s+found|does\s+not\s+exist)",
-    re.IGNORECASE,
-)
 _SENSITIVE_ENV_VARS = (
     "HOLON_AGENT_KEY",
     "HOLON_AGENT_SETTINGS",
@@ -171,10 +167,6 @@ def classify_probe_output(exit_code: int | None, output: str) -> PreflightStatus
 
 def matching_statuses(text: str) -> set[PreflightStatus]:
     return {status for status, pattern in _PATTERNS if pattern.search(text)}
-
-
-def is_model_error(text: str) -> bool:
-    return _MODEL_ERROR_RE.search(text) is not None
 
 
 def preflight_skipped_by_env(environ: Mapping[str, str] | None = None) -> bool:

@@ -90,7 +90,7 @@ class IterationGates:
     ci_status: Mapping[str, Any] = field(default_factory=dict)
     base_branch: str | None = None
     fingerprint_of: Callable[[str], str | None] | None = None
-    mode: str = "full"  # ``scoped`` when the iteration re-reviewed only ``context.review_scope_paths``.
+    mode: str = "full"  # ``scoped`` for a delta pass or a re-review of only ``context.review_scope_paths``.
 
 
 def pipeline_state_of(ci_green: bool | None, ci_status: Mapping[str, Any]) -> str:

@@ -405,7 +405,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             gate_base = resolved_target.base_branch or target_branch
             fingerprint_of = functools.partial(approval_fingerprint_of, repo_dir, base_branch=gate_base)
             gate_facts = (reviewers, ensemble_size, mergeable, blockers, ci.ci_green, last_ci_status, gate_base)
-            gate_mode = delta_review.current_decision(context).mode
+            scoped = delta_review.current_decision(context).scoped or bool(context.review_scope_paths)
+            gate_mode = "scoped" if scoped else "full"  # A conflict re-review saw only the scoped paths.
             facts = IterationGates(
                 resolved_target.head_sha, iteration, *gate_facts, fingerprint_of=fingerprint_of, mode=gate_mode
             )

@@ -567,6 +567,25 @@ class TestScopedDeltaReviewInTheLoop:
         assert diff_gate_of(ctx).mode == "full"
         assert all("Scoped Delta Review" not in call["request"].pr_body for call in ensemble.calls)
 
+    def test_a_conflict_scope_re_review_records_a_scoped_gate_even_when_the_delta_is_full(self, tmp_path, monkeypatch):
+        from sandbox_executor.flow.review.approval_gates import diff_gate_of
+
+        monkeypatch.setenv("HOLON_SCOPED_REVIEW_MAX_LINES", "0")
+        _, work = build_flow_worktree(tmp_path)
+
+        def real_head(repo_dir: str, review_target: str):
+            return ReviewTarget(review_target, review_target, _git(work, "rev-parse", "HEAD")), None
+
+        ctx = _ensemble_ctx(work)
+        ctx.review_scope_paths = ["src/app.py"]
+        ensemble = FakeEnsemble(lambda size: [clean_reviewer(1)])
+        with _LoopStubs(), patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", real_head):
+            res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1, ensemble_size=1, run_ensemble_fn=ensemble)
+
+        assert res["consensus"]["approved"] is True
+        assert self._modes(ctx) == ["1: full (disabled)."]
+        assert diff_gate_of(ctx).mode == "scoped"
+
 
 def test_an_injected_adapter_receives_every_github_call_of_the_loop(tmp_path):
     """``run_review_loop(github=...)`` routes PR, mergeability, CI and posting through that one adapter."""

@@ -120,6 +120,8 @@ def _dispatch_review_ensemble(
         container_args.append("--skip-push")
     if context.review_scope_paths:
         container_args.append(f"--review-paths={','.join(context.review_scope_paths)}")
+    # The host records the requested mode: a container that falls back to full still counts as scoped, which only
+    # understates coverage (the gate reads scoped and the scoped chain advances) and never overstates it.
     delta_request = forward_scoped_decision(context)
     if delta_request:
         container_args.append(f"--delta-request={delta_request}")

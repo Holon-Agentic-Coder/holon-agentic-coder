@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import os
 import re
 import subprocess
 from collections.abc import Callable
@@ -15,6 +17,9 @@ HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 NEW_FILE_HEADER_PREFIX = "+++ b/"
 DIFF_OPTIONS = ("-c", "core.quotePath=false", "diff", "-U0", "--no-color", "--no-ext-diff")
 CHANGED_FILE_FILTER = ("--diff-filter=ACMR", "--ignore-submodules=all")
+TARGET_REF = "origin/main"
+MAIN_FETCH_REFSPEC = "+refs/heads/main:refs/remotes/origin/main"
+FETCH_TIMEOUT_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -32,11 +37,52 @@ def git_output_bytes(root: Path, *args: str) -> bytes | None:
     return completed.stdout if completed.returncode == 0 else None
 
 
-def merge_base(root: Path) -> str | None:
-    completed = run_git(root, "merge-base", "HEAD", "origin/main")
+def existing_merge_base(root: Path) -> str | None:
+    completed = run_git(root, "merge-base", "HEAD", TARGET_REF)
     if completed is None or completed.returncode != 0:
         return None
     return completed.stdout.strip() or None
+
+
+def has_origin_remote(root: Path) -> bool:
+    completed = run_git(root, "remote", "get-url", "origin")
+    return completed is not None and completed.returncode == 0
+
+
+def is_shallow_repository(root: Path) -> bool:
+    completed = run_git(root, "rev-parse", "--is-shallow-repository")
+    return completed is not None and completed.stdout.strip() == "true"
+
+
+def fetch_from_origin(root: Path, *args: str) -> None:
+    # why: a credential prompt would hang CI and the containers
+    environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run(
+            ["git", "fetch", "--quiet", "origin", *args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=FETCH_TIMEOUT_SECONDS,
+            env=environment,
+        )
+
+
+def deepen_towards_origin_main(root: Path) -> None:
+    fetch_from_origin(root, MAIN_FETCH_REFSPEC)
+    if is_shallow_repository(root):
+        fetch_from_origin(root, "--unshallow", MAIN_FETCH_REFSPEC)
+
+
+def merge_base(root: Path) -> str | None:
+    base = existing_merge_base(root)
+    if base is not None:
+        return base
+    if not has_origin_remote(root):
+        return None
+    deepen_towards_origin_main(root)
+    return existing_merge_base(root)
 
 
 def hunk_added_lines(hunk_header: str) -> range:

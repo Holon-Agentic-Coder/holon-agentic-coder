@@ -105,7 +105,6 @@ def _reference_lines(references: Any) -> list[str]:
     return ["## References", line, ""]
 
 
-# why: restored payloads and intents may carry N/A, which must not hide the runner
 _PLACEHOLDER_VALUES = frozenset({"n/a", "na", "none", "null", "unknown", "-"})
 
 

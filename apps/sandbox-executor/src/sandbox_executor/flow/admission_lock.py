@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import glob
 import os
 import subprocess
 import time
@@ -8,6 +9,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 from sandbox_executor.flow.in_flight import GitRunner
+from sandbox_executor.flow.run_lock import RUN_LOCK_PREFIX
+from sandbox_executor.flow.run_lock_record import RunLockHolder
 from sandbox_executor.git import run_git
 
 # why: the common git dir is shared by every worktree and never holds a tracked path
@@ -69,3 +72,38 @@ def admission_lock(
             fcntl.flock(descriptor, fcntl.LOCK_UN)
     finally:
         os.close(descriptor)
+
+
+def _read_lock_text(descriptor: int) -> str:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    while chunk := os.read(descriptor, 4096):
+        chunks.append(chunk)
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def _live_holder_worktree(path: str) -> str | None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return None
+    try:
+        try:
+            # why: a non-blocking shared flock probes an exclusive runner lock without mutating or creating files
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            holder = RunLockHolder.from_text(_read_lock_text(descriptor))
+            # why: a forked child can inherit a dead runner's flock fd, so dead local pids count as parked
+            if holder is None or holder.is_dead_here():
+                return None
+            return os.path.realpath(holder.worktree)
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return None
+    finally:
+        os.close(descriptor)
+
+
+def live_runner_worktrees(repo_dir: str, run_git: GitRunner | None = None) -> frozenset[str]:
+    common_dir = os.path.dirname(admission_lock_path(repo_dir, run_git))
+    pattern = os.path.join(common_dir, f"{RUN_LOCK_PREFIX}*.lock")
+    return frozenset(worktree for path in glob.glob(pattern) if (worktree := _live_holder_worktree(path)) is not None)

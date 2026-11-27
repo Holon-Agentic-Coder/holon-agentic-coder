@@ -11,6 +11,9 @@ from sandbox_executor.calibration import PredictedMetrics, generate_calibration,
 from sandbox_executor.flow import FlowContext, StageStatus, run_calibrate_stage
 from sandbox_executor.ref_names import calibration_branch
 
+from tests.calibrate_scenarios import own_copy
+from tests.repo_templates import shared_template
+
 ROOT_INTENT = "I-1794000000-root/_"
 CHILD_INTENT = "I-1794000000-root--1-child/_"
 PLAN_ID = "P-1794000001-ab12cd34-a-m"
@@ -78,9 +81,15 @@ def drop_plan_ref(layout: SimpleNamespace, case: str) -> None:
         git(layout.host, "push", "-q", "origin", "--delete", PLAN)
 
 
+@pytest.fixture(scope="session")
+def nested_layout_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> SimpleNamespace:
+    root, built = shared_template(tmp_path_factory, "calibrate-nested-layout", make_nested_layout)
+    return SimpleNamespace(root=root, repos=built)
+
+
 @pytest.fixture
-def layout(tmp_path: Path) -> SimpleNamespace:
-    return make_nested_layout(tmp_path)
+def layout(nested_layout_template: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
+    return own_copy(nested_layout_template, tmp_path)
 
 
 @pytest.mark.parametrize(

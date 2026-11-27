@@ -25,8 +25,9 @@ from sandbox_executor.flow.stage5 import Stage5Steps, run_stage5, standalone_con
 from sandbox_executor.flow.stages.calibrate import stage5_steps
 from sandbox_executor.ledger import read_merged_rows, read_merged_text
 
-from tests.flow.helpers import _configure_identity
+from tests.calibrate_scenarios import build_no_fallback_repo, own_path_copy
 from tests.flow.sleep_patch import scoped_sleep_patch
+from tests.repo_templates import shared_template
 
 EXECUTION_BRANCH = "I-100-intent/P-200-plan/E-300-exec/_"
 CALIBRATED_BRANCH = "I-100-intent/P-200-plan/E-300-exec/calibrated"
@@ -41,21 +42,19 @@ def _git(repo: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout
 
 
+@pytest.fixture(scope="session")
+def no_fallback_repo_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> Path:
+    root, _ = shared_template(
+        tmp_path_factory,
+        "calibrate-no-fallback-repo",
+        lambda r: build_no_fallback_repo(r, EXECUTION_BRANCH, LEDGER_REL, SEED_ROW),
+    )
+    return root
+
+
 @pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    """A git repository on the execution branch with a seeded ledger and one execution commit."""
-    _git(tmp_path, "init", "-q", "-b", "main")
-    _configure_identity(tmp_path)
-    ledger = tmp_path / LEDGER_REL
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(SEED_ROW, encoding="utf-8")
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-q", "-m", "initial")
-    _git(tmp_path, "checkout", "-q", "-b", EXECUTION_BRANCH)
-    (tmp_path / "src.py").write_text("x = 1\n", encoding="utf-8")
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-q", "-m", "execution change")
-    return tmp_path
+def repo(no_fallback_repo_template: Path, tmp_path: Path) -> Path:
+    return own_path_copy(no_fallback_repo_template, tmp_path)
 
 
 @pytest.fixture

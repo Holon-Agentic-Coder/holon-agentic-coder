@@ -27,7 +27,15 @@ You are the **Holon Conflict Resolver** working in `{repo_dir}`, on model tier `
    domain language; add no new imports from entrypoints into the host flow engine.
 6. A `uv.lock` change that no `pyproject.toml` dependency or `requires-python` change explains is a defect. Never edit
    the frozen module budget configuration (`holon-config/hygiene/module_budgets.json`).
-7. When the two sides are incompatible and you cannot keep both intents without guessing, do not guess: write
+7. Code is self-explaining: names state the intent of every statement, and a block that cannot be named where it is gets
+   extracted into a function whose name says what it does. Write no docstrings and no explanatory comments in any
+   language (Python, shell, Makefile, Dockerfile, YAML, TOML, JavaScript). The only allowed comment is a `# why:`
+   comment recording a reason the code cannot show (a constraint, an incident, a non-obvious decision), never what the
+   code does. Machine directives stay allowed: shebangs, encoding lines, `# noqa`, `# type:`, `# pragma`, `# fmt:` and
+   shellcheck directives. Do not remove existing docstrings or comments as part of unrelated work.
+   `scripts/check_self_explaining.py` (run by `uv run task lint`) enforces this on added lines, so editing or moving a
+   docstring counts as adding one.
+8. When the two sides are incompatible and you cannot keep both intents without guessing, do not guess: write
    `CANNOT_DECIDE: <reason>` to `{decision_file}` and stop. The harness runs lint and the tests itself after your turn,
    so the verdict never rests on what you report.
 

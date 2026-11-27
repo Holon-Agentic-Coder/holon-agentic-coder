@@ -1,16 +1,3 @@
-"""Stage 3 resume salvage: commit an interrupted run's leftover edits as labelled partial work.
-
-A killed container or a usage limit leaves the executor's edits uncommitted in the mounted host worktree, and the next
-dispatch refuses a dirty mount. Before dispatching a resume, the host commits those leftovers onto the failed execution
-branch the worktree is on, pushes it and appends one superseding ``failure`` row carrying ``partial_head``, so the
-existing partial-work lookup finds the branch. The ledgers and this run's notes are engine-owned and never committed
-here, and nothing is reset, cleaned, stashed or amended.
-
-An execution branch a host crash left with commits past the plan tip but no summary row is adopted the same way: its
-leftovers, its own notes file included, are committed first and a superseding ``failure`` row records its tip as
-``partial_head``. A dirty worktree that would still block the executor's checkout is reported with the file names.
-"""
-
 from __future__ import annotations
 
 import functools
@@ -56,13 +43,11 @@ _EXECUTION_BRANCH = re.compile(r"/(E-\d+-[^/]+)/_$")
 
 
 class SalvageError(RuntimeError):
-    """The leftovers could not be salvaged safely; the message is redacted and names the branch."""
+    pass
 
 
 @dataclass(frozen=True)
 class SalvageResult:
-    """What a salvage did: ``sha`` is None and ``files`` empty when nothing was committed."""
-
     branch: str | None = None
     sha: str | None = None
     files: list[str] = field(default_factory=list)
@@ -90,7 +75,6 @@ def _status_paths(
 
 
 def leftover_paths(repo_dir: str, exec_id: str | None = None) -> list[str]:
-    """Paths with uncommitted edits, deletions or non-ignored untracked files, minus engine-owned and scratch files."""
     return _status_paths(repo_dir, exec_id)[0]
 
 
@@ -102,7 +86,6 @@ def _current_branch(repo_dir: str) -> str | None:
 
 
 def _salvage_branch(repo_dir: str, plan_prefix: str) -> tuple[str, str]:
-    """The failed execution branch of this plan the dirty worktree is on, with its execution id."""
     branch = _current_branch(repo_dir)
     match = _EXECUTION_BRANCH.search(branch) if branch else None
     if not branch or not match or not branch.startswith(f"{plan_prefix}/E-"):
@@ -160,7 +143,6 @@ def _salvage_row(
 
 
 def _local_ahead_of_origin(repo_dir: str, branch: str) -> bool:
-    """Whether the local ``branch`` exists and holds commits origin's copy lacks (so it has to be pushed)."""
     local = run_git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}"], cwd=repo_dir, check=False)
     if local.returncode != 0 or not isinstance(local.stdout, str) or not local.stdout.strip():
         return False
@@ -170,13 +152,6 @@ def _local_ahead_of_origin(repo_dir: str, branch: str) -> bool:
 def _publish_partial(
     context: FlowContext, target: tuple[str, str], sha: str, plan_prefix: str, row: Callable[[], dict[str, Any]]
 ) -> None:
-    """Push the branch and record ``sha`` as its partial head (a never-pushed branch is pushed with that row).
-
-    A branch whose origin copy already holds every local commit is not pushed; only its superseding row is appended.
-
-    Raises:
-        SalvageError: If the push or the ledger append fails; the local commit stays so a later resume retries.
-    """
     repo_dir = context.target_worktree
     branch = target[0]
     if _origin_has_branch(repo_dir, branch):
@@ -184,14 +159,13 @@ def _publish_partial(
         error = error or _fetch_branch_prefix_error(repo_dir, plan_prefix)
         error = error or _append_superseding_execution_row(context, branch, row())
     else:
-        # Never pushed: the row is committed first and the branch reaches origin with it, never without one.
+        # why: a never-pushed branch reaches origin with its row committed first, never without one.
         error = publish_with_first_row(context, branch, row)
     if error is not None:
         raise SalvageError(f"partial work committed as {sha[:12]} on '{branch}' but not recorded: {error}")
 
 
 def _unrecorded_salvage_commit(repo_dir: str, branch: str, exec_id: str) -> tuple[str, list[str]] | None:
-    """HEAD and its files when HEAD is this run's salvage commit and no ledger row at or after it records it."""
     head = run_git(["log", "-1", "--format=%H%x00%cI%x00%s"], cwd=repo_dir, check=False)
     parts = head.stdout.strip().split("\0", 2) if head.returncode == 0 and isinstance(head.stdout, str) else []
     if len(parts) != 3 or not parts[2].startswith(f"execute: {exec_id} partial work (interrupted)"):
@@ -210,7 +184,6 @@ def _unrecorded_salvage_commit(repo_dir: str, branch: str, exec_id: str) -> tupl
 
 
 def _publish_pending_salvage(context: FlowContext, plan_prefix: str, extras: dict[str, Any]) -> SalvageResult:
-    """Record a salvage commit an earlier resume made but could not record; an empty result when there is none."""
     try:
         branch, exec_id = _salvage_branch(context.target_worktree, plan_prefix)
         pending = _unrecorded_salvage_commit(context.target_worktree, branch, exec_id)
@@ -225,11 +198,6 @@ def _publish_pending_salvage(context: FlowContext, plan_prefix: str, extras: dic
 
 
 def salvage_leftovers(context: FlowContext, plan_prefix: str, *, include_notes: bool = False) -> SalvageResult:
-    """Commit the worktree's leftovers as partial work, publish the branch and record it in ``executions.jsonl``.
-
-    ``include_notes`` is set only when adopting the unrecorded execution branch the worktree is on: its own notes file
-    is then committed with the leftovers and the row is marked ``adopted_unrecorded``.
-    """
     repo_dir = context.target_worktree
     extras: dict[str, Any] = {"adopted_unrecorded": True} if include_notes else {}
     notes_id = _salvage_branch(repo_dir, plan_prefix)[1] if include_notes else None
@@ -254,7 +222,6 @@ def salvage_leftovers(context: FlowContext, plan_prefix: str, *, include_notes: 
 
 
 def _adopt_unrecorded(context: FlowContext, candidate: _UnrecordedBranch, plan_prefix: str) -> None:
-    """Record ``candidate``'s tip as its partial head with a superseding ``failure`` row (publishing it if needed)."""
     summary = (
         f"Interrupted run: {candidate.commits_past_plan} commit(s) past the plan tip adopted on resume (host stopped "
         "before a summary row was recorded)."
@@ -270,7 +237,6 @@ def _adopt_unrecorded(context: FlowContext, candidate: _UnrecordedBranch, plan_p
 
 
 def _salvage_and_adopt(context: FlowContext, plan_prefix: str, existing: set[str]) -> str | None:
-    """Salvage leftovers and adopt the plan's unrecorded execution branch; the branch to resume from, if any."""
     candidate = _find_unrecorded_branch(
         context.target_worktree, context.plan_branch, plan_prefix, existing, context.log
     )
@@ -287,12 +253,6 @@ def _salvage_and_adopt(context: FlowContext, plan_prefix: str, existing: set[str
 
 
 def salvage_for_resume(context: FlowContext, plan_prefix: str, existing: set[str]) -> tuple[set[str], str | None]:
-    """Salvage leftovers and adopt an unrecorded execution branch before a Stage 3 resume dispatch.
-
-    Returns the execution-branch snapshot to use from here on (refreshed when a branch was recorded, as it may be new
-    on origin, so the executor's next branch is the only new one) and a Stage 3 failure message, or None when the
-    resume may go on. The checkpoint's execution branch follows a recorded branch.
-    """
     try:
         branch = _salvage_and_adopt(context, plan_prefix, existing)
     except SalvageError as exc:

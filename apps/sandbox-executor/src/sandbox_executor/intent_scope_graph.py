@@ -1,10 +1,4 @@
-"""Read-only import-graph and co-change helpers for ``holon intent-check``.
-
-The helpers map tracked Python files to dotted module names, parse their imports with ``ast``, and count which files
-changed together with a listed file in recent history. Git is only queried with ``ls-files`` and ``log``, so nothing
-here writes the index, a ref or a file.
-"""
-
+# why: intent-check runs before launch, so git is only queried with ls-files and log and nothing is written.
 from __future__ import annotations
 
 import ast
@@ -20,11 +14,6 @@ _COMMIT_SEPARATOR = "\x1e"
 
 
 def module_name(path: str) -> str | None:
-    """Return the dotted module name of a repository-relative ``.py`` path, or ``None`` for other paths.
-
-    Segments up to and including the last ``src`` segment are dropped; without one, segments before the first
-    ``tests`` segment are dropped, so ``apps/x/tests/test_a.py`` maps to ``tests.test_a``.
-    """
     pure = PurePosixPath(path)
     if pure.suffix != ".py":
         return None
@@ -39,7 +28,6 @@ def module_name(path: str) -> str | None:
 
 
 def is_test_path(path: str) -> bool:
-    """Whether a path is a test file: ``test_*.py``, ``*_test.py`` or any ``.py`` file under a ``tests`` directory."""
     pure = PurePosixPath(path)
     if pure.suffix != ".py":
         return False
@@ -47,7 +35,6 @@ def is_test_path(path: str) -> bool:
 
 
 def python_files(worktree: str) -> list[str]:
-    """List the tracked ``.py`` files of a worktree; an empty list when it is not a git repository."""
     result = run_git(["ls-files", "-z", "--", "*.py"], cwd=worktree, check=False)
     if result.returncode != 0:
         return []
@@ -55,7 +42,6 @@ def python_files(worktree: str) -> list[str]:
 
 
 def build_module_index(files: Iterable[str]) -> dict[str, str]:
-    """Map each dotted module name to its non-test path."""
     index: dict[str, str] = {}
     for path in files:
         name = module_name(path)
@@ -65,7 +51,6 @@ def build_module_index(files: Iterable[str]) -> dict[str, str]:
 
 
 def _resolve_from(own: str, is_package: bool, module: str | None, level: int) -> str | None:
-    """Resolve the base module of an ``ImportFrom`` node against the importing file's own module."""
     if level == 0:
         return module
     package = own.split(".") if own else []
@@ -78,7 +63,6 @@ def _resolve_from(own: str, is_package: bool, module: str | None, level: int) ->
 
 
 def imported_modules(worktree: str, path: str) -> set[str]:
-    """Return the dotted names a file imports; ``from pkg import mod`` yields both ``pkg`` and ``pkg.mod``."""
     try:
         tree = ast.parse(Path(worktree, path).read_bytes(), filename=path)
     except (OSError, SyntaxError, ValueError):
@@ -102,14 +86,12 @@ def _imports_module(imports: Iterable[str], module: str) -> bool:
 
 
 def importing_tests(imports_by_path: Mapping[str, set[str]], module: str) -> list[str]:
-    """Return the test files whose imports contain ``module`` or a module under it."""
     return sorted(
         path for path, imports in imports_by_path.items() if is_test_path(path) and _imports_module(imports, module)
     )
 
 
 def _indexed_prefix(index: Mapping[str, str], name: str) -> str | None:
-    """Return the longest dotted prefix of ``name`` (``name`` itself included) present in the index."""
     parts = name.split(".")
     for end in range(len(parts), 0, -1):
         candidate = ".".join(parts[:end])
@@ -119,14 +101,12 @@ def _indexed_prefix(index: Mapping[str, str], name: str) -> str | None:
 
 
 def imported_sources(index: Mapping[str, str], imports: Iterable[str]) -> list[str]:
-    """Map imported names to tracked source paths; a package is dropped when a module under it also resolved."""
     resolved = {found for name in imports if (found := _indexed_prefix(index, name))}
     specific = {name for name in resolved if not any(other.startswith(f"{name}.") for other in resolved)}
     return sorted(index[name] for name in specific)
 
 
 def reexporting_init(worktree: str, path: str) -> str | None:
-    """Return the sibling ``__init__.py`` of a module when it exists and imports that module."""
     pure = PurePosixPath(path)
     module = module_name(path)
     if pure.name == "__init__.py" or module is None:
@@ -138,7 +118,6 @@ def reexporting_init(worktree: str, path: str) -> str | None:
 
 
 def _commit_file_sets(log_output: str) -> list[set[str]]:
-    """Split ``git log --name-only --format=%x1e`` output into the set of paths of each commit."""
     chunks = log_output.split(_COMMIT_SEPARATOR)
     return [files for chunk in chunks if (files := {line.strip() for line in chunk.splitlines() if line.strip()})]
 
@@ -157,11 +136,6 @@ def co_changed(
     limit: int = CO_CHANGE_COMMIT_LIMIT,
     threshold: int = CO_CHANGE_THRESHOLD,
 ) -> dict[str, tuple[int, str]]:
-    """Map each partner that changed with a listed path in at least ``threshold`` of the last ``limit`` commits.
-
-    The value is ``(count, listed_path)`` for the listed path it shared the most commits with. Listed paths,
-    bookkeeping paths and partners no longer in the worktree are left out.
-    """
     args = ["-c", "core.quotePath=false", "log", "-n", str(limit), "--no-merges", "--no-renames", "--name-only"]
     result = run_git([*args, "--format=%x1e"], cwd=worktree, check=False)
     if result.returncode != 0:

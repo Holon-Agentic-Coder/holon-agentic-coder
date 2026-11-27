@@ -7,7 +7,7 @@ import pytest
 from tests.self_doc_scanner import (
     find_disallowed_comments,
     find_docstrings_and_string_statements,
-    is_permitted_test_comment,
+    is_allowlisted_comment,
 )
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -46,7 +46,7 @@ def test_governed_test_file_has_no_docstrings(relative_path: str) -> None:
 
 @pytest.mark.parametrize("relative_path", GOVERNED_TEST_FILES)
 def test_governed_test_file_has_only_permitted_comments(relative_path: str) -> None:
-    findings = find_disallowed_comments(read_governed_test_file(relative_path), is_permitted_test_comment)
+    findings = find_disallowed_comments(read_governed_test_file(relative_path), allow_why=True)
     assert findings == [], f"{relative_path}: {findings}"
 
 
@@ -68,4 +68,4 @@ def test_governed_test_file_has_only_permitted_comments(relative_path: str) -> N
     ],
 )
 def test_permitted_comment_rules(line_number: int, column: int, text: str, permitted: bool) -> None:
-    assert is_permitted_test_comment(line_number, text, column) is permitted
+    assert is_allowlisted_comment(line_number, text, column, allow_why=True) is permitted

@@ -1,10 +1,3 @@
-"""Carry an approval across a mechanical target-branch merge when the PR's own change is unchanged.
-
-When a mechanical merge B has the same PR-own change fingerprint as approved head A, the approval is kept and recorded
-as one appended ``ACT-CARRY`` row while Stage 5 still waits for CI on B. Agent-resolved merges never carry over and
-instead record ``context.review_scope_paths`` so Stage 4 re-reviews the resolved paths.
-"""
-
 from __future__ import annotations
 
 import os
@@ -30,8 +23,6 @@ CARRY_OVER_LABELS = ["review", "conflict-gate", "approval-carry-over"]
 
 @dataclass(frozen=True)
 class CarryOver:
-    """An approval of ``approved_head`` kept for ``merged_head``: both carry the PR-own change ``fingerprint``."""
-
     approved_head: str
     merged_head: str
     fingerprint: str
@@ -45,7 +36,6 @@ def decide_carry_over(
     *,
     mechanical_only: bool = True,
 ) -> CarryOver | None:
-    """The carry-over when a mechanical-only ``merged_head`` has the approval's recorded fingerprint, else None."""
     if not mechanical_only:
         return None
     recorded = str(consensus_data.get("approval_fingerprint") or "")
@@ -57,7 +47,6 @@ def decide_carry_over(
 
 
 def carry_over_message(carry: CarryOver) -> str:
-    """The log line naming both SHAs and the fingerprint, and that CI on the merged head is still required."""
     return (
         f"approval carried over from {carry.approved_head} to {carry.merged_head} (fingerprint {carry.fingerprint}); "
         f"the target merge added nothing to the PR's own change; CI on {carry.merged_head} is still required before "
@@ -66,7 +55,6 @@ def carry_over_message(carry: CarryOver) -> str:
 
 
 def carry_over_record(review_target: str, carry: CarryOver) -> dict[str, Any]:
-    """The append-only ``ACT-CARRY`` row naming the approved head, the merged head and the fingerprint."""
     action = (
         f"Approval for {review_target} carried over from {carry.approved_head} to {carry.merged_head}: "
         f"same PR-own change (fingerprint {carry.fingerprint})"
@@ -89,10 +77,7 @@ def carry_over_record(review_target: str, carry: CarryOver) -> dict[str, Any]:
 
 
 def apply_carry_over(consensus_data: dict[str, Any], carry: CarryOver) -> None:
-    """Record the carry-over on the consensus; ``target_commit`` stays the head the reviewers saw.
-
-    Neither the approved head's CI nor its mergeability probe describes the merged head, so both become unmeasured.
-    """
+    # why: neither the approved head's CI nor its mergeability probe describes the merged head
     consensus_data["carried_from"] = carry.approved_head
     consensus_data["carried_to"] = carry.merged_head
     reason = f"CI on merged head {carry.merged_head} not yet measured; Stage 5 waits for it"
@@ -104,8 +89,8 @@ def apply_carry_over(consensus_data: dict[str, Any], carry: CarryOver) -> None:
 def carry_approval_over(
     context: FlowContext, exec_file: str, consensus_data: dict[str, Any], review_target: str, merged_head: str
 ) -> bool:
-    """Keep an approval the conflict gate's merge did not change: log, append one row, record it; True when kept."""
-    from sandbox_executor.flow.review.records import record_review_action  # Lazy: records imports review_report.
+    # why: records imports review_report, so a module-level import would cycle
+    from sandbox_executor.flow.review.records import record_review_action
 
     target_branch = str(consensus_data.get("base_branch") or "main")
     carry = decide_carry_over(context.target_worktree, consensus_data, merged_head, target_branch)
@@ -131,8 +116,8 @@ def record_stage5_carry_over(
     mechanical_only: bool = True,
     rereview_scope: Sequence[str] = (),
 ) -> CarryOver | None:
-    """After Stage 5's conflict gate merged the target: carry over mechanical merges, else record re-review scope."""
-    from sandbox_executor.flow.review.records import record_review_action  # Lazy: records imports review_report.
+    # why: records imports review_report, so a module-level import would cycle
+    from sandbox_executor.flow.review.records import record_review_action
 
     if not mechanical_only:
         if rereview_scope:
@@ -155,24 +140,18 @@ def record_stage5_carry_over(
 
 
 def _coverage(context: FlowContext, head: str) -> ApprovalCoverage:
-    """The approval's coverage of ``head``; a mismatch is re-checked once after fetching the base branch."""
     coverage = approval_covers(context, context.target_worktree, head)
     if coverage.how != CHANGED:
         return coverage
     base = str(_review_consensus(context).get("base_branch") or context.intent_data.get("target_branch") or "main")
     refspec = f"+refs/heads/{base}:refs/remotes/origin/{base}"
     if _fetch_refspecs_error(context.target_worktree, [refspec]):
-        return coverage  # A stale base can only cost a re-review, never skip one.
+        # why: a stale base can only cost a re-review, never skip one
+        return coverage
     return approval_covers(context, context.target_worktree, head)
 
 
 def merged_head_coverage(context: FlowContext, approved: str, head: str) -> tuple[str, dict[str, Any]]:
-    """How the approval covers a head that moved by more than bookkeeping, and what the merged-head gate records.
-
-    ``SAME_FINGERPRINT`` gives the ``approval_carry_over`` annotation for the CI record (the gate still waits for CI
-    on ``head``); ``CHANGED`` gives a failed record that withdraws the consensus so Stage 4 reviews the change again;
-    anything else gives an empty annotation (today's CI wait).
-    """
     if getattr(context, "review_scope_paths", None):
         reason = f"agent-resolved merge requires scoped re-review of: {', '.join(context.review_scope_paths)}"
         context.log(f"Merged-head CI gate: head {head} is not covered by the approval of {approved}: {reason}.")

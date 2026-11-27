@@ -3,7 +3,7 @@ import sys
 import time
 from collections.abc import Callable
 
-from sandbox_executor import preflight_cooldown, preflight_outage
+from sandbox_executor import local_llm, preflight_cooldown, preflight_outage
 from sandbox_executor.agent_defaults import (
     AGENT_IMAGE_MAPPING,
     Resolution,
@@ -62,7 +62,9 @@ def preflight_gate(
         return None
     agent_id = normalise_agent_id(agent)
     image = AGENT_IMAGE_MAPPING.get(agent_id, f"holon/agent-{agent_id}")
-    if short_circuit := preflight_cooldown.short_circuit_result(agent, model, image):
+    if not (agent_id == "pi" and local_llm.local_llm_requested()) and (
+        short_circuit := preflight_cooldown.short_circuit_result(agent, model, image)
+    ):
         _print_preflight_failure(short_circuit, gave_up=False, outage_seconds=0.0)
         return short_circuit
     started_at = clock()
@@ -73,7 +75,8 @@ def preflight_gate(
 
     outcome = preflight_outage.wait_out_outage(probe, probe(), started_at, sleep=sleep, clock=clock)
     result = outcome.result
-    preflight_cooldown.sync_probe_result(result)
+    if not (isinstance(result, PreflightResult) and result.short_circuited):
+        preflight_cooldown.sync_probe_result(result)
     if not result.ok:
         _print_preflight_failure(result, gave_up=outcome.gave_up, outage_seconds=outcome.outage_seconds)
     return result

@@ -973,3 +973,43 @@ def test_malformed_cooldown_marker_fails_open(probe_env):
     assert res.ok
     assert ok_runner.call_count == 1
     assert not marker_file.exists()
+
+
+def test_invalid_utf8_cooldown_marker_fails_open(probe_env):
+    marker_file = probe_env / ".holon" / "preflight" / "cooldowns" / "antigravity.json"
+    marker_file.parent.mkdir(parents=True, exist_ok=True)
+    marker_file.write_bytes(b"\xff\xfe\xfd")
+
+    assert preflight_cooldown.read_active_cooldown("antigravity-agent") is None
+    assert not marker_file.exists()
+
+
+@pytest.mark.parametrize(
+    ("output", "expected_ttl"),
+    [
+        ("Please retry after 5 minutes.", 300.0),
+        ("Retry-After: 5 minutes", 300.0),
+        ("Retry-After: 2 hours", preflight_cooldown.MAX_COOLDOWN_TTL_SECONDS),
+        ("Retry-After: 90s", 90.0),
+        ("Retry-After: 120", 120.0),
+        ("Retry-After: 2026-11-27T22:10:00Z", 600.0),
+    ],
+)
+def test_extract_cooldown_ttl_parses_units_and_iso_after_retry_after(output, expected_ttl):
+    fixed_now = datetime(2026, 11, 27, 22, 0, 0, tzinfo=UTC).timestamp()
+    assert preflight_cooldown.extract_cooldown_ttl(output, now=fixed_now) == expected_ttl
+
+
+def test_record_cooldown_sanitises_temp_prefix_for_unsafe_agent_id(tmp_path):
+    res = PreflightResult(
+        status=PreflightStatus.QUOTA_EXHAUSTED,
+        agent="../unsafe/agent",
+        model="m",
+        image="holon/agent-unsafe",
+        exit_code=1,
+        output_excerpt="429 Too Many Requests. Retry-After: 60",
+        hint="",
+    )
+    marker = preflight_cooldown.record_cooldown(res, now=1000.0, state_dir=str(tmp_path))
+    assert marker is not None
+    assert (tmp_path / "unsafe_agent.json").is_file()

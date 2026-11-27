@@ -32,12 +32,14 @@ _SPEND_LIMIT_RE = re.compile(
     r"|credit\s+balance\s+is\s+too\s+low|insufficient_quota|billing\s+hard\s+limit",
     re.IGNORECASE,
 )
-_RETRY_AFTER_SECONDS_RE = re.compile(
-    r"retry[-_\s]+after[\s:=]+(\d+(?:\.\d+)?)\s*(?:s|sec|secs|seconds?)?\b", re.IGNORECASE
-)
 _RETRY_IN_DURATION_RE = re.compile(
-    r"(?:retry|try\s+again|resets?)\s+(?:in|after)\s+(\d+(?:\.\d+)?)\s*"
+    r"(?:retry[-_\s]+after[\s:=]+|(?:retry|try\s+again|resets?)\s+(?:in|after)\s+)"
+    r"(\d+(?:\.\d+)?)\s*"
     r"(s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?)\b",
+    re.IGNORECASE,
+)
+_RETRY_AFTER_SECONDS_RE = re.compile(
+    r"retry[-_\s]+after[\s:=]+(\d+(?:\.\d+)?)(?![\w:-]|(?:\s+(?:m|min|mins|minutes?|h|hr|hrs|hours?|d|days?|ms)\b))",
     re.IGNORECASE,
 )
 _ISO_RESET_TIMESTAMP_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))\b")
@@ -88,9 +90,12 @@ def cooldown_dir(state_dir: str | None = None) -> str:
     return os.path.expanduser(os.path.join("~", ".holon", "preflight", "cooldowns"))
 
 
+def _safe_agent_id(agent: str) -> str:
+    return _SAFE_ID_RE.sub("_", normalise_agent_id(agent)).strip("_") or "unknown"
+
+
 def marker_path(agent: str, state_dir: str | None = None) -> str:
-    safe_id = _SAFE_ID_RE.sub("_", normalise_agent_id(agent)).strip("_") or "unknown"
-    return os.path.join(cooldown_dir(state_dir), f"{safe_id}.json")
+    return os.path.join(cooldown_dir(state_dir), f"{_safe_agent_id(agent)}.json")
 
 
 def _parse_iso_ttl(output: str, current_time: float) -> float | None:
@@ -105,12 +110,12 @@ def _parse_iso_ttl(output: str, current_time: float) -> float | None:
 
 
 def _parse_duration_ttl(output: str) -> float | None:
-    if match := _RETRY_AFTER_SECONDS_RE.search(output):
-        value = float(match.group(1))
-        if value > 0:
-            return value
     if match := _RETRY_IN_DURATION_RE.search(output):
         value = float(match.group(1)) * _UNIT_SECONDS[match.group(2)[0].lower()]
+        if value > 0:
+            return value
+    if match := _RETRY_AFTER_SECONDS_RE.search(output):
+        value = float(match.group(1))
         if value > 0:
             return value
     return None
@@ -153,7 +158,7 @@ def read_active_cooldown(
             payload = json.load(fh)
     except FileNotFoundError:
         return None
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         _remove_quietly(path)
         return None
     except OSError:
@@ -178,7 +183,8 @@ def _ensure_cooldown_dir(directory: str) -> None:
 def _write_marker_atomic(path: str, marker: CooldownMarker) -> None:
     directory = os.path.dirname(path)
     _ensure_cooldown_dir(directory)
-    fd, tmp_path = tempfile.mkstemp(prefix=f".{marker.agent_id}-", suffix=".tmp", dir=directory)
+    stem = _safe_agent_id(marker.agent_id)
+    fd, tmp_path = tempfile.mkstemp(prefix=f".{stem}-", suffix=".tmp", dir=directory)
     try:
         os.fchmod(fd, _OWNER_ONLY_FILE_MODE)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -197,7 +203,7 @@ def record_cooldown(
     ttl_seconds: float | None = None,
     state_dir: str | None = None,
 ) -> CooldownMarker | None:
-    if result.skipped or result.status.value != "quota_exhausted":
+    if result.skipped or result.short_circuited or result.status.value != "quota_exhausted":
         return None
     current_time = _current_time(now)
     ttl = (
@@ -250,6 +256,7 @@ def build_short_circuit_result(
         output_excerpt=marker.output_excerpt,
         hint=hint,
         skipped=False,
+        short_circuited=True,
     )
 
 
@@ -266,7 +273,7 @@ def sync_probe_result(result: PreflightResult, *, now: float | None = None, stat
     # why: lazy import avoids a circular dependency and skips non-PreflightResult test doubles.
     from sandbox_executor.preflight import PreflightResult, PreflightStatus
 
-    if not isinstance(result, PreflightResult) or result.skipped:
+    if not isinstance(result, PreflightResult) or result.skipped or result.short_circuited:
         return
     if result.status is PreflightStatus.QUOTA_EXHAUSTED:
         record_cooldown(result, now=now, state_dir=state_dir)

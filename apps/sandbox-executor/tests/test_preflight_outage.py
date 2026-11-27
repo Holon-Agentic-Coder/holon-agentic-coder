@@ -222,6 +222,55 @@ def test_wait_out_outage_short_circuits_when_cooldown_appears_during_sleep(fake_
     outcome = wait_out_outage(probe, outage, fake_time.clock(), sleep=sleep_and_record, clock=fake_time.clock)
     assert outcome.result.status is PreflightStatus.QUOTA_EXHAUSTED
     assert outcome.result.exit_code is None
+    assert outcome.result.short_circuited is True
     assert outcome.gave_up is False
     assert calls == 0
     assert fake_time.sleeps == [30]
+
+
+def test_preflight_gate_does_not_extend_cooldown_when_wait_out_outage_short_circuits(fake_time, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    wall = {"now": 3000.0}
+    monkeypatch.setattr(preflight_cooldown.time, "time", lambda: wall["now"])
+    outage = _result(output="getaddrinfo ENOTFOUND api.anthropic.com")
+    quota = _result(PreflightStatus.QUOTA_EXHAUSTED, output="Billing hard limit reached. Retry-After: 300")
+
+    def sleep_and_record(seconds: float) -> None:
+        fake_time.sleep(seconds)
+        preflight_cooldown.record_cooldown(quota, now=3000.0)
+        wall["now"] = 3120.0
+
+    with patch(_PROBE, return_value=outage) as probe:
+        result = preflight_gate("claude-agent", "m", sleep=sleep_and_record, clock=fake_time.clock)
+
+    assert result is not None
+    assert result.status is PreflightStatus.QUOTA_EXHAUSTED
+    assert result.short_circuited is True
+    assert probe.call_count == 1
+    marker = preflight_cooldown.read_active_cooldown("claude-agent", now=3120.0)
+    assert marker is not None
+    assert marker.recorded_at == 3000.0
+    assert marker.expires_at == 3300.0
+
+
+def test_preflight_gate_skips_cooldown_short_circuit_for_pi_local_llm(fake_time, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(preflight_cooldown.time, "time", lambda: 4000.0)
+    pi_quota = PreflightResult(
+        status=PreflightStatus.QUOTA_EXHAUSTED,
+        agent="pi",
+        model="cloud-model",
+        image="holon/agent-pi",
+        exit_code=1,
+        output_excerpt="Organization spend limit reached. Retry-After: 300",
+        hint="",
+    )
+    preflight_cooldown.record_cooldown(pi_quota, now=4000.0)
+    monkeypatch.setattr("sandbox_executor.local_llm.local_llm_requested", lambda: True)
+
+    result = preflight_gate("pi", "local-model", sleep=fake_time.sleep, clock=fake_time.clock)
+
+    assert result is not None
+    assert result.ok
+    assert result.skipped is True
+    assert preflight_cooldown.read_active_cooldown("pi", now=4000.0) is not None

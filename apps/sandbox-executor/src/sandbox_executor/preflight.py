@@ -75,6 +75,7 @@ class PreflightResult:
     output_excerpt: str
     hint: str
     skipped: bool = False
+    short_circuited: bool = False
 
     @property
     def ok(self) -> bool:

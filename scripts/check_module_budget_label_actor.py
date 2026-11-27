@@ -20,6 +20,9 @@ TOKEN_ENV = "GITHUB_TOKEN"
 AUTHORISING_PERMISSION = "admin"
 AUTHORISING_ACTOR_TYPE = "User"
 NOT_A_COLLABORATOR = 404
+INTENT_FIELD = "module_budget_change"
+INTENT_LEDGER = "holon-knowledge/ledger/intents.jsonl"
+PENDING_INTENTS = "holon-knowledge/ledger/pending/intents/*.jsonl"
 
 Opener = Callable[[urllib.request.Request], bytes]
 
@@ -41,6 +44,53 @@ def changed_paths(base: str, head: str) -> list[str] | None:
 
 def config_may_change(paths: list[str] | None) -> bool:
     return paths is None or BUDGET_CONFIG in paths
+
+
+def added_intent_lines(base: str, head: str) -> list[str] | None:
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "--unified=0", "--no-color", f"{base}...{head}", "--", INTENT_LEDGER, PENDING_INTENTS],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if diff.returncode != 0:
+        return None
+    return [line[1:] for line in diff.stdout.splitlines() if line.startswith("+") and not line.startswith("+++")]
+
+
+def intent_rows(lines: Sequence[str]) -> list[dict]:
+    rows: list[dict] = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def carries_budget_change(row: Mapping) -> bool:
+    # why: must agree with the flow's module_budget_change_authorised, so the flow gate and CI accept the same intents.
+    value = row.get(INTENT_FIELD)
+    return isinstance(value, str) and bool(value.strip())
+
+
+def intent_field_refusal(base: str, head: str) -> str | None:
+    lines = added_intent_lines(base, head)
+    if lines is None:
+        reason = f"the intent rows added between {base} and {head} cannot be read to confirm the '{INTENT_FIELD}' field"
+    elif not any(carries_budget_change(row) for row in intent_rows(lines)):
+        reason = f"the '{INTENT_FIELD}' field is missing or empty in every intent row the pull request adds"
+    else:
+        return None
+    return (
+        f"{BUDGET_CONFIG} changed, but {reason}. "
+        f"Only an intent quoting the maintainer's instruction in '{INTENT_FIELD}' authorises a module budget change."
+    )
 
 
 def build_request(url: str, token: str) -> urllib.request.Request:
@@ -137,7 +187,10 @@ def check(repo: str, number: int, token: str, opener: Opener) -> tuple[str | Non
 
 def parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=f"Require the '{BUDGET_CHANGE_LABEL}' label on a change to {BUDGET_CONFIG} to come from an admin."
+        description=(
+            f"Require a change to {BUDGET_CONFIG} to carry the '{BUDGET_CHANGE_LABEL}' label applied by an admin "
+            f"and an added intent row with a non-empty '{INTENT_FIELD}' field."
+        )
     )
     parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--repo", required=True)
@@ -160,7 +213,10 @@ def checked_exit_code(arguments: argparse.Namespace, token: str, opener: Opener)
     if refusal is not None:
         print(refusal_message(refusal), file=sys.stderr)
         return 1
-    print(f"{BUDGET_CONFIG} changed; the '{BUDGET_CHANGE_LABEL}' label was applied by the administrator {login}.")
+    print(
+        f"{BUDGET_CONFIG} changed; the '{BUDGET_CHANGE_LABEL}' label was applied by the administrator {login} "
+        f"and the intent carries '{INTENT_FIELD}'."
+    )
     return 0
 
 
@@ -173,6 +229,10 @@ def main(
     if not config_may_change(changed_paths(arguments.base, arguments.head)):
         print(f"{BUDGET_CONFIG} is unchanged; no label authorisation is needed.")
         return 0
+    intent_refusal = intent_field_refusal(arguments.base, arguments.head)
+    if intent_refusal is not None:
+        print(intent_refusal, file=sys.stderr)
+        return 1
     token = environ.get(TOKEN_ENV, "")
     if not token:
         print(f"{BUDGET_CONFIG} may have changed, but {TOKEN_ENV} is not set to check the label.", file=sys.stderr)

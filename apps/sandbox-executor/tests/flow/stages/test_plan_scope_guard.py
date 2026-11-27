@@ -98,6 +98,12 @@ def test_missing_or_empty_intent_scope_is_unconstrained(intent_data: dict[str, A
     assert _out_of_scope_touch_set_paths(intent_data, plan) == []
 
 
+@pytest.mark.parametrize("scope_value", ["src/app.py", ("src/app.py",)])
+def test_string_and_tuple_intent_scope_are_enforced(scope_value: str | tuple[str, ...]):
+    plan = _plan_with_touch_set("src/app.py", "src/other.py")
+    assert _out_of_scope_touch_set_paths({"scope": scope_value}, plan) == ["src/other.py"]
+
+
 def test_explicit_expansions_on_intent_data_plan_row_and_markdown_allow_expanded_paths():
     plan = _plan_with_touch_set(
         "src/app.py",

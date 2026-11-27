@@ -170,10 +170,7 @@ def _out_of_scope_touch_set_paths(
     plan_row: Mapping[str, Any] | None = None,
 ) -> list[str]:
     intent = intent_data or {}
-    raw_scope = intent.get("scope")
-    if not isinstance(raw_scope, list):
-        return []
-    scope_entries = _normalised_entries(raw_scope)
+    scope_entries = _normalised_entries(_coerce_raw_items(intent.get("scope")))
     if not scope_entries:
         return []
     expansion_entries = _scope_expansion_entries(intent, plan_content, plan_row or {})

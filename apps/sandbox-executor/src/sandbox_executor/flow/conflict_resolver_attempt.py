@@ -101,8 +101,8 @@ def _restore_conflict(worktree: str, path: str) -> bool:
     stages = _unmerged_stages(worktree, path)
     if {"2", "3"} <= stages:
         args = ["checkout", "-m", "--", path]
-    # why: ``checkout -m`` cannot recreate a modify/delete conflict, so the surviving side's blob is restored.
     elif stages & {"2", "3"}:
+        # why: ``checkout -m`` cannot recreate a modify/delete conflict, so the surviving side's blob is restored.
         args = ["checkout-index", "-f", f"--stage={min(stages & {'2', '3'})}", "--", path]
     else:
         return False

@@ -1,5 +1,3 @@
-"""The shared-worktree HEAD guard: re-attach a HEAD detached at the branch tip, refuse every other detached HEAD."""
-
 from __future__ import annotations
 
 import subprocess
@@ -22,8 +20,7 @@ def _git(repo: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
 
 
-def _snapshot(repo: Path) -> tuple[str, str, str]:
-    """Everything a re-attach must leave alone: the status, the unstaged diff and the staged diff."""
+def _uncommitted_state(repo: Path) -> tuple[str, str, str]:
     return (
         _git(repo, "status", "--porcelain", "--untracked-files=all"),
         _git(repo, "diff"),
@@ -33,7 +30,6 @@ def _snapshot(repo: Path) -> tuple[str, str, str]:
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    """A two-commit repository on BRANCH with a committed ledger file."""
     path = tmp_path / "flow"
     subprocess.run(["git", "init", "-q", "-b", BRANCH, str(path)], capture_output=True, check=True)
     (path / LEDGER).parent.mkdir(parents=True)
@@ -46,8 +42,7 @@ def repo(tmp_path: Path) -> Path:
     return path
 
 
-def _dirty(repo: Path) -> None:
-    """A modified tracked file, an untracked file and an uncommitted ledger row, as Stage 4 leaves them."""
+def _leave_changes_as_stage_4_does(repo: Path) -> None:
     (repo / "app.py").write_text("print('edited')\n", encoding="utf-8")
     (repo / "notes.txt").write_text("scratch\n", encoding="utf-8")
     with (repo / LEDGER).open("a", encoding="utf-8") as ledger:
@@ -55,21 +50,21 @@ def _dirty(repo: Path) -> None:
 
 
 def test_a_head_on_the_branch_is_left_alone(repo: Path) -> None:
-    before = _snapshot(repo)
+    before = _uncommitted_state(repo)
 
     outcome = reattach_branch(str(repo), BRANCH)
 
     assert outcome.status is ReattachStatus.ON_BRANCH
     assert _git(repo, "symbolic-ref", "--short", "HEAD") == BRANCH
-    assert _snapshot(repo) == before
+    assert _uncommitted_state(repo) == before
 
 
 def test_a_head_detached_at_the_tip_is_reattached_and_keeps_every_uncommitted_change(repo: Path) -> None:
     tip = _git(repo, "rev-parse", "HEAD")
     _git(repo, "checkout", "-q", "--detach", "HEAD")
-    _dirty(repo)
+    _leave_changes_as_stage_4_does(repo)
     _git(repo, "add", "notes.txt")
-    before = _snapshot(repo)
+    before = _uncommitted_state(repo)
     state = read_head_state(str(repo), BRANCH)
     assert state.detached_at_tip and not state.detached_elsewhere and not state.on_branch
 
@@ -79,7 +74,7 @@ def test_a_head_detached_at_the_tip_is_reattached_and_keeps_every_uncommitted_ch
     assert f"HEAD was detached at its tip {tip[:12]}" in outcome.message
     assert _git(repo, "symbolic-ref", "--short", "HEAD") == BRANCH
     assert _git(repo, "rev-parse", "HEAD") == tip
-    assert _snapshot(repo) == before
+    assert _uncommitted_state(repo) == before
     assert '"ACT-REV-1"' in (repo / LEDGER).read_text(encoding="utf-8")
 
 
@@ -87,8 +82,8 @@ def test_a_head_detached_elsewhere_is_refused_and_nothing_changes(repo: Path) ->
     parent = _git(repo, "rev-parse", "HEAD~1")
     tip = _git(repo, "rev-parse", "HEAD")
     _git(repo, "checkout", "-q", "--detach", "HEAD~1")
-    _dirty(repo)
-    before = _snapshot(repo)
+    _leave_changes_as_stage_4_does(repo)
+    before = _uncommitted_state(repo)
 
     outcome = reattach_branch(str(repo), BRANCH)
 
@@ -97,7 +92,7 @@ def test_a_head_detached_elsewhere_is_refused_and_nothing_changes(repo: Path) ->
     assert "refusing to re-attach" in outcome.message
     assert subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=repo).returncode != 0
     assert _git(repo, "rev-parse", "HEAD") == parent
-    assert _snapshot(repo) == before
+    assert _uncommitted_state(repo) == before
 
 
 def test_a_missing_local_branch_is_refused(repo: Path) -> None:
@@ -123,7 +118,7 @@ def test_the_guard_names_the_step_and_reattaches_after_a_block_that_detaches(rep
 
     with head_guard(str(repo), BRANCH, "reviewer ensemble (iteration 2)", logs.append) as guard:
         _git(repo, "checkout", "-q", "--detach", "HEAD")
-        _dirty(repo)
+        _leave_changes_as_stage_4_does(repo)
 
     assert guard.outcome is not None and guard.outcome.status is ReattachStatus.REATTACHED
     assert not guard.refused

@@ -1,13 +1,3 @@
-"""Stage 5 rebuild of the flow's own stale /calibrated branch.
-
-A resumed flow can find the /calibrated branch of an earlier run that no longer contains the execution head (the pull
-request branch moved after a conflict merge or a resolver push). When every commit the head lacks is a plain Stage 5
-calibration commit, the branch is the flow's own output: it is re-pointed at the origin execution head and the
-replaced SHAs are logged, so the old commits stay recoverable by SHA. Anything else is foreign work and the caller
-fails loudly. The only ref ever forced is the flow's own /calibrated branch, on origin only with a lease pinned to the
-SHA inspected here.
-"""
-
 from __future__ import annotations
 
 from sandbox_executor.calibration_evaluated_sha import (
@@ -25,7 +15,7 @@ from sandbox_executor.ref_names import calibration_branch
 
 
 class CalibrationSyncError(RuntimeError):
-    """The local execution ref cannot be reconciled with origin without losing commits."""
+    pass
 
 
 def _git_out(repo_dir: str, args: list[str]) -> str | None:
@@ -38,25 +28,23 @@ def is_ancestor(repo_dir: str, ancestor: str, descendant: str) -> bool:
 
 
 def _commits_missing_from_head(repo_dir: str, start_sha: str, existing_sha: str) -> list[str] | None:
-    """The commits on ``existing_sha`` that ``start_sha`` lacks; None when git cannot tell."""
     out = _git_out(repo_dir, ["rev-list", f"{start_sha}..{existing_sha}", "--"])
     return None if out is None else out.split()
 
 
 def holds_only_calibration_commits(repo_dir: str, start_sha: str, existing_sha: str) -> bool:
-    """True when ``existing_sha`` is an ancestor of ``start_sha`` or adds only Stage 5 calibration commits to it."""
     missing = _commits_missing_from_head(repo_dir, start_sha, existing_sha)
     return missing is not None and all(is_calibration_commit(repo_dir, sha) for sha in missing)
 
 
 def stale_calibrated_refs(repo_dir: str, start_sha: str, local_sha: str, remote_sha: str) -> tuple[str, str]:
-    """The local and remote /calibrated SHAs that do not contain ``start_sha``; '' for an absent or current ref."""
     stale = [sha if sha and not is_ancestor(repo_dir, start_sha, sha) else "" for sha in (local_sha, remote_sha)]
     return stale[0], stale[1]
 
 
 def _replace_remote_branch(context: FlowContext, calibrated: str, start_sha: str, lease_sha: str) -> None:
     repo_dir = context.target_worktree
+    # why: the lease pins the SHA inspected, so a push that landed since is never overwritten
     lease = f"--force-with-lease=refs/heads/{calibrated}:{lease_sha}"
     res = run_git(
         ["push", lease, "--", DEFAULT_REMOTE, f"{start_sha}:refs/heads/{calibrated}"],
@@ -81,15 +69,6 @@ def _dropped_count(repo_dir: str, start_sha: str, stale: tuple[str, str]) -> int
 
 
 def rebuild_calibrated_branch(context: FlowContext, target_sha: str, stale_local: str, stale_remote: str) -> None:
-    """Re-point the flow's own /calibrated branch at ``target_sha`` and log the SHAs it replaced.
-
-    The local branch is re-pointed when stale or absent. A stale origin branch is replaced with a lease on the SHA
-    inspected, except with ``skip_push``, which leaves origin untouched.
-
-    Raises:
-        CalibrationSyncError: If the branch is not a /calibrated branch, the lease push fails or the local ref cannot
-            be moved.
-    """
     repo_dir = context.target_worktree
     calibrated = calibration_branch(context.execution_branch or "")
     if not calibrated.endswith("/calibrated") or calibrated == context.execution_branch:
@@ -103,6 +82,7 @@ def rebuild_calibrated_branch(context: FlowContext, target_sha: str, stale_local
             detail = res.stderr.strip() if isinstance(res.stderr, str) else ""
             raise CalibrationSyncError(f"could not re-point '{calibrated}' at {target_sha[:12]}: {detail}")
     replaced_remote = stale_remote[:12] if stale_remote and not context.skip_push else "nothing"
+    # why: the replaced SHAs are logged so the dropped calibration commits stay recoverable
     context.log(
         f"Stage 5: re-pointed '{calibrated}' at {target_sha[:12]}; replaced local "
         f"{stale_local[:12] or 'nothing'} and origin {replaced_remote} ({dropped} calibration commit(s) not on the "

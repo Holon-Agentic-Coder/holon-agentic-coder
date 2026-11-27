@@ -41,8 +41,7 @@ from sandbox_executor.touch_set import parse_touch_set_section
 from sandbox_executor.touch_set_overlap import broad_entries
 from sandbox_executor.turns import AuthoringOutcome, record_budget_failure, run_turn, supervise_authoring_turn
 
-# The commit identity goes on the command line: a mounted host worktree's repository config is shared with the host and
-# mounted read-only, so a ``git config`` write there fails.
+# why: the mounted host worktree's repository config is shared and read-only, so the identity goes on the command line
 PLANNER_GIT_IDENTITY = (
     "git",
     "-c",
@@ -52,17 +51,8 @@ PLANNER_GIT_IDENTITY = (
 )
 
 
+# why: one pass, so a value is never rescanned and braces inside it are never re-expanded
 def render_placeholders(template: str, values: Mapping[str, str]) -> str:
-    """Render every ``{name}`` or unmatched ``{name`` placeholder in one regular-expression pass.
-
-    Args:
-        template: Prompt template text.
-        values: Replacement values keyed by bare placeholder name (``"plan_id"``, not ``"{plan_id}"``).
-
-    Returns:
-        The rendered text. Values are inserted literally and never rescanned, so braces or backslashes inside a value
-        are not re-expanded, and the result does not depend on the mapping's order. Unknown names are left untouched.
-    """
     if not values:
         return template
     names = "|".join(re.escape(name) for name in sorted(values, key=len, reverse=True))
@@ -70,26 +60,13 @@ def render_placeholders(template: str, values: Mapping[str, str]) -> str:
     return pattern.sub(lambda match: values[match.group(1)], template)
 
 
+# why: git's own error messages can carry the GitHub token when a remote URL embeds it
 def run_cmd(
     args: list[str],
     cwd: str | None = None,
     env: dict[str, str] | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a command, echoing it with credentials masked, and exit on failure when `check` is set.
-
-    The echo and the failure diagnostics go through the shared redactors, because git's own error
-    messages can carry the GitHub token when a remote URL embeds it.
-
-    Args:
-        args: The command and its arguments.
-        cwd: Working directory for the command.
-        env: Environment for the command; inherits the current environment when None.
-        check: Exit the process with the command's return code if it fails.
-
-    Returns:
-        The CompletedProcess, whose stdout and stderr are raw and unredacted.
-    """
     print(f"Running: {redact_command(args)}")
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
     if result.returncode != 0 and check:
@@ -106,7 +83,7 @@ def get_file_structure(root_dir, max_depth=3):
     prefix_len = len(root_dir) + 1
 
     for root, dirs, files in os.walk(root_dir):
-        # Filter out dot directories in-place to prevent os.walk from recursing into them
+        # why: os.walk only skips the directories removed from its list in place
         dirs[:] = [d for d in dirs if not d.startswith(".")]
 
         rel_path = root[prefix_len:]
@@ -127,27 +104,12 @@ def get_file_structure(root_dir, max_depth=3):
     return "\n".join(lines)
 
 
+# why: the plan validator's parser, so plans.jsonl and holon flow never read different numbers from one plan
 def parse_metrics(content):
-    """Parse the plan-level predicted metrics from a plan markdown document.
-
-    When the document has a ``## Overall Plan Metrics`` section, only the metric rows inside that
-    section (up to the next ``## `` heading) are read, so per-step ``### Metrics`` tables before or
-    after it cannot overwrite the plan-level values. Documents without that heading fall back to
-    scanning every metric row, where the last matching row wins. This delegates to
-    :func:`artefacts.plan_metrics`, the same parser the plan validator gates on, so the planner's
-    ``plans.jsonl`` row and ``holon flow`` can never read different numbers from one plan.
-    """
     return artefacts.plan_metrics(content)
 
 
 def load_metrics_config(repo_dir: str) -> dict:
-    """Load config-driven metrics physics parameters from holon-config/metrics/.
-
-    Returns a dictionary with 'lambda' (entropy penalty) and 'mu' (learning value weight).
-    Defaults: lambda = 0.3, mu = 0.5 as specified in docs/metrics.md (§1.2, §11).
-    Validation enforces range (0.0, 1.0] for both lambda and mu to prevent invalid or
-    unbounded scaling of EV physics coefficients.
-    """
     config = {"lambda": 0.3, "mu": 0.5}
     ev_config_path = os.path.join(repo_dir, "holon-config/metrics/ev_config.json")
     if os.path.exists(ev_config_path):
@@ -156,8 +118,7 @@ def load_metrics_config(repo_dir: str) -> dict:
                 data = json.load(f)
                 raw_lambda = float(data["lambda"]) if "lambda" in data else config["lambda"]
                 raw_mu = float(data["mu"]) if "mu" in data else config["mu"]
-                # Validate lambda and mu within range (0.0, 1.0], falling back to
-                # docs/metrics.md defaults (lambda=0.3, mu=0.5)
+                # why: out-of-range values fall back to the docs/metrics.md defaults
                 if 0 < raw_lambda <= 1.0:
                     config["lambda"] = raw_lambda
                 else:
@@ -177,6 +138,7 @@ def load_metrics_config(repo_dir: str) -> dict:
     return config
 
 
+# why: the ledger record would vanish with the container workspace if it were not committed
 def _record_plan_budget_failure(  # noqa: PLR0913
     breach: BudgetBreach,
     repo_dir: str,
@@ -187,11 +149,6 @@ def _record_plan_budget_failure(  # noqa: PLR0913
     stage_timer: StageTimer,
     reason: str = "resume did not recover",
 ) -> None:
-    """Record the single ACT-BUDGET action, then commit it together with the salvaged partial plan; the host pushes.
-
-    The ledger record would vanish with the container workspace if it were not committed, so the plan branch carries
-    it (plus whatever plan text was salvaged) even though no ``plans.jsonl`` entry is made for an unusable plan.
-    """
     ledger_rel = "holon-knowledge/ledger/executions.jsonl"
     record_budget_failure(
         os.path.join(repo_dir, ledger_rel),
@@ -218,15 +175,6 @@ def _record_plan_budget_failure(  # noqa: PLR0913
 
 
 def build_replan_paragraph(feedback: str, entropy_budget: float) -> str:
-    """Return the "Re-plan request" paragraph appended to the planner prompt when the flow asks for a new plan.
-
-    Args:
-        feedback: The flow's message stating the previous plan's entropy and the budget it exceeded.
-        entropy_budget: The resolved entropy budget the new plan must respect.
-
-    Returns:
-        A markdown paragraph, starting with blank lines so it can be appended to the prompt as is.
-    """
     return (
         "\n\n## Re-plan request\n\n"
         f"{feedback}\n\n"
@@ -239,18 +187,8 @@ def build_replan_paragraph(feedback: str, entropy_budget: float) -> str:
 _AGENT_ARG_DISPLAY_LEN = 100
 
 
+# why: redaction runs before the clamp so truncating an argument never splits a credential
 def format_agent_cmd_for_display(cmd: list[str]) -> str:
-    """Render the agent command line for the console with credentials masked and long args clamped.
-
-    Redaction runs per argument before the clamp, so truncating a long argument (for example a
-    `--settings` JSON blob carrying an OAuth token) can never split a credential and leak its prefix.
-
-    Args:
-        cmd: The agent argv exactly as handed to `subprocess`.
-
-    Returns:
-        A single space-joined line that is safe to print.
-    """
     print_cmd = []
     for arg in redact_command_args(cmd):
         if len(arg) > _AGENT_ARG_DISPLAY_LEN:
@@ -261,32 +199,20 @@ def format_agent_cmd_for_display(cmd: list[str]) -> str:
 
 
 def _unique_temp_file(prefix: str, suffix: str) -> str:
-    """Create an empty, private temp file with a collision-free name and return its path (the caller removes it)."""
     fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix)
     os.close(fd)
     return path
 
 
+# why: the rule runs on the plan as committed (after prettier), so sub_intents match what readers parse
 def _plan_decision_fields(plan_entry: dict, plan_md_path: str, intent_data: dict | None) -> dict:
-    """Return the decomposition decision fields to record on the plan row (see ``DecompositionDecision``).
-
-    The rule runs on the plan file as it will be committed (after prettier), so the recorded ``sub_intents`` match
-    what every reader of the plan branch would parse. An over-budget plan without a list is still recorded, as
-    ``over_budget``; the flow's re-plan loop handles it.
-    """
     with open(plan_md_path, encoding="utf-8") as f:
         plan_content = f.read()
     return should_decompose(plan_entry, plan_content, intent_data).to_plan_fields()
 
 
+# why: advisory only; the frozen budget config is dropped so it never serialises Stage 3 admission
 def _touch_set_field(plan_md_path: str, intent_data: Mapping | None = None) -> dict:
-    """Return the ``touch_set`` field for the plan row: the parsed ``## Touch Set`` section, or ``None``.
-
-    Advisory only: a missing section or a parse error records ``None`` and never fails the plan. The frozen module
-    budget configuration is dropped from the set unless the intent carries ``module_budget_change``, so it never
-    serialises Stage 3 admission (Stage 3 refuses a change to it anyway). Folder or wildcard entries print one
-    advisory warning and are recorded unchanged.
-    """
     try:
         with open(plan_md_path, encoding="utf-8") as f:
             touch_set = parse_touch_set_section(f.read())
@@ -309,11 +235,8 @@ def _touch_set_field(plan_md_path: str, intent_data: Mapping | None = None) -> d
     return {"touch_set": touch_set.to_row()}
 
 
+# why: the failure detail file lets the host's plan stage name the real cause
 def _fail_plan_attempt(repo_dir: str, plan_md_rel: str, message: str) -> NoReturn:
-    """Fail the plan attempt: report ``message`` (redacted), remove its untracked plan file, and exit 1.
-
-    The message also goes to the git-ignored failure detail file, so the host's plan stage can name the real cause.
-    """
     message = redact_agent_secrets(message)
     print(f"Error: {message}", file=sys.stderr)
     discard_untracked_plan_file(repo_dir, plan_md_rel)
@@ -321,8 +244,12 @@ def _fail_plan_attempt(repo_dir: str, plan_md_rel: str, message: str) -> NoRetur
     sys.exit(1)
 
 
+def _strip_markdown_fence(text: str) -> str:
+    match = re.search(r"```(?:markdown|md)?\s*\n(.*?)\n```", text, re.DOTALL)
+    return match.group(1).strip() if match else text
+
+
 def _api_error_of(outcome: AuthoringOutcome) -> str | None:
-    """The API error any turn of the agent printed (stdout, then stderr), or None."""
     return detect_api_error(*(text for turn in outcome.turns for text in (turn.stdout, turn.stderr)))
 
 
@@ -335,7 +262,6 @@ def main():  # noqa: C901, PLR0912, PLR0915
     agent_name = sys.argv[2]
     model_name = sys.argv[3]
 
-    # Validate agent and environment early before executing any git operations or cloning
     runner = get_runner(agent_name)
     runner.validate()
 
@@ -356,19 +282,17 @@ def main():  # noqa: C901, PLR0912, PLR0915
         sys.exit(1)
     plan_branch = f"{intent_branch_prefix}/{plan_id}/_"
 
-    # The host fetched the intent branch into the mounted worktree; the plan branch starts from it, locally.
+    # why: the host already fetched the intent branch into the mounted worktree
     try:
         start_branch_from_host_fetch(repo, repo_dir, intent_branch, plan_branch)
     except RuntimeError as exc:
         print(f"Error: {redact_agent_secrets(str(exc))}")
         sys.exit(1)
 
-    # Proactively check and resolve any stage conflicts
     from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 
     check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch="main", stage_name="plan")
 
-    # Get intent data
     intents_file_path = os.path.join(repo_dir, "holon-knowledge/ledger/intents.jsonl")
     intent_data = None
 
@@ -376,7 +300,6 @@ def main():  # noqa: C901, PLR0912, PLR0915
         print(f"Warning: skipping unreadable row in {intents_file_path} at line {line_no}: {e}")
 
     for data in read_merged_rows(intents_file_path, on_bad_line=warn):
-        # Match branch name prefix (e.g. branch == "I-timestamp-slug")
         if data.get("branch") == intent_branch_prefix or data.get("intent_id") == intent_branch_prefix:
             intent_data = data
 
@@ -384,13 +307,10 @@ def main():  # noqa: C901, PLR0912, PLR0915
         print(f"Error: No intent found for branch prefix '{intent_branch_prefix}' in '{intents_file_path}'")
         sys.exit(1)
 
-    # One budget for the whole handoff: shown to the agent here, persisted on the plans.jsonl row, enforced by the
-    # executor through the same resolver.
+    # why: one budget for the whole handoff, shared by the prompt, the plans.jsonl row and the executor
     entropy_budget = resolve_entropy_budget({}, intent_data)
 
-    # Transient re-plan feedback from the flow (HOLON_REPLAN_FEEDBACK). It reaches the agent through the prompt and the
-    # temporary intent file only; it is never written to any ledger. Any target-merge notice is excluded from the
-    # intent file's replan_feedback field so only real re-plan feedback is recorded there.
+    # why: re-plan feedback reaches the agent only via prompt and temp intent file, never a ledger or a merge notice
     raw_feedback = os.getenv(ENV_REPLAN_FEEDBACK, "").strip()
     if "## Target branch merged" in raw_feedback:
         head_part, tail_part = raw_feedback.split("## Target branch merged", 1)
@@ -400,7 +320,6 @@ def main():  # noqa: C901, PLR0912, PLR0915
         replan_feedback = raw_feedback
         merge_notice = ""
 
-    # Prepare prompt using template
     template_path = os.path.join(repo_dir, "holon-config/prompts/planner.template.md")
     if os.path.exists(template_path):
         with open(template_path) as f:
@@ -436,9 +355,7 @@ Include metrics in this format:
     }
     template = render_placeholders(template, values)
 
-    # Unique temp files (mkstemp), so two plans started in the same second, in one process or several, never share or
-    # clobber each other's prompt or intent file. Both are created inside the try, so the finally block below removes
-    # whichever exist even when creating the second one raises.
+    # why: unique names so concurrent plans never clobber each other; created inside the try so finally removes both
     prompt_file: str | None = None
     intent_file: str | None = None
     try:
@@ -457,12 +374,11 @@ Include metrics in this format:
         with open(intent_file, "w") as f:
             json.dump({**intent_data, "replan_feedback": replan_feedback} if replan_feedback else intent_data, f)
 
-        # Invoke AI agent
         plan_md_rel = plan_file_rel(intent_branch_prefix, plan_id)
         plan_md_path = os.path.join(repo_dir, plan_md_rel)
         os.makedirs(os.path.dirname(plan_md_path), exist_ok=True)
 
-        # Load full prompt content for agents that don't support file-based parameters
+        # why: some agents do not support file-based parameters
         with open(prompt_file) as f:
             prompt_content = f.read()
         with open(intent_file) as f:
@@ -475,7 +391,6 @@ Include metrics in this format:
 
         def build_agent_cmd(prompt_text: str) -> list[str]:
             cmd = runner.build_cmd(model_name, prompt_file, intent_file, prompt_text)
-            # Credentials are masked per argument before long arguments are clamped.
             print(f"Running command: {format_agent_cmd_for_display(cmd)}")
             return cmd
 
@@ -502,10 +417,10 @@ Include metrics in this format:
         except Exception as e:
             agent_error = f"Exception running agent: {e}"
         finally:
-            # Credentials are removed even when a turn breached its budget.
+            # why: credentials are removed even when a turn breached its budget
             runner.cleanup_ephemeral_credentials()
     finally:
-        # Temp files are removed even when creating or writing them, or anything before the turn, raised.
+        # why: temp files are removed even when creating them or anything before the turn raised
         for temp_f in (prompt_file, intent_file):
             if temp_f is not None and os.path.exists(temp_f):
                 os.remove(temp_f)
@@ -515,14 +430,13 @@ Include metrics in this format:
 
     result = outcome.last
     report = outcome.report
-    # An API failure is reported as such, never as a budget breach or a metrics failure.
+    # why: an API failure is reported as such, never as a budget breach or a metrics failure
     api_error = None if report is not None and report.usable else _api_error_of(outcome)
     if api_error is not None:
         _fail_plan_attempt(repo_dir, plan_md_rel, f"the planner agent's API call failed: {api_error}")
 
     if outcome.budget_failure is not None:
-        # Name the follow-up that actually ran: a resume after a breach, the re-prompt of a clean turn, or none at all
-        # (no stage time was left).
+        # why: the reason names the follow-up that actually ran, or none when no stage time was left
         reason = {
             "resume": "resume did not recover",
             "reprompt": "the re-prompt for missing content did not finish",
@@ -543,7 +457,7 @@ Include metrics in this format:
 
     if report is not None and report.usable:
         if result.returncode != 0 or result.truncated:
-            # The plan on disk is complete enough to commit; a cut-off final chat message does not matter.
+            # why: a cut-off final chat message does not matter once the plan on disk is complete
             print(
                 f"Info: agent exited with code {result.returncode} (stop reason: {result.stop_reason or 'unknown'}) "
                 f"after writing a valid plan file; treating the exit status as informational."
@@ -552,26 +466,22 @@ Include metrics in this format:
         stdout_text = (result.stdout or "").strip()
         stdout_api_error = detect_api_error(stdout_text)
         if stdout_api_error is not None:
-            # Defensive second guard: an API error is never written to the plan path.
+            # why: defensive second guard, an API error is never written to the plan path
             _fail_plan_attempt(repo_dir, plan_md_rel, f"the planner agent's API call failed: {stdout_api_error}")
         if stdout_text:
             print(
                 f"WARNING: agent did not write {plan_md_rel}; falling back to the plan text captured from stdout.",
                 file=sys.stderr,
             )
-            # Extract markdown block if output is wrapped in ```markdown ... ``` or ```md ... ```
-            match = re.search(r"```(?:markdown|md)?\s*\n(.*?)\n```", stdout_text, re.DOTALL)
-            if match:
-                stdout_text = match.group(1).strip()
             with open(plan_md_path, "w") as f:
-                f.write(stdout_text)
+                f.write(_strip_markdown_fence(stdout_text))
             report = validate_artefact(plan_md_path, PLAN_SPEC)
         else:
             print(f"Error: agent command failed or returned empty. code={result.returncode}", file=sys.stderr)
             print(f"Stdout:\n{redact_agent_secrets(result.stdout)}", file=sys.stderr)
             print(f"Stderr:\n{redact_agent_secrets(result.stderr)}", file=sys.stderr)
 
-    # Validate before any ledger append or commit. Missing metrics are a failure, never back-filled with defaults.
+    # why: validate before any ledger append or commit; missing metrics are never back-filled with defaults
     if report is None or not report.metrics_ok:
         missing = ", ".join(report.missing_metrics) if report is not None else ", ".join(PLAN_REQUIRED_METRICS)
         _fail_plan_attempt(
@@ -591,7 +501,6 @@ Include metrics in this format:
 
     metrics = dict(report.metrics)
 
-    # Recalculate EV based on config-driven formula: EV = P(success)*Impact + mu*LV - lambda*Entropy - Cost
     ev_config = load_metrics_config(repo_dir)
     ev_lambda = ev_config["lambda"]
     ev_mu = ev_config["mu"]
@@ -604,7 +513,6 @@ Include metrics in this format:
     ev = p_success * impact + ev_mu * learning_value - ev_lambda * entropy - cost
     metrics["ev"] = ev
 
-    # Append plan summary to ledger
     timestamp_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     plan_entry = {
         "plan_id": plan_id,
@@ -624,7 +532,7 @@ Include metrics in this format:
         "entropy_budget": entropy_budget,
     }
 
-    # Format plan markdown before the ledger append, so the recorded decision is parsed from the committed file
+    # why: format before the ledger append so the recorded decision is parsed from the committed file
     try:
         converge_prettier([plan_md_rel], repo_dir=repo_dir)
     except Exception as e:
@@ -639,7 +547,7 @@ Include metrics in this format:
         lf.write(json.dumps(plan_entry) + "\n")
     validate_ledger_file_unique_ids(plans_ledger_path, id_key="plan_id", parent_key="intent_branch")
 
-    # Git commit; the host pushes the branch after this container returns.
+    # why: no push here, the host pushes the branch after this container returns
     run_cmd(["git", "add", plan_md_rel, *ledger_commit_paths(repo_dir, "plans.jsonl")], cwd=repo_dir)
     run_cmd(
         [*PLANNER_GIT_IDENTITY, "commit", "-m", f"plan: {plan_id} created by {agent_name} ({model_name})"], cwd=repo_dir

@@ -1,6 +1,3 @@
-"""The review entrypoint keeps the mounted worktree on its branch: a HEAD detached at the branch tip is re-attached,
-one detached elsewhere is refused, before the review starts and after each resolver turn."""
-
 import argparse
 import json
 import subprocess
@@ -21,16 +18,15 @@ from tests.test_review_loop import (
 )
 
 
+# why: mirrors the sandbox setup in tests/test_review_loop.py so both suites exercise the same entry conditions
 @pytest.fixture(autouse=True)
 def _sandboxed_clean_reviewers(monkeypatch):
-    """Run every test inside a simulated sandbox with clean fake reviewers, as tests/test_review_loop.py does."""
     install_fake_reviewers(monkeypatch)
 
 
 def test_mounted_head_detached_away_from_the_branch_tip_is_refused_for_a_branch_target(tmp_path, capsys):
-    elsewhere = "e" * 40
-    # HEAD is detached at another commit; refs/heads/feature/y still points at PR_HEAD_SHA.
-    fake_git = FakeGitCommands(heads=[elsewhere])
+    head_detached_away_from_branch_tip = "e" * 40
+    fake_git = FakeGitCommands(heads=[head_detached_away_from_branch_tip])
 
     code, mock_loop, _post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
 
@@ -38,14 +34,17 @@ def test_mounted_head_detached_away_from_the_branch_tip_is_refused_for_a_branch_
     mock_loop.assert_not_called()
     err = " ".join(capsys.readouterr().err.split())
     assert "mounted workspace is on a detached HEAD" in err
-    assert f"detached at {elsewhere[:12]}, not at the tip {PR_HEAD_SHA[:12]} of 'feature/y'" in err
+    assert (
+        f"detached at {head_detached_away_from_branch_tip[:12]}, not at the tip {PR_HEAD_SHA[:12]} of 'feature/y'"
+        in err
+    )
     assert "Check out 'feature/y' by hand" in err
     assert not any(c[1] == "symbolic-ref" and c[-1].startswith("refs/heads/") for c in fake_git.calls)
 
 
 def test_mounted_head_detached_at_the_branch_tip_is_reattached_and_reviewed(tmp_path, capsys):
-    # HEAD is detached at PR_HEAD_SHA, which is also what refs/heads/feature/y points at.
-    fake_git = FakeGitCommands()
+    head_detached_at_branch_tip = PR_HEAD_SHA
+    fake_git = FakeGitCommands(heads=[head_detached_at_branch_tip])
 
     code, mock_loop, _post, _gh = _run_entrypoint(tmp_path, "feature/y", fake_git)
 
@@ -59,13 +58,7 @@ def test_mounted_head_detached_at_the_branch_tip_is_reattached_and_reviewed(tmp_
     assert not any(c[1] in _DESTRUCTIVE_GIT_VERBS for c in fake_git.calls), fake_git.calls
 
 
-# --------------------------------------------------------------------------------------
-# Resolver turn that leaves the shared worktree detached (real git)
-# --------------------------------------------------------------------------------------
-
-
-def _resolver_repo(tmp_path: Path) -> Path:
-    """A two-commit repository on ``feature/r`` with a committed ledger, as the host mounts it."""
+def _two_commit_feature_repo_with_ledger(tmp_path: Path) -> Path:
     repo = tmp_path / "flow"
     subprocess.run(["git", "init", "-q", "-b", "feature/r", str(repo)], capture_output=True, check=True)
     ledger = repo / "holon-knowledge" / "ledger"
@@ -80,8 +73,7 @@ def _resolver_repo(tmp_path: Path) -> Path:
 
 
 def _run_detaching_resolver(tmp_path: Path, detach_at: str) -> tuple[Path, dict, str]:
-    """Run ``--resolve`` with an agent turn that checks out ``detach_at`` and applies a fix; returns the outcome."""
-    repo = _resolver_repo(tmp_path)
+    repo = _two_commit_feature_repo_with_ledger(tmp_path)
     tip = _real_git(repo, "rev-parse", "HEAD")
     result_file = tmp_path / "result.json"
     findings = [{"id": "R1-F1", "severity": "nit", "path": "app.py", "line": 1, "summary": "prints bug"}]

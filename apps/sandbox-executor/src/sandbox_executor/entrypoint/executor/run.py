@@ -1,11 +1,3 @@
-"""`ExecutionRun`: one Stage 3 execution of a plan, as named steps over shared state, and its execution prompt.
-
-The step groups live in the modules that own their data and are mixed in here (`SubIntentSteps`, `AgentOutputSteps`,
-`CheckWorkSteps`, `OutcomeSteps` and `PrePushSteps`), so every step stays a method of `ExecutionRun`. The runner, the
-workspace probes, the authoring turn and the ledger writers are patch seams, read through the package facade at call
-time.
-"""
-
 import contextlib
 import json
 import os
@@ -46,19 +38,12 @@ from sandbox_executor.ref_names import INTENT_SUFFIX
 
 @dataclass(frozen=True)
 class ExecutionPromptInputs:
-    """The plan and intent an execution prompt describes: the plans.jsonl row, the plan markdown and the intent row."""
-
     plan_data: dict[str, Any]
     plan_content: str
     intent_data: dict[str, Any]
 
 
 def build_execution_prompt(repo_dir: str, plan_branch: str, inputs: ExecutionPromptInputs, exec_id: str) -> str:
-    """Render ``holon-config/prompts/executor.template.md`` when present, else the built-in execution prompt.
-
-    The write protocol for the execution notes is appended by the caller, so it is always present whichever prompt is
-    used.
-    """
     plan_data, plan_content, intent_data = inputs.plan_data, inputs.plan_content, inputs.intent_data
     intent_json = json.dumps(intent_data, indent=2)
     template_path = os.path.join(repo_dir, "holon-config/prompts/executor.template.md")
@@ -82,18 +67,12 @@ def build_execution_prompt(repo_dir: str, plan_branch: str, inputs: ExecutionPro
     }
     for key, value in replacements.items():
         template = template.replace(key, value)
-    # Substituted last so placeholder-like text inside the plan itself is never expanded.
+    # why: substituted last so placeholder-like text inside the plan itself is never expanded
     return template.replace("{plan_content}", plan_content)
 
 
+# why: patch seams are read through the package facade at call time, so tests patch one place
 class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeSteps, PrePushSteps):
-    """One Stage 3 execution of a plan, in place in the host worktree mounted into the container.
-
-    The named steps run in a fixed order (see `run`) and share the run's state as attributes. They write the
-    ``executions.jsonl`` summary row (and, when action logging is on, its action records), commit the execution branch
-    locally for the host to push, and exit 1 on a failed run or `OVER_BUDGET_EXIT_CODE` on a refused plan.
-    """
-
     def __init__(self, args: ExecutionArgs) -> None:
         self.args = args
         self.plan_branch = args.plan_branch
@@ -114,11 +93,11 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
         self._decision: DecompositionDecision | None = None
         self.exec_entry: dict[str, Any] = {}
         self.commit_msg = ""
-        # Set when a failed execution's code is salvaged; the host pushes that commit even with nothing else staged.
+        # why: the host pushes a salvaged commit even with nothing else staged
         self.salvaged_head: str | None = None
-        # Set once the execution branch carries its commit; the host pushes it after this container returns.
+        # why: the host pushes the execution branch after this container returns
         self.branch_recorded = False
-        # The authoring turn and its outcome; only an executed (not decomposed or refused) plan sets these.
+        # why: only an executed (not decomposed or refused) plan sets the authoring turn fields below
         self.notes_rel = ""
         self.notes_path = ""
         self._stage_timer: StageTimer | None = None
@@ -141,34 +120,24 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
 
     @property
     def repo(self) -> GitRepository:
-        """The workspace repository; set once the repository is validated."""
         assert self._repo is not None, "repo read before the workspace was validated"
         return self._repo
 
     @property
     def decision(self) -> DecompositionDecision:
-        """The plan's recorded decomposition decision; set once the plan is read."""
         assert self._decision is not None, "decision read before the plan was read"
         return self._decision
 
     @property
     def stage_timer(self) -> StageTimer:
-        """The execute stage timer; set once the authoring turn starts."""
         assert self._stage_timer is not None, "stage_timer read before the authoring turn started"
         return self._stage_timer
 
     @property
     def executions_ledger(self) -> str:
-        """Absolute path of the ``executions.jsonl`` ledger in the worktree."""
         return os.path.join(self.ledger_dir, "executions.jsonl")
 
     def run(self) -> None:
-        """Run every step in order.
-
-        Exits 1 when the workspace is not mounted. Inside the mounted workspace an escaping exception is reported as
-        ``Execution failed: ...`` and re-raised, while a step's ``SystemExit`` passes through untouched; either way the
-        runner's ephemeral credentials are cleaned up.
-        """
         self.runner = executor_facade.get_runner(self.args.agent_name)
         self.runner.validate()
         self.repo_dir = executor_facade.get_workspace_dir()
@@ -189,7 +158,6 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
                 self.runner.cleanup_ephemeral_credentials()
 
     def _run_steps(self) -> None:
-        """The steps inside the mounted workspace; a decomposed or refused plan skips the agent and its checks."""
         self.prepare_workspace()
         self.load_plan()
         skip_agent = self.record_decision()
@@ -204,13 +172,8 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
         self._exit_with_status(skip_agent)
 
     def prepare_workspace(self) -> None:
-        """Validate the mounted worktree, choose the execution id and check out the new execution branch.
-
-        A Stage 3 resume merges the partial branch's work into the new branch. The executor git identity is configured
-        before the agent runs, and stage conflicts are resolved. Never clones, fetches, resets or cleans.
-        """
         self._repo = repo = _get_repo(self.repo_dir)
-        # The host provisioned, fetched and mounted the worktree: no clone, fetch, reset or clean here.
+        # why: the host provisioned, fetched and mounted the worktree, so no clone, fetch, reset or clean here
         mounted_plan_tip = executor_facade.validate_mounted_workspace(repo, self.repo_dir, self.plan_branch)
 
         prefix = self.plan_branch_prefix
@@ -220,7 +183,7 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
         )
         self.exec_branch = f"{prefix}/{self.exec_id}{INTENT_SUFFIX}"
 
-        # Plan branch tip: the base the empty-diff guard compares the agent's work against, even on a resume.
+        # why: the plan tip is the empty-diff guard's base even on a resume
         self.plan_tip = mounted_plan_tip
         merge = partial(
             merge_plan_tip,
@@ -232,16 +195,14 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
         self.partial_head = start_execution_branch(
             repo, (self.plan_branch, self.exec_branch), self.args.partial_branch, self.plan_tip, (resolve, merge)
         )
-        # Before the agent runs, so the commits it makes step by step land on the execution branch.
+        # why: before the agent runs, so the commits it makes step by step land on the execution branch
         _configure_executor_identity(self.repo_dir)
 
-        # Proactively check and resolve any stage conflicts
         from sandbox_executor.flow.stage_conflicts import check_and_resolve_stage_conflicts
 
         check_and_resolve_stage_conflicts(repo_dir=self.repo_dir, target_branch="main", stage_name="execute")
 
     def load_plan(self) -> None:
-        """Read the plan row, the plan markdown and the intent row, falling back to rows derived from the branch."""
         prefix = self.plan_branch_prefix
         self.plan_data = _read_plan_row(self.repo_dir, prefix) or {
             "plan_id": prefix.split("/")[-1],
@@ -251,7 +212,6 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
             "entropy": 3.0,
         }
 
-        # Load plan markdown content if available
         plan_file_rel = recorded_plan_file(self.plan_data.get("plan_file"), prefix)
         if plan_file_rel and os.path.exists(os.path.join(self.repo_dir, plan_file_rel)):
             with open(os.path.join(self.repo_dir, plan_file_rel)) as f:
@@ -263,11 +223,6 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
         }
 
     def run_turns(self) -> None:
-        """Run the supervised authoring turn and classify its outcome.
-
-        Records an unrecovered budget failure in ``executions.jsonl`` unconditionally, resolves the review provenance,
-        records the agent's ``command_execution`` action and captures the redacted, byte-bounded agent output.
-        """
         print(f"Executing plan {self.plan_branch} using agent {self.args.agent_name}...")
         self.notes_rel = f"executions/{self.exec_id}.md"
         self.notes_path = os.path.join(self.repo_dir, self.notes_rel)
@@ -293,7 +248,6 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
         self._capture_agent_output()
 
     def _supervise_authoring(self, base_prompt: str, full_prompt: str, turn_budgets: Any) -> None:
-        """Run the authoring turn from temporary prompt and intent files, removed afterwards, and classify it."""
         prompt_file = os.path.join(tempfile.gettempdir(), f"exec_prompt-{self.exec_seq}.md")
         intent_file = os.path.join(tempfile.gettempdir(), f"exec_intent-{self.exec_seq}.json")
         runner, model_name = self.runner, self.args.model_name
@@ -323,8 +277,7 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
             self.exec_status, self.summary, self.budget_breach, self.budget_reason = (
                 executor_facade.classify_execution_outcome(outcome)
             )
-            # The implementation turn is the one classify_execution_outcome judges; follow-ups only touch the
-            # notes, so output size and error context describe the implementation turn.
+            # why: follow-ups only touch the notes, so output size and error context describe the implementation turn
             self.agent_result = outcome.first
             self.notes_report = outcome.report
         finally:
@@ -334,11 +287,9 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
                         os.remove(tf)
 
     def _record_budget_failure(self) -> None:
-        """Append the ``act_budget`` failure row of an unrecovered budget breach; a write failure is only a warning."""
         if self.budget_breach is None:
             return
-        # Written unconditionally (not gated on action logging): an unrecovered budget failure must always be
-        # auditable, and this is the only write site, so there is exactly one record per stage failure.
+        # why: not gated on action logging, and the only write site, so each stage failure has exactly one audit record
         try:
             os.makedirs(self.ledger_dir, exist_ok=True)
             executor_facade.record_budget_failure(
@@ -355,14 +306,10 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
             print(f"Warning: Failed to record budget failure: {redact_agent_secrets(str(e))}", file=sys.stderr)
 
     def stage_changes(self) -> None:
-        """Stage the ledger, plus the notes on a failure or every change on a success, and print the status.
-
-        On a failure the code changes are already in the partial-work commit, so only the ledger and notes are staged.
-        """
         repo_dir, repo = self.repo_dir, self.repo
         add_targets = ledger_commit_paths(repo_dir, "executions.jsonl")
         if self.exec_status != "success" and os.path.exists(self.notes_path):
-            # The notes (partial or not) explain the failure; the code changes are already in the partial commit.
+            # why: the code changes are already in the partial commit, so only the notes explain the failure
             add_targets.append(self.notes_rel)
         if add_targets:
             repo.run(["add", *add_targets], check=False)
@@ -370,17 +317,11 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
             repo.add(all_files=True)
             if skipped := unstage_sidecar_scratch(repo):
                 print(format_skipped_scratch_message(skipped), file=sys.stderr)
-        # Log staged changes to provide visibility
         status_output = repo.run(["status", "--short"], check=False)
         print("Current git repository status:")
         print(redact_agent_secrets(status_output.stdout))
 
     def commit_steps(self) -> bool:
-        """Commit whatever is staged; returns whether the execution branch has a commit to record.
-
-        A salvaged partial-work commit counts even when nothing else is staged; with neither, prints that nothing was
-        committed.
-        """
         staged_check = self.repo.diff(cached=True, quiet=True)
         if staged_check.returncode == 0 and not self.salvaged_head:
             print("No staged changes to commit.")
@@ -391,10 +332,6 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
         return True
 
     def _exit_with_status(self, skip_agent: bool) -> None:
-        """Print the stage summary and exit 1 on a budget breach; exit `OVER_BUDGET_EXIT_CODE` on a recorded refusal.
-
-        An over-budget refusal whose row no execution branch carries is a failed run and exits 1. Otherwise returns.
-        """
         if not skip_agent:
             print(self.stage_timer.summary("ok" if self.exec_status == "success" else "failed"))
             if self.budget_breach is not None:
@@ -408,7 +345,7 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
             f"budget {decision.entropy_budget} and it lists no sub-intent list."
         )
         if not self.branch_recorded:
-            # No execution branch carries the over_budget row: a failed run, not a refusal.
+            # why: no execution branch carries the over_budget row, so this is a failed run, not a refusal
             print(f"{refusal} Its over_budget row was not recorded on an execution branch.", file=sys.stderr)
             sys.exit(1)
         print(

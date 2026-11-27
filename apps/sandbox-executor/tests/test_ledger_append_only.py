@@ -1,5 +1,3 @@
-"""Pure-append guarantee for the three ledgers: no write reorders, deduplicates or re-serialises existing rows."""
-
 import hashlib
 import json
 import shutil
@@ -38,8 +36,7 @@ from tests.repo_templates import copy_template, shared_template
 
 LEDGER_NAMES = ("intents", "plans", "executions")
 
-#: Rows that the old reconciliation reordered: out-of-order timestamps, a repeated branch key and a description that
-#: mentions a diff3 marker inside a JSON string, which the old substring scan read as a conflict.
+# why: the old reconciliation reordered these rows and read a diff3 marker inside a JSON string as a conflict
 INTENT_ROWS: list[dict[str, Any]] = [
     {"slug": "late", "branch": "I-late", "created_at": "2026-10-28T12:00:00Z"},
     {"slug": "early", "branch": "I-early", "created_at": "2026-10-01T09:00:00Z"},
@@ -49,7 +46,6 @@ INTENT_ROWS: list[dict[str, Any]] = [
 
 
 def _seed_ledgers(repo: Path) -> dict[str, bytes]:
-    """Write the three ledgers under ``repo`` with compact separators and return their bytes."""
     ledger_dir = repo / "holon-knowledge" / "ledger"
     ledger_dir.mkdir(parents=True, exist_ok=True)
     rows = {
@@ -64,13 +60,10 @@ def _seed_ledgers(repo: Path) -> dict[str, bytes]:
 
 
 def _snapshot(repo: Path) -> dict[str, bytes]:
-    """Return the current bytes of each ledger under ``repo``."""
     return {n: (repo / "holon-knowledge" / "ledger" / f"{n}.jsonl").read_bytes() for n in LEDGER_NAMES}
 
 
 class FakeGit:
-    """Records every ``run_git`` call and answers with a clean porcelain status."""
-
     def __init__(self, porcelain: str = "") -> None:
         self.calls: list[list[str]] = []
         self.porcelain = porcelain
@@ -81,13 +74,11 @@ class FakeGit:
         return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
 
     def ledger_adds(self) -> list[list[str]]:
-        """Return each ``git add`` call that names a ledger path."""
         return [c for c in self.calls if c[:1] == ["add"] and any("holon-knowledge/ledger" in a for a in c)]
 
 
 @pytest.fixture
 def fake_git(monkeypatch: pytest.MonkeyPatch) -> FakeGit:
-    """Replace git and the mergeability probe at their ``flow`` submodule bindings."""
     fake = FakeGit()
     monkeypatch.setattr("sandbox_executor.flow.git_refs.run_git", fake)
     monkeypatch.setattr("sandbox_executor.flow.stage_conflicts.run_git", fake)
@@ -98,7 +89,7 @@ def fake_git(monkeypatch: pytest.MonkeyPatch) -> FakeGit:
 
 
 def test_stage_precheck_leaves_ledgers_byte_identical(tmp_path: Path, fake_git: FakeGit) -> None:
-    """Reproduction: the Stage 1 pre-check must not rewrite or stage a ledger that only mentions a marker."""
+    # why: reproduces the Stage 1 pre-check rewriting a ledger that only mentions a conflict marker
     before = _seed_ledgers(tmp_path)
     result = flow.check_and_resolve_stage_conflicts(str(tmp_path), stage_name="intent", branch=None)
     assert _snapshot(tmp_path) == before
@@ -106,7 +97,6 @@ def test_stage_precheck_leaves_ledgers_byte_identical(tmp_path: Path, fake_git: 
     assert result["conflicting_files"] == []
 
 
-#: A minimal action row for the guarded helpers.
 GUARD_ACTION: dict[str, Any] = {
     "action_id": "ACT-GUARD-1",
     "execution_id": "E-guard",
@@ -119,18 +109,14 @@ GUARD_ACTION: dict[str, Any] = {
 
 
 def _report_rewrite(path: str, before: bytes) -> None:
-    """Stand in for the prefix guard detecting a rewrite."""
     raise LedgerRewriteError(f"Ledger {path} was rewritten, not appended")
 
 
 def _report_resolution_rewrite(path: str, kept: str, resolved: str) -> None:
-    """Stand in for the resolution guard detecting a dropped or moved kept row."""
     raise LedgerRewriteError(f"Ledger {path} was rewritten: a kept row was dropped or moved")
 
 
 class TestPrefixGuard:
-    """``assert_ledger_prefix`` and the guarded ``atomic_ledger_append`` fail closed on any non-append write."""
-
     def test_pure_append_passes(self, tmp_path: Path) -> None:
         ledger = tmp_path / "plans.jsonl"
         ledger.write_bytes(b'{"plan_id":"P-1"}\n')
@@ -162,7 +148,7 @@ class TestPrefixGuard:
 
         def read_then_rewrite(path: str) -> bytes:
             before = read_before(path)
-            ledger.write_bytes(b'{"slug":"a"}\n')  # a rewrite inside the locked append window
+            ledger.write_bytes(b'{"slug":"a"}\n')
             return before
 
         monkeypatch.setattr(route_module, "_read_ledger_bytes", read_then_rewrite)
@@ -233,17 +219,8 @@ class TestPrefixGuard:
             reconcile_jsonl_ledger_conflict(_conflicted(), prefix_side="main")  # type: ignore[arg-type]
 
 
-# ---------------------------------------------------------------------------
-# Stage 1 against a local bare origin whose ledgers hold the rows that used to be reordered
-# ---------------------------------------------------------------------------
-
-
 class GuardedIntentAgents(FakeRoleAgents):
-    """Intent-creator stand-in that follows the real entrypoint: stage pre-check, then a guarded ledger append.
-
-    ``exit_code`` models a container that fails after the mount is validated, before it commits anything.
-    """
-
+    # why: exit_code models a container that fails after the mount is validated, before it commits anything
     def __init__(self, root: Path, origin: Path, exit_code: int = 0) -> None:
         super().__init__(root, origin)
         self.exit_code = exit_code
@@ -263,7 +240,6 @@ class GuardedIntentAgents(FakeRoleAgents):
 
 
 def _build_seeded_repos(root: Path) -> dict[str, bytes]:
-    """Bare origin whose main holds the seeded ledgers, and a host clone of it; returns main's ledger bytes."""
     origin, seed, host = root / "origin.git", root / "seed", root / "host"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
     subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True, capture_output=True)
@@ -279,11 +255,7 @@ def _build_seeded_repos(root: Path) -> dict[str, bytes]:
 def seeded_repos(
     tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[Path, Path, dict[str, bytes]]:
-    """Bare origin whose main holds the seeded ledgers, a host clone the flow runs in, and main's ledger bytes.
-
-    Git runs for real against the local origin; only the mergeability probe is stubbed, so ``gh`` is never asked. The
-    repositories are built once per run (no production code runs in the build) and each test works in its own copy.
-    """
+    # why: repos are built once per run and copied per test; only the mergeability probe is stubbed so gh is never asked
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
         "sandbox_executor.flow.stage_conflicts.check_pr_mergeability", lambda *_a, **_k: {"mergeable": "MERGEABLE"}
@@ -294,21 +266,17 @@ def seeded_repos(
 
 
 def _assert_host_untouched(host: Path, main_bytes: dict[str, bytes]) -> None:
-    """The operator's checkout keeps main's ledger bytes and has nothing staged."""
     assert _snapshot(host) == main_bytes
     assert _git(host, "diff", "--cached", "--name-only") == ""
     assert _git(host, "status", "--porcelain", "--untracked-files=no") == ""
 
 
 def _origin_ledger(host: Path, ref: str, name: str) -> bytes:
-    """Return the bytes of a ledger at ``ref`` as git stores them."""
     blob = f"{ref}:holon-knowledge/ledger/{name}.jsonl"
     return subprocess.run(["git", "show", blob], cwd=host, check=True, capture_output=True).stdout
 
 
 class TestIntentStageLedgers:
-    """Successful, failed and dry-run Stage 1 runs keep every ledger a pure append of main's bytes."""
-
     def test_successful_stage_appends_exactly_one_intent_row(self, seeded_repos, tmp_path: Path) -> None:
         host, origin, main_bytes = seeded_repos
         ctx = _dispatch_context(host, GuardedIntentAgents(tmp_path, origin))
@@ -320,13 +288,13 @@ class TestIntentStageLedgers:
         for name in LEDGER_NAMES:
             branch_bytes = _origin_ledger(host, branch_ref, name)
             assert branch_bytes.startswith(main_bytes[name]), name
-        # The appended row lands in the intent's pending fragment; the canonical file keeps main's bytes.
+        # why: the appended row lands in the intent's pending fragment, so the canonical file keeps main's bytes
         assert _origin_ledger(host, branch_ref, "intents") == main_bytes["intents"]
         main_rows = read_merged_rows_at_ref(str(host), "main", "intents.jsonl")
         new_intents = [r for r in read_merged_rows_at_ref(str(host), branch_ref, "intents.jsonl") if r not in main_rows]
         assert len(new_intents) == 1
         assert new_intents[0]["slug"] == "dispatch-test"
-        # The flow worktree is where the container committed, so main itself and the index stay untouched.
+        # why: the container committed in the flow worktree, so main and the index stay untouched
         for name in LEDGER_NAMES:
             assert _origin_ledger(host, "main", name) == main_bytes[name], name
         assert _git(host, "diff", "--cached", "--name-only") == ""
@@ -344,7 +312,7 @@ class TestIntentStageLedgers:
 
     def test_dry_run_leaves_ledgers_identical_and_unstaged(self, seeded_repos, tmp_path: Path) -> None:
         host, origin, main_bytes = seeded_repos
-        # The host is a copy of a shared template: its origin must be this test's own copy, not the template's.
+        # why: the host is copied from a shared template, so its origin must point at this test's own copy
         assert _git(host, "remote", "get-url", "origin") == str(origin)
         agents = GuardedIntentAgents(tmp_path, origin)
         ctx = _dispatch_context(host, agents, dry_run=True)
@@ -355,25 +323,18 @@ class TestIntentStageLedgers:
         _assert_host_untouched(host, main_bytes)
 
 
-# ---------------------------------------------------------------------------
-# Conflict resolution is a pure append
-# ---------------------------------------------------------------------------
-
 OURS_ROW = '{"execution_id":"E-ours","created_at":"2026-10-29T10:00:00Z"}'
 THEIRS_ROWS = ['{"execution_id":"E-z","created_at":"2026-10-29T11:00:00Z"}', '{"execution_id":"E-a"}']
 BASE_ROW = '{"execution_id":"E-base","created_at":"2026-10-28T00:00:00Z"}'
 
 
 def _conflicted(diff3: bool = False) -> str:
-    """Return ledger content with a real line-anchored conflict between ours and theirs appends."""
     base_section = "||||||| merged common ancestors\n" if diff3 else ""
     theirs = "".join(f"{row}\n" for row in THEIRS_ROWS)
     return f"{BASE_ROW}\n<<<<<<< HEAD\n{OURS_ROW}\n{base_section}=======\n{theirs}>>>>>>> origin/main\n"
 
 
 class TestAppendOnlyResolution:
-    """``reconcile_jsonl_ledger_conflict`` and ``reconcile_ledger_file`` never sort, dedupe by key or re-serialise."""
-
     def test_content_without_marker_lines_is_unchanged(self) -> None:
         content = "".join(json.dumps(r) + "\n" for r in INTENT_ROWS)
         assert reconcile_jsonl_ledger_conflict(content) == content
@@ -385,7 +346,7 @@ class TestAppendOnlyResolution:
 
     def test_theirs_prefix_keeps_target_rows_in_place_and_inserts_ours(self) -> None:
         resolved = reconcile_jsonl_ledger_conflict(_conflicted(), prefix_side="theirs")
-        # Target rows keep their order; E-ours (10:00) is the only addition, inserted before E-z (11:00).
+        # why: E-ours (10:00) is the only addition and sorts before E-z (11:00)
         assert resolved == "\n".join([BASE_ROW, OURS_ROW, *THEIRS_ROWS]) + "\n"
 
     def test_lines_already_present_are_not_repeated(self) -> None:
@@ -434,14 +395,8 @@ class TestAppendOnlyResolution:
 
 
 class TestPrePushMerge:
-    """Merging the advanced target branch keeps its ledger bytes as the prefix of the branch's ledger."""
-
     @staticmethod
     def _advance_main(host: Path, origin: Path, tmp_path: Path, rel_path: str, text: str) -> bytes:
-        """Append ``text`` to ``rel_path`` on origin's main from a peer clone, which the host then fetches.
-
-        Returns the file's new bytes.
-        """
         peer = tmp_path / "peer"
         subprocess.run(["git", "clone", "-q", str(origin), str(peer)], check=True, capture_output=True)
         (peer / rel_path).parent.mkdir(parents=True, exist_ok=True)
@@ -454,7 +409,7 @@ class TestPrePushMerge:
         return (peer / rel_path).read_bytes()
 
     def _branch_with_intent_row(self, host: Path) -> Path:
-        """A branch that appended to the canonical file before pending fragments existed (merge-time repair input)."""
+        # why: branches from before pending fragments appended to the canonical file; merge-time repair still meets them
         _git(host, "checkout", "-q", "-b", "feature")
         ledger = host / "holon-knowledge" / "ledger" / "intents.jsonl"
         with ledger.open("a", encoding="utf-8") as f:
@@ -471,7 +426,7 @@ class TestPrePushMerge:
         ok, msg = sync_and_reconcile_pre_push(str(host), target_branch="main")
 
         assert ok, msg
-        # Every main row keeps its order; the older branch row is the only addition, inserted before them.
+        # why: the older branch row is the only addition and lands before every main row
         assert ledger.read_bytes() == b'{"slug":"branch-row","created_at":"2026-09-01"}\n' + main_intents
         assert _git(host, "status", "--porcelain", "--untracked-files=no") == ""
 
@@ -514,7 +469,7 @@ def _digest(path: Path) -> str:
 
 @pytest.mark.skipif(not (REPO_LEDGER_DIR / "intents.jsonl").exists(), reason="repository ledgers are absent")
 def test_repository_ledgers_survive_precheck_and_reconcile_byte_for_byte(tmp_path: Path, fake_git: FakeGit) -> None:
-    """Main's real ledgers (one row mentions ``|||||||``) pass through unchanged; the originals are only read."""
+    # why: one row of main's real ledgers mentions a diff3 marker, and the originals must only be read
     originals = {n: _digest(REPO_LEDGER_DIR / f"{n}.jsonl") for n in LEDGER_NAMES}
     copy_dir = tmp_path / "holon-knowledge" / "ledger"
     copy_dir.mkdir(parents=True)
@@ -537,15 +492,9 @@ def test_repository_ledgers_survive_precheck_and_reconcile_byte_for_byte(tmp_pat
     assert {n: _digest(REPO_LEDGER_DIR / f"{n}.jsonl") for n in LEDGER_NAMES} == originals
 
 
-# ---------------------------------------------------------------------------
-# Callers let a detected rewrite stop the stage instead of logging and carrying on
-# ---------------------------------------------------------------------------
-
-
 def _run_executor_main(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, plan: dict[str, Any] | None = None, status: str = "tip-sha\n"
 ) -> list[list[str]]:
-    """Run the executor entrypoint with faked git and agent until it raises; return every command it ran."""
     from tests.executor_fixtures import _cuts_branch, _turn_via_run_cmd, _validate_stub
 
     commands: list[list[str]] = []
@@ -584,7 +533,6 @@ def _run_executor_main(
 def test_executor_rewrite_stops_before_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action_logging: str
 ) -> None:
-    """The summary-row write and the best-effort action-record writes both fail closed."""
     monkeypatch.setenv("HOLON_ACTION_LOGGING", action_logging)
     monkeypatch.setattr("sandbox_executor.ledger.route.assert_ledger_prefix", _report_rewrite)
     commands = _run_executor_main(tmp_path, monkeypatch)
@@ -592,7 +540,6 @@ def test_executor_rewrite_stops_before_commit(
 
 
 def _rewrite_only(event_type: str, target: str | None = None) -> Any:
-    """Wrap the action-record writer so only the named record reports a rewrite and every other write is real."""
     real = executor_module.append_action_record
 
     def fake(path: str, record: Any, **kwargs: Any) -> Any:
@@ -633,7 +580,6 @@ _EXECUTOR_SITES: dict[str, tuple[str | None, str | None, Any]] = {
 def test_each_executor_write_site_fails_closed_on_its_own(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, site: str
 ) -> None:
-    """A rewrite reported by one write alone still stops the run, so no site may swallow it."""
     event_type, target, arrange = _EXECUTOR_SITES[site]
     monkeypatch.setenv("HOLON_ACTION_LOGGING", "1")
     if event_type:
@@ -644,7 +590,6 @@ def test_each_executor_write_site_fails_closed_on_its_own(
 
 
 def _raise_rewrite(*_args: Any, **_kwargs: Any) -> Any:
-    """Stand in for a writer whose prefix guard detected a rewrite."""
     raise LedgerRewriteError("rewritten")
 
 

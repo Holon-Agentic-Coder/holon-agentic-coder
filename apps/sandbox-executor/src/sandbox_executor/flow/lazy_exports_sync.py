@@ -1,10 +1,6 @@
-"""The target-sync and conflict-resolution part of the flow package's re-export table (see :mod:`.lazy_exports`).
-
-It imports nothing, so loading it never pulls in a flow submodule.
-"""
-
 from __future__ import annotations
 
+# why: this table imports nothing, so loading it never pulls in a flow submodule
 SYNC_LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.calibrate_target_sync": "make_calibrate_retry_sync sync_before_calibration",
     "sandbox_executor.flow.conflict_classes": (

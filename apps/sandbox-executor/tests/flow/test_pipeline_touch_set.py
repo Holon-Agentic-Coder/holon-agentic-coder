@@ -1,5 +1,3 @@
-"""Tests for the pipeline's touch-set wiring: the --allow-overlap CLI flag and the Stage 3 violation re-plan."""
-
 import json
 from typing import Any
 from unittest.mock import patch
@@ -10,8 +8,6 @@ from sandbox_executor.flow import FlowContext, FlowStage, PipelineEngine, StageR
 
 
 class TestAllowOverlapCLI:
-    """``holon flow --allow-overlap`` reaches the flow context."""
-
     def test_cli_flow_allow_overlap_reaches_the_context(self, tmp_path, monkeypatch):
         intent_file = tmp_path / "intent.json"
         intent_file.write_text(json.dumps({"slug": "cli-test", "goal": "CLI flow test"}))
@@ -30,9 +26,7 @@ class TestAllowOverlapCLI:
         assert [ctx.allow_overlap for ctx in contexts] == [False, True]
 
 
-class TestTouchSetReplan:
-    """A Stage 3 touch-set violation returns to Stage 2, sharing the bounded re-plan counter with over-budget plans."""
-
+class TestTouchSetViolationReturnsToStage2SharingReplanCounter:
     @staticmethod
     def _violation() -> StageResult:
         return StageResult(

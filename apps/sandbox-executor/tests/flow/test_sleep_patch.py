@@ -1,5 +1,3 @@
-"""Tests for the scoped sleep patch helper."""
-
 from __future__ import annotations
 
 import subprocess

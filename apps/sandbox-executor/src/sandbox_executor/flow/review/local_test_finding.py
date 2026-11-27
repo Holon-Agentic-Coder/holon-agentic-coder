@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sandbox_executor.entrypoint.test_failure_loop import PARKED_STATUSES, UNATTRIBUTED_BLOCKER
 from sandbox_executor.review_report import FindingRow
+
+UNATTRIBUTED_BLOCKER = "none"
+PARKED_STATUSES = frozenset({"blocked", "exhausted"})
 
 MAX_IDS_NAMED = 5
 MAX_EXCERPTS_QUOTED = 3

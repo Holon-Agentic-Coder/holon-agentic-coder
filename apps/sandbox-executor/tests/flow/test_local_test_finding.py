@@ -67,7 +67,8 @@ def test_blocked_finding_surfaces_blocked_on_when_present():
     finding = local_test_failure_finding(1, status)
 
     assert finding is not None
-    assert "Blocked, not fixable in code: test failure environment (blocked): env broken (blocked_on: BEAN-42)." in finding.summary
+    expected = "Blocked, not fixable in code: test failure environment (blocked): env broken (blocked_on: BEAN-42)."
+    assert expected in finding.summary
     assert "Report this failure as blocked" in finding.recommendation
 
 

@@ -1,7 +1,3 @@
-"""Tests for the per-run holon-coherence sidecar in ``launcher.sidecar`` and ``launcher.sidecar_plan``: setup,
-teardown, the `docker run` argv and its mounts, the dashboard options and direct-egress degradation.
-"""
-
 import logging
 import os
 import socket
@@ -41,12 +37,10 @@ def _clean_sidecar_state():
 
 @pytest.fixture
 def host_paths(tmp_path, monkeypatch):
-    """Keep every host-side write inside tmp_path and hand out a real CA (see `isolate_host_paths`)."""
     return isolate_host_paths(tmp_path, monkeypatch)
 
 
 def test_setup_proxy_uses_the_coherence_image_and_mounts_no_addon(host_paths, monkeypatch):
-    """The sidecar runs the holon-coherence image's own `start` entrypoint; no addon or source tree is mounted."""
     monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
     fake = FakeDocker()
     fake_docker_runs(monkeypatch, fake)
@@ -63,11 +57,11 @@ def test_setup_proxy_uses_the_coherence_image_and_mounts_no_addon(host_paths, mo
     assert "-e HOLON_IN_CONTAINER=1" in joined_run
     image_index = run_cmd.index(proxy_image.GHCR_COHERENCE_IMAGE)
     assert run_cmd[image_index + 1 :] == ["start", "--port", "8080"]
-    assert fake.envs[fake.calls.index(run_cmd)] is None  # no dashboard password: the spawn inherits the environment
+    # why: with no dashboard password the spawn inherits the environment
+    assert fake.envs[fake.calls.index(run_cmd)] is None
 
 
 def test_setup_proxy_warns_about_the_cache_control_ttl_order_issue(host_paths, monkeypatch, caplog):
-    """holon-coherence injects 5m cache_control blocks with no ttl-order check; every sidecar start says so."""
     monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
     fake_docker_runs(monkeypatch, FakeDocker())
 
@@ -77,6 +71,11 @@ def test_setup_proxy_warns_about_the_cache_control_ttl_order_issue(host_paths, m
     assert "ttl='1h'" in caplog.text
     assert "HTTP 400" in caplog.text
     assert "Re-run without --token-reduce" in caplog.text
+
+
+def _assert_started_sidecar_removed(fake: FakeDocker) -> None:
+    assert "docker rm -f" in fake.joined()
+    assert "docker network rm" in fake.joined()
 
 
 def test_setup_proxy_spawn_failure_raises_and_injects_no_dead_proxy(host_paths, monkeypatch):
@@ -89,16 +88,14 @@ def test_setup_proxy_spawn_failure_raises_and_injects_no_dead_proxy(host_paths, 
     message = str(excinfo.value)
     assert "image not found" in message
     assert "Re-run without --token-reduce" in message
-    # The failed sidecar this run started is cleaned up; no proxy envs are returned.
-    assert "docker rm -f" in fake.joined()
-    assert "docker network rm" in fake.joined()
+    _assert_started_sidecar_removed(fake)
 
 
 def test_setup_proxy_spawn_failure_redacts_dashboard_credentials(host_paths, monkeypatch):
     pw_sample = make_probe("mitmweb")
     login_sample = make_probe("logintoken")
     monkeypatch.setenv("HOLON_MITM_WEB_PASSWORD", pw_sample)
-    # Hermetic: the real host port 8081 may already be bound, which would fail before docker runs.
+    # why: hermetic, the real host port 8081 may already be bound, which would fail before docker runs.
     monkeypatch.setattr(socket.socket, "connect_ex", lambda *args, **kwargs: 1)
     stderr = (
         f"Web server listening at http://127.0.0.1:8081/?token={login_sample}\n"
@@ -126,8 +123,7 @@ def test_setup_proxy_readiness_failure_raises_without_proxy_envs(host_paths, mon
 
     assert "never answered an HTTP proxy request" in str(excinfo.value)
     assert "Re-run without --token-reduce" in str(excinfo.value)
-    assert "docker rm -f" in fake.joined()
-    assert "docker network rm" in fake.joined()
+    _assert_started_sidecar_removed(fake)
 
 
 def test_setup_proxy_missing_published_port_raises(host_paths, monkeypatch):
@@ -150,13 +146,13 @@ def test_setup_proxy_success_mounts_only_narrow_ro_cache(host_paths, monkeypatch
     run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
     joined_run = " ".join(run_cmd)
 
-    # C1: only the narrow proxy cache is shared, read-only; never ~/.holon wholesale.
+    # why: C1, only the narrow proxy cache is shared, read-only; never ~/.holon wholesale.
     assert f"{host_paths / 'home' / '.holon' / 'proxy-cache'}:/home/mitmproxy/.holon/proxy-cache:ro" in joined_run
     assert ":/home/mitmproxy/.holon " not in joined_run
     assert "holon-root-ca.key" not in joined_run
 
-    # I11: mitmproxy needs the CA private key to sign leaves, so exactly the two files it expects
-    # are mounted read-only into /home/mitmproxy/.mitmproxy — never the whole certificate dir.
+    # why: I11, mitmproxy needs the CA private key to sign leaves, so exactly the two files it expects
+    # why: are mounted read-only into /home/mitmproxy/.mitmproxy, never the whole certificate dir.
     proxy_ca_dir = host_paths / "home" / ".holon" / "proxy-ca"
     assert f"{proxy_ca_dir / 'mitmproxy-ca.pem'}:/home/mitmproxy/.mitmproxy/mitmproxy-ca.pem:ro" in joined_run
     assert f"{proxy_ca_dir / 'mitmproxy-ca-cert.pem'}:/home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem:ro" in joined_run
@@ -169,18 +165,18 @@ def test_setup_proxy_success_mounts_only_narrow_ro_cache(host_paths, monkeypatch
     assert stat.S_IMODE(os.stat(proxy_ca_dir / "mitmproxy-ca.pem").st_mode) == 0o600
     assert stat.S_IMODE(os.stat(proxy_ca_dir).st_mode) == 0o700
 
-    # I3: containment posture.
+    # why: I3 requires a contained sidecar posture.
     for flag in ["--memory=256m", "--cpus=0.5", "max-size=5m", "max-file=2", "--restart=no"]:
         assert flag in joined_run
 
-    # I2: per-run resource names.
+    # why: I2 requires per-run resource names.
     assert "--network" in mounts
     network_name = mounts[mounts.index("--network") + 1]
     assert network_name.startswith("holon-net-")
     assert network_name not in ("holon-net",)
     assert envs["HTTP_PROXY"].startswith(f"http://holon-proxy-{os.getpid()}")
     assert envs["HTTPS_PROXY"] == envs["HTTP_PROXY"]
-    # C6: the trust-store overrides point at the merged bundle, never at the single-cert mount.
+    # why: C6, the trust-store overrides point at the merged bundle, never at the single-cert mount.
     assert envs["SSL_CERT_FILE"] == CONTAINER_CA_BUNDLE_PATH
     assert envs["NODE_EXTRA_CA_CERTS"] == _container_ca_path(str(host_paths / "certs" / "holon-root-ca.crt"))
     assert cli._sidecar_state.network_created is True
@@ -222,7 +218,6 @@ def test_flag_opt_in_sidecar_failure_degrades_to_direct_egress(host_paths, monke
 
 
 def _stub_run_preconditions(monkeypatch, teardowns: list[bool]) -> None:
-    """Neutralise host discovery and record teardown calls for run_docker_container tests."""
     monkeypatch.setattr(
         containers, "shutil", SimpleNamespace(which=lambda name: "/usr/bin/docker" if name == "docker" else None)
     )
@@ -305,18 +300,13 @@ def test_cli_mitm_web_configuration(host_paths, monkeypatch):
     run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
     joined_run = " ".join(run_cmd)
 
-    # The holon-coherence image starts its own mitmweb dashboard
     assert run_cmd[-6:] == ["start", "--port", "8080", "--web", "--web-port", "8081"]
     assert "mitmweb" not in joined_run
-    # Verify port 8081 is bound
     assert "127.0.0.1:8081:8081" in joined_run
-    # Verify WIRE_LOG_DIR is mounted and set
     assert "-e WIRE_LOG_DIR=/tmp/wire_logs" in joined_run
     assert ":/tmp/wire_logs" in joined_run
-    # Verify CACHE_DIR is mounted and set
     assert "-e CACHE_DIR=/tmp/cache" in joined_run
     assert ":/tmp/cache" in joined_run
-    # No source tree or addon is mounted into the sidecar
     assert "PYTHONPATH" not in joined_run
     assert ":/tmp/src:ro" not in joined_run
     assert "-e HOLON_IN_CONTAINER=1" in joined_run
@@ -346,7 +336,6 @@ def test_cli_directory_permissions_0o775_and_socket_conflict(host_paths, monkeyp
     fake = FakeDocker()
     fake_docker_runs(monkeypatch, fake)
 
-    # Test permissions 0o775
     setup_token_reduction_proxy(mitm_web=False)
     teardown_token_reduction_proxy()
 
@@ -355,7 +344,6 @@ def test_cli_directory_permissions_0o775_and_socket_conflict(host_paths, monkeyp
     for mode in wire_and_cache_modes:
         assert mode == 0o775
 
-    # Test socket conflict check when port is in use
     class InUseSocket:
         def __enter__(self):
             return self
@@ -367,16 +355,15 @@ def test_cli_directory_permissions_0o775_and_socket_conflict(host_paths, monkeyp
             pass
 
         def connect_ex(self, addr):
-            return 0  # In use
+            port_in_use = 0
+            return port_in_use
 
     monkeypatch.setattr(socket, "socket", lambda *args, **kwargs: InUseSocket())
     with pytest.raises(RuntimeError, match="already in use"):
         setup_token_reduction_proxy(mitm_web=True)
 
 
-def test_setup_token_reduction_proxy_chmod_oserror_fallback(host_paths, monkeypatch):
-    """Verifies that OSError on os.chmod is logged and does not halt proxy startup."""
-
+def test_setup_token_reduction_proxy_survives_chmod_oserror(host_paths, monkeypatch):
     original_chmod = os.chmod
 
     def fake_chmod(path, mode):
@@ -389,7 +376,6 @@ def test_setup_token_reduction_proxy_chmod_oserror_fallback(host_paths, monkeypa
     fake = FakeDocker()
     fake_docker_runs(monkeypatch, fake)
 
-    # Must complete without raising OSError
     mounts, envs = setup_token_reduction_proxy(mitm_web=False)
     teardown_token_reduction_proxy()
     assert mounts is not None
@@ -420,7 +406,7 @@ def test_setup_token_reduction_proxy_relative_paths(host_paths, monkeypatch):
     assert host_cache == str(host_paths / "custom" / "rel_cache")
 
 
-def test_mitm_web_password_support(host_paths, monkeypatch):
+def test_mitm_web_password_reaches_the_container_through_the_spawn_env_not_argv(host_paths, monkeypatch):
     from sandbox_executor.cli import setup_token_reduction_proxy, teardown_token_reduction_proxy
 
     monkeypatch.setenv("HOLON_MITM_WEB_PASSWORD", "secretpass123")
@@ -433,7 +419,6 @@ def test_mitm_web_password_support(host_paths, monkeypatch):
     teardown_token_reduction_proxy()
 
     run_cmd = next(call for call in fake.calls if call[:2] == ["docker", "run"])
-    # The password reaches the container through the spawn environment, never through argv.
     assert all("secretpass123" not in arg for arg in run_cmd)
     env_index = run_cmd.index("HOLON_COHERENCE_WEB_PASSWORD")
     assert run_cmd[env_index - 1] == "-e"

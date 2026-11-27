@@ -1,5 +1,3 @@
-"""The mechanical conflict classes and their self-verifying resolvers, on real conflicting merges."""
-
 from __future__ import annotations
 
 import json
@@ -24,8 +22,9 @@ KB = "holon-knowledge/kb/entry.json"
 INIT = "pkg/__init__.py"
 
 
-def _conflicted(tmp_path: Path, base: dict[str, str], flow: dict, target: dict) -> tuple[Path, list[str]]:
-    """A flow worktree midway through a conflicting merge of ``origin/main``, and its unmerged paths."""
+def _worktree_mid_conflicting_merge(
+    tmp_path: Path, base: dict[str, str], flow: dict, target: dict
+) -> tuple[Path, list[str]]:
     commits = [FlowCommit("main", target, "target"), FlowCommit(FLOW_BRANCH, flow, "flow")]
     work = build_flow_history(tmp_path, base, commits).work
     merge = subprocess.run(["git", "merge", "--no-ff", "--no-edit", "origin/main"], cwd=work, capture_output=True)
@@ -47,7 +46,7 @@ def test_an_older_branch_ledger_row_is_inserted_before_the_newer_target_tail(tmp
     base = _row("E-base", "2026-11-01T00:00:00Z")
     target = base + _row("E-main", "2026-11-04T00:00:00Z")
     flow = base + _row("E-flow", "2026-11-03T00:00:00Z")
-    work, paths = _conflicted(tmp_path, {LEDGER: base}, {LEDGER: flow}, {LEDGER: target})
+    work, paths = _worktree_mid_conflicting_merge(tmp_path, {LEDGER: base}, {LEDGER: flow}, {LEDGER: target})
 
     classified, outcome = _classify_and_resolve(work, paths)
 
@@ -62,7 +61,7 @@ def test_a_fragment_promoted_on_the_target_keeps_the_branch_copy(tmp_path: Path)
     promoted = _row("E-base", "2026-11-01T00:00:00Z")
     flow = promoted + _row("E-flow", "2026-11-03T00:00:00Z")
     target = {LEDGER: promoted, FRAGMENT: None}
-    work, paths = _conflicted(tmp_path, {LEDGER: "", FRAGMENT: promoted}, {FRAGMENT: flow}, target)
+    work, paths = _worktree_mid_conflicting_merge(tmp_path, {LEDGER: "", FRAGMENT: promoted}, {FRAGMENT: flow}, target)
 
     classified, outcome = _classify_and_resolve(work, paths)
 
@@ -79,7 +78,9 @@ def _kb(title: str, updated_at: str) -> str:
 
 
 def test_a_timestamp_only_kb_entry_keeps_the_target_copy(tmp_path: Path):
-    work, paths = _conflicted(tmp_path, {KB: _kb("t", "1")}, {KB: _kb("t", "2")}, {KB: _kb("t", "3")})
+    work, paths = _worktree_mid_conflicting_merge(
+        tmp_path, {KB: _kb("t", "1")}, {KB: _kb("t", "2")}, {KB: _kb("t", "3")}
+    )
 
     classified, outcome = _classify_and_resolve(work, paths)
 
@@ -128,7 +129,7 @@ def test_real_kb_and_wisdom_ts_only_conflicts_keep_the_target_copy(tmp_path: Pat
     base = payload("2026-11-06T08:50:16+00:00")
     ours = payload("2026-11-07T09:00:00+00:00")
     theirs = payload("2026-11-08T10:00:00+00:00")
-    work, paths = _conflicted(tmp_path, {rel: base}, {rel: ours}, {rel: theirs})
+    work, paths = _worktree_mid_conflicting_merge(tmp_path, {rel: base}, {rel: ours}, {rel: theirs})
 
     classified, outcome = _classify_and_resolve(work, paths)
 
@@ -138,7 +139,9 @@ def test_real_kb_and_wisdom_ts_only_conflicts_keep_the_target_copy(tmp_path: Pat
 
 
 def test_a_kb_entry_with_a_different_title_is_code(tmp_path: Path):
-    work, paths = _conflicted(tmp_path, {KB: _kb("t", "1")}, {KB: _kb("flow", "2")}, {KB: _kb("main", "3")})
+    work, paths = _worktree_mid_conflicting_merge(
+        tmp_path, {KB: _kb("t", "1")}, {KB: _kb("flow", "2")}, {KB: _kb("main", "3")}
+    )
 
     classified, outcome = _classify_and_resolve(work, paths)
 
@@ -149,7 +152,7 @@ def test_a_kb_entry_with_a_different_title_is_code(tmp_path: Path):
 def test_a_target_deletion_beats_a_whitespace_only_branch_edit(tmp_path: Path):
     source = "import os\nimport json\n\nx = 1\n"
     edited = "import json\nimport os\n\n\nx  =  1\n"
-    work, paths = _conflicted(tmp_path, {"old.py": source}, {"old.py": edited}, {"old.py": None})
+    work, paths = _worktree_mid_conflicting_merge(tmp_path, {"old.py": source}, {"old.py": edited}, {"old.py": None})
 
     classified, outcome = _classify_and_resolve(work, paths)
 
@@ -159,7 +162,9 @@ def test_a_target_deletion_beats_a_whitespace_only_branch_edit(tmp_path: Path):
 
 
 def test_a_target_deletion_against_a_real_branch_edit_is_code(tmp_path: Path):
-    work, paths = _conflicted(tmp_path, {"old.py": "x = 1\n"}, {"old.py": "x = 2\n"}, {"old.py": None})
+    work, paths = _worktree_mid_conflicting_merge(
+        tmp_path, {"old.py": "x = 1\n"}, {"old.py": "x = 2\n"}, {"old.py": None}
+    )
 
     classified, outcome = _classify_and_resolve(work, paths)
 
@@ -174,7 +179,7 @@ ALL_BASE = '"""Pkg."""\n\nVALUE = 1\n\n__all__ = [\n    "a",\n]\n'
 def test_both_sides_appending_to_all_give_an_ordered_union_that_imports(tmp_path: Path):
     flow = ALL_BASE.replace('    "a",\n', '    "a",\n    "flow_one",\n    "shared",\n')
     target = ALL_BASE.replace('    "a",\n', '    "a",\n    "main_one",\n    "shared",\n')
-    work, paths = _conflicted(tmp_path, {INIT: ALL_BASE}, {INIT: flow}, {INIT: target})
+    work, paths = _worktree_mid_conflicting_merge(tmp_path, {INIT: ALL_BASE}, {INIT: flow}, {INIT: target})
 
     classified, outcome = _classify_and_resolve(work, paths)
 
@@ -188,7 +193,7 @@ def test_both_sides_appending_to_all_give_an_ordered_union_that_imports(tmp_path
 def test_an_appended_list_plus_a_body_change_is_code(tmp_path: Path):
     flow = ALL_BASE.replace('    "a",\n', '    "a",\n    "flow_one",\n').replace("VALUE = 1", "VALUE = 2")
     target = ALL_BASE.replace('    "a",\n', '    "a",\n    "main_one",\n')
-    work, paths = _conflicted(tmp_path, {INIT: ALL_BASE}, {INIT: flow}, {INIT: target})
+    work, paths = _worktree_mid_conflicting_merge(tmp_path, {INIT: ALL_BASE}, {INIT: flow}, {INIT: target})
 
     classified, outcome = _classify_and_resolve(work, paths)
 
@@ -256,7 +261,9 @@ def test_list_union_refuses_a_removed_entry():
 def test_a_target_deletion_against_a_branch_reindent_is_code(tmp_path: Path):
     source = "if flag:\n    x = 1\ny = 2\n"
     reindented = "if flag:\n    x = 1\n    y = 2\n"
-    work, paths = _conflicted(tmp_path, {"old.py": source}, {"old.py": reindented}, {"old.py": None})
+    work, paths = _worktree_mid_conflicting_merge(
+        tmp_path, {"old.py": source}, {"old.py": reindented}, {"old.py": None}
+    )
 
     classified, outcome = _classify_and_resolve(work, paths)
 
@@ -275,7 +282,7 @@ def test_a_target_deletion_against_a_branch_reindent_is_code(tmp_path: Path):
     ],
 )
 def test_a_target_deletion_against_a_string_comment_or_indent_edit_is_code(tmp_path: Path, path, source, edited):
-    work, paths = _conflicted(tmp_path, {path: source}, {path: edited}, {path: None})
+    work, paths = _worktree_mid_conflicting_merge(tmp_path, {path: source}, {path: edited}, {path: None})
 
     classified, outcome = _classify_and_resolve(work, paths)
 
@@ -285,7 +292,9 @@ def test_a_target_deletion_against_a_string_comment_or_indent_edit_is_code(tmp_p
 
 def test_a_failed_delete_resolution_restores_the_unmerged_stages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     source = "import os\nimport json\n"
-    work, paths = _conflicted(tmp_path, {"old.py": source}, {"old.py": "import json\nimport os\n"}, {"old.py": None})
+    work, paths = _worktree_mid_conflicting_merge(
+        tmp_path, {"old.py": source}, {"old.py": "import json\nimport os\n"}, {"old.py": None}
+    )
 
     def rm_then_doubt(worktree: str, sides) -> bool:
         _git(Path(worktree), "rm", "-q", "--", sides.path)

@@ -1,5 +1,3 @@
-"""Tests for per-child progress: naming, the next-action decision table, origin reconciliation and checkpoint keys."""
-
 from __future__ import annotations
 
 import subprocess
@@ -112,7 +110,6 @@ def test_child_checkpoint_path_is_the_path_save_checkpoint_writes_and_distinct_p
 
 @pytest.fixture
 def origin_with_child(tmp_path: Path) -> tuple[Path, Path, str]:
-    """A bare origin with child 1's intent, plan and execution branches, plus a host clone."""
     origin = tmp_path / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
     work = tmp_path / "seed"
@@ -227,7 +224,7 @@ def test_initial_progress_cuts_a_long_child_slug_to_the_limit_at_a_word_boundary
 
 
 def test_initial_progress_records_original_of_shortened_child_slug() -> None:
-    # Below a deep parent the 32-character slug still leaves no room for a plan and execution, so it is shortened.
+    # why: below a deep parent the 32-character slug leaves no room for a plan and execution, so it is shortened
     deep_plan = f"I-1-{'a' * 130}/P-2-CLA-CS5.5/_"
     slug = "b" * 32
     shortened, untouched = initial_progress([{"slug": slug}, {"slug": "x"}], deep_plan)

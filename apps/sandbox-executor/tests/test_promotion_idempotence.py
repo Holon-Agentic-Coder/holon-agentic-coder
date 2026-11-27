@@ -1,5 +1,3 @@
-"""Hermetic tests: promote_pending_candidates returns only new items and skips already-promoted candidates."""
-
 from __future__ import annotations
 
 import json
@@ -12,7 +10,7 @@ from sandbox_executor.knowledge import wisdom
 from sandbox_executor.knowledge.index import ActionIndexDatabase
 from sandbox_executor.knowledge.wisdom import promote_pending_candidates
 
-# 10 successes reach likely-success; 22 are needed for proven-success (Wilson lower bound >= 0.85).
+# why: 10 successes reach likely-success; 22 are needed for proven-success (Wilson lower bound >= 0.85).
 LIKELY_SUCCESS_TRIALS = 10
 PROVEN_SUCCESS_TRIALS = 22
 
@@ -20,7 +18,6 @@ PROVEN_SUCCESS_TRIALS = 22
 def _append_ledger(
     ledger_path: Path, fingerprint: str, verdict: str, count: int, action_origin: str | None = None
 ) -> None:
-    """Append ``count`` action rows with the given verdict for one context fingerprint."""
     offset = len(ledger_path.read_text(encoding="utf-8").splitlines())
     with open(ledger_path, "a", encoding="utf-8") as f:
         for i in range(count):
@@ -38,8 +35,6 @@ def _append_ledger(
 
 
 class _Workspace:
-    """A tmp ledger, action index and KB/WB directories for one test."""
-
     def __init__(self, tmp_path: Path) -> None:
         self.ledger = tmp_path / "executions.jsonl"
         self.ledger.write_text("", encoding="utf-8")
@@ -48,18 +43,15 @@ class _Workspace:
         self.wb_dir = str(tmp_path / "holon-knowledge" / "wisdom")
 
     def seed(self, fingerprint: str, verdict: str, count: int, action_origin: str | None = None) -> None:
-        """Append ledger rows and sync them into the index."""
         _append_ledger(self.ledger, fingerprint, verdict, count, action_origin)
         self.db.sync_ledger(str(self.ledger))
 
     def promote(self, dry_run: bool = False) -> list[dict]:
-        """Run one promotion pass over the workspace."""
         return promote_pending_candidates(
             index_db=self.db, kb_dir=self.kb_dir, wb_dir=self.wb_dir, min_trials=2, dry_run=dry_run
         )
 
     def snapshot(self) -> dict[str, tuple[bytes, int]]:
-        """Map every file under the KB and WB directories to its bytes and nanosecond mtime."""
         files: dict[str, tuple[bytes, int]] = {}
         for base in (self.kb_dir, self.wb_dir):
             for root, _dirs, names in os.walk(base):
@@ -74,7 +66,6 @@ def _ids(items: list[dict]) -> list[str]:
 
 
 def test_second_call_returns_only_the_new_candidates(tmp_path: Path) -> None:
-    """With N candidates already promoted and M new ones, the next call returns exactly the M new items."""
     ws = _Workspace(tmp_path)
     old = [f"oldfail{i}_fp" for i in range(3)]
     new = [f"newfail{i}_fp" for i in range(2)]
@@ -90,8 +81,7 @@ def test_second_call_returns_only_the_new_candidates(tmp_path: Path) -> None:
     assert all(os.path.exists(item["persisted_path"]) for item in promoted)
 
 
-def test_promoting_twice_promotes_nothing_the_second_time(tmp_path: Path) -> None:
-    """A second call against an unchanged index returns [] and leaves every KB/WB file untouched."""
+def test_promoting_twice_promotes_nothing_and_leaves_files_untouched(tmp_path: Path) -> None:
     ws = _Workspace(tmp_path)
     ws.seed("succ0001_fp", "success", PROVEN_SUCCESS_TRIALS)
     ws.seed("fail0001_fp", "failure", 3)
@@ -104,7 +94,6 @@ def test_promoting_twice_promotes_nothing_the_second_time(tmp_path: Path) -> Non
 
 
 def test_terminal_candidates_are_not_re_evaluated(tmp_path: Path) -> None:
-    """Candidates whose terminal artefacts exist are skipped before evaluate_action_promotion runs."""
     ws = _Workspace(tmp_path)
     ws.seed("succ0002_fp", "success", PROVEN_SUCCESS_TRIALS)
     ws.seed("fail0002_fp", "failure", 3)
@@ -117,7 +106,6 @@ def test_terminal_candidates_are_not_re_evaluated(tmp_path: Path) -> None:
 
 
 def test_pattern_only_candidate_still_ascends_to_a_heuristic(tmp_path: Path) -> None:
-    """A likely-success pattern is re-evaluated and later returns only its new WB heuristic."""
     ws = _Workspace(tmp_path)
     ws.seed("ascend01_fp", "success", LIKELY_SUCCESS_TRIALS)
     first = ws.promote()
@@ -132,8 +120,7 @@ def test_pattern_only_candidate_still_ascends_to_a_heuristic(tmp_path: Path) -> 
     assert ws.promote() == []
 
 
-def test_failure_mode_with_a_later_success_is_still_evaluated(tmp_path: Path) -> None:
-    """A recorded failure mode stays terminal only while the fingerprint has no success, so its veto can lift."""
+def test_failure_mode_with_a_later_success_is_re_evaluated_and_its_veto_lifts(tmp_path: Path) -> None:
     ws = _Workspace(tmp_path)
     ws.seed("contest1_fp", "failure", 3)
     assert _ids(ws.promote()) == ["KB-failure-contest1"]
@@ -147,8 +134,7 @@ def test_failure_mode_with_a_later_success_is_still_evaluated(tmp_path: Path) ->
     assert vetoes["contest1_fp"] == "lifted"
 
 
-def test_dry_run_reports_what_the_real_run_writes(tmp_path: Path) -> None:
-    """A dry run returns the ids the next real run writes, writes nothing, and returns [] once they exist."""
+def test_dry_run_reports_what_the_real_run_writes_without_writing(tmp_path: Path) -> None:
     ws = _Workspace(tmp_path)
     ws.seed("succ0003_fp", "success", PROVEN_SUCCESS_TRIALS)
     ws.seed("fail0003_fp", "failure", 3)
@@ -162,8 +148,7 @@ def test_dry_run_reports_what_the_real_run_writes(tmp_path: Path) -> None:
     assert ws.promote(dry_run=True) == []
 
 
-def test_fresh_index_with_existing_failure_mode_still_records_the_veto(tmp_path: Path) -> None:
-    """A rebuilt index re-creates the veto for a committed failure mode without returning it again."""
+def test_rebuilt_index_with_existing_failure_mode_records_the_veto_without_returning_it(tmp_path: Path) -> None:
     ws = _Workspace(tmp_path)
     ws.seed("rebuild1_fp", "failure", 3)
     assert _ids(ws.promote()) == ["KB-failure-rebuild1"]
@@ -176,7 +161,6 @@ def test_fresh_index_with_existing_failure_mode_still_records_the_veto(tmp_path:
 
 
 def test_repeated_veto_still_escalates_to_proven_fail(tmp_path: Path) -> None:
-    """A repeated failure mode is re-evaluated until its veto reaches proven-fail."""
     ws = _Workspace(tmp_path)
     ws.seed("escal001_fp", "failure", 2)
     assert _ids(ws.promote()) == ["KB-failure-escal001"]
@@ -191,7 +175,6 @@ def test_repeated_veto_still_escalates_to_proven_fail(tmp_path: Path) -> None:
 
 
 def test_proven_fail_veto_records_later_reproductions(tmp_path: Path) -> None:
-    """A proven-fail veto is re-evaluated when new failures arrive so its reproduction count stays current."""
     ws = _Workspace(tmp_path)
     ws.seed("reprod01_fp", "failure", 3)
     assert _ids(ws.promote()) == ["KB-failure-reprod01"]
@@ -204,7 +187,6 @@ def test_proven_fail_veto_records_later_reproductions(tmp_path: Path) -> None:
 
 
 def test_sibling_signatures_of_one_fingerprint_settle(tmp_path: Path) -> None:
-    """Signatures sharing a fingerprint's veto row stop re-evaluating once it holds the highest count."""
     ws = _Workspace(tmp_path)
     ws.seed("sibling1_fp", "failure", 3)
     ws.seed("sibling1_fp", "failure", 4, action_origin="review_fix")
@@ -220,7 +202,6 @@ def test_sibling_signatures_of_one_fingerprint_settle(tmp_path: Path) -> None:
 
 
 def test_dry_run_counts_a_sibling_fingerprint_once(tmp_path: Path) -> None:
-    """Sibling signatures of one fingerprint yield one dry-run item, matching what the real run writes."""
     ws = _Workspace(tmp_path)
     ws.seed("sibling2_fp", "failure", 3)
     ws.seed("sibling2_fp", "failure", 4, action_origin="review_fix")
@@ -236,7 +217,6 @@ _RUN_VARYING_KEYS = ("wilson_lower", "total_executions", "success_count", "failu
 
 
 def _assert_stable_file(path: Path) -> None:
-    """A promoted file carries no counters, ledger refs or counter-bearing advisory text."""
     text = path.read_text(encoding="utf-8")
     assert not any(f'"{key}"' in text for key in _RUN_VARYING_KEYS)
     payload = json.loads(text)["payload"]
@@ -246,14 +226,12 @@ def _assert_stable_file(path: Path) -> None:
 
 
 def _two_workspaces(tmp_path: Path) -> tuple[_Workspace, _Workspace]:
-    """Two independent flow workspaces under one tmp directory."""
     for name in ("flow_a", "flow_b"):
         (tmp_path / name).mkdir()
     return _Workspace(tmp_path / "flow_a"), _Workspace(tmp_path / "flow_b")
 
 
 def test_same_context_promotes_identical_files_across_workspaces(tmp_path: Path) -> None:
-    """Two flows promoting one fingerprint with different execution counts write byte-identical KB and WB files."""
     ws_a, ws_b = _two_workspaces(tmp_path)
     ws_a.seed("ascend02_fp", "success", PROVEN_SUCCESS_TRIALS)
     ws_b.seed("ascend02_fp", "success", PROVEN_SUCCESS_TRIALS + 9)
@@ -272,7 +250,6 @@ def test_same_context_promotes_identical_files_across_workspaces(tmp_path: Path)
 
 
 def test_same_failure_context_promotes_identical_files_across_workspaces(tmp_path: Path) -> None:
-    """Two flows promoting one failing fingerprint with different failure counts write byte-identical KB files."""
     ws_a, ws_b = _two_workspaces(tmp_path)
     ws_a.seed("failsame_fp", "failure", 3)
     ws_b.seed("failsame_fp", "failure", 7)
@@ -287,7 +264,6 @@ def test_same_failure_context_promotes_identical_files_across_workspaces(tmp_pat
 
 
 def _append_dated_failures(ws: _Workspace, fingerprint: str, rows: list[tuple[str, str, str]]) -> None:
-    """Append failure rows given as (created_at, action, error_context) and sync them into the index."""
     offset = len(ws.ledger.read_text(encoding="utf-8").splitlines())
     with open(ws.ledger, "a", encoding="utf-8") as f:
         for i, (created_at, action, error_context) in enumerate(rows):
@@ -305,7 +281,6 @@ def _append_dated_failures(ws: _Workspace, fingerprint: str, rows: list[tuple[st
 
 
 def test_newer_divergent_failures_do_not_change_failure_file_bytes(tmp_path: Path) -> None:
-    """Flows sharing early failures but holding different newest rows write byte-identical KB-failure files."""
     ws_a, ws_b = _two_workspaces(tmp_path)
     shared = [(f"2026-11-0{i}T00:00:00+00:00", "Run the build", "RuntimeError: boom") for i in range(1, 4)]
     _append_dated_failures(ws_a, "diverge1_fp", [*shared, ("2026-11-20T00:00:00+00:00", "Retry A", "KeyError: a")])

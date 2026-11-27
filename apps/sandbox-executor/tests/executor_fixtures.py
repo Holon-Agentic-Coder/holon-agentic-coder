@@ -1,15 +1,3 @@
-"""Shared fixtures and helpers for the executor test modules; this module holds no tests.
-
-Rules:
-
-- No test lives here: no ``test_*`` function and no ``Test*`` class.
-- Test modules opt in to the two autouse fixtures by importing ``_agent_turns_use_run_cmd`` and
-  ``_workspace_is_mounted`` by name; an autouse fixture only applies where its name is in the module namespace.
-- ``unittest.TestCase`` subclasses must never live here: pytest collects every ``TestCase`` subclass in a test
-  module's namespace, so one imported into several test modules would be collected once per importer. Shared
-  harness methods live on the plain mixins below instead.
-"""
-
 import io
 import json
 import os
@@ -22,12 +10,12 @@ from sandbox_executor.entrypoint import executor
 from sandbox_executor.ledger import read_merged_rows
 from sandbox_executor.turns import TurnResult
 
+# why: autouse fixtures apply only where their name is imported, so importers opt in by importing them by name
+# why: pytest collects a TestCase subclass once per importing module, so shared harnesses are plain mixins
+
 
 def _turn_via_run_cmd(cmd, **kwargs):
-    """Route a supervised agent turn through ``executor.run_cmd`` so tests that fake run_cmd keep faking the agent.
-
-    The real turn supervisor spawns processes; its own behaviour is covered in test_turn_supervisor.py.
-    """
+    # why: tests that fake run_cmd keep faking the agent; the real supervisor is covered in test_turn_supervisor.py
     res = executor.run_cmd(cmd, cwd=kwargs.get("cwd"), check=False)
     stdout = res.stdout if isinstance(getattr(res, "stdout", None), str) else ""
     stderr = res.stderr if isinstance(getattr(res, "stderr", None), str) else ""
@@ -43,13 +31,11 @@ def _agent_turns_use_run_cmd():
 
 @pytest.fixture(autouse=True)
 def _workspace_is_mounted():
-    """Every test runs the executor as it runs in a role container: in the host's mounted worktree."""
     with patch("sandbox_executor.entrypoint.executor.workspace_mounted", return_value=True):
         yield
 
 
 def _validate_stub(repo, repo_dir, plan_branch):
-    """Stand-in for validate_mounted_workspace when git is faked: the plan tip the host fetched."""
     return "tip-sha"
 
 
@@ -57,48 +43,31 @@ _REMOTE_GIT_VERBS = {"clone", "fetch", "pull", "push", "ls-remote", "remote"}
 
 
 def _remote_git_cmds(cmds) -> list:
-    """The git commands that name a remote verb: a role container issues none."""
     return [cmd for cmd in cmds if cmd[:1] == ["git"] and _REMOTE_GIT_VERBS & set(cmd[1:3])]
 
 
 def _cuts_branch(args) -> bool:
-    """True for the command that cuts the execution branch, the first step after the mount is validated."""
     return list(args[:3]) == ["git", "checkout", "-b"]
 
 
-# Provider credentials are exercised as *shapes*, never as real keys. The filler is spliced in right
-# after the vendor prefix, so no contiguous vendor-format secret ever exists in this file (GitHub
-# push protection correctly refuses to accept one, even a documentation example) while the sweep
-# under test still sees a token-shaped value: every pattern it accepts allows these characters after
-# the prefix. Build them through this helper rather than writing a literal.
+# why: GitHub push protection refuses any contiguous vendor-format secret, so fakes splice a filler after the prefix
 _FAKE_FILLER = "NOTREAL_not-a-live-key_"
 
 
 def _fake_token(prefix: str, body: str = "9f3Aq7ZxR2tKp8Wm") -> str:
-    """Assemble a token-shaped fake credential from a vendor prefix and a declared-fake filler."""
     return prefix + _FAKE_FILLER + body
 
 
 def _unscoped_add_all(cmds) -> bool:
-    """True when a command list holds a `git add -A` without the failure-salvage pathspec (the success staging)."""
     return any(c[:3] == ["git", "add", "-A"] and "--" not in c for c in cmds)
 
 
 def _salvage_add(cmds) -> bool:
-    """True when a command list holds the scoped failure-salvage `git add -A` that excludes the executions ledger."""
     return any(c[:3] == ["git", "add", "-A"] and ":(exclude)holon-knowledge/ledger/executions.jsonl" in c for c in cmds)
 
 
 def _superseded_bound_then_redact(stream: str, budget: int) -> str:
-    """The pipeline as shipped at `38fe087`, kept so counter-examples can be run against it.
-
-    Bound the swept stream to a line-aligned tail, THEN redact that tail. Two of this loop's six
-    credential findings live in this ordering: the byte cut severs whatever the redactors need, and
-    `redact_text` anchors on the key name, whose separator to the value (`\\s*(:\\s*|=)\\s*`,
-    `Bearer\\s+`) is pure whitespace and therefore legally crosses lines. F-IT8-1 is the case this
-    helper exists to keep leaking: the anchor sits on the line above the value, the bound discards
-    that line, and the credential is committed whole.
-    """
+    # why: the pipeline as shipped at 38fe087, kept so F-IT8-1 counter-examples still leak against it
     from sandbox_executor.entrypoint.executor import (
         _TRUNCATION_MARKER_RESERVE,
         redact_agent_secrets,
@@ -114,7 +83,6 @@ def _superseded_bound_then_redact(stream: str, budget: int) -> str:
 
 
 def _exact_filler(total_bytes: int, tag: str) -> str:
-    """Return exactly `total_bytes` of newline-terminated filler, so cut offsets can be asserted."""
     lines, rem = divmod(total_bytes, 13)
     block = "".join(f"{tag}{i:08d}\n" for i in range(lines))
     if rem:
@@ -124,12 +92,6 @@ def _exact_filler(total_bytes: int, tag: str) -> str:
 
 
 def _boundary_cut_offsets(cred: str, secret: str) -> list[int]:
-    """Calculate boundary-critical cut offsets across syntax boundaries for a credential shape.
-
-    Yields block start, 1 byte into anchor, separator punctuation (: or "), pre-newline,
-    newline, post-newline, indentation whitespace boundaries, secret start, mid-secret,
-    end-of-secret, and block end.
-    """
     offsets = {0, 1, len(cred) - 1}
     for idx, ch in enumerate(cred):
         if ch in (":", '"'):
@@ -155,7 +117,7 @@ def _boundary_cut_offsets(cred: str, secret: str) -> list[int]:
 
 
 def _assert_supersedes(testcase, rev1, rev2):
-    """Reader contract (docs/ledger_schema.md): a superseding row repeats every authoritative field it replaces."""
+    # why: docs/ledger_schema.md reader contract requires a superseding row to repeat every authoritative field
     for key in ("execution_notes", "execution_notes_valid", "elapsed_seconds", "budget_seconds"):
         testcase.assertIn(key, rev1)
     changed = {"status", "summary", "created_at", "ledger_revision"}
@@ -198,12 +160,6 @@ def _run_executor_main(  # noqa: PLR0913
     commands: list | None = None,
     plan_branch: str = "I-456/P-123/_",
 ) -> list[dict]:
-    """Run executor.main() with mocked git and runner; return the executions.jsonl rows it wrote.
-
-    The index always reports staged changes, so the ledger row is committed; when ``commands`` is given, every run_cmd
-    argument list is appended to it. A refused (over-budget) plan must exit with OVER_BUDGET_EXIT_CODE after committing
-    its row, and every other non-execute outcome must return normally.
-    """
     runner = MagicMock()
     runner.get_version.return_value = "1.0.0"
 
@@ -250,8 +206,6 @@ def _run_executor_main(  # noqa: PLR0913
 
 
 class IncrementalNotesHarness:
-    """Run ``executor.main`` over scripted agent turns that write execution notes; mix into a ``TestCase``."""
-
     def run_executor(self, turns, env=None):
         scripted = list(turns)
         prompts = []
@@ -268,8 +222,7 @@ class IncrementalNotesHarness:
             result.returncode = 0
             result.stdout = ""
             result.stderr = ""
-            # #95 empty-diff guard: the simulated agent changed a source file next to its execution notes, so a
-            # successful run stays a success (the notes alone are metadata and would be an empty diff).
+            # why: #95 empty-diff guard treats notes alone as an empty diff, so the agent also changes a source file
             if args[:3] == ["git", "rev-parse", "HEAD"]:
                 result.stdout = "plan-tip-sha\n"
             elif "diff" in args and "--name-only" in args:
@@ -330,8 +283,6 @@ class IncrementalNotesHarness:
 
 
 class GitRemoteHarness:
-    """Build a real bare remote holding a plan branch and a workspace cloned from it; mix into a ``TestCase``."""
-
     def _create_bare_remote_with_plan(self, base_dir: str, plan_branch: str) -> tuple[str, str]:
         bare_dir = os.path.join(base_dir, "bare_remote.git")
         subprocess.run(["git", "init", "--bare", "-b", "main", bare_dir], check=True, capture_output=True)

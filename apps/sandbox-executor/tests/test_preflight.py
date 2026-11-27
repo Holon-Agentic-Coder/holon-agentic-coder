@@ -1,5 +1,3 @@
-"""Tests for the pre-flight readiness probe, `holon doctor` and the gating of plan, execute and flow."""
-
 import json
 import logging
 import os
@@ -30,7 +28,6 @@ _NO_PROXY = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
 
 @pytest.fixture
 def probe_env(monkeypatch, tmp_path):
-    """Isolated home, no sandbox markers, a dummy key and the real probe enabled."""
     monkeypatch.setenv("HOME", str(tmp_path))
     for name in ("HOLON_ROLE", "HOLON_IN_SANDBOX", "HOLON_SKIP_PREFLIGHT", "HOLON_AGENT_SETTINGS"):
         monkeypatch.delenv(name, raising=False)
@@ -72,12 +69,12 @@ def _result(status: PreflightStatus, agent: str = "antigravity-agent") -> Prefli
         (1, "invalid model selection (--model 'x' --effort 'medium')", PreflightStatus.UNKNOWN),
         (None, "", PreflightStatus.UNKNOWN),
         (125, "docker: Error response from daemon: pull access denied", PreflightStatus.UNKNOWN),
-        # An exit-0 probe that answered is ok, whatever incidental output the runner logged around the reply.
+        # why: an exit-0 probe that answered is ok, whatever incidental output the runner logged around the reply
         (0, "OK\nwarning: cached session token expired, refreshed", PreflightStatus.OK),
         (0, "OK\n...token expired...", PreflightStatus.OK),
         (0, "[debug] HTTP 401 retry succeeded\nOK.", PreflightStatus.OK),
         (0, "OK\nrate limit headroom: 12 requests", PreflightStatus.OK),
-        # Bare status codes and a bare "expired" are not failure signals on their own.
+        # why: bare status codes and a bare "expired" are not failure signals on their own
         (1, "request id req-429-abc failed", PreflightStatus.UNKNOWN),
         (1, "cache expired; aborting", PreflightStatus.UNKNOWN),
         (1, "HTTP 401", PreflightStatus.EXPIRED_KEY),
@@ -134,7 +131,7 @@ def test_probe_runs_runner_in_its_container_and_redacts(probe_env):
 
 
 def _set_probe_values(monkeypatch):
-    """Set fake ANTHROPIC_API_KEY and HOLON_AGENT_SETTINGS values (the claude runner ignores HOLON_AGENT_KEY)."""
+    # why: the claude runner ignores HOLON_AGENT_KEY, so the key goes in ANTHROPIC_API_KEY
     agent_probe = make_probe("key")
     settings_probe = make_probe("settings")
     settings = '{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"' + settings_probe + '"}}'
@@ -174,7 +171,6 @@ def test_probe_keeps_credentials_off_the_docker_argv(probe_env, monkeypatch, iso
     assert f"ANTHROPIC_API_KEY={agent_probe}" in seen["lines"]
     assert not any(line.startswith("HOLON_AGENT_KEY=") for line in seen["lines"])
     assert f"HOLON_AGENT_SETTINGS={settings}" in seen["lines"]
-    # The runner's `--settings` flag reads the variable inside the container instead of carrying the value.
     tail = seen["cmd"][seen["cmd"].index("holon/agent-claude") + 1 :]
     assert tail[:2] == ["sh", "-c"]
     assert 'printf %s "${HOLON_AGENT_SETTINGS}" >"$s' in tail[2]
@@ -183,8 +179,6 @@ def test_probe_keeps_credentials_off_the_docker_argv(probe_env, monkeypatch, iso
 
 
 def test_probe_drops_a_stale_retired_repo_url(probe_env, monkeypatch, isolated_env_file_dir):
-    """A leftover HOLON_REPO_URL is neither forwarded nor an error: the probe is identical without it."""
-
     def probe_once():
         seen = {}
         assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok
@@ -220,7 +214,6 @@ def _record_probe(seen):
 def test_probe_keeps_url_userinfo_off_the_argv_in_every_shape(  # noqa: PLR0913
     probe_env, monkeypatch, isolated_env_file_dir, name, form, separators
 ):
-    """The pre-flight probe shares the main run's classifier: every userinfo shape goes to the env-file."""
     value, parts = make_url_probe(form, separators)
     monkeypatch.setenv(name, value)
     seen = {}
@@ -236,7 +229,6 @@ def test_probe_keeps_url_userinfo_off_the_argv_in_every_shape(  # noqa: PLR0913
 def test_probe_passes_a_credential_free_url_verbatim_in_the_env_file(
     probe_env, monkeypatch, isolated_env_file_dir, value
 ):
-    """Every forwarded HOLON_* value goes in the env-file, credential or not, and never on the argv."""
     monkeypatch.setenv("HOLON_PROXY_URL", value)
     seen = {}
 
@@ -247,7 +239,7 @@ def test_probe_passes_a_credential_free_url_verbatim_in_the_env_file(
 
 
 def test_probe_names_a_multiline_settings_json_bare_and_hands_its_value_to_docker(probe_env, monkeypatch):
-    """A docker env-file cannot carry a line break, so a multi-line value goes as `-e NAME` with docker's env."""
+    # why: a docker env-file cannot carry a line break, so a multi-line value goes as `-e NAME` with docker's env
     sample = make_probe("bare")
     settings = '{\n  "model": "m",\n  "apiKeyHelper": "' + sample + '"\n}'
     monkeypatch.setenv("HOLON_AGENT_SETTINGS", settings)
@@ -272,7 +264,6 @@ def test_probe_passes_a_credential_free_single_line_settings_json_in_the_env_fil
 
     assert f"HOLON_AGENT_SETTINGS={settings}" in seen["lines"]
     assert settings not in " ".join(seen["cmd"])
-    # The runner flag filled from the variable reads it inside the container; the binary stays literal.
     tail = seen["cmd"][seen["cmd"].index("holon/agent-claude") + 1 :]
     assert tail[:2] == ["sh", "-c"]
     assert "exec claude " in tail[2]
@@ -281,7 +272,7 @@ def test_probe_passes_a_credential_free_single_line_settings_json_in_the_env_fil
 
 
 def test_probe_keeps_a_file_path_settings_value_as_a_variable_reference():
-    """Only inline JSON is materialised to a file; a path value already names the file claude should read."""
+    # why: only inline JSON is materialised to a file; a path value already names the file claude should read
     path = "/run/secrets/" + make_probe("settings") + ".json"
 
     cmd = reference_secret_args(["claude", "--settings", path, "-p", "hi"], {"HOLON_AGENT_SETTINGS": path})
@@ -292,7 +283,6 @@ def test_probe_keeps_a_file_path_settings_value_as_a_variable_reference():
 def test_probe_passes_a_bare_credential_under_a_plain_holon_name_only_in_the_env_file(
     probe_env, monkeypatch, isolated_env_file_dir
 ):
-    """A bare, non-URL credential-shaped value under a name that is not secret-shaped stays off the probe argv."""
     sample = make_probe("bare")
     monkeypatch.setenv("HOLON_EXAMPLE_SETTING", sample)
     seen = {}
@@ -306,7 +296,6 @@ def test_probe_passes_a_bare_credential_under_a_plain_holon_name_only_in_the_env
 def test_probe_keeps_the_runner_binary_literal_without_a_referenced_argument(
     probe_env, monkeypatch, isolated_env_file_dir
 ):
-    """HOLON_AGENT_ID=claude in the env-file does not turn the `claude` binary into a shell reference."""
     seen = {}
 
     assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok
@@ -426,9 +415,6 @@ def test_probe_skipped_in_pi_host_local_mode(probe_env, monkeypatch):
     assert res.ok and res.skipped
 
 
-# --- holon doctor -------------------------------------------------------------------------------------------------
-
-
 def _run_main(argv: list[str]) -> int:
     with patch.object(sys, "argv", argv), pytest.raises(SystemExit) as exc_info:
         main()
@@ -488,9 +474,6 @@ def test_doctor_unmapped_runner(probe_env, monkeypatch, capsys):
     assert "HOLON_AGENT" in capsys.readouterr().err
 
 
-# --- gating of plan / execute -------------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(("command", "target"), [("plan", "I-1/_"), ("execute", "I-1/P-2/_")])
 def test_plan_and_execute_abort_before_container_on_failed_probe(probe_env, monkeypatch, capsys, command, target):
     monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
@@ -509,7 +492,6 @@ def test_plan_and_execute_abort_before_container_on_failed_probe(probe_env, monk
 
 @pytest.fixture
 def host_publish():
-    """Stand in for the host fetch and push around the standalone commands."""
     with (
         patch("sandbox_executor.cli.commands.plan.prepare_worktree", return_value="/wt") as prepare,
         patch("sandbox_executor.cli.commands.plan.push_checked_out_branch", return_value="I-1/P-2/_") as push,
@@ -538,7 +520,6 @@ def test_skip_preflight_bypasses_probe(probe_env, monkeypatch, bypass):
 
 @pytest.fixture
 def cli_logging():
-    """Restore the package logger's level and handlers after a test that runs the CLI logging setup."""
     package_logger = logging.getLogger(PACKAGE_LOGGER_NAME)
     saved_level, saved_handlers = package_logger.level, list(package_logger.handlers)
     package_logger.handlers = [h for h in saved_handlers if not isinstance(h, _CurrentStderrHandler)]
@@ -642,9 +623,6 @@ def test_run_docker_container_disables_nested_preflight(probe_env):
     assert not any(item.startswith("HOLON_") for item in run.call_args[0][0])
 
 
-# --- review-loop routing ------------------------------------------------------------------------------------------
-
-
 @pytest.mark.usefixtures("feature_worktree_cwd")
 def test_bare_review_loop_still_runs_in_a_container(probe_env, monkeypatch):
     monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
@@ -673,9 +651,6 @@ def test_local_review_loop_records_resolved_runner(probe_env, monkeypatch):
         assert _run_main(["holon", "review-loop", "I-1/P-2/E-3/_", "--local"]) == 0
     args = local.call_args[0][0]
     assert (args.agent, args.model) == ("pi-agent", "claude-opus-5-5")
-
-
-# --- flow: abort before Stage 1 -----------------------------------------------------------------------------------
 
 
 def _git(repo, *args):
@@ -822,7 +797,6 @@ def test_resume_with_new_runner_resolves_its_default_model(  # noqa: PLR0913
     assert probe.call_args[0][:2] == expected
     ctx = pipeline.call_args[1]["context"]
     assert (ctx.agent, ctx.model) == expected
-    # Each decision is logged exactly once, with the source that actually supplied it.
     err = capsys.readouterr().err
     agent_lines = [line for line in err.splitlines() if line.startswith("Agent runner resolved to ")]
     model_lines = [line for line in err.splitlines() if line.startswith("Model resolved to ")]

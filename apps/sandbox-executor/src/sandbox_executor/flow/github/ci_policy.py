@@ -1,11 +1,8 @@
-"""I/O-free CI verdict: how ``gh pr checks`` JSON and recorded test results become a CI status summary.
-
-This module spawns nothing and reads no environment; ``ci.py`` owns the ``gh`` call and feeds its output here.
-"""
-
 from __future__ import annotations
 
 from typing import Any
+
+# why: this verdict stays I/O-free (no subprocess, no environment); ci.py owns the gh call
 
 _FAILED_STATES = ("FAILURE", "TIMED_OUT", "ACTION_REQUIRED")
 _PENDING_STATES = ("IN_PROGRESS", "QUEUED", "PENDING")
@@ -36,7 +33,6 @@ def _is_skipped(check: dict[str, Any]) -> bool:
 
 
 def summarise_ci_checks(raw_checks: list[dict[str, Any]]) -> dict[str, Any]:
-    """Summarise the ``gh pr checks --json bucket,name,state,...`` list into the ``github_cli`` CI status dict."""
     total = len(raw_checks)
     passed = sum(1 for c in raw_checks if _is_passed(c))
     failed = sum(1 for c in raw_checks if _is_failed(c))
@@ -55,7 +51,6 @@ def summarise_ci_checks(raw_checks: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def local_tests_ci_status() -> dict[str, Any]:
-    """Return a fresh ``local_tests`` fallback CI status, used when GitHub CLI checks are unavailable."""
     return {
         "source": "local_tests",
         "total": 1,
@@ -69,14 +64,13 @@ def local_tests_ci_status() -> dict[str, Any]:
 
 
 def _ci_green(ci_status: dict[str, Any], tests_failed: bool) -> bool | None:
-    """True or False when CI was measured, None when it was not (unknown is never green)."""
     if ci_status.get("measured") is False or "all_passed" not in ci_status:
+        # why: an unmeasured CI status is unknown, and unknown is never green
         return None
     return ci_status.get("all_passed") is True and not tests_failed
 
 
 def _extract_failed_ci_check_names(ci_status: dict[str, Any] | None, tests_failed: bool = False) -> list[str]:
-    """Extract unique names of failing CI checks or local tests."""
     failing: list[str] = []
     if ci_status and isinstance(ci_status.get("checks"), list):
         for check in ci_status["checks"]:

@@ -7,7 +7,7 @@ from typing import Any
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.token_scopes import REFRESH_COMMAND
-from sandbox_executor.flow.host_remote import new_local_child_branches, push_commit, remote_error
+from sandbox_executor.flow.host_remote import new_local_child_branches, push_commit_once, remote_error
 from sandbox_executor.git import run_git
 
 # why: a ref in the common repository survives worktree removal and branch deletion when the host push is refused
@@ -34,7 +34,7 @@ def _pin(repo_dir: str, branch: str) -> RecoveredExecution | None:
         return None
     # why: best effort: only a refusal tied to the branch name, not the content, lets this succeed
     remote_branch = f"{RECOVERY_BRANCH_PREFIX}{exec_id}"
-    pushed = remote_error(push_commit, repo_dir, sha, remote_branch) is None
+    pushed = remote_error(push_commit_once, repo_dir, sha, remote_branch) is None
     return RecoveredExecution(branch, local_ref, sha, remote_branch if pushed else None)
 
 

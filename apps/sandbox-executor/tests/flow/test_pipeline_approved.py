@@ -1,5 +1,3 @@
-"""The pipeline runs Stage 5 calibration after Stage 4 returns APPROVED."""
-
 from unittest.mock import patch
 
 from sandbox_executor.flow import FlowContext, FlowStage, PipelineEngine, StageResult, StageStatus

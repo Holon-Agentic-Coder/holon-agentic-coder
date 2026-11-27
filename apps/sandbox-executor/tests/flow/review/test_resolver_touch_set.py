@@ -7,11 +7,13 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+import sandbox_executor.entrypoint.review_loop as review_loop_mod
 from sandbox_executor.entrypoint.review_loop import (
     CommitOptions,
     _build_resolver_prompt,
     _commit_resolution,
     _load_resolver_touch_set,
+    _worktree_changed_paths,
 )
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.review.resolver import ResolverInput, _dispatch_review_resolver
@@ -334,3 +336,55 @@ def test_commit_resolution_is_unrestricted_when_touch_set_is_omitted(tmp_path: P
     assert (lint_ok, tests_ok) == (True, True)
     assert head_sha != initial_head
     assert updated[0].commit_sha == head_sha
+
+
+def test_commit_resolution_allows_new_in_set_file_in_new_untracked_directory(tmp_path: Path) -> None:
+    repo, initial_head = _init_repo(tmp_path)
+    new_file = repo / "new_pkg" / "sub" / "new_mod.py"
+    new_file.parent.mkdir(parents=True)
+    new_file.write_text("NEW = 1\n", encoding="utf-8")
+
+    with patch("sandbox_executor.entrypoint.review_loop._verify_before_push", return_value=(True, True, None)):
+        updated, head_sha, lint_ok, tests_ok, err = _commit_resolution(
+            str(repo),
+            "I-1-demo/P-1/E-1/_",
+            1,
+            _applied_disposition(path="new_pkg/sub/new_mod.py"),
+            CommitOptions(pre_resolver_head=initial_head, touch_set=("new_pkg/sub/new_mod.py",)),
+        )
+
+    assert err is None
+    assert (lint_ok, tests_ok) == (True, True)
+    assert head_sha != initial_head
+    assert updated[0].commit_sha == head_sha
+
+
+def test_commit_resolution_fails_closed_when_git_status_fails_for_touch_set(tmp_path: Path) -> None:
+    repo, initial_head = _init_repo(tmp_path)
+    (repo / "allowed.py").write_text("VALUE = 2\n", encoding="utf-8")
+    real_run_cmd = review_loop_mod.run_cmd
+
+    def fake_run_cmd(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
+        if cmd[:4] == ["git", "status", "--porcelain", "-z"]:
+            return subprocess.CompletedProcess(cmd, returncode=128, stdout="", stderr="fatal: status failed")
+        return real_run_cmd(cmd, *args, **kwargs)
+
+    with (
+        patch("sandbox_executor.entrypoint.review_loop.run_cmd", side_effect=fake_run_cmd),
+        patch("sandbox_executor.entrypoint.review_loop._verify_before_push") as verify_mock,
+    ):
+        assert _worktree_changed_paths(str(repo)) is None
+        _, head_sha, lint_ok, tests_ok, err = _commit_resolution(
+            str(repo),
+            "I-1-demo/P-1/E-1/_",
+            1,
+            _applied_disposition(),
+            CommitOptions(pre_resolver_head=initial_head, touch_set=("allowed.py",)),
+        )
+
+    assert err is not None
+    assert "touch_set_violation" in err
+    assert head_sha == initial_head
+    assert (lint_ok, tests_ok) == (False, False)
+    assert _git(repo, "rev-parse", "HEAD") == initial_head
+    verify_mock.assert_not_called()

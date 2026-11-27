@@ -481,10 +481,16 @@ class CommitOptions:
     touch_set: tuple[str, ...] = ()
 
 
-def _worktree_changed_paths(repo_dir: str) -> list[str]:
-    status_proc = run_cmd(["git", "status", "--porcelain", "-z", *_RESOLVER_PATHSPEC], cwd=repo_dir, check=False)
+def _worktree_changed_paths(repo_dir: str) -> list[str] | None:
+    status_proc = run_cmd(
+        ["git", "status", "--porcelain", "-z", "--untracked-files=all", *_RESOLVER_PATHSPEC],
+        cwd=repo_dir,
+        check=False,
+    )
+    if status_proc.returncode != 0:
+        return None
     raw = status_proc.stdout or ""
-    if status_proc.returncode != 0 or not raw:
+    if not raw:
         return []
     tokens = raw.split("\0")
     paths: list[str] = []
@@ -507,7 +513,10 @@ def _touch_set_commit_refusal(repo_dir: str, touch_set: Any) -> str | None:
     declared = _parse_touch_set(touch_set)
     if declared is None:
         return None
-    violating = sorted(dict.fromkeys(out_of_set_files(declared, _worktree_changed_paths(repo_dir))))
+    changed = _worktree_changed_paths(repo_dir)
+    if changed is None:
+        return "touch_set_violation: failed to inspect worktree changes via git status"
+    violating = sorted(dict.fromkeys(out_of_set_files(declared, changed)))
     if not violating:
         return None
     return (

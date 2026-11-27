@@ -171,7 +171,7 @@ _EXECUTOR_RESULT_FILE_ARGV = (
 _INTENT_CREATOR_ARGV = (
     "docker run --env-file <ENV_FILE> --rm -i -e DOCKER_CLI_HINTS=false -e UV_FROZEN=1 -e "
     "UV_PROJECT_ENVIRONMENT=/home/holon/.cache/holon-venv --add-host host.docker.internal:host-gateway -v "
-    "<TMP>/intent.json:/tmp/intent.json -v /work/flow-x:/home/holon/.holon-sandbox/workspace "
+    "<TMP>/intent.json:/tmp/intent.json:ro -v /work/flow-x:/home/holon/.holon-sandbox/workspace "
     "--cap-drop=ALL --security-opt=no-new-privileges --add-host 169.254.169.254:127.0.0.1 --add-host "
     "metadata.google.internal:127.0.0.1 --add-host instance-data:127.0.0.1 holon/orchestrator --slug x"
 )
@@ -410,6 +410,22 @@ def test_intent_creator_with_intent_file(launch_env, capsys, tmp_path):
     )
     _check("intent_creator", launch)
 
+
+def test_intent_creator_mounts_the_intent_file_read_only(launch_env, capsys, tmp_path):
+    intent_file = tmp_path / "intent.json"
+    intent_file.write_text("{}", encoding="utf-8")
+    launch = _launch(
+        launch_env,
+        capsys,
+        lambda: cli.dispatch_role_agent(
+            "intent-creator", None, None, ["--slug", "x"], target_worktree=WORKTREE, intent_file=str(intent_file)
+        ),
+    )
+    [docker_run] = launch.docker_runs
+    volumes = [docker_run[index + 1] for index, arg in enumerate(docker_run[:-1]) if arg == "-v"]
+    intent_volumes = [volume for volume in volumes if ":/tmp/intent.json" in volume]
+    assert intent_volumes == ["<TMP>/intent.json:/tmp/intent.json:ro"]
+    assert "<TMP>/intent.json:/tmp/intent.json" not in docker_run
 
 def test_intent_creator_with_missing_intent_file(launch_env, capsys, tmp_path):
     missing = tmp_path / "missing.json"

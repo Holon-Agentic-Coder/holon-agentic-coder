@@ -1,0 +1,23 @@
+{
+  "kb_id": "KB-failure-9e79a562",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "1970-01-01T00:00:00+00:00",
+  "updated_ts": "1970-01-01T00:00:00+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {},
+  "tags": [
+    "test",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795756305-diff-stays-in-intent-scope/P-1795756326-ANA-G4N/E-1795756626-ANA-G4N/_",
+    "description": "Reproduced failure across executions with identical context. Execution counts live in the action index and ledgers.",
+    "action": "Review Loop executed for I-1795756305-diff-stays-in-intent-scope/P-1795756326-ANA-G4N/E-1795756626-ANA-G4N/_",
+    "symptoms": [
+      "Consensus failed: findings=['FIND-CI-001', 'FIND-R1-001-01', 'FIND-R1-001-02', 'FIND-R1-001-03', 'FIND-R1-001-04', 'FIND-R2-001-01', 'FIND-R2-001-02', 'FIND-R2-001-03', 'FIND-R2-001-04', 'FIND-R3-001-01', 'FIND-R3-001-02', 'FIND-R3-001-03']; resolver failed: Resolver turn failed: Resolver agent timed out: turn stall budget of 90 s exceeded after 90.2 s (resolver exit code 1); output tail: Waiting for the local unit test suite (`uv run task test`) to finish so I can inspect any test failures alongside the review findings.\nRunning targeted tests and `ruff` checks on the updated files.\n\nroot agent idle; waiting for 1 background task(s) to finish\nerror: interrupted; not approved: reviewer 1 final verdict CHANGES_REQUESTED, reviewer 1 Engineering role CHANGES, reviewer 2 final verdict CHANGES_REQUESTED, reviewer 2 Engineering role CHANGES, reviewer 2 Security role CHANGES, reviewer 3 final verdict CHANGES_REQUESTED, reviewer 3 Engineering role CHANGES; final verdicts: Reviewer 1 CHANGES_REQUESTED (0/3/1); Reviewer 1 Engineering role CHANGES; Reviewer 2 CHANGES_REQUESTED (0/2/2); Reviewer 2 Engineering role CHANGES; Reviewer 2 Security role CHANGES; Reviewer 3 CHANGES_REQUESTED (0/2/1); Reviewer 3 Engineering role CHANGES"
+    ]
+  }
+}

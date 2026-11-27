@@ -1,14 +1,3 @@
-"""The per-intent flow run lock: one exclusive ``flock`` on ``<git-common-dir>/holon-flow-run-<slug>.lock``.
-
-Every worktree of a repository shares the common git directory, so two ``holon flow`` runs of one intent slug on one
-host cannot both drive its checkpoint; runs of different slugs use different files and never block each other. The lock
-is held for the whole run; the kernel releases it when the holder dies. The file records the holder
-(:class:`RunLockHolder`), and a clean release empties it, so content found under a free lock means the last holder
-exited without releasing: the takeover is logged and that run's leftover containers are swept by its run id. A lock
-whose ``flock`` is still held (by a fork that inherited it) but whose recorded holder on this host is dead is taken
-over too; a live holder, or one on another host, never is. The per-repository admission lock is separate.
-"""
-
 from __future__ import annotations
 
 import atexit
@@ -27,13 +16,12 @@ from sandbox_executor.git import run_git
 
 logger = logging.getLogger(__name__)
 
+# why: every worktree shares the common git directory, so one lock file serialises a slug per repository and host
 RUN_LOCK_PREFIX = "holon-flow-run-"
 _SLUG_INVALID = re.compile(r"[^A-Za-z0-9_-]+")
 
 
 class FlowRunLockHeld(RuntimeError):
-    """Another live ``holon flow`` process holds the run lock of this slug."""
-
     def __init__(self, slug: str, path: str, holder: RunLockHolder | None) -> None:
         who = holder.describe() if holder is not None else "an unidentified process"
         super().__init__(
@@ -46,8 +34,6 @@ class FlowRunLockHeld(RuntimeError):
 
 @dataclass(frozen=True)
 class HeldRunLock:
-    """A run lock this process holds; ``stale`` is the record of a previous holder it took over, if any."""
-
     path: str
     holder: RunLockHolder
     stale: RunLockHolder | None
@@ -65,7 +51,6 @@ def _nearest_existing_dir(path: str) -> str:
 
 
 def run_lock_path(target_worktree: str, slug: str) -> str | None:
-    """The lock file of ``slug`` in the common git directory of ``target_worktree``; None outside a repository."""
     probe = _nearest_existing_dir(target_worktree)
     try:
         result = run_git(["rev-parse", "--git-common-dir"], cwd=probe, check=False)
@@ -100,11 +85,11 @@ def _same_file(descriptor: int, path: str) -> bool:
 
 
 def _try_lock(descriptor: int, path: str) -> bool:
-    """Take the ``flock``; False when another process holds it or the path was replaced before it was taken."""
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         return False
+    # why: a contender may have unlinked and recreated the path between our open and our flock
     if _same_file(descriptor, path):
         return True
     fcntl.flock(descriptor, fcntl.LOCK_UN)
@@ -117,6 +102,7 @@ def _log_takeover(path: str, stale: RunLockHolder, why: str) -> None:
 
 
 def _locked(descriptor: int, path: str, holder: RunLockHolder, stale: RunLockHolder | None) -> HeldRunLock:
+    # why: a clean release empties the file, so a record under a free lock means its holder died without releasing
     unreleased = _read_holder(descriptor)
     if unreleased is not None:
         _log_takeover(path, unreleased, "the holder exited without releasing it")
@@ -128,23 +114,19 @@ def _locked(descriptor: int, path: str, holder: RunLockHolder, stale: RunLockHol
 
 
 def acquire_flow_run_lock(target_worktree: str, slug: str, run_id: str) -> HeldRunLock | None:
-    """Take the run lock of ``slug``, re-entrantly; None (with a warning) when no git directory can be found.
-
-    Raises:
-        FlowRunLockHeld: Another live process holds it.
-    """
     path = run_lock_path(target_worktree, slug)
     if path is None:
         logger.warning("No git directory for '%s'; the flow run lock of '%s' is not taken.", target_worktree, slug)
         return None
+    # why: re-entrant, since a second flock on a new descriptor would block against our own lock
     if path in _held:
         return _held[path][1]
     holder = RunLockHolder.current(slug, target_worktree, run_id)
     held = _attempt(slug, path, holder, None)
     if isinstance(held, HeldRunLock):
         return held
-    # Contenders for a dead holder's lock take it over one at a time under a guard lock and re-check the file there, so
-    # none can unlink a lock file another has just created and locked.
+    # why: contenders for a dead holder's lock take it over one at a time under a guard lock and re-check the file
+    # why: there, so none can unlink a lock file another has just created and locked.
     guard = os.open(f"{path}.takeover", os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(guard, fcntl.LOCK_EX)
@@ -163,14 +145,11 @@ def acquire_flow_run_lock(target_worktree: str, slug: str, run_id: str) -> HeldR
 
 
 def _attempt(slug: str, path: str, holder: RunLockHolder, stale: RunLockHolder | None) -> HeldRunLock | RunLockHolder:
-    """Take the lock at ``path``, or return its recorded holder when that holder is dead on this host.
-
-    Raises:
-        FlowRunLockHeld: A live, remote or unidentified process holds it.
-    """
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
     if _try_lock(descriptor, path):
         return _locked(descriptor, path, holder, stale)
+    # why: a fork that inherited the flock keeps it held after its recorded holder dies; only a dead local holder is
+    # why: taken over, never a live, remote or unidentified one
     current = _read_holder(descriptor)
     dead = current is not None and current.is_dead_here() and _same_file(descriptor, path)
     os.close(descriptor)
@@ -180,12 +159,10 @@ def _attempt(slug: str, path: str, holder: RunLockHolder, stale: RunLockHolder |
 
 
 def held_run_lock_paths() -> list[str]:
-    """The run lock files this process holds."""
     return list(_held)
 
 
 def release_flow_run_lock(path: str | None = None) -> None:
-    """Empty and release the lock at ``path``, or every run lock this process holds when ``path`` is None."""
     for lock_path in [path] if path is not None else list(_held):
         entry = _held.pop(lock_path, None)
         if entry is None:
@@ -206,7 +183,6 @@ def _reap_then_release() -> None:
 
 
 def hold_flow_run_lock(target_worktree: str, slug: str) -> bool:
-    """Hold the run lock of ``slug`` until this process exits, reaping the run's children first; exit 1 if held."""
     global _exit_hook_registered
     try:
         held = acquire_flow_run_lock(target_worktree, slug, uuid.uuid4().hex[:12])

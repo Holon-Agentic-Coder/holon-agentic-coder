@@ -1,5 +1,3 @@
-"""Stage 4 CI evidence: fold the Stage 3 local test result into a ``local_tests`` CI probe."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -12,11 +10,6 @@ def apply_local_test_evidence(
     dry_run: bool,
     unmeasured_blocks: bool,
 ) -> bool:
-    """Rewrite a ``local_tests`` probe in place from the Stage 3 evidence; True when tests were not measured.
-
-    Failed local tests always fail the probe. With no recorded pass rate, a dry run marks the probe unmeasured, and
-    otherwise, when ``unmeasured_blocks``, the probe becomes a skipped ``NOT_MEASURED`` check that blocks approval.
-    """
     if ci_status.get("source") != "local_tests":
         return False
     if tests_failed:
@@ -38,10 +31,6 @@ def _apply_guarded_test_evidence(
     blocked: bool,
     unmeasured_blocks: bool,
 ) -> tuple[bool, bool]:
-    """Run ``test_gate.evidence`` and fold it into ``ci_status`` unless ``blocked`` (infra error or missing ref).
-
-    Returns ``(tests_failed, not_measured)``.
-    """
     if not dry_run and blocked:
         return False, False
     gate_rate, tests_failed = test_gate.evidence(ci_status, dry_run=dry_run)

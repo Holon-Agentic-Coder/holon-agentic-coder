@@ -26,7 +26,7 @@
       "stage_4"
     ],
     "symptoms": [
-      "FAILED apps/sandbox-executor/tests/flow/test_module_budgets.py::test_the_live_configuration_passes_against_the_real_tree\n___________ test_the_live_configuration_passes_against_the_real_tree ___________\n[gw3] linux -- Python 3.13.14 /home/holon/.cache/holon-venv/bin/python\ncapsys = <_pytest.capture.CaptureFixture object at 0xffff960337f0>\n    def test_the_live_configuration_passes_against_the_real_tree(capsys: pytest.CaptureFixture[str]):\n        # Ratchet-down notices and stale-entry warnings are advisory: lowering or removing an override is a frozen\n        # configuration change, so a partia"
+      "FAILED apps/sandbox-executor/tests/flow/test_module_budgets.py::test_the_live_configuration_passes_against_the_real_tree\n___________ test_the_live_configuration_passes_against_the_real_tree ___________\n[gw3] linux -- Python 3.13.14 /home/holon/.cache/holon-venv/bin/python\ncapsys = <_pytest.capture.CaptureFixture object at 0xffff8f514b90>\n    def test_the_live_configuration_passes_against_the_real_tree(capsys: pytest.CaptureFixture[str]):\n        # Ratchet-down notices and stale-entry warnings are advisory: lowering or removing an override is a frozen\n        # configuration change, so a partia"
     ]
   }
 }

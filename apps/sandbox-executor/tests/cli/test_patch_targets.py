@@ -1,11 +1,3 @@
-"""Guard: tests patch CLI submodule-local symbols at their owning submodule, never on ``sandbox_executor.cli``.
-
-When a function moves from ``cli/__init__.py`` into ``cli/<module>.py``, any ``patch("sandbox_executor.cli.<name>")``
-or ``patch.object(cli, "<name>")`` silently patches only the re-export on the package object and never intercepts
-lookups inside ``cli/<module>.py``. Names intentionally accessed via ``cli.<name>`` by ``cli/commands/*.py`` remain
-valid package-level patch targets.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -19,7 +11,6 @@ MAX_CLI_SUBMODULE_LINES = 200
 
 
 def _module_local_names(path: Path) -> set[str]:
-    """Names bound at module level in ``path`` and loaded inside its top-level definitions."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     bound: set[str] = set()
     defs: list[ast.AST] = []
@@ -39,7 +30,6 @@ def _module_local_names(path: Path) -> set[str]:
 
 
 def _submodule_local_symbols() -> dict[str, set[str]]:
-    """Map each symbol resolved inside a direct ``cli/*.py`` submodule to its owning submodule name(s)."""
     owners: dict[str, set[str]] = {}
     for path in sorted(CLI_DIR.glob("*.py")):
         if path.name in ("__init__.py", "__main__.py"):
@@ -50,7 +40,6 @@ def _submodule_local_symbols() -> dict[str, set[str]]:
 
 
 def _command_dispatched_cli_attrs() -> set[str]:
-    """Names accessed through ``cli.<attr>`` inside ``sandbox_executor/cli/commands/*.py``."""
     attrs: set[str] = set()
     for path in sorted(COMMANDS_DIR.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -60,46 +49,64 @@ def _command_dispatched_cli_attrs() -> set[str]:
     return attrs
 
 
+def _is_patch_call(func: ast.expr) -> bool:
+    return (isinstance(func, ast.Name) and func.id == "patch") or (
+        isinstance(func, ast.Attribute) and func.attr == "patch"
+    )
+
+
+def _dotted_string_patch_offender(node: ast.Call, rel_path: str, forbidden: dict[str, set[str]]) -> str | None:
+    if not _is_patch_call(node.func) or not node.args:
+        return None
+    arg0 = node.args[0]
+    if not (isinstance(arg0, ast.Constant) and isinstance(arg0.value, str)):
+        return None
+    prefix = "sandbox_executor.cli."
+    if not arg0.value.startswith(prefix):
+        return None
+    rest = arg0.value[len(prefix) :]
+    head = rest.split(".", 1)[0]
+    if head not in forbidden:
+        return None
+    targets = ", ".join(sorted(forbidden[head]))
+    return f"{rel_path}:{node.lineno}: {arg0.value} -> patch {targets}"
+
+
+def _cli_attribute_patch_offender(node: ast.Call, rel_path: str, forbidden: dict[str, set[str]]) -> str | None:
+    func = node.func
+    if not (
+        isinstance(func, ast.Attribute)
+        and func.attr in ("object", "setattr")
+        and len(node.args) >= 2
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "cli"
+        and isinstance(node.args[1], ast.Constant)
+        and isinstance(node.args[1].value, str)
+    ):
+        return None
+    name = node.args[1].value
+    if name not in forbidden:
+        return None
+    targets = ", ".join(sorted(forbidden[name]))
+    return f"{rel_path}:{node.lineno}: cli.{name} -> patch {targets}"
+
+
 def _stale_cli_patch_targets_in_source(
     source: str,
     rel_path: str,
     forbidden: dict[str, set[str]],
 ) -> list[str]:
-    """Return formatted violation strings for stale ``sandbox_executor.cli.<name>`` patch calls in ``source``."""
     tree = ast.parse(source, filename=rel_path)
     offenders: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        func = node.func
-        # patch("sandbox_executor.cli.<name>", ...)
-        if (
-            (isinstance(func, ast.Name) and func.id == "patch")
-            or (isinstance(func, ast.Attribute) and func.attr == "patch")
-        ) and node.args:
-            arg0 = node.args[0]
-            if isinstance(arg0, ast.Constant) and isinstance(arg0.value, str):
-                prefix = "sandbox_executor.cli."
-                if arg0.value.startswith(prefix):
-                    rest = arg0.value[len(prefix) :]
-                    head = rest.split(".", 1)[0]
-                    if head in forbidden:
-                        targets = ", ".join(sorted(forbidden[head]))
-                        offenders.append(f"{rel_path}:{node.lineno}: {arg0.value} -> patch {targets}")
-        # patch.object(cli, "<name>", ...) or monkeypatch.setattr(cli, "<name>", ...)
-        if (
-            isinstance(func, ast.Attribute)
-            and func.attr in ("object", "setattr")
-            and len(node.args) >= 2
-            and isinstance(node.args[0], ast.Name)
-            and node.args[0].id == "cli"
-            and isinstance(node.args[1], ast.Constant)
-            and isinstance(node.args[1].value, str)
+        for offender in (
+            _dotted_string_patch_offender(node, rel_path, forbidden),
+            _cli_attribute_patch_offender(node, rel_path, forbidden),
         ):
-            name = node.args[1].value
-            if name in forbidden:
-                targets = ", ".join(sorted(forbidden[name]))
-                offenders.append(f"{rel_path}:{node.lineno}: cli.{name} -> patch {targets}")
+            if offender is not None:
+                offenders.append(offender)
     return offenders
 
 
@@ -109,6 +116,7 @@ def _forbidden_package_patch_names() -> dict[str, set[str]]:
     return {name: mods for name, mods in local_symbols.items() if name not in dispatched}
 
 
+# why: patching sandbox_executor.cli.<name> replaces only the package re-export, never lookups inside cli/<module>.py.
 def test_no_test_patches_submodule_local_cli_symbol_on_package():
     forbidden = _forbidden_package_patch_names()
     offenders: list[str] = []

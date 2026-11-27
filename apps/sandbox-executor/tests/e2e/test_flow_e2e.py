@@ -1,9 +1,3 @@
-"""Opt-in end-to-end ``holon flow`` test suite against a host-local OpenAI-compatible model endpoint.
-
-Excluded from default ``uv run pytest`` and ``uv run task test`` via ``norecursedirs = ["e2e"]``.
-Invoke explicitly with ``uv run task test-e2e`` after configuring ``HOLON_LOCAL_LLM=1`` (see ``docs/flow_e2e.md``).
-"""
-
 from __future__ import annotations
 
 import os
@@ -23,7 +17,6 @@ from sandbox_executor.git import run_git
 
 
 def _seed_disposable_e2e_repository(root: Path) -> tuple[Path, Path]:
-    """Create a disposable local bare ``origin.git`` and working ``repo`` for the E2E flow run."""
     origin = root / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
 
@@ -51,7 +44,6 @@ def _seed_disposable_e2e_repository(root: Path) -> tuple[Path, Path]:
 
 
 def _assert_e2e_stage_outputs(ctx: FlowContext, results: dict[str, StageResult]) -> None:
-    """Verify model-generated intent, plan, and execution artifacts before teardown."""
     for stage_name in ("intent", "plan", "execute"):
         res = results.get(stage_name)
         if res is None or res.status != StageStatus.SUCCESS:
@@ -65,9 +57,9 @@ def _assert_e2e_stage_outputs(ctx: FlowContext, results: dict[str, StageResult])
         raise E2EModelOutputError("E2E context is missing expected intent, plan, or execution branch names.")
 
 
+# why: norecursedirs keeps this out of default runs; run it via uv run task test-e2e with HOLON_LOCAL_LLM=1.
 @pytest.mark.e2e
 def test_flow_e2e_local_llm_with_unconditional_teardown(tmp_path: Path) -> None:
-    """Exercise ``holon flow`` Stages 1-3 against a configured host-local LLM and verify unconditional teardown."""
     ready, message, envelopes = validate_e2e_local_llm_env()
     if not ready:
         pytest.skip(message)

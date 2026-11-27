@@ -6,7 +6,11 @@ import logging
 import os
 from typing import Any
 
-from sandbox_executor.knowledge.stable_envelope import build_kb_envelope, build_wb_envelope, write_envelope_once
+from sandbox_executor.knowledge.stable_envelope import (
+    build_kb_envelope,
+    build_wb_envelope,
+    write_envelope_once,
+)
 
 logger = logging.getLogger(__name__)
 

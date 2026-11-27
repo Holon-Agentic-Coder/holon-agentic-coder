@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -31,6 +32,10 @@ MAX_FIX_TURNS = 4
 MAX_DIAGNOSES = MAX_FIX_TURNS + 2
 EVIDENCE_IDS_SHOWN = 5
 EVIDENCE_EXCERPT_CHARS = 400
+UNATTRIBUTED_BLOCKER = "none"
+PARKED_STATUSES = frozenset({"blocked", "exhausted"})
+_BEAN_ID_RE = re.compile(r"\bBEAN-\d+\b", re.IGNORECASE)
+_PR_REF_RE = re.compile(r"\b(?:PR\s*#|pull request\s*#|blocked(?:\s+on)?\s*#)(\d+)\b", re.IGNORECASE)
 
 FIX_PROMPT_TEMPLATE = """The project's test suite fails after your change. Classification: {classification}.
 
@@ -67,6 +72,12 @@ class LoopOutcome:
     failing_ids: tuple[str, ...] = ()
     excerpts: Mapping[str, str] = field(default_factory=dict)
     signature: str = ""
+    blocked_on: str | None = None
+    parked_record: dict[str, Any] | None = None
+
+    @property
+    def parked(self) -> bool:
+        return self.parked_record is not None
 
     @property
     def evidence_text(self) -> str:
@@ -100,6 +111,8 @@ class LoopPorts:
     start_tier: str | None = None
     remaining_seconds: Callable[[], float] = lambda: math.inf
     environment: Callable[[], Mapping[str, str]] = lambda: dict(os.environ)
+    blocker_map: Mapping[str, str] = field(default_factory=dict)
+    checkpoint_path: str = ""
 
 
 @dataclass
@@ -134,6 +147,49 @@ def _case_of(measurement: TestMeasurement, output: str) -> _Case:
     ids = failing_ids_from_output(output)
     excerpts = excerpts_by_test(output, ids)
     return _Case(measurement, ids, excerpts, failure_signature(ids, excerpts))
+
+
+def _blocker_lookup_keys(case: _Case) -> tuple[str, ...]:
+    suspects = case.diagnosis.environment_suspects if case.diagnosis else ()
+    classification = (case.diagnosis.classification.value,) if case.diagnosis else ()
+    return tuple(k for k in (case.signature, *case.failing_ids, *suspects, *classification) if k)
+
+
+def _extract_blocker_ref(texts: Iterable[str]) -> str | None:
+    for text in texts:
+        if not text:
+            continue
+        if (bean := _BEAN_ID_RE.search(text)) is not None:
+            return bean.group(0).upper()
+        if (pr := _PR_REF_RE.search(text)) is not None:
+            return f"PR#{pr.group(1)}"
+    return None
+
+
+def _resolve_blocked_on(case: _Case, reason: str | None, blocker_map: Mapping[str, str]) -> str:
+    for key in _blocker_lookup_keys(case):
+        if (mapped := str(blocker_map.get(key) or "").strip()):
+            return mapped
+    diag_outputs = (case.diagnosis.base.output, case.diagnosis.same_env.output) if case.diagnosis else ()
+    texts = (reason or "", *case.excerpts.values(), *diag_outputs)
+    return _extract_blocker_ref(texts) or UNATTRIBUTED_BLOCKER
+
+
+def _build_parked_record(outcome: LoopOutcome, checkpoint_path: str = "") -> dict[str, Any]:
+    return {
+        "status": "parked",
+        "loop_status": outcome.status,
+        "blocked_on": outcome.blocked_on or UNATTRIBUTED_BLOCKER,
+        "classification": outcome.classification or "unresolved",
+        "failing_ids": list(outcome.failing_ids),
+        "signature": outcome.signature,
+        "evidence": outcome.evidence_text,
+        "excerpts": dict(outcome.excerpts),
+        "blocked_reason": outcome.blocked_reason,
+        "final_tier": outcome.final_tier,
+        "ledger_rows": list(outcome.rows),
+        "checkpoint_path": checkpoint_path,
+    }
 
 
 class TestFailureLoop:
@@ -179,7 +235,7 @@ class TestFailureLoop:
 
     def _finish(self, status: str, case: _Case, reason: str | None = None) -> LoopOutcome:
         classification = case.diagnosis.classification.value if case.diagnosis else None
-        return LoopOutcome(
+        outcome = LoopOutcome(
             status,
             case.measurement,
             classification,
@@ -190,13 +246,21 @@ class TestFailureLoop:
             case.excerpts,
             case.signature,
         )
+        if status in PARKED_STATUSES:
+            outcome.blocked_on = _resolve_blocked_on(case, reason, self.ports.blocker_map)
+            outcome.parked_record = _build_parked_record(outcome, self.ports.checkpoint_path)
+        return outcome
 
     def _unmeasured(self, measurement: TestMeasurement) -> LoopOutcome:
-        case = _Case(measurement, (), {"run_error": measurement.run_error or ""}, "")
+        case = _Case(
+            measurement,
+            (),
+            {"run_error": measurement.run_error or ""},
+            "",
+            Diagnosis(FailureClass.ENVIRONMENT),
+        )
         self._record(case, FailureClass.ENVIRONMENT.value)
-        outcome = self._finish("blocked", case, f"tests could not be measured: {measurement.run_error}")
-        outcome.classification = FailureClass.ENVIRONMENT.value
-        return outcome
+        return self._finish("blocked", case, f"tests could not be measured: {measurement.run_error}")
 
     def _diagnose(self, case: _Case) -> _Case:
         case.diagnosis = diagnose(

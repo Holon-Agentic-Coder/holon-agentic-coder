@@ -5,10 +5,15 @@ import os
 from collections.abc import Iterator
 from typing import Any
 
-from sandbox_executor.budgets import ENV_REPLAN_FEEDBACK
+from sandbox_executor.budgets import (
+    ENV_REPLAN_FEEDBACK,
+    ENV_REPLAN_FEEDBACK_FILE,
+    REPLAN_FEEDBACK_INLINE_MAX_BYTES,
+)
 from sandbox_executor.entrypoint.planner import load_metrics_config, parse_metrics
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.stages.stage_support import stage_success
+from sandbox_executor.launcher import env_files
 from sandbox_executor.plan_paths import plan_file_rel
 
 _ROW_METRIC_KEYS = ("p_success", "entropy", "impact", "cost", "learning_value", "ev")
@@ -71,18 +76,35 @@ def plan_metrics(repo_dir: str, plan_content: str, plan_row: dict[str, Any]) -> 
     return metrics
 
 
+def _restore_env_var(key: str, previous: str | None) -> None:
+    if previous is None:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = previous
+
+
 @contextlib.contextmanager
 def replan_feedback_env(feedback: str, target_merged_notice: str = "") -> Iterator[None]:
-    # why: the feedback reaches the container through the environment only and is never written to a ledger.
+    # why: the feedback reaches the container through the environment or a temp file only and is never written to a ledger.
     combined = "\n\n".join(part for part in (feedback, target_merged_notice) if part)
-    previous = os.environ.get(ENV_REPLAN_FEEDBACK)
-    if combined:
+    if not combined:
+        yield
+        return
+    previous_inline = os.environ.get(ENV_REPLAN_FEEDBACK)
+    previous_file = os.environ.get(ENV_REPLAN_FEEDBACK_FILE)
+    temp_path: str | None = None
+    if len(combined.encode("utf-8")) > REPLAN_FEEDBACK_INLINE_MAX_BYTES:
+        temp_path = env_files.write_replan_feedback_file(combined)
+        os.environ[ENV_REPLAN_FEEDBACK_FILE] = temp_path
+        os.environ.pop(ENV_REPLAN_FEEDBACK, None)
+    else:
         os.environ[ENV_REPLAN_FEEDBACK] = combined
+        os.environ.pop(ENV_REPLAN_FEEDBACK_FILE, None)
     try:
         yield
     finally:
-        if combined:
-            if previous is None:
-                os.environ.pop(ENV_REPLAN_FEEDBACK, None)
-            else:
-                os.environ[ENV_REPLAN_FEEDBACK] = previous
+        _restore_env_var(ENV_REPLAN_FEEDBACK, previous_inline)
+        _restore_env_var(ENV_REPLAN_FEEDBACK_FILE, previous_file)
+        if temp_path is not None:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(temp_path)

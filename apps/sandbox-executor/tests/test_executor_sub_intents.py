@@ -3,9 +3,10 @@ import os
 import pytest
 from sandbox_executor.entrypoint import executor
 
+# why: the noqa imports register autouse fixtures, which pytest only applies once they are in the module namespace.
 from tests.executor_fixtures import (
-    _agent_turns_use_run_cmd,  # noqa: F401  (autouse fixture)
-    _workspace_is_mounted,  # noqa: F401  (autouse fixture)
+    _agent_turns_use_run_cmd,  # noqa: F401
+    _workspace_is_mounted,  # noqa: F401
 )
 
 # why: assembled from fragments so this file never spells the legacy capitalised plural heading out.

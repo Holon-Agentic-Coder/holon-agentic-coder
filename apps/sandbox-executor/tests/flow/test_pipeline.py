@@ -372,7 +372,7 @@ class TestFlowStages:
         assert all(sample_value not in line for line in ctx.logs)
 
     def test_stage5_calibrate_failure_bounds_act_cal_error_context(self, tmp_path):
-        # why: a long error_context is redacted before it is truncated
+        # why: truncating first could leave a credential fragment the redactor no longer recognises
         from sandbox_executor.flow import POSTING_ERROR_CONTEXT_MAX_CHARS
 
         ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"

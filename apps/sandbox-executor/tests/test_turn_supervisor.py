@@ -747,46 +747,53 @@ class TestSuperviseAuthoringTurn(unittest.TestCase):
 
 class TestProcessSampler(unittest.TestCase):
     def test_descendants_include_the_tree_and_the_group_but_not_the_runner(self):
+        runner, tool, new_session_child, reparented, unrelated = 100, 101, 102, 103, 200
         table = {
-            100: (1, 100, 50.0, 0.0),
-            101: (100, 100, 2.0, 0.0),
-            102: (101, 102, 3.0, 0.0),
-            103: (1, 100, 4.0, 0.0),
-            200: (1, 200, 9.0, 0.0),
+            runner: (1, runner, 50.0, 0.0),
+            tool: (runner, runner, 2.0, 0.0),
+            new_session_child: (tool, new_session_child, 3.0, 0.0),
+            reparented: (1, runner, 4.0, 0.0),
+            unrelated: (1, unrelated, 9.0, 0.0),
         }
-        self.assertEqual(turns.descendant_cpu_seconds(100, lambda: table), {101: 2.0, 102: 3.0, 103: 4.0})
-        self.assertIsNone(turns.descendant_cpu_seconds(100, lambda: None))
+        self.assertEqual(
+            turns.descendant_cpu_seconds(runner, lambda: table), {tool: 2.0, new_session_child: 3.0, reparented: 4.0}
+        )
+        self.assertIsNone(turns.descendant_cpu_seconds(runner, lambda: None))
 
     def test_reaped_children_cpu_counts_but_the_runners_own_cpu_does_not(self):
+        runner, reaping_shell, unrelated = 100, 101, 200
         table = {
-            100: (1, 100, 50.0, 7.0),
-            101: (100, 100, 0.5, 30.0),
-            200: (1, 200, 9.0, 9.0),
+            runner: (1, runner, 50.0, 7.0),
+            reaping_shell: (runner, runner, 0.5, 30.0),
+            unrelated: (1, unrelated, 9.0, 9.0),
         }
-        self.assertEqual(turns.descendant_cpu_seconds(100, lambda: table), {100: 7.0, 101: 30.5})
-        table[100] = (1, 100, 50.0, 0.0)
-        self.assertEqual(turns.descendant_cpu_seconds(100, lambda: table), {101: 30.5})
+        self.assertEqual(turns.descendant_cpu_seconds(runner, lambda: table), {runner: 7.0, reaping_shell: 30.5})
+        table[runner] = (1, runner, 50.0, 0.0)
+        self.assertEqual(turns.descendant_cpu_seconds(runner, lambda: table), {reaping_shell: 30.5})
 
     def test_wrapper_spawned_agent_binary_is_not_tool_progress(self):
         # why: the codex Node wrapper spawns the native codex binary, which parents the tools.
+        wrapper, agent, agent_tool, wrapper_child, nested_codex = 100, 101, 102, 103, 104
         table = {
-            100: (1, 100, 1.0, 0.0),
-            101: (100, 100, 80.0, 6.0),
-            102: (101, 100, 4.0, 0.0),
-            103: (100, 100, 2.0, 0.0),
+            wrapper: (1, wrapper, 1.0, 0.0),
+            agent: (wrapper, wrapper, 80.0, 6.0),
+            agent_tool: (agent, wrapper, 4.0, 0.0),
+            wrapper_child: (wrapper, wrapper, 2.0, 0.0),
         }
-        names = {100: "MainThread", 101: "codex", 102: "bash", 103: "git"}
+        names = {wrapper: "MainThread", agent: "codex", agent_tool: "bash", wrapper_child: "git"}
         self.assertEqual(
-            turns.descendant_cpu_seconds(100, lambda: table, name_of=names.get), {101: 6.0, 102: 4.0, 103: 2.0}
+            turns.descendant_cpu_seconds(wrapper, lambda: table, name_of=names.get),
+            {agent: 6.0, agent_tool: 4.0, wrapper_child: 2.0},
         )
-        table[104] = (102, 100, 9.0, 0.0)
-        names[104] = "codex"
-        self.assertEqual(turns.descendant_cpu_seconds(100, lambda: table, name_of=names.get)[104], 9.0)
+        table[nested_codex] = (agent_tool, wrapper, 9.0, 0.0)
+        names[nested_codex] = "codex"
+        self.assertEqual(turns.descendant_cpu_seconds(wrapper, lambda: table, name_of=names.get)[nested_codex], 9.0)
         self.assertEqual(
-            turns.descendant_cpu_seconds(100, lambda: table, name_of=names.get, agent_names=frozenset())[101], 86.0
+            turns.descendant_cpu_seconds(wrapper, lambda: table, name_of=names.get, agent_names=frozenset())[agent],
+            86.0,
         )
-        table[101] = (100, 100, 80.0, 0.0)
-        self.assertNotIn(101, turns.descendant_cpu_seconds(100, lambda: table, name_of=names.get))
+        table[agent] = (wrapper, wrapper, 80.0, 0.0)
+        self.assertNotIn(agent, turns.descendant_cpu_seconds(wrapper, lambda: table, name_of=names.get))
 
     def test_process_name_reads_proc_comm(self):
         tmp = tempfile.TemporaryDirectory()

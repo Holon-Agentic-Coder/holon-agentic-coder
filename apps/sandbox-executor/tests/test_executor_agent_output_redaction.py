@@ -4,13 +4,14 @@ import re
 import unittest
 from unittest.mock import patch
 
+# why: the noqa imports register autouse fixtures, which pytest only applies once they are in the module namespace.
 from tests.executor_fixtures import (
-    _agent_turns_use_run_cmd,  # noqa: F401  (autouse fixture)
+    _agent_turns_use_run_cmd,  # noqa: F401
     _boundary_cut_offsets,
     _exact_filler,
     _fake_token,
     _superseded_bound_then_redact,
-    _workspace_is_mounted,  # noqa: F401  (autouse fixture)
+    _workspace_is_mounted,  # noqa: F401
 )
 from tests.leak_assertions import make_gh_probe
 

@@ -8,9 +8,9 @@ from sandbox_executor.runners.claude import SPEC as CLAUDE
 from sandbox_executor.runners.codex import SPEC as CODEX
 from sandbox_executor.runners.opencode import SPEC as OPENCODE
 from sandbox_executor.runners.pi import SPEC as PI
-from sandbox_executor.runners.spec import RunnerSpec
+from sandbox_executor.runners.spec import ModelCapability, RunnerSpec, VALID_EFFORT_LEVELS
 
-__all__ = ["RUNNER_SPECS", "RunnerSpec", "runner_spec_for"]
+__all__ = ["ModelCapability", "RUNNER_SPECS", "RunnerSpec", "VALID_EFFORT_LEVELS", "runner_spec_for"]
 
 RUNNER_SPECS: Mapping[str, RunnerSpec] = {
     spec.agent_id: spec

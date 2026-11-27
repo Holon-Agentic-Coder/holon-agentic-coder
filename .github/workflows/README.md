@@ -38,11 +38,12 @@ This directory contains the CI/CD workflows for the `holon-agentic-coder` projec
   Buildx caching.
 - `ci-durations.yml`: Runs daily at 04:23 UTC and on manual dispatch, with read-only permissions (`actions: read`,
   `contents: read`). It builds the CI duration report described below and uploads it as the `ci-durations` artefact.
-- `promote-ledger.yml`: Runs on pushes to `main`, daily at 03:41 UTC and on manual dispatch (with a boolean `force`
-  input), under the `promote-ledger` concurrency group. It runs `holon ledger promote` (see
+- `promote-ledger.yml`: Runs daily at 03:41 UTC and on manual dispatch (with a boolean `force` input), under the
+  `promote-ledger` concurrency group. It runs `holon ledger promote` (see
   [Promotion](../../docs/ledger_fragments.md#promotion)) and pushes the ledger-only result with the maintainer-provided
-  `HOLON_LEDGER_BOT_TOKEN` secret; without the secret it is a green no-op. See "Ledger Promotion" below. It has no
-  `pull_request` trigger, so it is not one of the six pull-request workflows and has no bookkeeping gate.
+  `HOLON_LEDGER_BOT_TOKEN` secret; without the secret it emits a `::warning::` naming the pending fragment count and
+  required maintainer secret action. See "Ledger Promotion" below. It has no `pull_request` trigger, so it is not one of
+  the six pull-request workflows and has no bookkeeping gate.
 
 ### Pull requests into any branch
 
@@ -600,13 +601,17 @@ rate limit is hit) are merged into one warning that counts them and names the fi
 [Promotion](../../docs/ledger_fragments.md#promotion)); a manual dispatch with `force` set promotes whatever the count.
 The job then commits and pushes the result to `main` as `holon-ledger-bot`:
 
-- **Green no-op without the secret.** The job-level environment carries `HOLON_LEDGER_BOT_TOKEN` from the repository
-  secret. When it is empty, the `Explain a missing bot token` step prints a `::notice::` and writes the same reason to
-  the job summary, every later step is skipped and the run stays green. The secret reaches only the job environment and
-  the checkout `token` input, never a `run:` script, and no step prints it.
-- **Never its own commit.** The promotion commit message is `chore(ledger): promote pending fragments [ledger-promote]`.
-  A push whose head commit message contains `[ledger-promote]` skips the job, so a promotion never triggers another one.
-  Runs queue in the `promote-ledger` concurrency group with `cancel-in-progress: false`, so no run is killed mid-push.
+- **Explicit backlog warning without the secret.** The job-level environment carries `HOLON_LEDGER_BOT_TOKEN` from the
+  repository secret. When it is empty, `Checkout pending ledger directory` performs a read-only sparse checkout of
+  `holon-knowledge/ledger/pending` using the default `GITHUB_TOKEN`, and `Warn on missing bot token and pending backlog`
+  counts pending `.jsonl` fragment files, emits a `::warning::` naming the backlog count, `HOLON_LEDGER_BOT_TOKEN`, and
+  the required maintainer secret action, and writes the same warning to the job summary while skipping every later step
+  without failing the run. The secret reaches only the job environment and the authenticated checkout `token` input,
+  never a `run:` script, and no step prints it.
+- **Schedule and dispatch only.** `promote-ledger.yml` has no `push` trigger, preventing per-merge cancelled run storms
+  on `main` and ensuring the bot's own `chore(ledger): promote pending fragments [ledger-promote]` commit never
+  re-triggers the workflow. Runs remain serialised in the `promote-ledger` concurrency group with
+  `cancel-in-progress: false`, so no run is killed mid-push.
 - **Ledger paths only.** Before committing, the `Fail on changes outside holon-knowledge/ledger/` step lists every
   changed, deleted and untracked path, with a rename counted under both names. It fails the run if any path lies outside
   `holon-knowledge/ledger/`, and logs "Nothing to promote" when nothing changed (below the threshold or no pending

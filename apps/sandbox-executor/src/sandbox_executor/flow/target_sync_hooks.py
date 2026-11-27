@@ -45,7 +45,12 @@ def consume_target_merge_notice(context: FlowContext | None = None) -> str:
     return notice
 
 
-def active_flow_branch(context: FlowContext, stage: FlowStage) -> str:
+def active_flow_branch(
+    context: FlowContext, stage: FlowStage, boundary: SyncBoundary | None = None
+) -> str:
+    if stage is FlowStage.EXECUTE and boundary in (SyncBoundary.FLOW_START, SyncBoundary.STAGE_START):
+        # why: pre-dispatch Stage 3 sync must refresh plan_branch rather than a prior failed execution_branch
+        return next((branch for branch in (context.plan_branch, context.intent_branch) if branch), "")
     candidates: dict[FlowStage, tuple[str | None, ...]] = {
         FlowStage.INTENT: (context.intent_branch,),
         FlowStage.PLAN: (context.plan_branch, context.intent_branch),
@@ -100,7 +105,7 @@ def _run_boundary_sync(
     context: FlowContext, stage: FlowStage, boundary: SyncBoundary
 ) -> tuple[SyncResult, StageResult | None]:
     worktree, target_branch = context.target_worktree, base_branch_name(context)
-    branch = active_flow_branch(context, stage)
+    branch = active_flow_branch(context, stage, boundary)
     if context.dry_run or not branch or not _can_sync_worktree(worktree, target_branch):
         return SyncResult("unchanged", "", "", ""), None
     if (branch_ref := _best_branch_ref(worktree, branch)) is None:

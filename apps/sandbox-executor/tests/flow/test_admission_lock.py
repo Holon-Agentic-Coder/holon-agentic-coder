@@ -184,6 +184,13 @@ def test_live_runner_worktrees_excludes_released_stale_and_dead_pid_locks(flow_r
         inheritor.wait()
 
 
+def test_live_runner_worktrees_handles_glob_metacharacters_in_common_dir(tmp_path, lock_holder):
+    repo = tmp_path / "repo[1]"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, capture_output=True)
+    lock_holder(repo, "live-slug")
+    assert _live_runner_worktrees(str(repo)) == frozenset({os.path.realpath(repo)})
+
+
 def test_two_parked_flows_resuming_at_once_admit_exactly_one_with_named_live_blocker(flow_repos, tmp_path, monkeypatch):
     host, _origin = flow_repos
     make_plan_branch(host, OWN_PLAN, [{"path": "src/app.py"}])

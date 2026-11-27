@@ -105,5 +105,5 @@ def _live_holder_worktree(path: str) -> str | None:
 
 def _live_runner_worktrees(repo_dir: str, run_git: GitRunner | None = None) -> frozenset[str]:
     common_dir = os.path.dirname(admission_lock_path(repo_dir, run_git))
-    pattern = os.path.join(common_dir, f"{RUN_LOCK_PREFIX}*.lock")
+    pattern = os.path.join(glob.escape(common_dir), f"{RUN_LOCK_PREFIX}*.lock")
     return frozenset(worktree for path in glob.glob(pattern) if (worktree := _live_holder_worktree(path)) is not None)

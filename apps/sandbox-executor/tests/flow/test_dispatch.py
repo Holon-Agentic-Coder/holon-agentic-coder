@@ -1,5 +1,3 @@
-"""Tests for Stages 1-3 role-agent dispatch through ``sandbox_executor.flow.dispatch``."""
-
 import json
 import subprocess
 import time
@@ -39,17 +37,13 @@ from tests.flow.helpers import (
 from tests.flow.lookup_patch import patch_lookup_sites
 
 _NO_PROXY = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
-# A summary row without the key at all: the container recorded no test result.
+# why: a sentinel tells a summary row without the key apart from one that records None.
 _ABSENT = object()
 
 
 class TestFlowRoleDispatch:
-    """Stages 1-3 dispatch the same role agents as the per-stage commands and never author content."""
-
     def test_pipeline_dispatches_intent_plan_execute_with_resolved_runner(self, flow_repos, tmp_path):
         host, origin = flow_repos
-        # The container records a measured pass rate, which Stage 3 carries; a missing or malformed value is reported
-        # as not measured, which the summary-row validation cases below prove without a pipeline run.
         agents = FakeRoleAgents(tmp_path, origin, recorded_test_pass_rate=0.75)
         ctx = _dispatch_context(host, agents)
 
@@ -71,7 +65,6 @@ class TestFlowRoleDispatch:
         assert results["execute"].payload["changed_files"] == 1
         assert results["execute"].payload["test_pass_rate"] == 0.75
 
-        # The flow authored nothing: every ledger row on origin came from a (simulated) container.
         exec_rows = _ledger_rows(host, f"origin/{ctx.execution_branch}", "executions.jsonl")
         assert len(exec_rows) == 1
         assert len(_ledger_rows(host, f"origin/{ctx.execution_branch}", "plans.jsonl")) == 1
@@ -83,8 +76,6 @@ class TestFlowRoleDispatch:
         [(0.75, 0.75), (1, 1.0), (0.0, 0.0), ("1.0", None), (True, None), pytest.param(_ABSENT, None, id="absent")],
     )
     def test_stage3_validates_the_recorded_test_pass_rate_of_the_summary_row(self, recorded, expected):
-        # The fields Stage 3 copies from the container's summary row into its payload, as the run above carries them.
-        # A container that recorded no test result is reported as not measured rather than passed.
         row = {} if recorded is _ABSENT else {"test_pass_rate": recorded}
         carried = _recorded_test_fields(row)["test_pass_rate"]
         assert (carried, type(carried)) == (expected, type(expected))
@@ -113,8 +104,6 @@ class TestFlowRoleDispatch:
         assert payload["answers"] == {"What protocol?": "OAuth2"}
         rows = _ledger_rows(host, f"origin/{ctx.intent_branch}", "intents.jsonl")
         assert [r["slug"] for r in rows] == ["resolved-q"]
-        # The container committed the row on the intent branch in the worktree, which stays clean; the temporary
-        # payload file is removed.
         assert _git(host, "status", "--porcelain") == ""
         assert _git(host, "rev-parse", "--abbrev-ref", "HEAD") == ctx.intent_branch
         assert not any((tmp_path / "home" / ".holon" / "tmp").iterdir())
@@ -163,7 +152,7 @@ class TestFlowRoleDispatch:
         first = _dispatch_context(host, agents, intent_data=self._child_intent("Add the parser"))
         assert run_intent_stage(first).status == StageStatus.SUCCESS
 
-        # A re-plan changed the item at the same position while keeping its slug.
+        # why: a re-plan can change the item at the same position while keeping its slug.
         replanned_data = {**self._child_intent("Add the parser"), changed: "Add the parser with error recovery"}
         res = run_intent_stage(_dispatch_context(host, agents, intent_data=replanned_data))
 
@@ -212,7 +201,7 @@ class TestFlowRoleDispatch:
             res = run_plan_stage(ctx)
 
         assert res.status == StageStatus.SUCCESS
-        mock_format.assert_not_called()  # The planner container owns formatting.
+        mock_format.assert_not_called()
         assert res.payload["plan_file"] == f"plans/{res.payload['plan_id']}.md"
         assert res.payload["plan_id"].endswith("-CLA-CO5.5")
         assert res.payload["metrics"]["ev"] == pytest.approx(35.4)
@@ -224,19 +213,19 @@ class TestFlowRoleDispatch:
         agents = FakeRoleAgents(tmp_path, origin, planner_writes_plan=False)
         ctx = _dispatch_context(host, agents)
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        # Plan branches pushed before dispatch (an old run, and one stamped "now") are not this run's plan.
+        # why: plan branches pushed before dispatch, even one stamped "now", are not this run's plan.
         _push_child_branch(tmp_path, origin, ctx.intent_branch, "P-1000-claude-agent-claude-opus-5-5")
         _push_child_branch(tmp_path, origin, ctx.intent_branch, f"P-{int(time.time())}-claude-agent-claude-opus-5-5")
 
         res = run_plan_stage(ctx)
 
-        assert res.status == StageStatus.FAILED  # Zero new branches appeared during dispatch.
+        assert res.status == StageStatus.FAILED
         assert "refusing to fabricate a plan" in (res.error or "")
         assert ctx.plan_branch is None
 
     def test_stage2_adopts_plan_from_clock_skewed_container(self, flow_repos, tmp_path):
         host, origin = flow_repos
-        agents = FakeRoleAgents(tmp_path, origin, clock_offset=-3600)  # Container clock an hour behind the host.
+        agents = FakeRoleAgents(tmp_path, origin, clock_offset=-3600)
         ctx = _dispatch_context(host, agents)
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
 
@@ -251,7 +240,7 @@ class TestFlowRoleDispatch:
         agents = FakeRoleAgents(tmp_path, origin)
         ctx = _dispatch_context(host, agents)
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
-        # A concurrent run with the same runner/model whose branch name carries a later timestamp.
+        # why: simulates a concurrent run with the same runner/model whose branch carries a later timestamp.
         sibling = _push_child_branch(
             tmp_path, origin, ctx.intent_branch, f"P-{int(time.time()) + 600}-claude-agent-claude-opus-5-5"
         )
@@ -341,12 +330,11 @@ class TestFlowRoleDispatch:
 
         assert res.status == StageStatus.FAILED
         assert "before dispatching the planner" in (res.error or "")
-        # The template ran Stage 1; this test's containers record no dispatch at all.
+        # why: the template ran Stage 1, so this test's containers record no dispatch at all.
         assert start.agents.roles() == []
 
     @staticmethod
     def _fail_fetch_after(agents: "FakeRoleAgents", role: str) -> Callable[..., subprocess.CompletedProcess[str]]:
-        """Return a run_git stand-in whose fetches fail (with a secret in stderr) once ``role`` was dispatched."""
         from sandbox_executor import flow as flow_module
 
         real_run_git = flow_module.run_git
@@ -481,13 +469,11 @@ class TestFlowRoleDispatch:
         assert latest["ledger_revision"] == 2
         assert latest["failure_reason"] == "empty_diff"
         assert "test_pass_rate" not in latest
-        assert latest["agent_output_bytes"] == 12  # Authoritative fields are repeated, not merged backwards.
-        # Append-only: the container's original row is untouched.
+        assert latest["agent_output_bytes"] == 12
         assert exec_rows[0]["test_pass_rate"] == 1.0
         error = results["execute"].error or ""
         assert "exited with code 0" in error
         assert "container recorded status 'success'; recorded a superseding status 'failed' row" in error
-        # The local execution branch is fast-forwarded to the pushed superseding row.
         local_rows = _ledger_rows(host, ctx.execution_branch, "executions.jsonl")
         assert [r["status"] for r in local_rows if r.get("execution_id") == exec_id] == ["success", "failed"]
         assert _git(host, "rev-parse", ctx.execution_branch) == _git(
@@ -530,7 +516,6 @@ class TestFlowRoleDispatch:
         assert "recorded a superseding" not in error
         assert res.payload["container_status"] is None
         assert res.payload["superseding_row_recorded"] is False
-        # A branch without its ledger row is never pushed; it stays local in the host worktree.
         assert "kept local and not pushed" in error
         assert _git(host, "ls-remote", str(origin), res.payload["execution_branch"]) == ""
 
@@ -630,11 +615,7 @@ class TestFlowRoleDispatch:
         assert not any("Warning" in line for line in ctx.logs)
 
     def test_flow_attaches_a_detected_proxy_but_manual_commands_require_opt_in(self, monkeypatch):
-        """Documented limit of the equivalence guarantee: only 'holon flow' attaches to a detected running proxy.
-
-        Detection never asks for a spawned sidecar: the flow dispatches ``proxy_attach=True`` with
-        ``token_reduce=False``, so both paths spawn only on an explicit opt-in.
-        """
+        # why: documented limit of the equivalence guarantee: only 'holon flow' attaches to a detected proxy.
         from sandbox_executor import flow as flow_module
 
         monkeypatch.delenv("HOLON_TOKEN_REDUCE", raising=False)
@@ -662,7 +643,7 @@ class TestFlowRoleDispatch:
     def test_stage3_agent_failure_status_fails_stage(self, stage_start):
         start = stage_start("plan")
         host, ctx = start.host, start.ctx
-        # The failed agent still edited a file, so the failure comes from the container's own status.
+        # why: the failed agent still edited a file, so only the container's own status can fail the stage.
         start.agents.executor_mode = "change_failure"
 
         res = run_execute_stage(ctx)
@@ -675,7 +656,7 @@ class TestFlowRoleDispatch:
     @pytest.mark.parametrize("code", [1, 2])
     def test_stage3_nonzero_container_exit_fails_stage(self, flow_repos, code):
         host, _origin = flow_repos
-        # Any non-zero exit except the executor's over-budget refusal code (read from its pushed row) fails at once.
+        # why: only the executor's over-budget refusal code (read from its pushed row) is exempt from failing at once.
         ctx = _dispatch_context(host, MagicMock(return_value=code), plan_branch="I-1-x/P-1-claude-agent-m/_")
 
         res = run_execute_stage(ctx)
@@ -742,14 +723,8 @@ class TestFlowRoleDispatch:
         assert load_checkpoint(saved).context.dispatcher is None
 
 
-# ---------------------------------------------------------------------------
-# Merge interactions: #93 runner resolution / pre-flight and #90 Stage 5 reconciliation with role-agent dispatch
-# ---------------------------------------------------------------------------
 class TestFlowDispatchMergeInteractions:
-    """Regression tests for behaviour that only holds when the merged features work together."""
-
     def test_flow_dispatches_the_runner_and_model_resolved_by_the_cli_after_preflight(self, flow_repos, monkeypatch):
-        """'holon flow' resolves runner/model (#93), pre-flights them, then Stage 1 dispatches with those values."""
         from sandbox_executor.agent_defaults import DEFAULT_MODELS
 
         host, _origin = flow_repos
@@ -760,7 +735,7 @@ class TestFlowDispatchMergeInteractions:
         monkeypatch.delenv("HOLON_SKIP_PREFLIGHT", raising=False)
         order = MagicMock()
         order.probe.return_value = MagicMock(ok=True)
-        order.dispatch.return_value = 1  # stop the flow at Stage 1; only the dispatch arguments matter here
+        order.dispatch.return_value = 1  # why: stops the flow at Stage 1; only the dispatch arguments matter
 
         with (
             patch("sandbox_executor.cli.preflight.run_preflight_probe", order.probe),
@@ -778,9 +753,6 @@ class TestFlowDispatchMergeInteractions:
         assert order.dispatch.call_args.args[1:3] == expected
 
     def test_stage5_checks_out_execution_branch_then_commits_reconciliation_on_calibrated(self, tmp_path):
-        """Stage 5 calibrates from the execution branch (not the operator's HEAD) and, on success, commits the
-        reconciliation rows on /calibrated before fast-forwarding the execution branch to it."""
-
         def git(*args: str) -> str:
             return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
 
@@ -797,7 +769,7 @@ class TestFlowDispatchMergeInteractions:
         (tmp_path / "src.py").write_text("x = 1\n", encoding="utf-8")
         git("add", "-A")
         git("commit", "-q", "-m", "execution change")
-        git("checkout", "-q", "main")  # the operator's checkout is elsewhere when Stage 5 starts
+        git("checkout", "-q", "main")  # why: the operator's checkout is elsewhere when Stage 5 starts
         main_tip = git("rev-parse", "main").strip()
 
         seen_head: list[str] = []

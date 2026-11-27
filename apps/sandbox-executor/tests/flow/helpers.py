@@ -1,5 +1,3 @@
-"""Shared helpers and fakes for the flow package tests (no fixtures; those live in conftest.py)."""
-
 import json
 import os
 import subprocess
@@ -34,7 +32,7 @@ _REAL_RESOLVE_REVIEWED_TARGET = flow_module._resolve_reviewed_target
 
 
 def _verified_diff():
-    """Patch the empty-diff guard to pass, for review-loop tests whose repository is not a real git checkout."""
+    # why: review-loop test repositories are not real git checkouts, so the empty-diff guard would refuse them
     return patch(
         "sandbox_executor.review_target.verify_review_diff", return_value=(DiffVerdict.VERIFIED, "1 changed path(s)")
     )
@@ -42,7 +40,6 @@ def _verified_diff():
 
 @contextmanager
 def stage4_halts_at_consensus() -> Iterator[MagicMock]:
-    """Stand in for Stage 4 with the consensus halt the real stage returns, for an engine run about Stages 1-3."""
     halted = StageResult(
         stage=FlowStage.REVIEW, status=StageStatus.HALTED_FOR_HUMAN, payload={"halted_for_human": True}
     )
@@ -52,10 +49,7 @@ def stage4_halts_at_consensus() -> Iterator[MagicMock]:
 
 @contextmanager
 def _review_loop_gh_stubs() -> Iterator[FakeGitHub]:
-    """Inject a clean ``FakeGitHub`` (no CI checks, so CI falls back to local tests) at the stage and the loop.
-
-    The stage-conflict probe keeps its own clean stand-in; the loop must post exactly one review through the fake.
-    """
+    # why: the fake has no CI checks, so CI falls back to local tests
     clean_merge = {"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE", "source": "github_cli"}
     github = FakeGitHub(standing_view=merge_view())
     with (
@@ -71,8 +65,6 @@ def _review_loop_gh_stubs() -> Iterator[FakeGitHub]:
 
 
 class SteppingClock:
-    """Fake monotonic clock that advances by ``step`` seconds on every reading."""
-
     def __init__(self, step):
         self.step = step
         self.now = 0.0
@@ -82,10 +74,6 @@ class SteppingClock:
         return self.now
 
 
-# ---------------------------------------------------------------------------
-# Role-agent harness: a local bare origin plus a stub dispatcher that behaves like the containers
-# ---------------------------------------------------------------------------
-# The shared ``_git`` fixture helper (with identity/signing overrides) is defined with the mergeability tests below.
 def _configure_identity(repo: Path) -> None:
     _git(repo, "config", "user.email", "test@holon.com")
     _git(repo, "config", "user.name", "Holon Test")
@@ -124,14 +112,6 @@ Edit src/app.py.
 
 
 class FakeRoleAgents:
-    """Recording dispatcher that simulates the intent-creator, planner and executor containers.
-
-    Each call works in the mounted host worktree (``target_worktree``), as the containers do: it branches off the
-    ref the host fetched, creates the branch the real entrypoint would create and commits. It never contacts the
-    remote; the host pushes. Behaviour switches let tests model a silent planner or an executor that produces no
-    effective diff.
-    """
-
     def __init__(  # noqa: PLR0913
         self,
         root: Path,
@@ -144,16 +124,14 @@ class FakeRoleAgents:
         planner_records_decision: bool = True,
     ):
         self.root = root
-        # The current planner image records the decomposition decision on its plan row; False models an older image.
+        # why: False models an older planner image that does not record the decomposition decision on its plan row
         self.planner_records_decision = planner_records_decision
-        # Written onto the executor's summary row as 'test_pass_rate' when not None (models a container test run).
         self.recorded_test_pass_rate = recorded_test_pass_rate
         self.origin = origin
         self.planner_writes_plan = planner_writes_plan
         self.executor_mode = executor_mode
-        # Seconds added to the container clock that stamps branch names (models host/container skew).
+        # why: models host/container clock skew in the seconds that stamp branch names
         self.clock_offset = clock_offset
-        # Called with (role, positional_args) while the container runs, e.g. to push a concurrent sibling.
         self.during_dispatch = during_dispatch
         self.calls: list[dict[str, Any]] = []
         self.intent_payloads: list[dict[str, Any]] = []
@@ -214,7 +192,6 @@ class FakeRoleAgents:
         return 0
 
     def _recorded(self, work: Path, row: dict[str, Any], plan_content: str) -> dict[str, Any]:
-        """Return the plan row as the planner image writes it: with the recorded decision unless it is an older one."""
         if not self.planner_records_decision:
             return row
         intents_path = work / "holon-knowledge/ledger/intents.jsonl"
@@ -244,10 +221,8 @@ class FakeRoleAgents:
         if self.recorded_test_pass_rate is not None:
             row["test_pass_rate"] = self.recorded_test_pass_rate
         if self.executor_mode == "empty":
-            # Model a container that claims success with perfect tests while changing nothing.
             row["test_pass_rate"] = 1.0
         if self.executor_mode == "empty_no_row":
-            # Model a container that pushed only bookkeeping (no ledger summary row, no effective change).
             (work / "plans").mkdir(exist_ok=True)
             (work / "plans" / f"{exec_id}_notes.md").write_text("notes\n", encoding="utf-8")
         else:
@@ -276,7 +251,6 @@ def _dispatch_context(host: Path, agents: FakeRoleAgents, **overrides: Any) -> F
 
 
 def _push_child_branch(tmp_path: Path, origin: Path, parent_branch: str, child_id: str) -> str:
-    """Push '<parent>/<child_id>/_' to origin from a separate clone, as another (stale or concurrent) run would."""
     child_branch = f"{parent_branch.removesuffix('/_')}/{child_id}/_"
     work = tmp_path / f"other-{child_id}"
     subprocess.run(["git", "clone", "-q", str(origin), str(work)], check=True, capture_output=True)
@@ -290,13 +264,9 @@ def _push_child_branch(tmp_path: Path, origin: Path, parent_branch: str, child_i
     return child_branch
 
 
-# ---------------------------------------------------------------------------
-# Stage 4 ledger provenance regression tests
-# ---------------------------------------------------------------------------
 REAL_EXECUTIONS_LEDGER = Path(__file__).resolve().parents[3] / "holon-knowledge" / "ledger" / "executions.jsonl"
 
 
-# Historical row shapes for each Stage 4 record type, as found in the canonical ledger.
 HISTORICAL_REVIEW_KEYS = [
     "action_id",
     "execution_id",
@@ -357,7 +327,6 @@ EXECUTION_ID_PATTERNS = {
 
 
 def _ledger_fingerprint(path: Path) -> tuple[int, str]:
-    """Return the line count and SHA-256 digest of a ledger file (or a sentinel if absent)."""
     import hashlib
 
     if not path.exists():
@@ -367,7 +336,6 @@ def _ledger_fingerprint(path: Path) -> tuple[int, str]:
 
 
 def seed_empty_ledger(repo: Path) -> Path:
-    """Create an empty canonical executions ledger under ``repo`` and return its path."""
     ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
     ledger.parent.mkdir(parents=True, exist_ok=True)
     ledger.write_text("", encoding="utf-8")
@@ -382,7 +350,7 @@ def _prefix(row: dict) -> str:
     return str(row.get("action_id", "")).rsplit("-", 2)[0]
 
 
-# Identity and signing overrides so fixture commits never depend on the host's global git configuration.
+# why: fixture commits must never depend on the host's global git identity or signing configuration
 _TEST_GIT_CONFIG = [
     "-c",
     "user.name=Holon Test",
@@ -396,7 +364,6 @@ _TEST_GIT_CONFIG = [
 
 
 def _git(repo: Path, *args: str) -> str:
-    """Run a git command in a fixture repository and return its stripped stdout."""
     proc = subprocess.run(
         ["git", *_TEST_GIT_CONFIG, *args],
         cwd=repo,
@@ -410,15 +377,6 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _init_mergeability_repo(repo: Path) -> Path:
-    """Build a local repository (no origin remote) for real merge-tree checks.
-
-    Layout:
-        main:             shared.txt edited to "main change" after the branches fork.
-        clean-feature:    adds feature.txt only, so it merges cleanly into main.
-        conflict-feature: edits the same line of shared.txt differently, so it conflicts with main.
-
-    The repository is left with main checked out.
-    """
     repo.mkdir(parents=True, exist_ok=True)
     _git(repo, "init", "-q", "-b", "main")
     (repo / "shared.txt").write_text("base line\n", encoding="utf-8")
@@ -441,17 +399,7 @@ def _init_mergeability_repo(repo: Path) -> Path:
     return repo
 
 
-# ---------------------------------------------------------------------------
-# Entropy budget handoff: Stage 3 never halts for a human, re-plans, and drives explicit sub-intent lists
-# ---------------------------------------------------------------------------
 class BudgetRoleAgents(FakeRoleAgents):
-    """FakeRoleAgents whose planner writes chosen entropies and sections, and whose executor reads the plan row's
-    recorded decision like the real entrypoint, recording ``decomposed`` and ``over_budget`` rows instead of running.
-
-    ``plans`` is consumed one item per planner call: ``(entropy, extra_markdown)``; the last item repeats. A plan for
-    an intent branch containing ``fail_planning_for`` writes nothing, so that child's Stage 2 fails.
-    """
-
     def __init__(
         self,
         root: Path,
@@ -468,7 +416,6 @@ class BudgetRoleAgents(FakeRoleAgents):
         self.replan_feedback_seen: list[str | None] = []
         self.in_progress = False
         self.overlaps = 0
-        # When set, the fake executor reports this decision whatever the plan row records (models a disagreement).
         self.executor_decision: DecompositionDecision | None = None
 
     def __call__(self, role: str, runner: str, model: str, positional_args: list[str], **kwargs: Any) -> int:
@@ -485,7 +432,7 @@ class BudgetRoleAgents(FakeRoleAgents):
         self.replan_feedback_seen.append(os.environ.get("HOLON_REPLAN_FEEDBACK"))
         entropy, extra = self.plans[min(self.planner_calls, len(self.plans) - 1)]
         self.planner_calls += 1
-        # A real planner run takes minutes; keep each plan branch name (stamped in seconds) unique.
+        # why: a real planner run takes minutes, so plan branch names (stamped in seconds) never collide
         self.clock_offset += 1
         if self.fail_planning_for and self.fail_planning_for in intent_branch:
             return 0
@@ -524,12 +471,12 @@ class BudgetRoleAgents(FakeRoleAgents):
         plan_row = next(r for r in reversed(plans) if r.get("plan_id") == plan_id)
         intent_rows = _ledger_rows(work, plan_ref, "intents.jsonl")
         content = _git(work, "show", f"{plan_ref}:{plan_row['plan_file']}")
-        # Like the real executor: the newest plan row's recorded decision, the rule only for an older row.
+        # why: mirrors the real executor, which applies the rule only to an older plan row without a decision
         decision = self.executor_decision or DecompositionDecision.from_plan_row(plan_row)
         if decision is None:
             decision = should_decompose(plan_row, content, intent_rows[-1] if intent_rows else None)
         if decision.decision == "execute":
-            # A file of its own per plan, so a child cut after an earlier sibling merged still has an effective diff.
+            # why: a child cut after an earlier sibling merged must still have an effective diff
             (work / "src" / f"{plan_id.replace('-', '_')}.py").write_text(f"PLAN = {plan_id!r}\n", encoding="utf-8")
             return super()._execute(work, args, kwargs)
         agent, model = args[1], args[2]
@@ -546,7 +493,7 @@ class BudgetRoleAgents(FakeRoleAgents):
             "ledger_revision": 1,
         }
         if decision.decision == "decomposed":
-            # The summary refers to the plan row's list and never copies it.
+            # why: the summary refers to the plan row's sub-intent list and never copies it
             row["plan_decision"] = {
                 "plan_id": plan_id,
                 "plan_branch": plan_branch,
@@ -555,7 +502,6 @@ class BudgetRoleAgents(FakeRoleAgents):
             }
         _append_jsonl(work / "holon-knowledge/ledger/executions.jsonl", row)
         self._commit(work, f"execute: {exec_id} recorded {decision.decision}")
-        # Like the real executor: a refused plan exits non-zero after pushing its row.
         return OVER_BUDGET_EXIT_CODE if decision.decision == "over_budget" else 0
 
 
@@ -569,7 +515,6 @@ def _budget_context(host: Path, agents: FakeRoleAgents, budget: float, **intent_
 
 
 def _all_intent_rows(host: Path) -> list[dict[str, Any]]:
-    """Every intents.jsonl row on every origin branch, de-duplicated by branch."""
     _git(host, "fetch", "-q", "origin")
     rows: dict[str, dict[str, Any]] = {}
     for ref in _git(host, "for-each-ref", "--format=%(refname)", "refs/remotes/origin").splitlines():
@@ -579,7 +524,6 @@ def _all_intent_rows(host: Path) -> list[dict[str, Any]]:
 
 
 def _reviewer_with_data_block() -> ReviewerResult:
-    """A completed reviewer whose report carries the reviewer data block before its trailer."""
     finding = ReviewFinding("important", "src/app.py", 12, "The handler drops the error.")
     parsed = ParsedTrailer(ReviewerVerdict.CHANGES_REQUESTED, ReviewCounts(important=1), (finding,))
     block = {
@@ -591,14 +535,11 @@ def _reviewer_with_data_block() -> ReviewerResult:
     return ReviewerResult.completed(1, "fake-agent", "fake-model", "r1/report.md", text, parsed)
 
 
-# Touch-set admission fakes (tests/flow/test_in_flight.py, test_admission.py, stages/test_execute_touch_set.py).
 OTHER_PLAN = "I-200-other/P-201-aaaaaaaa-claude-agent-claude-opus-5-5/_"
 OTHER_HEAD = "I-200-other/P-201-aaaaaaaa-claude-agent-claude-opus-5-5/E-202-bbbbbbbb-claude-agent-claude-opus-5-5/_"
 
 
 class FakeGh:
-    """Answers ``gh pr list`` and ``gh pr diff`` (a patch) from fixed data; ``fail`` makes every call exit 1."""
-
     def __init__(self, prs: list[dict[str, Any]], diffs: dict[int, list[str] | str], fail: bool = False):
         self.prs, self.diffs, self.fail = prs, diffs, fail
         self.calls: list[list[str]] = []
@@ -614,12 +555,10 @@ class FakeGh:
 
 
 def patch_of(paths: list[str]) -> str:
-    """A ``gh pr diff`` patch modifying each of ``paths`` (a raw patch string is answered as it is)."""
     return "".join(f"diff --git a/{p} b/{p}\n--- a/{p}\n+++ b/{p}\n@@ -1 +1 @@\n-old\n+new\n" for p in paths)
 
 
 def make_plan_branch(host: Path, plan_branch: str, touch_set: list[dict[str, Any]] | None) -> None:
-    """Commit a plan branch whose plans.jsonl row records ``touch_set`` (omitted when None), then return to main."""
     plan_id = plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
     _git(host, "checkout", "-q", "-b", plan_branch, "main")
     row: dict[str, Any] = {"plan_id": plan_id, "intent_branch": plan_branch.split("/", 1)[0] + "/_"}
@@ -632,14 +571,13 @@ def make_plan_branch(host: Path, plan_branch: str, touch_set: list[dict[str, Any
 
 
 def no_worktrees(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-    """A git runner listing no other worktree; anything else (the admission lock's ``rev-parse``) runs real git."""
     if args[:2] != ["worktree", "list"]:
         return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
     return subprocess.CompletedProcess(["git", *args], 0, f"worktree {cwd}\n", "")
 
 
 def seed_base_files(host: Path, paths: list[str]) -> None:
-    """Commit ``paths`` on main and push them, so admission's base listing (``origin/main``) sees them as existing."""
+    # why: admission lists base files from origin/main, so seeded files must be pushed to count as existing
     _git(host, "checkout", "-q", "main")
     for rel in paths:
         (host / rel).parent.mkdir(parents=True, exist_ok=True)

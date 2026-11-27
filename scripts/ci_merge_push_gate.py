@@ -240,10 +240,7 @@ def _tree_rules(trees: MergeTrees, is_bookkeeping_path: Callable[[str], bool], c
     return _relation_check(trees, pr_paths, base_paths, client)
 
 
-def _merge_parents(context: GateContext, client: GateClient, rules: GateRules) -> MergeChain | Decision | None:
-    found = find_merge_chain(client, context.head_sha, rules.diff_rule)
-    if not isinstance(found, MergeChain):
-        return found
+def _merge_parents(context: GateContext, client: GateClient, found: MergeChain, rules: GateRules) -> Decision | None:
     pr_parent, merged_in = found.merge.parents
     if merged_in == context.before:
         return Decision(False, RULE_FIRST_PARENT_NOT_PREVIOUS_HEAD, f"first parent {pr_parent[:12]}")
@@ -254,7 +251,7 @@ def _merge_parents(context: GateContext, client: GateClient, rules: GateRules) -
         return Decision(False, RULE_FIRST_PARENT_NOT_PREVIOUS_HEAD, f"first parent {pr_parent[:12]}")
     if not context.base_ref:
         return Decision(False, RULE_INCOMPLETE_EVENT, "no base branch")
-    return found
+    return None
 
 
 def _previous_head_check(
@@ -264,7 +261,7 @@ def _previous_head_check(
     query = JobQuery(
         context.workflow_file, context.branch, context.job_name, context.os_name, context.run_number, pr_parent
     )
-    start_shas = (pr_parent, found.merge.sha, *found.post_shas)
+    start_shas = (context.before, pr_parent, found.merge.sha, *found.post_shas)
     chain, walked_cancelled = find_real_success_for_merge_chain(client, query, start_shas)
     if chain.real_sha is None:
         return chain.run_decision()
@@ -336,11 +333,12 @@ def decide_merge_push(context: GateContext, client: GateClient, rules: GateRules
     """Decide a ``synchronize`` push that the diff rule blocked; ``None`` keeps that decision (not a merge commit)."""
     if context.job_name == HYGIENE_JOB or context.workflow_file == HYGIENE_WORKFLOW:
         return Decision(False, RULE_HYGIENE_NEVER_SKIPPED, context.job_name)
-    found = _merge_parents(context, client, rules)
+    found = find_merge_chain(client, context.head_sha, rules.diff_rule)
     if not isinstance(found, MergeChain):
         return found
     try:
-        return _evidence(context, client, found, rules)
+        blocked = _merge_parents(context, client, found, rules)
+        return _evidence(context, client, found, rules) if blocked is None else blocked
     except Exception as error:
         status = f" {error.code}" if isinstance(error, urllib.error.HTTPError) else ""
         return Decision(False, RULE_API_ERROR, f"{type(error).__name__}{status}")

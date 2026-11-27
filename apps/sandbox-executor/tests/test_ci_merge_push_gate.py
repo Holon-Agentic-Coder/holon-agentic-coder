@@ -784,3 +784,23 @@ def test_hygiene_is_never_skipped_on_stacked_merge_bookkeeping_chain(overrides: 
     decision = gate(fake, context(before=NEW_HEAD_SHA, head_sha=POST_SHA, os_name="", **overrides))
 
     assert (decision.skip, decision.rule) == (False, "merge-push-hygiene-never-skipped")
+
+
+def test_single_push_with_pre_merge_merge_and_post_merge_bookkeeping_skips() -> None:
+    fake = stacked_merge_scene()
+    fake.runs = [entry for entry in fake.runs if entry["head_sha"] not in (PREVIOUS_HEAD_SHA, NEW_HEAD_SHA)]
+
+    decision = gate(fake, context(before=OLDER_SHA, head_sha=POST_SHA))
+
+    assert decision.skip is True
+    assert decision.rule == "merge-push-clean-main-merge"
+    assert f"real successes on {OLDER_SHA[:12]} and {BASE_HEAD_SHA[:12]}" in decision.detail
+
+
+def test_api_error_during_pre_merge_bookkeeping_chain_check_is_merge_push_api_error() -> None:
+    fake = stacked_merge_scene()
+    fake.errors[f"git/commits/{PREVIOUS_HEAD_SHA}"] = http_error(500)
+
+    assert gate(fake, context(before=OLDER_SHA, head_sha=POST_SHA)) == Decision(
+        False, "merge-push-api-error", "HTTPError 500"
+    )

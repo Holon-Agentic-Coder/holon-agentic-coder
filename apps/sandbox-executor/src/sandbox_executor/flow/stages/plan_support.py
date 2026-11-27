@@ -85,7 +85,7 @@ def _restore_env_var(key: str, previous: str | None) -> None:
 
 @contextlib.contextmanager
 def replan_feedback_env(feedback: str, target_merged_notice: str = "") -> Iterator[None]:
-    # why: the feedback reaches the container through the environment or a temp file only and is never written to a ledger.
+    # why: feedback reaches the container via env or a temp file only, never a ledger.
     combined = "\n\n".join(part for part in (feedback, target_merged_notice) if part)
     if not combined:
         yield

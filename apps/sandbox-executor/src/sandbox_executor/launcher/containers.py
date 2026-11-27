@@ -118,7 +118,10 @@ class ContainerLaunch:
                 env_files.sweep_stale_env_files(env_files.env_file_dir())
                 staged_path = env_files.write_replan_feedback_file(inline_feedback)
             except OSError as exc:
-                print(f"Error: could not stage replan feedback file: {messages.redact_cli_error(exc)}.", file=sys.stderr)
+                print(
+                    f"Error: could not stage replan feedback file: {messages.redact_cli_error(exc)}.",
+                    file=sys.stderr,
+                )
                 raise _LaunchAborted(1) from exc
             self.replan_feedback_host_path = staged_path
             self._owned_replan_feedback_file = staged_path

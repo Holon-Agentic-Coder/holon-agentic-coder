@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 ENV_FILE_PREFIX = "holon-env-"
 REPLAN_FEEDBACK_FILE_PREFIX = "holon-replan-feedback-"
-# why: Linux MAX_ARG_STRLEN caps a single execve environment entry (KEY=VALUE + NUL) at 128 KiB.
 MAX_ENV_VAR_BYTES = 128 * 1024
 _ENV_FILE_STALE_SECONDS = 24 * 60 * 60
 _OWNER_ONLY_DIR_MODE = 0o700

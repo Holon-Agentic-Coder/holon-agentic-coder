@@ -54,8 +54,7 @@ jobs:
           - os: macos-latest
             timing-min-delta: 150
             shards: 2
-          # why: match_job in scripts/ci_bookkeeping_chain.py refuses a name that matches two legs, so each shard
-          # needs a gate-leg value that is unique among its job name's values.
+          # why: match_job in scripts/ci_bookkeeping_chain.py refuses a name matching two legs, so gate-leg is unique.
           - os: macos-latest
             shard: 1
             timing-job: unit-shard-1

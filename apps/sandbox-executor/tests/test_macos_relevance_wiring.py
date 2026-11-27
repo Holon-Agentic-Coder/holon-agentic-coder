@@ -37,6 +37,16 @@ def test_job_has_no_condition_and_keeps_both_runners() -> None:
     assert "        os: [ubuntu-latest, macos-latest]\n" in job
 
 
+def test_both_macos_shards_run_the_relevance_gate() -> None:
+    job = workflow_text(WORKFLOW).partition("\njobs:\n")[2].partition("\n    steps:\n")[0]
+    gate = steps_of(WORKFLOW)[[step.name for step in steps_of(WORKFLOW)].index(RELEVANCE_GATE_STEP)]
+
+    assert re.findall(r"^        shard: (.+)$", job, flags=re.MULTILINE) == ["[1, 2]"]
+    assert "        exclude:\n          - os: ubuntu-latest\n            shard: 2\n" in job
+    assert gate.condition == GATE_CONDITION
+    assert "matrix.shard" not in gate.condition
+
+
 def test_relevance_gate_follows_the_bookkeeping_gate_on_the_macos_leg_only() -> None:
     steps = steps_of(WORKFLOW)
     names = [step.name for step in steps]

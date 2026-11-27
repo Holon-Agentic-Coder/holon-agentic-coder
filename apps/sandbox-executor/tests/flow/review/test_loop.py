@@ -30,7 +30,7 @@ from tests.flow.github.fake_github import FakeGitHub, ci_checks_payload
 from tests.flow.helpers import _git, _review_loop_gh_stubs
 from tests.flow.lookup_patch import patch_lookup_sites
 from tests.review_fakes import FakeEnsemble, clean_reviewer, objecting_reviewer, with_clean_peers
-from tests.review_flow_repo import added_rows, build_flow_worktree, changed_paths, ledger_commits
+from tests.review_flow_repo import added_rows, changed_paths, flow_worktree_copy, ledger_commits
 from tests.review_loop_stubs import EXEC_TARGET, _ensemble_ctx, _LoopStubs
 
 #: Where the loop's rows for the ``I-100-intent`` execution branch land (the fragment of its root intent).
@@ -433,8 +433,8 @@ class TestReviewLoopCommitsItsLedgerRows:
                 run_resolver_fn=resolver,
             )
 
-    def test_each_iteration_leaves_a_clean_tree_with_its_rows_in_their_own_commit(self, tmp_path):
-        origin, work = build_flow_worktree(tmp_path)
+    def test_each_iteration_leaves_a_clean_tree_with_its_rows_in_their_own_commit(self, tmp_path, tmp_path_factory):
+        origin, work = flow_worktree_copy(tmp_path_factory, tmp_path)
         fixes: list[str] = []
 
         def pushing_resolver(target, iteration, findings, action_ids, rejected_findings):
@@ -461,8 +461,8 @@ class TestReviewLoopCommitsItsLedgerRows:
         assert any(row.get("entry_type") == "summary" for row in final_rows)
         assert "co-authored-by" not in _git(work, "log", "-1", "--format=%B", final).lower()
 
-    def test_a_failed_iteration_still_commits_its_rows(self, tmp_path):
-        _, work = build_flow_worktree(tmp_path)
+    def test_a_failed_iteration_still_commits_its_rows(self, tmp_path, tmp_path_factory):
+        _, work = flow_worktree_copy(tmp_path_factory, tmp_path)
 
         def failing_resolver(target, iteration, findings, action_ids, rejected_findings):
             return {"error": "pre-push tests failed", "exit_code": 1, "failed_tests": ["tests/test_app.py::test_x"]}
@@ -477,8 +477,8 @@ class TestReviewLoopCommitsItsLedgerRows:
         assert any(row.get("entry_type") == "summary" for row in rows)
         assert any(row.get("review_iteration") == 1 for row in rows)
 
-    def test_ledger_only_heads_still_halt_on_no_convergence(self, tmp_path):
-        _, work = build_flow_worktree(tmp_path)
+    def test_ledger_only_heads_still_halt_on_no_convergence(self, tmp_path, tmp_path_factory):
+        _, work = flow_worktree_copy(tmp_path_factory, tmp_path)
 
         def idle_resolver(target, iteration, findings, action_ids, rejected_findings):
             # Like the resolver container: it reports the worktree HEAD, and the host infers a push from a moved head.
@@ -527,11 +527,11 @@ class TestScopedDeltaReviewInTheLoop:
     def _modes(ctx: FlowContext) -> list[str]:
         return [line.split("Review mode at iteration ")[1] for line in ctx.logs if "Review mode at iteration" in line]
 
-    def test_the_pass_after_a_resolver_fix_is_scoped(self, tmp_path, monkeypatch):
+    def test_the_pass_after_a_resolver_fix_is_scoped(self, tmp_path, tmp_path_factory, monkeypatch):
         from sandbox_executor.flow.review.approval_gates import diff_gate_of
 
         monkeypatch.delenv("HOLON_SCOPED_REVIEW_MAX_LINES", raising=False)
-        _, work = build_flow_worktree(tmp_path)
+        _, work = flow_worktree_copy(tmp_path_factory, tmp_path)
 
         res, ctx, ensemble, addressed = self._run(work)
 
@@ -544,9 +544,9 @@ class TestScopedDeltaReviewInTheLoop:
         assert "holon-knowledge" not in second.diff_text  # The ledger commit between passes is bookkeeping.
         assert f"`{addressed[0]}`" in second.pr_body and "`src/app.py`:" in second.pr_body
 
-    def test_the_pass_after_a_critical_finding_is_full(self, tmp_path, monkeypatch):
+    def test_the_pass_after_a_critical_finding_is_full(self, tmp_path, tmp_path_factory, monkeypatch):
         monkeypatch.delenv("HOLON_SCOPED_REVIEW_MAX_LINES", raising=False)
-        _, work = build_flow_worktree(tmp_path)
+        _, work = flow_worktree_copy(tmp_path_factory, tmp_path)
 
         res, ctx, ensemble, _addressed = self._run(work, "critical")
 
@@ -554,11 +554,11 @@ class TestScopedDeltaReviewInTheLoop:
         assert self._modes(ctx)[1] == "2: full (critical finding on last pass)."
         assert all("Scoped Delta Review" not in call["request"].pr_body for call in ensemble.calls)
 
-    def test_a_zero_limit_keeps_every_pass_full(self, tmp_path, monkeypatch):
+    def test_a_zero_limit_keeps_every_pass_full(self, tmp_path, tmp_path_factory, monkeypatch):
         from sandbox_executor.flow.review.approval_gates import diff_gate_of
 
         monkeypatch.setenv("HOLON_SCOPED_REVIEW_MAX_LINES", "0")
-        _, work = build_flow_worktree(tmp_path)
+        _, work = flow_worktree_copy(tmp_path_factory, tmp_path)
 
         res, ctx, ensemble, _addressed = self._run(work)
 
@@ -567,11 +567,13 @@ class TestScopedDeltaReviewInTheLoop:
         assert diff_gate_of(ctx).mode == "full"
         assert all("Scoped Delta Review" not in call["request"].pr_body for call in ensemble.calls)
 
-    def test_a_conflict_scope_re_review_records_a_scoped_gate_even_when_the_delta_is_full(self, tmp_path, monkeypatch):
+    def test_a_conflict_scope_re_review_records_a_scoped_gate_even_when_the_delta_is_full(
+        self, tmp_path, tmp_path_factory, monkeypatch
+    ):
         from sandbox_executor.flow.review.approval_gates import diff_gate_of
 
         monkeypatch.setenv("HOLON_SCOPED_REVIEW_MAX_LINES", "0")
-        _, work = build_flow_worktree(tmp_path)
+        _, work = flow_worktree_copy(tmp_path_factory, tmp_path)
 
         def real_head(repo_dir: str, review_target: str):
             return ReviewTarget(review_target, review_target, _git(work, "rev-parse", "HEAD")), None

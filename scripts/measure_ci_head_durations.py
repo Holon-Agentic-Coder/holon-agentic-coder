@@ -17,8 +17,9 @@ try:
     from scripts.ci_bookkeeping_gate import is_bookkeeping_path
     from scripts.ci_durations_collect import job_key, runner_os, seconds_between
 except ImportError:
-    from ci_bookkeeping_gate import is_bookkeeping_path
-    from ci_durations_collect import job_key, runner_os, seconds_between
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts.ci_bookkeeping_gate import is_bookkeeping_path
+    from scripts.ci_durations_collect import job_key, runner_os, seconds_between
 
 GhRunner = Callable[[Sequence[str]], Any]
 
@@ -112,8 +113,8 @@ def parse_pr_spec(spec: str) -> list[int]:
 
 def flatten_paged_items(payload: Any, key: str | None = None) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
-        items = payload.get(key, []) if key else [payload]
-        return [item for item in items if isinstance(item, dict)]
+        items = payload.get(key) if key else [payload]
+        return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
     if not isinstance(payload, list):
         return []
     result: list[dict[str, Any]] = []
@@ -122,7 +123,7 @@ def flatten_paged_items(payload: Any, key: str | None = None) -> list[dict[str, 
             result.extend(i for i in entry if isinstance(i, dict))
         elif isinstance(entry, dict) and key and isinstance(entry.get(key), list):
             result.extend(i for i in entry[key] if isinstance(i, dict))
-        elif isinstance(entry, dict):
+        elif isinstance(entry, dict) and not key:
             result.append(entry)
     return result
 
@@ -224,8 +225,8 @@ def _parse_flow_log_file(path: Path, default_pr: int | None) -> list[ReviewerWai
             if parsed := _parse_jsonl_wait(line, file_pr):
                 waits.append(parsed)
             continue
-        if pr_match := PR_REF_RE.search(line):
-            cur_pr = int(pr_match.group(1))
+        if (pr_match := PR_REF_RE.search(line)) and (new_pr := int(pr_match.group(1))) != cur_pr:
+            cur_pr, cur_iter, cur_head = new_pr, 1, ""
         if m := ITERATION_RE.search(line):
             cur_iter = int(m.group(1))
         elif m := RESOLVER_HEAD_RE.search(line):
@@ -261,13 +262,9 @@ def _render_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> list
 
 
 def _match_wait(head: HeadCommit, index: int, waits: Sequence[ReviewerWait]) -> ReviewerWait | None:
-    for w in waits:
-        if w.head_sha and head.head_sha.startswith(w.head_sha) and w.pr_number in (None, head.pr_number):
-            return w
-    for w in waits:
-        if not w.head_sha and w.pr_number in (None, head.pr_number) and w.iteration == index:
-            return w
-    return None
+    scoped = [w for w in waits if w.pr_number in (None, head.pr_number)]
+    by_sha = next((w for w in scoped if w.head_sha and head.head_sha.startswith(w.head_sha)), None)
+    return by_sha or next((w for w in scoped if not w.head_sha and w.iteration == index), None)
 
 
 def _head_rows(
@@ -340,7 +337,9 @@ def main(argv: Sequence[str] | None = None, runner: GhRunner = run_gh_json) -> i
     repo = resolve_repo(args.repo, runner)
     heads, timings = collect_pr_head_timings(repo, pr_numbers, runner)
     default_pr = pr_numbers[0] if len(pr_numbers) == 1 else None
+    pr_set = set(pr_numbers)
     waits = load_reviewer_waits([Path(p) for p in args.flow_log], default_pr)
+    waits = [w for w in waits if w.pr_number is None or w.pr_number in pr_set]
     print(render_summary(heads, timings, waits))
     return 0
 

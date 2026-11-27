@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -153,6 +156,8 @@ def test_flatten_paged_items_supports_slurped_lists_and_dicts() -> None:
     assert flatten_paged_items([[{"id": 1}], [{"id": 2}]]) == [{"id": 1}, {"id": 2}]
     assert flatten_paged_items([{"jobs": [{"id": 1}]}, {"jobs": [{"id": 2}]}], key="jobs") == [{"id": 1}, {"id": 2}]
     assert flatten_paged_items({"workflow_runs": [{"id": 3}]}, key="workflow_runs") == [{"id": 3}]
+    assert flatten_paged_items({"jobs": None}, key="jobs") == []
+    assert flatten_paged_items([{"jobs": [{"id": 1}]}, {"jobs": None}, {"other": 2}], key="jobs") == [{"id": 1}]
     assert flatten_paged_items("unexpected") == []
 
 
@@ -286,3 +291,64 @@ def test_cli_renders_tables_for_prs_360_to_366_with_and_without_flow_logs(
     assert "## Reviewer Iteration Waits" not in out_no_log
     assert "| #360" in out_no_log
     assert any(call[:2] == ("repo", "view") for call in runner.calls)
+
+
+def test_direct_script_invocation_succeeds_without_pythonpath(tmp_path: Path) -> None:
+    script = Path(__file__).resolve().parents[3] / "scripts" / "measure_ci_head_durations.py"
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    proc = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "--prs" in proc.stdout
+
+
+def test_load_reviewer_waits_resets_head_and_iteration_across_prs_in_combined_log(tmp_path: Path) -> None:
+    combined_log = tmp_path / "combined.log"
+    combined_log.write_text(
+        "\n".join(
+            [
+                "[Review Loop] Starting review iteration 1/5 for target '360'.",
+                "[Review Loop] Resolver pushed new head '0168bbbbbbbb' at iteration 2; proceeding to re-review.",
+                "[Review Loop] CI wait settled after 40s: green.",
+                "Switching to PR #361",
+                "[Review Loop] CI wait settled after 75s: green.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    waits = load_reviewer_waits([combined_log])
+    assert [(w.pr_number, w.iteration, w.head_sha, w.waited_seconds, w.state) for w in waits] == [
+        (360, 2, "0168bbbbbbbb", 40.0, "settled"),
+        (361, 1, "", 75.0, "settled"),
+    ]
+
+
+def test_cli_filters_unrelated_pr_waits_from_shared_flow_logs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner = FakeGhRunner(sample_pr_360_to_366_responses())
+    shared_jsonl = tmp_path / "executions.jsonl"
+    shared_jsonl.write_text(
+        "\n".join(
+            [
+                json.dumps({"pr_number": 360, "review_iteration": 1, "ci_wait": {"waited_seconds": 55.0}}),
+                json.dumps({"pr_number": 361, "review_iteration": 1, "ci_wait": {"waited_seconds": 99.0}}),
+                json.dumps({"review_iteration": 2, "ci_wait": {"waited_seconds": 33.0}}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    rc = main(["--repo", REPO, "--prs", "360", "--flow-log", str(shared_jsonl)], runner=runner)
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "## Reviewer Iteration Waits" in output
+    assert "55.0s" in output
+    assert "33.0s" in output
+    assert "#361" not in output
+    assert "99.0s" not in output

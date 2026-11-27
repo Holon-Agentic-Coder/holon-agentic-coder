@@ -23,6 +23,8 @@ concurrency:
 
 jobs:
   unit:
+    # why: without an explicit name GitHub appends the shard to every leg and renames the unit (ubuntu-latest) check.
+    name: unit (${{ matrix.os }}${{ matrix.shards > 1 && format(', {0}', matrix.gate-leg) || '' }})
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -32,6 +34,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        shard: [1, 2]
+        exclude:
+          - os: ubuntu-latest
+            shard: 2
         include:
           # Minimum absolute delta over the main baseline median before the relative gate may fail.
           # macOS runners showed a 135.2 s same-code swing (235 s vs 370.2 s), so 150 s keeps pure
@@ -42,8 +48,22 @@ jobs:
           # as the unit suite grew to ~6,965 tests).
           - os: ubuntu-latest
             timing-min-delta: 120
+            shards: 1
+            timing-job: unit
+            gate-leg: ubuntu-latest
           - os: macos-latest
             timing-min-delta: 150
+            shards: 2
+          # why: match_job in scripts/ci_bookkeeping_chain.py refuses a name that matches two legs, so each shard
+          # needs a gate-leg value that is unique among its job name's values.
+          - os: macos-latest
+            shard: 1
+            timing-job: unit-shard-1
+            gate-leg: shard 1 of 2
+          - os: macos-latest
+            shard: 2
+            timing-job: unit-shard-2
+            gate-leg: shard 2 of 2
 
     steps:
       - name: Record job start time
@@ -61,7 +81,7 @@ jobs:
         uses: ./.github/actions/bookkeeping-gate
         with:
           job-name: unit
-          os: ${{ matrix.os }}
+          os: ${{ matrix.gate-leg }}
 
       # A pull request that changes no platform-sensitive path or content skips the macOS leg's steps below; see
       # "macOS Relevance Gate" in .github/workflows/README.md.
@@ -81,7 +101,13 @@ jobs:
         if: steps.bookkeeping.outputs.skip != 'true' && steps.macos_relevance.outputs.skip != 'true'
         run: |
           uv sync --locked
-          uv run pytest -n auto --dist worksteal -v -l --tb=short -m "not integration_test and not stress" --junitxml=unit-report.xml
+          if [ "${{ matrix.shards }}" -gt 1 ]; then
+            uv run pytest --collect-only -q -m "not integration_test and not stress" > unit-collection.txt
+            python3 scripts/unit_test_shard.py --shard "${{ matrix.shard }}" --shards "${{ matrix.shards }}" < unit-collection.txt > unit-shard-files.txt
+            uv run pytest -n auto --dist worksteal -v -l --tb=short -m "not integration_test and not stress" --junitxml=unit-report.xml @unit-shard-files.txt
+          else
+            uv run pytest -n auto --dist worksteal -v -l --tb=short -m "not integration_test and not stress" --junitxml=unit-report.xml
+          fi
 
       - name: CI Timing Gate (compare with main)
         if: steps.bookkeeping.outputs.skip != 'true' && steps.macos_relevance.outputs.skip != 'true'
@@ -91,7 +117,7 @@ jobs:
           TIMING_OVERRIDE: ${{ contains(github.event.pull_request.labels.*.name, 'timing-regression-accepted') }}
         run: |
           python3 scripts/ci_timing_gate.py "$TIMING_MODE" \
-            --workflow test-unit --job unit --os "${{ matrix.os }}" --start "$CI_TIMING_START" \
+            --workflow test-unit --job "${{ matrix.timing-job }}" --os "${{ matrix.os }}" --start "$CI_TIMING_START" \
             --runs 5 --tolerance 0.5 --min-delta "${{ matrix.timing-min-delta }}" --ceiling 900 \
             --junit unit-report.xml --repo "$GITHUB_REPOSITORY" --output ci-timing/record.json \
             --override-label-present "$TIMING_OVERRIDE"
@@ -100,7 +126,7 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
-          name: ci-timing-test-unit-unit-${{ matrix.os }}
+          name: ci-timing-test-unit-${{ matrix.timing-job }}-${{ matrix.os }}
           path: ci-timing/record.json
           retention-days: 30
           # A main push that the gate skipped writes no timing record; a full run without one still fails.

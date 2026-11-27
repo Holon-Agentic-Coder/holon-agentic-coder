@@ -1,11 +1,3 @@
-"""The per-repository Stage 3 admission lock: one exclusive ``flock`` on ``<git-common-dir>/holon-admission.lock``.
-
-Every worktree of a repository shares the common git directory, so admission checks of all of them on one host are
-serialised. The lock is held from discovery until the admission state is written, so two overlapping flows cannot both
-be admitted in the same window. The wait is bounded (fail closed with :class:`AdmissionLockError`), and the kernel
-releases the lock when a holder dies, so a crashed flow never wedges admission. Cross-host flows are not serialised.
-"""
-
 from __future__ import annotations
 
 import fcntl
@@ -18,15 +10,15 @@ from contextlib import contextmanager
 from sandbox_executor.flow.in_flight import GitRunner
 from sandbox_executor.git import run_git
 
-#: Name of the lock file in the repository's common git directory (never a tracked path).
+# why: the common git dir is shared by every worktree and never holds a tracked path
 ADMISSION_LOCK_NAME = "holon-admission.lock"
-#: Longest wait for another flow's admission check (discovery makes at most ~50 ``gh pr diff`` calls).
+# why: a holder's discovery makes up to ~50 gh pr diff calls under the lock
 ADMISSION_LOCK_TIMEOUT_SECONDS = 120.0
 ADMISSION_LOCK_POLL_SECONDS = 0.1
 
 
 class AdmissionLockError(RuntimeError):
-    """The admission lock could not be located or taken in time; admission refuses fail-closed with this reason."""
+    pass
 
 
 def _host_git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
@@ -34,7 +26,6 @@ def _host_git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
 
 
 def admission_lock_path(repo_dir: str, run_git: GitRunner | None = None) -> str:
-    """``<git rev-parse --git-common-dir>/holon-admission.lock``, resolved against ``repo_dir``."""
     result = (run_git or _host_git)(["rev-parse", "--git-common-dir"], repo_dir)
     common_dir = (result.stdout or "").strip()
     if result.returncode != 0 or not common_dir:
@@ -45,6 +36,7 @@ def admission_lock_path(repo_dir: str, run_git: GitRunner | None = None) -> str:
 
 def _acquire(descriptor: int, path: str, timeout_seconds: float, poll_seconds: float) -> None:
     deadline = time.monotonic() + timeout_seconds
+    # why: the kernel drops a dead holder's flock, so a crashed flow never wedges admission (one host only)
     while True:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -64,7 +56,6 @@ def admission_lock(
     timeout_seconds: float = ADMISSION_LOCK_TIMEOUT_SECONDS,
     poll_seconds: float = ADMISSION_LOCK_POLL_SECONDS,
 ) -> Iterator[str]:
-    """Hold the repository's admission lock for the ``with`` block; yields the lock file path."""
     path = admission_lock_path(repo_dir, run_git)
     try:
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)

@@ -1,5 +1,3 @@
-"""The record type, sections and shared wording of the ``HOLON_*`` environment-variable reference (``env_registry``)."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,8 +22,6 @@ STAGE_INVALID = "warning naming the variable; the default is kept"
 
 
 class Area(StrEnum):
-    """The sections of the reference, in document order."""
-
     RUNNER_AND_AGENT = "runner and agent"
     BUDGETS = "budgets"
     TOKEN_REDUCTION_AND_PROXY = "token reduction and proxy"
@@ -38,14 +34,6 @@ class Area(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class EnvironmentVariable:
-    """One ``HOLON_*`` variable: what it does, what it accepts and where it is read and forwarded.
-
-    ``forwarding`` describes how the value reaches a role or sidecar container: ``env-file`` is the 0600 docker
-    env-file every forwarded ``HOLON_*`` value goes through (a value no env-file line can carry goes as a passthrough
-    ``-e NAME`` instead), ``argv`` is an explicit ``-e`` item on the sidecar command line. ``internal`` marks a variable
-    the host or a maintainer sets, not an operator setting.
-    """
-
     name: str
     area: Area
     purpose: str
@@ -55,6 +43,9 @@ class EnvironmentVariable:
     when_invalid: str
     read_side: ReadSide
     since: str
+    # why: env-file is the 0600 docker env-file; a value no env-file line can carry goes as a passthrough -e NAME.
+    # why: argv is an explicit -e item on the sidecar command line.
     forwarding: Forwarding = "env-file"
     secret: bool = False
+    # why: internal marks a variable the host or a maintainer sets, not an operator setting.
     internal: bool = False

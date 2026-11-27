@@ -14,9 +14,12 @@ except ImportError:
     from module_budget_freeze import run_git
 
 HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+REMOVED_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@")
 NEW_FILE_HEADER_PREFIX = "+++ b/"
+OLD_FILE_HEADER_PREFIX = "--- a/"
 DIFF_OPTIONS = ("-c", "core.quotePath=false", "diff", "-U0", "--no-color", "--no-ext-diff")
 CHANGED_FILE_FILTER = ("--diff-filter=ACMR", "--ignore-submodules=all")
+REMOVED_FILE_FILTER = ("--diff-filter=DMR", "--ignore-submodules=all")
 TARGET_REF = "origin/main"
 MAIN_FETCH_REFSPEC = "+refs/heads/main:refs/remotes/origin/main"
 FETCH_TIMEOUT_SECONDS = 300
@@ -29,6 +32,13 @@ class ChangedFile:
     text: str
 
 
+@dataclass(frozen=True)
+class RemovedFile:
+    path: str
+    removed_lines: frozenset[int]
+    text: str
+
+
 def git_output_bytes(root: Path, *args: str) -> bytes | None:
     try:
         completed = subprocess.run(["git", *args], cwd=root, capture_output=True, check=False)
@@ -37,8 +47,8 @@ def git_output_bytes(root: Path, *args: str) -> bytes | None:
     return completed.stdout if completed.returncode == 0 else None
 
 
-def existing_merge_base(root: Path) -> str | None:
-    completed = run_git(root, "merge-base", "HEAD", TARGET_REF)
+def existing_merge_base(root: Path, *, head: str = "HEAD") -> str | None:
+    completed = run_git(root, "merge-base", head, TARGET_REF)
     if completed is None or completed.returncode != 0:
         return None
     return completed.stdout.strip() or None
@@ -75,18 +85,18 @@ def deepen_towards_origin_main(root: Path) -> None:
         fetch_from_origin(root, "--unshallow", MAIN_FETCH_REFSPEC)
 
 
-def merge_base(root: Path) -> str | None:
-    base = existing_merge_base(root)
+def merge_base(root: Path, *, head: str = "HEAD") -> str | None:
+    base = existing_merge_base(root, head=head)
     if base is not None:
         return base
     if not has_origin_remote(root):
         return None
     deepen_towards_origin_main(root)
-    return existing_merge_base(root)
+    return existing_merge_base(root, head=head)
 
 
-def hunk_added_lines(hunk_header: str) -> range:
-    match = HUNK_HEADER.match(hunk_header)
+def hunk_line_range(hunk_header: str, header_pattern: re.Pattern[str]) -> range:
+    match = header_pattern.match(hunk_header)
     if match is None:
         return range(0)
     start = int(match.group(1))
@@ -94,21 +104,39 @@ def hunk_added_lines(hunk_header: str) -> range:
     return range(start, start + count)
 
 
-def added_line_numbers(diff_text: str) -> dict[str, frozenset[int]]:
-    added: dict[str, set[int]] = {}
+def hunk_added_lines(hunk_header: str) -> range:
+    return hunk_line_range(hunk_header, HUNK_HEADER)
+
+
+def hunk_removed_lines(hunk_header: str) -> range:
+    return hunk_line_range(hunk_header, REMOVED_HUNK_HEADER)
+
+
+def hunk_line_numbers(
+    diff_text: str, file_header_prefix: str, hunk_lines: Callable[[str], range]
+) -> dict[str, frozenset[int]]:
+    lines_by_path: dict[str, set[int]] = {}
     current_path: str | None = None
     in_file_header = False
     for line in diff_text.splitlines():
         if line.startswith("diff --git "):
             current_path, in_file_header = None, True
-        elif in_file_header and line.startswith(NEW_FILE_HEADER_PREFIX):
-            current_path = line.removeprefix(NEW_FILE_HEADER_PREFIX)
-            added.setdefault(current_path, set())
+        elif in_file_header and line.startswith(file_header_prefix):
+            current_path = line.removeprefix(file_header_prefix)
+            lines_by_path.setdefault(current_path, set())
         elif line.startswith("@@"):
             in_file_header = False
             if current_path is not None:
-                added[current_path].update(hunk_added_lines(line))
-    return {path: frozenset(lines) for path, lines in added.items()}
+                lines_by_path[current_path].update(hunk_lines(line))
+    return {path: frozenset(lines) for path, lines in lines_by_path.items()}
+
+
+def added_line_numbers(diff_text: str) -> dict[str, frozenset[int]]:
+    return hunk_line_numbers(diff_text, NEW_FILE_HEADER_PREFIX, hunk_added_lines)
+
+
+def removed_line_numbers(diff_text: str) -> dict[str, frozenset[int]]:
+    return hunk_line_numbers(diff_text, OLD_FILE_HEADER_PREFIX, hunk_removed_lines)
 
 
 def decode_text(content: bytes | None) -> str | None:
@@ -132,6 +160,10 @@ def read_worktree_text(root: Path, path: str) -> str | None:
 
 def read_index_text(root: Path, path: str) -> str | None:
     return decode_text(git_output_bytes(root, "show", f":{path}"))
+
+
+def read_commit_text(root: Path, commit: str, path: str) -> str | None:
+    return decode_text(git_output_bytes(root, "show", f"{commit}:{path}"))
 
 
 def every_line_number(text: str) -> frozenset[int]:
@@ -170,3 +202,30 @@ def changed_files_against_merge_base(root: Path, base: str) -> list[ChangedFile]
 def staged_changed_files(root: Path) -> list[ChangedFile]:
     diff_output = git_output_bytes(root, *DIFF_OPTIONS, "--cached", *CHANGED_FILE_FILTER)
     return changed_files_from_diff(diff_output, lambda path: read_index_text(root, path))
+
+
+def changed_files_between(root: Path, base: str, head: str) -> list[ChangedFile]:
+    diff_output = git_output_bytes(root, *DIFF_OPTIONS, *CHANGED_FILE_FILTER, base, head)
+    return changed_files_from_diff(diff_output, lambda path: read_commit_text(root, head, path))
+
+
+def removed_files_from_diff(root: Path, base: str, *diff_target: str) -> list[RemovedFile]:
+    diff_output = git_output_bytes(root, *DIFF_OPTIONS, *REMOVED_FILE_FILTER, base, *diff_target)
+    if diff_output is None:
+        return []
+    removed = []
+    for path, lines in removed_line_numbers(diff_output.decode("utf-8", errors="replace")).items():
+        text = read_commit_text(root, base, path)
+        if lines and text is not None:
+            removed.append(RemovedFile(path, lines, text))
+    return removed
+
+
+def removed_files_against_merge_base(root: Path, base: str, *, head: str = "HEAD") -> list[RemovedFile]:
+    if head == "HEAD":
+        return removed_files_from_diff(root, base)
+    return removed_files_from_diff(root, base, head)
+
+
+def staged_removed_files(root: Path) -> list[RemovedFile]:
+    return removed_files_from_diff(root, "HEAD", "--cached")

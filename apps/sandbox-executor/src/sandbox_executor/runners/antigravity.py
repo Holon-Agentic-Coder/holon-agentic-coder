@@ -1,5 +1,3 @@
-"""Runner spec for the Antigravity agent."""
-
 from __future__ import annotations
 
 import os

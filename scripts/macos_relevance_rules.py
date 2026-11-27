@@ -54,6 +54,7 @@ GATE_PATH_PATTERNS = (
     "scripts/macos_relevance*.py",
     "scripts/ci_bookkeeping_gate.py",
     "scripts/ci_bookkeeping_api.py",
+    "scripts/ci_bookkeeping_context.py",
     "scripts/ci_bookkeeping_chain.py",
     "scripts/ci_timing_gate.py",
     "apps/sandbox-executor/tests/test_macos_relevance*.py",

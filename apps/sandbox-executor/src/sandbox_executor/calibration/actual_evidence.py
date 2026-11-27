@@ -1,5 +1,3 @@
-"""The evidence one execution's actual metrics are measured from: its ledger summary rows and its patch size."""
-
 from __future__ import annotations
 
 import contextlib
@@ -22,8 +20,6 @@ from sandbox_executor.ledger import read_merged_text, with_ref_fragments
 
 @dataclass(frozen=True)
 class ExecutionEvidence:
-    """What the per-metric extractors read: the execution's identity, ledger rows and patch numstat."""
-
     execution_id: str
     plan_branch: str
     predicted: PredictedMetrics
@@ -37,7 +33,6 @@ class ExecutionEvidence:
 def _summary_records(
     execution_id: str, plan_branch: str, target_ref: str, target_worktree: str
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """``(records, matching)``: the executions ledger via git show at ``target_ref`` first, then the disk fallback."""
     canonical_content = read_git_file(target_ref, LEDGER_EXECUTIONS_REL, target_worktree)
     jsonl_content = with_ref_fragments(canonical_content, target_worktree, target_ref, "executions.jsonl")
     records = parse_summary_records(jsonl_content) if jsonl_content else []
@@ -55,11 +50,6 @@ def _summary_records(
 def _patch_numstat(
     plan_branch: str, execution_branch: str, target_ref: str, target_worktree: str
 ) -> tuple[str, dict[str, Any]]:
-    """``(numstat stdout, patch metadata)`` of the execution patch; raises ``RuntimeError`` on a non-zero git exit.
-
-    The diff starts from the merge-base with the intent's target branch; the plan branch and its fallbacks apply only
-    when no target branch resolves.
-    """
     intent_branch = extract_branch_components(plan_branch)["intent_branch"] if plan_branch else ""
     res, patch_meta = execution_patch_numstat(plan_branch, execution_branch, target_ref, target_worktree, intent_branch)
     return res.stdout, patch_meta
@@ -72,10 +62,9 @@ def gather_execution_evidence(
     execution_branch: str = "",
     target_worktree: str = ".",
 ) -> ExecutionEvidence:
-    """Read the ledger summary rows (git, then disk) and then the patch numstat of one execution, in that order."""
     target_ref = execution_branch if execution_branch else "HEAD"
     records, matching = _summary_records(execution_id, plan_branch, target_ref, target_worktree)
-    # Only a Stage 3 execution row sets exit_code and p_success: a Stage 4 or Stage 5 row describes a later stage.
+    # why: Stage 4 and Stage 5 rows describe later stages, so only the Stage 3 row sets exit_code and p_success
     best_record = latest_summary_row([r for r in matching if is_execution_row(r, execution_id)])
     numstat_stdout, patch_meta = _patch_numstat(plan_branch, execution_branch, target_ref, target_worktree)
     return ExecutionEvidence(
@@ -91,7 +80,6 @@ def gather_execution_evidence(
 
 
 def parse_numstat(text: str) -> tuple[list[str], int, int, int]:
-    """``(changed paths, files, insertions, deletions)`` of ``git diff --numstat`` output, metadata paths excluded."""
     changed_paths: list[str] = []
     insertions = deletions = 0
     for line in text.splitlines():
@@ -107,7 +95,6 @@ def parse_numstat(text: str) -> tuple[list[str], int, int, int]:
 
 
 def parse_shortstat(text: str) -> tuple[int, int, int]:
-    """``(files, insertions, deletions)`` of ``git diff --shortstat`` text (e.g. unit test mocks); 0 when absent."""
     fc_m = re.search(r"(\d+)\s+file", text)
     ins_m = re.search(r"(\d+)\s+insertion", text)
     del_m = re.search(r"(\d+)\s+deletion", text)

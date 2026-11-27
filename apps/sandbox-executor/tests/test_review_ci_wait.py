@@ -110,9 +110,9 @@ def _run_loop(tmp_path: Path, monkeypatch, probes: list[dict], fake: FakeTime, p
             _context(tmp_path, payload),
             target=EXEC_TARGET,
             max_iterations=2,
-            ensemble_size=1,
+            ensemble_size=3,
             auto_pr=False,
-            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            run_ensemble_fn=FakeEnsemble(),
             clock=fake.clock,
             sleep=fake.sleep,
             github=_github(*probes, head_sha=head_sha),
@@ -569,10 +569,11 @@ def test_ci_registration_runs_on_new_head_after_prior_iteration_local_failure(tm
     github = _github(local_only, PASSED, head_sha="head-2")
     current_head = {"sha": "head-1"}
 
-    def fake_resolver(**kwargs):
+    def fake_resolver(findings, **kwargs):
         del kwargs
         current_head["sha"] = "head-2"
-        return {"dispositions": [], "head_sha": "head-2", "pushed": True}
+        applied = [{"id": row.id, "disposition": "applied"} for row in findings]
+        return {"dispositions": applied, "head_sha": "head-2", "pushed": True}
 
     failing_local = TestMeasurement(0.5, 5, 5, 0, 1, None, "")
     monkeypatch.setattr(local_tests, "run_measurement", MagicMock(return_value=failing_local))
@@ -587,9 +588,9 @@ def test_ci_registration_runs_on_new_head_after_prior_iteration_local_failure(tm
             _context(tmp_path, {"head_sha": "head-1", "test_pass_rate": None, "exit_code": 0}),
             target=EXEC_TARGET,
             max_iterations=2,
-            ensemble_size=1,
+            ensemble_size=3,
             auto_pr=False,
-            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            run_ensemble_fn=FakeEnsemble(),
             run_resolver_fn=fake_resolver,
             clock=fake.clock,
             sleep=fake.sleep,

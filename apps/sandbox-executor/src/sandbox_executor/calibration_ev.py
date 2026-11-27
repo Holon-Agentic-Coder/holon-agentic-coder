@@ -1,13 +1,3 @@
-"""Dual EV evaluation and reporting helpers for Stage 5 calibration.
-
-Computes Clean / Intrinsic EV, Observed EV with intermediate failures,
-and Bug EV Drag to distinguish pipeline/environment failures from agent delivery.
-Only the plan's Stage 3 execution rows feed it (``calibration_rows``), the latest row of each execution id: Clean EV
-credits the delivery when one of them delivered (``calibration_outcome.has_delivered``), and Observed EV drops to the
-cost when an execution failure stays unresolved (``calibration_outcome.has_unresolved_failure``). Stage 4 and Stage 5
-rows never add drag.
-"""
-
 from __future__ import annotations
 
 import json
@@ -25,8 +15,6 @@ from sandbox_executor.plan_paths import plan_branch_of
 
 @dataclass
 class DualEVMetrics:
-    """Computed dual actual EV metrics and bug drag."""
-
     ev_clean: float = 0.0
     ev_with_bugs: float = 0.0
     p_success_clean: float = 0.0
@@ -36,29 +24,23 @@ class DualEVMetrics:
     bug_ev_drag: float = 0.0
 
     def to_dict(self) -> dict[str, float]:
-        """Convert metrics to dictionary."""
         return asdict(self)
 
 
 def is_matching_record(record: dict[str, Any], execution_id: str, plan_branch: str) -> bool:
-    """True for a summary record of this plan (never another plan's, whatever its id); id alone without a plan."""
     wanted, recorded = plan_branch_of(plan_branch or ""), plan_branch_of(str(record.get("plan_branch", "")))
     same_id = bool(execution_id) and str(record.get("execution_id", "")) == execution_id
     return record.get("entry_type", "summary") == "summary" and (recorded == wanted if wanted and recorded else same_id)
 
 
 def is_matching_execution_record(record: dict[str, Any], execution_id: str, plan_branch: str) -> bool:
-    """True for a Stage 3 execution summary row of this plan (``is_matching_record`` and ``is_execution_row``)."""
     return is_matching_record(record, execution_id, plan_branch) and is_execution_row(record, execution_id)
 
 
+# why: Stage 4 and Stage 5 rows never add drag; without any execution row of the plan, legacy ledgers use every one.
 def dual_ev_rows(
     records: list[dict[str, Any]], execution_id: str, plan_branch: str
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """The rows the dual EV scores: the latest Stage 3 execution row of each execution id (in flow order), and the
-    plan's summary rows (any stage) that resolve a ``sync_conflict``. With no execution row of the plan, every
-    execution summary row is used (legacy ledgers); the plan rows then fall back to those execution rows.
-    """
     matching = [r for r in records if is_matching_execution_record(r, execution_id, plan_branch)]
     if not matching:
         matching = [r for r in records if r.get("entry_type", "summary") == "summary" and is_execution_row(r)]
@@ -74,10 +56,6 @@ def evaluate_dual_ev_outcomes(
     predicted_impact: float,
     cost_effort: float,
 ) -> DualEVMetrics:
-    """Evaluate dual actual EV outcomes and bug drag across the plan's Stage 3 execution rows (``dual_ev_rows``).
-
-    With no execution row at all the run scores as a clean success.
-    """
     sorted_records, plan_rows = dual_ev_rows(records, execution_id, plan_branch)
     if not sorted_records:
         imp_c = float(predicted_impact)
@@ -107,7 +85,6 @@ def evaluate_dual_ev_outcomes(
 
 
 def parse_summary_records(content: str) -> list[dict[str, Any]]:
-    """Parse JSONL lines and extract summary records."""
     records: list[dict[str, Any]] = []
     for line in content.splitlines():
         if line.strip():
@@ -127,7 +104,6 @@ def format_dual_ev_table_rows(
     ratings: dict[str, str],
     biases: dict[str, str],
 ) -> list[str]:
-    """Format markdown table rows for Clean EV, Observed EV, and Bug EV Drag."""
     c_ev = float(act.get("ev_clean", act.get("ev", 0.0)))
     b_ev = float(act.get("ev_with_bugs", act.get("ev", 0.0)))
     drag = float(act.get("bug_ev_drag", round(c_ev - b_ev, 2)))
@@ -164,7 +140,6 @@ def format_dual_ev_derivation_lines(
     lambda_val: float,
     mu_val: float,
 ) -> list[str]:
-    """Format mathematical derivation lines for dual EV and bug drag."""
     p_c = float(act.get("p_success_clean", act.get("p_success", 0.0)))
     imp_c = float(act.get("impact_clean", act.get("impact", 0.0)))
     p_b = float(act.get("p_success_with_bugs", act.get("p_success", 0.0)))

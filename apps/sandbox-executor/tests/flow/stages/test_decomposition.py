@@ -1,5 +1,3 @@
-"""Tests for the entropy budget handoff, bounded re-planning and sequential child flows of Stage 3."""
-
 import dataclasses
 import os
 from pathlib import Path
@@ -40,8 +38,6 @@ _OVER_BUDGET_ERROR = (
 
 @pytest.mark.usefixtures("no_origin_reconcile")
 class TestEntropyBudgetHandoffInFlow:
-    """Intent goal 4: no Stage 3 halt, budget handoff, bounded re-planning and sequential child pipelines."""
-
     @pytest.mark.parametrize(
         ("entropy", "expected_status"),
         [(2.0, StageStatus.SUCCESS), (12.6, StageStatus.FAILED)],
@@ -50,22 +46,13 @@ class TestEntropyBudgetHandoffInFlow:
     def test_stage3_never_halts_for_a_human_when_the_executor_row_decides(
         self, flow_repos, tmp_path, entropy, expected_status
     ):
-        """Stage 3 ends in success or failure, never a halt, when only the executor's own row decides.
-
-        The same holds where the plan row decides before dispatch, which the tests named here prove with the status
-        they assert: a normal plan in ``test_plan_decision.py::test_in_budget_plan_executes_exactly_as_before``, a
-        refused one in ``test_replan_whose_stage_2_fails_ends_the_run_in_stage_2`` and a decomposed one in
-        ``test_explicit_sub_intent_list_runs_child_pipelines_in_order_and_records_each_child_pr``. A decomposed row
-        without a readable plan row fails in
-        ``test_plan_decision.py::test_decomposed_report_without_a_readable_plan_row_runs_no_child``.
-        """
         host, origin = flow_repos
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(entropy, "")])
         ctx = _budget_context(host, agents, 5.0)
         assert run_intent_stage(ctx).status == StageStatus.SUCCESS
         assert run_plan_stage(ctx).status == StageStatus.SUCCESS
 
-        # Model a plan the flow could not read before dispatch: the executor's own row decides.
+        # why: an unreadable plan row before dispatch leaves the decision to the executor's own row.
         with patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None):
             res = run_execute_stage(ctx)
 
@@ -76,7 +63,6 @@ class TestEntropyBudgetHandoffInFlow:
             assert res.payload["dispatched"] is True
             assert (res.payload["entropy"], res.payload["entropy_budget"]) == (entropy, 5.0)
             assert res.error == _OVER_BUDGET_ERROR
-            # The executor's row also carries the execution it recorded.
             assert res.payload["execution_branch"] == ctx.execution_branch is not None
 
     def test_intent_budget_16_persisted_on_the_plan_row_lets_plan_entropy_12_6_execute_normally(
@@ -92,7 +78,6 @@ class TestEntropyBudgetHandoffInFlow:
         assert results["execute"].status == StageStatus.SUCCESS
         assert agents.roles() == ["intent-creator", "planner", "executor"]
         assert ctx.replan_attempts == 0
-        # The budget persisted on the plan row is the one enforced.
         plan_rows = _ledger_rows(host, f"origin/{ctx.plan_branch}", "plans.jsonl")
         assert plan_rows[-1]["entropy_budget"] == 16.0
 
@@ -114,7 +99,6 @@ class TestEntropyBudgetHandoffInFlow:
         )
         assert "review" not in results
         assert execute.payload["replan_attempts"] == MAX_REPLAN_ATTEMPTS
-        # The feedback reached the planner on each re-plan only, and never lingers in the payload or environment.
         assert agents.replan_feedback_seen[0] is None
         assert all("entropy 12.6" in (fb or "") for fb in agents.replan_feedback_seen[1:])
         assert "replan_feedback" not in ctx.intent_data
@@ -142,13 +126,12 @@ class TestEntropyBudgetHandoffInFlow:
         assert children == ["add-the-parser", "add-the-cli-flag"]
         plan_branch = ctx.plan_branch
         for payload in agents.intent_payloads[1:]:
-            # Nested under the plan branch, never the intent branch or main.
             assert payload["target_branch"] == plan_branch
             assert payload["parent_intent_id"] == plan_branch
             assert payload["branch"].startswith(plan_branch.removesuffix("/_") + "--")
             assert payload["entropy_budget"] == 5.0
             assert payload["sub_intent_depth"] == 1
-            # Labels drive the PR title scope, so each child PR is scoped like its parent's.
+            # why: labels drive the PR title scope, so each child PR must be scoped like its parent's.
             assert payload["labels"] == ["flow"]
         execute = results["execute"]
         assert execute.status == StageStatus.SUCCESS
@@ -160,7 +143,6 @@ class TestEntropyBudgetHandoffInFlow:
         for child in execute.payload["children"]:
             assert child["execution_branch"].startswith(child["intent_branch"].removesuffix("/_") + "/P-")
             assert child["merged"] is True
-        # Each child PR targets the plan branch; Stage 4 of the parent raises the combined PR into main.
         assert [(r["slug"], r["base"]) for r in reviews.reviewed] == [
             ("add-the-parser", plan_branch),
             ("add-the-cli-flag", plan_branch),
@@ -179,9 +161,7 @@ class TestEntropyBudgetHandoffInFlow:
         assert results["review"].status == StageStatus.HALTED_FOR_HUMAN
         assert results["calibrate"].payload == {"skipped_by_flag": True}
         assert any("[sub-intent add-the-parser]" in line for line in ctx.logs)
-        # The executor wrote no intent rows: only the parent and the two children created through Stage 1 exist.
         assert sorted(r["slug"] for r in _all_intent_rows(host)) == sorted(["budget-test", *children])
-        # Each child halted at its own review, which is a success, and was merged with the PR it recorded.
         ran = execute.payload["children"]
         assert [r["head"] for r in reviews.reviewed[:2]] == [c["execution_branch"] for c in ran]
         assert [(c["pr_url"], c["pr_number"]) for c in ran] == [
@@ -190,7 +170,6 @@ class TestEntropyBudgetHandoffInFlow:
         ]
         assert [e["pr_number"] for e in execute.payload["children_progress"]] == [101, 102]
         assert [reviews.gh.prs[n]["state"] for n in (101, 102, 103)] == ["MERGED", "MERGED", "OPEN"]
-        # The parent's own Stage 4 raised the combined PR into main and halted there for the human.
         assert reviews.gh.prs[103]["base"] == "main"
 
     @staticmethod
@@ -205,13 +184,11 @@ class TestEntropyBudgetHandoffInFlow:
         assert child_plan.startswith(first["intent_branch"].removesuffix("/_") + "/P-")
         grandchildren = first["children"]
         assert [g["slug"] for g in grandchildren] == ["add-the-parser", "add-the-cli-flag"]
-        # Grandchildren nest under the first child's own plan branch, however fast the run.
         assert [g["intent_branch"] for g in grandchildren] == [
             child_plan.removesuffix("/_") + suffix for suffix in ("--1-add-the-parser/_", "--2-add-the-cli-flag/_")
         ]
         assert [p["sub_intent_depth"] for p in agents.intent_payloads[1:]] == [1, 2, 2, 1]
         assert [p["target_branch"] for p in agents.intent_payloads[2:4]] == [child_plan] * 2
-        # The decomposed child raises its own combined PR into the parent's plan branch, which is then merged.
         assert [(r["slug"], r["base"]) for r in reviews.reviewed] == [
             ("add-the-parser", child_plan),
             ("add-the-cli-flag", child_plan),
@@ -248,8 +225,7 @@ class TestEntropyBudgetHandoffInFlow:
         self, flow_repos, tmp_path
     ):
         host, origin = flow_repos
-        # Parent and first child both list sub-intents; the two grandchildren and the second child execute. The first
-        # grandchild shares its parent's slug, and a frozen clock creates every intent in the same second.
+        # why: a shared slug and a frozen clock force every intent into the same second, where branch names collide.
         agents = BudgetRoleAgents(tmp_path, origin, plans=[(9.0, SUB_INTENT_LIST), (9.0, SUB_INTENT_LIST), (2.0, "")])
         ctx = _budget_context(host, agents, 5.0)
 
@@ -259,7 +235,6 @@ class TestEntropyBudgetHandoffInFlow:
         ):
             results = PipelineEngine(ctx).run()
 
-        # Every intent was dispatched to the intent creator on a branch of its own: none reused another's.
         branches = [p["branch"] for p in agents.intent_payloads]
         assert len(branches) == len(set(branches)) == 5
         assert results["execute"].status == StageStatus.SUCCESS
@@ -296,9 +271,8 @@ class TestEntropyBudgetHandoffInFlow:
         assert ctx.replan_attempts == 1
         assert results["plan"].status == StageStatus.FAILED
         assert results["plan"].error == "Plan stage failed: no plan"
-        # The rejected plan is dropped before re-planning, so the checkpoint never resumes from the over-budget plan.
+        # why: the checkpoint must never resume from the rejected over-budget plan.
         assert ctx.plan_branch is None
-        # The refusal came from the plan row before dispatch: no executor container ran.
         refused = results["execute"]
         assert refused.status == StageStatus.FAILED
         assert refused.payload["over_budget"] is True
@@ -343,7 +317,6 @@ class TestEntropyBudgetHandoffInFlow:
 
         assert results["execute"].status == StageStatus.FAILED
         assert "deeper than the limit" in (results["execute"].error or "")
-        # The pre-dispatch check refuses the over-deep list, so no executor container runs.
         assert results["execute"].payload["dispatched"] is False
         assert agents.roles() == ["intent-creator", "planner"]
 
@@ -380,7 +353,7 @@ class TestEntropyBudgetHandoffInFlow:
         legacy = ctx.to_dict()
         del legacy["replan_attempts"]
         assert FlowContext.from_dict(legacy).replan_attempts == 0
-        # A hand-edited or foreign checkpoint may carry null or a numeric string; both load as an int.
+        # why: a hand-edited or foreign checkpoint may carry null or a numeric string.
         for recorded, expected in ((None, 0), ("1", 1)):
             loaded = FlowContext.from_dict({**legacy, "replan_attempts": recorded}).replan_attempts
             assert (loaded, type(loaded)) == (expected, int)
@@ -410,9 +383,7 @@ class TestEntropyBudgetHandoffInFlow:
         fresh = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"fresh": True})
         cases = [
             ({"decomposed": True, "plan_branch": plan, "children_progress": progress}, resumed),
-            # A re-plan produced another plan branch: the old plan's children are not resumed.
             ({"decomposed": True, "plan_branch": "I-1-parent/P-9-agent-model/_", "children_progress": progress}, fresh),
-            # A depth refusal recorded no progress, so nothing can be resumed.
             ({"decomposed": True, "plan_branch": plan, "children_progress": []}, fresh),
         ]
         for payload, expected in cases:
@@ -428,7 +399,6 @@ class TestEntropyBudgetHandoffInFlow:
 
     @pytest.mark.parametrize(("recorded", "expected"), [(-3, 0), ("-1", 0), (None, 0), ("deep", 0), ("2", 2)], ids=str)
     def test_sub_intent_depth_is_never_negative(self, recorded, expected):
-        # A negative or unreadable depth counts as a root intent, so children start at depth 1.
         assert flow_module._sub_intent_depth({"sub_intent_depth": recorded}) == expected
 
     def test_child_pipeline_that_runs_no_stage_fails_the_parent(self, tmp_path):
@@ -473,7 +443,6 @@ class TestEntropyBudgetHandoffInFlow:
         assert run.call_count == 0
 
     def test_child_context_inherits_or_resets_every_field(self):
-        """Table-driven: every FlowContext field is either inherited from the parent or reset for the new child."""
         dispatcher = MagicMock()
         parent_values: dict[str, Any] = {
             "target_worktree": "/srv/parent-repo",
@@ -499,7 +468,7 @@ class TestEntropyBudgetHandoffInFlow:
             calibrated_branch="I-1-parent/P-2-agent-model/E-3-agent-model/calibrated",
             stage_results={"intent": StageResult(stage=FlowStage.INTENT, status=StageStatus.SUCCESS)},
             logs=["parent log line"],
-            # A non-current version, as FlowContext.from_dict accepts from a malformed checkpoint (e.g. -1).
+            # why: FlowContext.from_dict accepts a non-current version such as -1 from a malformed checkpoint.
             schema_version=-1,
             replan_attempts=1,
             review_iterations_done=3,
@@ -524,20 +493,19 @@ class TestEntropyBudgetHandoffInFlow:
             "logs": [],
             "schema_version": flow_module.CURRENT_CONTEXT_SCHEMA_VERSION,
             "replan_attempts": 0,
-            "review_iterations_done": 0,  # A child intent runs its own Stage 4, so its review count starts afresh.
-            "admission": None,  # A child intent runs its own Stage 3 admission.
-            "carried_review_findings": [],  # The parent's open findings belong to the parent's review.
-            "review_scope_paths": [],  # A child intent starts with a full-diff Stage 4 review scope.
-            "review_state": {},  # The parent's approval gates belong to the parent's review.
-            "checkpoint_path": None,  # A child intent checkpoints at its own default path.
-            "merged_head_restart_allowed": True,  # A child intent's Stage 5 has its own restart budget.
+            "review_iterations_done": 0,  # why: a child intent runs its own Stage 4.
+            "admission": None,  # why: a child intent runs its own Stage 3 admission.
+            "carried_review_findings": [],  # why: the parent's open findings belong to the parent's review.
+            "review_scope_paths": [],  # why: a child intent starts with a full-diff Stage 4 review scope.
+            "review_state": {},  # why: the parent's approval gates belong to the parent's review.
+            "checkpoint_path": None,  # why: a child intent checkpoints at its own default path.
+            "merged_head_restart_allowed": True,  # why: a child intent's Stage 5 has its own restart budget.
         }
         defaults = FlowContext(token_reduce=False)
         for name, value in parent_values.items():
             assert getattr(defaults, name) != value, f"{name}: parent value must differ from the default"
 
-        # Pin proxy detection to the opposite of the parent's token_reduce and proxy_attach so a dropped copy cannot
-        # pass by detection.
+        # why: detection opposite to the parent's proxy flags stops a dropped copy from passing by detection.
         with patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY):
             child = flow_module._child_context(parent, child_intent)
 

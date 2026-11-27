@@ -9,9 +9,11 @@ from typing import Any
 
 from sandbox_executor.entrypoint.test_failure_classify import BaseSnapshot, run_failing_ids
 from sandbox_executor.entrypoint.test_failure_loop import (
+    PARKED_STATUSES,
     LoopOutcome,
     LoopPorts,
     TestFailureLoop,
+    _build_parked_record,
     measure_selection,
 )
 from sandbox_executor.entrypoint.test_failure_record import (
@@ -80,6 +82,8 @@ def _git_head(repo_dir: str) -> str:
 
 def _default_review_failure_loop(repo_dir: str, context: FlowContext) -> TestFailureLoop:
     branch = context.execution_branch or context.intent_branch or ""
+    raw_blockers = context.intent_data.get("blocker_map")
+    blocker_map = raw_blockers if isinstance(raw_blockers, Mapping) else {}
     ports = LoopPorts(
         run_selection=functools.partial(_measured_with_output, repo_dir),
         rerun_ids=functools.partial(run_failing_ids, cwd=repo_dir),
@@ -94,6 +98,8 @@ def _default_review_failure_loop(repo_dir: str, context: FlowContext) -> TestFai
         head_sha=functools.partial(_git_head, repo_dir),
         # why: the Stage 4 resolver is the fix turn; the gate only feeds it the evidence.
         fix_turn=None,
+        blocker_map=blocker_map,
+        checkpoint_path=str(context.checkpoint_path or ""),
     )
     return TestFailureLoop(ports)
 
@@ -133,10 +139,12 @@ class _ReviewLocalTests:
         return self.loop_outcomes[head].measurement
 
 
-def _attach_test_failure(ci_status: dict[str, Any], outcome: LoopOutcome | None) -> None:
+def _attach_test_failure(
+    ci_status: dict[str, Any], outcome: LoopOutcome | None, checkpoint_path: str = ""
+) -> None:
     if outcome is None:
         return
-    ci_status["test_failure"] = {
+    payload: dict[str, Any] = {
         "classification": outcome.classification,
         "status": outcome.status,
         "failing_ids": list(outcome.failing_ids),
@@ -145,7 +153,19 @@ def _attach_test_failure(ci_status: dict[str, Any], outcome: LoopOutcome | None)
         "rows": [row.get("action_id") for row in outcome.rows],
     }
     if outcome.status == "blocked" and outcome.classification in BLOCKED_CLASSIFICATIONS:
-        ci_status["test_failure"]["blocked_evidence"] = outcome.evidence_text
+        payload["blocked_evidence"] = outcome.evidence_text
+    if outcome.parked_record is not None or outcome.status in PARKED_STATUSES:
+        parked = (
+            dict(outcome.parked_record)
+            if outcome.parked_record is not None
+            else _build_parked_record(outcome, checkpoint_path)
+        )
+        if checkpoint_path and not parked.get("checkpoint_path"):
+            parked["checkpoint_path"] = checkpoint_path
+        payload["blocked_on"] = parked["blocked_on"]
+        payload["ledger_rows"] = list(outcome.rows)
+        payload["parked_record"] = parked
+    ci_status["test_failure"] = payload
 
 
 def _default_pr_head(repo_dir: str, target: str, proxy_env: Mapping[str, str] | None = None) -> str | None:
@@ -247,7 +267,11 @@ class _ReviewTestGate:
             rate, failed = outcome.rate, outcome.failed
             detail = outcome.measurement.run_error or f"rate {rate}, failed={failed}"
             _attach_local_counts(ci_status, outcome)
-            _attach_test_failure(ci_status, self._tester.loop_outcomes.get(current_head))
+            _attach_test_failure(
+                ci_status,
+                self._tester.loop_outcomes.get(current_head),
+                checkpoint_path=str(self._context.checkpoint_path or ""),
+            )
 
         ci_status["test_source"] = source
         ci_status["test_head_sha"] = current_head

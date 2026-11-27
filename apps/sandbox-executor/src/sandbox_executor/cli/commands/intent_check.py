@@ -1,5 +1,3 @@
-"""``holon intent-check``: a read-only check of a draft intent's scope before the intent is launched."""
-
 from __future__ import annotations
 
 import argparse
@@ -31,8 +29,7 @@ def register(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     parser.set_defaults(_run=run)
 
 
-def _resolve_worktree(path: str) -> str:
-    """Resolve a worktree path to its repository root so scope paths match from any subdirectory."""
+def _repository_root_of(path: str) -> str:
     if not os.path.isdir(path):
         raise ValueError(f"target worktree is not a directory: {path}")
     result = run_git(["rev-parse", "--show-toplevel"], cwd=path, check=False)
@@ -41,7 +38,7 @@ def _resolve_worktree(path: str) -> str:
 
 def run(args: argparse.Namespace) -> int:
     try:
-        worktree = _resolve_worktree(args.target_worktree or os.getcwd())
+        worktree = _repository_root_of(args.target_worktree or os.getcwd())
         report = check_intent_scope(load_intent(args.intent_file), worktree)
     except (ValueError, OSError, TimeoutError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

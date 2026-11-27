@@ -1,5 +1,3 @@
-"""The EV physics constants (``lambda`` entropy penalty, ``mu`` learning-value weight) of the target worktree."""
-
 from __future__ import annotations
 
 import json
@@ -10,7 +8,6 @@ logger = logging.getLogger(__name__)
 
 
 def load_metrics_physics(target_worktree: str = ".") -> tuple[float, float]:
-    """Load lambda (entropy penalty) and mu (learning value weight) from config."""
     default_lambda = 0.3
     default_mu = 0.5
     ev_config_path = os.path.join(target_worktree, "holon-config/metrics/ev_config.json")

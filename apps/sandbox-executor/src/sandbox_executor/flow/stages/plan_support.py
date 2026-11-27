@@ -1,9 +1,3 @@
-"""Stage 2 steps that need no patched lookup: the dry-run result, the plan metrics read-back and the replan feedback.
-
-The planner dispatch, the conflict check, the child-branch snapshot and the plan-row read stay in ``stages/plan.py``,
-where tests patch them.
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -22,7 +16,6 @@ _EV_INPUT_KEYS = ("p_success", "impact", "learning_value", "entropy", "cost")
 
 
 def plan_id_of(plan_branch: str) -> str:
-    """The plan id a plan branch ``<intent prefix>/<plan id>/_`` names."""
     return plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
 
 
@@ -33,7 +26,6 @@ def plan_stage_payload(
     metrics: dict[str, Any],
     consulted_ids: list[str],
 ) -> dict[str, Any]:
-    """Log Stage 2 completion and build the Stage 2 success payload dictionary for ``plan_branch``."""
     ev_text = f"{metrics['ev']:.2f}" if isinstance(metrics.get("ev"), int | float) else "n/a"
     context.log(f"Stage 2 completed: planner agent produced '{plan_file}' on '{plan_branch}' (EV={ev_text}).")
     return {
@@ -48,7 +40,6 @@ def plan_stage_payload(
 def dry_run_plan_result(
     context: FlowContext, start_time: str, plan_branch: str, consulted_ids: list[str]
 ) -> StageResult:
-    """Record the dry-run Stage 2 result for the branch ``<intent prefix>/<plan id>/_`` the planner would create."""
     plan_id = plan_id_of(plan_branch)
     intent_prefix = plan_branch.removesuffix("/_").rsplit("/", 1)[0]
     context.plan_branch = plan_branch
@@ -65,11 +56,6 @@ def dry_run_plan_result(
 
 
 def plan_metrics(repo_dir: str, plan_content: str, plan_row: dict[str, Any]) -> dict[str, Any]:
-    """The plan's overall metrics for the stage payload: the plan file's table, overridden by the row's numbers.
-
-    Metrics are read back for the stage payload only; the planner's plans.jsonl row is authoritative. Without an
-    ``ev`` but with all its inputs, ``ev`` is computed with the repository's ``mu`` and ``lambda``.
-    """
     metrics: dict[str, Any] = dict(parse_metrics(plan_content))
     for key in _ROW_METRIC_KEYS:
         if isinstance(plan_row.get(key), int | float):
@@ -87,10 +73,7 @@ def plan_metrics(repo_dir: str, plan_content: str, plan_row: dict[str, Any]) -> 
 
 @contextlib.contextmanager
 def replan_feedback_env(feedback: str, target_merged_notice: str = "") -> Iterator[None]:
-    """Set the replan feedback (and optional target-merge notice) for dispatch when non-empty, then restore.
-
-    Forwarded into the container through ``HOLON_REPLAN_FEEDBACK``; never written to a ledger.
-    """
+    # why: the feedback reaches the container through the environment only and is never written to a ledger.
     combined = "\n\n".join(part for part in (feedback, target_merged_notice) if part)
     previous = os.environ.get(ENV_REPLAN_FEEDBACK)
     if combined:

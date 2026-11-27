@@ -1,5 +1,4 @@
-"""The ``review_loop`` container entrypoint's command line, kept apart so the entrypoint stays within its budget."""
-
+# why: the parser lives apart from the review_loop entrypoint to keep that entrypoint within its line budget
 from __future__ import annotations
 
 import argparse
@@ -8,7 +7,6 @@ from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE, ENSEMBLE_SIZ
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """The argument parser of the containerised review loop."""
     parser = argparse.ArgumentParser(
         prog="review_loop",
         description="Holon Review Loop Agent container entrypoint.",

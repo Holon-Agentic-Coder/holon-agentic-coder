@@ -1,9 +1,3 @@
-"""The one ``target_sync`` action row a merged or blocked target sync appends to ``executions.jsonl``.
-
-``ledger.append_action_record`` is the only writer; earlier rows are only read (to name the ``sync_conflict`` row a
-merged sync supersedes) and never rewritten, per the append-only ledger constraint.
-"""
-
 from __future__ import annotations
 
 from dataclasses import replace
@@ -18,7 +12,6 @@ _OUTCOMES = {"merged": "success", "blocked": "blocked"}
 
 
 def superseded_sync_conflict(ledger_path: str, execution_id: str) -> str:
-    """The ``<execution_id>@r<revision>`` of the latest ``sync_conflict`` row of ``execution_id``, else ``""``."""
     rows = [
         row
         for row in query_ledger(ledger_path, entry_type="summary", outcome=SYNC_CONFLICT_STATUS)
@@ -30,7 +23,6 @@ def superseded_sync_conflict(ledger_path: str, execution_id: str) -> str:
 
 
 def sync_row(request: SyncRequest, result: SyncResult, supersedes: str) -> dict[str, Any]:
-    """The ``target_sync`` action row for ``result``; ``preserve_shape`` keeps its extra keys in this order."""
     row: dict[str, Any] = {
         "action_id": generate_action_id("SYNC"),
         "execution_id": request.execution_id,
@@ -60,14 +52,11 @@ def sync_row(request: SyncRequest, result: SyncResult, supersedes: str) -> dict[
 
 
 def append_sync_row(request: SyncRequest, result: SyncResult) -> SyncResult:
-    """Append exactly one row for a ``merged`` or ``blocked`` sync and return ``result`` naming it.
-
-    A merged sync supersedes the execution's latest ``sync_conflict`` row, found by a read-only scan.
-    """
     merged = result.status == "merged"
     supersedes = superseded_sync_conflict(request.ledger_path, request.execution_id) if merged else ""
     row = sync_row(request, result, supersedes)
     if row["error_context"] is None:
         del row["error_context"]
+    # why: append-only ledger: append_action_record is the only writer; the superseded sync_conflict row is only read
     written = append_action_record(request.ledger_path, row, preserve_shape=True)
     return replace(result, ledger_row_id=written["action_id"])

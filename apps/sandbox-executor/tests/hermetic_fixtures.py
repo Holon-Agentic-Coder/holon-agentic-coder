@@ -1,25 +1,7 @@
-"""Fixture helpers for container-based integration tests.
-
-These exist because a fixture that works under Docker Desktop can fail on a Linux CI runner. The
-tests need a git worktree that a *container* can commit into. Bind-mounting a host
-temporary directory cannot provide that: on macOS the mount's ownership is remapped into the
-container, while on Linux it keeps the host owner (the CI runner user), which is unrelated to the
-image's unprivileged ``holon`` user (uid 1000). Every workaround for that mismatch was a dead end:
-
-* ``git`` refuses a repository owned by a foreign uid (``detected dubious ownership``), and neither
-  ``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_<n>`` (not honoured by ``git clone``, verified against git
-  2.47.3 in ``holon/orchestrator``) nor the ``file://`` transport (``safe.directory`` applies to
-  ``file://`` sources too) can express the exception;
-* the container uid cannot write the mount at all, so a commit dies with ``remote unpack failed:
-  unable to create temporary object directory``;
-* relaxing the fixture to ``0o777`` is a CWE-732 insecure-permissions violation (CodeQL, high);
-* ``--user $(id -u)`` breaks the image entrypoint because ``/home/holon`` is ``drwx------``;
-* and whatever the container creates, the host process then cannot delete at teardown.
-
-A named Docker volume removes all of it: one uid owns everything inside it, the fixture is never
-visible to the host, and ``docker volume rm`` reclaims it regardless of inner ownership.
-"""
-
+# why: a bind-mounted host temp dir keeps the host owner on Linux CI, so git refuses it as dubious
+# why: ownership and the image's uid 1000 cannot write it; 0o777 is CWE-732 and --user breaks the
+# why: entrypoint. A named volume has one owner inside, stays off the host and is reclaimed by
+# why: docker volume rm regardless of inner ownership.
 import os
 import shutil
 import subprocess
@@ -31,12 +13,9 @@ IMAGE_UID = "1000:1000"
 SANDBOX_WORKSPACE_MOUNT = "/home/holon/.holon-sandbox/workspace"
 
 
+# why: role containers never reach a git remote, so the seeded volume stands in for the host
+# why: worktree at the sandbox workspace mount and there is no URL.
 def remote_path(volume: str) -> str:
-    """Return the in-container path at which *volume* is mounted: the role workspace mount.
-
-    The volume holds a seeded worktree, standing in for the host worktree that the host bind-mounts
-    at the sandbox workspace path. Role containers never reach a git remote, so there is no URL.
-    """
     return SANDBOX_WORKSPACE_MOUNT
 
 
@@ -57,16 +36,12 @@ chown -R {IMAGE_UID} {workspace}
 """
 
 
-class RemoteFixtureError(RuntimeError):
-    """Raised when the seeded remote fixture cannot be created."""
+class RemoteFixtureError(RuntimeError): ...
 
 
+# why: callers reclaim the volume via addCleanup(remove_remote_volume) so a failing assertion
+# why: cannot leak it.
 def create_seeded_remote(image: str = DEFAULT_FIXTURE_IMAGE) -> str:
-    """Creates a named volume holding a seeded worktree with one commit on ``main``.
-
-    Returns the volume name. The caller must reclaim it with :func:`remove_remote_volume`, normally
-    via ``self.addCleanup`` so a failing assertion cannot leak the volume.
-    """
     volume = f"holon-it-{uuid.uuid4().hex[:16]}"
     remote = remote_path(volume)
     create = subprocess.run(["docker", "volume", "create", volume], capture_output=True, text=True, check=False)
@@ -110,24 +85,18 @@ def create_seeded_remote(image: str = DEFAULT_FIXTURE_IMAGE) -> str:
 
 
 def remove_remote_volume(volume: str) -> None:
-    """Best-effort removal of a fixture volume."""
     subprocess.run(["docker", "volume", "rm", "-f", volume], capture_output=True, text=True, check=False)
 
 
 def remote_volume_args(volume: str) -> list[str]:
-    """Docker arguments mounting the fixture volume as the role workspace."""
     return ["-v", f"{volume}:{remote_path(volume)}"]
 
 
+# why: the repository never exists on the host, so inspection runs in a container as the image
+# why: user that owns the volume contents, which needs no ownership exception.
 def remote_show_file(
     ref: str, path: str, volume: str, image: str = DEFAULT_FIXTURE_IMAGE
 ) -> subprocess.CompletedProcess:
-    """Runs ``git show <ref>:<path>`` against the fixture worktree from inside a container.
-
-    The repository deliberately never exists on the host, so all inspection goes through the
-    container; the inspecting container runs as the image's own user, which also owns the volume
-    contents, so no ownership exception is required.
-    """
     return subprocess.run(
         [
             "docker",
@@ -152,55 +121,30 @@ def remote_show_file(
     )
 
 
-# ---------------------------------------------------------------------------------------------
-# Suite-level runner helpers, shared by the canary guard and the stress suite
-#
-# These live here so that the child-suite invocation exists in exactly one place. Two modules each
-# assembling their own ``uv run pytest ...`` command line is how the runner choice and the marker
-# selection drifted apart from ``.github/workflows/test-unit.yml`` once already.
-# ---------------------------------------------------------------------------------------------
-
-#: The only sanctioned way to run this suite (see ``.agents/rules.md``): never invoke ``python3``,
-#: a bare ``pytest``, or a ``.venv`` binary. Never ``python -m unittest`` either -- ``unittest``
-#: does not understand pytest markers, so it re-runs the ``integration_test``-marked tests that the
-#: unit job deliberately deselects and that need images it never builds.
+# why: one shared child-suite command; two hand-built command lines once drifted from the runner
+# why: and marker selection of .github/workflows/test-unit.yml.
+# why: uv is the only sanctioned runner (.agents/rules.md); unittest ignores pytest markers and
+# why: re-runs integration tests that need images the unit job never builds.
 UV = "uv"
 
-#: Marker expression matching the unit job. ``stress`` is excluded because the stress tests (the
-#: workspace-survival suite and the hermetic canary guard) re-run the whole suite, so a child that
-#: selected them would spawn another child.
+# why: stress tests re-run the whole suite, so a child selecting them would spawn another child.
 UNIT_MARKER_EXPRESSION = "not integration_test and not stress"
 
-#: Repository root, derived from this file rather than assumed: ``pyproject.toml`` lives here and
-#: is what supplies pytest's ``testpaths``/``pythonpath``/``markers`` configuration, so every child
-#: suite run must use this directory as its cwd.
+# why: pyproject.toml at the repository root supplies the pytest configuration, so children must
+# why: run from here.
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
-#: The suite directory relative to :data:`REPO_ROOT`, also derived. Children run the whole
-#: directory, so a new test file is covered the moment it is added.
 TESTS_DIR = os.path.relpath(os.path.dirname(os.path.abspath(__file__)), REPO_ROOT)
 
-#: Generous ceiling for a child suite run: process startup plus the whole non-integration suite.
 CHILD_TIMEOUT_SECONDS = 1800
 
 
-#: Sentinel set across all child suite environments to prevent nested child runners from
-#: spawning downstream child suites.
 CHILD_SUITE_SENTINEL = "HOLON_CHILD_SUITE_ACTIVE"
 
 
 def pytest_suite_command(*extra_args: str, targets: Sequence[str] = (TESTS_DIR,)) -> list[str]:
-    """Build the sanctioned command that runs the suite (by default the whole of it) in a child process.
-
-    Launched from :data:`REPO_ROOT` with ``uv`` so the child inherits the repository's pytest
-    configuration and marker policy. ``no:cacheprovider`` stops a child whose ``HOME`` points at a
-    throwaway directory writing cache state, and ``--import-mode=importlib`` avoids
-    ``prepend``-mode basename collisions if a sibling branch ever adds a ``conftest.py``.
-    ``-n auto --dist worksteal`` matches ``task test`` and the unit job; the xdist workers are
-    started from the child's own interpreter and environment, so they inherit its simulated ``HOME``.
-    ``targets`` replaces the suite directory with specific test files (the canary's narrowed selection,
-    ``tests/stress_selection.py``); the marker selection still applies to them.
-    """
+    # why: no:cacheprovider keeps a child with a throwaway HOME from writing cache state, and
+    # why: importlib import mode avoids basename collisions if a sibling branch adds a conftest.py.
     return [
         UV,
         "run",
@@ -223,12 +167,6 @@ def pytest_suite_command(*extra_args: str, targets: Sequence[str] = (TESTS_DIR,)
 
 
 def simulated_container_env(sim_home: str, sentinel_var: str) -> dict[str, str]:
-    """Build the environment of an executor container whose home is a throwaway directory.
-
-    ``HOLON_TARGET_WORKTREE`` is deliberately absent: the workspace-deletion incident happened precisely because
-    nothing pinned the workspace, so an unpatched ``get_workspace_dir()`` resolves into
-    ``sim_home``. ``sentinel_var`` is set so a child can never recurse into its own guard.
-    """
     env = os.environ.copy()
     env["HOME"] = sim_home
     env["USER"] = "holon"
@@ -236,78 +174,47 @@ def simulated_container_env(sim_home: str, sentinel_var: str) -> dict[str, str]:
     env["HOLON_ROLE"] = "executor"
     env["HOLON_IN_SANDBOX"] = "1"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # why: the workspace-deletion incident happened because nothing pinned the workspace, so an
+    # why: unpatched get_workspace_dir() must resolve into sim_home.
     env.pop("HOLON_TARGET_WORKTREE", None)
     env.pop("HOLON_REPO_DIR", None)
     env[sentinel_var] = "1"
     env[CHILD_SUITE_SENTINEL] = "1"
-    # ``HOME`` no longer points at the real user home, so uv can neither find its managed
-    # interpreters nor the project environment on its own: a child launched this way was observed
-    # downloading CPython and building a fresh ``.venv`` inside the fixture, which then failed on
-    # the missing ``holon`` console script. Name the environment explicitly and forbid downloads so
-    # the child reuses the interpreter and installed dependencies this process is already running
-    # under, and never reaches for the network.
+    # why: with a rewritten HOME a child was seen downloading CPython and building a fresh .venv
+    # why: that lacked the holon console script; pin the environment and never download.
     env["UV_PROJECT_ENVIRONMENT"] = project_environment()
     env["UV_PYTHON_DOWNLOADS"] = "never"
     return env
 
 
 def project_environment() -> str:
-    """Return the virtualenv a child suite run must use, preferring the one already active.
-
-    Required because a child runs with a rewritten ``HOME`` (and, for the stress suite, outside the
-    repository directory entirely), where uv's normal project-environment discovery does not apply.
-    """
     active = os.environ.get("VIRTUAL_ENV")
     if active and os.path.isdir(active):
         return os.path.abspath(active)
     return os.path.join(REPO_ROOT, ".venv")
 
 
+# why: callers skip rather than fall back; silently switching to unittest made the original guard
+# why: measure the wrong artifact.
 def uv_available() -> bool:
-    """Return True when the sanctioned test runner is present.
-
-    Callers skip rather than fall back to another runner: silently switching to ``unittest`` is
-    what made the original guard measure the wrong artifact.
-    """
     return bool(shutil.which(UV))
 
 
-# ---------------------------------------------------------------------------------------------
-# Knowledge-index snapshot helpers for the checkout hermeticity guard
-#
-# The guard uses before/after snapshots of ``<root>/holon-knowledge/.index/`` to detect any test
-# that creates, modifies or deletes a file in the checkout's index.  A developer's pre-existing
-# index is never counted as a failure; only changes made during a test are.
-# ---------------------------------------------------------------------------------------------
-
-#: Subdirectory under the repository root that holds the action knowledge index.  The guard is
-#: deliberately limited to this directory: broader walks would include the append-only ledger files
-#: that other guards already protect, and a git-ignored directory cannot be committed by accident.
+# why: limited to the index; broader walks would include the append-only ledgers other guards
+# why: already protect, and a pre-existing developer index only counts when a test changes it.
 KNOWLEDGE_INDEX_SUBDIR = os.path.join("holon-knowledge", ".index")
 
-#: Path to the checkout's knowledge index directory, derived from :data:`REPO_ROOT`.
 CHECKOUT_KNOWLEDGE_INDEX_DIR = os.path.join(REPO_ROOT, KNOWLEDGE_INDEX_SUBDIR)
 
 
+# why: os.walk swallows scandir errors by default, so an unreadable index would yield empty
+# why: snapshots on both sides and the guard would fail open.
 def _raise_walk_error(error: OSError) -> None:
-    """Re-raise directory-listing errors so :func:`knowledge_index_snapshot` fails closed.
-
-    ``os.walk`` defaults to ``onerror=None``, which silently swallows ``scandir`` errors (including
-    ``PermissionError``) and yields nothing -- an unreadable index directory would then produce an
-    empty snapshot on both sides and the guard would fail open. The absent-directory case is handled
-    by an explicit ``os.path.isdir`` check in the caller, so every error reaching here propagates.
-    """
     raise error
 
 
 def knowledge_index_snapshot(root: str) -> dict[str, tuple[int, int]]:
-    """Return a mapping from POSIX-relative path to ``(size, mtime_ns)`` for the index directory.
-
-    Walks ``<root>/holon-knowledge/.index/``.  An absent directory returns an empty mapping.  Any
-    ``OSError`` other than ``FileNotFoundError`` propagates immediately -- the guard fails closed,
-    never silently.  SQLite WAL side-files (``-wal``, ``-shm``) are included because WAL mode
-    creates them on first open.
-    """
+    # why: SQLite WAL side-files are included because WAL mode creates them on first open.
     index_dir = os.path.join(root, KNOWLEDGE_INDEX_SUBDIR)
     snapshot: dict[str, tuple[int, int]] = {}
     if not os.path.isdir(index_dir):
@@ -322,11 +229,6 @@ def knowledge_index_snapshot(root: str) -> dict[str, tuple[int, int]]:
 
 
 def describe_index_changes(before: dict[str, tuple[int, int]], after: dict[str, tuple[int, int]]) -> list[str]:
-    """Return a sorted list of human-readable change descriptions between two snapshots.
-
-    Each entry is one of ``"created <path>"``, ``"modified <path>"`` or ``"deleted <path>"``.
-    An empty list means no change.
-    """
     changes: list[str] = []
     for path in sorted(set(before) | set(after)):
         if path not in before:

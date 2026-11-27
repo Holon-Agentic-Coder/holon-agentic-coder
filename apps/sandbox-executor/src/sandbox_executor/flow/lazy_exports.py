@@ -89,6 +89,7 @@ LAZY_EXPORTS: dict[str, str] = {
         "CiWaitPolicy CiWaitResult is_pending_only next_poll_interval pending_check_names settle_pending_ci "
         "wait_for_pending_ci"
     ),
+    "sandbox_executor.flow.github.forge": "GitForge",
     "sandbox_executor.flow.github.merge": "BranchMerge merge_branch_detailed",
     "sandbox_executor.flow.github.merge_method": "choose_merge_flag lookup_merge_flag",
     "sandbox_executor.flow.github.mergeability_policy": (

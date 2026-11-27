@@ -6,6 +6,7 @@ from typing import Any
 
 from sandbox_executor.flow.github.adapter import GitHubAdapter
 from sandbox_executor.flow.github.adapter_runner import GhResult
+from sandbox_executor.flow.github.forge import GitForge
 from sandbox_executor.flow.github.review_policy import (
     GH_UNAVAILABLE_MESSAGE,
     CommentAttempt,
@@ -37,7 +38,7 @@ def post_pr_review_consensus(  # noqa: PLR0913
     *,
     reviewers: list[ReviewerResult] | None = None,
     title: str | None = None,
-    github: GitHubAdapter | None = None,
+    github: GitForge | None = None,
 ) -> dict[str, Any]:
     clean_target = str(target or "").strip()
     approved = report_approves(consensus_data, reviewers or [])
@@ -65,7 +66,7 @@ def post_pr_review_consensus(  # noqa: PLR0913
 
 @dataclass(frozen=True)
 class _GhCall:
-    github: GitHubAdapter
+    github: GitForge
     target: str
     report_text: str
 

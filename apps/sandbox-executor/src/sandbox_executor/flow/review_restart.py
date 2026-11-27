@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
+from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.github.ci_final_head import _bookkeeping_only, _git_changed_paths
 from sandbox_executor.flow.github.ci_head_checks import FAILED, PASSED
 from sandbox_executor.flow.github.ci_reverify import _same_commit, approved_head_of
@@ -26,6 +27,7 @@ from sandbox_executor.flow.review.merged_head_resume import (
     withdraw_after_rejected_restart,
 )
 from sandbox_executor.flow.review.merged_head_routing import refuse_calibration, route_merged_head_failure
+from sandbox_executor.flow.stage5 import stage5_prerequisite_error
 from sandbox_executor.git import run_git
 
 MAX_MERGED_HEAD_REVIEW_RESTARTS = 3
@@ -54,7 +56,19 @@ def _git_bookkeeping_move(repo_dir: str) -> Callable[[str, str], bool]:
 def _skip_reason(context: FlowContext) -> str | None:
     if context.dry_run or context.skip_push or not context.execution_branch:
         return "dry run" if context.dry_run else "push skipped" if context.skip_push else "no execution branch"
-    return None if approved_head_of(context) else "no Stage 4 approval recorded"
+    return None
+
+
+def _refuse_prerequisites(context: FlowContext, start: str, reason: str) -> tuple[StageResult, dict[str, Any]]:
+    record = gate_record("refused", "", [], [], reason)
+    failure = _stage_failure(
+        context,
+        FlowStage.CALIBRATE,
+        start,
+        f"Calibrate stage refused: {reason}; nothing was calibrated or pushed.",
+        merged_head_ci=record,
+    )
+    return failure, record
 
 
 def _decide(
@@ -75,6 +89,9 @@ def stage5_merged_head_gate(
     # why: a resume after a withdrawal or a scoped restart runs Stage 4 again first.
     if resumed is not None:
         return resumed
+    prereq_error = stage5_prerequisite_error(context)
+    if prereq_error is not None:
+        return _refuse_prerequisites(context, start, prereq_error)
     skip = _skip_reason(context)
     if skip:
         context.log(f"Merged-head CI gate skipped: {skip}.")

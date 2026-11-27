@@ -100,7 +100,6 @@ class TestHolonFlowCLI(unittest.TestCase):
                 mock_exit.assert_called_with(0)
 
     def test_flow_skip_push_rejected_outside_dry_run_for_any_resume(self):
-        # why: --skip-push without --dry-run must be rejected before the pre-flight probe or the pipeline runs
         with tempfile.TemporaryDirectory() as tmp_dir:
             intent_file = os.path.join(tmp_dir, "intent.json")
             with open(intent_file, "w", encoding="utf-8") as f:
@@ -463,8 +462,7 @@ class TestHolonFlowCLI(unittest.TestCase):
             self.assertTrue(parsed["consensus"]["approved"])
 
 
-def _password_head_error(head: str) -> ValueError:
-    # why: urlparse raises this when a raw delimiter cuts a password into the port
+def _urlparse_port_cast_error(head: str) -> ValueError:
     return ValueError(f"Port could not be cast to integer value as '{head}'")
 
 
@@ -474,7 +472,7 @@ def test_review_loop_handler_masks_a_quoted_password_head(monkeypatch, capsys, d
     monkeypatch.setenv("HOLON_PROXY_URL", f"http://alice:{head}{delim}{tail}@127.0.0.1:3128")
     with (
         patch("sys.argv", ["holon", "review-loop", "1"]),
-        patch("sandbox_executor.cli.detect_holon_coherence", side_effect=_password_head_error(head)),
+        patch("sandbox_executor.cli.detect_holon_coherence", side_effect=_urlparse_port_cast_error(head)),
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
@@ -494,7 +492,7 @@ def test_flow_handler_masks_a_quoted_password_head(monkeypatch, capsys, tmp_path
     checkpoint.write_text("{}", encoding="utf-8")
     with (
         patch("sys.argv", ["holon", "flow", "--checkpoint", str(checkpoint)]),
-        patch("sandbox_executor.cli.load_checkpoint", side_effect=_password_head_error(head)),
+        patch("sandbox_executor.cli.load_checkpoint", side_effect=_urlparse_port_cast_error(head)),
         pytest.raises(SystemExit) as exit_info,
     ):
         main()

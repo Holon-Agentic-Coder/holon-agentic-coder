@@ -22,7 +22,6 @@ from tests.stress_support import (
 )
 
 CHILD_RECURSION_SENTINEL_VAR = "HOLON_STRESS_CHILD"
-SUITE_DIR_IN_WORKSPACE_CLONE = "apps/sandbox-executor/tests"
 # why: the timeout is long because a child run executes the full non-integration suite
 CHILD_TIMEOUT_SECONDS = 1800
 

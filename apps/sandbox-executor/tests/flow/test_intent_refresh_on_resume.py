@@ -205,10 +205,10 @@ def test_a_checkpoint_without_an_intent_stage_goal_still_refreshes_the_intent_da
     assert getattr(context.stage_results.get("intent"), "payload", None) == payload
 
 
-@pytest.mark.parametrize("path", [Path(intent_refresh.__file__), Path(__file__)])
-def test_the_new_files_are_self_explaining(path):
+@pytest.mark.parametrize(("path", "line_cap"), [(Path(intent_refresh.__file__), 200), (Path(__file__), 400)])
+def test_the_new_files_are_self_explaining(path, line_cap):
     source = path.read_text(encoding="utf-8")
 
     assert find_docstrings_and_string_statements(source) == []
     assert [text for _line, text in find_disallowed_comments(source) if not text.startswith("# why:")] == []
-    assert count_lines(source) <= 400
+    assert count_lines(source) <= line_cap

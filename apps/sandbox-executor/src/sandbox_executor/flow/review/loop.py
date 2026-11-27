@@ -85,10 +85,10 @@ from sandbox_executor.flow.review.resolver import (
 )
 from sandbox_executor.flow.review.sync_points import sync_iteration_mergeability
 from sandbox_executor.flow.review.verdict import (
+    _finding_outcome_blockers,
     _loop_status,
     consensus_blockers,
     decide_returned_consensus,
-    finding_outcome_blockers,
     not_approved_verdicts,
     render_final_verdicts,
 )
@@ -390,7 +390,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         reviewer_objected = _any_reviewer_objects(reviewers) or bool(reviewer_findings) or bool(blockers)
         # why: added after reviewer_objected so the CI fast path and dry runs never see these blockers.
         outcome_dispositions = (*all_dispositions, *pending_dispositions, *rejected_history.values())
-        blockers += finding_outcome_blockers(
+        blockers += _finding_outcome_blockers(
             reviewers, merge_findings(iter_findings, carried_rows), outcome_dispositions
         )
 

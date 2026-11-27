@@ -16,8 +16,10 @@ This directory contains the CI/CD workflows for the `holon-agentic-coder` projec
 - `test-unit.yml`: Runs on pushes to `main` and on pull requests into any base branch across both `ubuntu-latest` and
   `macos-latest`. It executes unit tests
   (`uv run pytest -m "not integration_test and not stress" --junitxml=unit-report.xml`) using cached `uv` dependencies.
-  On a pull request the macOS leg skips its expensive steps when no changed file is platform-sensitive; see "macOS
-  Relevance Gate" below.
+  The ubuntu leg runs the whole suite in one job; the macOS leg runs as two parallel shards, each running the test files
+  that `scripts/unit_test_shard.py` assigns to it by a stable sha256 hash of the file path, so every file runs exactly
+  once. On a pull request the macOS shards skip their expensive steps when no changed file is platform-sensitive; see
+  "macOS Relevance Gate" below.
 - `test-stress.yml`: Runs on pushes to `main` and on pull requests into any base branch on `ubuntu-latest`. It runs the
   stress suite (`uv run pytest -m stress`) -- the workspace-survival test and the hermetic canary guard, both of which
   re-run the unit suite in a child process -- measuring the execution time explicitly in its own workflow.
@@ -318,12 +320,14 @@ An empty commit does not force a full run: it changes no path, so it counts as b
 The `macos-latest` leg of `test-unit.yml` is the slowest job of the pipeline (median 7.0 minutes, longest 9.5 minutes,
 against 3.2 minutes for the ubuntu leg on the same heads), so it sets how long every pull request waits for CI.
 `scripts/macos_relevance.py`, called through the composite action `.github/actions/macos-relevance-gate`, lets the macOS
-leg of a pull-request run skip its expensive steps when no changed file can behave differently on macOS. The job still
-starts, reports as `unit (macos-latest)` and ends green, so the required status check is satisfied; it has no job-level
-condition. The ubuntu leg, the bookkeeping gate and the Workspace survival job are unchanged. The rule lives in
-`scripts/macos_relevance_rules.py` (its content patterns in `scripts/macos_relevance_patterns.py`), the decision rules
-and log lines in `scripts/macos_relevance_judgement.py` and the git reads in `scripts/macos_relevance_git.py`; all of
-them use the standard library only and run on the runner's own `python3`.
+leg of a pull-request run skip its expensive steps when no changed file can behave differently on macOS. The macOS leg
+runs as two shards and the gate runs on each of them; both judge the same commits the same way, so both skip or both
+run. Each shard still starts, reports as `unit (macos-latest, shard 1 of 2)` or `unit (macos-latest, shard 2 of 2)` and
+ends green, so the required status checks are satisfied; the job has no job-level condition. The ubuntu leg, the
+bookkeeping gate and the Workspace survival job are unchanged. The rule lives in `scripts/macos_relevance_rules.py` (its
+content patterns in `scripts/macos_relevance_patterns.py`), the decision rules and log lines in
+`scripts/macos_relevance_judgement.py` and the git reads in `scripts/macos_relevance_git.py`; all of them use the
+standard library only and run on the runner's own `python3`.
 
 ### When the leg runs
 
@@ -478,7 +482,10 @@ standard library only and runs on the runner's own `python3`.
   job name, runner OS, commit and run id to `ci-timing/record.json`. Test jobs also record pytest's per-test durations
   from a JUnit report (`unit-report.xml`, `integration-report.xml`, `stress-report.xml`). The "Upload timing record"
   step then uploads the record as a workflow artefact named `ci-timing-<workflow>-<job>-<os>`, for example
-  `ci-timing-test-unit-unit-macos-latest`, kept for 30 days. Records are never committed and are never a ledger.
+  `ci-timing-test-unit-unit-ubuntu-latest`, kept for 30 days. The macOS unit shards pass `--job unit-shard-1` and
+  `--job unit-shard-2`, so their records and baselines are kept per shard
+  (`ci-timing-test-unit-unit-shard-1-macos-latest` and `ci-timing-test-unit-unit-shard-2-macos-latest`) and start cold
+  for their first 5 `main` pushes. Records are never committed and are never a ledger.
 - On a pull request the gate runs in `compare` mode: it reads the last 5 records for the same artefact name from
   successful `main` runs with the job's `GITHUB_TOKEN` (`actions: read`) and compares against their median.
 
@@ -628,10 +635,14 @@ Repository maintainers configuring branch protection rulesets on `main` should r
 
 - `Test - Hygiene / hygiene (ubuntu-latest)`
 - `Test - Unit / unit (ubuntu-latest)`
-- `Test - Unit / unit (macos-latest)`
+- `Test - Unit / unit (macos-latest, shard 1 of 2)`
+- `Test - Unit / unit (macos-latest, shard 2 of 2)`
 - `Test - Integration / integration (ubuntu-latest)`
 - `Run Make / build (ubuntu-latest)`
 - `Run Make / build (macos-latest)`
+
+The two macOS unit shards replaced the former `Test - Unit / unit (macos-latest)` check; maintainers must update the
+ruleset when the sharded workflow merges, or the old check stays "Expected" and blocks merges.
 
 ## Composite Actions
 
@@ -650,7 +661,8 @@ Repository maintainers configuring branch protection rulesets on `main` should r
   - **Inputs:**
     - `job-name`: (required) The job's base name as the jobs API shows it, without the matrix part, for example `unit`
       or `Workspace survival`.
-    - `os`: (optional, default: empty) The runner label of a matrix job, for example `ubuntu-latest`.
+    - `os`: (optional, default: empty) The value that tells the matrix leg apart among the values of its job name: the
+      runner label, for example `ubuntu-latest`, or `shard N of M` for a unit shard.
   - **Outputs:**
     - `skip`: `true` when the job may skip its expensive steps, `false` in every other case.
   - **Prerequisites & Requirements:**

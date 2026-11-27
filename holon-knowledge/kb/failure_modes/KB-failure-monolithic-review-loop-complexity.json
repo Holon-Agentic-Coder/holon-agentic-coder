@@ -1,0 +1,59 @@
+{
+  "kb_id": "KB-failure-monolithic-review-loop-complexity",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-27T00:00:00+00:00",
+  "updated_ts": "2026-11-27T00:00:00+00:00",
+  "created_by": "architecture-audit-2026-11",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "I-1795768764-hac-architecture-audit-kb"
+    ],
+    "success_count": 0,
+    "failure_count": 2
+  },
+  "tags": [
+    "architecture-audit-2026-11",
+    "review-loop",
+    "complexity",
+    "module-budgets"
+  ],
+  "human_approved": true,
+  "payload": {
+    "name": "Monolithic Review-Loop Complexity Accumulation",
+    "description": "Concentrating review iteration orchestration, CI check inspection, reviewer adjudication, and resolver routing in a single monolithic module (sandbox_executor/flow/review/loop.py) degrades testability and triggers module line-budget and ruff complexity failures.",
+    "symptoms": [
+      "Ruff complexity violations (C901, PLR0912, PLR0913, PLR0915) during lint checks",
+      "Module line-budget violations reported against holon-config/hygiene/module_budgets.json",
+      "High mocking overhead and brittle regression tests when changing one review-loop stage"
+    ],
+    "root_causes": [
+      "Adding new CI polling, finding triage, or resolver branches inline inside loop.py instead of dedicated helper modules",
+      "Passing broad multi-concern state dictionaries through deeply nested loop functions",
+      "Mixing I/O coordination with pure adjudication and routing decisions"
+    ],
+    "mitigations": [
+      {
+        "strategy": "Decompose into focused review submodules",
+        "description": "Split orchestration, CI inspection, adjudication, and resolver routing into single-responsibility modules under sandbox_executor/flow/review/.",
+        "cost": "Moderate refactor effort",
+        "effectiveness": 0.92
+      },
+      {
+        "strategy": "Enforce complexity and line-budget gates",
+        "description": "Keep functions within C901 <= 10, PLR0912 <= 12, PLR0913 <= 5, PLR0915 <= 50 and respect holon-config/hygiene/module_budgets.json without inline noqa suppressions.",
+        "cost": "Low ongoing discipline",
+        "effectiveness": 0.9
+      }
+    ],
+    "detection_heuristic": {
+      "condition": "module_lines > budget_limit OR ruff_complexity_violations > 0",
+      "confidence": 0.92
+    },
+    "related_failures": [
+      "KB-failure-bidirectional-flow-entrypoint-cycle",
+      "KB-failure-env-registry-runtime-drift"
+    ]
+  }
+}

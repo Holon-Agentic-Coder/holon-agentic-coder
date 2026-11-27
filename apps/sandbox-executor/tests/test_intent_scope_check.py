@@ -64,7 +64,7 @@ def _check(repo: Path, scope: list[str], criteria: list[str] | None = None) -> I
     intent = DraftIntent(
         scope=[ScopeEntry.parse(entry) for entry in scope],
         acceptance_criteria=criteria or [],
-        payload=default_assumptions_fields(),
+        payload={**default_assumptions_fields(), "scope": scope, "acceptance_criteria": criteria or []},
     )
     return check_intent_scope(intent, str(repo))
 

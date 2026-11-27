@@ -251,5 +251,5 @@ def test_existing_rules_remain_unchanged_alongside_valid_assumptions() -> None:
     assert not check_intent_payload(question_payload).refused
     assert validate_intent_questions(question_payload) == (
         False,
-        ["Which serializer should we use? (unresolved open_question)"],
+        ["Which serializer should we use? (unanswered open_question)"],
     )

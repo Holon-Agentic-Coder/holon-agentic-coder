@@ -1,5 +1,3 @@
-"""Branch-name components of an execution, and the evaluated-commit freshness of a calibration report."""
-
 from __future__ import annotations
 
 import logging
@@ -14,14 +12,6 @@ logger = logging.getLogger(__name__)
 
 
 def parse_evaluated_commit_sha(report_content_or_path: str) -> str | None:
-    """Parse evaluated commit SHA from markdown report content or file path.
-
-    Args:
-        report_content_or_path: Markdown report string or path to calibration markdown file.
-
-    Returns:
-        Lowercase commit SHA string if found, None otherwise.
-    """
     content = report_content_or_path
     if (
         "\n" not in report_content_or_path
@@ -47,17 +37,6 @@ def is_calibration_stale(
     current_head_ref: str | None = None,
     target_worktree: str = ".",
 ) -> tuple[bool, str, str]:
-    """Check whether a calibration report's evaluated SHA matches current HEAD.
-
-    Args:
-        report_path: Path to the calibration markdown report (or raw markdown content).
-        current_head_ref: Optional git reference to compare against (defaults to HEAD).
-        target_worktree: Path to the target git worktree directory.
-
-    Returns:
-        tuple[bool, str, str]: (is_stale, evaluated_sha, current_head_sha).
-        If evaluated SHA is missing, returns (True, "", "missing_evaluated_sha").
-    """
     full_path = report_path
     if (
         "\n" not in report_path
@@ -75,7 +54,7 @@ def is_calibration_stale(
     target_head = current_head_ref or "HEAD"
     try:
         current_head_sha = resolve_commit_sha(target_head, target_worktree=target_worktree).lower()
-        # Stage 5's own calibration commits on top of the evaluated head do not make the report stale
+        # why: Stage 5's own calibration commits on top of the evaluated head must not make the report stale
         current_head_sha = (evaluated_code_commit(current_head_sha, target_worktree) or current_head_sha).lower()
     except Exception as e:
         logger.debug("Failed to resolve current head SHA for %s: %s", target_head, e)
@@ -97,35 +76,17 @@ def verify_calibration_freshness(
     current_head_ref: str | None = None,
     target_worktree: str = ".",
 ) -> bool:
-    """Verify that a calibration report is fresh (evaluated SHA matches current HEAD).
-
-    Args:
-        report_path: Path to the calibration markdown report.
-        current_head_ref: Optional git reference to compare against (defaults to HEAD).
-        target_worktree: Path to the target git worktree directory.
-
-    Returns:
-        True if the report is fresh, False if stale or missing SHA.
-    """
     is_stale, _, _ = is_calibration_stale(
         report_path, current_head_ref=current_head_ref, target_worktree=target_worktree
     )
     return not is_stale
 
 
+def _is_bare_commit_sha(ref: str) -> bool:
+    return re.fullmatch(r"[0-9a-fA-F]{7,40}", ref) is not None
+
+
 def extract_branch_components(branch_str: str) -> dict[str, str]:
-    """Extract intent, plan, and execution branch identifiers from branch path.
-
-    The plan branch is the full path down to the plan segment (``plan_paths.split_plan_branch``), so a child intent
-    or a plan nested under another plan keeps its whole parent; ``plan_parent`` is that parent without the plan.
-
-    Supports inputs such as:
-    - Full execution branch: I-123-slug/P-456-CLA-CS5.5/E-789-CLA-CS5.5/_ (or a legacy agent-model name)
-    - Short execution ID: E-789-agent-model
-    - Plan branch: I-123-slug/P-456-agent-model/_
-    - Remote tracking branch: origin/I-123-slug/P-456-agent-model/E-789-agent-model/_
-    - Raw commit SHA: 40-character hex string
-    """
     clean = branch_str.strip().rstrip("/_").rstrip("/")
     parts = clean.split("/")
 
@@ -146,8 +107,7 @@ def extract_branch_components(branch_str: str) -> dict[str, str]:
         elif part.startswith("E-"):
             components["execution_id"] = part
 
-    # Handle raw commit SHA or short ref where execution_id is not yet set
-    if not components["execution_id"] and re.fullmatch(r"[0-9a-fA-F]{7,40}", clean):
+    if not components["execution_id"] and _is_bare_commit_sha(clean):
         components["execution_id"] = clean
 
     parent, plan_id = split_plan_branch(clean)

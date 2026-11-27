@@ -174,7 +174,7 @@ def test_resolver_rejected_find_ci_survives_ledger_commit_on_next_iteration(tmp_
             ctx,
             target=EXEC_TARGET,
             max_iterations=3,
-            ensemble_size=1,
+            ensemble_size=3,
             auto_pr=False,
             run_resolver_fn=fake_resolver,
             github=FakeGitHub(standing_view=merge_view()),

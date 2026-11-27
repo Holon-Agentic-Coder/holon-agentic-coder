@@ -1,5 +1,3 @@
-"""Exhaustive hermetic unit and benchmark test suite for knowledge, consult, and recording."""
-
 from __future__ import annotations
 
 import json
@@ -40,19 +38,16 @@ from sandbox_executor.ledger import format_commit_trailers, parse_commit_trailer
 
 @pytest.fixture
 def temp_dir() -> Any:
-    """Create a temporary directory for hermetic index and ledger testing."""
     with tempfile.TemporaryDirectory() as td:
         yield td
 
 
 def test_sqlite_fts5_inverted_index(temp_dir: str) -> None:
-    """Verify ActionIndexDatabase schema creation, inverted labels, and FTS5 ranking."""
     db_path = os.path.join(temp_dir, "test_action_index.db")
     db = ActionIndexDatabase(db_path=db_path)
 
     conn = db.get_connection()
     try:
-        # Check tables existence
         cur = conn.cursor()
         cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = {row[0] for row in cur.fetchall()}
@@ -68,12 +63,10 @@ def test_sqlite_fts5_inverted_index(temp_dir: str) -> None:
 
 
 def test_incremental_sync_byte_offsets(temp_dir: str) -> None:
-    """Assert byte-offset tracking seeks directly to new content without full-file scans."""
     db_path = os.path.join(temp_dir, "test_sync.db")
     ledger_path = os.path.join(temp_dir, "actions.jsonl")
     db = ActionIndexDatabase(db_path=db_path)
 
-    # 1. Write first batch of 3 records
     records_batch1 = [
         {"action_id": f"act-10{i}", "action": f"Task {i}", "verdict": "success", "labels": ["core", "test"]}
         for i in range(3)
@@ -85,10 +78,8 @@ def test_incremental_sync_byte_offsets(temp_dir: str) -> None:
     ingested1 = db.sync_ledger(ledger_path)
     assert ingested1 == 3
 
-    # Sync again without changes - should be 0 (instant exit)
     assert db.sync_ledger(ledger_path) == 0
 
-    # 2. Append second batch of 2 records
     records_batch2 = [
         {"action_id": f"act-20{i}", "action": f"Appended task {i}", "verdict": "failure", "labels": ["bug"]}
         for i in range(2)
@@ -97,7 +88,6 @@ def test_incremental_sync_byte_offsets(temp_dir: str) -> None:
         for r in records_batch2:
             f.write(json.dumps(r) + "\n")
 
-    # Ingests only the 2 newly appended records via byte offset seek
     ingested2 = db.sync_ledger(ledger_path)
     assert ingested2 == 2
 
@@ -109,7 +99,6 @@ def test_incremental_sync_byte_offsets(temp_dir: str) -> None:
     finally:
         conn.close()
 
-    # 3. Truncation test: rewrite file smaller, offset should reset and reingest
     with open(ledger_path, "w", encoding="utf-8") as f:
         f.write(json.dumps({"action_id": "act-rewritten", "action": "Reset", "verdict": "success"}) + "\n")
 
@@ -118,7 +107,6 @@ def test_incremental_sync_byte_offsets(temp_dir: str) -> None:
 
 
 def test_consult_multi_label_roundtrip(temp_dir: str) -> None:
-    """Test conjunctive (--all), disjunctive (--any), and negated (--not) queries."""
     db_path = os.path.join(temp_dir, "test_consult.db")
     ledger_path = os.path.join(temp_dir, "actions.jsonl")
     db = ActionIndexDatabase(db_path=db_path)
@@ -136,31 +124,26 @@ def test_consult_multi_label_roundtrip(temp_dir: str) -> None:
     db.sync_ledger(ledger_path)
     engine = ConsultEngine(db=db, auto_sync_ledgers=[ledger_path])
 
-    # Conjunctive (--all): ["db", "backend"] -> only act-1
     res_all = engine.consult_records(all_labels=["db", "backend"])
     assert res_all.total_matched == 1
     assert res_all.records[0]["action_id"] == "act-1"
 
-    # Disjunctive (--any): ["ui", "migration"] -> act-2 and act-3
     res_any = engine.consult_records(any_labels=["ui", "migration"])
     assert res_any.total_matched == 2
     matched_ids = {r["action_id"] for r in res_any.records}
     assert matched_ids == {"act-2", "act-3"}
 
-    # Negated (--not): any db, but not frontend -> act-1 and act-2
     res_not = engine.consult_records(any_labels=["db"], not_labels=["frontend"])
     assert res_not.total_matched == 2
     matched_not = {r["action_id"] for r in res_not.records}
     assert matched_not == {"act-1", "act-2"}
 
-    # FTS5 Text search
     res_fts = engine.consult_records(query_text="component")
     assert res_fts.total_matched == 1
     assert res_fts.records[0]["action_id"] == "act-3"
 
 
 def test_consult_rejects_unknown_filter(temp_dir: str) -> None:
-    """A misspelt consult filter raises TypeError instead of silently matching everything."""
     with pytest.raises(TypeError):
         ConsultQuery(any_label=["db"])
     engine = ConsultEngine(project_db_path=os.path.join(temp_dir, "index.db"), auto_sync_ledgers=[])
@@ -169,7 +152,6 @@ def test_consult_rejects_unknown_filter(temp_dir: str) -> None:
 
 
 def test_consult_build_where_orders_clauses_and_params() -> None:
-    """Clauses join in filter order with their params aligned; no filter gives an empty WHERE."""
     assert build_where(ConsultQuery()) == ("", [])
 
     query = ConsultQuery(
@@ -190,12 +172,10 @@ def test_consult_build_where_orders_clauses_and_params() -> None:
 
 
 def test_consult_latency_benchmark(temp_dir: str) -> None:
-    """Benchmark warm multi-label query CPU cost across 100 iterations (assert p95 < 50 ms)."""
     db_path = os.path.join(temp_dir, "test_benchmark.db")
     ledger_path = os.path.join(temp_dir, "actions.jsonl")
     db = ActionIndexDatabase(db_path=db_path)
 
-    # Seed with 250 realistic action records
     with open(ledger_path, "w", encoding="utf-8") as f:
         for i in range(250):
             lbls = ["python", f"module_{i % 5}", "unit_test" if i % 2 == 0 else "e2e"]
@@ -211,13 +191,11 @@ def test_consult_latency_benchmark(temp_dir: str) -> None:
     db.sync_ledger(ledger_path)
     engine = ConsultEngine(db=db, auto_sync_ledgers=[ledger_path])
 
-    # Prime connection (cold run)
+    # why: the cold first consult opens the connection; the SLA covers warm consults only
     engine.consult_records(all_labels=["python"])
 
-    # The consult runs entirely in this thread (in-process SQLite plus the ledger mtime check), so its cost is measured
-    # as this thread's CPU time (user plus system) rather than wall time. Wall time also counts the time the scheduler
-    # gives to other pytest-xdist workers on a shared runner, which is load on the host, not latency of the consult.
     latencies_ms: list[float] = []
+    # why: thread CPU time, not wall time, so load from other xdist workers on a shared runner is not counted
     for _ in range(100):
         t0 = time.thread_time()
         res = engine.consult_records(all_labels=["python"], any_labels=["module_1", "module_2"])
@@ -227,12 +205,11 @@ def test_consult_latency_benchmark(temp_dir: str) -> None:
 
     latencies_ms.sort()
     p95_latency = latencies_ms[round(99 * 0.95)]
-    # Verify SLA: the warm consult costs under 50 ms of thread CPU time at p95 (relaxed from 15.0ms for slow CI runners)
+    # why: relaxed from 15 ms for slow CI runners
     assert p95_latency < 50.0, f"p95 latency was {p95_latency:.2f}ms, expected < 50.0ms"
 
 
 def test_consult_payload_capping_and_dedup(temp_dir: str) -> None:
-    """Verify top-k <= 6, max_tokens <= 1200 capping, and session deduplication."""
     db_path = os.path.join(temp_dir, "test_capping.db")
     ledger_path = os.path.join(temp_dir, "actions.jsonl")
     db = ActionIndexDatabase(db_path=db_path)
@@ -250,17 +227,14 @@ def test_consult_payload_capping_and_dedup(temp_dir: str) -> None:
     db.sync_ledger(ledger_path)
     engine = ConsultEngine(db=db, auto_sync_ledgers=[ledger_path])
 
-    # Top-k cap: request top_k=10, must be capped at <= 6
     res = engine.consult_records(all_labels=["cap_test"], top_k=10)
     assert len(res.records) <= 6
     assert res.truncated is True
 
-    # Token cap: low token ceiling (100 tokens)
     res_tight = engine.consult_records(all_labels=["cap_test"], max_tokens=100)
     assert res_tight.tokens_injected <= 100
     assert len(res_tight.records) < 6
 
-    # Session deduplication: seen IDs are omitted
     seen = {res.records[0]["record_id"]}
     res_dedup = engine.consult_records(all_labels=["cap_test"], session_seen_ids=seen)
     dedup_ids = {r["record_id"] for r in res_dedup.records}
@@ -268,23 +242,19 @@ def test_consult_payload_capping_and_dedup(temp_dir: str) -> None:
 
 
 def test_outcome_logging_state_machine(temp_dir: str) -> None:
-    """Verify state machine transitions, terminal states, and 14-day TTL expiration."""
     ledger_path = os.path.join(temp_dir, "actions.jsonl")
     db_path = os.path.join(temp_dir, "actions.db")
 
-    # 1. Valid transitions
     validate_verdict_transition("attempted", "success")
     validate_verdict_transition("attempted", "failure")
     validate_verdict_transition("unknown", "unresolved")
 
-    # 2. Illegal transitions
     with pytest.raises(ValueError):
-        validate_verdict_transition("success", "failure")  # terminal state
+        validate_verdict_transition("success", "failure")
 
     with pytest.raises(ValueError):
         validate_verdict_transition("superseded", "attempted")
 
-    # 3. Append action event
     rec = append_action_event(
         {"action": "Deploy service", "verdict": "attempted", "labels": ["deploy"]},
         ledger_path=ledger_path,
@@ -293,7 +263,6 @@ def test_outcome_logging_state_machine(temp_dir: str) -> None:
     assert rec["verdict"] == "attempted"
     act_id = rec["action_id"]
 
-    # 4. Reconcile terminal outcome
     rec_stats = reconcile_records(
         ledger_path=ledger_path,
         target_action_id=act_id,
@@ -303,7 +272,6 @@ def test_outcome_logging_state_machine(temp_dir: str) -> None:
     )
     assert rec_stats["reconciled"] == 1
 
-    # 5. TTL expiration for unknown records older than 14 days
     old_time = "2020-01-01T00:00:00Z"
     with open(ledger_path, "a", encoding="utf-8") as f:
         f.write(json.dumps({"action_id": "act-old-unknown", "verdict": "unknown", "created_at": old_time}) + "\n")
@@ -313,7 +281,6 @@ def test_outcome_logging_state_machine(temp_dir: str) -> None:
 
 
 def test_credential_redaction() -> None:
-    """Verify OpenAI, Anthropic, Gemini, GitHub tokens, and Bearer tokens are scrubbed."""
     raw_text = (
         "Logs with OpenAI sk-1234567890abcdef12345678 and "
         "Anthropic sk-ant-api03-abcdef12345678901234 and "
@@ -341,14 +308,12 @@ def test_credential_redaction() -> None:
 
 
 def test_veto_ladder_and_decay(temp_dir: str) -> None:
-    """Verify 2 identical failures trigger veto, contrary success lifts it, and shadow mode prevents block."""
     db_path = os.path.join(temp_dir, "test_veto.db")
     ledger_path = os.path.join(temp_dir, "actions.jsonl")
     db = ActionIndexDatabase(db_path=db_path)
 
     fp = compute_context_fingerprint(target="api/v1/auth", tool="jwt_validator", command_prefix="auth")
 
-    # 1 failure -> observed
     with open(ledger_path, "w", encoding="utf-8") as f:
         f.write(
             json.dumps(
@@ -370,7 +335,6 @@ def test_veto_ladder_and_decay(temp_dir: str) -> None:
     assert eval1.failure_ladder_state == "observed"
     assert eval1.has_active_veto is False
 
-    # 2 failures with identical fingerprint -> repeated failure -> triggers veto
     with open(ledger_path, "a", encoding="utf-8") as f:
         f.write(
             json.dumps(
@@ -387,14 +351,12 @@ def test_veto_ladder_and_decay(temp_dir: str) -> None:
     eval2 = evaluate_action_promotion(sig_hash_calc, index_db=db)
     assert eval2.failure_ladder_state == "repeated"
     assert eval2.has_active_veto is True
-    assert eval2.is_shadow_veto is True  # shadow mode by default
+    assert eval2.is_shadow_veto is True
 
-    # Verify veto list
     v_list = list_vetoes(db)
     assert len(v_list) == 1
     assert v_list[0]["context_fingerprint"] == fp
 
-    # Contrary success -> automatically lifts veto
     with open(ledger_path, "a", encoding="utf-8") as f:
         f.write(
             json.dumps(
@@ -412,44 +374,35 @@ def test_veto_ladder_and_decay(temp_dir: str) -> None:
     assert eval3.has_active_veto is False
     assert eval3.failure_ladder_state == "contested"
 
-    # Manual lift helper
     lift_res = lift_veto(db, context_fingerprint=fp)
     assert lift_res is True
 
 
 def test_wilson_score_and_non_imperative_advisories() -> None:
-    """Verify statistical Wilson score interval and non-imperative advisory phrasing."""
-    # 0 trials
     low0, up0 = compute_wilson_score_interval(0, 0)
     assert low0 == 0.0 and up0 == 1.0
 
-    # 10 successes out of 10
     low10, up10 = compute_wilson_score_interval(10, 0)
     assert 0.65 <= low10 <= 1.0
     assert up10 <= 1.0
 
-    # Beta posterior
     _, _, p_mean = compute_beta_posterior(8, 2)
     assert 0.70 <= p_mean <= 0.85
 
-    # Advisory formatting invariant: must be non-imperative
     advisory = format_non_imperative_advisory("Use pytest-xdist", 10, 10, low10, "proven-success")
     assert "Advisory" in advisory
     assert "Consider" in advisory
-    # Strictly non-imperative: no commanding words
     assert "MUST" not in advisory
     assert "VETO" not in advisory
 
 
 def test_knowledge_persistence_and_promotion(temp_dir: str) -> None:
-    """Verify KB fact and WB rule persistence and promote_pending_candidates."""
     kb_dir = os.path.join(temp_dir, "kb")
     wb_dir = os.path.join(temp_dir, "wisdom")
     db_path = os.path.join(temp_dir, "action.db")
     ledger_path = os.path.join(temp_dir, "actions.jsonl")
     db = ActionIndexDatabase(db_path=db_path)
 
-    # Persist manual KB fact
     fact_path = persist_kb_fact(
         {
             "kb_type": "pattern",
@@ -463,7 +416,6 @@ def test_knowledge_persistence_and_promotion(temp_dir: str) -> None:
     assert [e["kb_id"] for e in kb_entries] == [os.path.splitext(os.path.basename(fact_path))[0]]
     assert not os.path.exists(os.path.join(kb_dir, "patterns", "index.json"))
 
-    # Persist manual WB rule
     wb_path = persist_wb_rule(
         {
             "wb_type": "heuristic",
@@ -477,7 +429,6 @@ def test_knowledge_persistence_and_promotion(temp_dir: str) -> None:
     assert [e["wb_id"] for e in wb_entries] == [os.path.splitext(os.path.basename(wb_path))[0]]
     assert not os.path.exists(os.path.join(wb_dir, "heuristics", "index.json"))
 
-    # Seed 10 successes to qualify for promotion
     fp = "fp_qual_success"
     with open(ledger_path, "w", encoding="utf-8") as f:
         for i in range(10):
@@ -501,8 +452,6 @@ def test_knowledge_persistence_and_promotion(temp_dir: str) -> None:
 
 
 def test_flow_stage_integration_and_stats(temp_dir: str) -> None:
-    """Verify Consulted-Knowledge-IDs trailers and TelemetryCollector metrics."""
-    # Commit trailers formatting and parsing
     trailers = format_commit_trailers(
         action_origin="initial_implementation",
         review_severity="nit",
@@ -513,7 +462,6 @@ def test_flow_stage_integration_and_stats(temp_dir: str) -> None:
     parsed = parse_commit_trailers(f"Commit header\n\n{trailers}")
     assert parsed["consulted_knowledge_ids"] == ["KB-pattern-01", "rec-123456"]
 
-    # Telemetry and stats dashboard
     db_path = os.path.join(temp_dir, "stats.db")
     db = ActionIndexDatabase(db_path=db_path)
     TelemetryCollector.record_consult(
@@ -535,13 +483,11 @@ def test_flow_stage_integration_and_stats(temp_dir: str) -> None:
 
 
 def test_cli_knowledge_commands(temp_dir: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
-    """Verify CLI dispatch for holon consult, record, reconcile, and stats."""
-    # `holon record` syncs the cwd-relative default project index, so keep it out of the repository.
+    # why: `holon record` syncs the cwd-relative default project index, which must stay out of the repository
     monkeypatch.chdir(temp_dir)
     db_path = os.path.join(temp_dir, "cli_test.db")
     ledger_path = os.path.join(temp_dir, "actions.jsonl")
 
-    # Record via CLI
     test_args = [
         "holon",
         "record",
@@ -567,7 +513,6 @@ def test_cli_knowledge_commands(temp_dir: str, monkeypatch: pytest.MonkeyPatch, 
     captured = capsys.readouterr()
     assert "Recorded action:" in captured.out
 
-    # Consult via CLI
     consult_args = [
         "holon",
         "consult",
@@ -586,7 +531,6 @@ def test_cli_knowledge_commands(temp_dir: str, monkeypatch: pytest.MonkeyPatch, 
     captured_consult = capsys.readouterr()
     assert "records" in captured_consult.out
 
-    # Reconcile via CLI
     reconcile_args = [
         "holon",
         "reconcile",
@@ -602,7 +546,6 @@ def test_cli_knowledge_commands(temp_dir: str, monkeypatch: pytest.MonkeyPatch, 
     captured_rec = capsys.readouterr()
     assert "Reconciled:" in captured_rec.out
 
-    # Stats via CLI
     stats_args = [
         "holon",
         "stats",

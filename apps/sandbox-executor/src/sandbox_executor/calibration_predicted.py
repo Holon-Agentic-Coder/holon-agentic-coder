@@ -1,13 +1,3 @@
-"""Predicted-metric row selection and cross-check for Stage 5 calibration.
-
-A plan may have more than one ``plans.jsonl`` row: the planner's row, the flow's ``decision_recorded_by: "flow"``
-back-fill and any plans correction row (see ``docs/ledger_schema.md``). Calibration uses the matching row with the
-highest ``ledger_revision`` (default 1); a tie goes to the later ``created_at`` instant, a full tie to the last ledger
-line. The selected row is then cross-checked against the plan file's ``## Overall Plan Metrics`` table and the
-execution summary's ``predicted_metrics``: a difference above ``MISMATCH_TOLERANCE`` logs a warning naming both
-values. The warning is advisory; calibration still uses the selected row. Ledgers are only ever read here.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -31,8 +21,6 @@ _METRIC_ROW = re.compile(r"\|\s*([a-zA-Z_0-9]+)\s*\|\s*([0-9\.\-]+)\s*\|")
 
 
 class PredictedMismatch(NamedTuple):
-    """One metric on which the selected plans row disagrees with another source."""
-
     source: str
     field: str
     selected: float
@@ -40,7 +28,6 @@ class PredictedMismatch(NamedTuple):
 
 
 def plans_row_revision(row: dict[str, Any]) -> int:
-    """The row's ``ledger_revision``; a missing, null or non-integer value is 1."""
     try:
         return int(row.get("ledger_revision") or 1)
     except (TypeError, ValueError):
@@ -48,12 +35,10 @@ def plans_row_revision(row: dict[str, Any]) -> int:
 
 
 def read_plans_rows(plans_jsonl_path: str) -> list[dict[str, Any]]:
-    """Every JSON object row of a ``plans.jsonl`` file and its pending fragments; none when missing or unreadable."""
     return read_merged_rows(plans_jsonl_path)
 
 
 def select_plans_row(rows: list[dict[str, Any]], plan_branch: str) -> dict[str, Any] | None:
-    """The plan's row with the highest ``ledger_revision``, then the latest ``created_at``, then the last line."""
     matching = [(index, row) for index, row in enumerate(rows) if is_row_of_plan(row, plan_branch)]
     if not matching:
         return None
@@ -77,12 +62,10 @@ def _float_fields(source: dict[str, Any], strip_suffix: str = "") -> dict[str, f
 
 
 def metrics_from_row(row: dict[str, Any]) -> dict[str, float]:
-    """The predicted fields present in ``row`` that convert to float; bad values are skipped."""
     return _float_fields(row)
 
 
 def overall_plan_metrics(content: str) -> dict[str, float]:
-    """Metrics of the plan file's ``## Overall Plan Metrics`` table only (no per-step fallback); empty without it."""
     rows: dict[str, str] = {}
     in_overall = False
     for line in content.splitlines():
@@ -98,7 +81,6 @@ def overall_plan_metrics(content: str) -> dict[str, float]:
 def plan_file_overall_metrics(
     row: dict[str, Any], plan_branch: str, target_worktree: str
 ) -> tuple[str, dict[str, float]]:
-    """``(plan file, Overall metrics)`` of the row's plan file; ``("", {})`` when no plan file resolves."""
     parent, plan_id = split_plan_branch(plan_branch)
     candidates = [recorded_plan_file(row.get("plan_file"), plan_branch), *plan_file_candidates(parent, plan_id)]
     for rel in dict.fromkeys(c for c in candidates if c):
@@ -114,7 +96,6 @@ def plan_file_overall_metrics(
 
 
 def execution_predicted_metrics(executions_path: str, execution_id: str, plan_branch: str) -> dict[str, float]:
-    """``predicted_metrics`` of the latest summary row of the execution (of the plan) that carries them."""
     content = read_merged_text(executions_path) if execution_id else None
     if content is None:
         return {}
@@ -130,10 +111,10 @@ def execution_predicted_metrics(executions_path: str, execution_id: str, plan_br
     return _float_fields(latest["predicted_metrics"]) if latest else {}
 
 
+# why: the warning is advisory; calibration still uses the selected plans row, and ledgers are only ever read here.
 def cross_check_predicted(
     selected: dict[str, Any], sources: list[tuple[str, dict[str, float]]]
 ) -> list[PredictedMismatch]:
-    """Compare the selected plans row with each ``(label, metrics)`` source; warn once per disagreeing source."""
     selected_metrics = metrics_from_row(selected)
     revision = plans_row_revision(selected)
     mismatches: list[PredictedMismatch] = []
@@ -162,7 +143,6 @@ def cross_check_predicted(
 def cross_check_selected_row(
     selected: dict[str, Any], plan_branch: str, target_worktree: str, execution_id: str = ""
 ) -> list[PredictedMismatch]:
-    """Cross-check the selected plans row against its plan file and its execution summary row; never raises."""
     try:
         plan_file, plan_metrics = plan_file_overall_metrics(selected, plan_branch, target_worktree)
         executions_path = os.path.join(target_worktree, EXECUTIONS_JSONL_REL)

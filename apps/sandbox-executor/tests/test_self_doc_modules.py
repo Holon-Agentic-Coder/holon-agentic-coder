@@ -50,6 +50,7 @@ GOVERNED_MODULES_BY_PACKAGE: dict[str, tuple[str, ...]] = {
         "preflight.py",
         "ref_names.py",
         "review_failure.py",
+        "review_finding_outcomes.py",
         "review_paths.py",
         "review_report.py",
         "review_target.py",
@@ -198,8 +199,8 @@ def _under_ceiling(source: str, ceiling: int) -> bool:
     return count_lines(source) < ceiling
 
 
-def test_registry_has_146_unique_modules() -> None:
-    assert len(GOVERNED_MODULES) == 146
+def test_registry_has_147_unique_modules() -> None:
+    assert len(GOVERNED_MODULES) == 147
     assert len(set(GOVERNED_MODULES)) == len(GOVERNED_MODULES)
     assert set(BASELINE_LINE_CEILINGS) <= set(GOVERNED_MODULES)
 
@@ -281,10 +282,28 @@ def test_intent_creator_keeps_shebang() -> None:
         (10, "# pragma: no cover extra text", 0, False),
         (10, "# pragma note about coverage", 0, False),
         (10, "# mentions pragma: no cover in prose", 0, False),
+        (10, "# fmt: off", 0, True),
+        (10, "# fmt: skip", 0, True),
+        (10, "# fmt: off because reasons", 0, False),
+        (10, "# why: git refuses a shallow file here", 0, False),
     ],
 )
 def test_comment_allowlist_rules(line_number: int, comment_text: str, column: int, expected: bool) -> None:
     assert is_allowlisted_comment(line_number, comment_text, column) is expected
+
+
+@pytest.mark.parametrize(
+    ("comment_text", "expected"),
+    [
+        ("# why: git refuses a shallow file here", True),
+        ("#why: no space after the hash", True),
+        ("# why:", False),
+        ("# whyever not", False),
+        ("# explains the code", False),
+    ],
+)
+def test_why_comment_rules(comment_text: str, expected: bool) -> None:
+    assert is_allowlisted_comment(10, comment_text, allow_why=True) is expected
 
 
 def test_find_disallowed_comments_reports_line_numbers_and_columns() -> None:

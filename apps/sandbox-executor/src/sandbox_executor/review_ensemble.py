@@ -1,37 +1,3 @@
-"""Independent reviewer ensemble for the Stage 4 review loop, with a strict report trailer and a unanimity consensus.
-
-This module runs ``N`` independent reviewer agent turns against one diff, parses each reviewer's report and decides
-the ensemble verdict. ``run_review_loop()`` calls :func:`run_ensemble` and :func:`decide_consensus` once per iteration,
-with a request built by :func:`build_review_request`, and ``review_report.py`` renders the posted report from the
-results; the loop refuses to run reviewers outside a sandbox.
-
-Reviewer turns
-    Each reviewer gets a fresh scratch directory ``tmp/review/iter-<n>/reviewer-<i>/`` (``tmp/`` is
-    git-ignored) and a prompt built from ``holon-config/prompts/review_loop.template.md`` that holds only the diff, the
-    PR description, the exact report path and the trailer contract. Reviewers run sequentially; before the next one
-    starts, the previous report has been read into memory and its scratch directory removed, so no reviewer can see
-    another reviewer's output. The turn is supervised by :func:`~sandbox_executor.turns.supervise_authoring_turn`, the
-    same supervision the planner uses, with :data:`REVIEW_REPORT_SPEC` as the artefact spec and ``modify_code=False``;
-    it needed no change to ``turns.py``. A runner exception (including ``SystemExit`` from an unknown agent or missing
-    credentials), a budget breach on any turn, a missing report or an invalid trailer makes the reviewer
-    FAILED with a redacted reason. A FAILED reviewer carries no verdict and is never counted as a vote. The runner's
-    exit code is not judged: the report on disk is the deliverable, as it is for plans.
-
-Trailer contract
-    A report ends with a block whose first line is ``<!-- holon-review-trailer -->`` and whose last line, the final
-    line of the report, is ``<!-- /holon-review-trailer -->``. Between them sits one JSON object with exactly the keys
-    ``verdict`` (``APPROVED`` or ``CHANGES_REQUESTED``), ``critical``, ``important``, ``nit`` (non-negative integers)
-    and ``findings`` (objects with exactly ``severity``, ``file``, ``line`` and ``summary``). Counts must equal the
-    findings tally per severity, and ``APPROVED`` with any non-zero count is rejected, so an inconsistent report fails
-    closed. A key repeated in any object is rejected rather than resolved to its last value.
-    :func:`render_review_trailer` is the single definition of the canonical block.
-
-Consensus
-    :func:`decide_consensus` approves only when every configured reviewer completed with ``APPROVED`` and zero
-    findings of any severity, and mergeability and CI are both known to be clean. There is no majority vote, and zero
-    completed reviewers can never approve.
-"""
-
 from __future__ import annotations
 
 import functools
@@ -93,13 +59,11 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 DEFAULT_ENSEMBLE_SIZE = 3
-# Help text for every ``--ensemble-size`` option (``holon flow``, ``holon review-loop`` and the container entrypoint).
 ENSEMBLE_SIZE_HELP = (
     "Number of independent reviewer agent turns per iteration; approval needs every reviewer to approve with zero "
     "findings (default: 3)"
 )
-# Budget stage for reviewer turns; ``review`` resolves to the ``review_iteration`` ceiling in ``budgets.py``. One
-# ensemble is one review iteration, so all of its reviewers share a single stage timer.
+# why: one ensemble is one review iteration, so all of its reviewers share a single stage timer.
 REVIEW_STAGE = "review"
 SEVERITIES = ("critical", "important", "nit")
 TRAILER_OPEN = "<!-- holon-review-trailer -->"
@@ -112,14 +76,6 @@ _AGENT_ARG_DISPLAY_LEN = 100
 
 
 def format_agent_cmd_for_display(cmd: Sequence[str]) -> str:
-    """Render the agent command line for display with credentials masked and long args clamped.
-
-    Args:
-        cmd: The agent argv exactly as handed to `subprocess`.
-
-    Returns:
-        A single space-joined line that is safe to print.
-    """
     print_cmd = []
     for arg in redact_command_args(cmd):
         if len(arg) > _AGENT_ARG_DISPLAY_LEN:
@@ -145,35 +101,27 @@ REVIEW_REPORT_SPEC = ArtefactSpec(
 
 
 class ReviewerVerdict(StrEnum):
-    """Verdict a completed reviewer reports in its trailer."""
-
     APPROVED = "APPROVED"
     CHANGES_REQUESTED = "CHANGES_REQUESTED"
 
 
 class ReviewerStatus(StrEnum):
-    """Whether a reviewer turn produced a valid report."""
-
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 
 
 class ConsensusVerdict(StrEnum):
-    """Ensemble verdict returned by :func:`decide_consensus`."""
-
     APPROVED = "APPROVED"
     CHANGES_REQUESTED = "CHANGES_REQUESTED"
     FAILED = "FAILED"
 
 
 class TrailerError(ValueError):
-    """A review report has no valid trailer block; the reviewer is treated as FAILED."""
+    pass
 
 
 @dataclass(frozen=True)
 class ReviewFinding:
-    """One finding from a reviewer's trailer; ``path`` is the trailer's ``file`` key."""
-
     severity: str
     path: str
     line: int | None
@@ -182,22 +130,17 @@ class ReviewFinding:
 
 @dataclass(frozen=True)
 class ReviewCounts:
-    """Findings per severity as declared in a trailer."""
-
     critical: int = 0
     important: int = 0
     nit: int = 0
 
     @property
     def total(self) -> int:
-        """Findings of every severity."""
         return self.critical + self.important + self.nit
 
 
 @dataclass(frozen=True)
 class ParsedTrailer:
-    """A validated trailer block."""
-
     verdict: ReviewerVerdict
     counts: ReviewCounts
     findings: tuple[ReviewFinding, ...] = ()
@@ -213,7 +156,6 @@ def build_review_request(  # noqa: PLR0913
     *,
     review_paths: Sequence[str] | None = None,
 ) -> ReviewRequest:
-    """Build the request every reviewer judges: the real diff between ``base_ref`` and the resolved head SHA."""
     if not target.head_sha:
         raise RuntimeError(f"'{target.head_branch}' has no resolved head commit to review")
     diff_text, scoped = build_scoped_diff(repo_dir, base_ref, target.head_sha, review_paths=review_paths)
@@ -223,12 +165,6 @@ def build_review_request(  # noqa: PLR0913
 
 @dataclass(frozen=True)
 class ReviewerResult:
-    """Outcome of one reviewer turn. Build it with :meth:`completed` or :meth:`failed`.
-
-    ``report_path`` is repository-relative and the file is removed once the ensemble moves on; ``report_text`` keeps the
-    report in memory. A FAILED result never carries a verdict.
-    """
-
     index: int
     agent: str
     model: str
@@ -236,6 +172,7 @@ class ReviewerResult:
     verdict: ReviewerVerdict | None
     counts: ReviewCounts
     findings: tuple[ReviewFinding, ...]
+    # why: the report file is removed once the ensemble moves on, so report_text keeps the report in memory.
     report_path: str
     report_text: str | None = None
     failure_reason: str | None = None
@@ -243,14 +180,12 @@ class ReviewerResult:
 
     @property
     def reason(self) -> str | None:
-        """Alias for failure_reason."""
         return self.failure_reason
 
     @classmethod
     def completed(  # noqa: PLR0913
         cls, index: int, agent: str, model: str, report_path: str, report_text: str, parsed: ParsedTrailer
     ) -> ReviewerResult:
-        """A reviewer whose report carried a valid trailer."""
         return cls(
             index,
             agent,
@@ -265,7 +200,6 @@ class ReviewerResult:
 
     @classmethod
     def failed(cls, index: int, agent: str, model: str, report_path: str, reason: str) -> ReviewerResult:
-        """A reviewer that produced no usable report; ``reason`` is redacted and bounded here."""
         return cls(
             index,
             agent,
@@ -280,16 +214,11 @@ class ReviewerResult:
 
 
 def _bounded_reason(reason: str) -> str:
-    """Redact secrets from a failure reason and cap its length."""
     text = redact_agent_secrets(reason) or "unknown failure"
     return text if len(text) <= MAX_REASON_CHARS else text[: MAX_REASON_CHARS - 3] + "..."
 
 
-# --- Trailer -------------------------------------------------------------------------------------------------------
-
-
 def render_review_trailer(parsed: ParsedTrailer) -> str:
-    """The canonical trailer block for ``parsed``; :func:`parse_review_trailer` accepts it unchanged."""
     payload = {
         "verdict": str(parsed.verdict),
         "critical": parsed.counts.critical,
@@ -304,7 +233,6 @@ def render_review_trailer(parsed: ParsedTrailer) -> str:
 
 
 def parse_review_trailer(text: str) -> ParsedTrailer:
-    """Parse the trailer block that must end ``text``; raise :class:`TrailerError` on any ambiguity."""
     obj = _load_trailer_object(_extract_trailer_block(text))
     verdict = _parse_verdict(obj["verdict"])
     counts = _parse_counts(obj)
@@ -314,7 +242,6 @@ def parse_review_trailer(text: str) -> ParsedTrailer:
 
 
 def _extract_trailer_block(text: str) -> str:
-    """Text between the last opening marker and the closing marker on the report's final non-empty line."""
     lines = [line.strip() for line in (text or "").rstrip().splitlines()]
     if not lines or lines[-1] != TRAILER_CLOSE:
         raise TrailerError("the report does not end with the closing trailer marker")
@@ -328,7 +255,6 @@ def _extract_trailer_block(text: str) -> str:
 
 
 def _strip_json_fence(inner: str) -> str:
-    """Tolerate one ```json fence around the trailer object."""
     lines = inner.splitlines()
     if len(lines) >= 2 and lines[0].startswith("```") and lines[-1] == "```":
         return "\n".join(lines[1:-1])
@@ -336,14 +262,14 @@ def _strip_json_fence(inner: str) -> str:
 
 
 def _load_trailer_object(inner: str) -> dict[str, Any]:
-    """Decode the trailer JSON and require exactly the trailer keys."""
     try:
         obj = json.loads(inner, object_pairs_hook=_reject_repeated_keys)
     except TrailerError:
         raise
     except json.JSONDecodeError as error:
         raise TrailerError(f"the trailer is not valid JSON: {error.msg}") from error
-    except (ValueError, RecursionError) as error:  # an oversized integer or a too-deeply nested value
+    # why: json raises these for an oversized integer or a too-deeply nested value.
+    except (ValueError, RecursionError) as error:
         raise TrailerError(f"the trailer cannot be decoded ({type(error).__name__})") from error
     if not isinstance(obj, dict):
         raise TrailerError("the trailer must be one JSON object")
@@ -354,8 +280,8 @@ def _load_trailer_object(inner: str) -> dict[str, Any]:
     return obj
 
 
+# why: plain JSON decoding silently keeps the last value of a repeated key.
 def _reject_repeated_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    """Build one decoded JSON object, refusing a repeated key (plain decoding silently keeps the last value)."""
     obj: dict[str, Any] = {}
     for key, value in pairs:
         if key in obj:
@@ -365,19 +291,17 @@ def _reject_repeated_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _parse_verdict(value: Any) -> ReviewerVerdict:
-    """The trailer verdict; anything but the two known strings is rejected."""
     if not isinstance(value, str) or value not in tuple(ReviewerVerdict):
         raise TrailerError(f"unknown verdict {value!r}")
     return ReviewerVerdict(value)
 
 
+# why: bool is an int subclass, so `True` must not pass as a count.
 def _is_count(value: Any) -> bool:
-    """True for a non-negative int that is not a bool (``True`` is an ``int`` subclass)."""
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _parse_counts(obj: Mapping[str, Any]) -> ReviewCounts:
-    """Per-severity counts; each must be a non-negative integer."""
     for name in SEVERITIES:
         if not _is_count(obj[name]):
             raise TrailerError(f"count {name!r} must be a non-negative integer, got {obj[name]!r}")
@@ -385,14 +309,12 @@ def _parse_counts(obj: Mapping[str, Any]) -> ReviewCounts:
 
 
 def _parse_findings(raw: Any) -> tuple[ReviewFinding, ...]:
-    """The findings list; each entry must be a well-formed finding object."""
     if not isinstance(raw, list):
         raise TrailerError("findings must be a list")
     return tuple(_parse_finding(item) for item in raw)
 
 
 def _parse_finding(item: Any) -> ReviewFinding:
-    """One finding object with a known severity, a file, an optional line and a summary."""
     if not isinstance(item, dict) or set(item) != _FINDING_KEYS:
         raise TrailerError(f"each finding must be an object with exactly the keys {sorted(_FINDING_KEYS)}")
     if item["severity"] not in SEVERITIES:
@@ -405,7 +327,6 @@ def _parse_finding(item: Any) -> ReviewFinding:
 
 
 def _check_consistency(verdict: ReviewerVerdict, counts: ReviewCounts, findings: tuple[ReviewFinding, ...]) -> None:
-    """Counts must match the findings tally, and an approval may not carry any finding."""
     for name in SEVERITIES:
         tally = sum(1 for item in findings if item.severity == name)
         if getattr(counts, name) != tally:
@@ -414,11 +335,7 @@ def _check_consistency(verdict: ReviewerVerdict, counts: ReviewCounts, findings:
         raise TrailerError("an APPROVED verdict must report zero findings")
 
 
-# --- Prompt --------------------------------------------------------------------------------------------------------
-
-
 def load_review_template(repo_dir: str) -> str:
-    """The repository's review template, or the scaffolded default when the repository has none."""
     path = os.path.join(repo_dir, TEMPLATE_REL)
     if not os.path.isfile(path):
         return REVIEW_LOOP_TEMPLATE
@@ -427,12 +344,6 @@ def load_review_template(repo_dir: str) -> str:
 
 
 def build_reviewer_prompt(template_text: str, request: ReviewRequest, report_rel: str) -> str:
-    """Fill the template's allow-listed placeholders and append the report path and trailer contract.
-
-    Placeholders are replaced literally in a single pass, so literal braces in the template stay intact and unknown
-    placeholders are left as they are. The prompt is built from ``request`` alone, so it cannot contain another
-    reviewer's report. When the template lacks ``{diff}`` or ``{pr_description}``, they are appended.
-    """
     values = _placeholder_values(request)
     body = _PLACEHOLDER.sub(lambda match: values[match.group(1)], template_text)
     return f"{body.rstrip()}\n\n{_missing_inputs(template_text, request)}{reviewer_contract(report_rel)}"
@@ -446,7 +357,6 @@ _REVIEWER_PROHIBITIONS = (
 
 
 def reviewer_contract(report_rel: str) -> str:
-    """Closing instruction for a reviewer turn, with examples rendered by :func:`render_review_trailer`."""
     clean = ParsedTrailer(ReviewerVerdict.APPROVED, ReviewCounts())
     finding = ReviewFinding("nit", "path/to/file.py", 12, "Short description of the issue and the fix.")
     changes = ParsedTrailer(ReviewerVerdict.CHANGES_REQUESTED, ReviewCounts(nit=1), (finding,))
@@ -467,29 +377,22 @@ def reviewer_contract(report_rel: str) -> str:
     )
 
 
-# --- Scratch directories -------------------------------------------------------------------------------------------
-
-
+# why: the index becomes part of a scratch path, so anything but a non-negative int could steer it.
 def _require_index(value: Any, name: str) -> int:
-    """``value`` as a non-negative int; anything else could steer a path, so it is rejected."""
     if not _is_count(value):
         raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
     return value
 
 
 def _iteration_dir_rel(iteration: int) -> str:
-    """``tmp/review/iter-<n>``."""
     return f"{REVIEW_ROOT_REL}/iter-{_require_index(iteration, 'iteration')}"
 
 
 def reviewer_report_rel(iteration: int, index: int) -> str:
-    """Repository-relative report path ``tmp/review/iter-<n>/reviewer-<i>/report.md``."""
     return f"{_iteration_dir_rel(iteration)}/reviewer-{_require_index(index, 'index')}/{REPORT_NAME}"
 
 
 def _review_root(repo_dir: str) -> str:
-    """The resolved ``<repo_dir>/tmp/review``, refusing a root that a symlinked ``tmp`` or ``tmp/review`` steers
-    anywhere else (for example outside the repository)."""
     expected = os.path.join(os.path.realpath(repo_dir), REVIEW_ROOT_REL)
     root = os.path.realpath(os.path.join(repo_dir, REVIEW_ROOT_REL))
     if root != expected:
@@ -501,7 +404,6 @@ def _review_root(repo_dir: str) -> str:
 
 
 def _contained_path(repo_dir: str, rel: str) -> str:
-    """Absolute path of ``rel``, refusing anything that does not resolve inside ``<repo_dir>/tmp/review/``."""
     root = _review_root(repo_dir)
     path = os.path.realpath(os.path.join(repo_dir, rel))
     if not path.startswith(root + os.sep):
@@ -510,14 +412,12 @@ def _contained_path(repo_dir: str, rel: str) -> str:
 
 
 def _remove_scratch(repo_dir: str, rel: str) -> None:
-    """Remove a review scratch directory if it exists (contained to ``tmp/review/``)."""
     path = _contained_path(repo_dir, rel)
     if os.path.lexists(path):
         shutil.rmtree(path)
 
 
 def _prepare_scratch(repo_dir: str, rel: str) -> str:
-    """Create ``rel`` empty, removing anything stale first; return its absolute path."""
     _remove_scratch(repo_dir, rel)
     path = _contained_path(repo_dir, rel)
     os.makedirs(path)
@@ -525,7 +425,6 @@ def _prepare_scratch(repo_dir: str, rel: str) -> str:
 
 
 def _write_turn_inputs(scratch: str, prompt: str, request: ReviewRequest) -> tuple[str, str]:
-    """Write ``prompt.md`` and ``request.json`` for runners that take a prompt file and an intent file."""
     prompt_file = os.path.join(scratch, "prompt.md")
     intent_file = os.path.join(scratch, "request.json")
     with open(prompt_file, "w", encoding="utf-8") as handle:
@@ -536,7 +435,6 @@ def _write_turn_inputs(scratch: str, prompt: str, request: ReviewRequest) -> tup
 
 
 def _read_report(path: str) -> str | None:
-    """The report text, or None when it is missing or unreadable."""
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
             return handle.read()
@@ -544,12 +442,10 @@ def _read_report(path: str) -> str | None:
         return None
 
 
-# --- Reviewer turns ------------------------------------------------------------------------------------------------
-
-
 RunnerFactory = Callable[[str], AgentRunner]
 
 
+# why: SystemExit from the runner factory or credential validation must fail only this reviewer.
 def run_reviewer(  # noqa: PLR0913
     request: ReviewRequest,
     index: int,
@@ -562,13 +458,6 @@ def run_reviewer(  # noqa: PLR0913
     budgets: Budgets | None = None,
     stage_timer: StageTimer | None = None,
 ) -> ReviewerResult:
-    """Run one supervised reviewer turn and turn its report into a :class:`ReviewerResult`.
-
-    Every failure, including ``SystemExit`` from the runner factory or credential validation, becomes a FAILED result
-    with a redacted reason. A budget breach on any turn fails the reviewer, even when the first turn or a follow-up left
-    a parseable report, because a cut-short turn cannot count as a finished review. The scratch directory is left in
-    place; :func:`run_ensemble` removes it before the next reviewer starts.
-    """
     report_rel = reviewer_report_rel(request.iteration, index)
     budgets = budgets or load_budgets(os.environ)
     timer = stage_timer or StageTimer(REVIEW_STAGE, budgets.stage_seconds(REVIEW_STAGE))
@@ -594,7 +483,6 @@ def _supervise_reviewer_turn(  # noqa: PLR0913
     budgets: Budgets,
     timer: StageTimer,
 ) -> AuthoringOutcome:
-    """Prepare the scratch directory and run the turn; ephemeral credentials are always cleaned up."""
     scratch = _prepare_scratch(request.repo_dir, os.path.dirname(report_rel))
     prompt = build_reviewer_prompt(template, request, report_rel)
     prompt_file, intent_file = _write_turn_inputs(scratch, prompt, request)
@@ -626,8 +514,6 @@ def _supervise_reviewer_turn(  # noqa: PLR0913
 
 
 def _command_builder(runner: AgentRunner, model: str, prompt_file: str, intent_file: str) -> Callable[[str], list[str]]:
-    """``build_cmd`` callable for :func:`supervise_authoring_turn`."""
-
     def build_cmd(prompt_text: str) -> list[str]:
         cmd = runner.build_cmd(model, prompt_file, intent_file, prompt_text)
         formatted = format_agent_cmd_for_display(cmd)
@@ -639,7 +525,6 @@ def _command_builder(runner: AgentRunner, model: str, prompt_file: str, intent_f
 
 
 def _log_turn_completion(outcome: AuthoringOutcome) -> None:
-    """Log process completion telemetry for a reviewer turn."""
     if not outcome.turns:
         return
     result = outcome.last
@@ -657,13 +542,12 @@ def _log_turn_completion(outcome: AuthoringOutcome) -> None:
 
 
 def _missing_report_reason(outcome: AuthoringOutcome) -> str:
-    """Diagnostic failure reason when no report was written."""
     return missing_report_reason(outcome.last) if outcome.turns else "the reviewer wrote no report"
 
 
 def _turn_failure(outcome: AuthoringOutcome, *, report_missing: bool = False) -> str | None:
-    """Why a supervised turn cannot count, or None when the report may be judged."""
-    breach = outcome.breach  # the last breach of any turn; it covers every unrecovered budget failure too
+    # why: a breach on any turn fails the reviewer even with a parseable report: a cut-short turn is no finished review.
+    breach = outcome.breach
     if breach is not None:
         return f"review turn cut short: {breach.describe()}"
     if report_missing:
@@ -674,10 +558,10 @@ def _turn_failure(outcome: AuthoringOutcome, *, report_missing: bool = False) ->
 def _judged_report(  # noqa: PLR0913
     outcome: AuthoringOutcome, repo_dir: str, report_rel: str, index: int, agent: str, model: str
 ) -> ReviewerResult:
-    """:func:`_result_from_outcome`, but an unexpected error reading or parsing the report fails only this reviewer."""
     try:
         return _result_from_outcome(outcome, repo_dir, report_rel, index, agent, model)
-    except Exception as error:  # KeyboardInterrupt and SystemExit still propagate
+    # why: an unexpected error judging one report fails only that reviewer; KeyboardInterrupt and SystemExit propagate.
+    except Exception as error:
         reason = f"judging the review report raised {type(error).__name__}: {error}"
         return ReviewerResult.failed(index, agent, model, report_rel, reason)
 
@@ -685,7 +569,6 @@ def _judged_report(  # noqa: PLR0913
 def _result_from_outcome(  # noqa: PLR0913
     outcome: AuthoringOutcome, repo_dir: str, report_rel: str, index: int, agent: str, model: str
 ) -> ReviewerResult:
-    """COMPLETED when the turn ran within budget and the report carries a valid trailer, otherwise FAILED."""
     failure = _turn_failure(outcome)
     if failure is not None:
         return ReviewerResult.failed(index, agent, model, report_rel, failure)
@@ -701,8 +584,8 @@ def _result_from_outcome(  # noqa: PLR0913
     return ReviewerResult.completed(index, agent, model, report_rel, text, parsed)
 
 
+# why: only index, agent, status and counts are logged, never prompt or report content.
 def _logged(result: ReviewerResult) -> ReviewerResult:
-    """Log a reviewer outcome (index, agent, status and counts only; never prompt or report content)."""
     logger.info(
         "Reviewer %d (%s) %s: critical %d, important %d, nit %d",
         result.index,
@@ -715,9 +598,8 @@ def _logged(result: ReviewerResult) -> ReviewerResult:
     return result
 
 
-# --- Ensemble ------------------------------------------------------------------------------------------------------
-
-
+# why: reviewers run one after another and earlier scratch is removed first, so no reviewer sees another's output;
+# why: a reviewer that cannot be isolated is recorded FAILED, so the consensus fails closed.
 def run_ensemble(
     request: ReviewRequest,
     *,
@@ -727,17 +609,6 @@ def run_ensemble(
     sleep: Callable[[float], None] = time.sleep,
     **seams: Any,
 ) -> list[ReviewerResult]:
-    """Run ``size`` independent reviewers (three by default) one after another and return their results in order.
-
-    ``seams`` are passed to :func:`run_reviewer`. A reviewer that fails on a quota whose reset is within the wait
-    ceiling is retried once after ``sleep``; the wait is credited to the shared stage timer, and at most one retry runs
-    per ensemble. Budgets, the stage timer and the template are resolved once, so the whole ensemble
-    shares one review-iteration ceiling. The iteration directory is cleared first; each reviewer's report is held in
-    memory and its scratch directory removed before the next reviewer starts, and the iteration directory is removed at
-    the end. If the iteration directory cannot be cleared, no reviewer is dispatched; if a report cannot be removed,
-    the remaining reviewers are not dispatched. Either way the undispatched reviewers are recorded as FAILED, so the
-    consensus fails closed. ``size < 1`` dispatches nothing.
-    """
     if size < 1:
         return []
     seams = _shared_seams(request, seams)
@@ -765,7 +636,6 @@ def run_ensemble(
 
 
 def _shared_seams(request: ReviewRequest, seams: Mapping[str, Any]) -> dict[str, Any]:
-    """``seams`` with budgets, one shared stage timer and the template filled in."""
     shared = dict(seams)
     budgets = shared.get("budgets") or load_budgets(os.environ)
     shared["budgets"] = budgets
@@ -777,7 +647,6 @@ def _shared_seams(request: ReviewRequest, seams: Mapping[str, Any]) -> dict[str,
 
 
 def _clear_iteration(repo_dir: str, iteration_rel: str) -> str | None:
-    """Remove stale reports from an earlier run; return why the iteration could not be cleared, or None."""
     try:
         _remove_scratch(repo_dir, iteration_rel)
     except (OSError, ValueError) as error:
@@ -791,17 +660,12 @@ def _clear_iteration(repo_dir: str, iteration_rel: str) -> str | None:
 
 
 def _undispatched(request: ReviewRequest, index: int, agent: str, model: str, reason: str) -> ReviewerResult:
-    """A FAILED result for a reviewer that was never dispatched because isolation could not be guaranteed."""
     report_rel = reviewer_report_rel(request.iteration, index)
     return _logged(ReviewerResult.failed(index, agent, model, report_rel, reason))
 
 
+# why: a leftover that cannot be removed is logged and left in place; the results already stand.
 def _remove_leftovers(repo_dir: str, results: Sequence[ReviewerResult], iteration_rel: str) -> None:
-    """Remove the last reports and the iteration directory; a failure here is logged, the results stand.
-
-    A path that cannot be removed, or that resolves outside ``tmp/review/`` (for example a symlinked iteration
-    directory), is left in place rather than aborting the ensemble.
-    """
     try:
         _remove_scratch(repo_dir, iteration_rel)
     except (OSError, ValueError) as error:
@@ -814,10 +678,6 @@ def _remove_leftovers(repo_dir: str, results: Sequence[ReviewerResult], iteratio
 
 
 def _isolate(repo_dir: str, earlier: Sequence[ReviewerResult], *, consequence: str, level: int) -> str | None:
-    """Remove every earlier reviewer's scratch directory; return why isolation failed, or None.
-
-    A directory that cannot be removed is logged at ``level`` with the caller's ``consequence`` (no error detail).
-    """
     for result in earlier:
         scratch_rel = os.path.dirname(result.report_path)
         try:
@@ -830,19 +690,10 @@ def _isolate(repo_dir: str, earlier: Sequence[ReviewerResult], *, consequence: s
     return None
 
 
-# --- Consensus -----------------------------------------------------------------------------------------------------
-
-
+# why: unanimity with no majority vote: a single nit blocks, and unknown mergeability or CI is never clean.
 def decide_consensus(
     results: Sequence[ReviewerResult], configured_size: int, mergeable: bool | None, ci_green: bool | None
 ) -> ConsensusVerdict:
-    """Unanimity consensus that fails closed.
-
-    FAILED when nothing was dispatched, the result count differs from ``configured_size`` or any reviewer FAILED.
-    CHANGES_REQUESTED when any reviewer requested changes or reported any finding (a single nit blocks), or when
-    ``mergeable`` or ``ci_green`` is not exactly ``True`` (unknown is never clean). APPROVED only otherwise.
-    :func:`_ensemble_failed` guarantees APPROVED never comes from zero completed reviewers.
-    """
     if _ensemble_failed(results, configured_size):
         return ConsensusVerdict.FAILED
     if _any_reviewer_objects(results) or mergeable is not True or ci_green is not True:
@@ -850,28 +701,20 @@ def decide_consensus(
     return ConsensusVerdict.APPROVED
 
 
+# why: past this check at least one reviewer completed, so APPROVED never comes from zero completed reviewers.
 def _ensemble_failed(results: Sequence[ReviewerResult], configured_size: int) -> bool:
-    """True when the ensemble did not run in full with every reviewer completing.
-
-    Empty results and any non-COMPLETED result are FAILED here, so past this check at least one reviewer completed.
-    """
     if configured_size < 1 or not results or len(results) != configured_size:
         return True
     return any(result.status is not ReviewerStatus.COMPLETED for result in results)
 
 
 def _any_reviewer_objects(results: Sequence[ReviewerResult]) -> bool:
-    """True when any reviewer did not approve cleanly."""
     return any(
         result.verdict is not ReviewerVerdict.APPROVED or result.counts.total or result.findings for result in results
     )
 
 
-# --- Result Transport Serialisation & Deserialisation -------------------------------------------------------------
-
-
 def serialize_reviewer_result(result: ReviewerResult) -> dict[str, Any]:
-    """Convert ReviewerResult into a JSON-serialisable dictionary for transport."""
     findings_list = [
         {"severity": f.severity, "file": f.path, "line": f.line, "summary": f.summary} for f in result.findings
     ]
@@ -893,7 +736,6 @@ def serialize_reviewer_result(result: ReviewerResult) -> dict[str, Any]:
 
 
 def _deserialize_finding(item: Mapping[str, Any]) -> ReviewFinding:
-    """Parse and strictly validate one transported finding."""
     sev = str(item.get("severity", "")).lower()
     if sev not in ("critical", "important", "nit"):
         raise ValueError(f"Invalid finding severity: {sev}")
@@ -907,8 +749,6 @@ def _deserialize_finding(item: Mapping[str, Any]) -> ReviewFinding:
 
 
 def _deserialize_counts(data: Mapping[str, Any]) -> ReviewCounts:
-    """Parse and validate finding counts."""
-
     def _parse_cnt(val: Any) -> int:
         if isinstance(val, bool) or not isinstance(val, (int, float)):
             return 0
@@ -922,7 +762,6 @@ def _deserialize_counts(data: Mapping[str, Any]) -> ReviewCounts:
 
 
 def deserialize_reviewer_result(data: Mapping[str, Any]) -> ReviewerResult:
-    """Reconstruct a verified ReviewerResult from transported data, failing closed on malformed schema."""
     raw_status = str(data.get("status", "")).upper()
     try:
         status = ReviewerStatus(raw_status)
@@ -960,7 +799,6 @@ def serialize_review_outcome(
     verdict: ConsensusVerdict | None,
     error: str | None = None,
 ) -> dict[str, Any]:
-    """Serialise ensemble results and consensus verdict for container-to-host transport."""
     return {
         "ensemble_verdict": str(verdict) if verdict else None,
         "reviewers": [serialize_reviewer_result(r) for r in reviewers],
@@ -971,7 +809,6 @@ def serialize_review_outcome(
 def deserialize_review_outcome(
     data: Mapping[str, Any],
 ) -> tuple[list[ReviewerResult], ConsensusVerdict | None, str | None]:
-    """Deserialise review outcome from container transport, validating types and structure."""
     error = data.get("error")
     raw_verdict = data.get("ensemble_verdict")
     verdict: ConsensusVerdict | None = None

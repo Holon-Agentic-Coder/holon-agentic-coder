@@ -1,5 +1,3 @@
-"""Flow boundary hooks for ``sync_with_target``: flow start, stage start/end, turn boundaries, and merge notices."""
-
 from __future__ import annotations
 
 import os
@@ -28,15 +26,12 @@ _LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
 
 
 class TurnBoundarySyncError(RuntimeError):
-    """Raised by :func:`make_turn_boundary_hook` when a host-side turn-boundary sync is blocked."""
-
     def __init__(self, failure: StageResult) -> None:
         self.failure = failure
         super().__init__(failure.error or "turn-boundary target sync blocked")
 
 
 def format_target_merge_notice(target_sha: str, changed_paths: tuple[str, ...] | list[str]) -> str:
-    """Render the ``## Target branch merged`` markdown notice listing ``target_sha`` and ``changed_paths``."""
     paths = [str(p) for p in changed_paths if p]
     bullets = "\n".join(f"- `{p}`" for p in paths) if paths else "- (no file changes)"
     header = f"## Target branch merged\n\nThe target branch was merged into this flow branch at commit `{target_sha}`."
@@ -44,7 +39,6 @@ def format_target_merge_notice(target_sha: str, changed_paths: tuple[str, ...] |
 
 
 def consume_target_merge_notice(context: FlowContext | None = None) -> str:
-    """Return and clear the pending target-merge notice from ``context``."""
     notice = str(getattr(context, _NOTICE_ATTR, "") or "").strip() if context is not None else ""
     if context is not None:
         setattr(context, _NOTICE_ATTR, "")
@@ -52,7 +46,6 @@ def consume_target_merge_notice(context: FlowContext | None = None) -> str:
 
 
 def active_flow_branch(context: FlowContext, stage: FlowStage) -> str:
-    """Select the active flow branch for ``stage`` from ``context``."""
     candidates: dict[FlowStage, tuple[str | None, ...]] = {
         FlowStage.INTENT: (context.intent_branch,),
         FlowStage.PLAN: (context.plan_branch, context.intent_branch),
@@ -106,7 +99,6 @@ def _after_boundary_merge(context: FlowContext, stage: FlowStage, branch: str, r
 def _run_boundary_sync(
     context: FlowContext, stage: FlowStage, boundary: SyncBoundary
 ) -> tuple[SyncResult, StageResult | None]:
-    """Run ``sync_with_target`` at ``(stage, boundary)``; return ``(sync_result, failure_stage_result_or_None)``."""
     worktree, target_branch = context.target_worktree, base_branch_name(context)
     branch = active_flow_branch(context, stage)
     if context.dry_run or not branch or not _can_sync_worktree(worktree, target_branch):
@@ -141,17 +133,14 @@ def _run_boundary_sync(
 
 
 def at_flow_start(context: FlowContext, first_stage: FlowStage = FlowStage.INTENT) -> StageResult | None:
-    """Run ``sync_with_target`` at ``FLOW_START``; return a failed :class:`StageResult` if blocked, else ``None``."""
     return _run_boundary_sync(context, first_stage, SyncBoundary.FLOW_START)[1]
 
 
 def at_stage_boundary(context: FlowContext, stage: FlowStage, boundary: SyncBoundary) -> StageResult | None:
-    """Run ``sync_with_target`` at ``STAGE_START`` or ``STAGE_END``; return a failed :class:`StageResult` if blocked."""
     return _run_boundary_sync(context, stage, boundary)[1]
 
 
 def at_turn_boundary(context: FlowContext, stage: FlowStage, turn_index: int = 0) -> StageResult | None:
-    """Run ``sync_with_target`` at a ``TURN`` boundary; return a failed :class:`StageResult` if blocked."""
     del turn_index
     return _run_boundary_sync(context, stage, SyncBoundary.TURN)[1]
 
@@ -159,7 +148,6 @@ def at_turn_boundary(context: FlowContext, stage: FlowStage, turn_index: int = 0
 def make_turn_boundary_hook(
     worktree: str, branch: str, target_branch: str, stage: FlowStage, *, context: FlowContext | None = None
 ) -> Callable[[int], str | None]:
-    """Build a host-side ``on_turn_boundary`` callback; no-ops inside a mounted container and raises if blocked."""
     ctx = context or FlowContext(
         target_worktree=worktree,
         intent_data={"target_branch": target_branch},
@@ -169,6 +157,7 @@ def make_turn_boundary_hook(
     )
 
     def _on_turn(turn_index: int) -> str | None:
+        # why: inside a mounted container the host owns the target sync, so the in-container hook does nothing
         if workspace_mounted():
             return None
         if failure := at_turn_boundary(ctx, stage, turn_index):

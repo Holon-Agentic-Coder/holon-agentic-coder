@@ -1,9 +1,3 @@
-"""Stage 4 head test gate: judge test evidence for the current head commit via ``choose_evidence``.
-
-Reuses confirmed resolver evidence, green GitHub CI on the PR head SHA, or Stage 3 on an unchanged head, falling back
-to a per-head local test run (``review_local``) when Stage 3 failed, was unmeasured, or the head moved.
-"""
-
 from __future__ import annotations
 
 import functools
@@ -64,7 +58,7 @@ def _measure_with_short_summary(repo_dir: str) -> TestMeasurement:
     return _MeasurementWithOutput(**vars(measurement), full_output=output)
 
 
-# The test run; replaced in tests so no real ``uv run task test`` starts.
+# why: a seam tests replace, so no real ``uv run task test`` starts.
 run_measurement: Callable[[str], TestMeasurement] = _measure_with_short_summary
 
 FailureLoopFactory = Callable[[], "TestFailureLoop | None"]
@@ -109,8 +103,6 @@ _review_failure_loop: Callable[[str, FlowContext], TestFailureLoop | None] = _de
 
 
 class _ReviewLocalTests:
-    """Measures the project's tests in the review workspace, once per head commit."""
-
     def __init__(self, repo_dir: str, head_sha: str = "", *, failure_loop: FailureLoopFactory | None = None) -> None:
         self._repo_dir = repo_dir
         self._head_sha = head_sha
@@ -123,7 +115,6 @@ class _ReviewLocalTests:
         return res.stdout.strip() if res.returncode == 0 and res.stdout.strip() else self._head_sha
 
     def measure(self) -> _LocalTestOutcome:
-        """The measurement for the current head, running the test task only when this head is not yet cached."""
         head = self._head() or "unknown"
         if head not in self._cache:
             measurement = run_measurement(self._repo_dir)
@@ -158,13 +149,10 @@ def _attach_test_failure(ci_status: dict[str, Any], outcome: LoopOutcome | None)
 
 
 def _default_pr_head(repo_dir: str, target: str, proxy_env: Mapping[str, str] | None = None) -> str | None:
-    """The PR head commit for ``target`` via ``gh``, or None when it cannot be read."""
     return pr_head_sha(repo_dir, target, proxy_env)
 
 
 class _ReviewTestGate:
-    """Stage 3's test evidence for the review loop, topped up by a local measurement when CI cannot supply it."""
-
     def __init__(
         self,
         context: FlowContext,
@@ -182,7 +170,7 @@ class _ReviewTestGate:
         self._stage_3 = (exec_result.payload if exec_result else None) or {}
         rate, exit_code = _test_evidence(exec_result)
         self.stage_3_evidence = (rate, exit_code != 0 or (rate is not None and rate < 1.0))
-        # The commit Stage 3 tested; without one its evidence applies to no head and the gate measures locally.
+        # why: without a tested commit, Stage 3 evidence applies to no head and the gate measures locally.
         self.stage_3_head = str(self._stage_3.get("head_sha") or "").strip()
 
         self._tester = _ReviewLocalTests(repo_dir, failure_loop=lambda: _review_failure_loop(repo_dir, context))
@@ -191,33 +179,30 @@ class _ReviewTestGate:
         self._pr_heads: dict[str, str | None] = {}
 
     def _get_pr_head(self, local_head: str) -> str | None:
-        """The PR head commit; cached once matched to ``local_head`` so stale or failed lookups retry."""
         if local_head and self._pr_heads.get(local_head) == local_head:
             return local_head
         reader = self.pr_head or (lambda t: _default_pr_head(self._repo_dir, t, self._proxy_env))
+        # why: only a lookup matched to the local head is cached, so stale or failed lookups retry.
         if (sha := reader(self._target)) == local_head and local_head:
             self._pr_heads[local_head] = sha
         return sha
 
     def accept_resolver_evidence(self, head_sha: str, dispositions: Sequence[Any]) -> None:
-        """Confirm a rejected FIND-CI with passing test evidence on this head via local re-measurement."""
         if not head_sha or not _has_passing_ci_rejection(dispositions):
             return
         if self._tester._head() != head_sha:
-            # The resolver pushed: the checkout is no longer the head its evidence describes.
+            # why: the resolver pushed, so the checkout is no longer the head its evidence describes.
             return
         outcome = self._tester.measure()
         if not outcome.failed and outcome.rate is not None and not outcome.measurement.run_error:
             self._resolver_heads.add(head_sha)
 
     def needs_ci_registration(self) -> bool:
-        """True when the current head has neither confirmed resolver evidence nor a Stage 3 measurement."""
         return _needs_ci_registration(
             self.stage_3_evidence, self.stage_3_head, self._tester._head(), self._resolver_heads
         )
 
     def advance_ledger_head(self, old_head: str, new_head: str) -> None:
-        """Carry head-scoped evidence across a flow-authored ledger commit (no code changed)."""
         if not old_head or not new_head or old_head == new_head:
             return
         if old_head in self._resolver_heads:
@@ -228,7 +213,6 @@ class _ReviewTestGate:
             self.stage_3_head = new_head
 
     def evidence(self, ci_status: dict[str, Any], dry_run: bool | None = None) -> tuple[float | None, bool]:
-        """The ``(test_pass_rate, tests_failed)`` for the CI gate judging the current head commit."""
         if bool(dry_run or self._context.dry_run):
             _attribute_test_source(ci_status, self._stage_3, None)
             return self.stage_3_evidence

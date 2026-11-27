@@ -22,7 +22,6 @@ _OWNER_ONLY_FILE_MODE = 0o600
 
 
 def _make_private_dirs(directory: str) -> None:
-    """Create the missing ancestors of ``directory`` owner-only, leaving existing directories untouched."""
     missing: list[str] = []
     current = directory
     while current and not os.path.lexists(current):
@@ -40,7 +39,6 @@ def _make_private_dirs(directory: str) -> None:
 
 
 def _write_private_file(path: str, content: str) -> None:
-    """Write ``content`` to ``path`` with owner-only mode, also when the file already exists."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, _OWNER_ONLY_FILE_MODE)
     try:
         os.fchmod(fd, _OWNER_ONLY_FILE_MODE)
@@ -52,7 +50,6 @@ def _write_private_file(path: str, content: str) -> None:
         handle.write(content)
 
 
-# Directory cleanup and root protection helpers
 ALLOWED_PARENTS = {
     "/home",
     "/Users",
@@ -99,7 +96,6 @@ def _check_forbidden_root(path: str) -> None:
 
 
 def _handle_remove_readonly(func: Callable, path: str, *_args: Any) -> None:
-    """Error handler for shutil.rmtree to handle read-only files/directories (e.g. git pack files)."""
     try:
         if os.path.isdir(path):
             os.chmod(path, stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR, follow_symlinks=False)
@@ -111,7 +107,6 @@ def _handle_remove_readonly(func: Callable, path: str, *_args: Any) -> None:
 
 
 def _rmtree(path: str) -> None:
-    """Helper to call shutil.rmtree with the onexc / onerror error handler."""
     import shutil
 
     if sys.version_info >= (3, 12):  # noqa: UP036
@@ -121,7 +116,6 @@ def _rmtree(path: str) -> None:
 
 
 def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:  # noqa: C901
-    """Clear all contents of a directory without removing the directory itself."""
     if not os.path.isdir(path):
         return
 
@@ -160,14 +154,6 @@ def _clear_dir_contents(path: str, raise_on_error: bool = False) -> None:  # noq
 
 
 def cleanup_target_worktree(target_worktree: str, raise_on_error: bool = False) -> None:
-    """Clean up existing target worktree directory.
-
-    Clears contents if mount, unlinks if symlink, otherwise removes the tree with read-only chmod handling.
-
-    Args:
-        target_worktree: Path to the target worktree directory.
-        raise_on_error: If True, propagates exceptions. If False, prints a warning and continues.
-    """
     if not os.path.lexists(target_worktree):
         return
     try:
@@ -188,18 +174,13 @@ def cleanup_target_worktree(target_worktree: str, raise_on_error: bool = False) 
 
 cleanup_repo_dir = cleanup_target_worktree
 
-#: Absolute container-side path of the sandboxed role-agent workspace. This is the value
-#: :func:`get_workspace_dir` resolves to inside a role container (``HOME=/home/holon`` and a sandbox
-#: signal set), kept as one shared constant so the host dispatcher's worktree bind mount and the
-#: in-container entrypoint can never drift apart.
+# why: shared by the host dispatcher bind mount and the in-container entrypoint so the two can never drift apart.
 SANDBOX_WORKSPACE_MOUNT = "/home/holon/.holon-sandbox/workspace"
 
-#: Container-private uv project environment for a mounted host worktree: outside the mount (whose ``.venv``
-#: is the host's) and in the image's holon-owned ``~/.cache``, since the mount's root-created parents are not
-#: writable by the holon user.
+# why: the mounted .venv is the host's, and the mount's root-created parents are not writable by the holon user.
 SANDBOX_UV_PROJECT_ENVIRONMENT = "/home/holon/.cache/holon-venv"
 
-#: Every uv variable the dispatcher pins for a mounted worktree; ``UV_FROZEN`` keeps a stage from rewriting ``uv.lock``.
+# why: UV_FROZEN stops a stage from rewriting uv.lock.
 SANDBOX_UV_ENV = {"UV_PROJECT_ENVIRONMENT": SANDBOX_UV_PROJECT_ENVIRONMENT, "UV_FROZEN": "1"}
 
 INTENT_CREATOR_ROLE = "intent-creator"
@@ -208,25 +189,17 @@ REVIEW_LOOP_ROLE = "review-loop"
 EXECUTOR_ROLE = "executor"
 CONFLICT_RESOLVER_ROLE = "conflict-resolver"
 
-#: Every role entrypoint works in place on the bind-mounted host worktree and never touches the remote: the host
-#: fetches the base before the container starts and pushes the committed branch after it returns.
-#: The conflict resolver sees the host's in-progress target merge (``MERGE_HEAD`` and the unmerged index) in place.
+# why: the host fetches the base before and pushes after, so role containers never touch the remote; the conflict
+# why: resolver needs the host's in-progress merge (MERGE_HEAD and the unmerged index) in place.
 HOST_WORKTREE_ROLES: frozenset[str] = frozenset(
     {INTENT_CREATOR_ROLE, PLANNER_ROLE, REVIEW_LOOP_ROLE, EXECUTOR_ROLE, CONFLICT_RESOLVER_ROLE}
 )
 
-#: Host environment variables that earlier releases forwarded and no container reads any more; a stale value is dropped,
-#: never forwarded and never an error.
+# why: earlier releases forwarded these; a stale value is dropped silently rather than forwarded or treated as an error.
 RETIRED_ENV_VARS: frozenset[str] = frozenset({"HOLON_REPO_URL"})
 
 
 def get_workspace_dir() -> str:
-    """Returns the workspace directory path based on environment or sandbox status.
-
-    Checks ``HOLON_TARGET_WORKTREE`` first, then determines if running in a sandbox environment
-    (via ``HOLON_IN_SANDBOX``, ``HOLON_ROLE``, ``/.dockerenv``, or user heuristic) and returns
-    ``~/.holon-sandbox/workspace`` if in a sandbox or ``~/.holon/repo`` otherwise.
-    """
     target_worktree = os.getenv("HOLON_TARGET_WORKTREE")
     if target_worktree:
         return target_worktree
@@ -251,15 +224,10 @@ CLAUDE_EXPERIMENTAL_CODE_MODE_ENV = "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE"
 
 
 def skip_permissions_enabled() -> bool:
-    """Return whether ``HOLON_AGENT_SKIP_PERMISSIONS`` (default true) asks runners to bypass permission prompts.
-
-    Read on every call, so a runner honours the value current when its command is built rather than at import time.
-    """
     return os.getenv("HOLON_AGENT_SKIP_PERMISSIONS", "true").lower() in _TRUTHY
 
 
 def claude_code_mode_enabled() -> bool:
-    """Return whether ``HOLON_CLAUDE_CODE_MODE`` (default enabled) turns on Claude Code experimental code mode."""
     val = os.getenv(ENV_CLAUDE_CODE_MODE)
     if val is None:
         return True
@@ -267,8 +235,6 @@ def claude_code_mode_enabled() -> bool:
 
 
 class EnvMapping:
-    """Defines a mapping from an environment variable to a command-line flag."""
-
     def __init__(self, env_var: str, flag: str, is_boolean: bool = False):
         self.env_var = env_var
         self.flag = flag
@@ -276,8 +242,6 @@ class EnvMapping:
 
 
 class AgentRunner:
-    """Base class for constructing and running agent CLI commands."""
-
     uses_stdin: bool = False
 
     def __init__(self, agent_id: str, binary_name: str, model_flag: str):
@@ -296,20 +260,16 @@ class AgentRunner:
         raise NotImplementedError
 
     def compose_cmd(self, model_name: str, full_prompt: str) -> list[str]:
-        """Assemble the agent argv without validating credentials (see :class:`StandardAgentRunner`)."""
         raise NotImplementedError
 
     def build_command(self, prompt: str, model_name: str) -> list[str]:
-        """Construct the execution command for a prompt and model, delegating to compose_cmd."""
         return self.compose_cmd(model_name, prompt)
 
     def get_version(self) -> str:
-        """Return agent version string, returning 'unknown' fallback if resolution fails."""
         raise NotImplementedError
 
 
 def _sync_prompt_file(prompt_file: str, full_prompt: str) -> None:
-    """Ensure full_prompt is written to prompt_file on disk if not already present or out of sync."""
     if not prompt_file or not os.path.isabs(prompt_file):
         return
     try:
@@ -327,8 +287,6 @@ def _sync_prompt_file(prompt_file: str, full_prompt: str) -> None:
 
 
 class StandardAgentRunner(AgentRunner):
-    """Runner for agents that accept prompt strings directly via arguments."""
-
     uses_stdin: bool = True
 
     def __init__(  # noqa: PLR0913
@@ -343,7 +301,7 @@ class StandardAgentRunner(AgentRunner):
     ):
         super().__init__(agent_id, binary_name, model_flag)
         self.prefix = prefix or []
-        # Bypass argv, emitted only while skip_permissions_enabled(); never routed through any settings value.
+        # why: emitted only while skip_permissions_enabled(); never routed through a settings value.
         self.bypass_flags = bypass_flags or []
         self.suffix = suffix or []
         self.env_mappings = env_mappings or []
@@ -351,13 +309,10 @@ class StandardAgentRunner(AgentRunner):
 
     @property
     def required_keys(self) -> list[str]:
-        """Read-only view of the spec's accepted API-key variables; the spec is authoritative."""
         spec = runner_spec_for(self.agent_id)
         return list(spec.api_key_env_vars) if spec else []
 
     def resolve_credentials(self) -> None:
-        """Processes Tier 1 secret bundles to unpack configuration files."""
-        # Ephemeral Secret Bundle Injection (HOLON_SECRET_BUNDLE_PATH or default /run/secrets/holon_auth.json)
         secret_bundle_path = os.getenv("HOLON_SECRET_BUNDLE_PATH", "/run/secrets/holon_auth.json")
         if os.path.exists(secret_bundle_path):
             try:
@@ -369,7 +324,6 @@ class StandardAgentRunner(AgentRunner):
                     if api_key and self.agent_id != "claude":
                         os.environ["HOLON_AGENT_KEY"] = api_key
 
-                    # Unpack session files into /home/holon/ if specified
                     config_files = bundle.get("config_files", {})
                     base_home = os.path.realpath(os.path.expanduser("~"))
                     if not base_home.endswith(os.sep):
@@ -389,7 +343,6 @@ class StandardAgentRunner(AgentRunner):
                 )
 
     def cleanup_ephemeral_credentials(self) -> None:
-        """Securely wipe temporary secret bundles or session artifacts generated during the run."""
         for path in self._ephemeral_files:
             try:
                 if os.path.exists(path):
@@ -402,10 +355,9 @@ class StandardAgentRunner(AgentRunner):
         self._ephemeral_files.clear()
 
     def validate(self) -> None:
-        """Validates that required environment variables or credentials exist across the 3-Tier Fallback Contract."""
         self.resolve_credentials()
 
-        # Tier 2 & 3: the agent's spec owns its accepted variables, session paths and exemptions.
+        # why: tiers 2 and 3 belong to the agent's spec: accepted variables, session paths and exemptions.
         spec = runner_spec_for(self.agent_id)
         if spec is None:
             return
@@ -415,11 +367,6 @@ class StandardAgentRunner(AgentRunner):
             sys.exit(1)
 
     def compose_cmd(self, model_name: str, full_prompt: str) -> list[str]:
-        """Assemble the agent argv without validating credentials or changing the environment.
-
-        Used by :meth:`build_cmd` and by the host-side pre-flight probe, which runs the command inside the runner's
-        container where the binary and credentials actually live.
-        """
         prefix = [*self.prefix, *self.bypass_flags] if self.bypass_flags and skip_permissions_enabled() else self.prefix
         cmd = [self.binary_name, *prefix, self.model_flag, model_name, *self.suffix]
         self._append_env_mappings(cmd)
@@ -446,7 +393,7 @@ class StandardAgentRunner(AgentRunner):
     ) -> list[str]:
         self.validate()
 
-        # Coherence with host-local model provider: default HOLON_AGENT_PROVIDER from HOLON_LOCAL_PROVIDER or "local"
+        # why: keeps the in-container provider coherent with the host-local model provider.
         if (
             local_llm.normalize_agent_id(self.agent_id) == "pi"
             and local_llm.local_llm_requested()
@@ -485,7 +432,6 @@ class StandardAgentRunner(AgentRunner):
         return self.compose_cmd(model_name, full_prompt)
 
     def get_version(self) -> str:
-        """Return agent version string, returning 'unknown' fallback if resolution fails."""
         if self._resolved_version is not None:
             return self._resolved_version
 
@@ -516,13 +462,6 @@ class StandardAgentRunner(AgentRunner):
 
 
 class AntigravityAgentRunner(StandardAgentRunner):
-    """Runner for the Antigravity agent.
-
-    Defers evaluation of ``HOLON_AGENT_EFFORT`` and ``HOLON_AGENT_SKIP_PERMISSIONS``
-    environment variables to :meth:`build_cmd` so that runtime changes to the variables
-    are always respected instead of being frozen at module import time.
-    """
-
     uses_stdin: bool = False
 
     def __init__(
@@ -544,7 +483,7 @@ class AntigravityAgentRunner(StandardAgentRunner):
         )
 
     def compose_cmd(self, model_name: str, full_prompt: str) -> list[str]:
-        # Resolve HOLON_AGENT_EFFORT and optional permissions bypass at call time
+        # why: read at call time so a changed environment takes effect without re-import.
         prefix = list(self.prefix)
         suffix = list(self.suffix)
         if skip_permissions_enabled():
@@ -571,8 +510,6 @@ class AntigravityAgentRunner(StandardAgentRunner):
 
 
 class PiAgentRunner(StandardAgentRunner):
-    """Runner for Pi agent."""
-
     uses_stdin: bool = True
 
     def __init__(
@@ -595,8 +532,6 @@ class PiAgentRunner(StandardAgentRunner):
 
 
 class ClaudeAgentRunner(StandardAgentRunner):
-    """Runner for Claude agent; every launch carries settings that disable commit attribution."""
-
     uses_stdin: bool = True
 
     def __init__(
@@ -615,7 +550,7 @@ class ClaudeAgentRunner(StandardAgentRunner):
             bypass_flags=kwargs.pop(
                 "bypass_flags", ["--allow-dangerously-skip-permissions", "--permission-mode", "bypassPermissions"]
             ),
-            # The raw value is for compose_cmd (host pre-flight probe) only; turn argv carries a private file path.
+            # why: the raw value serves only the host pre-flight probe; a turn argv carries a private file path.
             env_mappings=kwargs.pop("env_mappings", [EnvMapping("HOLON_AGENT_SETTINGS", "--settings")]),
             **kwargs,
         )
@@ -627,11 +562,9 @@ class ClaudeAgentRunner(StandardAgentRunner):
         intent_file: str | None = None,
         full_prompt: str = "",
     ) -> list[str]:
-        """Build the launch argv with attribution disabled; the pre-flight probe (``compose_cmd``) makes no commits."""
         return self._with_private_settings(super().build_cmd(model_name, prompt_file, intent_file, full_prompt))
 
     def build_command(self, prompt: str, model_name: str) -> list[str]:
-        """In-container turn argv (conflict resolver, review loop); ``compose_cmd`` stays raw for the host probe."""
         cmd = self.compose_cmd(model_name, prompt)
         return self._with_private_settings(cmd) if os.getenv("HOLON_AGENT_SETTINGS") else cmd
 
@@ -642,8 +575,6 @@ class ClaudeAgentRunner(StandardAgentRunner):
 
 
 class OpenCodeAgentRunner(StandardAgentRunner):
-    """Runner for OpenCode agent."""
-
     uses_stdin: bool = True
 
     def __init__(
@@ -666,8 +597,6 @@ class OpenCodeAgentRunner(StandardAgentRunner):
 
 
 class CodexAgentRunner(StandardAgentRunner):
-    """Runner for Codex agent."""
-
     uses_stdin: bool = True
 
     def __init__(
@@ -696,13 +625,8 @@ class CodexAgentRunner(StandardAgentRunner):
         )
 
 
-# Runner registry: maps agent_id -> StandardAgentRunner instance.
-#
-# Architectural assumption: one agent per sandbox container execution.
-# HOLON_AGENT_PROVIDER is shared across runners that use it (e.g. pi-agent),
-# but since only a single agent is active per container, a single HOLON_AGENT_PROVIDER
-# value is always unambiguous at runtime. If multi-agent orchestration is ever needed,
-# per-agent provider overrides would need to be introduced.
+# why: one agent runs per container, so a shared HOLON_AGENT_PROVIDER is unambiguous; multi-agent orchestration would
+# why: need per-agent provider overrides.
 runners = {
     "pi": PiAgentRunner(),
     "claude": ClaudeAgentRunner(),
@@ -713,7 +637,6 @@ runners = {
 
 
 def get_runner(agent_name: str) -> AgentRunner:
-    """Helper function to parse the agent name and return the appropriate AgentRunner instance."""
     agent_id = agent_name.lower().replace("-agent", "").replace("agent-", "")
     if agent_id not in runners:
         supported = ", ".join(sorted(runners.keys()))

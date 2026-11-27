@@ -12,7 +12,9 @@ _PRAGMA_COMMENT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(rf"^#\s*noqa(?::\s*{_CODE_LIST})?\s*$", re.IGNORECASE),
     re.compile(rf"^#\s*type:\s*ignore(?:\[\s*{_CODE_LIST}\s*\])?\s*$"),
     re.compile(r"^#\s*pragma:\s*no\s+cover\s*$", re.IGNORECASE),
+    re.compile(r"^#\s*fmt:\s*(?:off|on|skip)\s*$"),
 )
+_WHY_COMMENT_RE = re.compile(r"^#\s*why:\s*\S")
 
 
 def _is_string_statement(node: ast.AST) -> bool:
@@ -39,7 +41,9 @@ def find_docstrings_and_string_statements(source: str) -> list[tuple[int, str]]:
     return sorted(findings.values())
 
 
-def is_allowlisted_comment(line_number: int, comment_text: str, column: int = 0) -> bool:
+def is_allowlisted_comment(line_number: int, comment_text: str, column: int = 0, *, allow_why: bool = False) -> bool:
+    if allow_why and _WHY_COMMENT_RE.match(comment_text):
+        return True
     if comment_text.startswith("#!"):
         return line_number == 1 and column == 0
     if line_number in (1, 2) and _ENCODING_COOKIE_RE.search(comment_text):
@@ -55,13 +59,13 @@ def find_comments(source: str) -> list[tuple[int, str]]:
     ]
 
 
-def find_disallowed_comments(source: str) -> list[tuple[int, str]]:
+def find_disallowed_comments(source: str, *, allow_why: bool = False) -> list[tuple[int, str]]:
     findings: list[tuple[int, str]] = []
     for token in tokenize.generate_tokens(io.StringIO(source).readline):
         if token.type != tokenize.COMMENT:
             continue
         line_number, column = token.start
-        if not is_allowlisted_comment(line_number, token.string, column):
+        if not is_allowlisted_comment(line_number, token.string, column, allow_why=allow_why):
             findings.append((line_number, token.string))
     return findings
 

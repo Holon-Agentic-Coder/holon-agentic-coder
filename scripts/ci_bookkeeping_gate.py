@@ -40,6 +40,7 @@ from collections.abc import Mapping, Sequence
 from scripts.ci_bookkeeping_api import GateClient, GateContext, Opener, compare, context_from, load_event
 from scripts.ci_bookkeeping_chain import (
     CHAIN_RULES,
+    RULE_PREVIOUS_RUN_NOT_SUCCESSFUL,
     RULE_PREVIOUS_RUN_SUCCEEDED,
     Decision,
     JobQuery,
@@ -134,9 +135,13 @@ def diff_rule(client: GateClient, base: str, head: str) -> tuple[Decision | None
     return None, len(comparison.paths)
 
 
+def _is_cancelled_block(blocked: Decision) -> bool:
+    return blocked.rule == RULE_PREVIOUS_RUN_NOT_SUCCESSFUL and blocked.detail.startswith("cancelled ")
+
+
 def merge_push_or(blocked: Decision, context: GateContext, client: GateClient) -> Decision:
     """Hand a push blocked by a changed or too large diff to the merge-push route; keep ``blocked`` when it declines."""
-    if blocked.rule not in (RULE_NON_BOOKKEEPING_CHANGE, RULE_DIFF_TOO_LARGE):
+    if blocked.rule not in (RULE_NON_BOOKKEEPING_CHANGE, RULE_DIFF_TOO_LARGE) and not _is_cancelled_block(blocked):
         return blocked
     merged = decide_merge_push(context, client, GateRules(diff_rule, is_bookkeeping_path))
     return blocked if merged is None else merged
@@ -161,11 +166,12 @@ def decide(context: GateContext, client: GateClient) -> Decision:
     )
     chain = find_real_success(client, query)
     if chain.real_sha is None:
-        return chain.run_decision()
+        blocked = chain.run_decision()
+        return merge_push_or(blocked, context, client) if synchronize else blocked
     if chain.real_sha not in (target, context.head_sha):
         blocked, changed = diff_rule(client, chain.real_sha, context.head_sha)
         if blocked is not None:
-            return blocked
+            return merge_push_or(blocked, context, client) if synchronize else blocked
     rule = RULE_BOOKKEEPING_ONLY if synchronize else RULE_LABEL_NOT_RESULT_AFFECTING
     return Decision(True, rule, f"{changed} changed paths since the real success on {chain.real_sha[:12]}")
 

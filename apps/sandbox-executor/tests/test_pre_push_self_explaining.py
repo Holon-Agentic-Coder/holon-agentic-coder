@@ -3,6 +3,7 @@ import pathlib
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sandbox_executor.entrypoint.executor import ExecutionPromptInputs, build_execution_prompt, pre_push
@@ -74,6 +75,7 @@ class GatedRun(PrePushSteps):
         self.exec_branch = "feature"
         self.exec_status = status
         self.branch_recorded = False
+        self.args = SimpleNamespace(agent_name="claude-agent", model_name="claude-opus-5-5")
 
 
 @pytest.fixture
@@ -86,6 +88,7 @@ def sync_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         return True, "ok"
 
     monkeypatch.setattr(pre_push, "attribution_allows_publish", lambda plan_tip, runner: True)
+    monkeypatch.setattr(pre_push, "run_agent_turn", lambda repo_dir, runner, model, prompt: None)
     monkeypatch.setattr(pre_push.executor_facade, "sync_and_reconcile_pre_push", recording_sync)
     return calls
 
@@ -113,6 +116,46 @@ def test_docstring_branch_is_refused_with_path_and_line_and_not_pushed(
     assert row["failure_reason"] == "self_explaining_violation"
     assert "pkg/module.py:2" in row["summary"]
     assert git(gated_repository, "status", "--porcelain", "holon-knowledge") == ""
+
+
+def test_repair_turn_that_removes_the_docstring_lets_the_branch_be_recorded(
+    gated_repository: Path, sync_calls: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_lines(gated_repository, "pkg/module.py", DOCSTRING_MODULE_LINES)
+    commit_all(gated_repository, "add module")
+    prompts: list[str] = []
+
+    def repairing_turn(repo_dir: str, runner: str, model: str, prompt: str) -> None:
+        prompts.append(prompt)
+        write_lines(gated_repository, "pkg/module.py", WHY_COMMENT_MODULE_LINES)
+
+    monkeypatch.setattr(pre_push, "run_agent_turn", repairing_turn)
+    run = GatedRun(gated_repository)
+
+    run.record_branch()
+
+    assert run.branch_recorded is True
+    assert run.exec_status == "success"
+    assert len(prompts) == 1
+    assert "pkg/module.py:2" in prompts[0]
+    assert git(gated_repository, "status", "--porcelain", "--untracked-files=no") == ""
+    assert last_ledger_row(gated_repository)["execution_id"] == "E-base"
+
+
+def test_failed_repair_turn_leaves_the_branch_refused(
+    gated_repository: Path, sync_calls: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_lines(gated_repository, "pkg/module.py", DOCSTRING_MODULE_LINES)
+    commit_all(gated_repository, "add module")
+    monkeypatch.setattr(
+        pre_push, "run_agent_turn", lambda repo_dir, runner, model, prompt: SimpleNamespace(reason="timed out")
+    )
+    run = GatedRun(gated_repository)
+
+    run.record_branch()
+
+    assert run.branch_recorded is False
+    assert last_ledger_row(gated_repository)["failure_reason"] == "self_explaining_violation"
 
 
 def test_code_with_only_a_why_comment_is_recorded(gated_repository: Path, sync_calls: list[str]) -> None:

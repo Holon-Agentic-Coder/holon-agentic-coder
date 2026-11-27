@@ -6,6 +6,7 @@ from typing import Any
 
 import sandbox_executor.entrypoint.executor as executor_facade
 from sandbox_executor.attribution_check import attribution_allows_publish
+from sandbox_executor.entrypoint.conflict_resolver import run_agent_turn
 from sandbox_executor.entrypoint.executor.commands import _entrypoint_git_runner, _get_repo
 from sandbox_executor.entrypoint.executor.repair import _configure_executor_identity
 from sandbox_executor.entrypoint.sync_conflict import (
@@ -28,6 +29,11 @@ SELF_EXPLAINING_VIOLATION_EXIT = 1
 SELF_EXPLAINING_TIMEOUT_SECONDS = 600
 SELF_EXPLAINING_SUMMARY_LIMIT = 20
 SELF_EXPLAINING_FAILURE_REASON = "self_explaining_violation"
+SELF_EXPLAINING_REPAIR_PROMPT = (
+    "Stage 3 ran `scripts/check_self_explaining.py` before the push and it reported these added docstrings or "
+    "explanatory comments:\n{violations}\n\nRemove each one, or turn a needed reason into a '# why:' comment. Change "
+    "only those lines; do not commit, push, switch branches or edit the ledger."
+)
 
 
 def _is_ledger_path(path: str) -> bool:
@@ -173,6 +179,29 @@ def record_self_explaining_refusal(
     repo.commit(f"execute: record self-explaining refusal for {exec_id}", check=False)
 
 
+def repair_self_explaining_violations(
+    repo: GitRepository, repo_dir: str, fixer: tuple[str, str], exec_id: str, violations: str
+) -> bool:
+    branch = repo.run(["rev-parse", "--abbrev-ref", "HEAD"], check=False).stdout.strip()
+    try:
+        verdict = run_agent_turn(repo_dir, *fixer, SELF_EXPLAINING_REPAIR_PROMPT.format(violations=violations))
+    except Exception as exc:
+        print(
+            f"Warning: the self-explaining repair turn could not run: {redact_agent_secrets(str(exc))}", file=sys.stderr
+        )
+        return False
+    if verdict is not None:
+        print(f"Warning: the self-explaining repair turn failed: {verdict.reason or verdict.verdict}", file=sys.stderr)
+        return False
+    if repo.run(["rev-parse", "--abbrev-ref", "HEAD"], check=False).stdout.strip() != branch:
+        print("Warning: the self-explaining repair turn moved the HEAD branch.", file=sys.stderr)
+        return False
+    repo.add(["-u", "--", ".", f":(exclude){_LEDGER_DIR_PREFIX}"], check=False)
+    if repo.diff(cached=True, quiet=True).returncode == 0:
+        return False
+    return repo.commit(f"execute: repair self-explaining violations for {exec_id}", check=False).returncode == 0
+
+
 class PrePushSteps:
     def target_base(self) -> str:
         intent_data = self.intent_data
@@ -188,6 +217,11 @@ class PrePushSteps:
             )
             return True
         passed, output = run_self_explaining_check(self.repo_dir)
+        if not passed:
+            print(f"Self-explaining check failed before push; running one repair turn:\n{output}", file=sys.stderr)
+            fixer = (self.args.agent_name, self.args.model_name)
+            if repair_self_explaining_violations(self.repo, self.repo_dir, fixer, self.exec_id, output):
+                passed, output = run_self_explaining_check(self.repo_dir)
         if passed:
             return True
         print(f"Error: Self-explaining check failed before push:\n{output}", file=sys.stderr)

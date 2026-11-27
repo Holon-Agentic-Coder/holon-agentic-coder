@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 PACKAGE_DIR = Path(__file__).resolve().parents[1] / "src" / "sandbox_executor"
 
 MODULE_BROAD_EXCEPT_BASELINES: dict[str, int] = {
@@ -193,3 +195,114 @@ def test_sandbox_executor_broad_except_ratchet() -> None:
         PACKAGE_BROAD_EXCEPT_BASELINES,
     )
     assert violations == [], "\n".join(violations)
+
+
+def _write_module(root: Path, relative_path: str, source: str) -> None:
+    target = root / relative_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(source, encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("try:\n    pass\nexcept Exception:\n    pass\n", 1),
+        ("try:\n    pass\nexcept Exception as exc:\n    _ = exc\n", 1),
+        ("try:\n    pass\nexcept (ValueError, Exception):\n    pass\n", 1),
+        ("import builtins\ntry:\n    pass\nexcept builtins.Exception:\n    pass\n", 1),
+        ("try:\n    pass\nexcept* Exception:\n    pass\n", 1),
+        ("try:\n    pass\nexcept ValueError:\n    pass\n", 0),
+        ("try:\n    pass\nexcept (OSError, http.client.HTTPException):\n    pass\n", 0),
+        ("try:\n    pass\nexcept BaseException:\n    pass\n", 0),
+        ("try:\n    pass\nexcept:\n    pass\n", 0),
+        ('text = "except Exception:"\n# except Exception:\nx = 1\n', 0),
+    ],
+)
+def test_count_broad_except_in_source(source: str, expected: int) -> None:
+    assert count_broad_except_in_source(source) == expected
+
+
+def test_ratchet_fails_when_baselined_module_exceeds_cap(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "sub/alpha.py",
+        "try:\n    pass\nexcept Exception:\n    pass\ntry:\n    pass\nexcept Exception:\n    pass\n",
+    )
+    module_counts, package_counts = scan_package_broad_except_counts(tmp_path)
+    violations = find_ratchet_violations(
+        module_counts,
+        package_counts,
+        {"sub/alpha.py": 1},
+        {"sub": 1},
+    )
+    assert len(violations) == 2
+    assert any("module sub/alpha.py: 2" in item and "(cap 1)" in item for item in violations)
+    assert any("package sub: 2" in item and "(cap 1)" in item for item in violations)
+
+
+def test_ratchet_fails_for_unlisted_module_and_unlisted_package(tmp_path: Path) -> None:
+    _write_module(tmp_path, "fresh/new_mod.py", "try:\n    pass\nexcept Exception:\n    pass\n")
+    module_counts, package_counts = scan_package_broad_except_counts(tmp_path)
+    violations = find_ratchet_violations(module_counts, package_counts, {}, {})
+    assert len(violations) == 2
+    assert any("module fresh/new_mod.py: 1" in item and "(cap 0)" in item for item in violations)
+    assert any("package fresh: 1" in item and "(cap 0)" in item for item in violations)
+
+
+def test_ratchet_fails_for_unlisted_module_in_root_package(tmp_path: Path) -> None:
+    _write_module(tmp_path, "root_mod.py", "try:\n    pass\nexcept Exception:\n    pass\n")
+    module_counts, package_counts = scan_package_broad_except_counts(tmp_path)
+    violations = find_ratchet_violations(module_counts, package_counts, {}, {})
+    assert len(violations) == 2
+    assert any("module root_mod.py: 1" in item and "(cap 0)" in item for item in violations)
+    assert any("package <root>: 1" in item and "(cap 0)" in item for item in violations)
+
+
+def test_ratchet_fails_when_package_cap_exceeded_despite_module_caps(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/one.py", "try:\n    pass\nexcept Exception:\n    pass\n")
+    _write_module(tmp_path, "pkg/two.py", "try:\n    pass\nexcept Exception:\n    pass\n")
+    module_counts, package_counts = scan_package_broad_except_counts(tmp_path)
+    violations = find_ratchet_violations(
+        module_counts,
+        package_counts,
+        {"pkg/one.py": 1, "pkg/two.py": 1},
+        {"pkg": 1},
+    )
+    assert violations == ["package pkg: 2 broad except Exception catches (cap 1)"]
+
+
+def test_ratchet_passes_when_counts_equal_baseline(tmp_path: Path) -> None:
+    _write_module(tmp_path, "root.py", "try:\n    pass\nexcept Exception:\n    pass\n")
+    _write_module(tmp_path, "pkg/mod.py", "try:\n    pass\nexcept Exception:\n    pass\n")
+    module_counts, package_counts = scan_package_broad_except_counts(tmp_path)
+    violations = find_ratchet_violations(
+        module_counts,
+        package_counts,
+        {"root.py": 1, "pkg/mod.py": 1},
+        {"": 1, "pkg": 1},
+    )
+    assert violations == []
+
+
+def test_ratchet_passes_when_broad_catches_are_reduced(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "try:\n    pass\nexcept ValueError:\n    pass\n")
+    module_counts, package_counts = scan_package_broad_except_counts(tmp_path)
+    violations = find_ratchet_violations(
+        module_counts,
+        package_counts,
+        {"pkg/mod.py": 2},
+        {"pkg": 2},
+    )
+    assert violations == []
+
+
+def test_ratchet_passes_when_baselined_module_removed_and_clean_module_added(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/clean.py", "try:\n    pass\nexcept OSError:\n    pass\n")
+    module_counts, package_counts = scan_package_broad_except_counts(tmp_path)
+    violations = find_ratchet_violations(
+        module_counts,
+        package_counts,
+        {"pkg/removed.py": 1},
+        {"pkg": 1},
+    )
+    assert violations == []

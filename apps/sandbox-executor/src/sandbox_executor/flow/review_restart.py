@@ -1,18 +1,3 @@
-"""The merged-head restart: Stage 5 refuses a head CI failed on, and the pipeline restarts Stage 4 for that head.
-
-:func:`stage5_merged_head_gate` runs after the conflict gate and before any calibration commit. A head that is the
-approved head, or moved past it only by non-merge bookkeeping commits (the ledger rows Stage 4 commits on exit), keeps
-today's path: Stage 5 relies on the Stage 4 CI of the approved code. Any other head (a merge of the target branch, or a
-code change) waits for CI on exactly that SHA (:mod:`sandbox_executor.flow.review.merged_head_gate`), also when the
-approval carried over by PR-own fingerprint; a PR-own change that differs from the approved one withdraws the consensus
-without waiting (:mod:`sandbox_executor.flow.review.approval_carry_over`). A failed check is routed by class
-(:mod:`sandbox_executor.flow.review.merged_head_routing`): noise is rerun once, a defect restarts Stage 4 scoped with
-the CI finding carried while the diff approval stands, and a changed diff withdraws the consensus; each restart returns
-a SKIPPED Stage 5 flagged ``review_restart``. Anything unsettled fails Stage 5 closed.
-:func:`calibrate_with_review_restart` turns that flag into a fresh Stage 4 at iteration 1 and, on a new approval, a new
-Stage 5, at most ``MAX_MERGED_HEAD_REVIEW_RESTARTS`` times; a scoped restart whose Stage 4 does not approve withdraws.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -47,7 +32,6 @@ MAX_MERGED_HEAD_REVIEW_RESTARTS = 3
 
 
 def _execution_head(context: FlowContext, seams: MergedHeadSeams) -> str | None:
-    """The execution head on origin after the conflict gate's push, else the PR head GitHub reports."""
     if seams.head_reader is not None:
         return seams.head_reader()
     branch, repo_dir = str(context.execution_branch), context.target_worktree
@@ -57,7 +41,6 @@ def _execution_head(context: FlowContext, seams: MergedHeadSeams) -> str | None:
 
 
 def _git_bookkeeping_move(repo_dir: str) -> Callable[[str, str], bool]:
-    """Whether ``approved..head`` holds no merge commit and touches only plan, execution and knowledge-base paths."""
 
     def moved(approved: str, head: str) -> bool:
         merges = run_git(["rev-list", "--merges", f"{approved}..{head}"], cwd=repo_dir, check=False)
@@ -77,7 +60,6 @@ def _skip_reason(context: FlowContext) -> str | None:
 def _decide(
     context: FlowContext, start: str, record: dict[str, Any], seams: MergedHeadSeams
 ) -> tuple[StageResult | None, dict[str, Any]]:
-    """None lets Stage 5 calibrate; a failed check is routed by class; anything unsettled fails closed."""
     if record["state"] == PASSED:
         return None, record
     if record["state"] == FAILED:
@@ -88,10 +70,10 @@ def _decide(
 def stage5_merged_head_gate(
     context: FlowContext, seams: MergedHeadSeams | None = None
 ) -> tuple[StageResult | None, dict[str, Any]]:
-    """Gate Stage 5 on CI of the head it would calibrate: (the result that stops Stage 5 or None, the CI record)."""
     seams, start = seams or MergedHeadSeams(), datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     resumed = resumed_restart(context, start)
-    if resumed is not None:  # A resume after a withdrawal or a scoped restart: Stage 4 runs again first.
+    # why: a resume after a withdrawal or a scoped restart runs Stage 4 again first.
+    if resumed is not None:
         return resumed
     skip = _skip_reason(context)
     if skip:
@@ -109,7 +91,8 @@ def stage5_merged_head_gate(
         )
         return None, record
     coverage, annotation = merged_head_coverage(context, approved, head)
-    if coverage == CHANGED:  # The PR-own change differs from the approved one: Stage 4 reviews it again.
+    # why: a PR-own change that differs from the approved one sends Stage 4 to review it again.
+    if coverage == CHANGED:
         return _decide(context, start, annotation, seams)
     context.log(f"Merged-head CI gate: head {head} is not the approved head {approved}; waiting for its CI.")
     record = {**gate_merged_head_ci(context, context.target_worktree, head, seams), **annotation}
@@ -118,14 +101,12 @@ def stage5_merged_head_gate(
 
 
 def approval_stands(context: FlowContext, result: StageResult) -> bool:
-    """Whether ``result`` and Stage 4's latest result are approvals no merged-head CI failure has withdrawn."""
     latest = context.stage_results.get(FlowStage.REVIEW.value) or result
     approved = result.status == StageStatus.APPROVED and latest.status == StageStatus.APPROVED
     return approved and withdrawn_consensus_of(context) is None and pending_scoped_restart(context) is None
 
 
 def is_review_restart(result: StageResult) -> bool:
-    """Whether a Stage 5 result withdrew the consensus and asks for a fresh Stage 4."""
     return result.stage == FlowStage.CALIBRATE and bool(result.payload.get("review_restart"))
 
 
@@ -135,7 +116,6 @@ def _run_calibrate(
     record: Callable[[FlowStage, StageResult], None],
     restarts: int,
 ) -> StageResult:
-    """Run and record Stage 5; a restart request past the cap becomes a FAILED Stage 5 (nothing was calibrated)."""
     context.merged_head_restart_allowed = restarts < MAX_MERGED_HEAD_REVIEW_RESTARTS
     result = run_stage(FlowStage.CALIBRATE)
     if is_review_restart(result) and restarts >= MAX_MERGED_HEAD_REVIEW_RESTARTS:
@@ -151,7 +131,6 @@ def _run_calibrate(
 
 
 def _restart_note(result: StageResult) -> str:
-    """The log line that names a scoped restart for a CI defect, or the withdrawal that restarts Stage 4."""
     gate = result.payload.get("merged_head_ci") or {}
     if result.payload.get("scoped_restart"):
         cls = (result.payload.get("ci_routing") or {}).get("classification")
@@ -168,18 +147,13 @@ def calibrate_with_review_restart(
     run_stage: Callable[[FlowStage], StageResult],
     record: Callable[[FlowStage, StageResult], None],
 ) -> StageResult:
-    """Run Stage 5, restarting Stage 4 at iteration 1 while the merged head's CI asks for a restart.
-
-    ``run_stage`` runs one stage with the engine's hooks and budget; ``record`` stores and checkpoints its result. A
-    restarted Stage 4 that does not approve is returned as it is, so the pipeline halts on it as on any Stage 4; when
-    it was a scoped restart for a CI defect, the consensus is withdrawn first.
-    """
     restarts = 0
     result = _run_calibrate(context, run_stage, record, restarts)
     while is_review_restart(result):
         restarts += 1
         gate, scoped = result.payload.get("merged_head_ci") or {}, bool(result.payload.get("scoped_restart"))
-        approved = result.payload.get("approved_head")  # Named before the restarted Stage 4 replaces the consensus.
+        # why: read before the restarted Stage 4 replaces the consensus.
+        approved = result.payload.get("approved_head")
         context.log(f"{_restart_note(result)} (restart {restarts} of {MAX_MERGED_HEAD_REVIEW_RESTARTS}).")
         review = run_stage(FlowStage.REVIEW)
         record(FlowStage.REVIEW, review)

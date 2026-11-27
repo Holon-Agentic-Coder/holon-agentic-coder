@@ -1,5 +1,3 @@
-"""Git reference resolution for calibration: fetches, commit SHAs, branch and PR refs, and file reads at a ref."""
-
 from __future__ import annotations
 
 import contextlib
@@ -14,15 +12,6 @@ logger = logging.getLogger(__name__)
 
 
 def fetch_remote_ref_if_needed(ref_name: str, target_worktree: str = ".") -> bool:
-    """Attempt to fetch a git reference from the remote repository.
-
-    Args:
-        ref_name: Name of branch or git reference to fetch.
-        target_worktree: Path to the target git worktree directory.
-
-    Returns:
-        True if fetch succeeded, False otherwise.
-    """
     clean_ref = ref_name.strip().strip("/")
     if not clean_ref or clean_ref.startswith("-"):
         return False
@@ -44,18 +33,6 @@ fetch_ref_if_needed = fetch_remote_ref_if_needed
 
 
 def resolve_commit_sha(ref: str, target_worktree: str = ".") -> str:
-    """Resolve any git ref (branch, tag, SHA, HEAD) to a 40-character commit SHA.
-
-    Args:
-        ref: Git reference to resolve (branch name, commit SHA, HEAD, etc.)
-        target_worktree: Path to the target git worktree directory.
-
-    Returns:
-        The 40-character hexadecimal commit SHA.
-
-    Raises:
-        RuntimeError: If ref cannot be resolved to a commit object.
-    """
     clean_ref = ref.strip()
     if not clean_ref:
         raise RuntimeError("Empty reference provided for commit SHA resolution.")
@@ -76,7 +53,6 @@ def resolve_commit_sha(ref: str, target_worktree: str = ".") -> str:
 
 
 def _as_commit_sha(clean_ref: str, target_worktree: str) -> str | None:
-    """A hex commit SHA (7 to 40 hex chars) that names a commit object: its full SHA."""
     if not re.fullmatch(r"[0-9a-fA-F]{7,40}", clean_ref):
         return None
     try:
@@ -91,13 +67,11 @@ def _as_commit_sha(clean_ref: str, target_worktree: str) -> str | None:
 
 
 def _as_local_branch(clean_ref: str, target_worktree: str) -> str | None:
-    """A local branch (``refs/heads/<ref>``), after fetching its origin update when tracking exists."""
     try:
         res = run_git(
             ["rev-parse", "--verify", f"refs/heads/{clean_ref}"], cwd=target_worktree, check=False, timeout=30
         )
         if res.returncode == 0:
-            # Check if origin has an updated ref and fetch it if tracking exists
             with contextlib.suppress(Exception):
                 fetch_remote_ref_if_needed(clean_ref, target_worktree=target_worktree)
             return clean_ref
@@ -107,7 +81,6 @@ def _as_local_branch(clean_ref: str, target_worktree: str) -> str | None:
 
 
 def _as_qualified_ref(clean_ref: str, target_worktree: str) -> str | None:
-    """A ref that already starts with ``origin/`` or ``refs/`` and verifies as given."""
     if not (clean_ref.startswith("origin/") or clean_ref.startswith("refs/")):
         return None
     try:
@@ -120,7 +93,6 @@ def _as_qualified_ref(clean_ref: str, target_worktree: str) -> str | None:
 
 
 def _as_remote_tracking(clean_ref: str, target_worktree: str) -> str | None:
-    """``origin/<ref>`` when ``origin/<ref>`` or ``refs/remotes/origin/<ref>`` exists."""
     for remote_candidate in [f"origin/{clean_ref}", f"refs/remotes/origin/{clean_ref}"]:
         try:
             res = run_git(["rev-parse", "--verify", remote_candidate], cwd=target_worktree, check=False, timeout=30)
@@ -132,7 +104,6 @@ def _as_remote_tracking(clean_ref: str, target_worktree: str) -> str | None:
 
 
 def _after_remote_fetch(clean_ref: str, target_worktree: str) -> str | None:
-    """The local branch, else ``origin/<ref>``, once a fetch from origin succeeded."""
     if not fetch_remote_ref_if_needed(clean_ref, target_worktree=target_worktree):
         return None
     try:
@@ -152,7 +123,6 @@ def _after_remote_fetch(clean_ref: str, target_worktree: str) -> str | None:
 
 
 def _pull_request_head_via_gh(pr_num: str, target_worktree: str) -> str | None:
-    """The head commit SHA of pull request ``pr_num`` as reported by ``gh pr view``."""
     try:
         res = subprocess.run(
             ["gh", "pr", "view", pr_num, "--json", "headRefOid", "-q", ".headRefOid"],
@@ -170,7 +140,6 @@ def _pull_request_head_via_gh(pr_num: str, target_worktree: str) -> str | None:
 
 
 def _as_pull_request(clean_ref: str, target_worktree: str) -> str | None:
-    """A PR ref (``pull/<n>/head``, ``refs/pull/<n>/head`` or ``pr-<n>``): fetched to ``pr-<n>``, else its gh head."""
     pr_match = re.search(r"pull/(\d+)/head", clean_ref) or re.search(r"pr-(\d+)", clean_ref)
     if not pr_match:
         return None
@@ -188,7 +157,6 @@ def _as_pull_request(clean_ref: str, target_worktree: str) -> str | None:
 
 
 def _as_direct_ref(clean_ref: str, target_worktree: str) -> str | None:
-    """The ref as given, when ``git rev-parse --verify`` accepts it."""
     try:
         res = run_git(["rev-parse", "--verify", clean_ref], cwd=target_worktree, check=False, timeout=15)
         if res.returncode == 0 and res.stdout.strip():
@@ -198,8 +166,7 @@ def _as_direct_ref(clean_ref: str, target_worktree: str) -> str | None:
     return None
 
 
-# Lookup stages of resolve_git_ref in order; the first non-None result wins.
-_REF_RESOLVERS: tuple[Callable[[str, str], str | None], ...] = (
+_REF_RESOLVERS_FIRST_MATCH_WINS: tuple[Callable[[str, str], str | None], ...] = (
     _as_commit_sha,
     _as_local_branch,
     _as_qualified_ref,
@@ -211,29 +178,10 @@ _REF_RESOLVERS: tuple[Callable[[str, str], str | None], ...] = (
 
 
 def resolve_git_ref(ref_name: str, target_worktree: str = ".") -> str:
-    """Resolve execution or plan ref across commit SHAs, local branches, and remote refs.
-
-    Lookup order (``_REF_RESOLVERS``):
-    1. Commit SHA (40-char or short hex matching valid commit object).
-    2. Local branch ref (`refs/heads/<ref_name>`).
-    3. Remote tracking ref (`origin/<ref_name>` or `refs/remotes/origin/<ref_name>`).
-    4. Remote fetch fallback (attempt fetch from origin).
-    5. PR head ref (`pull/<n>/head` or `refs/pull/<n>/head` or `pr-<n>`).
-
-    Args:
-        ref_name: Target git reference string.
-        target_worktree: Path to the target git worktree directory.
-
-    Returns:
-        The resolvable git ref string or canonical commit SHA.
-
-    Raises:
-        RuntimeError: If the reference cannot be resolved locally or remotely.
-    """
     clean_ref = ref_name.strip().strip("/")
     if not clean_ref:
         raise RuntimeError("Cannot resolve empty git ref.")
-    for resolver in _REF_RESOLVERS:
+    for resolver in _REF_RESOLVERS_FIRST_MATCH_WINS:
         resolved = resolver(clean_ref, target_worktree)
         if resolved is not None:
             return resolved
@@ -246,17 +194,6 @@ def read_git_file(
     target_worktree: str = ".",
     repo_dir: str | None = None,
 ) -> str | None:
-    """Read file content from a specific git ref using `git show <ref>:<path>`.
-
-    Args:
-        ref: Git reference (branch, tag, or commit SHA).
-        rel_path: Relative path to the file within the repository.
-        target_worktree: Path to the target git worktree directory.
-        repo_dir: Backward-compatible alias for target_worktree.
-
-    Returns:
-        File contents as string if successful, None if git show fails.
-    """
     if repo_dir is not None:
         target_worktree = repo_dir
     clean_ref = ref.strip()

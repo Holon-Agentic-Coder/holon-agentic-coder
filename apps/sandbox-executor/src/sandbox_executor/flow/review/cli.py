@@ -1,5 +1,3 @@
-"""The 'holon review-loop' CLI entry; its summary helpers live in :mod:`sandbox_executor.flow.review.verdict`."""
-
 from __future__ import annotations
 
 import json
@@ -12,16 +10,6 @@ from sandbox_executor.flow.review.verdict import review_loop_approved, review_su
 
 
 def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
-    """CLI dispatcher for 'holon review-loop' (and aliases 'review', 'pr-review-loop').
-
-    Args:
-        args: Parsed CLI namespace containing target, max_iterations, ensemble_size, etc.
-        token_reduce: Whether token reduction proxy is enabled.
-
-    Returns:
-        int: Process exit code: 0 only when the ensemble verdict is APPROVED and the consensus was approved and
-        posted (ready for maintainer merge), otherwise 1.
-    """
     target_worktree = getattr(args, "target_worktree", None) or getattr(args, "repo_dir", ".")
     target = getattr(args, "target", "")
     max_iterations = getattr(args, "max_iterations", 25)
@@ -31,7 +19,7 @@ def run_review_loop_cli(args: Any, token_reduce: bool = False) -> int:
     json_output = getattr(args, "json", False)
 
     context_kwargs: dict[str, Any] = {}
-    # main() resolves --agent/--model before dispatch; keep the FlowContext defaults for other callers.
+    # why: main() resolves --agent/--model before dispatch; other callers keep the FlowContext defaults.
     if getattr(args, "agent", None):
         context_kwargs["agent"] = args.agent
     if getattr(args, "model", None):

@@ -1,14 +1,3 @@
-"""Stage 2 resume adoption: discover existing plan branches under an intent, check completeness and adopt the newest.
-
-On entry to Stage 2 (outside dry runs and engine re-plans carrying ``replan_feedback``), the stage inspects every
-``<intent prefix>/P-.../_`` branch on ``origin`` and in the local worktree. A branch is complete when a ``plans.jsonl``
-row of that plan and the plan file that row records both exist at the branch ref (``refs/remotes/origin/<branch>`` when
-on ``origin``, else ``refs/heads/<branch>``). When at least one complete branch exists, the stage adopts the newest
-complete one (largest plan-id timestamp, ties broken by branch name), pushes it first if it exists only locally, logs
-every candidate, the ignored incomplete ones with their reason and the adopted choice, and proceeds without dispatching
-the planner.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -37,7 +26,6 @@ AMBIGUOUS_PLAN_BRANCHES_HINT = (
 
 
 def _plan_timestamp(branch: str) -> int:
-    """Return the integer epoch timestamp from the ``P-<timestamp>-...`` segment of ``branch`` (0 if unparseable)."""
     _, plan_id = split_plan_branch(branch)
     parts = plan_id.split("-")
     if len(parts) >= 2 and parts[1].isdigit():
@@ -47,8 +35,6 @@ def _plan_timestamp(branch: str) -> int:
 
 @dataclass(frozen=True)
 class PlanCandidate:
-    """One existing ``P-.../_`` branch under an intent prefix, evaluated for Stage 2 resume adoption."""
-
     branch: str
     ref: str
     published: bool
@@ -56,16 +42,13 @@ class PlanCandidate:
 
     @property
     def complete(self) -> bool:
-        """True when both the ``plans.jsonl`` row of this plan and its recorded plan file exist at ``ref``."""
         return not self.missing
 
     def sort_key(self) -> tuple[int, str]:
-        """Sort key ordering candidates oldest first: numeric plan-id timestamp, then branch name."""
         return (_plan_timestamp(self.branch), self.branch)
 
 
 def _missing_reason(repo_dir: str, branch: str, ref: str) -> str:
-    """Return why ``branch`` at ``ref`` is incomplete, or ``""`` when its plan row and plan file both exist."""
     rows = [r for r in _read_ledger_rows(repo_dir, ref, "plans.jsonl") if is_row_of_plan(r, branch)]
     if not rows:
         return "no plans.jsonl row"
@@ -76,7 +59,6 @@ def _missing_reason(repo_dir: str, branch: str, ref: str) -> str:
 
 
 def plan_candidates(repo_dir: str, intent_prefix: str) -> list[PlanCandidate]:
-    """Return every ``<intent_prefix>/P-.../_`` candidate on origin or locally, ordered oldest first."""
     origin_branches = _list_child_branches(repo_dir, intent_prefix, "P")
     local_branches = set(new_local_child_branches(repo_dir, intent_prefix, "P", set()))
     candidates: list[PlanCandidate] = []
@@ -89,7 +71,6 @@ def plan_candidates(repo_dir: str, intent_prefix: str) -> list[PlanCandidate]:
 
 
 def _log_adopted_choice(context: FlowContext, chosen: PlanCandidate) -> None:
-    """Log the adopted newest complete plan branch, checkpoint match status, and how to force a fresh plan."""
     recorded = context.plan_branch
     if recorded == chosen.branch:
         checkpoint_note = f"matches checkpoint plan_branch '{recorded}'"
@@ -104,12 +85,6 @@ def _log_adopted_choice(context: FlowContext, chosen: PlanCandidate) -> None:
 
 
 def adopt_existing_plan(context: FlowContext, intent_prefix: str) -> tuple[str, str | None]:
-    """Adopt the newest complete plan branch under ``intent_prefix``, publishing it first if local-only.
-
-    Returns:
-        tuple[str, str | None]: ``(adopted_branch, None)`` when a complete branch is adopted, ``("", None)`` when
-        Stage 2 should dispatch the planner as usual, or ``("", error)`` when publishing a local branch failed.
-    """
     if str(context.intent_data.get("replan_feedback") or "").strip():
         return "", None
     repo_dir = context.target_worktree
@@ -134,11 +109,6 @@ def adopt_existing_plan(context: FlowContext, intent_prefix: str) -> tuple[str, 
 
 
 def record_plan_branch(context: FlowContext, plan_branch: str) -> str | None:
-    """Save the checkpoint with ``plan_branch`` and Stage 2 marked ``RUNNING`` before pushing, then restore live state.
-
-    Transient ``replan_feedback`` is removed for the save and restored in ``finally`` together with
-    ``context.plan_branch`` and the ``plan`` stage result. Returns ``None`` on success, or an error text.
-    """
     prev_branch = context.plan_branch
     has_plan_result = FlowStage.PLAN.value in context.stage_results
     prev_plan_result = context.stage_results.get(FlowStage.PLAN.value)
@@ -173,7 +143,6 @@ def publish_planned_branches(
     suffix: str,
     run_remote: Callable[..., str | None] = remote_error,
 ) -> str | None:
-    """Record a single new matching plan branch in the checkpoint before pushing every new child branch to origin."""
     repo_dir = context.target_worktree
     created = [
         b for b in new_local_child_branches(repo_dir, intent_prefix, "P", before) if _matches_dispatch_suffix(b, suffix)

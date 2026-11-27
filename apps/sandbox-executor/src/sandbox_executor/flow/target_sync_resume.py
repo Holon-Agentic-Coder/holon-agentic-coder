@@ -1,12 +1,3 @@
-"""Adopt a target merge a flow left in progress, so a resumed flow finishes or redoes it instead of halting.
-
-A merge counts as the flow's own only when its ``MERGE_MSG`` carries the sync's message (``SYNC_MERGE_PREFIX``) and
-its ``MERGE_HEAD`` is reachable from the current target ref; any other merge (for example an operator merging by hand
-a branch that already landed in the target) is never touched and is reported instead. A merge of the current target
-SHA is finished when every path resolves; a merge of an older target SHA, or one that cannot be finished, is aborted,
-and the flow's next boundary sync (``sync_with_target``) redoes it.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -27,8 +18,6 @@ from sandbox_executor.git import run_git
 
 @dataclass(frozen=True)
 class MergeAdoption:
-    """What adoption did: ``completed`` (merged), ``aborted`` (redo the sync) or ``refused`` (left untouched)."""
-
     action: str
     result: SyncResult | None = None
     error: str = ""
@@ -44,7 +33,6 @@ def _reachable(worktree: str, ancestor: str, descendant: str) -> bool:
 
 
 def _started_by_sync(worktree: str) -> bool:
-    """Whether the in-progress merge's ``MERGE_MSG`` carries the message every sync merge is started with."""
     res = run_git(["rev-parse", "--git-path", "MERGE_MSG"], cwd=worktree, check=False)
     if res.returncode != 0 or not isinstance(res.stdout, str) or not res.stdout.strip():
         return False
@@ -55,7 +43,6 @@ def _started_by_sync(worktree: str) -> bool:
 
 
 def _target_sha(request: SyncRequest) -> str:
-    """Fetch the target and return its SHA, or ``""`` when it cannot be fetched or resolved."""
     try:
         fetch_base(request.worktree, request.target_branch)
     except HostRemoteError:
@@ -64,7 +51,8 @@ def _target_sha(request: SyncRequest) -> str:
 
 
 def _refusal(request: SyncRequest, merge_head: str) -> tuple[str, str]:
-    """The fetched target SHA and why the merge of ``merge_head`` is not the flow's own (``""`` when it is)."""
+    # why: a merge is the flow's own only when MERGE_MSG carries SYNC_MERGE_PREFIX and MERGE_HEAD is reachable from the
+    # why: target; any other merge, such as an operator's hand merge, is never touched and is reported instead
     if not _started_by_sync(request.worktree):
         return "", f"the merge of {merge_head[:12]} was not started by the target sync"
     target_sha = _target_sha(request)
@@ -76,7 +64,6 @@ def _refusal(request: SyncRequest, merge_head: str) -> tuple[str, str]:
 
 
 def adopt_merge_in_progress(request: SyncRequest) -> MergeAdoption | None:
-    """Finish, abort or refuse the merge in progress in ``request.worktree``; ``None`` when there is none."""
     worktree = request.worktree
     if not merge_in_progress(worktree):
         return None
@@ -90,6 +77,7 @@ def adopt_merge_in_progress(request: SyncRequest) -> MergeAdoption | None:
     target_ref, conflicted = f"origin/{request.target_branch}", tuple(unmerged_paths(worktree))
     probe = TargetProbe(target_ref, target_sha, _sha(worktree, "HEAD"), "", True, conflicted)
     result = complete_merge(request, probe)
-    if result.status == "merged" or result.ledger_row_id:  # a failed push keeps the recorded merge commit
+    # why: a failed push keeps the recorded merge commit
+    if result.status == "merged" or result.ledger_row_id:
         return MergeAdoption("completed", result, result.error)
     return MergeAdoption("aborted" if not merge_in_progress(worktree) else "refused", result, result.error)

@@ -427,6 +427,7 @@ def test_intent_creator_mounts_the_intent_file_read_only(launch_env, capsys, tmp
     assert intent_volumes == ["<TMP>/intent.json:/tmp/intent.json:ro"]
     assert "<TMP>/intent.json:/tmp/intent.json" not in docker_run
 
+
 def test_intent_creator_with_missing_intent_file(launch_env, capsys, tmp_path):
     missing = tmp_path / "missing.json"
     launch = _launch(

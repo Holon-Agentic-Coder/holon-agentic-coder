@@ -190,6 +190,17 @@ def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     return subprocess.run(["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=repo).returncode == 0
 
 
+def resolve_conflict_by_merging_main_into_plan(repo: Path) -> None:
+    # why: a merge keeps origin/main an ancestor of the plan tip, so the resumed refresh is a no-op
+    git(repo, "checkout", "-q", "-B", PLAN, f"origin/{PLAN}")
+    subprocess.run(["git", "merge", "-q", "origin/main"], cwd=repo, capture_output=True)
+    (repo / "src/app.py").write_text("APP = 23\n", encoding="utf-8")
+    git(repo, "add", "src/app.py")
+    git(repo, "commit", "-q", "--no-edit")
+    git(repo, "push", "-q", "origin", PLAN)
+    git(repo, "checkout", "-q", "main")
+
+
 def test_ac1_a_flow_admitted_after_a_wait_gets_main_merged_before_dispatch(
     host_with_overlap_merged_on_main: tuple[Path, str],
 ) -> None:
@@ -276,14 +287,7 @@ def test_ac4_a_non_ledger_conflict_stops_stage_3_before_dispatch_and_stays_resum
     refresh_still_due = {"state": "admitted", "waited_since": WAITED_SINCE}
     assert saved_admission(host) == refresh_still_due
 
-    # why: the operator merges by hand (merge, not rebase); the resumed flow retries the refresh, now a no-op
-    git(host, "checkout", "-q", "-B", PLAN, f"origin/{PLAN}")
-    subprocess.run(["git", "merge", "-q", "origin/main"], cwd=host, capture_output=True)
-    (host / "src/app.py").write_text("APP = 23\n", encoding="utf-8")
-    git(host, "add", "src/app.py")
-    git(host, "commit", "-q", "--no-edit")
-    git(host, "push", "-q", "origin", PLAN)
-    git(host, "checkout", "-q", "main")
+    resolve_conflict_by_merging_main_into_plan(host)
     resumed = load_checkpoint(get_default_checkpoint_path(str(host), "x")).context
 
     again = run_stage(host, resumed, executor)

@@ -44,7 +44,7 @@ from tests.flow.sync_boundary_repos import (
 )
 from tests.flow.test_sync_boundaries import FakeResolverDispatcher, _inject_ledger_conflict
 from tests.flow_repo_templates import FlowCommit, flow_history_copy
-from tests.ledger_conflict_repos import FLOW_BRANCH, commit_on
+from tests.ledger_conflict_repos import FLOW_BRANCH
 
 
 def _resolve_app(work: Path) -> None:
@@ -150,11 +150,10 @@ def test_stage4_iteration_and_resolver_turn_boundaries_resolve_injected_conflict
     assert ctx.review_scope_paths == []  # Unapproved PR must never be narrowed to conflict-resolved paths.
 
     # When already in a post-approval scoped re-review, a further agent merge unions into review_scope_paths.
-    ctx.review_scope_paths = ["src/other.py"]
-    commit_on(work, "main", {APP: "y = 3\n", "src/unrelated_target.py": "u = 1\n"}, "target code 2")
-    commit_on(work, FLOW_BRANCH, {APP: "x = 2\n"}, "flow code 2")
-    before_union = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
-    ctx.dispatcher = FakeResolverDispatcher([(_resolve_app, "resolved")])
+    repos_u = flow_history_copy(tmp_path_factory, tmp_path / "union", CODE_BASE, (TARGET_CODE, FLOW_CODE))
+    before_union = repos_u.shas[1]
+    ctx_u = _ctx(repos_u.work, dispatcher=FakeResolverDispatcher([(_resolve_app, "resolved")]))
+    ctx_u.review_scope_paths = ["src/other.py"]
     probes_u = iter(
         [
             {"mergeable": "CONFLICTING", "merge_state_status": "DIRTY", "is_dirty": True},
@@ -162,20 +161,20 @@ def test_stage4_iteration_and_resolver_turn_boundaries_resolve_injected_conflict
         ]
     )
     updated_u, _, _, err_u = sync_iteration_mergeability(
-        ctx,
+        ctx_u,
         ReviewTarget(raw=FLOW_BRANCH, head_branch=FLOW_BRANCH, head_sha=before_union),
         "main",
         2,
         lambda: next(probes_u),
     )
     assert err_u is None and updated_u is not None and updated_u.head_sha != before_union
-    assert ctx.review_scope_paths == [APP, "src/other.py"]
+    assert ctx_u.review_scope_paths == [APP, "src/other.py"]
 
     # Resolver turn boundary also resolves a newly injected target ledger conflict.
-    _inject_ledger_conflict(work, FLOW_BRANCH, 4)
-    before_turn = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
+    repos_turn = flow_history_copy(tmp_path_factory, tmp_path / "turn", CODE_BASE, ledger_conflict(2))
+    before_turn = repos_turn.shas[1]
     updated2, err2 = sync_after_resolver_turn(
-        ctx, ReviewTarget(raw=FLOW_BRANCH, head_branch=FLOW_BRANCH, head_sha=before_turn), "main", 1
+        _ctx(repos_turn.work), ReviewTarget(raw=FLOW_BRANCH, head_branch=FLOW_BRANCH, head_sha=before_turn), "main", 1
     )
     assert err2 is None
     assert updated2 is not None and updated2.head_sha != before_turn
@@ -324,9 +323,8 @@ def test_stage5_entry_and_retry_sync_resolve_conflicts_and_block_cleanly(
     assert calls == 2
 
     # A blocked retry sync raises permanent CalibrationSyncError without retrying further.
-    commit_on(work, "main", {APP: "main = 1\n"}, "main code")
-    commit_on(work, FLOW_BRANCH, {APP: "flow = 1\n"}, "flow code")
-    ctx_fail = _ctx(work, dispatcher=FakeResolverDispatcher([(None, "cannot_decide")] * 3))
+    work_fail = sync_work(tmp_path_factory, tmp_path / "blocked", (TARGET_CODE, FLOW_CODE), base=CODE_BASE)
+    ctx_fail = _ctx(work_fail, dispatcher=FakeResolverDispatcher([(None, "cannot_decide")] * 3))
     with pytest.raises(CalibrationSyncError, match=r"code conflicts with main in: src/app\.py"):
         make_calibrate_retry_sync(ctx_fail)(1)
 
@@ -523,9 +521,8 @@ def test_stage4_start_boundary_unions_rereview_scope_when_already_scoped(
     assert ctx.review_scope_paths == [APP, "src/existing.py"]
 
     # Unscoped Stage 4 entry keeps review_scope_paths empty (full PR review).
-    commit_on(work, "main", {APP: "y = 3\n"}, "target code 2")
-    commit_on(work, FLOW_BRANCH, {APP: "x = 2\n"}, "flow code 2")
-    ctx_full = _ctx(work, dispatcher=FakeResolverDispatcher([(_resolve_app, "resolved")]))
+    work_full = sync_work(tmp_path_factory, tmp_path / "full", (TARGET_CODE, FLOW_CODE), base=CODE_BASE)
+    ctx_full = _ctx(work_full, dispatcher=FakeResolverDispatcher([(_resolve_app, "resolved")]))
     assert at_stage_boundary(ctx_full, FlowStage.REVIEW, SyncBoundary.STAGE_START) is None
     assert ctx_full.review_scope_paths == []
 

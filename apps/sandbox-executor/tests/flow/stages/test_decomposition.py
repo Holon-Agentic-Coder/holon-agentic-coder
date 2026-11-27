@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sandbox_executor import flow as flow_module
 from sandbox_executor.budgets import MAX_REPLAN_ATTEMPTS, MAX_SUB_INTENT_DEPTH
+from sandbox_executor.decomposition_rule import DecompositionDecision
 from sandbox_executor.flow import (
     FlowContext,
     FlowStage,
@@ -43,8 +44,12 @@ class TestEntropyBudgetHandoffInFlow:
         ids=["normal", "over-budget"],
     )
     def test_stage3_never_halts_for_a_human_when_the_executor_row_decides(self, stage_start, entropy, expected_status):
-        start = stage_start("plan", AgentsSpec(plans=((entropy, ""),), budget=5.0))
+        start = stage_start("plan", AgentsSpec(plans=((12.6, ""),), budget=5.0))
         ctx = start.ctx
+        if expected_status == StageStatus.SUCCESS:
+            start.agents.executor_decision = DecompositionDecision(
+                decision="execute", entropy=entropy, entropy_budget=5.0
+            )
 
         # why: an unreadable plan row before dispatch leaves the decision to the executor's own row.
         with patch("sandbox_executor.flow.stages.execute._plan_budget_decision", return_value=None):
@@ -274,13 +279,9 @@ class TestEntropyBudgetHandoffInFlow:
         assert not any(line.startswith("Combined PR") for line in summary)
 
     def test_sub_intent_depth_is_bounded(self, stage_start):
-        start = stage_start(
-            "plan",
-            AgentsSpec(
-                plans=((2.0, SUB_INTENT_LIST),), budget=5.0, intent_extra=(("sub_intent_depth", MAX_SUB_INTENT_DEPTH),)
-            ),
-        )
+        start = stage_start("plan", AgentsSpec(plans=((9.0, SUB_INTENT_LIST), (2.0, "")), budget=5.0))
         agents, ctx = start.agents, start.ctx
+        ctx.intent_data["sub_intent_depth"] = MAX_SUB_INTENT_DEPTH
 
         results = PipelineEngine(ctx, from_stage=FlowStage.EXECUTE).run()
 

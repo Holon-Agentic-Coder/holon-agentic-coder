@@ -145,9 +145,14 @@ def bare_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config:
 
 
 @pytest.fixture(scope="session")
-def path_cases_repo(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> tuple[Path, dict[str, str]]:
+def path_cases_repo(
+    tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str
+) -> tuple[Path, dict[str, str], str]:
     root, shas = shared_template(tmp_path_factory, "fingerprint-path-cases", _build_path_cases)
-    return root / "cases.git", shas
+    repo = root / "cases.git"
+    before = pr_change_fingerprint(str(repo), shas["pr"], shas["base"])
+    assert before is not None
+    return repo, shas, before
 
 
 def _repos(template: Path, root: Path, pr_files: dict[str, str]) -> Path:
@@ -188,24 +193,22 @@ def test_fingerprint_is_versioned_and_stable(repos_template: Path, tmp_path: Pat
 
 @pytest.mark.parametrize("case_id", list(BOOKKEEPING_CASES))
 def test_bookkeeping_paths_do_not_change_the_fingerprint(
-    path_cases_repo: tuple[Path, dict[str, str]], case_id: str
+    path_cases_repo: tuple[Path, dict[str, str], str], case_id: str
 ) -> None:
-    repo, shas = path_cases_repo
-    before = pr_change_fingerprint(str(repo), shas["pr"], shas["base"])
-    after = pr_change_fingerprint(str(repo), shas[f"bookkeeping:{case_id}"], shas["base"])
-    assert before is not None and after == before
+    repo, shas, before = path_cases_repo
+    assert pr_change_fingerprint(str(repo), shas[f"bookkeeping:{case_id}"], shas["base"]) == before
 
 
 @pytest.mark.parametrize("rel", REVIEWABLE_PATHS)
-def test_every_reviewable_path_changes_the_fingerprint(path_cases_repo: tuple[Path, dict[str, str]], rel: str) -> None:
-    repo, shas = path_cases_repo
-    before = pr_change_fingerprint(str(repo), shas["pr"], shas["base"])
-    after = pr_change_fingerprint(str(repo), shas[f"reviewable:{rel}"], shas["base"])
-    assert before is not None and after not in (before, None)
+def test_every_reviewable_path_changes_the_fingerprint(
+    path_cases_repo: tuple[Path, dict[str, str], str], rel: str
+) -> None:
+    repo, shas, before = path_cases_repo
+    assert pr_change_fingerprint(str(repo), shas[f"reviewable:{rel}"], shas["base"]) not in (before, None)
 
 
-def test_bookkeeping_only_pr_change_has_no_fingerprint(path_cases_repo: tuple[Path, dict[str, str]]) -> None:
-    repo, shas = path_cases_repo
+def test_bookkeeping_only_pr_change_has_no_fingerprint(path_cases_repo: tuple[Path, dict[str, str], str]) -> None:
+    repo, shas, _ = path_cases_repo
     assert pr_change_fingerprint(str(repo), shas["bookkeeping_only"], shas["base"]) is None
 
 
@@ -287,13 +290,13 @@ def test_binary_change_changes_the_fingerprint(repos_template: Path, tmp_path: P
     assert before is not None and _fingerprint(work) != before
 
 
-def test_empty_pr_change_has_no_fingerprint(path_cases_repo: tuple[Path, dict[str, str]]) -> None:
-    repo, shas = path_cases_repo
+def test_empty_pr_change_has_no_fingerprint(path_cases_repo: tuple[Path, dict[str, str], str]) -> None:
+    repo, shas, _ = path_cases_repo
     assert pr_change_fingerprint(str(repo), shas["empty_pr"], shas["base"]) is None
 
 
-def test_unknown_refs_have_no_fingerprint(path_cases_repo: tuple[Path, dict[str, str]], tmp_path: Path) -> None:
-    repo, shas = path_cases_repo
+def test_unknown_refs_have_no_fingerprint(path_cases_repo: tuple[Path, dict[str, str], str], tmp_path: Path) -> None:
+    repo, shas, _ = path_cases_repo
     assert pr_change_fingerprint(str(repo), shas["pr"], "refs/remotes/origin/missing") is None
     assert pr_change_fingerprint(str(repo), "0" * 40, shas["base"]) is None
     assert approval_fingerprint_of(str(repo), "HEAD", "main") is None

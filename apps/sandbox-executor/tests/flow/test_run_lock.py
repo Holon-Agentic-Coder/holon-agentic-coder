@@ -1,5 +1,3 @@
-"""The per-intent flow run lock (flow/run_lock.py): holder record, refusal, per-slug independence and takeover."""
-
 from __future__ import annotations
 
 import fcntl
@@ -21,7 +19,6 @@ from tests.flow.helpers import _git
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    """A fresh repository with one commit, private to the test."""
     path = tmp_path / "repo"
     path.mkdir()
     _git(path, "init", "-q", "-b", "main")

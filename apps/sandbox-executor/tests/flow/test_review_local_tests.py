@@ -1,6 +1,3 @@
-"""The review loop measures tests itself when no CI registers, attributes the source and never reads a measured
-result as unmeasured."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -212,9 +209,9 @@ def test_resolver_evidence_accepted_and_cleared_on_head_change(tmp_path, monkeyp
         assert probe["test_source"] == "resolver_evidence"
         assert any("[Review Loop] Test evidence for head1: resolver_evidence" in log for log in ctx.logs)
 
-        # Head moves to head2 where tests fail
         run.return_value = _measurement(0.5, 1)
-        mock_git.return_value = MagicMock(returncode=0, stdout="head2\n")
+        failing_head = MagicMock(returncode=0, stdout="head2\n")
+        mock_git.return_value = failing_head
         probe2 = {"source": "local_tests"}
         rate2, failed2 = gate.evidence(probe2)
         assert rate2 == 0.5
@@ -279,21 +276,21 @@ def test_pr_head_is_not_queried_for_non_github_or_resolver_covered_heads(tmp_pat
         mock_git.return_value = MagicMock(returncode=0, stdout="head1\n")
         gate = local_tests._ReviewTestGate(ctx, str(tmp_path), pr_head=pr_head)
 
-        # Non-github probe and failing github probe skip pr_head lookup.
-        gate.evidence({"source": "local_tests"})
-        gate.evidence({"source": "github_cli", "all_passed": False, "pending": 0})
+        non_github_probe = {"source": "local_tests"}
+        failing_github_probe = {"source": "github_cli", "all_passed": False, "pending": 0}
+        gate.evidence(non_github_probe)
+        gate.evidence(failing_github_probe)
         pr_head.assert_not_called()
 
-        # Accepted resolver head also skips pr_head even when github_cli is green, and attaches test_counts.
         disp = [{"id": "FIND-CI-001", "disposition": "rejected", "evidence": "tests/test_app.py::test_ok passed"}]
         gate.accept_resolver_evidence("head1", disp)
-        probe = {"source": "github_cli", "all_passed": True, "pending": 0}
-        rate, failed = gate.evidence(probe)
+        green_probe_on_resolver_covered_head = {"source": "github_cli", "all_passed": True, "pending": 0}
+        rate, failed = gate.evidence(green_probe_on_resolver_covered_head)
 
     pr_head.assert_not_called()
     assert (rate, failed) == (1.0, False)
-    assert probe["test_source"] == "resolver_evidence"
-    assert probe["test_counts"] == {"passed": 10, "failed": 0, "errored": 0}
+    assert green_probe_on_resolver_covered_head["test_source"] == "resolver_evidence"
+    assert green_probe_on_resolver_covered_head["test_counts"] == {"passed": 10, "failed": 0, "errored": 0}
 
 
 def test_advance_ledger_head_preserves_resolver_evidence_and_test_counts(tmp_path, monkeypatch):
@@ -462,18 +459,16 @@ def test_pr_head_retries_stale_or_missing_lookup_until_matched(tmp_path, monkeyp
         assert pr_head.call_count == 1
         run.assert_called_once()
 
-        # On unchanged local_head, once GitHub catches up to head1, ci_head succeeds and caches head1.
-        probe2 = _green_github_probe()
-        rate2, failed2 = gate.evidence(probe2)
+        probe_after_github_caught_up = _green_github_probe()
+        rate2, failed2 = gate.evidence(probe_after_github_caught_up)
         assert (rate2, failed2) == (1.0, False)
-        assert probe2["test_source"] == "ci_head"
+        assert probe_after_github_caught_up["test_source"] == "ci_head"
         assert pr_head.call_count == 2
 
-        # Once matched to local_head, subsequent lookups reuse the cached PR head without re-querying.
-        probe3 = _green_github_probe()
-        rate3, failed3 = gate.evidence(probe3)
+        probe_reusing_cached_pr_head = _green_github_probe()
+        rate3, failed3 = gate.evidence(probe_reusing_cached_pr_head)
         assert (rate3, failed3) == (1.0, False)
-        assert probe3["test_source"] == "ci_head"
+        assert probe_reusing_cached_pr_head["test_source"] == "ci_head"
         assert pr_head.call_count == 2
 
 

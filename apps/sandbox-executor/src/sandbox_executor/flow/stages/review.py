@@ -24,7 +24,7 @@ from sandbox_executor.flow.stages.review_outcome import ReviewOutcomeContext, bu
 from sandbox_executor.flow.target_sync_hooks import at_stage_boundary
 from sandbox_executor.flow.target_sync_result import SyncBoundary
 from sandbox_executor.flow.test_evidence import _test_results_package
-from sandbox_executor.git import run_git
+from sandbox_executor.git import parse_numstat, run_git
 from sandbox_executor.git_revisions import qualify_branch_revision, revision_args
 from sandbox_executor.knowledge import ConsultEngine
 from sandbox_executor.redaction import redact_agent_secrets
@@ -135,19 +135,12 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
             files_changed = 0
             insertions = 0
             deletions = 0
-            for line in stat_res.stdout.splitlines():
-                parts = line.strip().split("	")
-                if len(parts) >= 3:
-                    file_path = parts[2].strip().removeprefix("./")
-                    if " => " in file_path:
-                        file_path = file_path.split(" => ")[-1].strip().rstrip("}").strip()
-                    if is_metadata_path(file_path):
-                        continue
-                    files_changed += 1
-                    if parts[0] != "-":
-                        insertions += int(parts[0])
-                    if parts[1] != "-":
-                        deletions += int(parts[1])
+            for ins, dels, file_path in parse_numstat(stat_res.stdout):
+                if is_metadata_path(file_path):
+                    continue
+                files_changed += 1
+                insertions += max(ins, 0)
+                deletions += max(dels, 0)
             diff_summary = {
                 "files_changed": files_changed,
                 "insertions": insertions,

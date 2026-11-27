@@ -9,12 +9,11 @@ from typing import Any
 from sandbox_executor.calibration.branches import extract_branch_components
 from sandbox_executor.calibration.predicted import PredictedMetrics
 from sandbox_executor.calibration.refs import read_git_file
-from sandbox_executor.calibration_diff import execution_patch_numstat
+from sandbox_executor.calibration_diff import execution_patch_numstat, parse_patch_numstat
 from sandbox_executor.calibration_ev import is_matching_record, parse_summary_records
 from sandbox_executor.calibration_evaluated_sha import LEDGER_EXECUTIONS_REL
 from sandbox_executor.calibration_outcome import latest_summary_row
 from sandbox_executor.calibration_rows import is_execution_row
-from sandbox_executor.git import is_metadata_path
 from sandbox_executor.ledger import read_merged_text, with_ref_fragments
 
 
@@ -80,18 +79,7 @@ def gather_execution_evidence(
 
 
 def parse_numstat(text: str) -> tuple[list[str], int, int, int]:
-    changed_paths: list[str] = []
-    insertions = deletions = 0
-    for line in text.splitlines():
-        parts = line.strip().split("\t")
-        if len(parts) < 3 or is_metadata_path(parts[2]):
-            continue
-        changed_paths.append(parts[2].strip())
-        if parts[0] != "-":
-            insertions += int(parts[0])
-        if parts[1] != "-":
-            deletions += int(parts[1])
-    return changed_paths, len(changed_paths), insertions, deletions
+    return parse_patch_numstat(text)
 
 
 def parse_shortstat(text: str) -> tuple[int, int, int]:

@@ -115,11 +115,7 @@ def _is_broad_exception_type(expr: ast.expr | None) -> bool:
     if isinstance(expr, ast.Name):
         return expr.id == "Exception"
     if isinstance(expr, ast.Attribute):
-        return (
-            expr.attr == "Exception"
-            and isinstance(expr.value, ast.Name)
-            and expr.value.id == "builtins"
-        )
+        return expr.attr == "Exception" and isinstance(expr.value, ast.Name) and expr.value.id == "builtins"
     if isinstance(expr, ast.Tuple):
         return any(_is_broad_exception_type(elt) for elt in expr.elts)
     return False
@@ -128,9 +124,7 @@ def _is_broad_exception_type(expr: ast.expr | None) -> bool:
 def count_broad_except_in_source(source: str) -> int:
     tree = ast.parse(source)
     return sum(
-        1
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ExceptHandler) and _is_broad_exception_type(node.type)
+        1 for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler) and _is_broad_exception_type(node.type)
     )
 
 

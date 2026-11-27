@@ -4,6 +4,7 @@ import time
 PROXY_READY_TIMEOUT_SECONDS = 15.0
 PROXY_POLL_INTERVAL_SECONDS = 0.5
 PROXY_PROBE_ATTEMPT_TIMEOUT_SECONDS = 2.0
+# why: .invalid is a reserved TLD (RFC 6761), so the readiness request can never reach a real upstream.
 PROXY_READINESS_HOST = "holon-proxy-readiness.invalid"
 PROXY_READINESS_REQUEST = (
     f"GET http://{PROXY_READINESS_HOST}/ HTTP/1.1\r\nHost: {PROXY_READINESS_HOST}\r\nConnection: close\r\n\r\n"

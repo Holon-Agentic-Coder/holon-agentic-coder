@@ -9,8 +9,11 @@ from sandbox_executor.redaction import starts_with_url_authority, url_userinfo_e
 
 logger = logging.getLogger(__name__)
 
+# why: sandbox runs as unprivileged holon, so update-ca-certificates cannot run and entrypoint merges this mount.
 CONTAINER_CA_DIR = "/usr/local/share/ca-certificates"
+# why: SSL_CERT_FILE/REQUESTS_CA_BUNDLE/CURL_CA_BUNDLE replace the trust store, so they need the merged bundle.
 CONTAINER_CA_BUNDLE_PATH = "/home/holon/.holon-ca-bundle.crt"
+# why: loopback tooling and link-local metadata endpoints must never be force-proxied.
 NO_PROXY_HOSTS = "localhost,127.0.0.1,::1,169.254.169.254"
 MITM_PROXY_CA_DIR = "/home/mitmproxy/.mitmproxy"
 PROXY_LISTEN_PORT = 8080
@@ -78,6 +81,7 @@ def _build_proxy_envs(ca_cert_path: str, proxy_url: str) -> dict[str, str]:
 
 
 def _write_private_combined_ca(combined_path: str, key_blob: str, cert_blob: str) -> None:
+    # why: 0o600 at creation avoids any world-readable window regardless of umask; chmod tightens prior runs.
     fd = os.open(combined_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _PRIVATE_KEY_FILE_MODE)
     with os.fdopen(fd, "w") as handle:
         handle.write(f"{key_blob}{cert_blob}")

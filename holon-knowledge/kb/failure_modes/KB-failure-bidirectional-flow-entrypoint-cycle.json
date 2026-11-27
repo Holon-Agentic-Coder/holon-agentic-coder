@@ -1,0 +1,59 @@
+{
+  "kb_id": "KB-failure-bidirectional-flow-entrypoint-cycle",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-27T00:00:00+00:00",
+  "updated_ts": "2026-11-27T00:00:00+00:00",
+  "created_by": "architecture-audit-2026-11",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "I-1795768764-hac-architecture-audit-kb"
+    ],
+    "success_count": 0,
+    "failure_count": 2
+  },
+  "tags": [
+    "architecture-audit-2026-11",
+    "imports",
+    "circular-dependency",
+    "entrypoint"
+  ],
+  "human_approved": true,
+  "payload": {
+    "name": "Bidirectional Flow/Entrypoint and Ledger/Knowledge Import Cycles",
+    "description": "Importing host flow modules from container entrypoints or CLI layers, or introducing bidirectional imports between sandbox_executor.ledger and sandbox_executor.knowledge, creates circular import failures and breaks container/host boundary isolation.",
+    "symptoms": [
+      "ImportError or AttributeError on partially initialized modules during CLI or entrypoint startup",
+      "AST import guard failures in apps/sandbox-executor/tests/test_import_cycle.py or apps/sandbox-executor/tests/test_entrypoint_imports.py",
+      "Container entrypoint scripts pulling in host-only flow orchestration dependencies"
+    ],
+    "root_causes": [
+      "Importing sandbox_executor.flow symbols directly inside sandbox_executor.entrypoint or sandbox_executor.cli modules",
+      "Cross-importing between sandbox_executor.ledger and sandbox_executor.knowledge instead of keeping ledger as a lower-level dependency",
+      "Placing shared data types or helpers in high-level orchestration modules instead of leaf modules"
+    ],
+    "mitigations": [
+      {
+        "strategy": "Extract shared leaf modules",
+        "description": "Move shared constants, schemas, and pure helpers into low-level leaf modules that neither flow nor entrypoint owns.",
+        "cost": "Low refactor overhead",
+        "effectiveness": 0.95
+      },
+      {
+        "strategy": "Enforce AST import boundary tests",
+        "description": "Run apps/sandbox-executor/tests/test_import_cycle.py and apps/sandbox-executor/tests/test_entrypoint_imports.py on every change to block new entrypoint-to-flow or ledger-to-knowledge edges.",
+        "cost": "Negligible CI runtime",
+        "effectiveness": 0.95
+      }
+    ],
+    "detection_heuristic": {
+      "condition": "entrypoint_imports_flow > 0 OR ledger_knowledge_cycle_detected == true",
+      "confidence": 0.95
+    },
+    "related_failures": [
+      "KB-failure-monolithic-review-loop-complexity",
+      "KB-failure-env-registry-runtime-drift"
+    ]
+  }
+}

@@ -1,12 +1,3 @@
-"""Fakes for decomposed flows: a Stage 4 that opens PRs in a ``FakeGitHub`` and the patches that wire both in.
-
-``ChildReviews`` replaces ``run_review_stage`` (looked up in ``sandbox_executor.flow.pipeline``) for the parent and each
-child pipeline: it opens (or, like ``create_or_update_pr``, reuses) a PR from the execution branch into the intent's
-``target_branch`` and halts at consensus approval with the payload shape the real stage returns. ``decomposed_flow``
-patches it in together with the ``gh`` seam of the guarded merge, so children really merge into the plan branch on the
-fixture's bare origin.
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -22,8 +13,8 @@ from tests.flow.fake_gh import FakeGitHub
 APPROVED = {"approved": True, "score": 1.0, "iterations": 1, "status": "approved"}
 
 
+# why: the worktree is tmp_path so the stage never writes the real .holon/.
 def parent_ctx(tmp_path: Path) -> FlowContext:
-    """A parent intent's context whose worktree is ``tmp_path``, so the stage never writes the real ``.holon/``."""
     return FlowContext(
         repo_dir=str(tmp_path), token_reduce=False, intent_data={"slug": "parent", "goal": "Change the application"}
     )
@@ -32,7 +23,6 @@ def parent_ctx(tmp_path: Path) -> FlowContext:
 def halted_review(
     number: int | None, url: str | None, *, status: StageStatus = StageStatus.HALTED_FOR_HUMAN
 ) -> StageResult:
-    """The Stage 4 result at a consensus boundary, recording the PR under ``payload["pr"]`` as the real stage does."""
     pr = {"attempted": True, "success": True, "action": "create", "pr_number": number, "output": url or ""}
     return StageResult(
         stage=FlowStage.REVIEW,
@@ -46,8 +36,6 @@ def halted_review(
 
 
 class ChildReviews:
-    """Fake ``run_review_stage``: open or reuse the PR, then end at consensus (or fail for a chosen slug, once)."""
-
     def __init__(
         self,
         gh: FakeGitHub,
@@ -57,7 +45,7 @@ class ChildReviews:
     ):
         self.gh = gh
         self.fail_once_for = fail_once_for
-        # PR base per slug, overriding the intent's target_branch (models a mis-recorded or edited base).
+        # why: a PR base per slug overrides the intent's target_branch to model a mis-recorded or edited base.
         self.bases = bases or {}
         self.review_status = review_status
         self.reviewed: list[dict[str, Any]] = []
@@ -76,7 +64,7 @@ class ChildReviews:
         self.reviewed.append({"slug": slug, "head": head, "base": base, "number": number})
         if self.fail_once_for and slug == self.fail_once_for:
             self.fail_once_for = None
-            # Like the real stage, a failed review still records the PR it opened.
+            # why: like the real stage, a failed review still records the PR it opened.
             failed = halted_review(number, self.gh.prs[number]["url"])
             failed.status, failed.error = StageStatus.FAILED, "Autonomous review requested changes."
             failed.payload.update(halted_for_human=False, consensus={**APPROVED, "approved": False})
@@ -86,7 +74,6 @@ class ChildReviews:
 
 @contextlib.contextmanager
 def decomposed_flow(origin: Path, tmp_path: Path, **review_options: Any) -> Iterator[ChildReviews]:
-    """Patch in ``ChildReviews`` as Stage 4 and a ``FakeGitHub`` over ``origin`` as the merge's ``gh`` runner."""
     scratch = tmp_path / "fake-gh"
     scratch.mkdir(exist_ok=True)
     reviews = ChildReviews(FakeGitHub(origin, scratch), **review_options)

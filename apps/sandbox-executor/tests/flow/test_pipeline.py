@@ -1,5 +1,3 @@
-"""Tests for the pipeline engine: stage orchestration, stage budgets, the flow CLI and worktree provisioning."""
-
 import json
 import os
 import re
@@ -41,8 +39,6 @@ from tests.flow.timed_dispatch import dispatch_timed_execute
 
 
 class TestFlowStages:
-    """Test the individual execution stages with isolated mocking."""
-
     def test_stage1_intent_validation_failure(self, tmp_path):
         ctx = FlowContext(repo_dir=str(tmp_path), intent_data={}, dry_run=True)
         res = run_intent_stage(ctx)
@@ -81,7 +77,7 @@ class TestFlowStages:
         review_res = run_review_stage(ctx)
         assert review_res.status in (StageStatus.SUCCESS, StageStatus.HALTED_FOR_HUMAN)
 
-        # No git repository under tmp_path, so calibration fails closed instead of halting for a human.
+        # why: no git repository under tmp_path, so calibration fails closed instead of halting for a human
         cal_res = run_calibrate_stage(ctx)
         assert cal_res.status == StageStatus.FAILED
 
@@ -104,11 +100,7 @@ class TestFlowStages:
         assert "without an active execution_branch" in (res.error or "")
 
     def test_stage4_review_human_only_merge_halt(self, tmp_path):
-        """CRITICAL INVARIANT TEST: human-only PR merging rule.
-
-        Ensures autonomous review loop completes with APPROVED upon reaching
-        consensus approval and strictly NEVER executes a git merge to main.
-        """
+        # why: human-only merge rule: the autonomous review loop must never merge to main
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             intent_branch="I-100-intent/_",
@@ -122,7 +114,7 @@ class TestFlowStages:
             payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
         )
 
-        # The empty-diff guard allows the PR: only an allowed diff can reach consensus.
+        # why: only an allowed diff can reach consensus, so the empty-diff guard must let the PR through
         with (
             patch_lookup_sites(
                 "sandbox_executor.flow.stage_conflicts.run_git", "sandbox_executor.flow.stages.review.run_git"
@@ -133,7 +125,6 @@ class TestFlowStages:
             mock_git.return_value = MagicMock(returncode=0, stdout=" 1 file changed, 5 insertions(+)\n")
             res = run_review_stage(ctx)
 
-            # Assert git merge was NEVER called
             for call in mock_git.call_args_list:
                 args = call[0][0]
                 assert "merge" not in args, f"HUMAN-ONLY MERGE RULE VIOLATED: merge invoked with args {args}"
@@ -145,7 +136,7 @@ class TestFlowStages:
         assert "holon review approve" in res.payload["human_approval_command"]
 
     def test_stage4_review_diff_summary_excludes_execution_notes(self, tmp_path):
-        """Notes in executions/E-*.md are metadata, so they never count as changed code in the review package."""
+        # why: notes in executions/E-*.md are metadata, never changed code
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             plan_branch="I-100-intent/P-200-plan/_",
@@ -178,7 +169,6 @@ class TestFlowStages:
         assert res.payload["review_package"]["diff_summary"] == {"files_changed": 1, "insertions": 7, "deletions": 2}
 
     def test_stage4_review_rejection_on_test_failure(self, tmp_path):
-        """Test Stage 4 fails consensus and returns FAILED when previous stage failed."""
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
@@ -194,7 +184,6 @@ class TestFlowStages:
         assert res.payload["consensus"]["approved"] is False
 
     def test_stage5_calibrate_without_repository_fails_closed(self, tmp_path):
-        """A dry-run Stage 5 whose calibration cannot run fails: no stub report, no calibrated branch."""
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
@@ -209,7 +198,6 @@ class TestFlowStages:
         assert not list(tmp_path.rglob("*_calibration.md"))
 
     def test_stage5_calibrate_mocked(self, tmp_path):
-        """Test Stage 5 invoking run_calibrate successfully."""
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
@@ -250,7 +238,6 @@ class TestFlowStages:
         assert not (tmp_path / "plans" / "I-100-intent" / "P-200-plan_calibration.md").exists()
 
     def test_stage5_calibrate_failure_appends_uncommitted_failure_act_cal(self, tmp_path):
-        """A failed calibration run appends an ACT-CAL failure row that stays uncommitted, as documented."""
         import subprocess
 
         def git(*args: str) -> str:
@@ -265,7 +252,7 @@ class TestFlowStages:
         git("add", "-A")
         git("commit", "-q", "-m", "initial")
         head_before = git("rev-parse", "HEAD").strip()
-        # HEAD stays on main: Stage 5 checks the execution branch out itself before calibrating.
+        # why: Stage 5 checks the execution branch out itself before calibrating
         git("branch", "I-100-intent/P-200-plan/E-300-exec/_")
 
         ctx = FlowContext(
@@ -290,8 +277,7 @@ class TestFlowStages:
         )
         assert cal_rows[0]["calibration_report_path"] == "plans/I-100-intent/P-200-plan_calibration.md"
 
-        # Nothing is committed on a failed calibration: only the row remains a working-tree change, no report.
-        # The worktree is returned to the branch it started on, carrying the uncommitted row.
+        # why: a failed calibration commits nothing; the worktree returns to its start branch with only the row
         assert git("rev-parse", "--abbrev-ref", "HEAD").strip() == "main"
         assert git("rev-parse", "HEAD").strip() == head_before
         assert git("rev-parse", "main").strip() == head_before
@@ -302,7 +288,6 @@ class TestFlowStages:
 
     @pytest.mark.parametrize("scenario", ["raises_after_checkout", "rerun_on_calibrated"])
     def test_stage5_calibrate_failure_on_calibrated_branch_commits_nothing(self, tmp_path, scenario):
-        """A failed calibration commits nothing even when HEAD sits on the /calibrated branch."""
         import subprocess
 
         def git(*args: str) -> str:
@@ -345,12 +330,10 @@ class TestFlowStages:
         assert len(cal_rows) == 1
         assert cal_rows[0]["outcome"] == "failure"
 
-        # Neither branch gains a commit, so no ff/push can carry the failure row into the PR. The /calibrated
-        # branch this stage created is discarded once HEAD has left it; a pre-existing one is kept unchanged.
+        # why: without a new commit no ff/push can carry the failure row into the PR
         assert git("rev-parse", execution_branch).strip() == execution_tip
         if scenario == "raises_after_checkout":
             assert git("branch", "--list", calibrated_branch).strip() == ""
-            # The row never names a discarded branch.
             assert cal_rows[0]["target"] == execution_branch
         else:
             assert git("rev-parse", calibrated_branch).strip() == execution_tip
@@ -360,7 +343,6 @@ class TestFlowStages:
         assert "plans/I-100-intent/P-200-plan_calibration.md" not in status
 
     def test_stage5_calibrate_failure_redacts_credentials_in_act_cal(self, tmp_path):
-        """The failure ACT-CAL error_context and the stage error must not carry credentials from the exception text."""
         ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
         ledger.parent.mkdir(parents=True)
         ledger.write_text("", encoding="utf-8")
@@ -390,7 +372,7 @@ class TestFlowStages:
         assert all(sample_value not in line for line in ctx.logs)
 
     def test_stage5_calibrate_failure_bounds_act_cal_error_context(self, tmp_path):
-        """A long failure error_context is redacted before it is truncated."""
+        # why: a long error_context is redacted before it is truncated
         from sandbox_executor.flow import POSTING_ERROR_CONTEXT_MAX_CHARS
 
         ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
@@ -398,7 +380,7 @@ class TestFlowStages:
         ledger.write_text("", encoding="utf-8")
         sample_value = "ghp_" + "Q" * 36
         prefix_len = len("Calibration run failed: ")
-        # The sample value starts 20 characters before the cap, so it straddles the boundary.
+        # why: the sample value starts 20 characters before the cap, so it straddles the boundary
         padding = "x" * (POSTING_ERROR_CONTEXT_MAX_CHARS - prefix_len - 21)
         hook_output = f"{padding} {sample_value} trailing hook output"
 
@@ -434,7 +416,6 @@ class TestFlowStages:
         )
 
     def test_stage5_prettier_check_failure_fails_stage_and_never_pushes(self, tmp_path):
-        """A report that fails the repository Prettier check fails Stage 5 and is never pushed."""
         from sandbox_executor.calibration import CalibrationFormatError
 
         ctx = self._stage5_push_context(tmp_path)
@@ -469,7 +450,6 @@ class TestFlowStages:
         assert not (tmp_path / "plans").exists()
 
     def test_stage5_calibration_success_still_pushes(self, tmp_path):
-        """Regression guard: a report that passes the check is still pushed and fast-forwarded."""
         ctx = self._stage5_push_context(tmp_path)
         mock_report = MagicMock()
         mock_report.calibrated_branch = "I-100-intent/P-200-plan/E-300-exec/calibrated"
@@ -490,7 +470,6 @@ class TestFlowStages:
         assert ["merge", "--ff-only", f"refs/heads/{mock_report.calibrated_branch}"] in git_calls
 
     def test_warn_ledger_failure_redacts_credentials(self, tmp_path, caplog):
-        """Non-fatal ledger failure warnings redact the exception text in both logs."""
         from sandbox_executor.flow import _warn_ledger_failure
 
         caplog.set_level("WARNING", logger="sandbox_executor.flow")
@@ -507,7 +486,6 @@ class TestFlowStages:
 
     @pytest.mark.parametrize("failure_mode", ["stderr", "raises"])
     def test_stage5_reconciliation_commit_warning_redacts_credentials(self, tmp_path, caplog, failure_mode):
-        """A failed Stage 5 reconciliation commit warns without echoing credentials."""
         from sandbox_executor.flow import _commit_stage5_reconciliation
 
         caplog.set_level("WARNING", logger="sandbox_executor.flow")
@@ -535,11 +513,7 @@ class TestFlowStages:
 
     @pytest.mark.parametrize("stage", ["intent", "plan", "execute"])
     def test_stage_fails_fast_when_role_agent_ledger_append_fails(self, flow_repos, stage):
-        """A role container whose ledger append fails exits non-zero, and the stage fails instead of proceeding.
-
-        Stages 1-3 no longer append intents/plans/executions rows on the host: the dispatched container does, under
-        LedgerLock, and a failed append surfaces as its non-zero exit code.
-        """
+        # why: role containers append ledger rows under LedgerLock, so a failed append surfaces as their exit code
         host, _origin = flow_repos
         overrides: dict[str, Any] = {"intent_branch": "I-1-x/_", "plan_branch": "I-1-x/P-1-claude-agent-m/_"}
         ctx = _dispatch_context(host, MagicMock(return_value=1), **overrides)
@@ -551,7 +525,6 @@ class TestFlowStages:
         assert "exited with code 1" in (res.error or "")
 
     def test_engine_halts_when_stage1_role_agent_fails(self, flow_repos):
-        """The engine stops at a failed Stage 1 dispatch and never reaches the plan stage."""
         host, _origin = flow_repos
         dispatcher = MagicMock(return_value=1)
         ctx = _dispatch_context(host, dispatcher)
@@ -564,8 +537,6 @@ class TestFlowStages:
 
 
 class TestFlowCLI:
-    """Test CLI subcommands, flags, and dispatching."""
-
     def test_cli_flow_help(self):
         with pytest.raises(SystemExit) as exc_info:
             cli_main_args = ["holon", "flow", "--help"]
@@ -609,8 +580,6 @@ class TestFlowCLI:
 
 
 class TestStageBudgets:
-    """Stage budgets: stage ceilings, elapsed-versus-budget summary lines and the execute budget hand-down."""
-
     def test_summary_line_format(self):
         res = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS, elapsed_seconds=246, budget_seconds=2100)
         assert res.summary_line() == "plan: ok (4.1 min / 35 min)"
@@ -645,7 +614,7 @@ class TestStageBudgets:
         assert not (tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl").exists()
 
     def test_sub_minute_stage_ceiling_is_not_reported_as_zero_minutes(self, tmp_path):
-        # Budget messages use the shared minutes formatter, so a 20 s ceiling reads "0.3 min", not "0 min".
+        # why: the shared minutes formatter must render a 20 s ceiling as 0.3 min, not 0 min
         from sandbox_executor.budgets import Budgets
 
         (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
@@ -657,8 +626,7 @@ class TestStageBudgets:
         assert "against 0 min" not in results["intent"].error
 
     def test_review_overrun_after_consensus_keeps_approval_and_runs_calibration(self, tmp_path):
-        # Two review iterations each within budget plus PR/posting overhead exceed 2 x 120 min in total; the
-        # approved review is not downgraded and calibration still runs.
+        # why: two in-budget review iterations plus PR overhead exceed 2 x 120 min in total
         (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
         ctx = FlowContext(
             repo_dir=str(tmp_path), intent_data={"slug": "rev", "goal": "Rev"}, auto_calibrate=True, dry_run=True
@@ -695,7 +663,7 @@ class TestStageBudgets:
         assert result.payload["budget_overrun"]["budget_seconds"] == 600
 
     def test_decomposed_execute_overrun_keeps_success(self, tmp_path):
-        # A decomposed Stage 3 spans whole child pipelines, so its overrun is recorded, never a stage failure.
+        # why: a decomposed Stage 3 spans whole child pipelines, so its overrun is recorded, never a failure
         ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "dec", "goal": "Dec"}, dry_run=True)
         decomposed = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, payload={"decomposed": True})
         with patch("sandbox_executor.flow.pipeline.run_execute_stage", return_value=decomposed):
@@ -718,7 +686,7 @@ class TestStageBudgets:
         assert result.payload["budget_breach"]["budget_name"] == "stage"
 
     def test_timed_stage_is_the_active_host_timer_except_review(self, tmp_path):
-        # Role containers dispatched during a stage read this timer (cli.run_docker_container hand-down).
+        # why: role containers dispatched during a stage read this timer
         from sandbox_executor.budgets import current_stage_timer, stage_budget_handdown_env
 
         ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "h", "goal": "H"}, dry_run=True)
@@ -754,12 +722,11 @@ class TestStageBudgets:
         assert engine.stage_budget_seconds(FlowStage.REVIEW, review) == 360
 
     def test_execute_budget_reaches_the_dispatched_executor_container(self, tmp_path):
-        # After #95 Stage 3 runs no host-side verification: the executor container measures its own tests, so the
-        # execute stage budget must reach that container through dispatch_role_agent -> run_docker_container.
+        # why: since #95 the executor container measures its own tests, so the execute budget must reach it
         result, seen = dispatch_timed_execute(tmp_path, {"HOLON_STAGE_BUDGET_EXECUTE_MINUTES": "20"})
         assert [(role, image) for role, image, _, _ in seen] == [("executor", "holon/agent-claude")]
         assert seen[0][2] == ["I-1-x/P-2-y/_", "claude-agent", "claude-opus-5-5"]
-        # 1200 s stage budget minus CONTAINER_OVERHEAD_AND_HOST_CHECKS_MARGIN_SECONDS (at most a tenth of the budget).
+        # why: 1200 s budget minus the container overhead margin, at most a tenth of the budget
         assert seen[0][3] == {"HOLON_STAGE_BUDGET_SECONDS": "1140"}
         assert result.status == StageStatus.FAILED
         assert result.error == "Execute stage failed: executor agent exited with code 7."
@@ -790,8 +757,6 @@ class TestStageBudgets:
 
 
 class TestSkipPushRejectedOnEveryNonDryRun:
-    """--skip-push outside --dry-run is rejected for runs and resumes from any stage."""
-
     @pytest.mark.parametrize("from_stage", [None, "plan", "execute", "review", "calibrate"])
     def test_engine_rejects_skip_push_before_any_stage_or_checkpoint(self, tmp_path, from_stage):
         checkpoint = tmp_path / "checkpoint.json"
@@ -840,15 +805,11 @@ class TestSkipPushRejectedOnEveryNonDryRun:
 
 
 class TestFlowWorktreeHermetic:
-    """Hermetic integration tests for git worktree provisioning, pruning, and reuse."""
-
     @pytest.fixture
     def hermetic_repos(self, tmp_path_factory: pytest.TempPathFactory, tmp_path: Path) -> dict[str, Path]:
-        """Real source and bare repositories, copied per test from a read-only template."""
         return hermetic_repos_copy(tmp_path_factory, tmp_path)
 
     def test_is_bare_and_is_working_tree(self, hermetic_repos: dict[str, Path], tmp_path: Path) -> None:
-        """Verify is_bare_repository and is_working_tree on bare, worktree, and absent paths."""
         assert is_bare_repository(str(hermetic_repos["bare"])) is True
         assert is_working_tree(str(hermetic_repos["bare"])) is False
 
@@ -860,14 +821,12 @@ class TestFlowWorktreeHermetic:
         assert is_working_tree(absent_path) is False
 
     def test_derive_worktree_layout(self, hermetic_repos: dict[str, Path]) -> None:
-        """Verify canonical worktree path and branch derivations."""
         wt_path, branch = derive_worktree_layout(str(hermetic_repos["bare"]), "my-task")
         assert branch == "flow-my-task"
         assert os.path.basename(wt_path) == "flow-my-task"
         assert os.path.dirname(wt_path) == str(hermetic_repos["root"].resolve())
 
     def test_auto_create_worktree_from_bare_repository(self, hermetic_repos: dict[str, Path]) -> None:
-        """Verify automatic worktree creation and file checkout when invoked on bare repository."""
         bare_path = str(hermetic_repos["bare"])
         wt_dir = ensure_worktree(bare_path, slug="test-auto-provision", target_branch="main")
 
@@ -886,7 +845,6 @@ class TestFlowWorktreeHermetic:
         assert proc.stdout.strip() == "flow-test-auto-provision"
 
     def test_self_heal_stale_worktree_records_after_directory_deletion(self, hermetic_repos: dict[str, Path]) -> None:
-        """Verify self-healing via prune_worktrees after deleting a worktree folder without git worktree remove."""
         bare_path = str(hermetic_repos["bare"])
         wt_dir = ensure_worktree(bare_path, slug="test-stale-heal", target_branch="main")
         assert os.path.isdir(wt_dir)
@@ -900,7 +858,6 @@ class TestFlowWorktreeHermetic:
         assert (Path(recreated_dir) / "README.md").read_text(encoding="utf-8") == "# Hermetic Repository\n"
 
     def test_idempotent_attach_to_existing_branch(self, hermetic_repos: dict[str, Path]) -> None:
-        """Verify worktree attaches to pre-existing branch without collision errors."""
         bare_path = str(hermetic_repos["bare"])
         subprocess.run(
             ["git", "branch", "flow-test-reuse", "main"],
@@ -917,19 +874,16 @@ class TestFlowWorktreeHermetic:
         assert wt_dir_again == wt_dir
 
     def test_ensure_worktree_validates_empty_slug(self, hermetic_repos: dict[str, Path]) -> None:
-        """Verify ensure_worktree rejects blank slug with ValueError."""
         with pytest.raises(ValueError, match="Intent slug must be non-empty"):
             ensure_worktree(str(hermetic_repos["bare"]), slug="   ")
 
     def test_prune_worktrees_directly(self, hermetic_repos: dict[str, Path]) -> None:
-        """Verify prune_worktrees executes cleanly on bare and missing paths."""
         prune_worktrees(str(hermetic_repos["bare"]))
         prune_worktrees("/non/existent/path")
 
     def test_flow_cli_auto_creates_worktree_from_bare_repo(
         self, hermetic_repos: dict[str, Path], tmp_path: Path
     ) -> None:
-        """Verify holon flow CLI detects bare repo and provisions worktree in dry-run mode."""
         intent_file = tmp_path / "test_intent.json"
         intent_file.write_text(
             json.dumps({"slug": "auto-bare-cli", "target_branch": "main"}),

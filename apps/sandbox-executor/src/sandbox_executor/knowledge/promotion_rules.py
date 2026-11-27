@@ -64,7 +64,7 @@ def veto_decay_weight(updated_at: str | None, now: datetime | None = None) -> fl
             last_up = last_up.replace(tzinfo=UTC)
         age_hours = ((now or datetime.now(UTC)) - last_up).total_seconds() / _SECONDS_PER_HOUR
         return max(_VETO_DECAY_MIN_WEIGHT, math.exp(-_VETO_DECAY_PER_HOUR * age_hours))
-    except Exception:
+    except (ValueError, TypeError, OverflowError):
         return _VETO_DECAY_DEFAULT_WEIGHT
 
 

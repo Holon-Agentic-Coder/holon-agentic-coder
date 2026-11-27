@@ -1,6 +1,4 @@
-# Check on every pull request that the repository keeps exactly three ledgers and that no ledger row of the merge base
-# changed, moved or disappeared on the head. The job never uses the bookkeeping gate: ledger-only pull requests are the
-# ones it must check.
+# why: no bookkeeping gate here, since ledger-only pull requests are the ones whose ledger rows must be checked.
 name: Test - Ledger Invariants
 
 on:
@@ -23,7 +21,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          # Full history, so the merge base and the base ledger blobs exist.
+          # why: full history, so the merge base and the base ledger blobs exist.
           fetch-depth: 0
 
       - name: Install uv

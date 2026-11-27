@@ -81,6 +81,14 @@ def test_additions_new_fragments_and_promotion_pass(base: tuple[Path, str], edit
             [f"{LEDGER}/plans.jsonl:3: deleted"],
         ),
         (
+            {f"{LEDGER}/plans.jsonl": '{"id": "P-1"}\n{"id": "P-3"}\n'},
+            [f"{LEDGER}/plans.jsonl:2: deleted"],
+        ),
+        (
+            {f"{LEDGER}/plans.jsonl": '{"id": "P-2"}\n{"id": "P-3"}\n'},
+            [f"{LEDGER}/plans.jsonl:1: deleted"],
+        ),
+        (
             {f"{LEDGER}/executions.jsonl": '{"id": "E-2"}\n{"id": "E-1"}\n'},
             [f"{LEDGER}/executions.jsonl:2: moved"],
         ),
@@ -95,7 +103,17 @@ def test_additions_new_fragments_and_promotion_pass(base: tuple[Path, str], edit
             [f"{LEDGER}/executions.jsonl:2: changed"],
         ),
     ],
-    ids=["edited", "deleted", "swapped", "ledger-removed", "fragment-removed", "half-promoted", "trailing-space"],
+    ids=[
+        "edited",
+        "deleted",
+        "middle-deleted",
+        "first-deleted",
+        "swapped",
+        "ledger-removed",
+        "fragment-removed",
+        "half-promoted",
+        "trailing-space",
+    ],
 )
 def test_a_base_row_edit_fails(base: tuple[Path, str], files: dict[str, str | None], expected: list[str]) -> None:
     assert _problems(base, files) == expected

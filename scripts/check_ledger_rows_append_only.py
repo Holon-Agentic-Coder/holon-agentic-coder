@@ -61,19 +61,30 @@ def rows(data: bytes) -> list[bytes]:
 
 def compare_rows(path: str, base_rows: list[bytes], head_rows: list[bytes]) -> list[str]:
     # why: the ledger conflict resolver inserts head rows by created_at between kept rows, so only their order is fixed.
-    head_set = set(head_rows)
+    head_set, base_set = set(head_rows), set(base_rows)
     problems: list[str] = []
     cursor = 0
     for index, row in enumerate(base_rows):
         try:
             cursor = head_rows.index(row, cursor) + 1
         except ValueError:
-            gone = "deleted" if cursor >= len(head_rows) else "changed"
-            problems.append(f"{path}:{index + 1}: {'moved' if row in head_set else gone}")
+            label = _missing_row_label(row, head_rows, cursor, head_set, base_set)
+            problems.append(f"{path}:{index + 1}: {label}")
+            # why: a replacement row pairs with the one base row it replaced, so the next base row is not also changed.
+            cursor += label == "changed"
     if len(problems) > MAX_PROBLEMS_PER_FILE:
         hidden = len(problems) - MAX_PROBLEMS_PER_FILE
         problems = [*problems[:MAX_PROBLEMS_PER_FILE], f"{path}: ... and {hidden} more"]
     return problems
+
+
+def _missing_row_label(
+    row: bytes, head_rows: list[bytes], cursor: int, head_set: set[bytes], base_set: set[bytes]
+) -> str:
+    if row in head_set:
+        return "moved"
+    # why: a head row that is new where the base row stood is its edit; a base row there means this one was deleted.
+    return "changed" if cursor < len(head_rows) and head_rows[cursor] not in base_set else "deleted"
 
 
 def promoted(fragment_rows: list[bytes], head_canonical_rows: list[bytes]) -> bool:

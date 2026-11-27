@@ -637,13 +637,12 @@ Repository maintainers configuring branch protection rulesets on `main` should r
 - `Test - Unit / unit (ubuntu-latest)`
 - `Test - Unit / unit (macos-latest, shard 1 of 2)`
 - `Test - Unit / unit (macos-latest, shard 2 of 2)`
-
-The two macOS unit shards replaced the former `Test - Unit / unit (macos-latest)` check; maintainers must update the
-ruleset when the sharded workflow merges, or the old check stays "Expected" and blocks merges.
-
 - `Test - Integration / integration (ubuntu-latest)`
 - `Run Make / build (ubuntu-latest)`
 - `Run Make / build (macos-latest)`
+
+The two macOS unit shards replaced the former `Test - Unit / unit (macos-latest)` check; maintainers must update the
+ruleset when the sharded workflow merges, or the old check stays "Expected" and blocks merges.
 
 ## Composite Actions
 

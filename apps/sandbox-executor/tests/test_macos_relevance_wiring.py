@@ -1,9 +1,3 @@
-"""Text guards for the wiring of the macOS relevance gate into the unit workflow, its action and its README section.
-
-The job must keep its key, its matrix and its check name ``unit (macos-latest)`` on every head, so only step-level
-guards may change; the step splitting is the one ``test_ci_bookkeeping_wiring`` pins.
-"""
-
 from __future__ import annotations
 
 import re

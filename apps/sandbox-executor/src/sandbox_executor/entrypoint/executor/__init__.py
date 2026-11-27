@@ -1,27 +1,4 @@
-"""Sandbox executor entrypoint for Holon Agentic Coder.
-
-Works in place on the host worktree that 'holon execute' and 'holon flow' bind-mount into the container, runs the
-configured agent, captures execution results into the ledger, and commits the execution branch. The container never
-touches the remote: the host fetches the plan and target branches first and pushes the execution branch afterwards.
-
-This package's ``__init__`` is the facade: it owns the constants and `main`, and re-exports every name the former
-``executor.py`` module exposed (the decomposition rule, the agent-output bound, the redactors and the collaborators),
-so existing importers keep working unchanged. The step modules look up the names tests patch here (``run_cmd``,
-``get_runner``, the workspace probes, the authoring turn, the ledger writers and so on) on this package at call time,
-so a patch on ``sandbox_executor.entrypoint.executor.<name>`` reaches every submodule. ``python -m
-sandbox_executor.entrypoint.executor`` runs ``__main__``.
-
-Key environment variables:
-    HOLON_TARGET_WORKTREE: The sandbox mountpoint, which marks the mounted host worktree (required).
-    HOLON_IN_SANDBOX: Set to '1' to explicitly mark sandbox context.
-    HOLON_ROLE: When set, implies sandbox context.
-
-Known limitations:
-    - redact_args: Secret values starting with '-' are not masked to avoid
-      over-masking legitimate flags that immediately follow a secret flag.
-      See _is_secret_flag and the LIMITATION comment in redact_args for details.
-"""
-
+# why: the step modules look up patched names on this package at call time, so a patch here reaches every submodule
 import contextlib as contextlib
 import json as json
 import os as os
@@ -138,23 +115,15 @@ from sandbox_executor.turns import record_budget_failure as record_budget_failur
 from sandbox_executor.turns import run_turn as run_turn
 from sandbox_executor.turns import supervise_authoring_turn as supervise_authoring_turn
 
-# Exit status of an executor run that refused an over-budget plan and committed its over_budget row to the execution
-# branch (the host pushes it afterwards). Distinct from 1 (a failed run) so the flow can tell the refusal apart and
-# read that row, while a direct 'holon execute' still exits non-zero. Every other over_budget outcome exits 1.
+# why: distinct from 1 so the flow can tell a committed over-budget refusal from a failed run and read its row
 OVER_BUDGET_EXIT_CODE = 3
 
-# The repo-local identity of every commit the executor (and the agent it runs) makes inside the container.
 EXECUTOR_GIT_EMAIL = "executor-agent@holon-agentic-coder.com"
 EXECUTOR_GIT_NAME = "Holon Executor Agent"
 EXECUTIONS_LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
 
 
 def main() -> None:
-    """Executor entry point: ``executor.py <plan_branch> [agent_name] [model_name] [partial_execution_branch]``.
-
-    Without a plan branch prints the usage line and exits 1; otherwise runs one `ExecutionRun`, whose exit codes it
-    passes through.
-    """
     if len(sys.argv) < 2:
         print("Usage: executor.py <plan_branch> [agent_name] [model_name] [partial_execution_branch]")
         sys.exit(1)

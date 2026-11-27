@@ -1,9 +1,3 @@
-"""Turn supervisor tests. Every process, clock, sleep and signal is faked: no real process is spawned or signalled.
-
-The only exception is :class:`TestProcessSamplerOnThisHost`, which checks that the descendant-CPU sampler works on the
-host it runs on (``/proc`` on Linux, ``ps`` on macOS) with one short-lived busy child.
-"""
-
 import io
 import os
 import queue
@@ -30,18 +24,16 @@ MINUTE = 60
 
 
 class TickStream:
-    """A pipe the test feeds one chunk at a time, to model a runner that streams tokens of one long response."""
-
     def __init__(self):
         self.chunks = queue.Queue()
         self.closed = False
 
     def feed(self, data):
         self.chunks.put(data)
-        self.chunks.join()  # wait until the reader thread has taken it
+        self.chunks.join()
 
     def close(self):
-        # The EOF sentinel wakes a reader blocked in read1 at once, instead of on its next poll.
+        # why: the EOF sentinel wakes a reader blocked in read1 at once, instead of on its next poll.
         self.closed = True
         self.chunks.put(b"")
 
@@ -57,13 +49,8 @@ class TickStream:
             return data
 
 
+# why: run_turn waits READER_JOIN_TIMEOUT_SECONDS of real time for EOF; joining in the fake killpg removes that race.
 class RecordedReaders(list):
-    """Patches ``turns._StreamReader`` so the test can join exactly the readers one ``run_turn`` call starts.
-
-    ``run_turn`` gives its readers ``READER_JOIN_TIMEOUT_SECONDS`` of real time to see EOF. A fake ``killpg`` that
-    closes the pipe joins them itself before returning, so the outcome never depends on thread scheduling.
-    """
-
     def __enter__(self):
         recorded = self
 
@@ -81,7 +68,7 @@ class RecordedReaders(list):
 
     def join(self):
         for reader in self:
-            # A safety net only: the pipe is already at EOF, so this returns at once.
+            # why: a safety net only; the pipe is already at EOF, so this returns at once.
             reader.join(timeout=5.0)
 
 
@@ -94,8 +81,6 @@ class FakeClock:
 
 
 class FakeProc:
-    """A child that exits at ``exit_at`` fake seconds, or when signalled (unless it ignores SIGTERM)."""
-
     def __init__(self, clock, exit_at=None, returncode=0, stdout=b"", stderr=b"", ignores_sigterm=False):  # noqa: PLR0913
         self.clock = clock
         self.exit_at = exit_at
@@ -133,9 +118,9 @@ class Harness:
         self.signals = []
         self.sleeps = 0
         self.on_tick = None
-        # Fake descendant CPU seconds by pid; None models a host without /proc or ps.
+        # why: None models a host without /proc or ps.
         self.tool_cpu = {}
-        # Fake live non-agent descendant commands by pid, so no test depends on the host process table.
+        # why: faked so no test depends on the host process table.
         self.children = {}
 
     def tool_sampler(self, pid):
@@ -193,8 +178,7 @@ class TestRunTurn(unittest.TestCase):
         self.assertEqual(h.signals, [])
 
     def test_turn_timeout_breach_terminates_the_process_group(self):
-        # One degenerate response: tokens keep streaming (so the stall window never fires) but no tool call ever
-        # lands on disk, so the response never ends and the per-turn budget fires.
+        # why: tokens keep streaming (no stall) but no tool call lands on disk, so only the turn budget can fire.
         stream = TickStream()
         h = Harness(exit_at=None, stdout=stream)
         tmp = tempfile.TemporaryDirectory()
@@ -212,8 +196,7 @@ class TestRunTurn(unittest.TestCase):
         self.assertTrue(result.stdout.startswith("tok "))
 
     def test_long_process_with_steady_artefact_progress_is_not_killed(self):
-        # C1: a 30-minute runner process (many responses) inside a 45-minute stage, writing its artefact every minute,
-        # runs to completion under the default turn and stall budgets.
+        # why: C1: a 30-minute runner in a 45-minute stage writing every minute must finish under default budgets.
         h = Harness(exit_at=30 * MINUTE)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -246,8 +229,7 @@ class TestRunTurn(unittest.TestCase):
         self.assertGreaterEqual(result.elapsed_seconds, 30 * MINUTE)
 
     def test_long_process_with_working_tree_progress_only_is_not_killed(self):
-        # Executor shape: the notes are written once, then only the working tree changes (every 75 s, inside the stall
-        # window, observed by the 15 s tree scan).
+        # why: executor shape: notes written once, then only the working tree changes inside the stall window.
         h = Harness(exit_at=30 * MINUTE)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -265,8 +247,7 @@ class TestRunTurn(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
 
     def test_silent_process_that_stops_progressing_is_stopped_by_the_turn_budget(self):
-        # A non-streaming runner cannot signal liveness mid-response, so after its last write it gets the full turn
-        # budget (not the 90 s stall window) before it is stopped.
+        # why: a non-streaming runner cannot signal liveness mid-response, so it gets the full turn budget.
         h = Harness(exit_at=None)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -286,8 +267,7 @@ class TestRunTurn(unittest.TestCase):
         self.assertEqual(h.signals, [(CHILD_PID, signal.SIGTERM)])
 
     def test_silent_runner_with_slow_responses_gets_the_full_turn_budget(self):
-        # I2: a non-streaming runner (claude -p / pi -p print nothing until exit) whose responses each take 200 s
-        # before their write lands is inside the 300 s turn budget and must not be cut off by the 90 s stall window.
+        # why: I2: claude -p / pi -p print nothing until exit; 200 s responses must survive the 90 s stall window.
         h = Harness(exit_at=20 * MINUTE)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -328,8 +308,7 @@ class TestRunTurn(unittest.TestCase):
         self.assertLess(h.clock.now, 330)
 
     def test_long_tool_call_within_a_turn_is_not_a_breach(self):
-        # The model thinks for 150 s, then runs the test suite for 190 s (a busy descendant of the runner),
-        # then writes its notes at 400 s and exits. Without tool progress the 300 s turn clock would fire at 300 s.
+        # why: without tool progress the 300 s turn clock would fire at 300 s, in the middle of the 190 s test run.
         h = Harness(exit_at=420)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -337,7 +316,7 @@ class TestRunTurn(unittest.TestCase):
 
         def tick(now):
             if 150 < now <= 340:
-                h.tool_cpu[5001] = h.tool_cpu.get(5001, 0.0) + 0.9  # pytest: ~90 % of one core
+                h.tool_cpu[5001] = h.tool_cpu.get(5001, 0.0) + 0.9
             elif now == 400:
                 with open(path, "a") as f:
                     f.write("## Tests Run\n")
@@ -350,7 +329,7 @@ class TestRunTurn(unittest.TestCase):
         self.assertEqual(h.sampled_pid, CHILD_PID)
 
     def test_long_tool_call_is_not_judged_by_the_streaming_stall_window(self):
-        # A runner that streamed before starting the tool is silent while the tool runs; that silence is not a stall.
+        # why: a runner that streamed before starting a tool is silent while it runs; that is not a stall.
         stream = TickStream()
         h = Harness(exit_at=300, stdout=stream)
         tmp = tempfile.TemporaryDirectory()
@@ -362,8 +341,7 @@ class TestRunTurn(unittest.TestCase):
             elif now <= 210:
                 h.tool_cpu[5001] = h.tool_cpu.get(5001, 0.0) + 1.0
             elif now >= 300:
-                # The runner exits now and its pipe closes with it. Left open, the pipe would make this a lingering
-                # pipe holder case, which has its own tests below and costs a real READER_JOIN_TIMEOUT_SECONDS.
+                # why: an open pipe would make this a lingering pipe holder case costing READER_JOIN_TIMEOUT_SECONDS.
                 stream.close()
 
         h.on_tick = tick
@@ -373,7 +351,7 @@ class TestRunTurn(unittest.TestCase):
         self.assertEqual(h.signals, [])
 
     def test_idle_runner_with_idle_descendants_still_breaches_the_turn_budget(self):
-        # A long-lived helper that only wakes up occasionally (below the CPU threshold) is not tool progress.
+        # why: a long-lived helper that wakes up below the CPU threshold is not tool progress.
         h = Harness(exit_at=None)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -409,8 +387,7 @@ class TestRunTurn(unittest.TestCase):
         self.assertEqual(result.breach.budget_name, "turn")
 
     def test_streaming_runner_that_goes_silent_is_stalled(self):
-        # A runner that streams tokens has shown it can signal liveness, so silence within its response is bounded by
-        # the stall window rather than the turn budget.
+        # why: a runner that streams tokens has shown it can signal liveness, so the stall window bounds its silence.
         stream = TickStream()
         h = Harness(exit_at=None, stdout=stream)
         tmp = tempfile.TemporaryDirectory()
@@ -424,8 +401,7 @@ class TestRunTurn(unittest.TestCase):
         self.assertEqual(h.signals, [(CHILD_PID, signal.SIGTERM)])
 
     def test_artefact_progress_resets_the_streaming_stall_window(self):
-        # Output marks only the current response as streaming: after a write, a silent next response (prefill before
-        # its first token) gets the turn budget again rather than the stall window.
+        # why: output marks only the current response as streaming; the next prefill gets the turn budget again.
         stream = TickStream()
         h = Harness(exit_at=None, stdout=stream)
         tmp = tempfile.TemporaryDirectory()
@@ -483,8 +459,7 @@ class TestRunTurn(unittest.TestCase):
         self.assertIsNotNone(h.proc.returncode)
 
     def test_silent_stall_window_is_never_stricter_than_the_turn_budget(self):
-        # No output, no watched artefact: nothing could have signalled liveness, so silence is bounded by
-        # max(stall, turn) and reported as a stall.
+        # why: nothing could have signalled liveness, so silence is bounded by max(stall, turn) and reported as a stall.
         h = Harness(exit_at=None)
         result = h.run(turn=300, stall=90)
         self.assertEqual(result.breach.budget_name, "stall")
@@ -493,8 +468,7 @@ class TestRunTurn(unittest.TestCase):
         self.assertLess(h.clock.now, 330)
 
     def test_lingering_pipe_holder_group_is_terminated_after_exit(self):
-        # N5: the agent exits but a descendant keeps stdout open, so the reader never sees EOF; the rest of the
-        # agent's process group (pgid == agent pid) gets SIGTERM, and the agent's own exit status is kept.
+        # why: N5: a descendant keeping stdout open must not hide the agent's exit; the agent's exit status is kept.
         stream = TickStream()
         h = Harness(exit_at=5, stdout=stream)
         self.addCleanup(stream.close)
@@ -523,8 +497,6 @@ class TestRunTurn(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
 
     def test_lingering_pipe_holder_ignoring_sigterm_gets_sigkill(self):
-        # A descendant that ignores SIGTERM keeps the pipe open; after a bounded reader wait the group gets
-        # SIGKILL, and the readers are joined again before the output is read.
         stream = TickStream()
         h = Harness(exit_at=5, stdout=stream)
         self.addCleanup(stream.close)
@@ -645,7 +617,7 @@ class TestRunTurn(unittest.TestCase):
     def test_stop_reason_parsing(self):
         self.assertEqual(parse_stop_reason('{"stopReason":"length"}'), "length")
         self.assertEqual(parse_stop_reason('{"stop_reason": "max_tokens"}'), "max_tokens")
-        # Prose the agent merely printed is not a runner-reported truncation.
+        # why: prose the agent merely printed is not a runner-reported truncation.
         self.assertIsNone(parse_stop_reason("stop_reason=max_tokens"))
         self.assertIsNone(parse_stop_reason("all good"))
         self.assertTrue(TurnResult(returncode=1, stop_reason="length").truncated)
@@ -718,7 +690,7 @@ class TestSuperviseAuthoringTurn(unittest.TestCase):
         )
         self.assertEqual(len(outcome.turns), 2)
         self.assertIs(outcome.budget_failure, turn_breach)
-        # Salvage: the partial file is left on disk untouched.
+        # why: salvage: the partial plan stays on disk untouched.
         with open(self.path) as f:
             self.assertEqual(f.read(), "# Plan for I-1\n")
 
@@ -744,8 +716,7 @@ class TestSuperviseAuthoringTurn(unittest.TestCase):
         self.assertIs(outcome.budget_failure, stage_breach)
 
     def test_no_reprompt_when_stage_has_no_time_left(self):
-        # A clean first turn that finishes at the stage ceiling must not launch a re-prompt that would breach
-        # the stage budget on its first poll.
+        # why: a re-prompt launched at the stage ceiling would breach the stage budget on its first poll.
         def finish_at_ceiling():
             with open(self.path, "a", encoding="utf-8") as f:
                 f.write("# Plan for I-1\n")
@@ -776,48 +747,53 @@ class TestSuperviseAuthoringTurn(unittest.TestCase):
 
 class TestProcessSampler(unittest.TestCase):
     def test_descendants_include_the_tree_and_the_group_but_not_the_runner(self):
+        runner, tool, new_session_child, reparented, unrelated = 100, 101, 102, 103, 200
         table = {
-            100: (1, 100, 50.0, 0.0),  # the runner
-            101: (100, 100, 2.0, 0.0),  # a tool
-            102: (101, 102, 3.0, 0.0),  # its child in a new session
-            103: (1, 100, 4.0, 0.0),  # re-parented, still in the runner's group
-            200: (1, 200, 9.0, 0.0),  # unrelated
+            runner: (1, runner, 50.0, 0.0),
+            tool: (runner, runner, 2.0, 0.0),
+            new_session_child: (tool, new_session_child, 3.0, 0.0),
+            reparented: (1, runner, 4.0, 0.0),
+            unrelated: (1, unrelated, 9.0, 0.0),
         }
-        self.assertEqual(turns.descendant_cpu_seconds(100, lambda: table), {101: 2.0, 102: 3.0, 103: 4.0})
-        self.assertIsNone(turns.descendant_cpu_seconds(100, lambda: None))
+        self.assertEqual(
+            turns.descendant_cpu_seconds(runner, lambda: table), {tool: 2.0, new_session_child: 3.0, reparented: 4.0}
+        )
+        self.assertIsNone(turns.descendant_cpu_seconds(runner, lambda: None))
 
     def test_reaped_children_cpu_counts_but_the_runners_own_cpu_does_not(self):
+        runner, reaping_shell, unrelated = 100, 101, 200
         table = {
-            100: (1, 100, 50.0, 7.0),  # the runner: own CPU excluded, its reaped tools' CPU kept
-            101: (100, 100, 0.5, 30.0),  # a shell that reaped many short commands
-            200: (1, 200, 9.0, 9.0),  # unrelated
+            runner: (1, runner, 50.0, 7.0),
+            reaping_shell: (runner, runner, 0.5, 30.0),
+            unrelated: (1, unrelated, 9.0, 9.0),
         }
-        self.assertEqual(turns.descendant_cpu_seconds(100, lambda: table), {100: 7.0, 101: 30.5})
-        table[100] = (1, 100, 50.0, 0.0)
-        self.assertEqual(turns.descendant_cpu_seconds(100, lambda: table), {101: 30.5})
+        self.assertEqual(turns.descendant_cpu_seconds(runner, lambda: table), {runner: 7.0, reaping_shell: 30.5})
+        table[runner] = (1, runner, 50.0, 0.0)
+        self.assertEqual(turns.descendant_cpu_seconds(runner, lambda: table), {reaping_shell: 30.5})
 
     def test_wrapper_spawned_agent_binary_is_not_tool_progress(self):
-        # The codex Node wrapper (100) spawns the native codex binary (101), which parents the tools.
+        # why: the codex Node wrapper spawns the native codex binary, which parents the tools.
+        wrapper, agent, agent_tool, wrapper_child, nested_codex = 100, 101, 102, 103, 104
         table = {
-            100: (1, 100, 1.0, 0.0),  # node wrapper ("MainThread")
-            101: (100, 100, 80.0, 6.0),  # the real agent: own CPU excluded, its reaped tools' CPU kept
-            102: (101, 100, 4.0, 0.0),  # a tool the agent runs
-            103: (100, 100, 2.0, 0.0),  # a direct child of the wrapper that is not the agent
+            wrapper: (1, wrapper, 1.0, 0.0),
+            agent: (wrapper, wrapper, 80.0, 6.0),
+            agent_tool: (agent, wrapper, 4.0, 0.0),
+            wrapper_child: (wrapper, wrapper, 2.0, 0.0),
         }
-        names = {100: "MainThread", 101: "codex", 102: "bash", 103: "git"}
+        names = {wrapper: "MainThread", agent: "codex", agent_tool: "bash", wrapper_child: "git"}
         self.assertEqual(
-            turns.descendant_cpu_seconds(100, lambda: table, name_of=names.get), {101: 6.0, 102: 4.0, 103: 2.0}
+            turns.descendant_cpu_seconds(wrapper, lambda: table, name_of=names.get),
+            {agent: 6.0, agent_tool: 4.0, wrapper_child: 2.0},
         )
-        # A "codex" process deeper in the tree is a tool, not the agent.
-        table[104] = (102, 100, 9.0, 0.0)
-        names[104] = "codex"
-        self.assertEqual(turns.descendant_cpu_seconds(100, lambda: table, name_of=names.get)[104], 9.0)
-        # Without the wrapper exclusion the agent's own CPU would count.
+        table[nested_codex] = (agent_tool, wrapper, 9.0, 0.0)
+        names[nested_codex] = "codex"
+        self.assertEqual(turns.descendant_cpu_seconds(wrapper, lambda: table, name_of=names.get)[nested_codex], 9.0)
         self.assertEqual(
-            turns.descendant_cpu_seconds(100, lambda: table, name_of=names.get, agent_names=frozenset())[101], 86.0
+            turns.descendant_cpu_seconds(wrapper, lambda: table, name_of=names.get, agent_names=frozenset())[agent],
+            86.0,
         )
-        table[101] = (100, 100, 80.0, 0.0)
-        self.assertNotIn(101, turns.descendant_cpu_seconds(100, lambda: table, name_of=names.get))
+        table[agent] = (wrapper, wrapper, 80.0, 0.0)
+        self.assertNotIn(agent, turns.descendant_cpu_seconds(wrapper, lambda: table, name_of=names.get))
 
     def test_process_name_reads_proc_comm(self):
         tmp = tempfile.TemporaryDirectory()
@@ -855,8 +831,6 @@ class TestProcessSampler(unittest.TestCase):
 
 
 class FakeProcFs:
-    """A fake Linux ``/proc`` (100 ticks per second) whose stat files a test rewrites as fake time passes."""
-
     def __init__(self, test):
         self._tmp = tempfile.TemporaryDirectory()
         test.addCleanup(self._tmp.cleanup)
@@ -874,9 +848,8 @@ class FakeProcFs:
         return turns.descendant_cpu_seconds(pid, lambda: turns._proc_table(self._tmp.name))
 
 
+# why: CPU of descendants that finished between two samples only shows up in cutime/cstime on Linux.
 class TestReapedChildrenProgress(unittest.TestCase):
-    """CPU of descendants that finished between two samples counts through ``cutime``/``cstime`` on Linux."""
-
     SHELL_PID = CHILD_PID + 1
 
     def run_with(self, runner_cpu, shell_reaped):
@@ -887,7 +860,7 @@ class TestReapedChildrenProgress(unittest.TestCase):
 
         def tick(now):
             proc_fs.write(CHILD_PID, 1, CHILD_PID, runner_cpu(now), 0.0)
-            # The tool's shell stays alive; each short command it runs exits before any sample sees it.
+            # why: the tool's shell stays alive while each short command it runs exits before any sample sees it.
             proc_fs.write(self.SHELL_PID, CHILD_PID, CHILD_PID, 0.01, shell_reaped(now))
 
         tick(0)
@@ -896,7 +869,6 @@ class TestReapedChildrenProgress(unittest.TestCase):
         return h.run(turn=300, stall=90, watch_path=os.path.join(tmp.name, "notes.md"))
 
     def test_loop_of_short_processes_counts_as_progress(self):
-        # About one core spent in 0.3 s commands for the whole 10 min: no turn breach.
         result = self.run_with(runner_cpu=lambda now: 1.0, shell_reaped=lambda now: 0.3 * int(now / 0.3))
         self.assertIsNone(result.breach)
         self.assertEqual(result.returncode, 0)
@@ -907,7 +879,6 @@ class TestReapedChildrenProgress(unittest.TestCase):
         self.assertGreaterEqual(result.breach.elapsed_seconds, 300)
 
     def test_runners_own_cpu_is_not_progress(self):
-        # The runner itself burning a core (a degenerate response) is not tool progress.
         result = self.run_with(runner_cpu=lambda now: now, shell_reaped=lambda now: 2.0)
         self.assertEqual(result.breach.budget_name, "turn")
         self.assertGreaterEqual(result.breach.elapsed_seconds, 300)
@@ -915,14 +886,13 @@ class TestReapedChildrenProgress(unittest.TestCase):
 
 class TestProcessSamplerOnThisHost(unittest.TestCase):
     def test_busy_grandchild_is_sampled_on_this_host(self):
-        # Portability check for the real sampler (/proc on Linux, ps on macOS): a shell runner with a busy child.
+        # why: the only real process in this module: it proves the real sampler works on this host (/proc or ps).
         import contextlib
         import subprocess
         import sys
         import time
 
-        # The child burns CPU until it has used 3 s of its own (or 30 s of wall time), and the sampler is polled until
-        # it reports more than the asserted 0.3 s, so a loaded host only makes the test slower, never wrong.
+        # why: polling until the sample exceeds the asserted 0.3 s makes a loaded host slower, never wrong.
         busy = "import time\nend = time.time() + 30\nwhile time.process_time() < 3.0 and time.time() < end: pass\n"
         proc = subprocess.Popen(
             ["/bin/sh", "-c", f'"{sys.executable}" -c "$0"; sleep 0.5', busy], start_new_session=True

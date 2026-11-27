@@ -1,14 +1,3 @@
-"""The ``holon doctor`` configuration report and the ``.env.example`` text, rendered from the layered configuration.
-
-A secret value is never rendered: its row shows ``set (<layer>)``. Like every other doctor message (configuration
-values are withheld unless known to be safe), a non-secret value is shown only when it is plainly harmless: a finite
-decimal or ``unlimited`` for a numeric key, otherwise a short value without a URL authority, ``@``, a token-like run or
-a non-finite number, which the command redactor leaves unchanged. Any other value shows as
-``set (<layer>; value withheld)``. The rendering reads configuration values only from the configuration it is given;
-``os.environ`` is inspected solely to check ``COMMAND_ECHO_ENV_NAMES`` during redaction, and the bounded redaction
-cache is keyed on a SHA-256 digest so plaintext credentials are never retained in memory.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -34,6 +23,7 @@ _REDACTION_CACHE_MAXSIZE = 512
 _REDACTION_CACHE: OrderedDict[bytes, bool] = OrderedDict()
 
 
+# why: the redaction cache is keyed on a SHA-256 digest so plaintext credentials are never retained in memory.
 def _plain_value_cache_key(key: str, value: str) -> bytes:
     hasher = hashlib.sha256()
     for part in (key, value, *(os.environ.get(name, "") for name in COMMAND_ECHO_ENV_NAMES)):
@@ -58,7 +48,6 @@ def _plain_value_redaction_safe(key: str, value: str) -> bool:
 
 
 def _plain_value(key: str, value: str) -> bool:
-    """True when ``value`` may be printed: it cannot carry a credential, a URL or a non-finite number."""
     if key.endswith(_NUMERIC_SUFFIXES):
         return bool(_NUMBER_RE.fullmatch(value)) or value.lower() == "unlimited"
     if not _PLAIN_VALUE_RE.fullmatch(value) or "//" in value or _TOKEN_RUN_RE.search(value):
@@ -72,7 +61,6 @@ def _plain_value(key: str, value: str) -> bool:
 
 
 def _display(setting: ResolvedSetting, masked: bool) -> tuple[str | None, str]:
-    """``(value shown, display text)`` of one setting."""
     if setting.value is None:
         return None, f"unset ({setting.source})"
     if masked:
@@ -83,7 +71,6 @@ def _display(setting: ResolvedSetting, masked: bool) -> tuple[str | None, str]:
 
 
 def setting_rows(config: EffectiveConfig) -> list[dict[str, Any]]:
-    """One row per effective setting, sorted by key; ``value`` is None for a secret, withheld or unset setting."""
     rows = []
     for key in sorted(config.settings):
         setting = config.settings[key]
@@ -108,7 +95,6 @@ def _provenance(row: dict[str, Any], inherited: bool) -> str:
 
 
 def format_config_report(config: EffectiveConfig, rows: list[dict[str, Any]] | None = None) -> list[str]:
-    """The text report: a heading, one ``KEY = value   [source; shadows ...]`` line per row, then the warnings."""
     resolved_rows = setting_rows(config) if rows is None else rows
     lines = [REPORT_HEADING]
     lines.extend(f"  {row['key']} = {row['display']}   [{_provenance(row, config.inherited)}]" for row in resolved_rows)
@@ -119,13 +105,11 @@ def format_config_report(config: EffectiveConfig, rows: list[dict[str, Any]] | N
 
 
 def configuration_payload(config: EffectiveConfig, rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """The ``--json`` form: ``settings`` rows, ``warnings`` and whether the resolution was inherited."""
     resolved_rows = setting_rows(config) if rows is None else rows
     return {"settings": resolved_rows, "warnings": list(config.warnings), "inherited": config.inherited}
 
 
 def env_example_text() -> str:
-    """The commented ``.env.example`` that ``holon init`` scaffolds; every line is a comment and holds no value."""
     lines = [
         "# Holon layered configuration. Copy to .env (git-ignored) or ~/.holon/.env, both mode 0600.",
         f"# Precedence, broadest first: {', '.join(LAYERS)}. The file layers are: {', '.join(FILE_LAYERS)}.",

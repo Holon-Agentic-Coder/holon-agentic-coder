@@ -1,53 +1,5 @@
-"""Supervised runner turns: streamed output, stall detection, salvage and a single resume.
-
-:func:`run_turn` replaces the blocking ``subprocess.run`` agent call. The agent is started in its own session so its
-whole process group can be stopped without signalling the entrypoint itself; stdout and stderr are drained by reader
-threads, so a chatty agent can never block on a full pipe. Liveness is "new output *or* growth of the artefact being
-written", which keeps agents that buffer their chat output but write the file incrementally alive.
-
-A *turn* is a single assistant response, not a runner process: one ``claude -p`` / ``pi -p``
-invocation performs a whole plan or execution as many responses. The process as a whole is therefore bounded only by the
-stage ceiling (and the stall window). The per-turn budget is applied to what is observable about a single response from
-outside a non-streaming CLI: the interval between *artefact progress* events (growth of the watched artefact, or a
-change in the watched working tree), which are the side effects of the response boundaries (tool calls). Streamed
-stdout/stderr keeps a turn out of the stall window but does not close a response, so a model that streams one
-degenerate response for longer than the turn budget without writing anything is still stopped. Without a watched
-artefact or tree, no response boundary is observable and the turn budget is not applied.
-
-A tool call is not an assistant response either. While the runner waits on a tool (a test suite, ``uv sync``) nothing
-is written and a non-streaming runner prints nothing, so the runner's descendant processes are sampled as well: CPU
-time consumed by any process descended from the runner (or left in its process group), excluding the agent's own
-processes (the runner and, for wrapper CLIs such as ``codex``, the agent binary it spawns), is *tool progress* and
-counts like an artefact change (a response boundary). A runner whose descendants are idle, or that has none, is
-judged exactly as before, so a genuinely idle or degenerate runner still breaches. Sampling reads ``/proc`` (Linux
-containers) or ``ps`` (macOS); where neither is available it is skipped and only artefact progress
-counts.
-
-A quiet foreground tool (a test blocked on I/O, sleeping between retries or waiting on a worker) may burn too little
-CPU to count as tool progress, so the runner's live non-agent descendants are listed as well (the *live-child guard*,
-sampled with the tool CPU). While the runner has one, the stall check uses the non-streaming :func:`silence_window`,
-so the stall budget does not fire on a waiting foreground tool; the turn timeout (or ``DEFAULT_TURN_SECONDS`` when it
-is ``unlimited``) and the stage ceiling still bound the turn. A breach warning names the commands still running. After
-a runner exits without a breach, any process left in its process group (a command backgrounded with ``&``) is logged
-as a warning naming its command and recorded on :attr:`TurnResult.background_commands`; such a command cannot report
-back after the turn ends. Leftovers are only reported here; the pipe-holder path still stops a group that keeps the
-agent's pipes open. A command that starts its own session (``setsid``) leaves the group and is not found.
-
-The stall window bounds silence *within* a response, so it is only stricter than the turn budget once the runner has
-shown that it streams: after stdout/stderr output in the current response (since the last artefact progress event).
-Non-streaming runners (``claude -p`` / ``pi -p`` in text mode print nothing until they exit) cannot emit a stall
-signal, so for them the silence window is ``max(stall_seconds, turn_seconds)`` and a single response gets the full
-turn budget; with an observable response boundary the turn budget is the one that fires. With an ``unlimited`` turn
-timeout the turn budget never fires and the non-streaming silence window is
-``max(stall_seconds, DEFAULT_TURN_SECONDS)``, so silence stays bounded while stall detection is on (see
-:func:`silence_window`).
-
-:func:`supervise_authoring_turn` adds the authoring policy on top: validate the artefact after the turn, attempt exactly
-one follow-up turn (a resume after a breach, or a targeted re-prompt for missing sections), and report a budget failure
-only when the artefact is still unusable. :func:`record_budget_failure` is the single place that writes the ACT-BUDGET
-action, so a stage failure yields exactly one record.
-"""
-
+# why: a turn is one assistant response, not a runner process; a non-streaming CLI shows a response boundary only via
+# why: its side effects (artefact growth, a working-tree change, tool CPU), so the turn budget runs between those.
 import contextlib
 import logging
 import os
@@ -66,51 +18,41 @@ from sandbox_executor.ledger import ActionRecord, append_action_record, generate
 
 logger = logging.getLogger(__name__)
 
-# Seconds between SIGTERM and SIGKILL when a breached turn is stopped.
 TERMINATION_GRACE_SECONDS = 10.0
 POLL_INTERVAL_SECONDS = 1.0
-# Minimum seconds between working-tree scans when a whole tree is watched for liveness (executor turns edit many
-# files, not just their notes). Scans skip VCS metadata and dependency directories.
+# why: executor turns edit many files, not just their notes, so the whole tree is scanned, but at most this often.
 TREE_SCAN_INTERVAL_SECONDS = 15.0
-# Seconds between samples of the runner's descendant processes, and the CPU seconds they must consume between two
-# samples (5 % of one core) to count as tool progress. The threshold ignores idle helpers that wake up now and then.
+# why: 5 % of one core between samples counts as tool progress, so idle helpers that wake up now and then do not.
 TOOL_SCAN_INTERVAL_SECONDS = 10.0
 TOOL_CPU_PROGRESS_SECONDS = 0.5
 PS_TIMEOUT_SECONDS = 5.0
-# Real seconds to wait for the pipe readers after the agent exits before treating a descendant as holding them open.
 READER_JOIN_TIMEOUT_SECONDS = 5.0
-# Longest command line quoted in a live-child or background-command warning, so a huge argv cannot flood the log.
+# why: a huge argv in a live-child or background-command warning must not flood the log.
 COMMAND_DISPLAY_CHARS = 200
 _TREE_SKIP_DIRS = frozenset({".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache"})
 
-# Agent CLIs report why generation stopped in structured JSON events ({"stopReason": "length"}). Only the quoted JSON
-# key/value form is accepted, so prose the agent merely printed (e.g. "stop_reason=max_tokens") is never mistaken for a
-# runner-reported truncation.
+# why: only the quoted JSON key/value form counts, so prose the agent printed ("stop_reason=max_tokens") is never
+# why: mistaken for a runner-reported truncation.
 _STOP_REASON = re.compile(r'"stop_?reason"\s*:\s*"([A-Za-z_]+)"', re.IGNORECASE)
 _TRUNCATION_REASONS = frozenset({"length", "max_tokens", "maxtokens"})
 
 
 @dataclass
 class TurnResult:
-    """Outcome of one supervised runner turn; compatible with ``CompletedProcess`` for the fields callers read."""
-
     returncode: int
     stdout: str = ""
     stderr: str = ""
     breach: BudgetBreach | None = None
     elapsed_seconds: float = 0.0
     stop_reason: str | None = None
-    # Command lines left running in the runner's process group after it exited without a breach.
     background_commands: tuple[str, ...] = ()
 
     @property
     def truncated(self) -> bool:
-        """True when the runner reported that output was cut off by its token limit."""
         return (self.stop_reason or "").lower() in _TRUNCATION_REASONS
 
 
 def parse_stop_reason(*texts: str) -> str | None:
-    """Last stop reason reported as a structured JSON field in the runner output, if any."""
     found = None
     for text in texts:
         for match in _STOP_REASON.finditer(text or ""):
@@ -129,7 +71,6 @@ def _file_state(path: str | None) -> tuple[int, int] | None:
 
 
 def _tree_mtime(root: str | None) -> int | None:
-    """Newest file mtime (ns) under ``root``, skipping VCS and dependency directories; None when unreadable."""
     if not root or not os.path.isdir(root):
         return None
     newest = 0
@@ -143,15 +84,13 @@ def _tree_mtime(root: str | None) -> int | None:
     return newest
 
 
-# A process table row: (ppid, pgid, own user+system CPU seconds, CPU seconds of its reaped children). The last field
-# comes from ``cutime``+``cstime`` in Linux ``/proc``; ``ps`` cannot report it, so it is 0.0 on macOS.
+# why: rows are (ppid, pgid, own CPU, reaped-children CPU); ps cannot report reaped-children CPU, so it is 0.0 on macOS.
 ProcessTable = dict[int, tuple[int, int, float, float]]
 ToolSampler = Callable[[int], dict[int, float] | None]
 ChildLister = Callable[[int], dict[int, str] | None]
 
 
 def _proc_table(proc_root: str = "/proc") -> ProcessTable | None:
-    """Process table from a Linux ``/proc``; None when it is not available."""
     if not os.path.isdir(proc_root):
         return None
     try:
@@ -170,11 +109,11 @@ def _proc_table(proc_root: str = "/proc") -> ProcessTable | None:
             with open(os.path.join(proc_root, entry, "stat"), encoding="utf-8", errors="replace") as handle:
                 stat = handle.read()
         except OSError:
-            continue  # the process exited between listdir and open
-        # The command name (field 2) is parenthesised and may contain spaces or ')'; fields resume after the last ')'.
+            continue
+        # why: the command name (field 2) is parenthesised and may contain spaces or ')'.
         fields = stat[stat.rfind(")") + 2 :].split()
         try:
-            # Fields 14-17 of stat(5): utime, stime, cutime, cstime (CPU of children the process has waited for).
+            # why: fields 14-17 of stat(5) are utime, stime, cutime and cstime.
             own = (int(fields[11]) + int(fields[12])) / ticks
             reaped = (int(fields[13]) + int(fields[14])) / ticks
             table[int(entry)] = (int(fields[1]), int(fields[2]), own, reaped)
@@ -184,7 +123,6 @@ def _proc_table(proc_root: str = "/proc") -> ProcessTable | None:
 
 
 def _parse_cpu_time(text: str) -> float:
-    """Seconds from a ``ps -o time`` value: ``M:SS.ss`` (macOS), ``[DD-]HH:MM:SS`` (procps) or similar."""
     days = 0.0
     if "-" in text:
         day_text, text = text.split("-", 1)
@@ -209,7 +147,6 @@ def _parse_ps_table(output: str) -> ProcessTable:
 
 
 def _ps_table() -> ProcessTable | None:
-    """Process table from POSIX ``ps`` (macOS has no ``/proc``); None when ``ps`` is missing or fails."""
     try:
         result = subprocess.run(
             ["ps", "-A", "-o", "pid=,ppid=,pgid=,time="],
@@ -226,32 +163,23 @@ def _ps_table() -> ProcessTable | None:
 
 
 def process_table() -> ProcessTable | None:
-    """Every visible process with its parent, process group and CPU seconds, from ``/proc`` or ``ps``.
-
-    Only ``/proc`` reports the CPU of reaped children; rows read from ``ps`` carry 0.0 for it.
-    """
     table = _proc_table()
     return table if table is not None else _ps_table()
 
 
-# Executable names of agents whose CLI is a wrapper that spawns the real agent binary as its direct child. Verified in
-# the ``holon/agent-codex`` image: ``codex`` is a Node script (``@openai/codex/bin/codex.js``, process name
-# ``MainThread``) that spawns the native ``vendor/<triple>/bin/codex`` binary (process name ``codex``), which runs the
-# model loop and is the parent of every tool. That child is the agent itself, so it is treated like the runner: its own
-# CPU never counts as tool progress, only the CPU of the tool processes it has reaped. Names are matched against the
-# kernel process name (``/proc/<pid>/comm``, at most 15 characters) of direct children of the runner only.
+# why: verified in the holon/agent-codex image: the codex Node wrapper spawns the native codex binary running the model
+# why: loop, so that direct child is the agent and only the CPU of tools it reaped counts as tool progress.
 WRAPPED_AGENT_PROCESS_NAMES = frozenset({"codex"})
 
 
 def process_name(pid: int, proc_root: str = "/proc") -> str | None:
-    """Kernel process name of ``pid`` (``/proc/<pid>/comm``, else the basename of ``ps -o comm=``); None if gone."""
     try:
         with open(os.path.join(proc_root, str(pid), "comm"), encoding="utf-8", errors="replace") as handle:
             return handle.read().strip() or None
     except OSError:
         pass
     if os.path.isdir(proc_root):
-        return None  # /proc exists, so the process has exited
+        return None
     try:
         result = subprocess.run(
             ["ps", "-o", "comm=", "-p", str(pid)],
@@ -274,7 +202,6 @@ def _children_of(table: ProcessTable) -> dict[int, list[int]]:
 
 
 def _descendant_members(table: ProcessTable, root_pid: int) -> set[int]:
-    """``root_pid``, every process in its process group and every process descended from either."""
     children = _children_of(table)
     members = {root_pid} | {pid for pid, (_ppid, pgid, _cpu, _reaped) in table.items() if pgid == root_pid}
     stack = list(members)
@@ -289,7 +216,6 @@ def _descendant_members(table: ProcessTable, root_pid: int) -> set[int]:
 def _agent_pids(
     table: ProcessTable, root_pid: int, name_of: Callable[[int], str | None], agent_names: frozenset[str]
 ) -> set[int]:
-    """The agent's own processes: ``root_pid`` and its direct children named in ``agent_names``."""
     agent_pids = {root_pid}
     if agent_names:
         agent_pids |= {pid for pid in _children_of(table).get(root_pid, ()) if name_of(pid) in agent_names}
@@ -302,16 +228,6 @@ def descendant_cpu_seconds(
     name_of: Callable[[int], str | None] = process_name,
     agent_names: frozenset[str] = WRAPPED_AGENT_PROCESS_NAMES,
 ) -> dict[int, float] | None:
-    """CPU seconds of every process descended from ``root_pid`` or in its process group, excluding the agent's own.
-
-    The runner was started in its own session, so its pid is also its process group id; group members that were
-    re-parented after their parent exited are still included. Each descendant's value is its own CPU plus that of the
-    children it has reaped, so a tool made of many short processes (a shell loop, ``make``) shows up through its
-    still-running parent. The agent's own processes are ``root_pid`` and, for wrapper CLIs, a direct child of it whose
-    process name (``name_of``) is in ``agent_names`` (see :data:`WRAPPED_AGENT_PROCESS_NAMES`); each appears only with
-    the CPU of its reaped children, never its own, and only when that is non-zero. Reaped-children CPU is only reported
-    by ``/proc`` (Linux). Returns None when no process table is available.
-    """
     table = table_source()
     if table is None:
         return None
@@ -326,10 +242,6 @@ def descendant_cpu_seconds(
 
 
 def process_command(pid: int, proc_root: str = "/proc") -> str | None:
-    """Command line of ``pid`` (``/proc/<pid>/cmdline``, else ``ps -o args=``), cut to ``COMMAND_DISPLAY_CHARS``.
-
-    Returns None when the process is gone or its command line cannot be read.
-    """
     try:
         with open(os.path.join(proc_root, str(pid), "cmdline"), "rb") as handle:
             raw = handle.read()
@@ -338,14 +250,13 @@ def process_command(pid: int, proc_root: str = "/proc") -> str | None:
     if raw is not None:
         command = " ".join(part for part in raw.decode("utf-8", errors="replace").split("\0") if part).strip()
     elif os.path.isdir(proc_root):
-        return None  # /proc exists, so the process has exited
+        return None
     else:
         command = _ps_command(pid)
     return command[:COMMAND_DISPLAY_CHARS] or None
 
 
 def _ps_command(pid: int) -> str:
-    """``ps -o args=`` for ``pid``; empty when ``ps`` is missing, fails or the process is gone."""
     try:
         result = subprocess.run(
             ["ps", "-o", "args=", "-p", str(pid)],
@@ -366,12 +277,6 @@ def descendant_commands(
     command_of: Callable[[int], str | None] = process_command,
     agent_names: frozenset[str] = WRAPPED_AGENT_PROCESS_NAMES,
 ) -> dict[int, str] | None:
-    """``{pid: command line}`` of every live non-agent process descended from ``root_pid`` or in its process group.
-
-    Uses the same membership and agent rules as :func:`descendant_cpu_seconds`, so a command backgrounded with ``&``
-    is still found after the runner has been reaped (it stays in the runner's process group). Processes whose command
-    line can no longer be read are skipped. Returns None when no process table is available.
-    """
     table = table_source()
     if table is None:
         return None
@@ -381,18 +286,14 @@ def descendant_commands(
 
 
 def describe_commands(commands: Mapping[int, str]) -> str:
-    """``"<command> (pid N); <command> (pid M)"`` sorted by pid, for log lines."""
     return "; ".join(f"{commands[pid]} (pid {pid})" for pid in sorted(commands))
 
 
 def tool_cpu_used(previous: Mapping[int, float], current: Mapping[int, float]) -> float:
-    """CPU seconds the descendants consumed between two samples; a process new in ``current`` counts in full."""
     return sum(max(0.0, cpu - previous.get(pid, 0.0)) for pid, cpu in current.items())
 
 
 class _StreamReader(threading.Thread):
-    """Drains one pipe into a buffer and counts what it read; the poll loop turns new counts into activity."""
-
     def __init__(self, stream: Any) -> None:
         super().__init__(daemon=True)
         self._stream = stream
@@ -403,8 +304,7 @@ class _StreamReader(threading.Thread):
     def run(self) -> None:
         if self._stream is None:
             return
-        # read1 returns as soon as any bytes are available, so output without a trailing newline (progress dots,
-        # streamed tokens) still counts as activity.
+        # why: read1 returns as soon as any bytes arrive, so output with no newline (progress dots) is activity.
         read = getattr(self._stream, "read1", None) or self._stream.read
         try:
             while True:
@@ -415,7 +315,7 @@ class _StreamReader(threading.Thread):
                     self._chunks.append(chunk)
                     self.count += len(chunk)
         except (OSError, ValueError):
-            # The pipe was closed underneath us (process killed); whatever was read is kept.
+            # why: the pipe closes underneath the reader when the process is killed; what was read is kept.
             return
 
     def text(self) -> str:
@@ -423,6 +323,7 @@ class _StreamReader(threading.Thread):
             return b"".join(self._chunks).decode("utf-8", errors="replace")
 
 
+# why: only the group the child leads is signalled, so the entrypoint and its salvage path survive.
 def _terminate_group(  # noqa: PLR0913
     proc: Any,
     *,
@@ -433,11 +334,6 @@ def _terminate_group(  # noqa: PLR0913
     grace_seconds: float,
     poll_interval: float,
 ) -> None:
-    """SIGTERM the child's process group, wait ``grace_seconds``, then SIGKILL it.
-
-    Only the group the child leads is signalled. If that group is somehow our own (the child was not started in a new
-    session), fall back to signalling the child alone, so the entrypoint and its salvage path survive.
-    """
     try:
         child_pgid = getpgid(proc.pid)
     except (ProcessLookupError, OSError):
@@ -468,31 +364,16 @@ def _terminate_group(  # noqa: PLR0913
         logger.warning("Agent process %s did not exit after SIGKILL", getattr(proc, "pid", "?"))
 
 
+# why: docker's promotional and diagnostic hints would otherwise pollute captured agent output.
 def build_turn_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Build an execution environment mapping for a turn subprocess.
-
-    Copies the provided environment mapping or ``os.environ`` if ``None``,
-    guaranteeing that ``DOCKER_CLI_HINTS`` is explicitly set to ``'false'`` so
-    promotional and diagnostic hints are suppressed in all spawned child processes.
-
-    Args:
-        env: Optional base environment mapping. If ``None``, ``os.environ`` is used.
-
-    Returns:
-        A normalised environment dictionary containing ``DOCKER_CLI_HINTS='false'``.
-    """
     effective_env = dict(os.environ) if env is None else dict(env)
     effective_env["DOCKER_CLI_HINTS"] = "false"
     return effective_env
 
 
+# why: a non-streaming runner cannot signal liveness mid-response, so it gets the turn budget, and silence stays bounded
+# why: by DEFAULT_TURN_SECONDS when the turn timeout is unlimited.
 def silence_window(budgets: TurnBudgets, streaming: bool) -> float:
-    """Seconds of silence (no output, no progress) allowed before a ``stall`` breach.
-
-    A streaming runner gets ``stall_seconds``. A non-streaming runner, which cannot signal liveness mid-response, gets
-    ``max(stall_seconds, turn_seconds)``, or ``max(stall_seconds, DEFAULT_TURN_SECONDS)`` when the turn timeout is
-    ``unlimited``, so silence is never unbounded while stall detection is on (``stall_seconds > 0``).
-    """
     if streaming:
         return budgets.stall_seconds
     turn = DEFAULT_TURN_SECONDS if budgets.turn_seconds is None else budgets.turn_seconds
@@ -502,14 +383,12 @@ def silence_window(budgets: TurnBudgets, streaming: bool) -> float:
 def _turn_breach(
     budgets: TurnBudgets, turn_observable: bool, now: float, last_progress: float, stage: str
 ) -> BudgetBreach | None:
-    """The ``turn`` breach once a response has run past ``turn_seconds``; never with an ``unlimited`` turn timeout."""
     if budgets.turn_seconds is None or not turn_observable or now - last_progress < budgets.turn_seconds:
         return None
     return BudgetBreach(stage, "turn", budgets.turn_seconds, now - last_progress)
 
 
 def _live_children(child_lister: ChildLister | None, pid: int) -> dict[int, str]:
-    """Live non-agent descendants of the runner from ``child_lister``; empty when disabled, unavailable or failing."""
     if child_lister is None:
         return {}
     try:
@@ -518,18 +397,14 @@ def _live_children(child_lister: ChildLister | None, pid: int) -> dict[int, str]
         return {}
 
 
+# why: a live child (a quiet foreground tool or a persistent helper) disables the short streaming stall window, leaving
+# why: the turn timeout to bound the turn.
 def _stall_window(budgets: TurnBudgets, streaming: bool, has_live_child: bool) -> float:
-    """The stall window: the non-streaming :func:`silence_window` while the runner has a live child (a tool).
-
-    Any live non-agent descendant counts, including a persistent helper process (a language server, a daemon) the
-    runner keeps for the whole turn; such a helper disables the short streaming stall window, leaving the turn
-    timeout to bound the turn.
-    """
     return silence_window(budgets, streaming and not has_live_child)
 
 
+# why: a command backgrounded with `&` stays in the runner's process group and cannot report back after the turn.
 def _report_background_commands(child_lister: ChildLister | None, pid: int) -> tuple[str, ...]:
-    """Warn about commands left in the exited runner's process group and return their command lines."""
     leftovers = _live_children(child_lister, pid)
     if leftovers:
         logger.warning(
@@ -561,40 +436,6 @@ def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
     tool_sampler: ToolSampler | None = descendant_cpu_seconds,
     child_lister: ChildLister | None = descendant_commands,
 ) -> TurnResult:
-    """Run one agent turn under the turn, stall and stage budgets.
-
-    Args:
-        cmd: Runner command line.
-        stdin_file: Optional path to a file streamed into child process stdin.
-        turn_budgets: Turn and stall limits; defaults to :class:`TurnBudgets` defaults.
-        stage_timer: Running stage timer; it bounds the whole runner process, which is stopped when the stage has no
-            time left.
-        stage: Stage name recorded on a breach.
-        watch_path: Artefact the agent is writing; growth counts as liveness and closes the current response for the
-            turn budget.
-        watch_tree: Optional working tree whose newest file mtime also counts as liveness and response progress
-            (scanned at most every ``TREE_SCAN_INTERVAL_SECONDS``).
-        cwd: Working directory for the agent.
-        env: Environment for the agent (``None`` inherits).
-        clock, sleeper, popen_factory, killpg, getpgid: Injection seams for tests.
-        poll_interval: Seconds between supervision checks.
-        grace_seconds: Seconds between SIGTERM and SIGKILL.
-        tool_sampler: Returns ``{pid: cpu_seconds}`` for the runner's descendants (None when unavailable); sampled
-            every ``TOOL_SCAN_INTERVAL_SECONDS``. ``None`` disables tool progress.
-        child_lister: Returns ``{pid: command}`` for the runner's live non-agent descendants (None when unavailable);
-            sampled with ``tool_sampler`` and once after the runner exits. ``None`` disables the live-child guard and
-            the background warning.
-
-    Budgets: ``turn`` fires when no artefact or tool progress (a response boundary) has been seen for ``turn_seconds``
-    (only when ``watch_path`` or ``watch_tree`` is given); tool progress is at least ``TOOL_CPU_PROGRESS_SECONDS`` of
-    CPU consumed by the runner's descendants between two samples, and also counts as activity for the stall window;
-    ``stall`` fires after ``stall_seconds`` with no output and no artefact or tool progress once the runner has
-    streamed output in the current response, and otherwise (a non-streaming
-    runner, which cannot signal liveness mid-response) after :func:`silence_window`; ``stage`` fires when
-    ``stage_timer`` reaches its ceiling. An ``unlimited`` turn timeout or stage never fires. The process elapsed time
-    on its own is never compared with the turn budget. While ``child_lister`` reports a live child, the stall check
-    uses the non-streaming :func:`silence_window`, so the turn timeout still bounds a quiet foreground tool.
-    """
     budgets = turn_budgets or TurnBudgets()
     start = clock()
     effective_env = build_turn_env(env)
@@ -619,11 +460,10 @@ def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
         reader.start()
 
     last_activity = start
-    # Start of the current observable response: reset by artefact or tree progress, never by streamed output.
+    # why: streamed output does not close a response, so only artefact, tree or tool progress resets this.
     last_progress = start
     turn_observable = bool(watch_path or watch_tree)
-    # True once the runner has streamed stdout/stderr in the current response; only then is the (shorter) stall window
-    # a meaningful liveness check. Reset by every artefact or tree progress event (a response boundary).
+    # why: the shorter stall window is a meaningful liveness check only once the runner streamed in this response.
     streaming = False
     seen_counts = [0, 0]
     seen_file = _file_state(watch_path)
@@ -672,7 +512,7 @@ def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 live_children = _live_children(child_lister, proc.pid)
                 sample = tool_sampler(proc.pid) if tool_sampler is not None else None
                 if sample is not None:
-                    # A tool call is a response boundary: its CPU time is progress, not part of a response.
+                    # why: a tool call is a response boundary, so its CPU time is progress, not part of a response.
                     if seen_tools is not None and tool_cpu_used(seen_tools, sample) >= TOOL_CPU_PROGRESS_SECONDS:
                         last_activity = last_progress = now
                         streaming = False
@@ -692,24 +532,22 @@ def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 break
             sleeper(poll_interval)
     except BaseException:
-        # Never leave the agent's process group running when supervision itself fails or is interrupted.
+        # why: never leave the agent's process group running when supervision itself fails or is interrupted.
         with contextlib.suppress(Exception):
             if proc.poll() is None:
                 stop_group()
         raise
 
-    # Observed before the pipe-holder path below may stop the leftovers.
+    # why: observed before the pipe-holder path below may stop the leftovers.
     background_commands = _report_background_commands(child_lister, proc.pid) if breach is None else ()
     for reader in readers:
         reader.join(timeout=READER_JOIN_TIMEOUT_SECONDS)
     if any(reader.is_alive() for reader in readers):
-        # A grandchild still holds stdout/stderr open after the agent exited: stop the rest of its group.
         logger.warning("Agent pipes still open after exit; terminating the remaining process group")
-        # start_new_session=True makes the agent's pid its process group id, which outlives the reaped agent.
+        # why: start_new_session=True makes the agent's pid its process group id, which outlives the reaped agent.
         with contextlib.suppress(OSError):
             if proc.pid != getpgid(0):
-                # SIGTERM, a bounded wait for the readers, then SIGKILL for a holder that ignores SIGTERM (mirrors
-                # _terminate_group); a final bounded wait lets the readers drain what the holder left in the pipes.
+                # why: SIGKILL only for a holder that ignores SIGTERM; the final wait lets the readers drain the pipes.
                 for sig in (signal.SIGTERM, signal.SIGKILL):
                     killpg(proc.pid, sig)
                     for reader in readers:
@@ -733,26 +571,21 @@ def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
 @dataclass
 class AuthoringOutcome:
-    """What :func:`supervise_authoring_turn` did and the state of the artefact afterwards."""
-
     turns: list[TurnResult] = field(default_factory=list)
     report: ArtefactReport | None = None
-    follow_up: str | None = None  # "resume" after a breach, "reprompt" for missing sections, or None
+    follow_up: str | None = None
     budget_failure: BudgetBreach | None = None
 
     @property
     def last(self) -> TurnResult:
-        """The most recent turn."""
         return self.turns[-1]
 
     @property
     def first(self) -> TurnResult:
-        """The original turn (the one that did the stage's work; follow-ups only repair the artefact)."""
         return self.turns[0]
 
     @property
     def breach(self) -> BudgetBreach | None:
-        """The last budget that fired in any turn, recovered or not."""
         breaches = [result.breach for result in self.turns if result.breach is not None]
         return breaches[-1] if breaches else None
 
@@ -760,6 +593,8 @@ class AuthoringOutcome:
 TurnRunner = Callable[..., TurnResult]
 
 
+# why: runner CLIs start every invocation as a fresh session, so the context is prepended to the one follow-up; callers
+# why: whose follow-up cannot finish the stage's real work treat a breach of the first turn as a failure regardless.
 def supervise_authoring_turn(  # noqa: PLR0913
     build_cmd: Callable[[str], list[str]],
     prompt: str,
@@ -780,23 +615,6 @@ def supervise_authoring_turn(  # noqa: PLR0913
     prompt_file: str | None = None,
     on_turn_boundary: Callable[[int], str | None] | None = None,
 ) -> AuthoringOutcome:
-    """Run an authoring turn and at most one follow-up, then report whether a budget failure must be recorded.
-
-    Policy:
-
-    - after a breached turn, whatever is on disk is kept (salvage) and exactly one resume turn is attempted, naming the
-      partial file and listing what is missing; it runs under the same stall, turn and stage budgets;
-    - after a clean turn that left the file with missing sections or metric rows, exactly one targeted re-prompt is
-      issued, provided the stage still has time left (like the resume);
-    - a budget failure is reported only when a turn breached and the artefact is still not usable afterwards. Callers
-      whose follow-up cannot finish the stage's real work (the executor's resume only touches its notes) must treat a
-      breach of :attr:`AuthoringOutcome.first` as a failure regardless, and a breach confined to a follow-up of a clean
-      first turn as a notes-only problem (see the executor entrypoint).
-
-    Runner CLIs start every invocation as a fresh session, so ``context`` (the task description without the original
-    write protocol) is prepended to the follow-up instruction. The caller records the failure (see
-    :func:`record_budget_failure`) so that it happens exactly once.
-    """
     outcome = AuthoringOutcome()
 
     def turn(text: str) -> TurnResult:
@@ -851,6 +669,7 @@ def supervise_authoring_turn(  # noqa: PLR0913
     return outcome
 
 
+# why: the single writer of the ACT-BUDGET action, so a stage failure yields exactly one record.
 def record_budget_failure(  # noqa: PLR0913
     ledger_path: str,
     breach: BudgetBreach,
@@ -860,16 +679,6 @@ def record_budget_failure(  # noqa: PLR0913
     clock_elapsed: float | None = None,
     reason: str = "resume did not recover",
 ) -> dict[str, Any]:
-    """Append the single ACT-BUDGET action for an unrecovered budget failure via ``append_action_record``.
-
-    Args:
-        ledger_path: ``holon-knowledge/ledger/executions.jsonl`` of the workspace.
-        breach: The budget that fired last.
-        record_id: Plan or execution id the failure belongs to.
-        target: Artefact (or other object) the stage was producing.
-        clock_elapsed: Stage elapsed seconds, recorded in the error context for diagnosis.
-        reason: Why the breach was not recovered, appended to the action text.
-    """
     context = breach.describe()
     if clock_elapsed is not None:
         context += f"; stage elapsed {clock_elapsed:.1f} s"

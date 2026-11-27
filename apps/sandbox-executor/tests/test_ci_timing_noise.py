@@ -1,5 +1,3 @@
-"""Unit tests for scripts/ci_timing_noise.py: the per-test report and the runner-noise evidence of the timing gate."""
-
 from __future__ import annotations
 
 import ast
@@ -36,13 +34,10 @@ GATE_SCRIPT = SCRIPTS / "ci_timing_gate.py"
 NOISE_SCRIPT = SCRIPTS / "ci_timing_noise.py"
 
 
-# Per-test top-offender report
-
-
 def test_top_offenders_needs_both_growth_thresholds() -> None:
     baseline = [{"a": 10.0, "b": 2.0, "c": 20.0, "d": 10.0}]
     current = {"a": 16.0, "b": 6.0, "c": 26.0, "d": 15.0}
-    # a: +60 % and +6 s; b: +200 % but only +4 s; c: +6 s but only +30 %; d: +50 % exactly, not more.
+    # why: a clears both bars; b grows +200 % but 4 s, c grows 6 s but 30 %, d sits exactly at +50 %
     assert [row.test_id for row in top_offenders(current, baseline)] == ["a"]
 
 
@@ -73,11 +68,7 @@ def test_per_test_report_skipped_without_baseline_times() -> None:
     assert "no test grew" in per_test_report({"m::slow": 10.0}, [{"m::slow": 10.0}])[0]
 
 
-# The gate as the workflows run it: a script file, started outside the repository, with Python 3.9 syntax
-
-
 def script_environment() -> dict[str, str]:
-    """Return the process environment without ``PYTHONPATH`` and without the variables GitHub Actions sets."""
     dropped = {"PYTHONPATH", "GITHUB_STEP_SUMMARY", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_TOKEN"}
     return {name: value for name, value in os.environ.items() if name not in dropped}
 
@@ -98,7 +89,7 @@ def test_gate_runs_as_a_script_file_from_another_directory(tmp_path: Path) -> No
 
 
 def test_script_mode_imports_the_noise_module_by_its_bare_name(tmp_path: Path) -> None:
-    """Without the repository root on ``sys.path`` the package form fails and the gate falls back to the sibling."""
+    # why: without the repository root on sys.path the package import fails and the gate falls back to the sibling
     code = "import ci_timing_gate; print(ci_timing_gate.noise.__name__, ci_timing_gate.Verdict.__module__)"
     result = subprocess.run(
         [sys.executable, "-c", f"import sys; sys.path.insert(0, {str(SCRIPTS)!r}); {code}"],
@@ -131,11 +122,8 @@ def test_noise_module_never_imports_the_gate() -> None:
     assert not [name for name in imported if "ci_timing_gate" in name]
 
 
-# Runner-noise evidence: is a slowdown spread across the suite or concentrated in a few tests?
-
-
 def suite() -> dict[str, float]:
-    """Return a deterministic 60-test suite of 413.6 s: 5 tests of 0.02 s, 25 of 0.1 to 2.5 s and 30 of 4 to 21.4 s."""
+    # why: 60 tests of 413.6 s: 5 of 0.02 s, 25 of 0.1 to 2.5 s, 30 of 4 to 21.4 s; later asserts rely on these sums
     times = {f"tests.tiny::test_{i}": 0.02 for i in range(5)}
     times.update({f"tests.quick::test_{i}": round(0.1 * (i + 1), 1) for i in range(25)})
     times.update({f"tests.slow::test_{i}": round(4.0 + 0.6 * i, 1) for i in range(30)})
@@ -143,11 +131,10 @@ def suite() -> dict[str, float]:
 
 
 def slowed(times: dict[str, float], factor: float) -> dict[str, float]:
-    """Return ``times`` with every test multiplied by ``factor``, as a slower runner would produce them."""
     return {test_id: seconds * factor for test_id, seconds in times.items()}
 
 
-# The ten tests the per-test report of the failed ubuntu run of 2026-11-24 listed: (baseline median, current) seconds.
+# why: rows of the per-test report of the failed ubuntu run of 2026-11-24: (baseline median, current) seconds
 UBUNTU_REPORT_ROWS = (
     (0.8, 13.4),
     (0.1, 11.1),
@@ -183,16 +170,17 @@ def test_uniform_slowdown_has_no_offender_and_is_spread() -> None:
 
 
 def test_uniform_slowdown_of_a_top_heavy_suite_is_still_spread() -> None:
-    """Ten tests hold 300 s of 317.5 s; their raw growth is 9 s each, their growth beyond the scale is zero."""
+    # why: ten tests hold 300 s of 317.5 s; raw growth is 9 s each, growth beyond the scale is zero
     times = {f"tests.heavy::test_{i}": 30.0 for i in range(10)}
     times.update({f"tests.light::test_{i}": 0.5 for i in range(35)})
     evidence = gather_evidence(slowed(times, 1.3), [times] * 5)
     assert evidence is not None
     assert evidence.median_ratio == pytest.approx(1.3)
-    assert len(top_offenders(slowed(times, 1.3), [times])) == 0  # +30 % stays under the report's own +50 % bar
+    # why: +30 % stays under the report's own +50 % bar
+    assert len(top_offenders(slowed(times, 1.3), [times])) == 0
     assert evidence.offenders == ()
     assert not evidence.concentrated
-    # The same suite at 1.6 times: every heavy test passes the raw report thresholds, none passes them beyond the scale.
+    # why: at 1.6 times every heavy test passes the raw report bars, none passes them beyond the scale
     assert len(top_offenders(slowed(times, 1.6), [times])) == 10
     evidence = gather_evidence(slowed(times, 1.6), [times] * 5)
     assert evidence is not None
@@ -226,7 +214,7 @@ def test_concentrated_slowdown_names_exactly_the_slowed_tests_in_order_of_growth
 
 
 def test_failed_ubuntu_run_is_spread_although_ten_tests_grew() -> None:
-    """A contended runner: every test 1.6 times slower, and ten unrelated sub-second tests at 6 to 13 s on top."""
+    # why: a contended runner: every test 1.6 times slower plus ten unrelated sub-second tests at 6 to 13 s
     baseline = suite()
     current = slowed(baseline, 1.6)
     for index, (before, after) in enumerate(UBUNTU_REPORT_ROWS):
@@ -237,7 +225,7 @@ def test_failed_ubuntu_run_is_spread_although_ten_tests_grew() -> None:
     assert evidence.median_ratio == pytest.approx(1.6)
     assert len(evidence.offenders) == 10
     assert {row.test_id.split("::")[0] for row in evidence.offenders} == {"tests.contended"}
-    # 93.9 s after, less 5.2 s before scaled by 1.6; over the 0.6 * 413.6 s of the suite plus the 88.7 s of the ten.
+    # why: 93.9 s after less 5.2 s before scaled by 1.6; over 0.6 * 413.6 s of the suite plus 88.7 s of the ten
     assert evidence.attributed == pytest.approx(85.58)
     assert evidence.excess == pytest.approx(336.86)
     assert evidence.share == pytest.approx(0.25, abs=0.01)
@@ -255,12 +243,11 @@ def test_new_slow_test_is_concentrated_and_worded_as_new() -> None:
 
 
 def renamed(times: dict[str, float]) -> dict[str, float]:
-    """Return ``times`` with the slow tests under the ids a renamed module gives them."""
     return {test_id.replace("tests.slow::", "tests.moved::"): seconds for test_id, seconds in times.items()}
 
 
 def test_renamed_tests_attribute_nothing_and_are_not_named() -> None:
-    """A renamed module on a slower runner: its thirty tests of up to 21.4 s look new, and as many vanished."""
+    # why: a renamed module on a slower runner: its thirty tests of up to 21.4 s look new, as many vanished
     current = renamed(slowed(suite(), 1.4))
     evidence = gather_evidence(current, [suite()] * 5)
     assert evidence is not None
@@ -269,14 +256,14 @@ def test_renamed_tests_attribute_nothing_and_are_not_named() -> None:
     assert evidence.new_seconds == 0.0
     assert evidence.offenders == ()
     assert evidence.attributed == 0.0
-    # The renamed tests weigh 381 s: their 40 % of growth is in the excess, their 381 s of baseline time is not.
+    # why: the renamed tests weigh 381 s: their 40 % growth is in the excess, their baseline time is not
     assert evidence.excess == pytest.approx(413.6 * 0.4)
     assert not evidence.concentrated
     assert "new test time" not in describe_evidence(evidence)
 
 
 def test_rename_with_a_net_of_a_few_seconds_names_no_renamed_test() -> None:
-    """Thirty renamed tests of 5.6 to 30 s net to 3.8 s, under the report minimum: none of them is an offender."""
+    # why: thirty renamed tests of 5.6 to 30 s net to 3.8 s, under the report minimum, so none is an offender
     current = renamed(slowed(suite(), 1.4))
     current["tests.moved::test_0"] += 3.8
     evidence = gather_evidence(current, [suite()] * 5)
@@ -289,7 +276,7 @@ def test_rename_with_a_net_of_a_few_seconds_names_no_renamed_test() -> None:
 
 
 def test_rename_with_jitter_names_the_slowed_tests_and_not_the_renamed_ones() -> None:
-    """Six tests 12 s slower hold 72 s of the 73 s excess; the renamed module's 1 s of jitter names nobody."""
+    # why: six tests 12 s slower hold 72 s of the 73 s excess; the renamed module's 1 s of jitter names nobody
     current = renamed(suite())
     current["tests.moved::test_29"] += 1.0
     grown = [f"tests.quick::test_{index}" for index in range(6)]
@@ -306,7 +293,7 @@ def test_rename_with_jitter_names_the_slowed_tests_and_not_the_renamed_ones() ->
 
 
 def test_new_tests_are_named_only_to_the_extent_of_the_net_new_time() -> None:
-    """A renamed module whose thirty tests each grew by 1 s nets to 30 s: the two largest tests take all of it."""
+    # why: thirty renamed tests each 1 s slower net to 30 s: the two largest tests take all of it
     current = {test_id: seconds + 1.0 for test_id, seconds in renamed(suite()).items() if "moved" in test_id}
     current.update({test_id: seconds for test_id, seconds in suite().items() if "slow" not in test_id})
     evidence = gather_evidence(current, [suite()] * 5)
@@ -320,7 +307,7 @@ def test_new_tests_are_named_only_to_the_extent_of_the_net_new_time() -> None:
 
 
 def test_new_test_ranks_by_its_part_of_the_net_new_time_beside_slowed_tests() -> None:
-    """A new test of 60 s that replaces one of 21.4 s explains 38.6 s, less than a test slowed by 45 s."""
+    # why: a 60 s test replacing one of 21.4 s explains 38.6 s, less than a test slowed by 45 s
     current = {test_id: seconds for test_id, seconds in suite().items() if test_id != "tests.slow::test_29"}
     current["tests.added::test_slow"] = 60.0
     current["tests.quick::test_0"] = 45.1
@@ -342,7 +329,7 @@ def test_net_new_seconds_subtracts_the_scaled_vanished_tests_and_never_goes_nega
 def test_new_tests_are_attributed_together_whatever_their_size_and_number(
     count: int, seconds: float, named: int
 ) -> None:
-    """Two hundred new tests of 4 s pass no 5 s bar and twenty-five of 20 s outnumber the ten named: both count."""
+    # why: 200 new tests of 4 s pass no 5 s bar; 25 of 20 s outnumber the ten named: both must count
     current = suite()
     current.update({f"tests.added::test_{i}": seconds for i in range(count)})
     evidence = gather_evidence(current, [suite()] * 5)
@@ -389,12 +376,11 @@ def test_every_offender_is_attributed_and_only_the_ten_largest_are_named() -> No
 
 
 def big_suite() -> dict[str, float]:
-    """Return a deterministic suite of 300 tests of 8 s each, 2400 s in all."""
     return {f"tests.big::test_{i:03d}": 8.0 for i in range(300)}
 
 
 def test_slowdown_of_thirty_tests_in_a_large_suite_is_concentrated() -> None:
-    """Thirty tests each 6 s slower at an unchanged median: the ten largest are a third of the excess, all are 100 %."""
+    # why: 30 tests each 6 s slower at an unchanged median: the ten largest are a third of the excess
     current = big_suite()
     for index in range(30):
         current[f"tests.big::test_{index:03d}"] = 14.0
@@ -476,8 +462,6 @@ def test_wording_fragments_stay_on_one_line() -> None:
     assert offenders.count("`") == 4
 
 
-# Verdict wording and the second judgement of a breached limit
-
 WORDS = "suite test time was 351 s against a baseline median of 220 s over 5 main runs"
 BREACH = Breach(WORDS, 351.0, 340.0)
 PLAIN = f"::error::Timing regression: {WORDS}. Speed the job up."
@@ -542,7 +526,7 @@ def test_rejudge_keeps_the_outcome_of_a_concentrated_slowdown_and_names_the_offe
 
 
 def test_rejudge_keeps_a_concentrated_slowdown_that_the_scale_would_account_for() -> None:
-    """Both parts are required: a runner 1.6 times slower does not forgive two tests that explain most of the excess."""
+    # why: a 1.6 times slower runner must not forgive two tests that explain most of the excess
     current = {**slowed(suite(), 1.6), "tests.quick::test_0": 200.0, "tests.quick::test_1": 300.0}
     verdict = rejudge(Verdict(False, (PLAIN,), BREACH), current, [suite()] * 5)
     assert not verdict.passed
@@ -553,7 +537,7 @@ def test_rejudge_keeps_a_concentrated_slowdown_that_the_scale_would_account_for(
 
 @pytest.mark.parametrize("passed", [False, True])
 def test_rejudge_keeps_a_spread_slowdown_that_the_scale_does_not_account_for(passed: bool) -> None:
-    """Every test is 1.02 times slower, which explains 7 s of a 131 s breach: the gain is not the runner's."""
+    # why: 1.02 times slower explains 7 s of a 131 s breach, so the runner does not account for it
     verdict = rejudge(Verdict(passed, (PLAIN,), BREACH), slowed(suite(), 1.02), [suite()] * 5)
     assert verdict == Verdict(
         passed,
@@ -568,7 +552,7 @@ def test_rejudge_keeps_a_spread_slowdown_that_the_scale_does_not_account_for(pas
 
 @pytest.mark.parametrize(("limit", "forgiven"), [(219.3, False), (219.375, True), (219.4, True)])
 def test_rejudge_forgives_only_when_the_rescaled_value_is_back_inside_the_limit(limit: float, forgiven: bool) -> None:
-    """351 s at a scale of 1.6 is 219.375 s: forgiven at a limit of exactly that, kept at any limit under it."""
+    # why: 351 s at a scale of 1.6 is 219.375 s: forgiven at exactly that limit, kept at any limit under it
     breach = Breach(WORDS, 351.0, limit)
     verdict = rejudge(Verdict(False, (PLAIN,), breach), slowed(suite(), 1.6), [suite()] * 5)
     assert verdict.passed is forgiven
@@ -581,7 +565,7 @@ HIDDEN_WORDS = "suite test time was 625 s against a baseline median of 220 s ove
 
 
 def test_rejudge_forgives_a_ceiling_breach_with_a_relative_breach_beneath_only_when_the_scale_explains_both() -> None:
-    """625 s at a scale of 1.25 is 500 s: inside the 600 s ceiling and inside a relative limit of 500 s."""
+    # why: 625 s at a scale of 1.25 is 500 s: inside the 600 s ceiling and inside a relative limit of 500 s
     inside = Verdict(False, (f"::error::Timing regression: {HIDDEN_WORDS}.",), Breach(HIDDEN_WORDS, 625.0, 500.0))
     verdict = rejudge(Verdict(False, (CEILING_LINE,), CEILING, inside), slowed(suite(), 1.25), [suite()] * 5)
     assert verdict.passed
@@ -596,7 +580,7 @@ def test_rejudge_forgives_a_ceiling_breach_with_a_relative_breach_beneath_only_w
 
 @pytest.mark.parametrize("accepted", [False, True])
 def test_rejudge_returns_the_relative_verdict_beneath_a_ceiling_breach_that_alone_is_forgiven(accepted: bool) -> None:
-    """The label decides the relative verdict and the scale does not change it: 500 s is above the limit of 340 s."""
+    # why: the label decides the relative verdict; the scale leaves 500 s above the limit of 340 s
     relative = Breach(HIDDEN_WORDS, 625.0, 340.0)
     beneath = Verdict(accepted, (PLAIN,), relative)
     verdict = rejudge(Verdict(False, (CEILING_LINE,), CEILING, beneath), slowed(suite(), 1.25), [suite()] * 5)
@@ -627,7 +611,7 @@ def test_rejudge_keeps_a_ceiling_breach_that_the_scale_does_not_account_for_what
 
 
 def test_rejudge_never_scales_a_faster_suite_up() -> None:
-    """Most tests ran faster and ten ran 3 s slower: the scale stays 1, so the judged value is held as it is."""
+    # why: most tests ran faster and ten ran 3 s slower: the scale stays 1, so the judged value is unchanged
     current = slowed(suite(), 0.9)
     for index in range(10):
         current[f"tests.slow::test_{index}"] = suite()[f"tests.slow::test_{index}"] + 3.0
@@ -640,7 +624,7 @@ def test_rejudge_never_scales_a_faster_suite_up() -> None:
 
 
 def test_rejudge_keeps_one_slow_test_that_a_floor_of_small_growth_dilutes() -> None:
-    """One test 150 s slower is under half of the excess beside 140 tests each 1.2 s slower; the median is unchanged."""
+    # why: one test 150 s slower is under half the excess beside 140 tests each 1.2 s slower; median unchanged
     current = big_suite()
     for index in range(140):
         current[f"tests.big::test_{index:03d}"] = 9.2

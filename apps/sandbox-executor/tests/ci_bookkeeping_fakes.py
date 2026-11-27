@@ -1,15 +1,3 @@
-"""A fake GitHub REST API and payload builders for the bookkeeping-only push gate tests.
-
-``FakeGitHub`` is passed as the opener of ``GateClient``. It serves the URL shapes the gate reads (compare, the runs
-of a workflow by branch or by head commit, the jobs of a run, for a push to ``main`` the pull requests of a commit and
-the tree of a commit and the tip of ``main``, and for a merge push the parents of a commit, the merge base of a
-compare, recursive trees, blobs and the push runs of a commit) from data given by the test, records every requested URL
-and its ``Authorization`` header, and raises ``AssertionError`` for any other URL, so nothing reaches the network. The
-builders return recorded-shape entries with defaults: a run, a push run, a merged pull request, a job, the three shapes
-of a successful job (a real success, a job the gate skipped, and a success from before the gate existed), a recursive
-tree, and a whole merge scene (``merge_scene``).
-"""
-
 from __future__ import annotations
 
 import base64
@@ -27,7 +15,6 @@ API = f"https://api.github.com/repos/{REPO}/"
 TOKEN = "fake-token-for-the-bookkeeping-gate"
 BRANCH = "I-1-intent/P-1-plan/E-1-execution/_"
 WORKFLOW = "test-unit.yml"
-# The names the jobs API shows for the two jobs of the unit workflow's matrix.
 UNIT_JOB = "unit (ubuntu-latest)"
 MACOS_JOB = "unit (macos-latest)"
 
@@ -39,7 +26,6 @@ _COMMIT = re.compile(r"^git/commits/([^/?]+)$")
 _TREE = re.compile(r"^git/trees/([^/?]+)\?recursive=1$")
 _BLOB = re.compile(r"^git/blobs/([^/?]+)$")
 _REF = re.compile(r"^git/ref/heads/([^/?]+)$")
-# The commits of the usual merge scene: the merge base, the previous head, the merged-in main commit and the new head.
 MERGE_BASE_SHA = "a" * 40
 PREVIOUS_HEAD_SHA = "b" * 40
 BASE_HEAD_SHA = "e" * 40
@@ -49,7 +35,6 @@ BASE_PUSH_RUN = 70
 
 
 def run(run_number: int, head_sha: str, **overrides: object) -> dict[str, object]:
-    """Return a recorded-shape ``workflow_runs`` entry: a completed run of one pull request, id ``1000 + number``."""
     base: dict[str, object] = {
         "id": 1000 + run_number,
         "run_number": run_number,
@@ -64,17 +49,14 @@ def run(run_number: int, head_sha: str, **overrides: object) -> dict[str, object
 
 
 def push_run(run_number: int, head_sha: str, **overrides: object) -> dict[str, object]:
-    """Return a recorded-shape ``workflow_runs`` entry of a completed push run on ``main``, id ``1000 + number``."""
     return run(run_number, head_sha, **{"head_branch": "main", "event": "push", "pull_requests": [], **overrides})
 
 
 def blob_id(data: bytes) -> str:
-    """Return the git blob id of ``data``, as ``git hash-object`` computes it."""
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
 def tree_of(files: Mapping[str, str], truncated: bool = False) -> dict[str, object]:
-    """Return a recorded-shape recursive tree answer of regular files with the given text content."""
     entries: list[dict[str, str]] = []
     for path in sorted(files):
         directories = path.split("/")[:-1]
@@ -87,7 +69,6 @@ def tree_of(files: Mapping[str, str], truncated: bool = False) -> dict[str, obje
 
 
 def merge_base_answer(base_sha: str, base_tree: str, head_tree: str) -> dict[str, object]:
-    """Return a compare answer that names the merge base ``base_sha`` and the trees of it and of the compare's base."""
     return {
         "status": "diverged",
         "merge_base_commit": {"sha": base_sha, "commit": {"tree": {"sha": base_tree}}},
@@ -97,7 +78,6 @@ def merge_base_answer(base_sha: str, base_tree: str, head_tree: str) -> dict[str
 
 
 def pull(number: int, head_sha: str, merge_commit_sha: str, **overrides: object) -> dict[str, object]:
-    """Return a recorded-shape pull request entry: merged into ``main`` with ``merge_commit_sha``."""
     base: dict[str, object] = {
         "number": number,
         "state": "closed",
@@ -110,7 +90,6 @@ def pull(number: int, head_sha: str, merge_commit_sha: str, **overrides: object)
 
 
 def job(name: str = UNIT_JOB, marker: str | None = None, **overrides: object) -> dict[str, object]:
-    """Return a recorded-shape job entry that concluded ``success``; ``marker`` is the marker step's conclusion."""
     steps = [
         {"name": "Checkout repository", "conclusion": "success"},
         {"name": "Bookkeeping gate", "conclusion": "success"},
@@ -122,22 +101,18 @@ def job(name: str = UNIT_JOB, marker: str | None = None, **overrides: object) ->
 
 
 def real_success_job(name: str = UNIT_JOB) -> dict[str, object]:
-    """Return a job that ran in full and passed: the marker step concluded ``success``."""
     return job(name, marker="success")
 
 
 def gate_skipped_job(name: str = UNIT_JOB) -> dict[str, object]:
-    """Return a job the gate skipped: the job concluded ``success`` and the marker step ``skipped``."""
     return job(name, marker="skipped")
 
 
 def legacy_success_job(name: str = UNIT_JOB) -> dict[str, object]:
-    """Return a successful job from before the gate existed: it has no marker step."""
     return job(name)
 
 
 def comparison(*files: str | tuple[str, str], status: str = "ahead") -> dict[str, object]:
-    """Return a compare answer; a file is a path or, for a rename, an ``(old name, new name)`` pair."""
     entries: list[dict[str, str]] = []
     for item in files:
         if isinstance(item, tuple):
@@ -148,8 +123,6 @@ def comparison(*files: str | tuple[str, str], status: str = "ahead") -> dict[str
 
 
 class FakeGitHub:
-    """Serve compare answers, runs and jobs; ``errors`` and ``bodies`` map a URL part to an exception or raw bytes."""
-
     def __init__(self, compares: dict[tuple[str, str], object] | None = None) -> None:
         self.compares: dict[tuple[str, str], object] = dict(compares or {})
         self.runs: list[dict[str, object]] = []
@@ -167,32 +140,27 @@ class FakeGitHub:
         self.auth: list[str | None] = []
 
     def add_run(self, number: int, head_sha: str, *jobs: dict[str, object], **overrides: object) -> FakeGitHub:
-        """Add one earlier run with its jobs and return the fake, so that calls can be chained."""
         entry = run(number, head_sha, **overrides)
         self.runs.append(entry)
         self.jobs[int(str(entry["id"]))] = list(jobs)
         return self
 
     def add_push_run(self, number: int, head_sha: str, *jobs: dict[str, object], **overrides: object) -> FakeGitHub:
-        """Add one push run on ``main`` with its jobs and return the fake."""
         entry = push_run(number, head_sha, **overrides)
         self.runs.append(entry)
         self.jobs[int(str(entry["id"]))] = list(jobs)
         return self
 
     def set_tip(self, sha: str) -> FakeGitHub:
-        """Serve ``sha`` as the tip of ``main`` and return the fake."""
         self.refs["main"] = sha
         return self
 
     def add_tree(self, tree_sha: str, files: Mapping[str, str], truncated: bool = False) -> FakeGitHub:
-        """Serve ``files`` as the recursive tree ``tree_sha`` and their contents as blobs; return the fake."""
         self.tree_listings[tree_sha] = {**tree_of(files, truncated), "sha": tree_sha}
         self.blobs.update({blob_id(text.encode()): text.encode() for text in files.values()})
         return self
 
     def calls(self, part: str) -> list[str]:
-        """Return the requested URLs that contain ``part``."""
         return [url for url in self.urls if part in url]
 
     def __call__(self, request: urllib.request.Request) -> bytes:
@@ -273,19 +241,12 @@ class FakeGitHub:
         return {"workflow_runs": found}
 
 
-# The tree ids of the usual merge scene.
 TREE_IDS = {"base": "1" * 40, "previous": "2" * 40, "merged_in": "3" * 40, "merged": "4" * 40}
 
 
 def merge_scene(
     base: Mapping[str, str], previous: Mapping[str, str], merged_in: Mapping[str, str], merged: Mapping[str, str]
 ) -> FakeGitHub:
-    """Return a fake for the merge of ``BASE_HEAD_SHA`` into ``PREVIOUS_HEAD_SHA`` as ``NEW_HEAD_SHA``.
-
-    The four mappings are the files of the merge base, the previous head, the merged-in main commit and the new head.
-    The unit job really succeeded in pull-request run ``PREVIOUS_RUN`` on the previous head and in push run
-    ``BASE_PUSH_RUN`` on the merged-in commit. The test adds the ``before...head`` compare it needs.
-    """
     fake = FakeGitHub()
     fake.commits[NEW_HEAD_SHA] = (TREE_IDS["merged"], [PREVIOUS_HEAD_SHA, BASE_HEAD_SHA])
     fake.commits[BASE_HEAD_SHA] = (TREE_IDS["merged_in"], [MERGE_BASE_SHA])

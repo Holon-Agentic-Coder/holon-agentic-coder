@@ -19,6 +19,13 @@ from sandbox_executor.plan_paths import plan_file_for_branch
 # model fields serialised through their own to_dict().
 _NOT_SERIALISED = frozenset({"markdown_content", "changed_paths", "summary_records"})
 _MODEL_FIELDS = frozenset({"predicted", "actual", "deltas", "entropy_factors"})
+_COUNT_LABELS = (
+    ("files_checked", "Changed files checked"),
+    ("added_docstrings", "Added docstrings"),
+    ("added_comments", "Added comments (not '# why:')"),
+    ("removed_docstrings", "Removed docstrings"),
+    ("removed_comments", "Removed comments (not '# why:')"),
+)
 
 
 @dataclass
@@ -233,6 +240,26 @@ def _assessment_lines(report_data: dict[str, Any]) -> list[str]:
     )
 
 
+def self_explaining_count_lines(report_data: dict[str, Any]) -> list[str]:
+    if "self_explaining_counts" not in report_data:
+        return []
+    counts = report_data["self_explaining_counts"]
+    title = "## 7. Self-Explaining Code Counts"
+    if "unavailable" in counts:
+        return [title, "", f"- Counts unavailable: {counts['unavailable']}", ""]
+    sentence = (
+        f"Against the merge base with origin/main: added {counts['added_docstrings']} docstring(s), "
+        f"added {counts['added_comments']} comment(s), removed {counts['removed_docstrings']} docstring(s) and "
+        f"removed {counts['removed_comments']} comment(s) across {counts['files_checked']} changed file(s)."
+    )
+    bullets = [f"- {label}: {counts[key]}" for key, label in _COUNT_LABELS]
+    return [title, "", sentence, "", *bullets, ""]
+
+
+def _optional_section(lines: list[str]) -> list[str]:
+    return ["---", "", *lines] if lines else []
+
+
 def format_markdown_report(report_data: dict[str, Any]) -> str:
     """Format structured markdown report conforming to reference calibration schema."""
     lines = [
@@ -248,5 +275,6 @@ def format_markdown_report(report_data: dict[str, Any]) -> str:
         "---",
         "",
         *review_churn_report_lines(report_data),
+        *_optional_section(self_explaining_count_lines(report_data)),
     ]
     return "\n".join(lines)

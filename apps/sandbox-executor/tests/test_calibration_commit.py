@@ -1,5 +1,3 @@
-"""Stage 5 calibration commit path: ACT-CAL ledger provenance and calibration report formatting."""
-
 from __future__ import annotations
 
 import hashlib
@@ -24,10 +22,6 @@ from sandbox_executor.calibration_format import LINT_DOCS_PRETTIER, PRETTIER_PAS
 from sandbox_executor.cli import main as cli_main
 from sandbox_executor.ledger import merged_jsonl_text, read_merged_rows_at_ref, read_merged_text
 
-# ---------------------------------------------------------------------------
-# Stage 5 ACT-CAL ledger provenance regression tests (pytest style)
-# ---------------------------------------------------------------------------
-
 _REAL_EXECUTIONS_LEDGER = Path(__file__).resolve().parents[3] / "holon-knowledge" / "ledger" / "executions.jsonl"
 _EXEC_BRANCH = "I-1-cal/P-2/E-3/_"
 _GIT_IDENTITY = {
@@ -47,7 +41,6 @@ def _fingerprint(path: Path) -> tuple[int, str]:
 
 @pytest.fixture
 def guard_real_ledger():
-    """Fail if a test modifies the repository's own canonical execution ledger."""
     before = _fingerprint(_REAL_EXECUTIONS_LEDGER)
     yield
     assert _fingerprint(_REAL_EXECUTIONS_LEDGER) == before, "Real executions.jsonl was modified"
@@ -55,7 +48,6 @@ def guard_real_ledger():
 
 @pytest.fixture
 def calibration_repo(tmp_path, monkeypatch, guard_real_ledger):
-    """Create a throwaway git repository with plan and execution branches."""
     for key, value in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, value)
 
@@ -92,12 +84,10 @@ _FRAGMENT_REL = "holon-knowledge/ledger/pending/executions/I-1-cal.jsonl"
 
 
 def _merged_ledger_text(repo: Path) -> str:
-    """The logical executions ledger of the working tree: canonical rows plus pending fragments."""
     return read_merged_text(str(repo / "holon-knowledge" / "ledger" / "executions.jsonl")) or ""
 
 
 def _ref_ledger_text(repo: Path, ref: str) -> str:
-    """The logical executions ledger committed at ``ref``."""
     return merged_jsonl_text(read_merged_rows_at_ref(str(repo), ref, "executions.jsonl"))
 
 
@@ -107,7 +97,6 @@ def _cal_rows(ledger_text: str) -> list[dict]:
 
 
 def test_run_calibrate_commit_failure_warning_redacts_credentials(calibration_repo, caplog):
-    """A failed calibration commit warns without echoing credentials from the exception text."""
     repo, _ = calibration_repo
     caplog.set_level("WARNING", logger="sandbox_executor.calibration")
     sample_value = "ghp_" + "C" * 36
@@ -132,7 +121,6 @@ _HOOK_SECRET = "ghp_" + "H" * 36
 
 
 def _install_rejecting_pre_commit_hook(repo: Path, git) -> None:
-    """Install a repository-local pre-commit hook that rejects every commit."""
     hooks_dir = repo / ".git" / "test-hooks"
     hooks_dir.mkdir()
     hook = hooks_dir / "pre-commit"
@@ -141,8 +129,7 @@ def _install_rejecting_pre_commit_hook(repo: Path, git) -> None:
     git("config", "core.hooksPath", str(hooks_dir))
 
 
-def test_run_calibrate_rejected_report_commit_raises(calibration_repo, capsys):
-    """A pre-commit hook that rejects the report commit makes run_calibrate fail, redacted."""
+def test_run_calibrate_rejected_report_commit_raises_redacted_error(calibration_repo, capsys):
     repo, git = calibration_repo
     _install_rejecting_pre_commit_hook(repo, git)
     with (
@@ -156,7 +143,6 @@ def test_run_calibrate_rejected_report_commit_raises(calibration_repo, capsys):
     assert "pre-commit rejected" in message
     assert _HOOK_SECRET not in message
     assert "committed" not in capsys.readouterr().out
-    # Nothing reached git: the report is absent from HEAD and HEAD still carries no ACT-CAL row.
     head_has_report = subprocess.run(
         ["git", "-C", str(repo), "cat-file", "-e", f"HEAD:{_REPORT_REL}"], capture_output=True
     )
@@ -165,8 +151,7 @@ def test_run_calibrate_rejected_report_commit_raises(calibration_repo, capsys):
     assert git("log", "--format=%s", "-1").strip() == "feature"
 
 
-def test_cli_calibrate_rejected_report_commit_exits_non_zero(calibration_repo, capsys):
-    """`holon calibrate` exits 1 with a redacted error when the report commit is rejected."""
+def test_cli_calibrate_rejected_report_commit_exits_one_with_redacted_error(calibration_repo, capsys):
     repo, git = calibration_repo
     _install_rejecting_pre_commit_hook(repo, git)
     test_args = ["holon", "calibrate", _EXEC_BRANCH, "--target-worktree", str(repo)]
@@ -226,12 +211,10 @@ def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
     assert row["calibration_deltas"] == report.deltas.to_dict()
     assert row["calibration_report_path"] == "plans/I-1-cal/P-2_calibration.md"
 
-    # The ACT-CAL row is committed with the report on the calibrated branch, and nothing else is.
     assert _cal_rows(_ref_ledger_text(repo, "HEAD")) == rows
     committed = sorted(git("show", "--name-only", "--pretty=format:", "HEAD").split())
     assert committed == [_FRAGMENT_REL, "plans/I-1-cal/P-2_calibration.md"]
     assert "untracked_scratch.txt" in git("status", "--porcelain")
-    # Exactly one summary row, unchanged: no duplicate summary was written.
     all_rows = read_merged_rows_at_ref(str(repo), "HEAD", "executions.jsonl")
     assert [r for r in all_rows if r.get("entry_type") == "summary"] == [
         json.loads((repo / ledger_rel).read_text(encoding="utf-8").splitlines()[0])
@@ -339,8 +322,7 @@ def _stage5_context(repo: Path, *, dry_run: bool):
     return ctx
 
 
-def test_stage5_dry_run_leaves_executions_ledger_unchanged(calibration_repo):
-    """A dry-run Stage 5 appends nothing, including no reconciliation event."""
+def test_stage5_dry_run_appends_no_ledger_row_or_reconciliation_event(calibration_repo):
     from sandbox_executor.flow import StageStatus, run_calibrate_stage
 
     repo, _ = calibration_repo
@@ -353,8 +335,7 @@ def test_stage5_dry_run_leaves_executions_ledger_unchanged(calibration_repo):
     assert _merged_ledger_text(repo) == merged_before
 
 
-def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
-    """A rejected report commit fails Stage 5 closed: its rows stay uncommitted, no push / ff / reconciliation."""
+def test_stage5_rejected_report_commit_fails_closed_without_push_or_reconciliation(calibration_repo):
     from sandbox_executor.flow import StageStatus, run_calibrate_stage
     from sandbox_executor.git import run_git as real_run_git
 
@@ -384,7 +365,6 @@ def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
     assert git("branch", "--list", calibrated).strip() == ""
     assert git("rev-parse", "--abbrev-ref", "HEAD").strip() == _EXEC_BRANCH
     assert _cal_rows(_ref_ledger_text(repo, _EXEC_BRANCH)) == []
-    # The ACT-CAL rows stay in the working tree: the rejected success row, then the failure row.
     working = _merged_ledger_text(repo)
     assert [r["outcome"] for r in _cal_rows(working)] == ["success", "failure"]
     failure = _cal_rows(working)[-1]
@@ -400,8 +380,7 @@ def test_stage5_rejected_report_commit_takes_failure_path(calibration_repo):
     assert "Calibration attempt 1/3 failed (permanent)" in joined
 
 
-def test_stage5_commits_reconciliation_row_on_calibrated_branch(calibration_repo):
-    """The Stage 5 reconciliation row is committed on /calibrated and reaches the execution branch."""
+def test_stage5_commits_reconciliation_row_on_calibrated_branch_and_reaches_execution_branch(calibration_repo):
     from sandbox_executor.flow import StageStatus, run_calibrate_stage
 
     repo, git = calibration_repo
@@ -416,7 +395,6 @@ def test_stage5_commits_reconciliation_row_on_calibrated_branch(calibration_repo
 
     calibrated = "I-1-cal/P-2/E-3/calibrated"
     assert ctx.calibrated_branch == calibrated
-    # The ledger has no uncommitted rows left behind.
     status = git("status", "--porcelain")
     assert ledger_rel not in status and "holon-knowledge/ledger/pending/" not in status
     for ref in (calibrated, _EXEC_BRANCH):
@@ -434,9 +412,8 @@ def test_stage5_commits_reconciliation_row_on_calibrated_branch(calibration_repo
     assert git("show", "--name-only", "--pretty=format:", calibrated).split() == [_FRAGMENT_REL]
 
 
-# A calibration paragraph that the old pinned prettier@3.8.4 accepts as formatted (its `--check` passes) but the
-# repository `npx prettier --check` (lint-docs, CI hygiene) rejects, and the same paragraph in the repository style that
-# check accepts at width 120. Both are verbatim Prettier output.
+# why: the old pinned prettier@3.8.4 `--check` accepts _PINNED_WRAP; repository `npx prettier --check` rejects it.
+# why: both paragraphs are verbatim Prettier output, the second in the repository style at width 120.
 _REPORT_REL = "plans/I-1-cal/P-2_calibration.md"
 _PINNED_WRAP = (
     "# Calibration Report\n\n"
@@ -456,8 +433,6 @@ _REPOSITORY_STYLE = (
 
 
 class _FakePrettier:
-    """Stand-in for calibration_format._run_prettier: records argv and rewrites the report like repository Prettier."""
-
     def __init__(
         self,
         check_returncode: int = 0,
@@ -500,7 +475,6 @@ class _FakePrettier:
 
 @pytest.fixture
 def no_real_npx(monkeypatch):
-    """Fail the test if anything reaches the real subprocess.run with npx (no network, no Node)."""
     real_run = subprocess.run
 
     def guarded_run(cmd, *args, **kwargs):
@@ -514,8 +488,6 @@ def no_real_npx(monkeypatch):
 
 @pytest.mark.usefixtures("no_real_npx")
 class TestFormatCalibrationReport:
-    """The calibration report is formatted with the lint-docs Prettier invocation and fails closed."""
-
     def _write_report(self, repo: Path) -> None:
         (repo / _REPORT_REL).parent.mkdir(parents=True, exist_ok=True)
         (repo / _REPORT_REL).write_text(_PINNED_WRAP, encoding="utf-8")
@@ -544,8 +516,7 @@ class TestFormatCalibrationReport:
         assert mock_run.call_args.kwargs["cwd"] == str(tmp_path)
         assert mock_run.call_args.kwargs["timeout"] > 0
 
-    def test_invocation_matches_lint_docs_task(self):
-        """Drift guard: the calibration Prettier must be the one `uv run task lint-docs` and CI `lint-md` run."""
+    def test_invocation_matches_lint_docs_task_and_ci_lint_md(self):
         repo_root = Path(__file__).resolve().parents[3]
         pyproject = repo_root / "pyproject.toml"
         lint_docs = tomllib.loads(pyproject.read_text(encoding="utf-8"))["tool"]["taskipy"]["tasks"]["lint-docs"]

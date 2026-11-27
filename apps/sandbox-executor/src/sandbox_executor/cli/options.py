@@ -1,5 +1,3 @@
-"""Shared option-group helpers and help text constants for CLI commands."""
-
 from __future__ import annotations
 
 import argparse
@@ -33,7 +31,6 @@ def add_target_worktree_option(
     default: str | None = None,
     help: str = "Target git worktree directory path (default: current directory).",
 ) -> None:
-    """Add standard --target-worktree argument to a parser."""
     parser.add_argument(
         "--target-worktree",
         dest="target_worktree",
@@ -43,18 +40,15 @@ def add_target_worktree_option(
 
 
 def add_runner_options(parser: argparse.ArgumentParser) -> None:
-    """Add standard --agent and --model runner options."""
     parser.add_argument("--agent", default=None, help=_AGENT_HELP)
     parser.add_argument("--model", default=None, help=_MODEL_HELP)
 
 
 def add_preflight_option(parser: argparse.ArgumentParser) -> None:
-    """Add the --skip-preflight flag."""
     parser.add_argument("--skip-preflight", action="store_true", help=_SKIP_PREFLIGHT_HELP)
 
 
 def add_token_reduction_options(parser: argparse.ArgumentParser) -> None:
-    """Add --token-reduce and --mitm-web options."""
     parser.add_argument(
         "--token-reduce",
         action="store_true",

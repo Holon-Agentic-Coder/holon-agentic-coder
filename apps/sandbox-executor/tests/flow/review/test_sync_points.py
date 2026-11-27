@@ -493,7 +493,7 @@ def test_containerised_run_review_loop_skips_target_sync_and_dispatches_reviewer
         ctx,
         target=FLOW_BRANCH,
         max_iterations=1,
-        ensemble_size=1,
+        ensemble_size=3,
         run_ensemble_fn=fake_ensemble,
         github=MagicMock(available=False),
     )

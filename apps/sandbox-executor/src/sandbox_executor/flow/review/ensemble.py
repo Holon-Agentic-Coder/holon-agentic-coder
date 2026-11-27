@@ -32,6 +32,11 @@ def _resolve_reviewed_target(repo_dir: str, review_target: str) -> tuple[ReviewT
         return None, f"Could not resolve the review target '{review_target}': {redact_agent_secrets(str(exc))}"
 
 
+def _planning_runner(context: FlowContext) -> dict[str, str]:
+    # why: one runner per checkpoint makes the flow context runner the planner's, which the plan payload never records
+    return {"agent": context.agent, "model": context.model}
+
+
 def _semantic_pr_text(context: FlowContext) -> tuple[str, str]:
     """The PR title and body generated from the intent and plan; empty strings if generation fails."""
     plan_res = context.stage_results.get("plan")
@@ -40,7 +45,7 @@ def _semantic_pr_text(context: FlowContext) -> tuple[str, str]:
         return generate_semantic_pr_metadata(
             context.intent_data,
             plan_metadata=plan_meta,
-            runner={"agent": context.agent, "model": context.model},
+            runner=_planning_runner(context),
         )
     except Exception as exc:
         logger.debug("Non-fatal PR metadata generation in review loop: %s", exc)

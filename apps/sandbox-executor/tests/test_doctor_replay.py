@@ -1,27 +1,3 @@
-"""Proof that ``tests/doctor_replay.py`` replays only what is identical, and that the replay keeps callers apart.
-
-The redaction matrix (``tests/test_url_credential_redaction.py``) computes the configuration section of ``holon
-doctor`` once per case and replays it for the other doctor runs of that case. The first identity test here runs the
-matrix's own ``_doctor`` without that replay and compares what the real ``cli_doctor._configuration_section`` returns
-in each of its eight call contexts. If production makes the section depend on the host configuration, the fetcher or
-``--json``, it fails, and the replay must be removed from the matrix.
-
-The matrix also runs the environment report (``cli_doctor.report_budgets_and_envelope``) only once for the direct call
-and the two doctor runs of one block of a case and replays its text and exit code for the others. The second identity
-test runs ``_doctor`` without that replay (and without the direct-call one) and compares everything the three real
-reports of each block do (the direct one and two doctor runs): the text, the exit code, the log lines, the gateway
-probes and any other output. If production makes the report depend on how often it ran or on who called it, it fails,
-and that replay must be removed.
-
-The invalid-value matrix of the same file (``_invalid_value_doctor``) uses both replays too, in another context: an
-isolated ``HOME``, a docker stand-in, an invalid value in a budget, envelope or host models setting, and a report on
-a stream of its own before the text and the ``--json`` doctor run. It has its own two identity tests here, over a
-sample of its own cases that holds every invalid-value slot with every URL prefix.
-
-A worker that ran ``cli.main`` earlier still has the CLI's log handler, which repeats every log line on stderr. The
-tests of the environment report therefore run in both states (``cli_log_handler``), whatever ran before them.
-"""
-
 import argparse
 import contextlib
 import io
@@ -50,7 +26,6 @@ def _refuse(*_args, **_kwargs):
 
 @pytest.fixture
 def empty_environment(monkeypatch):
-    """The process state the redaction matrix runs its cases in: no tools, no sockets, an empty environment."""
     monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(socket, "create_connection", _refuse)
     for name in list(os.environ):
@@ -59,7 +34,7 @@ def empty_environment(monkeypatch):
 
 @pytest.fixture(params=[False, True], ids=["no-cli-log-handler", "cli-log-handler"])
 def cli_log_handler(request, monkeypatch) -> bool:
-    """Both states ``cli.configure_cli_logging`` of an earlier test can leave: without and with its stderr handler."""
+    # why: a worker that ran cli.main earlier keeps the CLI log handler, which repeats every log line on stderr
     package_logger = logging.getLogger(cli.PACKAGE_LOGGER_NAME)
     handlers = [handler for handler in package_logger.handlers if not isinstance(handler, cli._CurrentStderrHandler)]
     if request.param:
@@ -69,7 +44,6 @@ def cli_log_handler(request, monkeypatch) -> bool:
 
 
 def _sampled_values() -> list[tuple[str, str]]:
-    """``(case_id, value)`` for every prefix with six credential shapes; userinfo, host and suffix rotate."""
     rng = seeded_secrets.generator("doctor-replay:identity")
     shapes = redaction_matrix._credential_shapes()
     rotation = itertools.cycle(
@@ -105,7 +79,6 @@ def test_configuration_section_is_identical_in_all_eight_doctor_contexts_of_a_ca
         calls.append((section, (local_llm.host_models_json() is None, args.json)))
         return section
 
-    # The matrix's own `_doctor`, with the replay switched off, so every one of its doctor runs computes the section.
     monkeypatch.setattr(redaction_matrix, "replayed_configuration_section", contextlib.nullcontext)
     monkeypatch.setattr(cli_doctor, "_configuration_section", recording)
     differing: list[str] = []
@@ -114,7 +87,6 @@ def test_configuration_section_is_identical_in_all_eight_doctor_contexts_of_a_ca
         redaction_matrix._doctor(value)
         sections = [section for section, _context in calls]
         contexts = sorted(context for _section, context in calls)
-        # Two fetchers for each of: host configuration absent or present, text or `--json`.
         assert contexts == sorted([*itertools.product((False, True), (False, True))] * 2), case_id
         if any(section != sections[0] for section in sections):
             differing.append(case_id)
@@ -143,7 +115,6 @@ def test_matrix_doctor_computes_the_section_once_per_case(monkeypatch, empty_env
 
 @pytest.fixture
 def counted_section(monkeypatch):
-    """Stand in for the real section with one that counts its calls and returns a fresh value built from the key."""
     calls: list[tuple[str | None, str | None, str | None]] = []
 
     def section(args):
@@ -226,7 +197,6 @@ def test_the_original_function_is_back_after_the_context(counted_section):
 
 
 def _recorded_environment_reports(monkeypatch) -> list[tuple[tuple, tuple]]:
-    """Record ``(context, everything observable)`` of every real environment report; the replay is off in both users."""
     real, real_fetchers = cli_doctor.report_budgets_and_envelope, redaction_matrix._fetchers
     reports: list[tuple[tuple, tuple]] = []
     probes: list[tuple[str, float]] = []
@@ -240,7 +210,7 @@ def _recorded_environment_reports(monkeypatch) -> list[tuple[tuple, tuple]]:
         return recorded
 
     def recording(fetch, out=None):
-        # Inside the matrix's `_captured`, `sys.stdout` and `sys.stderr` are buffers.
+        # why: inside the matrix's `_captured`, `sys.stdout` and `sys.stderr` are buffers
         streams = (out or sys.stdout, sys.stdout, sys.stderr)
         starts = [len(stream.getvalue()) for stream in streams]
         first_probe = len(probes)
@@ -248,7 +218,6 @@ def _recorded_environment_reports(monkeypatch) -> list[tuple[tuple, tuple]]:
         logger = logging.getLogger("sandbox_executor")
         logger.addHandler(logged)
         try:
-            # The caller's own arguments: the report sees the same fetcher object and stream as in the matrix.
             code = real(fetch=fetch, out=out)
         finally:
             logger.removeHandler(logged)
@@ -260,7 +229,7 @@ def _recorded_environment_reports(monkeypatch) -> list[tuple[tuple, tuple]]:
 
     monkeypatch.setattr(redaction_matrix, "replayed_environment_report", contextlib.nullcontext)
     monkeypatch.setattr(redaction_matrix, "replayed_direct_report", contextlib.nullcontext)
-    # One recording fetcher per fetcher of a block, so the three calls of the block share it as they do in the matrix.
+    # why: one recording fetcher per fetcher of a block, so the block's three calls share it as in the matrix
     monkeypatch.setattr(redaction_matrix, "_fetchers", lambda seen: tuple(map(probe_recording, real_fetchers(seen))))
     monkeypatch.setattr(redaction_matrix, "_empty_health", probe_recording(redaction_matrix._empty_health))
     monkeypatch.setattr(cli_doctor, "report_budgets_and_envelope", recording)
@@ -277,11 +246,9 @@ def test_environment_report_is_identical_in_the_three_calls_of_every_doctor_bloc
         reports.clear()
         redaction_matrix._doctor(value)
         blocks = [reports[start : start + 3] for start in range(0, len(reports), 3)]
-        # Host configuration absent or present, each with the responding and the failing fetcher.
         assert [block[0][0][:2] for block in blocks] == [*itertools.product((True, False), ("ok", "fail"))], case_id
         for block in blocks:
             (host_absent, fetcher, _direct), first = block[0]
-            # The direct call on stdout first, then the two doctor runs, which pass their own stream.
             assert [context for context, _observed in block] == [
                 (host_absent, fetcher, True),
                 (host_absent, fetcher, False),
@@ -302,18 +269,13 @@ def test_environment_report_is_identical_in_the_three_calls_of_every_doctor_bloc
 
 
 def _shows_another_line(replayed: list[str], every_report_real: list[str]) -> bool:
-    """Whether one of the two runs of a case shows a text with a line that is not a text both runs show.
-
-    A text that only one run shows is allowed if each of its lines is a text both runs show: that is stderr under the
-    CLI's log handler, which holds every logged line once per report that ran.
-    """
+    # why: stderr under the CLI's log handler holds every logged line once per report that ran
     in_both = set(replayed) & set(every_report_real)
     in_one_only = set(replayed) ^ set(every_report_real)
     return not all(line in in_both for text in in_one_only for line in text.splitlines())
 
 
 def _differs_in_more_than_repetition(replayed: list[str], every_report_real: list[str]) -> bool:
-    """Whether the two runs of one case show different texts, or the replayed one does not show fewer of them."""
     return _shows_another_line(replayed, every_report_real) or len(replayed) >= len(every_report_real)
 
 
@@ -349,14 +311,12 @@ def test_matrix_doctor_runs_the_environment_report_once_per_block(monkeypatch, e
     redaction_matrix._doctor("http://alice:FGJQVZFGJQVZ@localhost:8081/v1")
     redaction_matrix._doctor("http://alice:ZVQJGFZVQJGF@localhost:8081/v1")
 
-    # Per block: one report, on a stream, for the direct call and the two doctor runs. Nothing is carried further.
     per_block = [(True, False)] * 2 + [(False, False)] * 2
     assert ran == per_block * 2
 
 
 @pytest.fixture
 def counted_report(monkeypatch):
-    """Stand in for the real environment report with one that counts its runs and writes and returns the count."""
     runs: list[tuple[str | None, object]] = []
 
     def report(fetch=None, out=None):
@@ -429,14 +389,13 @@ def test_each_environment_replay_context_starts_empty_and_restores_the_report(co
     assert cli_doctor.report_budgets_and_envelope is original
 
 
-# Every 37th case of the invalid-value matrix: 37 shares no factor with its eight slots, so the slots rotate.
+# why: 37 shares no factor with the eight invalid-value slots, so the sampled slots rotate
 INVALID_VALUE_SAMPLE_STEP = 37
 InvalidValueCase = tuple[str, dict[str, str], dict | None, str]
 
 
 @pytest.fixture
 def invalid_value_process(monkeypatch):
-    """The process state the invalid-value matrix runs its cases in: a docker stand-in and an empty environment."""
     redaction_matrix._isolate_invalid_value_process(monkeypatch)
 
 
@@ -446,7 +405,6 @@ def _sampled_invalid_value_cases() -> list[InvalidValueCase]:
 
 
 def _invalid_value_doctor(case: InvalidValueCase, home: str) -> tuple[list[int], list[str]]:
-    """Run the doctor part of one invalid-value case as the matrix does; the exit codes and the captured texts."""
     with redaction_matrix._invalid_value_case(*case, home) as (out, _docker):
         codes = redaction_matrix._invalid_value_doctor(out)
     return codes, out
@@ -473,7 +431,6 @@ def test_configuration_section_is_identical_in_the_text_and_the_json_run_of_an_i
         calls.append((section, args.json))
         return section
 
-    # The matrix's own `_invalid_value_doctor`, with the replay switched off, so both doctor runs compute the section.
     monkeypatch.setattr(redaction_matrix, "replayed_configuration_section", contextlib.nullcontext)
     monkeypatch.setattr(cli_doctor, "_configuration_section", recording)
     differing: list[str] = []
@@ -500,7 +457,6 @@ def test_environment_report_is_identical_in_the_three_calls_of_an_invalid_value_
     for case in _sampled_invalid_value_cases():
         reports.clear()
         _invalid_value_doctor(case, str(tmp_path))
-        # The report on a stream of its own, then the text and the `--json` doctor run: no call is on stdout.
         assert [context for context, _observed in reports] == [(case[2] is None, "_empty_health", False)] * 3, case[0]
         first = reports[0][1]
         if any(observed != first for _context, observed in reports):

@@ -1,0 +1,21 @@
+{
+  "kb_id": "KB-failure-3d6df8f3",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "1970-01-01T00:00:00+00:00",
+  "updated_ts": "1970-01-01T00:00:00+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {},
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795801599-hac-turns-run-turn-decompose/P-1795801622-ANA-G4N/_",
+    "description": "Reproduced failure across executions with identical context. Execution counts live in the action index and ledgers.",
+    "action": "Review Loop halted without consensus after 1 iteration(s): not approved: reviewer 1 final verdict CHANGES_REQUESTED, reviewer 1 Engineering role CHANGES, reviewer 1 Testing role CHANGES, reviewer 2 final verdict CHANGES_REQUESTED, reviewer 2 Testing role CHANGES, reviewer 3 final verdict FAILED; final verdicts: Reviewer 1 CHANGES_REQUESTED (0/1/1); Reviewer 1 Engineering role CHANGES; Reviewer 1 Testing role CHANGES; Reviewer 2 CHANGES_REQUESTED (0/1/0); Reviewer 2 Testing role CHANGES; Reviewer 3 FAILED (0/0/0)",
+    "symptoms": []
+  }
+}

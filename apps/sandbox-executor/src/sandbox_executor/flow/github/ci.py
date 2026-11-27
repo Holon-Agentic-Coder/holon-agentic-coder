@@ -1,7 +1,3 @@
-"""CI check probing for the review loop: probe the PR's checks, wait for them to register and settle, and
-summarise the result.
-"""
-
 from __future__ import annotations
 
 import json
@@ -30,26 +26,6 @@ def probe_ci_checks(
     *,
     github: GitHubAdapter | None = None,
 ) -> dict[str, Any]:
-    """Inspect CI check status using GitHub CLI (gh pr checks) with local fallback.
-
-    Args:
-        repo_dir: Path to git repository.
-        branch_or_pr: Branch name, PR number, or PR URL.
-        timeout: Maximum timeout in seconds for gh execution.
-        proxy_env: Optional proxy environment variables.
-        github: The GitHub adapter to read the checks through; defaults to one for repo_dir and proxy_env.
-
-    Returns:
-        dict[str, Any]: Status summary dictionary with keys:
-            - source: str ("github_cli" or "local_tests")
-            - total: int
-            - passed: int
-            - failed: int
-            - pending: int
-            - skipped: int
-            - all_passed: bool
-            - checks: list[dict[str, Any]]
-    """
     clean_target = str(branch_or_pr).strip()
     github = github or GitHubAdapter(repo_dir, proxy_env)
     if clean_target and github.available:
@@ -62,22 +38,15 @@ def probe_ci_checks(
         except Exception as e:
             logger.debug(f"probe_ci_checks gh check failed: {e}")
 
-    # Fallback to local tests inspection
     return local_tests_ci_status()
 
 
-# How long the review loop waits for GitHub CI checks to register on a PR when Stage 3 recorded no test result.
+# why: Stage 3 recorded no test result, so the review loop must see CI checks register before judging them
 CI_REGISTRATION_TIMEOUT_SECONDS = 180.0
-
-
 CI_REGISTRATION_TIMEOUT_ENV_VAR = "HOLON_CI_REGISTRATION_TIMEOUT"
 
 
 def resolve_ci_registration_timeout(explicit: float | None = None, environ: Any = None) -> float:
-    """Return the CI registration wait: explicit value, then ``HOLON_CI_REGISTRATION_TIMEOUT``, then 180 seconds.
-
-    ``0`` disables the wait; negative or unparseable values fall back to the default.
-    """
     if explicit is not None and explicit >= 0:
         return float(explicit)
     env = os.environ if environ is None else environ
@@ -99,10 +68,6 @@ def _wait_for_ci_registration(  # noqa: PLR0913
     sleep: Callable[[float], None] | None = None,
     probe: Callable[[], dict[str, Any]] | None = None,
 ) -> None:
-    """Poll until GitHub CI checks register on ``review_target`` or ``timeout`` elapses.
-
-    When invoked during the post-review gate, the wait is bounded by the remaining iteration budget.
-    """
     if timeout <= 0:
         return
     clock = clock or time.monotonic

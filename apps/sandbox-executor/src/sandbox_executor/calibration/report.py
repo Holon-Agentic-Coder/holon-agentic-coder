@@ -3,12 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-import json
-import logging
-import subprocess
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from sandbox_executor.calibration.actual import ActualMetrics
@@ -24,9 +19,6 @@ from sandbox_executor.plan_paths import plan_file_for_branch
 # model fields serialised through their own to_dict().
 _NOT_SERIALISED = frozenset({"markdown_content", "changed_paths", "summary_records"})
 _MODEL_FIELDS = frozenset({"predicted", "actual", "deltas", "entropy_factors"})
-SELF_EXPLAINING_SCRIPT = Path(__file__).resolve().parents[5] / "scripts" / "check_self_explaining.py"
-# why: covers the script's own 300-second fetch of origin/main plus the diff and classification
-SELF_EXPLAINING_TIMEOUT_SECONDS = 600
 _COUNT_LABELS = (
     ("files_checked", "Changed files checked"),
     ("added_docstrings", "Added docstrings"),
@@ -34,8 +26,6 @@ _COUNT_LABELS = (
     ("removed_docstrings", "Removed docstrings"),
     ("removed_comments", "Removed comments (not '# why:')"),
 )
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -248,39 +238,6 @@ def _assessment_lines(report_data: dict[str, Any]) -> list[str]:
             )
         ],
     )
-
-
-def _unavailable_counts(reason: str) -> dict[str, Any]:
-    logger.warning("Self-explaining counts unavailable: %s", reason)
-    return {"unavailable": reason}
-
-
-def _last_line(text: str) -> str:
-    lines = text.strip().splitlines()
-    return lines[-1] if lines else ""
-
-
-def measure_self_explaining_counts(target_worktree: str, head_ref: str) -> dict[str, Any]:
-    if not SELF_EXPLAINING_SCRIPT.is_file():
-        return _unavailable_counts(f"{SELF_EXPLAINING_SCRIPT} is missing")
-    command = [sys.executable, str(SELF_EXPLAINING_SCRIPT), "--root", target_worktree, "--head", head_ref]
-    try:
-        completed = subprocess.run(
-            [*command, "--counts-json"],
-            cwd=target_worktree,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=SELF_EXPLAINING_TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return _unavailable_counts(type(error).__name__)
-    if completed.returncode != 0:
-        return _unavailable_counts(_last_line(completed.stderr) or f"exit code {completed.returncode}")
-    try:
-        return json.loads(completed.stdout)
-    except json.JSONDecodeError:
-        return _unavailable_counts("unreadable counts output")
 
 
 def self_explaining_count_lines(report_data: dict[str, Any]) -> list[str]:

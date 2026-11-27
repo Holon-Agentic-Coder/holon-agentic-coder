@@ -4,8 +4,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from sandbox_executor.calibration import report
-from sandbox_executor.calibration.report import format_markdown_report, measure_self_explaining_counts
+from sandbox_executor.calibration import self_explaining_counts
+from sandbox_executor.calibration.report import format_markdown_report
+from sandbox_executor.calibration.self_explaining_counts import measure_self_explaining_counts
 
 from tests.test_calibration_report import _golden_report_dict
 
@@ -48,7 +49,7 @@ def report_with_counts(counts: dict) -> str:
 
 
 def test_the_counting_script_is_found_in_the_holon_checkout():
-    assert report.SELF_EXPLAINING_SCRIPT.is_file()
+    assert self_explaining_counts.SELF_EXPLAINING_SCRIPT.is_file()
 
 
 def test_report_states_added_docstring_and_removed_comment(execution_repo):
@@ -76,7 +77,7 @@ def test_missing_merge_base_reports_counts_unavailable(base_repo):
 
 
 def test_missing_script_reports_counts_unavailable(execution_repo, tmp_path, monkeypatch):
-    monkeypatch.setattr(report, "SELF_EXPLAINING_SCRIPT", tmp_path / "absent.py")
+    monkeypatch.setattr(self_explaining_counts, "SELF_EXPLAINING_SCRIPT", tmp_path / "absent.py")
     counts = measure_self_explaining_counts(str(execution_repo), "execution")
     assert "absent.py is missing" in counts["unavailable"]
     assert "- Counts unavailable:" in report_with_counts(counts)

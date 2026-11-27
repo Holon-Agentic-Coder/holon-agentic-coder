@@ -17,12 +17,8 @@ from sandbox_executor.calibration.deltas import compute_calibration_deltas
 from sandbox_executor.calibration.physics import load_metrics_physics
 from sandbox_executor.calibration.predicted import parse_predicted_metrics
 from sandbox_executor.calibration.refs import resolve_commit_sha, resolve_git_ref
-from sandbox_executor.calibration.report import (
-    CalibrationReport,
-    EntropyFactors,
-    format_markdown_report,
-    measure_self_explaining_counts,
-)
+from sandbox_executor.calibration.report import CalibrationReport, EntropyFactors, format_markdown_report
+from sandbox_executor.calibration.self_explaining_counts import measure_self_explaining_counts
 from sandbox_executor.calibration_evaluated_sha import LEDGER_EXECUTIONS_REL, evaluated_code_commit
 from sandbox_executor.calibration_execution_owner import unique_plan_branch_of_execution
 from sandbox_executor.calibration_touch_set import touch_set_metrics

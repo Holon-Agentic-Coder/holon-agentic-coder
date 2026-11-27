@@ -9,7 +9,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sandbox_executor.artefacts import ArtefactReport, ArtefactSpec, build_reprompt, validate_artefact
@@ -323,43 +323,76 @@ class _StreamReader(threading.Thread):
             return b"".join(self._chunks).decode("utf-8", errors="replace")
 
 
+@dataclass(frozen=True)
+class TurnConfig:
+    stdin_file: str | None = None
+    turn_budgets: TurnBudgets | None = None
+    stage_timer: StageTimer | None = None
+    stage: str = "turn"
+    watch_path: str | None = None
+    watch_tree: str | None = None
+    cwd: str | None = None
+    env: Mapping[str, str] | None = None
+    clock: Clock = time.monotonic
+    sleeper: Sleeper = time.sleep
+    popen_factory: Callable[..., Any] = subprocess.Popen
+    killpg: Callable[[int, int], None] = os.killpg
+    getpgid: Callable[[int], int] = os.getpgid
+    poll_interval: float = POLL_INTERVAL_SECONDS
+    grace_seconds: float = TERMINATION_GRACE_SECONDS
+    tool_sampler: ToolSampler | None = descendant_cpu_seconds
+    child_lister: ChildLister | None = descendant_commands
+
+
+@dataclass(frozen=True)
+class TurnRequest:
+    cmd: list[str]
+    config: TurnConfig = field(default_factory=TurnConfig)
+
+
+def _resolve_turn_request(
+    cmd: list[str] | TurnRequest,
+    config: TurnConfig | None,
+    kwargs: Mapping[str, Any],
+) -> TurnRequest:
+    if isinstance(cmd, TurnRequest):
+        if config is not None:
+            raise TypeError("Pass either a TurnRequest or config, not both")
+        resolved = replace(cmd.config, **kwargs) if kwargs else cmd.config
+        return TurnRequest(cmd=cmd.cmd, config=resolved)
+    base = config if config is not None else TurnConfig()
+    resolved = replace(base, **kwargs) if kwargs else base
+    return TurnRequest(cmd=cmd, config=resolved)
+
+
 # why: only the group the child leads is signalled, so the entrypoint and its salvage path survive.
-def _terminate_group(  # noqa: PLR0913
-    proc: Any,
-    *,
-    sleeper: Sleeper,
-    clock: Clock,
-    killpg: Callable[[int, int], None],
-    getpgid: Callable[[int], int],
-    grace_seconds: float,
-    poll_interval: float,
-) -> None:
+def _terminate_group(proc: Any, config: TurnConfig) -> None:
     try:
-        child_pgid = getpgid(proc.pid)
+        child_pgid = config.getpgid(proc.pid)
     except (ProcessLookupError, OSError):
         child_pgid = None
     try:
-        own_pgid = getpgid(0)
+        own_pgid = config.getpgid(0)
     except OSError:
         own_pgid = None
 
     def send(sig: int) -> None:
         if child_pgid is not None and child_pgid != own_pgid:
             with contextlib.suppress(ProcessLookupError, PermissionError):
-                killpg(child_pgid, sig)
+                config.killpg(child_pgid, sig)
         else:
             logger.warning("Agent shares the entrypoint process group; signalling the agent process only")
             with contextlib.suppress(OSError):
                 proc.send_signal(sig)
 
     send(signal.SIGTERM)
-    deadline = clock() + grace_seconds
-    while proc.poll() is None and clock() < deadline:
-        sleeper(poll_interval)
+    deadline = config.clock() + config.grace_seconds
+    while proc.poll() is None and config.clock() < deadline:
+        config.sleeper(config.poll_interval)
     if proc.poll() is None:
         send(signal.SIGKILL)
     try:
-        proc.wait(timeout=grace_seconds)
+        proc.wait(timeout=config.grace_seconds)
     except subprocess.TimeoutExpired:
         logger.warning("Agent process %s did not exit after SIGKILL", getattr(proc, "pid", "?"))
 
@@ -477,12 +510,14 @@ def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
     def stop_group() -> None:
         _terminate_group(
             proc,
-            sleeper=sleeper,
-            clock=clock,
-            killpg=killpg,
-            getpgid=getpgid,
-            grace_seconds=grace_seconds,
-            poll_interval=poll_interval,
+            TurnConfig(
+                sleeper=sleeper,
+                clock=clock,
+                killpg=killpg,
+                getpgid=getpgid,
+                grace_seconds=grace_seconds,
+                poll_interval=poll_interval,
+            ),
         )
 
     try:

@@ -234,6 +234,7 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
         )
         if self.args.partial_branch and self.partial_head:
             base_prompt = f"{base_prompt}\n\n{continuation_note(self.args.partial_branch, self.partial_head)}"
+        # why: consume=True strips feedback vars before spawning the executor agent subprocess.
         merged_notice = read_replan_feedback(os.environ, consume=True)
         if merged_notice and "## Target branch merged" in merged_notice:
             base_prompt = f"{base_prompt}\n\n{merged_notice}"

@@ -15,6 +15,7 @@ _ENV_FILE_STALE_SECONDS = 24 * 60 * 60
 _OWNER_ONLY_DIR_MODE = 0o700
 _GROUP_AND_OTHER_PERMS_MASK = 0o077
 _OWNER_ONLY_FILE_MODE = 0o600
+_CONTAINER_READABLE_FILE_MODE = 0o644
 _HOLON_ENV_PREFIX = "HOLON_"
 
 
@@ -79,7 +80,7 @@ def validate_env_var_size(key: str, value: str, max_bytes: int = MAX_ENV_VAR_BYT
 def write_replan_feedback_file(content: str) -> str:
     fd, path = tempfile.mkstemp(prefix=REPLAN_FEEDBACK_FILE_PREFIX, suffix=".txt", dir=env_file_dir())
     try:
-        os.fchmod(fd, _OWNER_ONLY_FILE_MODE)
+        os.fchmod(fd, _CONTAINER_READABLE_FILE_MODE)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(content)
     except BaseException:

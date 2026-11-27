@@ -85,7 +85,7 @@ def _restore_env_var(key: str, previous: str | None) -> None:
 
 @contextlib.contextmanager
 def replan_feedback_env(feedback: str, target_merged_notice: str = "") -> Iterator[None]:
-    # why: feedback reaches the container via env or a temp file only, never a ledger.
+    # why: reaches docker run and planner/executor container via env or file, never a ledger; restored on exit.
     combined = "\n\n".join(part for part in (feedback, target_merged_notice) if part)
     if not combined:
         yield

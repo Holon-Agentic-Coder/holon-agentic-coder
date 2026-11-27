@@ -360,7 +360,10 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         value_type="file path",
         default="set by the flow or launcher for large feedback",
         when_unset="falls back to `HOLON_REPLAN_FEEDBACK` when set",
-        when_invalid="a missing or unreadable file logs a warning and falls back to `HOLON_REPLAN_FEEDBACK`",
+        when_invalid=(
+            "a missing host file aborts container launch; inside the container a missing or unreadable "
+            "file logs a warning and falls back to `HOLON_REPLAN_FEEDBACK`"
+        ),
         read_side="both",
         since=BUDGETS_DOC,
         internal=True,

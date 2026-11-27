@@ -92,7 +92,8 @@ def test_replan_feedback_env_spawns_child_process_with_over_150kib_feedback_with
     with replan_feedback_env("", payload):
         assert ENV_REPLAN_FEEDBACK not in os.environ
         feedback_path = os.environ[ENV_REPLAN_FEEDBACK_FILE]
-        assert os.stat(feedback_path).st_mode & 0o777 == 0o600
+        assert os.stat(feedback_path).st_mode & 0o777 == 0o644
+        assert os.stat(os.path.dirname(feedback_path)).st_mode & 0o777 == 0o700
         assert Path(feedback_path).read_text(encoding="utf-8") == payload
         child = subprocess.run(
             [

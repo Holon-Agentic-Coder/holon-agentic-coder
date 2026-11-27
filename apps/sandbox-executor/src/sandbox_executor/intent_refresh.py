@@ -40,6 +40,20 @@ def read_intent_file(path: str) -> dict[str, Any]:
     return payload
 
 
+def stored_stage_intent(context: Any) -> dict[str, Any] | None:
+    intent_stage_result = getattr(context, "stage_results", {}).get("intent")
+    stage_intent = getattr(intent_stage_result, "payload", {}).get("intent")
+    return stage_intent if isinstance(stage_intent, dict) else None
+
+
+def align_stage_intent_with_intent_data(context: Any) -> None:
+    stage_intent = stored_stage_intent(context)
+    if stage_intent is None or "goal" not in stage_intent:
+        return
+    for field in (name for name in REFRESHED_INTENT_FIELDS if name in stage_intent and name in context.intent_data):
+        stage_intent[field] = context.intent_data[field]
+
+
 def refresh_intent_text(context: Any, intent_path: str) -> list[str]:
     intent_file = read_intent_file(intent_path)
     changed: list[str] = []
@@ -53,6 +67,8 @@ def refresh_intent_text(context: Any, intent_path: str) -> list[str]:
         message = f"Resume refreshed intent {field} from {intent_path}: the checkpoint held an older text."
         logger.info(message)
         context.log(message)
+    # why: a loaded checkpoint holds the Stage 1 intent as a separate copy, so the in-place refresh never reaches it.
+    align_stage_intent_with_intent_data(context)
     if not goal_states_self_explaining_code(context.intent_data.get("goal")):
         raise IntentContractError(
             f"The goal in intent file '{intent_path}' lacks the self-explaining-code sentence, so the resume is "

@@ -1,10 +1,3 @@
-"""Guard: tests patch flow names at the submodule that looks them up, never at the package re-export.
-
-A patch of ``sandbox_executor.flow.<name>`` replaces only the package attribute, which no flow submodule reads, so it
-silently intercepts nothing. The one exception is a name that a caller outside the package imports from
-``sandbox_executor.flow`` inside a function body: that caller reads the package attribute at call time.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -18,16 +11,14 @@ FLOW_DIR = SRC_DIR / "flow"
 PATCH_TARGET = re.compile(r'"sandbox_executor\.flow\.(?P<head>\w+)(?P<rest>[\w.]*)')
 PACKAGE_OBJECT_PATCH = re.compile(r"(?:setattr|patch\.object)\(\s*(?:flow|flow_module)(?:\.\w+)?,")
 
-# Quoted text that names a flow function without patching it (a prompt invariant, not a mock target).
-NOT_A_PATCH = frozenset({'"sandbox_executor.flow.record_review_action()'})
+QUOTED_FLOW_NAMES_THAT_ARE_NOT_MOCK_TARGETS = frozenset({'"sandbox_executor.flow.record_review_action()'})
 
 
 def _flow_submodule_names() -> set[str]:
     return {path.stem for path in FLOW_DIR.iterdir() if path.suffix == ".py" or (path / "__init__.py").exists()}
 
 
-def _lazily_imported_from_package() -> set[str]:
-    """Names that modules outside the flow package import from ``sandbox_executor.flow`` inside a function body."""
+def _names_imported_from_flow_package_inside_functions_outside_flow() -> set[str]:
     names: set[str] = set()
     for path in SRC_DIR.rglob("*.py"):
         if FLOW_DIR in path.parents:
@@ -50,15 +41,16 @@ def _test_sources() -> list[tuple[str, str]]:
 
 
 def test_no_test_patches_a_flow_name_at_the_package_reexport():
+    # why: a package-attribute patch intercepts nothing, as flow submodules never read sandbox_executor.flow.<name>
     submodules = _flow_submodule_names()
-    allowed = _lazily_imported_from_package()
+    allowed = _names_imported_from_flow_package_inside_functions_outside_flow()
     offenders = []
     for rel_path, source in _test_sources():
         for match in PATCH_TARGET.finditer(source):
             head = match.group("head")
             if head in submodules or head in allowed:
                 continue
-            if any(source.startswith(text, match.start()) for text in NOT_A_PATCH):
+            if any(source.startswith(text, match.start()) for text in QUOTED_FLOW_NAMES_THAT_ARE_NOT_MOCK_TARGETS):
                 continue
             line = source.count("\n", 0, match.start()) + 1
             offenders.append(f"{rel_path}:{line}: sandbox_executor.flow.{head}{match.group('rest')}")
@@ -77,4 +69,4 @@ def test_no_test_patches_an_attribute_of_the_package_object():
 def test_the_lazy_package_lookups_are_real_flow_exports():
     import sandbox_executor.flow as flow
 
-    assert _lazily_imported_from_package() <= set(flow.__all__)
+    assert _names_imported_from_flow_package_inside_functions_outside_flow() <= set(flow.__all__)

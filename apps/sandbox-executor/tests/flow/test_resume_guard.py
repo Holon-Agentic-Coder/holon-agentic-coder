@@ -1,5 +1,3 @@
-"""The pre-run resume guard refuses a resume missing its start stage's branch only when a checkpoint would be lost."""
-
 import json
 import subprocess
 from pathlib import Path
@@ -80,8 +78,7 @@ def test_a_skipped_calibration_resume_has_no_stage_to_check(tmp_path, existing_c
     assert _resume_context_error(_context(tmp_path, skip_calibrate=True), FlowStage.CALIBRATE) is None
 
 
-def _flow_repo_with_interrupted_merge(tmp_path: Path) -> Path:
-    """A flow worktree midway through a ledger-only merge of the current target (the guard's adoption case)."""
+def _flow_worktree_midway_through_ledger_only_merge(tmp_path: Path) -> Path:
     ledger = "holon-knowledge/ledger/executions.jsonl"
     base = json.dumps({"execution_id": "E-base"}) + "\n"
     _, work = build_flow_repos(tmp_path, {ledger: base})
@@ -99,7 +96,7 @@ def _merging(work: Path) -> bool:
 
 
 def test_a_resume_adopts_a_target_merge_before_the_guard_passes(tmp_path):
-    work = _flow_repo_with_interrupted_merge(tmp_path)
+    work = _flow_worktree_midway_through_ledger_only_merge(tmp_path)
     assert _merging(work)
     context = _context(work, **ALL_BRANCHES)
 
@@ -108,7 +105,7 @@ def test_a_resume_adopts_a_target_merge_before_the_guard_passes(tmp_path):
 
 
 def test_a_dry_run_resume_reports_the_merge_without_adopting_it(tmp_path):
-    work = _flow_repo_with_interrupted_merge(tmp_path)
+    work = _flow_worktree_midway_through_ledger_only_merge(tmp_path)
     context = _context(work, dry_run=True, **ALL_BRANCHES)
 
     assert _resume_context_error(context, FlowStage.REVIEW) is None
@@ -116,14 +113,14 @@ def test_a_dry_run_resume_reports_the_merge_without_adopting_it(tmp_path):
 
 
 def test_a_run_from_stage_one_never_adopts(tmp_path):
-    work = _flow_repo_with_interrupted_merge(tmp_path)
+    work = _flow_worktree_midway_through_ledger_only_merge(tmp_path)
 
     assert _resume_context_error(_context(work), None) is None
     assert _merging(work)
 
 
 def test_an_execution_branch_of_only_placeholders_falls_back_to_the_checked_out_branch(tmp_path):
-    work = _flow_repo_with_interrupted_merge(tmp_path)
+    work = _flow_worktree_midway_through_ledger_only_merge(tmp_path)
     context = _context(work, **{**ALL_BRANCHES, "execution_branch": "_"})
 
     request = _resume_sync_request(context, FlowStage.REVIEW)

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from sandbox_executor import cli
 from sandbox_executor.cli.commands import discover
+from sandbox_executor.harness_reference_patterns import sample_reference
 
 _FILES = {
     "src/pkg/__init__.py": "",
@@ -36,11 +37,12 @@ def repo(tmp_path: Path) -> Path:
     return path
 
 
-def _intent_file(tmp_path: Path, scope: list[str]) -> str:
+def _intent_file(tmp_path: Path, scope: list[str], goal: str = "") -> str:
     intent_dir = tmp_path / "intents"
     intent_dir.mkdir(exist_ok=True)
     path = intent_dir / "intent.json"
-    path.write_text(json.dumps({"scope": scope, "acceptance_criteria": ["core.py and lonely.py"]}), encoding="utf-8")
+    payload = {"goal": goal, "scope": scope, "acceptance_criteria": ["core.py and lonely.py"]}
+    path.write_text(json.dumps(payload), encoding="utf-8")
     return str(path)
 
 
@@ -127,3 +129,35 @@ def test_subdirectory_worktree_resolves_to_repository_root(
     intent = _intent_file(tmp_path, ["src/pkg/core.py"])
     assert _run(["intent-check", intent, "--target-worktree", str(repo / "src" / "pkg")]) == 1
     assert "tests/test_core.py" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_glob_scope_entry_exits_two(
+    repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], as_json: bool
+) -> None:
+    intent = _intent_file(tmp_path, ["src/pkg/*.py"])
+    argv = ["intent-check", intent, "--target-worktree", str(repo), *(["--json"] if as_json else [])]
+    assert _run(argv) == 2
+    out = capsys.readouterr().out
+    if as_json:
+        assert json.loads(out)["violations"] == [
+            "scope entry 'src/pkg/*.py' contains a glob character: list each file on its own; a directory or glob "
+            "widens the touch set and blocks every other flow at Stage 3 admission"
+        ]
+    else:
+        assert out.startswith("Violations:\n  - scope entry 'src/pkg/*.py' contains a glob character")
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_harness_reference_in_goal_exits_two_without_echoing_it(
+    repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], as_json: bool
+) -> None:
+    sample = sample_reference("agent-instruction directory")
+    intent = _intent_file(tmp_path, ["src/pkg/lonely.py"], goal=f"Also {sample}")
+    argv = ["intent-check", intent, "--target-worktree", str(repo), *(["--json"] if as_json else [])]
+    assert _run(argv) == 2
+    out = capsys.readouterr().out
+    assert sample not in out
+    assert "intent field 'goal' names a control-plane agent-instruction directory" in out
+    if as_json:
+        assert len(json.loads(out)["violations"]) == 1

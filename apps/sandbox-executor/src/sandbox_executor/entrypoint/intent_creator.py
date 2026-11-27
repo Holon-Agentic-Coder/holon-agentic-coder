@@ -57,8 +57,9 @@ def main():  # noqa: PLR0915
     if not valid_questions:
         unresolved_list_str = "; ".join(unresolved)
         print(
-            f"Error: Unresolved questions detected in intent payload. "
-            f"All clarifying questions must be resolved prior to Stage 1 completion. Unresolved: {unresolved_list_str}",
+            f"Error: Unresolved questions or intent rule violations detected in intent payload. "
+            "All clarifying questions and intent rules must be resolved prior to Stage 1 completion. "
+            f"Unresolved: {unresolved_list_str}",
             file=sys.stderr,
         )
         sys.exit(1)

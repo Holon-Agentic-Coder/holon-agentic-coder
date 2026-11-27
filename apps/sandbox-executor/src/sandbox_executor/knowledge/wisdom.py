@@ -251,7 +251,6 @@ def _signature_classification(rows: list[dict[str, Any]]) -> str:
 def _signature_failure_item(signature: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     classification = _signature_classification(rows)
     symptom = rows[0].get("error_context")
-    # why: build_kb_envelope keeps no evidence keys for KB facts, so the ids and classification live in the payload.
     return {
         "kb_id": f"KB-failure-{signature}",
         "kb_type": "failure_mode",

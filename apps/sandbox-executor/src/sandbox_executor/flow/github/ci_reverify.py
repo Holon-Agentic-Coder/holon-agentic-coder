@@ -33,6 +33,7 @@ SKIPPED = "skipped"
 _VERDICT_BY_STATE = {"success": GREEN, "failed": RED, "skipped": SKIPPED}
 _SYMBOLIC_HEAD = "HEAD"
 MAX_FAILED_RUNS = 3
+UNDIAGNOSED_FINAL_HEAD_CLASSIFICATION = FailureClass.INTRODUCED.value
 _LOG_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\S*Z ?")
 
 FailedCheckOutput = Callable[[str, str], str]
@@ -141,7 +142,6 @@ def _gh_failed_check_output(repo_dir: str, final_head: str, run: Callable[..., A
         run_ids = [str(entry["databaseId"]) for entry in runs[:MAX_FAILED_RUNS]]
         return "\n".join(_gh_stdout(["run", "view", run_id, "--log-failed"], repo_dir, run) for run_id in run_ids)
     except Exception:
-        # why: the lookup only annotates a verdict that is already decided.
         return ""
 
 
@@ -166,8 +166,7 @@ def _record_stage5_test_failure(context: FlowContext, final_head: str, output: s
         head_sha=final_head,
         failing_ids=ids,
         excerpts=excerpts_by_test(text, ids),
-        # why: Stage 5 cannot re-run CI tests to diagnose, so the final head's own CI failure counts as introduced.
-        classification=FailureClass.INTRODUCED.value,
+        classification=UNDIAGNOSED_FINAL_HEAD_CLASSIFICATION,
     )
     ledger_path = os.path.join(context.target_worktree, *LEDGER_RELPATH)
     return record_test_failure(ledger_path, evidence, branch=branch, execution_id=execution_id)

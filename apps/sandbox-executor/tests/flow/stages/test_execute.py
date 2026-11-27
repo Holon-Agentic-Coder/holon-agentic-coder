@@ -1,8 +1,8 @@
 """Tests for Stage 3 resumption from a failed partial execution branch."""
 
+import subprocess
 from contextlib import ExitStack
 from pathlib import Path
-import subprocess
 from typing import Any
 from unittest.mock import patch
 
@@ -574,7 +574,7 @@ class TestStage3FromStagePlanRefresh:
         repo, main_sha = _make_stage3_refresh_repo(tmp_path)
         prior_branch: str | None = None
         if with_prior_execution:
-            prior_branch = f"I-1-x/P-2-claude-agent-claude-opus-5-5/E-1-claude-agent-claude-opus-5-5/_"
+            prior_branch = "I-1-x/P-2-claude-agent-claude-opus-5-5/E-1-claude-agent-claude-opus-5-5/_"
             _git(repo, "push", "-q", "origin", f"refs/remotes/origin/{PLAN}:refs/heads/{prior_branch}")
             _git(repo, "fetch", "-q", "origin")
         ctx = _stage3_engine_context(repo, prior_execution_branch=prior_branch)

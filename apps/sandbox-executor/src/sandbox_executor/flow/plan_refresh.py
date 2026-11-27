@@ -10,7 +10,7 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult
 from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.git_refs import _append_ledger_row, _read_ledger_rows, fast_forward_local_branch
 from sandbox_executor.flow.github.merge import _fetched_tips, merge_branch_detailed
-from sandbox_executor.flow.target_sync_branch import _can_sync_worktree
+from sandbox_executor.flow.target_sync_branch import _best_branch_ref, _can_sync_worktree
 from sandbox_executor.git import run_git
 from sandbox_executor.plan_paths import REFRESH_MERGE_PREFIX
 
@@ -39,7 +39,7 @@ def refresh_due(context: FlowContext) -> bool:
 
 
 def _plan_behind_target(repo_dir: str, target: str, plan_branch: str) -> tuple[bool, str | None]:
-    if not plan_branch or not _can_sync_worktree(repo_dir, target):
+    if not plan_branch or not _can_sync_worktree(repo_dir, target) or _best_branch_ref(repo_dir, plan_branch) is None:
         return False, None
     tips, fetch_error = _fetched_tips(repo_dir, target, plan_branch)
     if fetch_error:

@@ -45,12 +45,12 @@ def consume_target_merge_notice(context: FlowContext | None = None) -> str:
     return notice
 
 
-def active_flow_branch(
+def _branch_candidates(
     context: FlowContext, stage: FlowStage, boundary: SyncBoundary | None = None
-) -> str:
+) -> tuple[str | None, ...]:
     if stage is FlowStage.EXECUTE and boundary in (SyncBoundary.FLOW_START, SyncBoundary.STAGE_START):
         # why: pre-dispatch Stage 3 sync must refresh plan_branch rather than a prior failed execution_branch
-        return next((branch for branch in (context.plan_branch, context.intent_branch) if branch), "")
+        return (context.plan_branch, context.execution_branch, context.intent_branch)
     candidates: dict[FlowStage, tuple[str | None, ...]] = {
         FlowStage.INTENT: (context.intent_branch,),
         FlowStage.PLAN: (context.plan_branch, context.intent_branch),
@@ -58,7 +58,20 @@ def active_flow_branch(
         FlowStage.REVIEW: (context.execution_branch, context.plan_branch),
         FlowStage.CALIBRATE: (context.execution_branch,),
     }
-    return next((branch for branch in candidates.get(stage, ()) if branch), "")
+    return candidates.get(stage, ())
+
+
+def active_flow_branch(context: FlowContext, stage: FlowStage, boundary: SyncBoundary | None = None) -> str:
+    return next((branch for branch in _branch_candidates(context, stage, boundary) if branch), "")
+
+
+def _active_branch_ref(
+    worktree: str, context: FlowContext, stage: FlowStage, boundary: SyncBoundary
+) -> tuple[str, str | None]:
+    for branch in _branch_candidates(context, stage, boundary):
+        if branch and (branch_ref := _best_branch_ref(worktree, branch)) is not None:
+            return branch, branch_ref
+    return "", None
 
 
 def _execution_id_of(branch: str, stage: FlowStage, boundary: SyncBoundary) -> str:
@@ -105,10 +118,10 @@ def _run_boundary_sync(
     context: FlowContext, stage: FlowStage, boundary: SyncBoundary
 ) -> tuple[SyncResult, StageResult | None]:
     worktree, target_branch = context.target_worktree, base_branch_name(context)
-    branch = active_flow_branch(context, stage, boundary)
-    if context.dry_run or not branch or not _can_sync_worktree(worktree, target_branch):
+    if context.dry_run or not _can_sync_worktree(worktree, target_branch):
         return SyncResult("unchanged", "", "", ""), None
-    if (branch_ref := _best_branch_ref(worktree, branch)) is None:
+    branch, branch_ref = _active_branch_ref(worktree, context, stage, boundary)
+    if not branch or branch_ref is None:
         return SyncResult("unchanged", "", "", ""), None
     last = getattr(context, _PROBE_ATTR, None)
     try:

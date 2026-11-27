@@ -178,3 +178,57 @@ def test_preflight_gate_skip_bypasses_active_cooldown(isolated_cooldown_home, mo
         result = preflight_gate("claude-agent", "claude-opus-5-5", skip=bypass == "flag")
     assert result is None
     probe.assert_not_called()
+
+
+def test_preflight_gate_exempts_host_local_pi_from_active_cooldown(isolated_cooldown_home, monkeypatch):
+    record_cooldown("pi-agent", "claude-sonnet-5", "HTTP 429 Too Many Requests", ttl_seconds=300.0)
+    record_cooldown("claude-agent", "claude-opus-5-5", "org spend limit reached", ttl_seconds=300.0)
+    monkeypatch.setenv("HOLON_LOCAL_LLM", "1")
+
+    with patch("sandbox_executor.preflight.subprocess.run") as mock_run:
+        pi_result = preflight_gate("pi-agent", "local-model")
+        claude_result = preflight_gate("claude-agent", "claude-opus-5-5")
+
+    assert pi_result is not None
+    assert pi_result.ok
+    assert pi_result.skipped
+    mock_run.assert_not_called()
+    assert read_active_cooldown("pi-agent") is not None
+
+    assert claude_result is not None
+    assert claude_result.status is PreflightStatus.QUOTA_EXHAUSTED
+    assert claude_result.hint.startswith(COOLDOWN_HINT_PREFIX)
+
+    monkeypatch.delenv("HOLON_LOCAL_LLM")
+    cloud_pi_result = preflight_gate("pi-agent", "claude-sonnet-5")
+    assert cloud_pi_result is not None
+    assert cloud_pi_result.status is PreflightStatus.QUOTA_EXHAUSTED
+    assert cloud_pi_result.hint.startswith(COOLDOWN_HINT_PREFIX)
+
+
+def test_write_marker_atomic_closes_fd_and_unlinks_tmp_when_chmod_fails(isolated_cooldown_home, monkeypatch):
+    path = marker_path("claude-agent")
+    real_mkstemp = preflight_cooldown.tempfile.mkstemp
+    real_chmod = os.chmod
+    opened: list[tuple[int, str]] = []
+
+    def tracking_mkstemp(*args, **kwargs):
+        fd, tmp_path = real_mkstemp(*args, **kwargs)
+        opened.append((fd, tmp_path))
+        return fd, tmp_path
+
+    def failing_chmod(target, mode):
+        if opened and target == opened[-1][1]:
+            raise OSError("chmod failed")
+        return real_chmod(target, mode)
+
+    monkeypatch.setattr(preflight_cooldown.tempfile, "mkstemp", tracking_mkstemp)
+    monkeypatch.setattr(preflight_cooldown.os, "chmod", failing_chmod)
+
+    assert record_cooldown("claude-agent", "claude-opus-5-5", "429 Too Many Requests", ttl_seconds=60.0) is None
+    assert not os.path.exists(path)
+    assert len(opened) == 1
+    fd, tmp_path = opened[0]
+    assert not os.path.exists(tmp_path)
+    with pytest.raises(OSError):
+        os.fstat(fd)

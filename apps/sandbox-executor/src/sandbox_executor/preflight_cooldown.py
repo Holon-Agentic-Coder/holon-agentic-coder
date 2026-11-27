@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from sandbox_executor import local_llm
 from sandbox_executor.agent_defaults import AGENT_IMAGE_MAPPING, normalise_agent_id
 
 if TYPE_CHECKING:
@@ -197,8 +198,8 @@ def _write_marker_atomic(path: str, marker: CooldownMarker) -> None:
     os.chmod(directory, 0o700)
     fd, tmp_path = tempfile.mkstemp(prefix=".cooldown-", suffix=".tmp", dir=directory)
     try:
-        os.chmod(tmp_path, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            os.chmod(tmp_path, 0o600)
             json.dump(asdict(marker), fh, sort_keys=True)
         os.replace(tmp_path, path)
     except BaseException:
@@ -275,10 +276,13 @@ def active_cooldown_result(
     *,
     now: float | None = None,
 ) -> PreflightResult | None:
+    agent_id = normalise_agent_id(agent)
+    # why: host-local pi mode has no cloud provider quota to enforce; keep parity with preflight._early_probe_result.
+    if agent_id == "pi" and local_llm.local_llm_requested():
+        return None
     marker = read_active_cooldown(agent, now=now)
     if marker is None:
         return None
-    agent_id = normalise_agent_id(agent)
     resolved_image = image or AGENT_IMAGE_MAPPING.get(agent_id, f"holon/agent-{agent_id}")
     return build_cooldown_result(marker, agent, model, resolved_image, now=now)
 

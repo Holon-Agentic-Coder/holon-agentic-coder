@@ -1,19 +1,39 @@
+import json
 import os
+import subprocess
 import sys
+from typing import Any
 
 import sandbox_executor.entrypoint.executor as executor_facade
 from sandbox_executor.attribution_check import attribution_allows_publish
+from sandbox_executor.entrypoint.conflict_resolver import run_agent_turn
 from sandbox_executor.entrypoint.executor.commands import _entrypoint_git_runner, _get_repo
 from sandbox_executor.entrypoint.executor.repair import _configure_executor_identity
-from sandbox_executor.entrypoint.sync_conflict import SyncConflictMessage, record_sync_failure
+from sandbox_executor.entrypoint.sync_conflict import (
+    SyncConflictMessage,
+    record_sync_failure,
+    superseding_failure_row,
+)
 from sandbox_executor.git import GitRepository
-from sandbox_executor.ledger import LedgerRewriteError
+from sandbox_executor.ledger import LedgerRewriteError, atomic_ledger_append
+from sandbox_executor.ledger.fragments import ledger_commit_paths
 from sandbox_executor.redaction import redact_agent_secrets
 
 _LEDGER_DIR_PREFIX = "holon-knowledge/ledger/"
 _LEDGER_FILE_SUFFIX = ".jsonl"
 _CONFLICT_STATUS_PREFIXES: tuple[str, ...] = ("UU ", "AA ", "UD ", "DU ", "AU ", "UA ", "DD ")
 _PUBLISHED_TARGET_PREFIX_SIDE = "theirs"
+SELF_EXPLAINING_CHECKER = "scripts/check_self_explaining.py"
+SELF_EXPLAINING_BASE_BRANCH = "main"
+SELF_EXPLAINING_VIOLATION_EXIT = 1
+SELF_EXPLAINING_TIMEOUT_SECONDS = 600
+SELF_EXPLAINING_SUMMARY_LIMIT = 20
+SELF_EXPLAINING_FAILURE_REASON = "self_explaining_violation"
+SELF_EXPLAINING_REPAIR_PROMPT = (
+    "Stage 3 ran `scripts/check_self_explaining.py` before the push and it reported these added docstrings or "
+    "explanatory comments:\n{violations}\n\nRemove each one, or turn a needed reason into a '# why:' comment. Change "
+    "only those lines; do not commit, push, switch branches or edit the ledger."
+)
 
 
 def _is_ledger_path(path: str) -> bool:
@@ -100,20 +120,127 @@ def _reconcile_conflicted_merge(repo: GitRepository, repo_dir: str, target_ref: 
         return False, f"Exception during ledger reconciliation merge: {redact_agent_secrets(str(exc))}"
 
 
-class PrePushSteps:
-    def pre_push_sync(self) -> bool:
-        intent_data = self.intent_data
-        target_base = (
-            os.getenv("HOLON_TARGET_BRANCH") or (intent_data.get("target_branch") if intent_data else None) or "main"
+def violations_on_tracked_paths(repo_dir: str, checker_stderr: str) -> list[str]:
+    tracked_paths = set(_get_repo(repo_dir).run(["ls-files", "-z"], check=False).stdout.split("\0"))
+    return [
+        line for line in checker_stderr.splitlines() if ": added " in line and line.split(":", 1)[0] in tracked_paths
+    ]
+
+
+def run_self_explaining_check(repo_dir: str) -> tuple[bool, str]:
+    checker = os.path.join(repo_dir, SELF_EXPLAINING_CHECKER)
+    if not os.path.isfile(checker):
+        notice = f"Notice: {SELF_EXPLAINING_CHECKER} not found; the pre-push self-explaining check was skipped."
+        print(notice)
+        return True, notice
+    try:
+        completed = subprocess.run(
+            [sys.executable, checker, "--root", repo_dir],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=SELF_EXPLAINING_TIMEOUT_SECONDS,
         )
-        sync_ok, sync_msg = executor_facade.sync_and_reconcile_pre_push(self.repo_dir, target_branch=target_base)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return _continue_since_ci_fails_closed(redact_agent_secrets(str(exc)))
+    if completed.returncode == 0:
+        return True, completed.stdout
+    if completed.returncode != SELF_EXPLAINING_VIOLATION_EXIT:
+        return _continue_since_ci_fails_closed(
+            f"exit code {completed.returncode}: {redact_agent_secrets(completed.stderr)}"
+        )
+    violations = violations_on_tracked_paths(repo_dir, completed.stderr)
+    if not violations:
+        notice = "Notice: the self-explaining check flagged only untracked files; continuing."
+        print(notice)
+        return True, notice
+    return False, "\n".join(violations)
+
+
+def _continue_since_ci_fails_closed(detail: str) -> tuple[bool, str]:
+    warning = f"Warning: the pre-push self-explaining check could not run ({detail}); continuing."
+    print(warning, file=sys.stderr)
+    return True, warning
+
+
+def record_self_explaining_refusal(
+    repo: GitRepository, exec_entry: dict[str, Any], exec_id: str, ledger_dir: str, violations: str
+) -> None:
+    listed = "; ".join(violations.splitlines()[:SELF_EXPLAINING_SUMMARY_LIMIT])
+    summary = (
+        f"Pre-push self-explaining check refused the branch: {listed}. Remove the added docstrings and comments, "
+        "or turn a needed reason into a '# why:' comment."
+    )
+    ledger_row = {**superseding_failure_row(exec_entry, summary), "failure_reason": SELF_EXPLAINING_FAILURE_REASON}
+    with atomic_ledger_append(os.path.join(ledger_dir, "executions.jsonl")) as ledger_file:
+        ledger_file.write(json.dumps(ledger_row) + "\n")
+    repo.add(ledger_commit_paths(os.path.dirname(os.path.dirname(ledger_dir)), "executions.jsonl"), check=False)
+    repo.commit(f"execute: record self-explaining refusal for {exec_id}", check=False)
+
+
+def repair_self_explaining_violations(
+    repo: GitRepository, repo_dir: str, fixer: tuple[str, str], exec_id: str, violations: str
+) -> bool:
+    branch = repo.run(["rev-parse", "--abbrev-ref", "HEAD"], check=False).stdout.strip()
+    try:
+        verdict = run_agent_turn(repo_dir, *fixer, SELF_EXPLAINING_REPAIR_PROMPT.format(violations=violations))
+    except Exception as exc:
+        print(
+            f"Warning: the self-explaining repair turn could not run: {redact_agent_secrets(str(exc))}", file=sys.stderr
+        )
+        return False
+    if verdict is not None:
+        print(f"Warning: the self-explaining repair turn failed: {verdict.reason or verdict.verdict}", file=sys.stderr)
+        return False
+    if repo.run(["rev-parse", "--abbrev-ref", "HEAD"], check=False).stdout.strip() != branch:
+        print("Warning: the self-explaining repair turn moved the HEAD branch.", file=sys.stderr)
+        return False
+    repo.add(["-u", "--", ".", f":(exclude){_LEDGER_DIR_PREFIX}"], check=False)
+    if repo.diff(cached=True, quiet=True).returncode == 0:
+        return True
+    return repo.commit(f"execute: repair self-explaining violations for {exec_id}", check=False).returncode == 0
+
+
+class PrePushSteps:
+    def target_base(self) -> str:
+        intent_data = self.intent_data
+        return os.getenv("HOLON_TARGET_BRANCH") or (intent_data.get("target_branch") if intent_data else None) or "main"
+
+    def self_explaining_gate(self) -> bool:
+        if self.exec_entry.get("status") != "success":
+            return True
+        if self.target_base() != SELF_EXPLAINING_BASE_BRANCH:
+            print(
+                f"Notice: {SELF_EXPLAINING_CHECKER} diffs against origin/{SELF_EXPLAINING_BASE_BRANCH}; "
+                f"the pre-push self-explaining check was skipped for target {self.target_base()}."
+            )
+            return True
+        passed, output = run_self_explaining_check(self.repo_dir)
+        if not passed:
+            print(f"Self-explaining check failed before push; running one repair turn:\n{output}", file=sys.stderr)
+            fixer = (self.args.agent_name, self.args.model_name)
+            if repair_self_explaining_violations(self.repo, self.repo_dir, fixer, self.exec_id, output):
+                passed, output = run_self_explaining_check(self.repo_dir)
+        if passed:
+            return True
+        print(f"Error: Self-explaining check failed before push:\n{output}", file=sys.stderr)
+        record_self_explaining_refusal(self.repo, self.exec_entry, self.exec_id, self.ledger_dir, output)
+        self.exec_status = "failure"
+        return False
+
+    def pre_push_sync(self) -> bool:
+        sync_ok, sync_msg = executor_facade.sync_and_reconcile_pre_push(self.repo_dir, target_branch=self.target_base())
         if sync_ok:
             return True
         return record_sync_failure(self.repo, self.exec_entry, self.exec_id, self.ledger_dir, sync_msg)
 
     def record_branch(self) -> None:
         can_record = self.repo.rev_parse("HEAD^", verify=True).returncode == 0
-        can_record = attribution_allows_publish(self.plan_tip, _entrypoint_git_runner(self.repo_dir)) and can_record
+        if can_record:
+            can_record = self.self_explaining_gate()
+        if can_record:
+            can_record = attribution_allows_publish(self.plan_tip, _entrypoint_git_runner(self.repo_dir))
         if can_record:
             can_record = self.pre_push_sync()
 

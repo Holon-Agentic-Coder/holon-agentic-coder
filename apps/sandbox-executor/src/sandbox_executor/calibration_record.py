@@ -1,5 +1,3 @@
-"""Build the Stage 5 ACT-CAL action row that ``calibration.record_calibration_action`` appends."""
-
 from __future__ import annotations
 
 import time
@@ -12,10 +10,6 @@ from sandbox_executor.ledger.order import utc_now_z
 def calibration_action_row(
     data: dict[str, Any], report_rel: str, outcome: str, error_context: str | None
 ) -> dict[str, Any]:
-    """Return the ACT-CAL row for a report in ``CalibrationReport.to_dict()`` form.
-
-    See ``calibration.record_calibration_action`` for the meaning of ``outcome`` and ``error_context``.
-    """
     plan_id = str(data.get("plan_id") or "P-unknown")
     execution_branch = data.get("execution_branch")
     if outcome == "success":

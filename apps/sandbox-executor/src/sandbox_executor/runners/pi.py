@@ -1,5 +1,3 @@
-"""Runner spec for the Pi agent, including its host-local LLM exemption."""
-
 from __future__ import annotations
 
 import os
@@ -7,8 +5,7 @@ import os
 from sandbox_executor import local_llm
 from sandbox_executor.runners.spec import RunnerSpec, any_path_exists, generic_missing_message, has_api_key
 
-# pi resolves providers from models.json; that single file is what the launcher mounts, so that is what counts as an
-# available session here -- not the surrounding directory, which holds auth.json and transcripts.
+# why: the launcher mounts only models.json, not its directory holding auth.json and transcripts, so it is the session.
 _MODELS_JSON_PATHS = (
     "/home/holon/.pi/agent/models.json",
     "~/.pi/agent/models.json",
@@ -18,9 +15,7 @@ _MODELS_JSON_PATHS = (
 
 
 def _local_llm_configured() -> bool:
-    # A host-local inference server addressed through the Docker gateway needs no provider credential. Only accepted
-    # for pi -- the generated artifact is a pi agent directory, so a pi-only gate keeps a stray opt-in from masking a
-    # missing cloud key for another runner -- and only when the local endpoint is actually configured.
+    # why: pi-only, as the artefact is a pi agent directory and a stray opt-in must not mask another runner's key.
     return local_llm.local_llm_requested() and bool(
         os.getenv(local_llm.ENV_PI_AGENT_DIR) or os.getenv(local_llm.ENV_LOCAL_BASE_URL)
     )

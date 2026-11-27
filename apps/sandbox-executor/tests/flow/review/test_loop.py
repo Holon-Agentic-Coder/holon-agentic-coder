@@ -29,7 +29,7 @@ from sandbox_executor.review_target import ReviewTarget
 from tests.flow.github.fake_github import FakeGitHub, ci_checks_payload
 from tests.flow.helpers import _git, _review_loop_gh_stubs
 from tests.flow.lookup_patch import patch_lookup_sites
-from tests.review_fakes import FakeEnsemble, clean_reviewer, objecting_reviewer
+from tests.review_fakes import FakeEnsemble, clean_reviewer, objecting_reviewer, with_clean_peers
 from tests.review_flow_repo import added_rows, build_flow_worktree, changed_paths, ledger_commits
 from tests.review_loop_stubs import EXEC_TARGET, _ensemble_ctx, _LoopStubs
 
@@ -418,7 +418,7 @@ class TestReviewLoopCommitsItsLedgerRows:
 
         def ensemble(size: int):
             passes.append(size)
-            return reviewers(len(passes))
+            return with_clean_peers(reviewers(len(passes)))
 
         def real_head(repo_dir: str, review_target: str):
             return ReviewTarget(review_target, review_target, _git(work, "rev-parse", "HEAD")), None
@@ -428,7 +428,7 @@ class TestReviewLoopCommitsItsLedgerRows:
                 _ensemble_ctx(work),
                 target=EXEC_TARGET,
                 max_iterations=max_iterations,
-                ensemble_size=1,
+                ensemble_size=3,
                 run_ensemble_fn=FakeEnsemble(ensemble),
                 run_resolver_fn=resolver,
             )
@@ -510,14 +510,14 @@ class TestScopedDeltaReviewInTheLoop:
             return ReviewTarget(review_target, review_target, _git(work, "rev-parse", "HEAD")), None
 
         ctx = _ensemble_ctx(work)
-        first_pass = [objecting_reviewer(1, severity)]
-        ensemble = FakeEnsemble(lambda size: first_pass if not ensemble.calls[1:] else [clean_reviewer(1)])
+        first_pass = with_clean_peers([objecting_reviewer(1, severity)])
+        ensemble = FakeEnsemble(lambda size: first_pass if not ensemble.calls[1:] else with_clean_peers([]))
         with _LoopStubs(), patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", real_head):
             res = run_review_loop(
                 ctx,
                 target=EXEC_TARGET,
                 max_iterations=2,
-                ensemble_size=1,
+                ensemble_size=3,
                 run_ensemble_fn=ensemble,
                 run_resolver_fn=pushing_resolver,
             )
@@ -578,13 +578,111 @@ class TestScopedDeltaReviewInTheLoop:
 
         ctx = _ensemble_ctx(work)
         ctx.review_scope_paths = ["src/app.py"]
-        ensemble = FakeEnsemble(lambda size: [clean_reviewer(1)])
+        ensemble = FakeEnsemble()
         with _LoopStubs(), patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", real_head):
-            res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1, ensemble_size=1, run_ensemble_fn=ensemble)
+            res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1, ensemble_size=3, run_ensemble_fn=ensemble)
 
         assert res["consensus"]["approved"] is True
         assert self._modes(ctx) == ["1: full (disabled)."]
         assert diff_gate_of(ctx).mode == "scoped"
+
+
+class TestEveryFindingNeedsAResolverOutcome:
+    @staticmethod
+    def _run(tmp_path: Path, outcome: dict) -> dict:
+        def ensemble(size: int):
+            first = not ensemble_fake.calls[1:]
+            return with_clean_peers([objecting_reviewer(1, "nit")] if first else [], size)
+
+        def resolver(target, iteration, findings, action_ids, rejected_findings):
+            return {"dispositions": [{**row, **outcome} for row in _applied(findings)], **_pushes(outcome)}
+
+        ensemble_fake = FakeEnsemble(ensemble)
+        with _LoopStubs():
+            return run_review_loop(
+                _ensemble_ctx(tmp_path),
+                target=EXEC_TARGET,
+                max_iterations=2,
+                ensemble_size=3,
+                run_ensemble_fn=ensemble_fake,
+                run_resolver_fn=resolver,
+            )
+
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            {"disposition": "open", "evidence": "could not reproduce"},
+            {"disposition": "applied", "pushed": False},
+        ],
+    )
+    def test_a_finding_left_without_an_outcome_blocks_a_clean_re_review(self, tmp_path, outcome):
+        res = self._run(tmp_path, outcome)
+
+        assert res["consensus"]["approved"] is False
+        assert res["consensus"]["status"] != "approved"
+        assert any(b.endswith("with a reason): R1-F1") for b in res["consensus_blockers"])
+
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            {"disposition": "applied", "pushed": True},
+            {"disposition": "rejected", "rejection_reason": "inaccurate"},
+        ],
+    )
+    def test_a_finding_applied_with_a_commit_or_rejected_with_a_reason_lets_a_clean_re_review_approve(
+        self, tmp_path, outcome
+    ):
+        res = self._run(tmp_path, outcome)
+
+        assert res["consensus"]["approved"] is True
+        assert res["consensus_blockers"] == []
+
+    @staticmethod
+    def _run_three(tmp_path: Path, outcomes: list[dict]) -> tuple[dict, list[list[str]]]:
+        calls: list[list[str]] = []
+
+        def ensemble(size: int):
+            first = not ensemble_fake.calls[1:]
+            return with_clean_peers([objecting_reviewer(1, "nit")] if first else [], size)
+
+        def resolver(target, iteration, findings, action_ids, rejected_findings):
+            calls.append([row.id for row in findings])
+            outcome = outcomes[min(len(calls), len(outcomes)) - 1]
+            return {"dispositions": [{**row, **outcome} for row in _applied(findings)], **_pushes(outcome)}
+
+        ensemble_fake = FakeEnsemble(ensemble)
+        with _LoopStubs():
+            res = run_review_loop(
+                _ensemble_ctx(tmp_path),
+                target=EXEC_TARGET,
+                max_iterations=3,
+                ensemble_size=3,
+                run_ensemble_fn=ensemble_fake,
+                run_resolver_fn=resolver,
+            )
+        return res, calls
+
+    def test_an_unpushed_fix_goes_back_to_the_resolver_and_approves_once_pushed(self, tmp_path):
+        res, calls = self._run_three(
+            tmp_path, [{"disposition": "applied", "pushed": False}, {"disposition": "applied", "pushed": True}]
+        )
+
+        assert calls == [["R1-F1"], ["R1-F1"]]
+        assert res["consensus"]["approved"] is True
+        assert res["consensus_blockers"] == []
+
+    def test_a_finding_left_open_two_iterations_back_still_blocks_approval(self, tmp_path):
+        res, calls = self._run_three(tmp_path, [{"disposition": "open", "evidence": "could not reproduce"}])
+
+        # why: the carried finding is unchanged on an unchanged head, so iteration 3 halts as no-convergence.
+        assert calls == [["R1-F1"]] * 2
+        assert res["no_convergence"] is True
+        assert res["consensus"]["approved"] is False
+        assert any(b.endswith("with a reason): R1-F1") for b in res["consensus_blockers"])
+
+
+def _pushes(outcome: dict) -> dict:
+    return {"head_sha": "c" * 40, "pushed": True} if outcome.get("pushed") else {"pushed": False}
 
 
 def test_an_injected_adapter_receives_every_github_call_of_the_loop(tmp_path):

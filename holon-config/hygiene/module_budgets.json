@@ -1,5 +1,5 @@
 {
-  "default_max_lines": 400,
+  "default_max_lines": 350,
   "exclude": [],
   "overrides": {
     "apps/sandbox-executor/src/sandbox_executor/agent_defaults.py": 494,

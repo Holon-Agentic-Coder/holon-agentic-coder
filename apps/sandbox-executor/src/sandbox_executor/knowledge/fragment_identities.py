@@ -8,18 +8,9 @@ from typing import Any
 ParsedRow = tuple[int, str, dict[str, Any]]
 
 
+# why: a fragment row promoted into the canonical ledger, or re-read from a recreated fragment, is never indexed twice
 @dataclass(frozen=True)
 class RowIdentity:
-    """Cross-pass dedup for a canonical ledger and its pending fragments.
-
-    Fragment syncs (``record=True``) persist the identity of every row they index; every sync of the
-    same ``scope`` skips rows whose identity is already persisted, so a fragment row promoted into the
-    canonical ledger after it was indexed is not indexed a second time. Fragment syncs re-read their
-    file from the start, so a fragment deleted on promotion and recreated at the same path is indexed
-    in full; the persisted identities keep the re-read rows from being indexed again. Only fragment
-    syncs de-duplicate within a batch: canonical rows are filtered against persisted identities only.
-    """
-
     scope: str
     of: Callable[[dict[str, Any]], str]
     record: bool = False

@@ -1,9 +1,3 @@
-"""Hand a scoped decision from the host engine to the review-loop container through the mounted worktree.
-
-The file lives under the worktree's git-ignored ``.holon/``; the host removes it once the dispatch returns, and the
-container honours it only for the head it resolves itself (see ``delta_review.decide_review_mode``).
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -25,14 +19,13 @@ FORWARDED_REL = os.path.join(".holon", "review", "delta_request.json")
 
 
 def forward_scoped_decision(context: FlowContext) -> str | None:
-    """Write a scoped decision for the review-loop container; its worktree-relative path, or None (``full``)."""
     current = delta_state_of(context).get("current")
     if not current_decision(context).scoped:
         return None
     path = os.path.join(context.target_worktree, FORWARDED_REL)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        # A fresh temp file renamed over the target never follows a link planted at ``path`` in the shared worktree.
+        # why: a fresh temp file renamed over the target never follows a link planted there in the shared worktree.
         fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".delta_request.", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -50,7 +43,6 @@ def forward_scoped_decision(context: FlowContext) -> str | None:
 
 
 def load_forwarded_decision(context: FlowContext, repo_dir: str, rel_path: str) -> bool:
-    """Load a forwarded decision (container side); an absolute, escaping, missing or malformed file loads nothing."""
     parts = rel_path.replace("\\", "/").split("/")
     if os.path.isabs(rel_path) or ".." in parts:
         return False
@@ -63,12 +55,12 @@ def load_forwarded_decision(context: FlowContext, repo_dir: str, rel_path: str) 
     if not decision.scoped:
         return False
     addressed = data.get("addressed")
+    # why: decide_review_mode honours the forwarded decision only for the head the container resolves itself.
     set_forwarded(context, decision)
     record_addressed_findings(context, addressed if isinstance(addressed, list) else [])
     return True
 
 
 def discard_forwarded_decision(context: FlowContext) -> None:
-    """Remove the forwarded decision file from the worktree, if any."""
     with contextlib.suppress(OSError):
         os.remove(os.path.join(context.target_worktree, FORWARDED_REL))

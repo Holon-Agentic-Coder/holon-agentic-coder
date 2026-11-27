@@ -1,10 +1,3 @@
-"""Stage 3 decomposition: validate a recorded sub-intent list and hand it to the child loop.
-
-The child loop itself lives in :mod:`sandbox_executor.flow.stages.children`, the final integration in
-:mod:`sandbox_executor.flow.stages.integration` and the flow summary lines in
-:mod:`sandbox_executor.flow.stages.decomposition_summary`; ``_run_decomposed_plan`` keeps the signature Stage 3 calls.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,25 +13,20 @@ from sandbox_executor.ref_names import RefTooLongError
 
 @dataclass(frozen=True)
 class PlanDecomposition:
-    """A recorded sub-intent list of one plan: its items, the plan branch its children nest under, and their limits."""
-
     context: FlowContext
     items: list[dict[str, Any]]
     plan_branch: str
 
     @classmethod
     def from_summary_row(cls, context: FlowContext, summary_row: dict[str, Any]) -> PlanDecomposition:
-        """The dict items of the row's ``sub_intents``; the plan branch from the context, else from the row."""
         raw_items = summary_row.get("sub_intents")
         items = [i for i in raw_items if isinstance(i, dict)] if isinstance(raw_items, list) else []
         return cls(context, items, str(context.plan_branch or summary_row.get("plan_branch") or ""))
 
     def depth(self) -> int:
-        """The sub-intent depth this intent's children would have."""
         return _sub_intent_depth(self.context.intent_data) + 1
 
     def depth_error(self) -> str | None:
-        """The Stage 3 failure message when the children would exceed ``MAX_SUB_INTENT_DEPTH``, else None."""
         depth = self.depth()
         if depth <= MAX_SUB_INTENT_DEPTH:
             return None
@@ -48,48 +36,30 @@ class PlanDecomposition:
         )
 
     def validation_error(self, payload: dict[str, Any]) -> str | None:
-        """The first reason the list cannot run (no items, too deep, no plan branch), or None.
-
-        Past the items check, ``payload`` records the plan branch (None when unknown), as each failure reports it.
-        """
         if not self.items:
             return "Execute stage failed: the plan row records a decomposed decision without any sub-intent list items."
         payload["plan_branch"] = self.plan_branch or None
         depth_error = self.depth_error()
         if depth_error is not None:
             return depth_error
+        # why: children never fall back to the intent branch when no plan branch is known
         if not self.plan_branch:
             return "Execute stage failed: no plan branch is known, so the sub-intents cannot be nested under it."
         return None
 
     def start_payload(self, payload: dict[str, Any], summary_row: dict[str, Any]) -> None:
-        """Add the parent target branch, the entropy budget and the initial child progress to ``payload``.
-
-        Raises:
-            RefTooLongError: A child's intent branch cannot be named within the ref length limit.
-        """
         payload["parent_target_branch"] = str(self.context.intent_data.get("target_branch") or "main")
         payload["entropy_budget"] = summary_row.get("entropy_budget")
         payload[PROGRESS_KEY] = initial_progress(self.items, self.plan_branch)
 
 
 def _sub_intent_depth_error(context: FlowContext) -> str | None:
-    """Return the Stage 3 failure message when this intent's children would exceed ``MAX_SUB_INTENT_DEPTH``."""
     return PlanDecomposition(context, [], "").depth_error()
 
 
 def _run_decomposed_plan(
     context: FlowContext, start_time: str, summary_row: dict[str, Any], base_payload: dict[str, Any]
 ) -> StageResult:
-    """Drive each item of a recorded sub-intent list through the full pipeline under the plan branch.
-
-    Validates the items and the depth limit, then hands the list to
-    :func:`sandbox_executor.flow.stages.children.run_children`: each child is cut from the plan branch tip, targets the
-    plan branch (never the intent branch or ``main``), and is merged into it after its consensus and calibration;
-    after the last child the plan branch is integrated into this execution branch for the combined PR. The plan
-    branch comes from the context, else from the decision record; without one the stage fails rather than fall back
-    to the intent branch.
-    """
     decomposition = PlanDecomposition.from_summary_row(context, summary_row)
     payload: dict[str, Any] = {**base_payload, "decomposed": True, "sub_intents": decomposition.items, "children": []}
     error = decomposition.validation_error(payload)

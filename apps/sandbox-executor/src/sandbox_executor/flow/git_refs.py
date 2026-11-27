@@ -9,6 +9,17 @@ from typing import Any
 from sandbox_executor.entrypoint.execution_workspace import workspace_mounted
 from sandbox_executor.flow.combined_base import _combined_diff_verdict, _integrated_plan_recorded
 from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.flow.git_refs_branches import (
+    BRANCH_TIP_SUFFIX,
+    EXECUTOR_GIT_ENV,
+    _execution_parent_plan_branch,
+    _matches_dispatch_suffix,
+)
+from sandbox_executor.flow.git_refs_branches import EXECUTION_BRANCH_MARKER as EXECUTION_BRANCH_MARKER
+from sandbox_executor.flow.git_refs_ledger import DEFAULT_LEDGER_REVISION as DEFAULT_LEDGER_REVISION
+from sandbox_executor.flow.git_refs_ledger import _latest_execution_summary as _latest_execution_summary
+from sandbox_executor.flow.git_refs_ledger import _ledger_unique_id_keys
+from sandbox_executor.flow.git_refs_ledger import _parse_ledger_revision as _parse_ledger_revision
 from sandbox_executor.flow.ledger_worktree import _ledger_worktree
 from sandbox_executor.git import changed_paths, empty_diff_summary, run_git
 from sandbox_executor.ledger import (
@@ -18,7 +29,6 @@ from sandbox_executor.ledger import (
     validate_ledger_file_unique_ids,
 )
 from sandbox_executor.ledger.fragments import ledger_commit_paths
-from sandbox_executor.plan_paths import is_row_of_execution
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_target import ReviewTargetError, is_pr_reference, resolve_review_target
 
@@ -30,16 +40,6 @@ LOCAL_HEAD_REF_PREFIX = "refs/heads/"
 GIT_REMOTE_TIMEOUT_SECONDS = 300
 SHORT_SHA_LOG_LENGTH = 12
 LEDGER_DIR_PREFIX = "holon-knowledge/ledger/"
-BRANCH_TIP_SUFFIX = "/_"
-EXECUTION_BRANCH_MARKER = "/E-"
-DEFAULT_LEDGER_REVISION = 1
-
-EXECUTOR_GIT_ENV: dict[str, str] = {
-    "GIT_AUTHOR_NAME": "Holon Executor Agent",
-    "GIT_AUTHOR_EMAIL": "executor-agent@holon-agentic-coder.com",
-    "GIT_COMMITTER_NAME": "Holon Executor Agent",
-    "GIT_COMMITTER_EMAIL": "executor-agent@holon-agentic-coder.com",
-}
 
 
 def _fetch_branch_prefix_error(repo_dir: str, prefix: str) -> str | None:
@@ -190,11 +190,6 @@ def _snapshot_child_branches(repo_dir: str, parent_prefix: str, marker: str) -> 
     return _list_child_branches(repo_dir, parent_prefix, marker)
 
 
-def _matches_dispatch_suffix(branch: str, preferred_suffix: str) -> bool:
-    bare = branch.removesuffix(BRANCH_TIP_SUFFIX)
-    return bare.endswith(preferred_suffix) or re.sub(r"-\d+$", "", bare).endswith(preferred_suffix)
-
-
 def _discover_child_branch(
     repo_dir: str,
     parent_prefix: str,
@@ -230,34 +225,9 @@ def _read_ledger_rows(repo_dir: str, ref: str, ledger_name: str) -> list[dict[st
     return read_merged_rows_at_ref(repo_dir, ref, ledger_name, git=run_git)
 
 
-def _parse_ledger_revision(row: dict[str, Any]) -> int:
-    try:
-        return int(row.get("ledger_revision") or DEFAULT_LEDGER_REVISION)
-    except (TypeError, ValueError):
-        return DEFAULT_LEDGER_REVISION
-
-
-def _latest_execution_summary(rows: list[dict[str, Any]], execution_id: str, branch: str = "") -> dict[str, Any] | None:
-    best_rank: tuple[int, int] | None = None
-    chosen_row: dict[str, Any] | None = None
-    for idx, row in enumerate(rows):
-        if row.get("entry_type") != "summary" or not is_row_of_execution(row, execution_id, branch):
-            continue
-        rank = (_parse_ledger_revision(row), idx)
-        if best_rank is None or rank > best_rank:
-            best_rank, chosen_row = rank, row
-    return chosen_row
-
-
 def _append_superseding_execution_row(context: FlowContext, exec_branch: str, row: dict[str, Any]) -> str | None:
     message = f"execute: record {row.get('status') or 'superseding'} row for {row.get('execution_id')}"
     return _append_ledger_row(context, exec_branch, "executions.jsonl", row, message)
-
-
-def _ledger_unique_id_keys(ledger: str) -> tuple[str, str]:
-    if ledger == "plans.jsonl":
-        return "plan_id", "intent_branch"
-    return "execution_id", "plan_branch"
 
 
 def _best_effort_sync_local_refs(context: FlowContext, branch: str, pushed_sha: str) -> None:
@@ -300,13 +270,6 @@ def _sync_local_execution_refs(context: FlowContext, exec_branch: str, pushed_sh
             f"Warning: could not update '{remote_ref}' to the pushed commit {pushed_sha[:SHORT_SHA_LOG_LENGTH]}."
         )
     fast_forward_local_branch(context, exec_branch, pushed_sha)
-
-
-def _execution_parent_plan_branch(execution_branch: str) -> str | None:
-    clean = execution_branch.strip()
-    if EXECUTION_BRANCH_MARKER not in clean:
-        return None
-    return clean.split(EXECUTION_BRANCH_MARKER, 1)[0] + BRANCH_TIP_SUFFIX
 
 
 def _has_origin_remote(repo_dir: str) -> bool:

@@ -1,14 +1,3 @@
-"""Check a draft intent's scope list against the target worktree before the intent is launched.
-
-The report has three parts: listed paths that do not exist, companion files proposed for the scope (tests importing a
-listed module, modules a listed test imports, the re-exporting package ``__init__.py`` and frequent co-change
-partners), and warnings for listed files that no acceptance criterion names. Warnings never become proposals.
-
-A scope entry for a file the intent creates is marked new with a trailing `` (new)`` or a leading ``new:``; the marker
-is stripped before every check, and a marked entry is never reported missing. The check reads files and runs only
-read-only git commands.
-"""
-
 from __future__ import annotations
 
 import json
@@ -37,8 +26,6 @@ _NEW_SUFFIX_RE = re.compile(r"\s+\(new\)$", re.IGNORECASE)
 
 @dataclass(frozen=True)
 class ScopeEntry:
-    """One scope path with the new-file marker stripped."""
-
     path: str
     marked_new: bool
 
@@ -51,8 +38,6 @@ class ScopeEntry:
 
 @dataclass(frozen=True)
 class DraftIntent:
-    """The parts of an intent file the scope check reads."""
-
     scope: list[ScopeEntry]
     acceptance_criteria: list[str]
     payload: dict[str, Any] = field(default_factory=dict)
@@ -60,8 +45,6 @@ class DraftIntent:
 
 @dataclass(frozen=True)
 class Proposal:
-    """A companion file proposed for the scope, the reason, and the listed file that led to it."""
-
     path: str
     reason: str
     source: str
@@ -69,8 +52,6 @@ class Proposal:
 
 @dataclass(frozen=True)
 class IntentScopeReport:
-    """Missing listed paths, proposed companions and acceptance-criteria warnings."""
-
     missing: list[str]
     proposed: list[Proposal]
     warnings: list[str]
@@ -82,7 +63,6 @@ class IntentScopeReport:
 
 
 def load_intent(path: str) -> DraftIntent:
-    """Read an intent JSON file; raise ``ValueError`` when it is unreadable or has no ``scope`` list."""
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -138,7 +118,6 @@ def _co_change_proposals(worktree: str, listed: list[str]) -> list[Proposal]:
 
 
 def _merge(proposals: Iterable[Proposal], in_scope: set[str]) -> list[Proposal]:
-    """Drop in-scope paths and duplicates (the first reason wins) and sort by path."""
     unique: dict[str, Proposal] = {}
     for proposal in proposals:
         if proposal.path not in in_scope:
@@ -162,7 +141,6 @@ def _criteria_warnings(intent: DraftIntent) -> list[str]:
 
 
 def check_intent_scope(intent: DraftIntent, worktree: str) -> IntentScopeReport:
-    """Build the scope report of a draft intent against a worktree without writing anything."""
     listed = [entry.path for entry in intent.scope]
     existing = [path for path in listed if _exists(worktree, path)]
     missing = sorted({entry.path for entry in intent.scope if not entry.marked_new and entry.path not in existing})
@@ -182,7 +160,6 @@ def _section(title: str, lines: list[str]) -> list[str]:
 
 
 def render_text(report: IntentScopeReport) -> str:
-    """Render the report as plain text with Missing, Proposed companions and Warnings sections."""
     proposed = [f"{item.path} ({item.reason}; from {item.source})" for item in report.proposed]
     lines = [
         *(_section("Violations", report.violations) if report.violations else []),

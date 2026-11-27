@@ -1,5 +1,3 @@
-"""Runner spec for the Codex agent, including its ``HOLON_AGENT_OSS_MODE`` exemption."""
-
 from __future__ import annotations
 
 import os
@@ -7,8 +5,12 @@ import os
 from sandbox_executor.runners.spec import RunnerSpec, has_api_key
 
 
+def _oss_mode_enabled() -> bool:
+    return os.getenv("HOLON_AGENT_OSS_MODE") in ("true", "1")
+
+
 def _check_credentials(spec: RunnerSpec) -> str | None:
-    if os.getenv("HOLON_AGENT_OSS_MODE") in ("true", "1"):
+    if _oss_mode_enabled():
         return None
     has_session = os.path.exists("/home/holon/.codex") or os.path.exists(os.path.expanduser("~/.codex"))
     if has_api_key(spec) or has_session:

@@ -1,11 +1,3 @@
-"""The slowest tests of a failed CI job, so a timing-gate failure is fixed where the time goes.
-
-Two sources, tried in order through ``gh`` on the host: the per-test durations that ``scripts/ci_timing_gate.py``
-uploads as the ``ci-timing-*`` artefact (``record.json``), then the ``--durations`` section of the job log. Every
-error yields an empty list. Test names are untrusted text: they are stripped of control characters, truncated and
-redacted before a prompt sees them.
-"""
-
 from __future__ import annotations
 
 import json
@@ -27,23 +19,22 @@ RECORD_FILE = "record.json"
 _JOB_ID_PATTERN = re.compile(r"/job/(\d+)")
 _DURATION_LINE = re.compile(r"^\s*(\d+(?:\.\d+)?)s\s+(?:call|setup|teardown)\s+(\S.*?)\s*$")
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+_GH_LOG_LINE_PREFIX = re.compile(r"^\S+\s+\S+\s+\d{4}-\S+Z\s")
 
 SlowestLookup = Callable[[dict[str, Any]], "list[tuple[str, float]]"]
 
 
 def clean_test_name(name: str) -> str:
-    """A test name safe to show: control characters removed, truncated and redacted."""
+    # why: test names are untrusted text that reach an agent prompt
     return CredentialRedactor.redact_text(_CONTROL_CHARS.sub("", str(name)))[:MAX_TEST_NAME_CHARS]
 
 
 def top_slowest(durations: Mapping[str, float], count: int = SLOWEST_TEST_COUNT) -> list[tuple[str, float]]:
-    """The ``count`` slowest tests as ``(name, seconds)``, slowest first, with non-numeric durations dropped."""
     numeric = [(clean_test_name(k), float(v)) for k, v in durations.items() if isinstance(v, int | float)]
     return sorted(numeric, key=lambda item: item[1], reverse=True)[:count]
 
 
 def durations_from_records(directory: Path, job_name: str) -> dict[str, float]:
-    """Per-test durations from the ``record.json`` files under ``directory``, preferring the record of ``job_name``."""
     records: list[dict[str, Any]] = []
     for path in sorted(directory.rglob(RECORD_FILE)):
         try:
@@ -58,10 +49,9 @@ def durations_from_records(directory: Path, job_name: str) -> dict[str, float]:
 
 
 def durations_from_log(log: str) -> dict[str, float]:
-    """Per-test durations from the ``--durations`` section of a pytest log; the longest of repeated names wins."""
     found: dict[str, float] = {}
     for line in log.splitlines():
-        match = _DURATION_LINE.search(re.sub(r"^\S+\s+\S+\s+\d{4}-\S+Z\s", "", line))
+        match = _DURATION_LINE.search(_GH_LOG_LINE_PREFIX.sub("", line))
         if match:
             found[match.group(2)] = max(found.get(match.group(2), 0.0), float(match.group(1)))
     return found
@@ -70,7 +60,6 @@ def durations_from_log(log: str) -> dict[str, float]:
 def gh_slowest_lookup(
     repo_dir: str, proxy_env: Mapping[str, str], run: Callable[..., Any] = subprocess.run
 ) -> SlowestLookup:
-    """A lookup of the slowest tests of a failed check through ``gh run download`` then ``gh run view --log``."""
     env = {**os.environ, **proxy_env, "DOCKER_CLI_HINTS": "false"}
 
     def call(args: list[str]) -> Any:
@@ -98,6 +87,7 @@ def gh_slowest_lookup(
             job = _JOB_ID_PATTERN.search(str(check.get("link") or ""))
             logged = call(["run", "view", run_id, "--log", *(["--job", job.group(1)] if job else [])])
             return top_slowest(durations_from_log(logged.stdout or "")) if logged.returncode == 0 else []
+        # why: the slowest tests only annotate a timing failure, so every lookup error yields an empty list
         except Exception:
             return []
 

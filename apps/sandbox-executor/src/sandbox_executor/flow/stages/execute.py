@@ -17,7 +17,12 @@ from sandbox_executor.flow.admission import admission_stage_failure
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _dispatch_role, _recorded_test_fields, _stage_failure
 from sandbox_executor.flow.execution_publish import held_execution_failure, hold_unrecorded_executions
-from sandbox_executor.flow.execution_recovery import rejected_push_failure, rejected_push_recovery
+from sandbox_executor.flow.execution_recovery import (
+    _record_execution_before_push,
+    _republish_recorded_execution,
+    rejected_push_failure,
+    rejected_push_recovery,
+)
 from sandbox_executor.flow.git_refs import (
     _discover_child_branch,
     _fetch_branch_prefix_error,
@@ -70,6 +75,7 @@ class ExecuteState:
     executor_args: list[str] = field(default_factory=list)
     exit_code: int = 0
     push_error: str | None = None
+    republished: bool = False
     exec_branch: str = ""
     exec_id: str = ""
     exec_ref: str = ""
@@ -205,6 +211,12 @@ class ExecuteStage:
         if not self.resume_partial:
             return None
         context, state = self.context, self.state
+        branch, reuse_error = _republish_recorded_execution(context, state.plan_prefix, state.existing_executions)
+        if reuse_error:
+            return self._fail(reuse_error, dispatched=False, execution_branch=branch)
+        if branch:
+            state.republished = True
+            return None
         state.existing_executions, salvage_error = salvage_for_resume(
             context, state.plan_prefix, state.existing_executions
         )
@@ -219,12 +231,17 @@ class ExecuteStage:
         return None
 
     def dispatch_executor(self) -> StageResult | None:
+        if self.state.republished:
+            return None
         context, state = self.context, self.state
         with replan_feedback_env("", consume_target_merge_notice(context)):
             state.exit_code = exit_code = _dispatch_role(context, "executor", state.executor_args)
         # why: the container only commits; the host pushes each committed branch with its ledger row, failed included
         left_alone = hold_unrecorded_executions(context, state.plan_prefix, state.existing_executions)
-        state.push_error = remote_error(publish_new_child_branches, state.repo_dir, state.plan_prefix, "E", left_alone)
+        recorded = _record_execution_before_push(context, state.plan_prefix, left_alone)
+        state.push_error = remote_error(
+            publish_new_child_branches, state.repo_dir, state.plan_prefix, "E", left_alone, context.log
+        )
         held = left_alone - state.existing_executions
         # why: an over-budget exit's committed row decides, and a failure below returns before the recovery error
         exit_failed = exit_code not in (0, OVER_BUDGET_EXIT_CODE)
@@ -236,7 +253,7 @@ class ExecuteStage:
             return self._fail(
                 f"Execute stage failed: executor agent exited with code {exit_code}.", exit_code=exit_code
             )
-        return rejected_push_failure(context, state.start_time, recovery, exit_code)
+        return rejected_push_failure(context, state.start_time, recovery, exit_code, recorded)
 
     def adopt_execution_branch(self) -> StageResult | None:
         context, state = self.context, self.state

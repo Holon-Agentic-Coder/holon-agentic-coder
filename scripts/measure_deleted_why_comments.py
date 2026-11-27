@@ -16,13 +16,11 @@ except ImportError:
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 EXCLUDED_ROOTS = frozenset({"plans", "executions", "holon-knowledge"})
-CODE_SUFFIXES = frozenset({".py", ".sh", ".bash", ".yml", ".yaml", ".toml", ".mk", ".js", ".mjs", ".cjs"})
+CODE_SUFFIXES = frozenset({".py", ".sh", ".bash", ".yml", ".yaml", ".toml", ".mk"})
 CODE_NAMES = frozenset({"Makefile", "GNUmakefile", "Dockerfile"})
 REASON_INDICATORS = ("because", "so that", "otherwise", "must", "avoid", "never", "race", "ensure")
-REASON_INDICATOR_PATTERN = re.compile(
-    r"\b(?:because|so\s+that|otherwise|must|avoid|never|race|ensure)\b|\bwhy:",
-    re.IGNORECASE,
-)
+_REASON_ALTERNATION = "|".join(r"\s+".join(re.escape(part) for part in term.split()) for term in REASON_INDICATORS)
+REASON_INDICATOR_PATTERN = re.compile(rf"\b(?:{_REASON_ALTERNATION})\b|\bwhy:", re.IGNORECASE)
 HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 INTENT_CREATED_PATTERN = re.compile(r"^\*\s+intent:\s+created\s+([^\s/]+)", re.MULTILINE)
 PR_NUMBER_PATTERN = re.compile(r"\(#(\d+)\)\s*$")
@@ -142,10 +140,9 @@ def resolve_file_unmatched(file_state: FileDiffState) -> list[UnmatchedReason]:
     pending_reasons: list[RemovedComment] = []
     surplus_why_count = 0
     for hunk in file_state.hunks:
-        if hunk.added_why_count > 0:
-            surplus_why_count += max(0, hunk.added_why_count - len(hunk.removed_reasons))
-        else:
-            pending_reasons.extend(hunk.removed_reasons)
+        matched_in_hunk = min(len(hunk.removed_reasons), hunk.added_why_count)
+        pending_reasons.extend(hunk.removed_reasons[matched_in_hunk:])
+        surplus_why_count += hunk.added_why_count - matched_in_hunk
     remaining = pending_reasons[surplus_why_count:]
     return [UnmatchedReason(path, item.line, item.text) for item in remaining]
 
@@ -252,6 +249,8 @@ def scan_slice_diff(repo_root: Path, slice_info: SelfDocSlice) -> SliceReport:
         "-c",
         "core.quotePath=false",
         "show",
+        "-m",
+        "--first-parent",
         "--format=",
         "--patch",
         "-U3",

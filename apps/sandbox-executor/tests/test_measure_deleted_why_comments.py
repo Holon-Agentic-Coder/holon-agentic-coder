@@ -75,6 +75,23 @@ def test_removed_reason_paired_with_other_hunk_why_passes():
     assert find_unmatched_reasons_in_diff(diff_text) == []
 
 
+def test_same_hunk_why_consumes_one_to_one():
+    diff_text = make_diff(
+        "app/worker.py",
+        "@@ -4,4 +4,3 @@",
+        [
+            " def run():",
+            "-    # retry because the socket closes early",
+            "-    # never drop pending frames",
+            "+    # why: the socket closes early on idle peers",
+            "     return 1",
+        ],
+    )
+    assert find_unmatched_reasons_in_diff(diff_text) == [
+        UnmatchedReason(file_path="app/worker.py", line=6, text="# never drop pending frames")
+    ]
+
+
 def test_cross_hunk_why_consumes_one_to_one():
     diff_text = "\n".join(
         [
@@ -123,6 +140,7 @@ def test_ordinary_removed_comments_are_ignored(comment):
         ("executions/E-1.md", "# because markdown is not code"),
         ("holon-knowledge/notes.py", "# because knowledge files are excluded"),
         ("data/config.json", "# must not scan json"),
+        ("app/widget.js", "this.#mustKeep = 1"),
     ],
 )
 def test_string_literals_directives_and_non_code_paths_are_ignored(path, removed_line):
@@ -269,3 +287,49 @@ def test_scan_self_doc_history_and_cli_report_unmatched_reasons(tmp_path, capsys
     assert "PR #101" in text_output
     assert "src/worker.py:4: # avoid reusing stale handles" in text_output
     assert "Scanned 1 self-doc slice(s); 1 unmatched removed reason(s)." in text_output
+
+
+def test_scan_self_doc_history_handles_merge_commits(tmp_path):
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True, capture_output=True)
+    target = tmp_path / "src" / "worker.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("# avoid reusing stale handles\nVALUE = 1\n", encoding="utf-8")
+    git_commit(tmp_path, "chore: initial commit")
+
+    subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=tmp_path, check=True, capture_output=True)
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    git_commit(tmp_path, "refactor: drop comment")
+
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=tmp_path, check=True, capture_output=True)
+    merge_message = "\n".join(
+        [
+            "Merge pull request #202 from org/self-doc (#202)",
+            "",
+            "* intent: created I-200-self-doc-merge/_",
+        ]
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "merge",
+            "--no-ff",
+            "-q",
+            "-m",
+            merge_message,
+            "feature",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    reports = scan_self_doc_history(tmp_path, ref="main")
+    assert len(reports) == 1
+    assert reports[0].slice_info.pr_number == 202
+    assert reports[0].unmatched == [
+        UnmatchedReason(file_path="src/worker.py", line=1, text="# avoid reusing stale handles")
+    ]

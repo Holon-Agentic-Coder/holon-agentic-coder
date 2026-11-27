@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import io
 import re
+import textwrap
 import tokenize
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -24,6 +25,9 @@ YAML_SUFFIXES = frozenset({".yml", ".yaml"})
 SHELL_LIKE_NAMES = frozenset({"Dockerfile"})
 MAKEFILE_NAMES = frozenset({"Makefile", "GNUmakefile"})
 JAVASCRIPT_SUFFIXES = frozenset({".js", ".mjs", ".cjs"})
+MARKDOWN_FENCE_ROOTS = frozenset({"plans", "executions"})
+FENCE_OPEN = re.compile(r"^[ \t]*(`{3,}|~{3,})[ \t]*(.*)$")
+FENCE_CLOSE = re.compile(r"^[ \t]*(`{3,}|~{3,})[ \t]*$")
 JAVASCRIPT_TOKEN = re.compile(
     r"\"(?:\\.|[^\"\\\n])*\"?|'(?:\\.|[^'\\\n])*'?|`(?:\\.|[^`\\])*`?|//[^\n]*|/\*.*?(?:\*/|\Z)",
     re.DOTALL,
@@ -138,8 +142,92 @@ def javascript_findings(text: str) -> list[Finding]:
     return findings
 
 
+MARKDOWN_FENCE_FINDERS: dict[str, Callable[[str], list[Finding]]] = {
+    "python": python_findings,
+    "py": python_findings,
+    "python3": python_findings,
+    "sh": shell_findings,
+    "bash": shell_findings,
+    "shell": shell_findings,
+    "zsh": shell_findings,
+    "yaml": yaml_findings,
+    "yml": yaml_findings,
+}
+
+
+def is_violation(finding: Finding) -> bool:
+    return "docstring" in finding.kind or not is_allowed_comment(finding.text, finding.first_line)
+
+
+def is_checked_markdown(path: PurePosixPath) -> bool:
+    return path.suffix.lower() == ".md" and bool(path.parts) and path.parts[0] in MARKDOWN_FENCE_ROOTS
+
+
+def parse_fence_open(line: str) -> tuple[str, int, str] | None:
+    match = FENCE_OPEN.match(line)
+    if match is None:
+        return None
+    fence, info = match.group(1), match.group(2)
+    if fence[0] == "`" and "`" in info:
+        return None
+    stripped = info.strip()
+    language = stripped.split(maxsplit=1)[0].lower() if stripped else ""
+    return fence[0], len(fence), language
+
+
+def is_fence_close(line: str, fence_char: str, fence_len: int) -> bool:
+    match = FENCE_CLOSE.match(line)
+    return match is not None and match.group(1)[0] == fence_char and len(match.group(1)) >= fence_len
+
+
+def join_block_lines(lines: list[str]) -> str:
+    return "\n".join(lines) + "\n" if lines else ""
+
+
+def iter_fenced_blocks(text: str) -> Iterable[tuple[int, str, str]]:
+    active: tuple[str, int, int, str] | None = None
+    body_lines: list[str] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if active is None:
+            opened = parse_fence_open(line)
+            if opened is not None:
+                active = (opened[0], opened[1], line_number, opened[2])
+                body_lines = []
+            continue
+        if is_fence_close(line, active[0], active[1]):
+            yield active[2], active[3], join_block_lines(body_lines)
+            active = None
+            body_lines = []
+        else:
+            body_lines.append(line)
+    if active is not None:
+        yield active[2], active[3], join_block_lines(body_lines)
+
+
+def markdown_fenced_findings(text: str) -> list[Finding]:
+    findings: list[Finding] = []
+    for open_line, language, block_text in iter_fenced_blocks(text):
+        finder = MARKDOWN_FENCE_FINDERS.get(language)
+        if finder is None:
+            continue
+        dedented = textwrap.dedent(block_text)
+        for finding in finder(dedented):
+            if is_violation(finding):
+                findings.append(
+                    Finding(
+                        finding.first_line + open_line,
+                        finding.last_line + open_line,
+                        finding.kind,
+                        finding.text,
+                    )
+                )
+    return findings
+
+
 def language_finder(path: str, text: str) -> Callable[[str], list[Finding]] | None:
     pure_path = PurePosixPath(path)
+    if is_checked_markdown(pure_path):
+        return markdown_fenced_findings
     if pure_path.suffix == ".py":
         return python_findings
     if pure_path.suffix in JAVASCRIPT_SUFFIXES:
@@ -157,8 +245,4 @@ def find_comments_and_docstrings(path: str, text: str) -> list[Finding]:
     finder = language_finder(path, text)
     if finder is None:
         return []
-    return [
-        finding
-        for finding in finder(text)
-        if "docstring" in finding.kind or not is_allowed_comment(finding.text, finding.first_line)
-    ]
+    return [finding for finding in finder(text) if is_violation(finding)]

@@ -1,9 +1,3 @@
-"""The Stage 4 consensus report renders only real reviewer data (fakes only: no runner, gh or remote).
-
-The posted shape is asserted against the "Posted review shape" block of the shipped review template, so a change to
-either the prompt or the generator that is not made to both fails here.
-"""
-
 import hashlib
 import json
 import re
@@ -37,6 +31,8 @@ from sandbox_executor.review_report import (
 from sandbox_executor.review_target import ReviewTarget
 
 from tests.review_fakes import failed_reviewer
+
+# why: the posted shape is read from the shipped template, so a prompt or generator change not made to both fails here
 from tests.test_prompt_templates import MARKDOWN_TEMPLATE, posted_shape_block
 
 COMMIT = "abc1234"
@@ -44,9 +40,6 @@ FORMER_FALLBACK_TITLE = "Audit Remediation and Flow Review Hardening"
 SECRET = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
 APP_FINDING = ReviewFinding("important", "src/app.py", 12, "The handler drops the error.")
 DOC_FINDING = ReviewFinding("nit", "docs/guide.md", None, "Typo in the heading.")
-
-
-# --- Fixture dataset -----------------------------------------------------------------------------------------------
 
 
 def _parsed(*findings: ReviewFinding) -> ParsedTrailer:
@@ -90,7 +83,6 @@ APPROVED_BLOCK = {
 
 
 def changes_reviewers() -> list[ReviewerResult]:
-    """Reviewer 1 with a data block, reviewer 2 raising the same finding without one, reviewer 3 FAILED."""
     return [
         _reviewer(1, APP_FINDING, DOC_FINDING, block=CHANGES_BLOCK),
         _reviewer(2, APP_FINDING),
@@ -99,7 +91,6 @@ def changes_reviewers() -> list[ReviewerResult]:
 
 
 def approved_reviewers() -> list[ReviewerResult]:
-    """Three clean reviewers; only the first supplies a data block."""
     return [_reviewer(1, block=APPROVED_BLOCK), _reviewer(2), _reviewer(3)]
 
 
@@ -131,35 +122,38 @@ def _report(reviewers, title=None, **overrides) -> str:
     return build_pr_review_consensus_report("/nonexistent", "42", _consensus(**overrides), reviewers, title)
 
 
-# --- The shape, read from the template -----------------------------------------------------------------------------
-
-
 def _cells(line: str) -> list[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
-def shape_markers() -> list[str]:
-    """The fixed text of the template's posted shape, in order.
+def _unpadded_table_header(line: str) -> str:
+    return "| " + " | ".join(_cells(line)) + " |"
 
-    Each table header contributes its cells (unpadded, as rendered); each other line contributes its text before the
-    first placeholder, or the whole line when it has none. Example table rows and example bullets are skipped.
-    """
+
+def _text_before_first_placeholder(line: str) -> str:
+    return line.split("{", 1)[0]
+
+
+def _is_example_bullet(line: str) -> bool:
+    return line.startswith("- ") and "{" not in line
+
+
+def shape_markers() -> list[str]:
     lines = posted_shape_block(MARKDOWN_TEMPLATE).splitlines()
     markers = []
     for number, line in enumerate(lines):
         following = lines[number + 1] if number + 1 < len(lines) else ""
         if line.startswith("|"):
             if following.startswith("| -"):
-                markers.append("| " + " | ".join(_cells(line)) + " |")
+                markers.append(_unpadded_table_header(line))
             continue
-        prefix = line.split("{", 1)[0]
-        if prefix.strip() and not (line.startswith("- ") and "{" not in line):
+        prefix = _text_before_first_placeholder(line)
+        if prefix.strip() and not _is_example_bullet(line):
             markers.append(prefix)
     return markers
 
 
-def _alternative(markers: list[str], approved: bool) -> list[str]:
-    """Drop the markers of the other verdict: its heading and its body (Verified list or findings table)."""
+def _markers_without_the_other_verdict(markers: list[str], approved: bool) -> list[str]:
     other = ("CHANGES REQUESTED", "| ID |") if approved else ("APPROVED (", "**Verified:**")
     return [marker for marker in markers if not any(token in marker for token in other)]
 
@@ -191,7 +185,7 @@ def test_template_shape_yields_the_seven_parts():
 def test_changes_requested_report_follows_the_template_shape():
     body = _report(changes_reviewers())
 
-    assert_in_order(body, _alternative(shape_markers(), approved=False))
+    assert_in_order(body, _markers_without_the_other_verdict(shape_markers(), approved=False))
     assert body.startswith("## ❌ Ensemble Consensus Review — CHANGES REQUESTED (Iteration 2)")
     assert "**Verified:**" not in body
     assert body.endswith(CLOSING_NOTICE)
@@ -200,7 +194,7 @@ def test_changes_requested_report_follows_the_template_shape():
 def test_approved_report_follows_the_template_shape():
     body = build_review_consensus_report("/nonexistent", "42", _approved(), approved_reviewers())
 
-    assert_in_order(body, _alternative(shape_markers(), approved=True))
+    assert_in_order(body, _markers_without_the_other_verdict(shape_markers(), approved=True))
     assert body.startswith("## ✅ Ensemble Consensus Review — APPROVED (3/3)")
     assert "| ID |" not in body
     assert body.endswith(CLOSING_NOTICE)
@@ -250,9 +244,6 @@ def test_evaluation_paragraph_names_commit_base_counts_ci_and_mergeability():
     assert f"`{COMMIT}`" in paragraph and "against `main`" in paragraph
     assert "0 critical, 1 important and 1 nit findings" in paragraph
     assert "CI passing" in paragraph and "mergeability CLEAN" in paragraph
-
-
-# --- Seam ----------------------------------------------------------------------------------------------------------
 
 
 def test_role_table_lists_only_roles_reviewers_declared():
@@ -379,13 +370,11 @@ def test_review_data_survives_the_container_transport():
     for result in reviewers:
         item = serialize_reviewer_result(result)
         restored = deserialize_reviewer_result(json.loads(json.dumps(item)))
-        assert not restored.report_text  # the strict transport drops the report text
+        # why: the strict container transport drops the report text, so the detail payload must carry the data
+        assert not restored.report_text
         transported.append(with_reviewer_detail(restored, reviewer_detail_payload(result)))
 
     assert collect_review_data(transported) == collect_review_data(reviewers)
-
-
-# --- Verdict and probes --------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("verdict", [None, "FAILED", "CHANGES_REQUESTED", "approved"])
@@ -416,8 +405,8 @@ def test_approval_fraction_counts_only_completed_approving_reviewers():
     assert body.splitlines()[0].endswith("— 1/3 approved")
 
 
+# why: this report was formerly headed APPROVED (1/3); an open finding now forbids that heading
 def test_an_approved_verdict_with_an_open_finding_renders_as_changes_requested():
-    """Formerly headed APPROVED (1/3): a reviewer with an open finding now forbids the APPROVED heading."""
     body = build_review_consensus_report("/nonexistent", "42", _approved(), [_reviewer(1), _reviewer(2, DOC_FINDING)])
 
     assert body.splitlines()[0].endswith("CHANGES REQUESTED (Iteration 2) — 1/3 approved")
@@ -425,8 +414,8 @@ def test_an_approved_verdict_with_an_open_finding_renders_as_changes_requested()
     assert "Typo in the heading." in body
 
 
+# why: reproduces the incident of APPROVED, APPROVED and a critical CHANGES_REQUESTED with Security at CHANGES
 def _failing_shape() -> list[ReviewerResult]:
-    """The incident: APPROVED, APPROVED and CHANGES_REQUESTED with one critical finding and Security at CHANGES."""
     critical = ReviewFinding("critical", "src/sandbox/mounts.py", 40, "Bind mount exposes the host Docker socket.")
     parsed = ParsedTrailer(ReviewerVerdict.CHANGES_REQUESTED, ReviewCounts(critical=1), (critical,))
     block = {"roles": [{"role": "Security", "verdict": "CHANGES", "review": "Mount escapes the sandbox."}]}
@@ -533,9 +522,6 @@ def test_mergeability_renders_the_probe_word(mergeability, note, word):
         assert f"mergeability MISSING_REF ({note})." in body
 
 
-# --- Sanitisation --------------------------------------------------------------------------------------------------
-
-
 def test_untrusted_block_text_is_escaped_redacted_and_bounded():
     hostile = f"a | b `code` <script>x</script>\n## heading {SECRET} " + "word " * 60
     block = {
@@ -563,9 +549,6 @@ def test_untrusted_finding_text_cannot_break_out_of_its_row():
         "| not supplied |"
     )
     assert "\n## injected" not in body
-
-
-# --- Trailer, alias and title --------------------------------------------------------------------------------------
 
 
 def test_the_on_disk_trailer_never_appears_in_a_posted_body():
@@ -712,9 +695,6 @@ def test_report_without_a_github_origin_renders_the_target_without_a_link(tmp_pa
     assert "](" not in body
     assert "github.com" not in body
     assert "Holon-Agentic-Coder" not in body
-
-
-# --- Fail-closed dispositions ---------------------------------------------------------------------------------------
 
 
 NIT_ROW = review_report.FindingRow("R1-F1", "nit", "flow/calibrate_rerun.py", 40, (1,), "A nit.", "Fix it.")

@@ -1,11 +1,3 @@
-"""Stage 4 check and mergeability resolution for a stacked pull request whose base is a plan branch.
-
-A decomposed plan runs child intents whose pull requests target the plan branch, not ``main``. These tests pin
-that the review loop opens the pull request against that branch, evaluates mergeability against it (through ``gh`` and
-through the local git fallback, in a repository with no ``main`` at all), waits for CI checks to register and settle,
-and records them, without ever naming ``main``. No real ``gh``, network or clock is used.
-"""
-
 import json
 import shutil
 import subprocess
@@ -29,20 +21,13 @@ _PENDING = {**_PASS, "bucket": "pending", "state": "IN_PROGRESS"}
 
 
 class FakeGh:
-    """A ``gh`` stand-in playing a stacked pull request from creation to green checks and the posted review.
-
-    Other commands run for real.
-    """
-
     def __init__(self, checks_replies: list[tuple[int, list[dict[str, Any]]]], real_run: Callable[..., Any]) -> None:
-        """Answer ``gh pr checks`` with ``checks_replies`` in order (the last one repeats)."""
         self.calls: list[list[str]] = []
         self.pr_created = False
         self._checks_replies = list(checks_replies)
         self._real_run = real_run
 
     def __call__(self, cmd: Any, *args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        """Dispatch ``gh`` commands to the fake and everything else to the real ``subprocess.run``."""
         if not (isinstance(cmd, list) and cmd and cmd[0] == "gh"):
             return self._real_run(cmd, *args, **kwargs)
         self.calls.append(list(cmd))
@@ -70,19 +55,14 @@ class FakeGh:
 
 
 class FakeClock:
-    """Monotonic clock that only moves when the fake sleep is called."""
-
     def __init__(self) -> None:
-        """Start at zero with no sleeps recorded."""
         self.now = 0.0
         self.sleeps: list[float] = []
 
     def __call__(self) -> float:
-        """Return the current fake time."""
         return self.now
 
     def sleep(self, seconds: float) -> None:
-        """Advance the fake time instead of sleeping."""
         self.sleeps.append(seconds)
         self.now += seconds
 
@@ -163,8 +143,7 @@ def _commit(repo: Path, name: str, text: str) -> None:
 
 
 @pytest.fixture
-def stacked_repo(tmp_path: Path) -> Path:
-    """A repository whose only branches are a parent intent branch and a child stacked on it: no ``main`` exists."""
+def stacked_repo_without_main(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", PARENT_BRANCH)
@@ -180,15 +159,15 @@ def stacked_repo(tmp_path: Path) -> Path:
 
 
 def test_local_mergeability_of_a_stacked_branch_never_needs_main(
-    stacked_repo: Path, monkeypatch: pytest.MonkeyPatch
+    stacked_repo_without_main: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("sandbox_executor.flow.github.adapter.shutil.which", lambda name: None)
 
-    clean = check_pr_mergeability(str(stacked_repo), CHILD_EXECUTION_BRANCH, target_branch=PARENT_BRANCH)
+    clean = check_pr_mergeability(str(stacked_repo_without_main), CHILD_EXECUTION_BRANCH, target_branch=PARENT_BRANCH)
     assert (clean["source"], clean["mergeable"], clean["merge_state_status"]) == ("git_local", "MERGEABLE", "CLEAN")
 
-    _commit(stacked_repo, "app.py", "value = 3\n")
-    dirty = check_pr_mergeability(str(stacked_repo), CHILD_EXECUTION_BRANCH, target_branch=PARENT_BRANCH)
+    _commit(stacked_repo_without_main, "app.py", "value = 3\n")
+    dirty = check_pr_mergeability(str(stacked_repo_without_main), CHILD_EXECUTION_BRANCH, target_branch=PARENT_BRANCH)
     assert (dirty["mergeable"], dirty["merge_state_status"], dirty["is_dirty"]) == ("CONFLICTING", "DIRTY", True)
 
 

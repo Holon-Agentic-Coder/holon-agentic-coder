@@ -1,5 +1,3 @@
-"""Hermetic tests for reviewer failure classification, redaction and the single quota wait."""
-
 from __future__ import annotations
 
 import logging

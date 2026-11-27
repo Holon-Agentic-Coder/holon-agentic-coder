@@ -11,6 +11,7 @@ import re
 import textwrap
 from pathlib import Path
 
+from scripts.self_explaining_comments import find_comments_and_docstrings
 from tests.test_workflow_triggers import parse_triggers
 
 _KEY = re.compile(r"^([A-Za-z0-9_-]+):\s*(.*)$")
@@ -108,10 +109,10 @@ def _step(prefix: str) -> tuple[int, dict[str, Node]]:
     return found[0]
 
 
-def test_triggers_are_push_on_main_a_daily_schedule_and_dispatch() -> None:
+def test_triggers_are_schedule_and_dispatch_without_push() -> None:
     triggers = parse_triggers(_WORKFLOW.read_text(encoding="utf-8"))
-    assert set(triggers) == {"push", "schedule", "workflow_dispatch"}
-    assert triggers["push"] == {"branches": ["main"]}
+    assert set(triggers) == {"schedule", "workflow_dispatch"}
+    assert "push" not in triggers
     on = _child(_workflow(), "on")
     schedule = on["schedule"]
     assert isinstance(schedule, list)
@@ -129,24 +130,33 @@ def test_runs_are_serialised_and_the_default_token_is_read_only() -> None:
     assert _child(workflow, "permissions") == {"contents": "read"}
 
 
-def test_a_missing_token_is_explained_and_every_later_step_requires_it() -> None:
+def test_a_missing_token_warns_with_pending_backlog_and_later_steps_require_it() -> None:
     assert _child(_job(), "env") == {_TOKEN: f"${{{{ secrets.{_TOKEN} }}}}"}
     steps = _steps()
-    first = steps[0]
-    assert first["if"] == f"env.{_TOKEN} == ''"
-    assert "::notice::" in _text(first, "run") and _TOKEN in _text(first, "run")
-    assert "exit 1" not in _text(first, "run")
-    for step in steps[1:]:
+    read_pending, warn_missing = steps[0], steps[1]
+    assert read_pending["name"] == "Read pending ledger directory"
+    assert read_pending["if"] == f"env.{_TOKEN} == ''"
+    assert read_pending["uses"] == "actions/checkout@v7"
+    read_with = _child(read_pending, "with")
+    assert read_with["ref"] == "main"
+    assert read_with["sparse-checkout"] == f"{_LEDGER}/pending"
+    assert "token" not in read_with
+    assert warn_missing["name"] == "Warn on missing bot token and pending backlog"
+    assert warn_missing["if"] == f"env.{_TOKEN} == ''"
+    warn_script = _text(warn_missing, "run")
+    assert "::warning::" in warn_script and "::notice::" not in warn_script
+    assert f"{_LEDGER}/pending" in warn_script and _TOKEN in warn_script
+    assert "GITHUB_STEP_SUMMARY" in warn_script and "exit 1" not in warn_script
+    for step in steps[2:]:
         assert _TOKEN_SET in _text(step, "if"), f"{step['name']} runs without the bot token"
 
 
-def test_the_bots_own_commit_does_not_trigger_another_promotion() -> None:
-    condition = _text(_job(), "if")
-    assert condition.startswith("github.event_name != 'push' || !contains(github.event.head_commit.message, ")
-    marker = re.search(r"head_commit\.message, '([^']+)'\)", condition)
+def test_the_bots_own_commit_carries_the_marker_and_cannot_retrigger_on_push() -> None:
+    triggers = parse_triggers(_WORKFLOW.read_text(encoding="utf-8"))
+    assert "push" not in triggers
+    assert "if" not in _job()
     message = re.search(r'git commit -m "([^"]+)"', _text(_step("Commit and push")[1], "run"))
-    assert marker and message
-    assert marker.group(1) in message.group(1)
+    assert message and "[ledger-promote]" in message.group(1)
 
 
 def test_the_path_guard_runs_before_the_commit_and_only_the_ledger_is_staged() -> None:
@@ -168,12 +178,21 @@ def test_the_push_is_retried_a_bounded_number_of_times_after_a_fetch_and_rebase(
 
 
 def test_secrets_reach_only_the_job_environment_and_the_checkout_token() -> None:
+    token_steps = []
     for step in _steps():
         assert "secrets." not in _text(step, "run")
         assert "secrets." not in str(step.get("env", ""))
-    checkout = _child(_step("Checkout")[1], "with")
+        if "with" in step and "secrets." in str(step["with"]):
+            token_steps.append(_text(step, "name"))
+    assert token_steps == ["Checkout repository"]
+    checkout = _child(_step("Checkout repository")[1], "with")
     assert checkout["token"] == f"${{{{ secrets.{_TOKEN} }}}}"
     assert checkout["ref"] == "main"
+
+
+def test_workflow_is_self_explaining_yaml() -> None:
+    text = _WORKFLOW.read_text(encoding="utf-8")
+    assert find_comments_and_docstrings(".github/workflows/promote-ledger.yml", text) == []
 
 
 def test_the_readme_describes_the_workflow_and_its_secret() -> None:

@@ -4,7 +4,7 @@ import logging
 import subprocess
 from typing import Any
 
-from sandbox_executor.git import run_git
+from sandbox_executor.git import is_metadata_path, parse_numstat, run_git
 from sandbox_executor.git_revisions import qualify_branch_revision, revision_args
 from sandbox_executor.ledger import read_merged_rows_at_ref
 
@@ -156,6 +156,18 @@ def execution_patch_numstat(
     if diff_base in (DIFF_BASE_PLAN, DIFF_BASE_TARGET_MERGE_BASE):
         patch_meta.update(merge_history(base_rev, target_rev, target_worktree))
     return res, patch_meta
+
+
+def parse_patch_numstat(text: str) -> tuple[list[str], int, int, int]:
+    changed_paths: list[str] = []
+    insertions = deletions = 0
+    for ins, dels, file_path in parse_numstat(text):
+        if is_metadata_path(file_path):
+            continue
+        changed_paths.append(file_path)
+        insertions += max(ins, 0)
+        deletions += max(dels, 0)
+    return changed_paths, len(changed_paths), insertions, deletions
 
 
 def patch_size_base_line(report_data: dict[str, Any]) -> str:

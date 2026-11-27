@@ -17,6 +17,7 @@ from sandbox_executor.cli.commands._flow_resume import RUN_SWITCHES, discover_re
 from sandbox_executor.cli.commands.flow import _build_flow_context, _resolve_checkpoint_and_intent
 from sandbox_executor.flow import FlowContext, FlowStage, PipelineEngine, StageResult, StageStatus
 from sandbox_executor.flow.checkpoint import load_checkpoint, save_checkpoint
+from sandbox_executor.intent_refresh import SELF_EXPLAINING_SENTENCE
 from sandbox_executor.launcher.coherence import FlowProxyChoice
 
 _NO_PROXY = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
@@ -30,7 +31,7 @@ STAGES = ("intent", "plan", "execute", "review", "calibrate")
 
 
 def _intent_data(**extra: str) -> dict[str, str]:
-    return {"slug": SLUG, "goal": "Keep the checkpoint", "target_branch": "main", **extra}
+    return {"slug": SLUG, "goal": f"Keep the checkpoint. {SELF_EXPLAINING_SENTENCE}", "target_branch": "main", **extra}
 
 
 def _completed_context(worktree: Path, intent_data: dict[str, str] | None = None) -> FlowContext:

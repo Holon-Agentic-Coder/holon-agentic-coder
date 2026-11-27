@@ -117,6 +117,10 @@ LAZY_EXPORTS: dict[str, str] = {
         "local_blocked_waiters local_in_flight_flows open_flow_pull_requests other_checkpoints read_plan_touch_set "
         "root_intent"
     ),
+    "sandbox_executor.flow.in_flight_liveness": (
+        "ProcessCmdlines fetch_prune_origin origin_branch_ref process_command_lines "
+        "pull_request_is_closed_or_merged worktree_has_live_runner"
+    ),
     "sandbox_executor.flow.intent_questions": (
         "IntentQuestions QuestionKind answered_by_id answered_by_text has_inline_answer is_marked_open "
         "validate_intent_questions"

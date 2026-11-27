@@ -20,6 +20,7 @@ class WorktreeCheckpoint:
     worktree: str
     in_flight_stage: bool
     record: AdmissionRecord | None
+    execution_branch: str | None = None
 
 
 def read_worktree_checkpoint(path: str, worktree: str) -> WorktreeCheckpoint | None:
@@ -33,7 +34,8 @@ def read_worktree_checkpoint(path: str, worktree: str) -> WorktreeCheckpoint | N
         return None
     in_flight_stage = checkpoint.current_stage in _IN_FLIGHT_STAGES
     record = AdmissionRecord.from_dict(checkpoint.context.admission)
-    return WorktreeCheckpoint(str(checkpoint.context.plan_branch), worktree, in_flight_stage, record)
+    execution_branch = str(checkpoint.context.execution_branch) if checkpoint.context.execution_branch else None
+    return WorktreeCheckpoint(str(checkpoint.context.plan_branch), worktree, in_flight_stage, record, execution_branch)
 
 
 def worktree_checkpoints(worktree: str) -> list[WorktreeCheckpoint]:

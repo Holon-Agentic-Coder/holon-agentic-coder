@@ -1,0 +1,23 @@
+{
+  "kb_id": "KB-failure-3f93b6bc",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "1970-01-01T00:00:00+00:00",
+  "updated_ts": "1970-01-01T00:00:00+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {},
+  "tags": [
+    "test",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795752556-self-doc-tests-45/P-1795752580-CLA-CO5.5/E-1795753243-CLA-CO5.5/_",
+    "description": "Reproduced failure across executions with identical context. Execution counts live in the action index and ledgers.",
+    "action": "Review Loop executed for I-1795752556-self-doc-tests-45/P-1795752580-CLA-CO5.5/E-1795753243-CLA-CO5.5/_",
+    "symptoms": [
+      "Consensus failed: findings=['FIND-R1-001-01', 'FIND-R2-001-01']; not approved: reviewer 1 final verdict CHANGES_REQUESTED, reviewer 1 Documentation role CHANGES, reviewer 2 final verdict CHANGES_REQUESTED, reviewer 2 Engineering role CHANGES; final verdicts: Reviewer 1 CHANGES_REQUESTED (0/0/1); Reviewer 1 Documentation role CHANGES; Reviewer 2 CHANGES_REQUESTED (0/0/1); Reviewer 2 Engineering role CHANGES; Reviewer 3 APPROVED (0/0/0)"
+    ]
+  }
+}

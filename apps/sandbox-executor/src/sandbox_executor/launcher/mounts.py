@@ -4,7 +4,6 @@ import shutil
 import subprocess
 from collections.abc import Callable, Mapping
 
-# why: re-exported for sandbox_executor.cli compatibility (test_import_cycle.MOVED_CLI_NAMES).
 from sandbox_executor.launcher.antigravity_mounts import antigravity_session_mounts as antigravity_session_mounts
 from sandbox_executor.launcher.pi_mounts import get_pi_mounts as get_pi_mounts
 from sandbox_executor.runners import runner_spec_for

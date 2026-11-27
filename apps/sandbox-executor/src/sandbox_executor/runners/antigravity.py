@@ -3,7 +3,13 @@ from __future__ import annotations
 import os
 import sys
 
-from sandbox_executor.runners.spec import VALID_EFFORT_LEVELS, ModelCapability, RunnerSpec, has_api_key
+from sandbox_executor.runners.spec import (
+    _VALID_EFFORT_LEVELS,
+    RunnerSpec,
+    _ExtendedRunnerSpec,
+    _ModelCapability,
+    has_api_key,
+)
 
 _SESSION_PATHS = ("/home/holon/.gemini/antigravity-cli", "/home/holon/.gemini", "/home/holon/.config/gcloud")
 _HOME_SESSION_PATHS = ("~/.gemini/antigravity-cli", "~/.gemini", "~/.config/gcloud", "~/.holon/sessions/antigravity")
@@ -34,14 +40,14 @@ def _coordinate_gemini_effort(canonical: str, effort: str | None) -> tuple[str, 
 
     inferred_effort = None
     base = canonical
-    for level in VALID_EFFORT_LEVELS:
+    for level in _VALID_EFFORT_LEVELS:
         suffix = f"-{level}"
         if canonical.endswith(suffix):
             inferred_effort = level
             base = canonical[: -len(suffix)]
             break
 
-    if eff in VALID_EFFORT_LEVELS:
+    if eff in _VALID_EFFORT_LEVELS:
         return f"{base}-{eff}", eff
     if inferred_effort:
         return canonical, inferred_effort
@@ -89,7 +95,7 @@ def _build_session_mounts(home: str) -> list[str]:
     return []
 
 
-SPEC = RunnerSpec(
+SPEC: RunnerSpec = _ExtendedRunnerSpec(
     agent_id="antigravity",
     image="holon/agent-antigravity",
     default_model="gemini-3.8-flash-medium",
@@ -108,25 +114,25 @@ SPEC = RunnerSpec(
     harness_marker_priority=50,
     non_marker_vars=("AGY_USER_TOKEN", "GOOGLE_API_KEY"),
     model_capabilities=(
-        ModelCapability(
+        _ModelCapability(
             runner="antigravity-agent",
             canonical_model="gemini-3.8-flash",
             aliases=["flash"],
-            effort_levels=list(VALID_EFFORT_LEVELS),
+            effort_levels=list(_VALID_EFFORT_LEVELS),
             fallback_tier="Primary (Cloud/CLI)",
         ),
-        ModelCapability(
+        _ModelCapability(
             runner="antigravity-agent",
             canonical_model="gemini-3.8-flash-medium",
             aliases=["flash-medium"],
-            effort_levels=list(VALID_EFFORT_LEVELS),
+            effort_levels=list(_VALID_EFFORT_LEVELS),
             fallback_tier="Primary (Cloud/CLI)",
         ),
-        ModelCapability(
+        _ModelCapability(
             runner="antigravity-agent",
             canonical_model="gemini-3.8-flash-high",
             aliases=["flash-high"],
-            effort_levels=list(VALID_EFFORT_LEVELS),
+            effort_levels=list(_VALID_EFFORT_LEVELS),
             fallback_tier="Primary (Cloud/CLI)",
         ),
     ),

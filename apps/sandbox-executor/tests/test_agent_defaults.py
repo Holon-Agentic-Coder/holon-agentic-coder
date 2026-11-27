@@ -288,10 +288,10 @@ def test_capabilities_markers_and_non_marker_vars_derived_from_runner_specs():
         for spec in sorted(RUNNER_SPECS.values(), key=lambda s: s.harness_marker_priority)
         for marker, kind in spec.harness_markers
     )
-    assert HARNESS_MARKERS == expected_markers
+    assert expected_markers == HARNESS_MARKERS
 
     expected_non_markers = frozenset(var for spec in RUNNER_SPECS.values() for var in spec.non_marker_vars)
-    assert NON_MARKER_VARS == expected_non_markers
+    assert expected_non_markers == NON_MARKER_VARS
 
 
 def test_model_validation_and_normalisation_honour_runner_specs():

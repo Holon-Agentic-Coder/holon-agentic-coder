@@ -5,7 +5,9 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from sandbox_executor.runners import RUNNER_SPECS, VALID_EFFORT_LEVELS, ModelCapability, runner_spec_for
+from sandbox_executor.runners import RUNNER_SPECS, runner_spec_for
+from sandbox_executor.runners.spec import _VALID_EFFORT_LEVELS
+from sandbox_executor.runners.spec import _ModelCapability as ModelCapability
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +80,7 @@ def is_valid_model_for_runner(agent: str, model: str) -> bool:
         if (
             spec is not None
             and spec.supports_effort_suffix
-            and any(m_lower == f"{cap.canonical_model.lower()}-{eff}" for eff in VALID_EFFORT_LEVELS)
+            and any(m_lower == f"{cap.canonical_model.lower()}-{eff}" for eff in _VALID_EFFORT_LEVELS)
         ):
             return True
     return False
@@ -132,9 +134,7 @@ def _detect_local_gateway_present(norm: str, env: Mapping[str, str]) -> bool:
         return True
     spec = RUNNER_SPECS.get(norm)
     return bool(
-        spec
-        and spec.supports_local_llm
-        and env.get("HOLON_LOCAL_LLM", "").strip().lower() in _LOCAL_LLM_TRUTHY_VALUES
+        spec and spec.supports_local_llm and env.get("HOLON_LOCAL_LLM", "").strip().lower() in _LOCAL_LLM_TRUTHY_VALUES
     )
 
 

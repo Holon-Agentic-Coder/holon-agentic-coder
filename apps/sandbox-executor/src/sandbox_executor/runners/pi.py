@@ -4,8 +4,9 @@ import os
 
 from sandbox_executor import local_llm
 from sandbox_executor.runners.spec import (
-    ModelCapability,
     RunnerSpec,
+    _ExtendedRunnerSpec,
+    _ModelCapability,
     any_path_exists,
     generic_missing_message,
     has_api_key,
@@ -78,7 +79,7 @@ def _build_session_mounts(home: str) -> list[str]:
     return args
 
 
-SPEC = RunnerSpec(
+SPEC: RunnerSpec = _ExtendedRunnerSpec(
     agent_id="pi",
     image="holon/agent-pi",
     default_model="claude-opus-5-5",
@@ -96,14 +97,14 @@ SPEC = RunnerSpec(
     harness_markers=(("PI_CODING_AGENT", "exact"),),
     harness_marker_priority=10,
     model_capabilities=(
-        ModelCapability(
+        _ModelCapability(
             runner="pi-agent",
             canonical_model="claude-opus-5-5",
             aliases=["pi-default"],
             effort_levels=[],
             fallback_tier="Secondary (Cloud/CLI)",
         ),
-        ModelCapability(
+        _ModelCapability(
             runner="pi-agent",
             canonical_model="gpt-5-codex",
             aliases=["codex"],

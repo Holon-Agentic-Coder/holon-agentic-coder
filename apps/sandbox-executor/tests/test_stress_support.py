@@ -1,20 +1,3 @@
-"""Negative controls and isolation proof for the stress tests' shared support module.
-
-The two stress tests (workspace survival and the hermetic canary) only guard anything if their
-post-run checks fail when the hazard really happens. Each control here runs a small generated child
-test under the same kind of :class:`~tests.stress_support.ChildContext` the stress tests use, lets
-it break hermeticity on purpose, and requires the matching check to report it. A positive control
-shows the checks also come out clean for a hermetic child.
-
-The isolation tests prove that two concurrent contexts share no workspace, ``HOME`` or temporary
-directory, which is what lets the ``Workspace survival`` job run both stress tests concurrently.
-
-Every generated child is a single file run with its own ``pytest.ini`` (``-c``/``--rootdir``), so the
-repository's configuration, ``conftest.py`` and ``testpaths`` stay out of it. This module is
-unit-selected, so it also runs inside each stress child; that is harmless, because its own children
-are tiny and never re-run the suite.
-"""
-
 import os
 import subprocess
 import textwrap
@@ -44,21 +27,18 @@ from tests.stress_support import (
     survival_violations,
 )
 
-#: Sentinel the generated children run under, as the stress children run under theirs.
 SENTINEL = "HOLON_STRESS_SUPPORT_CHILD"
 
-#: Index root the generated child writes into for the index control; always under ``tmp_path``.
-INDEX_ROOT_VAR = "STRESS_SUPPORT_INDEX_ROOT"
+GENERATED_CHILD_INDEX_ROOT_VAR = "STRESS_SUPPORT_INDEX_ROOT"
 
-#: Generated child test bodies. Each resolves the workspace only through ``Path.home()``, which
-#: the child environment points at the context's throwaway ``HOME``.
+# why: children reach the workspace only through Path.home(), which the child env points at a throwaway HOME
 _WORKSPACE = 'Path.home() / ".holon-sandbox" / "workspace"'
 HERMETIC_BODY = "(tmp_path / 'scratch.txt').write_text('inside tmp_path')"
 CANARY_HAZARDS = {
     "marker-overwritten": (f"({_WORKSPACE} / 'canary.txt').write_text('overwritten')", "Canary marker content"),
     "git-deleted": (f"shutil.rmtree({_WORKSPACE} / '.git')", "Dummy .git directory was deleted"),
     "index-written": (
-        f"p = Path(os.environ['{INDEX_ROOT_VAR}']) / {KNOWLEDGE_INDEX_SUBDIR!r} / 'x.db'\n"
+        f"p = Path(os.environ['{GENERATED_CHILD_INDEX_ROOT_VAR}']) / {KNOWLEDGE_INDEX_SUBDIR!r} / 'x.db'\n"
         "p.parent.mkdir(parents=True)\n"
         "p.write_bytes(b'db')",
         "holon-knowledge/.index/x.db",
@@ -76,8 +56,7 @@ SURVIVAL_HAZARDS = {
 
 SURVIVAL_CANARY_CONTENT = "canary-must-survive-suite-run"
 
-#: Fixed git identity for the controls' commits. A throwaway ``HOME`` has no git config, and on a host
-#: without a fully qualified domain name git cannot derive an email and refuses to commit.
+# why: a throwaway HOME has no git config, and without an FQDN git cannot derive an email and refuses to commit
 GIT_IDENTITY = {
     "GIT_AUTHOR_NAME": "Holon Stress Control",
     "GIT_AUTHOR_EMAIL": "stress-control@holon.invalid",
@@ -89,11 +68,11 @@ GIT_IDENTITY = {
 def run_generated_child(
     context: ChildContext, body: str, tmp_path: Path, extra_env: dict[str, str] | None = None
 ) -> ChildRun:
-    """Write ``body`` as a one-test file under ``tmp_path`` and run it as a child of ``context``."""
     if not uv_available():
         pytest.skip(f"{UV} is not available; the generated child runs only under '{UV} run pytest'.")
     child_dir = tmp_path / "generated-child"
     child_dir.mkdir()
+    # why: its own pytest.ini keeps the repository configuration, conftest.py and testpaths out of the child
     (child_dir / "pytest.ini").write_text("[pytest]\n")
     test_body = textwrap.indent(body, "    ")
     (child_dir / "test_generated_child.py").write_text(
@@ -101,8 +80,7 @@ def run_generated_child(
         f"def test_generated_child(tmp_path):\n{test_body}\n"
     )
     env = child_env(context, SENTINEL) | (extra_env or {})
-    # Guardrail: the generated child must only ever see the context's throwaway HOME.
-    assert env["HOME"].startswith(context.root + os.sep)
+    _assert_child_sees_only_the_throwaway_home(env, context)
     cmd = [UV, "run", "--no-sync", "--project", REPO_ROOT, "pytest", "-p", "no:cacheprovider", "-q"]
     cmd += ["-c", str(child_dir / "pytest.ini"), "--rootdir", str(child_dir)]
     cmd += ["--basetemp", context.basetemp, str(child_dir / "test_generated_child.py")]
@@ -111,13 +89,17 @@ def run_generated_child(
     return run
 
 
+def _assert_child_sees_only_the_throwaway_home(env: dict[str, str], context: ChildContext) -> None:
+    assert env["HOME"].startswith(context.root + os.sep)
+
+
 def _canary_check(body: str, tmp_path: Path) -> list[str]:
     index_root = tmp_path / "index-root"
     index_root.mkdir()
     with child_context("canary") as context:
         seed = seed_canary_workspace(context)
         index_before = knowledge_index_snapshot(str(index_root))
-        run_generated_child(context, body, tmp_path, {INDEX_ROOT_VAR: str(index_root)})
+        run_generated_child(context, body, tmp_path, {GENERATED_CHILD_INDEX_ROOT_VAR: str(index_root)})
         return canary_violations(context, seed, str(index_root), index_before)
 
 

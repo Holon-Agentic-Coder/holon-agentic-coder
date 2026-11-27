@@ -1,34 +1,3 @@
-"""Canary guard test simulating container conditions to prove the suite stays hermetic.
-
-Scope note: the workspace-deletion defect was suite-wide -- an unguarded test could resolve the live
-workspace and delete it -- so a list of "the modules we remember" cannot establish that the hazard is
-gone; it silently rots as the suite grows, which is exactly how the original guard ended up excluding
-``test_agent_runner.py``, the one module that exercises the real ``cleanup_repo_dir``/``_rmtree``.
-This guard's child therefore runs a selection *computed* by a stated rule
-(``tests/stress_selection.py``): every test module that resolves ``HOME`` or the workspace, deletes
-directories, or directly references a production or helper module that does. A new module is covered
-the moment it matches. The rest of the suite is not left unchecked: the workspace-survival stress test
-(``test_workspace_survival_stress.py``) re-runs the whole unit selection under the same simulated
-``HOME`` and workspace layout, so a test reaching the workspace by an indirect route still trips it.
-
-The child suite is launched with ``uv run pytest`` -- the repository's only sanctioned test runner
--- so it inherits the root pytest configuration and the unit job's marker selection. Launching it
-with ``python -m unittest`` bypasses both: ``unittest`` has no concept of pytest markers, so it
-re-runs the ``integration_test``-marked Docker image tests that the unit job never builds, and the
-guard then fails for an environment reason that has nothing to do with hermeticity.
-
-Where it runs: the canary re-runs about half of the unit selection in a child process, which would
-add a large share of the unit job's wall time. It is therefore marked ``stress`` and runs only in the
-``Workspace survival`` job (``.github/workflows/test-stress.yml``, ``-m stress``), which also fails if it was
-skipped. The negative control below is a single short subprocess and stays in the unit job. The
-child's own selection (``not integration_test and not stress``) excludes the canary, and the
-``HOLON_HERMETIC_GUARD_CHILD`` sentinel skips it in any child run, so it cannot recurse.
-
-The guard now also covers ``holon-knowledge/.index/``: the per-test autouse fixture in
-``conftest.py`` fires on any change to that directory, and the stress canary verifies that no
-test in the child run touches it either.
-"""
-
 import os
 import pathlib
 import subprocess
@@ -58,34 +27,30 @@ from tests.stress_support import (
     seed_canary_workspace,
 )
 
-#: Sentinel set in the child environment so a child run can never recurse back into this guard.
+# why: set in the child environment so a child run can never recurse back into this guard
 CHILD_ENV_VAR = "HOLON_HERMETIC_GUARD_CHILD"
 
-#: Generous ceiling: the child runs the canary selection of the non-integration suite, which itself
-#: nests the negative-control harness.
+# why: generous because the child runs the canary selection, which itself nests the negative-control harness
 CHILD_TIMEOUT_SECONDS = 1800
 
 
-class TestSandboxHermeticGuard(unittest.TestCase):
-    """Canary test to verify that running entrypoint test suites under simulated container conditions
-    (HOLON_ROLE=executor, HOLON_IN_SANDBOX=1, USER=holon) does not touch the simulated sandbox workspace.
-    """
+def _is_child_suite_run() -> bool:
+    return (
+        os.environ.get(CHILD_ENV_VAR) == "1"
+        or os.environ.get("HOLON_STRESS_CHILD") == "1"
+        or os.environ.get(CHILD_SUITE_SENTINEL) == "1"
+    )
 
+
+class TestSandboxHermeticGuard(unittest.TestCase):
     def setUp(self):
-        """Skip inside a child run, so the guard can never recurse into itself."""
-        if (
-            os.environ.get(CHILD_ENV_VAR) == "1"
-            or os.environ.get("HOLON_STRESS_CHILD") == "1"
-            or os.environ.get(CHILD_SUITE_SENTINEL) == "1"
-        ):
+        if _is_child_suite_run():
             self.skipTest("running inside a child suite")
 
         if not uv_available():
             self.skipTest(f"{UV} is not available; this suite runs only under '{UV} run pytest'.")
 
-        # ``cwd=REPO_ROOT`` below must be a real directory, and the child must have a suite to run:
-        # pytest exits 5 on "no tests collected", which would otherwise surface as an opaque
-        # failure of this guard rather than a missing directory.
+        # why: pytest exits 5 on "no tests collected", an opaque guard failure instead of a missing directory
         self.assertTrue(os.path.isdir(REPO_ROOT), f"repo root does not exist: {REPO_ROOT}")
         tests_path = os.path.join(REPO_ROOT, TESTS_DIR)
         self.assertTrue(os.path.isdir(tests_path), f"test directory does not exist: {tests_path}")
@@ -94,19 +59,15 @@ class TestSandboxHermeticGuard(unittest.TestCase):
             f"no test modules found under {tests_path}",
         )
 
+    # why: the child re-runs about half the unit selection, so only the Workspace survival job runs it
     @pytest.mark.stress
     def test_canary_workspace_survives_entrypoint_tests(self):
-        # The context gives this test its own HOME, workspace, TMPDIR and pytest --basetemp, so it can
-        # run concurrently with the workspace-survival stress test (see tests/stress_support.py).
+        # why: its own HOME, workspace, TMPDIR and --basetemp let it run concurrently with the survival stress test
         with child_context("canary") as context:
             seed = seed_canary_workspace(context)
-
-            # Snapshot the checkout's knowledge index before the child run.
             index_before = knowledge_index_snapshot(REPO_ROOT)
-
-            # Run the canary selection (tests/stress_selection.py) through the sanctioned runner and
-            # the unit job's marker selection, from the repository root so the child inherits the
-            # root pytest configuration.
+            # why: a computed selection covers a new hazardous module at once; a remembered module list rots
+            # why: uv run pytest from the root inherits its configuration and markers; unittest would run Docker tests
             cmd = child_suite_command(context, targets=canary_selection(REPO_ROOT, TESTS_DIR))
             res = run_child(
                 cmd,
@@ -122,19 +83,10 @@ class TestSandboxHermeticGuard(unittest.TestCase):
                 f"Command: {' '.join(cmd)}\n"
                 f"Stdout:\n{res.stdout}\nStderr:\n{res.stderr}",
             )
-
-            # The checkout's knowledge index, the workspace, its canary marker, the dummy repository
-            # file and the dummy .git must all be untouched by the child run.
             self.assertEqual(canary_violations(context, seed, REPO_ROOT, index_before), [])
 
     def test_negative_control_canary_is_actually_live(self):
-        """Prove the simulated workspace is the path an unpatched cleanup really destroys.
-
-        Without this control the canary guard could pass vacuously: if nothing ever resolved to the
-        simulated workspace, nothing would ever delete it and the guard would be unfalsifiable. Here
-        the same simulated container environment runs a deliberately *unpinned* call to the real
-        ``cleanup_repo_dir`` against ``get_workspace_dir()``, and the canary is expected to die.
-        """
+        # why: without a live control the canary guard could pass vacuously, since nothing would resolve the workspace
         with tempfile.TemporaryDirectory() as sim_home:
             sim_sandbox_workspace = os.path.join(sim_home, ".holon-sandbox", "workspace")
             os.makedirs(sim_sandbox_workspace, exist_ok=True)
@@ -179,11 +131,6 @@ class TestSandboxHermeticGuard(unittest.TestCase):
 
 
 class TestKnowledgeIndexSnapshotHelpers:
-    """Unit tests for the knowledge_index_snapshot and describe_index_changes helpers.
-
-    These tests use a throwaway directory under tmp_path and never touch the real checkout.
-    """
-
     def test_absent_directory_returns_empty_snapshot(self, tmp_path: pathlib.Path) -> None:
         snap = knowledge_index_snapshot(str(tmp_path))
         assert snap == {}
@@ -235,12 +182,7 @@ class TestKnowledgeIndexSnapshotHelpers:
         assert describe_index_changes(before, after) == []
 
     def test_unreadable_directory_propagates_error(self, tmp_path: pathlib.Path) -> None:
-        """An unreadable index directory must raise, never return an empty snapshot.
-
-        ``os.walk`` with its default ``onerror=None`` swallows directory-listing errors, which
-        would make the guard fail open on an unreadable ``.index/``. The snapshot helper passes an
-        ``onerror`` callback that re-raises, so the guard fails closed as documented.
-        """
+        # why: os.walk swallows listing errors by default, so the snapshot re-raises to make the guard fail closed
         if os.geteuid() == 0:
             pytest.skip("running as root: permission bits are ignored, the directory stays readable")
         index_dir = tmp_path / KNOWLEDGE_INDEX_SUBDIR

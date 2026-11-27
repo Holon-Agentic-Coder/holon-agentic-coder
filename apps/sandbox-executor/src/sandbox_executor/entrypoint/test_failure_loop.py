@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -31,6 +32,13 @@ MAX_FIX_TURNS = 4
 MAX_DIAGNOSES = MAX_FIX_TURNS + 2
 EVIDENCE_IDS_SHOWN = 5
 EVIDENCE_EXCERPT_CHARS = 400
+UNATTRIBUTED_BLOCKER = "none"
+PARKED_STATUSES = frozenset({"blocked", "exhausted"})
+_BLOCKER_PATTERNS = (
+    re.compile(r"\b(?:bean(?:[-_:][A-Za-z0-9._-]+|\d+[A-Za-z0-9._-]*)|I-\d+-[a-z0-9-]+)\b"),
+    re.compile(r"\bPR\s*#?\d+\b", re.IGNORECASE),
+    re.compile(r"(?<!\w)#\d+\b"),
+)
 
 FIX_PROMPT_TEMPLATE = """The project's test suite fails after your change. Classification: {classification}.
 
@@ -67,6 +75,29 @@ class LoopOutcome:
     failing_ids: tuple[str, ...] = ()
     excerpts: Mapping[str, str] = field(default_factory=dict)
     signature: str = ""
+    blocked_on: str | None = None
+    checkpoint_path: str | None = None
+
+    @property
+    def parked(self) -> bool:
+        return self.status == "exhausted" or (self.status == "blocked" and self.blocked_on is not None)
+
+    def to_parked_record(self, checkpoint_path: str | None = None) -> dict[str, Any] | None:
+        if not self.parked:
+            return None
+        return {
+            "parked": True,
+            "status": self.status,
+            "blocked_on": self.blocked_on or UNATTRIBUTED_BLOCKER,
+            "classification": self.classification,
+            "failing_ids": list(self.failing_ids),
+            "signature": self.signature,
+            "evidence": self.evidence_text,
+            "excerpts": dict(self.excerpts),
+            "ledger_rows": list(self.rows),
+            "final_tier": self.final_tier,
+            "checkpoint_path": checkpoint_path if checkpoint_path is not None else self.checkpoint_path,
+        }
 
     @property
     def evidence_text(self) -> str:
@@ -75,9 +106,10 @@ class LoopOutcome:
         excerpt = next(iter(self.excerpts.values()), "")[:EVIDENCE_EXCERPT_CHARS]
         row_ids = ", ".join(str(row.get("action_id")) for row in self.rows) or "none"
         reason = self.blocked_reason or "no reason"
+        blocked_part = f"; blocked_on: {self.blocked_on}" if self.blocked_on else ""
         return (
             f"test failure {self.classification or 'unclassified'} ({self.status}): {reason}"
-            f"; failing: {shown}{f' (+{more} more)' if more > 0 else ''}; ledger rows: {row_ids}"
+            f"{blocked_part}; failing: {shown}{f' (+{more} more)' if more > 0 else ''}; ledger rows: {row_ids}"
             + (f"; excerpt: {excerpt}" if excerpt else "")
         )
 
@@ -85,6 +117,7 @@ class LoopOutcome:
 SelectionRun = Callable[[], "tuple[TestMeasurement, str]"]
 FixTurn = Callable[[FixRequest], object]
 RecordFn = Callable[[TestFailureEvidence], "dict[str, Any] | None"]
+BlockerResolver = Callable[[str | None, tuple[str, ...], str, Mapping[str, str]], "str | None"]
 
 
 @dataclass(frozen=True)
@@ -100,6 +133,9 @@ class LoopPorts:
     start_tier: str | None = None
     remaining_seconds: Callable[[], float] = lambda: math.inf
     environment: Callable[[], Mapping[str, str]] = lambda: dict(os.environ)
+    blocker_map: Mapping[str, str] = field(default_factory=dict)
+    resolve_blocker: BlockerResolver | None = None
+    checkpoint_path: str | None = None
 
 
 @dataclass
@@ -134,6 +170,34 @@ def _case_of(measurement: TestMeasurement, output: str) -> _Case:
     ids = failing_ids_from_output(output)
     excerpts = excerpts_by_test(output, ids)
     return _Case(measurement, ids, excerpts, failure_signature(ids, excerpts))
+
+
+def _extract_blocker_token(texts: tuple[str, ...]) -> str | None:
+    for text in texts:
+        for pattern in _BLOCKER_PATTERNS:
+            if (match := pattern.search(text)) is not None:
+                return match.group(0)
+    return None
+
+
+def _blocker_candidates(case: _Case, classification: str | None) -> tuple[str, ...]:
+    suspects = case.diagnosis.environment_suspects if case.diagnosis else ()
+    return tuple(key for key in (case.signature, *case.failing_ids, classification or "", *suspects) if key)
+
+
+def _blocker_texts(case: _Case, reason: str | None) -> tuple[str, ...]:
+    diag_outputs = (case.diagnosis.same_env.output, case.diagnosis.base.output) if case.diagnosis else ()
+    return tuple(text for text in (reason or "", *case.excerpts.values(), *diag_outputs) if text)
+
+
+def _resolve_blocked_on(case: _Case, classification: str | None, reason: str | None, ports: LoopPorts) -> str:
+    if ports.resolve_blocker is not None:
+        if resolved := ports.resolve_blocker(classification, case.failing_ids, case.signature, case.excerpts):
+            return str(resolved).strip()
+    for key in _blocker_candidates(case, classification):
+        if (mapped := ports.blocker_map.get(key)) and str(mapped).strip():
+            return str(mapped).strip()
+    return _extract_blocker_token(_blocker_texts(case, reason)) or UNATTRIBUTED_BLOCKER
 
 
 class TestFailureLoop:
@@ -179,6 +243,12 @@ class TestFailureLoop:
 
     def _finish(self, status: str, case: _Case, reason: str | None = None) -> LoopOutcome:
         classification = case.diagnosis.classification.value if case.diagnosis else None
+        should_park = status == "exhausted" or (
+            status == "blocked"
+            and (classification != FailureClass.INTRODUCED.value or reason != "no fix runner available")
+        )
+        blocked_on = _resolve_blocked_on(case, classification, reason, self.ports) if should_park else None
+        checkpoint_path = self.ports.checkpoint_path if should_park else None
         return LoopOutcome(
             status,
             case.measurement,
@@ -189,6 +259,8 @@ class TestFailureLoop:
             case.failing_ids,
             case.excerpts,
             case.signature,
+            blocked_on,
+            checkpoint_path,
         )
 
     def _unmeasured(self, measurement: TestMeasurement) -> LoopOutcome:

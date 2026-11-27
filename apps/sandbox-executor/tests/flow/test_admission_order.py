@@ -15,6 +15,7 @@ from sandbox_executor.flow.checkpoint import (
 )
 from sandbox_executor.flow.checkpoint_discovery import get_default_checkpoint_path
 from sandbox_executor.flow.in_flight import BlockedWaiter, InFlightFlow
+from sandbox_executor.flow.run_lock import acquire_flow_run_lock, release_flow_run_lock
 from sandbox_executor.touch_set import TouchSet, TouchSetEntry
 from sandbox_executor.touch_set_overlap import TouchSetOnBase
 
@@ -66,27 +67,54 @@ def two_waiters(flow_repos, tmp_path, monkeypatch):
     return older, newer
 
 
+@pytest.fixture(autouse=True)
+def _release_run_locks():
+    yield
+    release_flow_run_lock()
+
+
 def _local_blockers(recorded: dict) -> list[tuple[str, str]]:
     return [(entry["kind"], entry["plan_branch"]) for entry in recorded["blocked_by"]]
 
 
-def test_newer_flow_retrying_first_defers_to_the_older_waiter(two_waiters):
+def test_newer_flow_retrying_while_older_waiter_is_parked_is_admitted(two_waiters):
+    _older, newer = two_waiters
+    assert _retry_as_resumed_flow(newer, MERGED) == {"state": "admitted", "waited_since": "2026-11-20T01:01:00.000Z"}
+
+
+def test_newer_flow_retrying_first_defers_to_live_older_waiter(two_waiters):
     older, newer = two_waiters
     first_refusal_time = "2026-11-20T01:01:00.000Z"
-    newer_state = _retry_as_resumed_flow(newer, MERGED)
-    assert newer_state["state"] == "blocked" and _local_blockers(newer_state) == [("local_flow", OLDER_PLAN)]
-    assert newer_state["blocked_since"] == first_refusal_time
-    assert Path(newer_state["blocked_by"][0]["worktree"]).resolve() == Path(older.target_worktree).resolve()
-    assert _retry_as_resumed_flow(older, MERGED) == {"state": "admitted", "waited_since": "2026-11-20T01:00:00.000Z"}
-    again = _retry_as_resumed_flow(newer, MERGED)
-    assert again["state"] == "blocked" and _local_blockers(again) == [("local_flow", OLDER_PLAN)]
+    older_lock = acquire_flow_run_lock(older.target_worktree, "older", "live-older")
+    assert older_lock is not None
+    try:
+        newer_state = _retry_as_resumed_flow(newer, MERGED)
+        assert newer_state["state"] == "blocked" and _local_blockers(newer_state) == [("local_flow", OLDER_PLAN)]
+        assert newer_state["blocked_since"] == first_refusal_time
+        assert Path(newer_state["blocked_by"][0]["worktree"]).resolve() == Path(older.target_worktree).resolve()
+        assert _retry_as_resumed_flow(older, MERGED) == {
+            "state": "admitted",
+            "waited_since": "2026-11-20T01:00:00.000Z",
+        }
+        again = _retry_as_resumed_flow(newer, MERGED)
+        assert again["state"] == "blocked" and _local_blockers(again) == [("local_flow", OLDER_PLAN)]
+    finally:
+        release_flow_run_lock(older_lock.path)
 
 
 def test_older_flow_retrying_first_is_admitted_and_blocks_the_newer(two_waiters):
     older, newer = two_waiters
-    assert _retry_as_resumed_flow(older, MERGED) == {"state": "admitted", "waited_since": "2026-11-20T01:00:00.000Z"}
-    newer_state = _retry_as_resumed_flow(newer, MERGED)
-    assert newer_state["state"] == "blocked" and _local_blockers(newer_state) == [("local_flow", OLDER_PLAN)]
+    older_lock = acquire_flow_run_lock(older.target_worktree, "older", "live-older")
+    assert older_lock is not None
+    try:
+        assert _retry_as_resumed_flow(older, MERGED) == {
+            "state": "admitted",
+            "waited_since": "2026-11-20T01:00:00.000Z",
+        }
+        newer_state = _retry_as_resumed_flow(newer, MERGED)
+        assert newer_state["state"] == "blocked" and _local_blockers(newer_state) == [("local_flow", OLDER_PLAN)]
+    finally:
+        release_flow_run_lock(older_lock.path)
 
 
 def _reload(context: FlowContext) -> FlowContext:
@@ -102,8 +130,13 @@ def test_an_admitted_flow_resuming_stage_3_does_not_defer_to_a_ready_older_waite
     assert save_admission(_reload(older), older_waiting_on_pr_7_alone) is None
     admitted_earlier_under_allow_overlap = {"state": "admitted"}
     assert save_admission(_reload(newer), admitted_earlier_under_allow_overlap) is None
-    # why: an admitted flow resuming Stage 3 never defers to an older waiter, even once PR #7 merges
-    assert _retry_as_resumed_flow(newer, MERGED) == {"state": "admitted"}
+    older_lock = acquire_flow_run_lock(older.target_worktree, "older", "live-older")
+    assert older_lock is not None
+    try:
+        # why: an admitted flow resuming Stage 3 never defers to an older waiter, even once PR #7 merges
+        assert _retry_as_resumed_flow(newer, MERGED) == {"state": "admitted"}
+    finally:
+        release_flow_run_lock(older_lock.path)
 
 
 def _waiter(plan_branch: str, since: str, *blocked_by: BlockedBy) -> BlockedWaiter:

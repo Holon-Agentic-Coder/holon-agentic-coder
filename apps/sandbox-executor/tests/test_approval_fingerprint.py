@@ -31,6 +31,7 @@ from sandbox_executor.flow.review.approval_fingerprint import (
 from sandbox_executor.flow.review.conflict_merge import _merge_target_ledger_only
 
 from tests.flow.helpers import _git
+from tests.flow_repo_templates import GraphCommit, fast_import
 from tests.repo_templates import copy_template, shared_template
 
 BRANCH = "I-1-x/P-2-y/E-3-z/_"
@@ -55,11 +56,15 @@ def _commit(work: Path, files: dict[str, str], message: str) -> None:
     _git(work, "commit", "-q", "--allow-empty", "-m", message)
 
 
+def _ledger_row(execution_id: str, day: int) -> str:
+    row = {"execution_id": execution_id, "created_at": f"2026-11-{day:02d}T00:00:00Z"}
+    return json.dumps(row, separators=(",", ":")) + "\n"
+
+
 def _ledger_with(work: Path, execution_id: str) -> str:
     path = work / LEDGER
     old = path.read_text(encoding="utf-8") if path.exists() else ""
-    row = {"execution_id": execution_id, "created_at": f"2026-11-{len(old.splitlines()) + 1:02d}T00:00:00Z"}
-    return old + json.dumps(row, separators=(",", ":")) + "\n"
+    return old + _ledger_row(execution_id, len(old.splitlines()) + 1)
 
 
 def _build_repos(root: Path) -> None:
@@ -77,6 +82,72 @@ def _build_repos(root: Path) -> None:
 def repos_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> Path:
     """The repositories of ``_build_repos``, built once and read-only; ``_repos`` copies them."""
     return shared_template(tmp_path_factory, "fingerprint-template", _build_repos)[0]
+
+
+BOOKKEEPING_CASES: dict[str, dict[str, str | None]] = {
+    "execution": {"executions/E-1.md": "# top-level execution record\n"},
+    "plan": {"plans/I-1-x/P-2-y.md": "# plan\n", "plans/I-1-x/P-2-y_calibration.md": "# calibration\n"},
+    "plan-json": {"plans/P-2-y_calibration.md": "# flat calibration\n", "plans/meta.json": "{}\n"},
+    "knowledge-base": {"holon-knowledge/kb/note.md": "learnt\n", "holon-knowledge/kb/deep/rows.jsonl": "{}\n"},
+    "ledger": {LEDGER: None},
+}
+REVIEWABLE_PATHS = (
+    "plans/tool.py",
+    "executions/run.sh",
+    "holon-knowledge/kb/loader.py",
+    "apps/sandbox-executor/src/x.py",
+    "scripts/gate.py",
+    "docs/guide.md",
+    "holon-config/world/rules.md",
+    "README.md",
+    "planning/notes.md",
+)
+
+
+def _init_bare(root: Path) -> None:
+    _git(root, "init", "-q", "--bare", "-b", "main", str(root / "repo.git"))
+
+
+def _build_path_cases(root: Path) -> dict[str, str]:
+    repo = root / "cases.git"
+    _git(root, "init", "-q", "--bare", "-b", "main", str(repo))
+    base_row, pr_row, late_row = _ledger_row("E-base", 1), _ledger_row("E-pr", 2), _ledger_row("E-late", 3)
+    commits = [
+        GraphCommit("main", {"README.md": "base\n", LEDGER: base_row}, "base"),
+        GraphCommit(BRANCH, {"src/pr_a.py": "x = 1\n", LEDGER: base_row + pr_row}, "pr change", (0,)),
+    ]
+    labels = ["base", "pr"]
+    for case_id, files in BOOKKEEPING_CASES.items():
+        resolved = {rel: text or (base_row + pr_row + late_row) for rel, text in files.items()}
+        commits.append(GraphCommit(BRANCH, resolved, f"bookkeeping {case_id}", (1,)))
+        labels.append(f"bookkeeping:{case_id}")
+    for rel in REVIEWABLE_PATHS:
+        commits.append(GraphCommit(BRANCH, {rel: "changed\n"}, f"reviewable {rel}", (1,)))
+        labels.append(f"reviewable:{rel}")
+    commits.append(
+        GraphCommit(
+            BRANCH,
+            {"executions/E-1.md": "# record\n", "plans/P-1.md": "# plan\n", LEDGER: base_row + pr_row},
+            "bookkeeping only",
+            (0,),
+        )
+    )
+    labels.append("bookkeeping_only")
+    commits.append(GraphCommit(BRANCH, {LEDGER: base_row + pr_row}, "empty pr", (0,)))
+    labels.append("empty_pr")
+    shas = fast_import(repo, commits)
+    return dict(zip(labels, shas, strict=True))
+
+
+@pytest.fixture(scope="session")
+def bare_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> Path:
+    return shared_template(tmp_path_factory, "fingerprint-bare-template", _init_bare)[0]
+
+
+@pytest.fixture(scope="session")
+def path_cases_repo(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> tuple[Path, dict[str, str]]:
+    root, shas = shared_template(tmp_path_factory, "fingerprint-path-cases", _build_path_cases)
+    return root / "cases.git", shas
 
 
 def _repos(template: Path, root: Path, pr_files: dict[str, str]) -> Path:
@@ -115,50 +186,27 @@ def test_fingerprint_is_versioned_and_stable(repos_template: Path, tmp_path: Pat
     assert approval_fingerprint_of(str(work), _git(work, "rev-parse", "HEAD"), "main") == first
 
 
-@pytest.mark.parametrize(
-    "files",
-    [
-        {"executions/E-1.md": "# top-level execution record\n"},
-        {"plans/I-1-x/P-2-y.md": "# plan\n", "plans/I-1-x/P-2-y_calibration.md": "# calibration\n"},
-        {"plans/P-2-y_calibration.md": "# flat calibration\n", "plans/meta.json": "{}\n"},
-        {"holon-knowledge/kb/note.md": "learnt\n", "holon-knowledge/kb/deep/rows.jsonl": "{}\n"},
-        {LEDGER: None},
-    ],
-    ids=["execution", "plan", "plan-json", "knowledge-base", "ledger"],
-)
+@pytest.mark.parametrize("case_id", list(BOOKKEEPING_CASES))
 def test_bookkeeping_paths_do_not_change_the_fingerprint(
-    repos_template: Path, tmp_path: Path, files: dict[str, str | None]
+    path_cases_repo: tuple[Path, dict[str, str]], case_id: str
 ) -> None:
-    work = _repos(repos_template, tmp_path, {"src/pr_a.py": "x = 1\n"})
-    before = _fingerprint(work)
-    _commit(work, {rel: text or _ledger_with(work, "E-late") for rel, text in files.items()}, "bookkeeping")
-    assert before is not None and _fingerprint(work) == before
+    repo, shas = path_cases_repo
+    before = pr_change_fingerprint(str(repo), shas["pr"], shas["base"])
+    after = pr_change_fingerprint(str(repo), shas[f"bookkeeping:{case_id}"], shas["base"])
+    assert before is not None and after == before
 
 
-@pytest.mark.parametrize(
-    "rel",
-    [
-        "plans/tool.py",
-        "executions/run.sh",
-        "holon-knowledge/kb/loader.py",
-        "apps/sandbox-executor/src/x.py",
-        "scripts/gate.py",
-        "docs/guide.md",
-        "holon-config/world/rules.md",
-        "README.md",
-        "planning/notes.md",
-    ],
-)
-def test_every_reviewable_path_changes_the_fingerprint(repos_template: Path, tmp_path: Path, rel: str) -> None:
-    work = _repos(repos_template, tmp_path, {"src/pr_a.py": "x = 1\n"})
-    before = _fingerprint(work)
-    _commit(work, {rel: "changed\n"}, "reviewable")
-    assert before is not None and _fingerprint(work) not in (before, None)
+@pytest.mark.parametrize("rel", REVIEWABLE_PATHS)
+def test_every_reviewable_path_changes_the_fingerprint(path_cases_repo: tuple[Path, dict[str, str]], rel: str) -> None:
+    repo, shas = path_cases_repo
+    before = pr_change_fingerprint(str(repo), shas["pr"], shas["base"])
+    after = pr_change_fingerprint(str(repo), shas[f"reviewable:{rel}"], shas["base"])
+    assert before is not None and after not in (before, None)
 
 
-def test_bookkeeping_only_pr_change_has_no_fingerprint(repos_template: Path, tmp_path: Path) -> None:
-    work = _repos(repos_template, tmp_path, {"executions/E-1.md": "# record\n", "plans/P-1.md": "# plan\n"})
-    assert _fingerprint(work) is None
+def test_bookkeeping_only_pr_change_has_no_fingerprint(path_cases_repo: tuple[Path, dict[str, str]]) -> None:
+    repo, shas = path_cases_repo
+    assert pr_change_fingerprint(str(repo), shas["bookkeeping_only"], shas["base"]) is None
 
 
 def test_version_is_pf2_and_never_matches_pf1() -> None:
@@ -239,19 +287,27 @@ def test_binary_change_changes_the_fingerprint(repos_template: Path, tmp_path: P
     assert before is not None and _fingerprint(work) != before
 
 
-def test_empty_pr_change_has_no_fingerprint(repos_template: Path, tmp_path: Path) -> None:
-    work = _repos(repos_template, tmp_path, {})
-    assert _fingerprint(work) is None
+def test_empty_pr_change_has_no_fingerprint(path_cases_repo: tuple[Path, dict[str, str]]) -> None:
+    repo, shas = path_cases_repo
+    assert pr_change_fingerprint(str(repo), shas["empty_pr"], shas["base"]) is None
 
 
-def test_unknown_refs_have_no_fingerprint(repos_template: Path, tmp_path: Path) -> None:
-    work = _repos(repos_template, tmp_path, {"src/pr_a.py": "x = 1\n"})
-    assert pr_change_fingerprint(str(work), "HEAD", "refs/remotes/origin/missing") is None
-    assert pr_change_fingerprint(str(work), "0" * 40, TARGET) is None
-    assert approval_fingerprint_of(str(work), "HEAD", "main") is None
-    assert approval_fingerprint_of(str(work), None, "main") is None
-    assert approval_fingerprint_of(str(work), "abc", None) is None
+def test_unknown_refs_have_no_fingerprint(path_cases_repo: tuple[Path, dict[str, str]], tmp_path: Path) -> None:
+    repo, shas = path_cases_repo
+    assert pr_change_fingerprint(str(repo), shas["pr"], "refs/remotes/origin/missing") is None
+    assert pr_change_fingerprint(str(repo), "0" * 40, shas["base"]) is None
+    assert approval_fingerprint_of(str(repo), "HEAD", "main") is None
+    assert approval_fingerprint_of(str(repo), None, "main") is None
+    assert approval_fingerprint_of(str(repo), "abc", None) is None
     assert approval_fingerprint_of(str(tmp_path / "no-repo"), "abc", "main") is None
+
+
+def test_clean_ledger_only_merge_preserves_fingerprint(repos_template: Path, tmp_path: Path) -> None:
+    work = _repos(repos_template, tmp_path, {"src/pr_a.py": "x = 1\n"})
+    before = _fingerprint(work)
+    _advance_main(work, {"src/main_a.py": "y = 1\n"}, "0")
+    _merge_main(work, "0")
+    assert before is not None and _fingerprint(work) == before
 
 
 def test_hand_resolved_code_conflict_changes_the_fingerprint(repos_template: Path, tmp_path: Path) -> None:
@@ -277,17 +333,34 @@ PR_CHANGES = st.dictionaries(st.sampled_from(PR_PATHS), CONTENT, min_size=1)
 MAIN_MOVES = st.lists(st.dictionaries(st.sampled_from(MAIN_PATHS), CONTENT), min_size=0, max_size=3)
 
 
-def _merged_repos(
-    template: Path, root: Path, pr_files: dict[str, str], main_moves: list[dict[str, str]]
-) -> tuple[Path, str | None]:
-    """The clone after ``len(main_moves)`` merges of a moving main, and the fingerprint before the first merge."""
-    work = _repos(template, root, pr_files)
-    before = _fingerprint(work)
+def _property_dag(
+    pr_files: dict[str, str], main_moves: list[dict[str, str]], edited_path: str, new_content: str
+) -> tuple[list[GraphCommit], list[tuple[int, int]], int]:
+    base_row, pr_row = _ledger_row("E-base", 1), _ledger_row("E-pr", 2)
+    main_ledger, branch_ledger = [base_row], [base_row, pr_row]
+    commits = [
+        GraphCommit("main", {"README.md": "base\n", LEDGER: base_row}, "base"),
+        GraphCommit(BRANCH, {**pr_files, LEDGER: "".join(branch_ledger)}, "pr change", (0,)),
+    ]
+    main_tip, branch_tip, next_day = 0, 1, 3
+    main_tree: dict[str, str] = {}
+    merge_pairs: list[tuple[int, int]] = []
     for index, files in enumerate(main_moves):
-        _advance_main(work, files, str(index))
-        _merge_main(work, str(index))
-        assert _fingerprint(work) == before, f"fingerprint changed after merge {index + 1}"
-    return work, before
+        main_tree.update(files)
+        main_ledger.append(_ledger_row(f"E-main-{index}", next_day))
+        commits.append(GraphCommit("main", {**files, LEDGER: "".join(main_ledger)}, f"main {index}", (main_tip,)))
+        main_tip, next_day = len(commits) - 1, next_day + 1
+        branch_ledger.append(_ledger_row(f"E-pr-{index}", next_day))
+        commits.append(GraphCommit(BRANCH, {LEDGER: "".join(branch_ledger)}, f"pr row {index}", (branch_tip,)))
+        branch_tip, next_day = len(commits) - 1, next_day + 1
+        branch_ledger = sorted(set(branch_ledger) | set(main_ledger))
+        # why: fast-import bases a merge commit on its first parent, so accumulated main files are included explicitly.
+        merged_files = {**main_tree, LEDGER: "".join(branch_ledger)}
+        commits.append(GraphCommit(BRANCH, merged_files, f"Merge main ({index})", (branch_tip, main_tip)))
+        branch_tip = len(commits) - 1
+        merge_pairs.append((branch_tip, main_tip))
+    commits.append(GraphCommit(BRANCH, {edited_path: new_content}, "post-approval push", (branch_tip,)))
+    return commits, merge_pairs, main_tip
 
 
 class _ChosenDraws:
@@ -320,15 +393,19 @@ SINGLE_NEWLINE = ({"src/pr_a.py": "\n"}, [{"src/main_a.py": "\n"}], "src/pr_a.py
 @example(pr_files=SINGLE_NEWLINE[0], main_moves=SINGLE_NEWLINE[1], data=_ChosenDraws(*SINGLE_NEWLINE[2:]))
 @given(pr_files=PR_CHANGES, main_moves=MAIN_MOVES, data=st.data())
 def test_property_fingerprint_survives_merges_of_a_disjoint_moving_main_and_changes_when_a_pr_file_changes(
-    repos_template: Path, pr_files: dict[str, str], main_moves: list[dict[str, str]], data: st.DataObject
+    bare_template: Path, pr_files: dict[str, str], main_moves: list[dict[str, str]], data: st.DataObject
 ) -> None:
+    path = data.draw(st.sampled_from(PR_PATHS), label="edited PR path")
+    old = pr_files.get(path, "")
+    new = data.draw(CONTENT.filter(lambda text: text != old), label="new content")
+    commits, merge_pairs, last_main = _property_dag(pr_files, main_moves, path, new)
     with tempfile.TemporaryDirectory(prefix="holon-fingerprint-") as root:
-        # The first half of the property is asserted in here, after every merge.
-        work, before = _merged_repos(repos_template, Path(root), pr_files, main_moves)
+        bare = copy_template(bare_template, Path(root)) / "repo.git"
+        shas = fast_import(bare, commits)
+        before = pr_change_fingerprint(str(bare), shas[1], shas[0])
         assert before is not None
-        assert _fingerprint(work) == before
-        path = data.draw(st.sampled_from(PR_PATHS), label="edited PR path")
-        old = (work / path).read_text(encoding="utf-8") if (work / path).exists() else ""
-        new = data.draw(CONTENT.filter(lambda text: text != old), label="new content")
-        _commit(work, {path: new}, "post-approval push")
-        assert _fingerprint(work) != before
+        for step, (merge_idx, main_idx) in enumerate(merge_pairs, start=1):
+            assert pr_change_fingerprint(str(bare), shas[merge_idx], shas[main_idx]) == before, (
+                f"fingerprint changed after merge {step}"
+            )
+        assert pr_change_fingerprint(str(bare), shas[-1], shas[last_main]) != before

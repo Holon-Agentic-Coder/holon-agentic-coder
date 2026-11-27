@@ -218,7 +218,7 @@ def test_governed_module_has_no_docstrings_or_string_statements(relative_path: s
 
 @pytest.mark.parametrize("relative_path", GOVERNED_MODULES)
 def test_governed_module_has_no_disallowed_comments(relative_path: str) -> None:
-    findings = find_disallowed_comments(_read_module(relative_path))
+    findings = find_disallowed_comments(_read_module(relative_path), allow_why=True)
     assert findings == [], f"{relative_path} contains non-allowlisted comments: {findings}"
 
 

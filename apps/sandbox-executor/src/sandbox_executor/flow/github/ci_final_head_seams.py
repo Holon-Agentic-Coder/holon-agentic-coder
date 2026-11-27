@@ -8,10 +8,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sandbox_executor.flow.context import FlowContext
-from sandbox_executor.flow.github.adapter import GitHubAdapter
 from sandbox_executor.flow.github.ci import probe_ci_checks
 from sandbox_executor.flow.github.ci_failure_detail import STEP_LOOKUP_TIMEOUT_SECONDS, DetailLookup
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy
+from sandbox_executor.flow.github.forge import GitForge
 
 Probe = Callable[[], dict[str, Any]]
 
@@ -28,7 +28,7 @@ class FinalHeadSeams:
     rerun_dispatcher: Callable[[str], bool] | None = None
     changed_paths: Callable[[str, str], list[str] | None] | None = None
     approved_head: Callable[[], str | None] | None = None
-    github: GitHubAdapter | None = None
+    github: GitForge | None = None
 
 
 @dataclass(frozen=True)
@@ -37,7 +37,7 @@ class _FinalHeadCheck:
     repo_dir: str
     branch: str
     seams: FinalHeadSeams
-    github: GitHubAdapter
+    github: GitForge
 
     def default_probe(self) -> Callable[[], dict[str, Any]]:
         proxy_env = dict(self.seams.proxy_env)

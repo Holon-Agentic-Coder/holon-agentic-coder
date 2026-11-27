@@ -59,9 +59,12 @@ from scripts.ci_bookkeeping_chain import (
     REAL_SUCCESS,
     Decision,
     JobQuery,
+    MergeChain,
     classify_job,
-    find_real_success,
+    find_merge_chain,
+    find_real_success_for_merge_chain,
     match_job,
+    verify_bookkeeping_chain,
 )
 from scripts.ci_merge_push_imports import MAX_BLOB_READS, BlobReader, imports_of, related_pair
 
@@ -237,32 +240,39 @@ def _tree_rules(trees: MergeTrees, is_bookkeeping_path: Callable[[str], bool], c
     return _relation_check(trees, pr_paths, base_paths, client)
 
 
-def _merge_parents(context: GateContext, client: GateClient) -> CommitRef | Decision | None:
-    """Return the new head when it merges a second parent into the previous head, a "run" decision, or ``None``."""
-    try:
-        head = commit_ref(client, context.head_sha)
-    except Exception:
-        return None
-    if len(head.parents) < 2:
-        return None
-    if len(head.parents) > 2:
-        return Decision(False, RULE_NOT_TWO_PARENTS, f"{len(head.parents)} parents")
-    if head.parents[0] != context.before:
-        return Decision(False, RULE_FIRST_PARENT_NOT_PREVIOUS_HEAD, f"first parent {head.parents[0][:12]}")
+def _merge_parents(context: GateContext, client: GateClient, found: MergeChain, rules: GateRules) -> Decision | None:
+    pr_parent, merged_in = found.merge.parents
+    if merged_in == context.before:
+        return Decision(False, RULE_FIRST_PARENT_NOT_PREVIOUS_HEAD, f"first parent {pr_parent[:12]}")
+    if (
+        context.before not in (pr_parent, found.merge.sha, *found.post_shas)
+        and verify_bookkeeping_chain(client, context.before, pr_parent, rules.diff_rule) is not None
+    ):
+        return Decision(False, RULE_FIRST_PARENT_NOT_PREVIOUS_HEAD, f"first parent {pr_parent[:12]}")
     if not context.base_ref:
         return Decision(False, RULE_INCOMPLETE_EVENT, "no base branch")
-    return head
+    return None
 
 
-def _previous_head_check(context: GateContext, client: GateClient, rules: GateRules) -> Decision | None:
-    """Return the "run" decision unless the job really succeeded on the previous head, over bookkeeping-only pushes."""
+def _previous_head_check(
+    context: GateContext, client: GateClient, found: MergeChain, rules: GateRules
+) -> str | Decision:
+    pr_parent = found.merge.parents[0]
     query = JobQuery(
-        context.workflow_file, context.branch, context.job_name, context.os_name, context.run_number, context.before
+        context.workflow_file, context.branch, context.job_name, context.os_name, context.run_number, pr_parent
     )
-    chain = find_real_success(client, query)
+    start_shas = (context.before, pr_parent, found.merge.sha, *found.post_shas)
+    chain, walked_cancelled = find_real_success_for_merge_chain(client, query, start_shas)
     if chain.real_sha is None:
         return chain.run_decision()
-    return rules.diff_rule(client, chain.real_sha, context.before)[0] if chain.real_sha != context.before else None
+    if chain.real_sha != pr_parent:
+        if walked_cancelled or found.post_shas:
+            blocked = verify_bookkeeping_chain(client, chain.real_sha, pr_parent, rules.diff_rule)
+        else:
+            blocked = rules.diff_rule(client, chain.real_sha, pr_parent)[0]
+        if blocked is not None:
+            return blocked
+    return chain.real_sha
 
 
 def _base_run_check(context: GateContext, client: GateClient, sha: str) -> Decision | None:
@@ -300,20 +310,22 @@ def _trees(client: GateClient, head: CommitRef) -> MergeTrees | Decision:
     return MergeTrees(*entries)
 
 
-def _evidence(context: GateContext, client: GateClient, head: CommitRef, rules: GateRules) -> Decision:
-    """Apply rules 3 to 9 in order; only the last statement returns "skip". Exceptions reach the caller."""
-    merged_in = head.parents[1]
-    blocked = _previous_head_check(context, client, rules) or _base_run_check(context, client, merged_in)
+def _evidence(context: GateContext, client: GateClient, found: MergeChain, rules: GateRules) -> Decision:
+    merged_in = found.merge.parents[1]
+    previous = _previous_head_check(context, client, found, rules)
+    if isinstance(previous, Decision):
+        return previous
+    blocked = _base_run_check(context, client, merged_in)
     if blocked is not None:
         return blocked
-    trees = _trees(client, head)
+    trees = _trees(client, found.merge)
     if isinstance(trees, Decision):
         return trees
     blocked = _tree_rules(trees, rules.is_bookkeeping_path, client)
     if blocked is not None:
         return blocked
     count = len(changed_paths(trees.base, trees.merged_in))
-    proof = f"real successes on {context.before[:12]} and {merged_in[:12]}"
+    proof = f"real successes on {previous[:12]} and {merged_in[:12]}"
     return Decision(True, RULE_CLEAN_MAIN_MERGE, f"{count} base-side paths merged from {merged_in[:12]}; {proof}")
 
 
@@ -321,11 +333,12 @@ def decide_merge_push(context: GateContext, client: GateClient, rules: GateRules
     """Decide a ``synchronize`` push that the diff rule blocked; ``None`` keeps that decision (not a merge commit)."""
     if context.job_name == HYGIENE_JOB or context.workflow_file == HYGIENE_WORKFLOW:
         return Decision(False, RULE_HYGIENE_NEVER_SKIPPED, context.job_name)
-    head = _merge_parents(context, client)
-    if not isinstance(head, CommitRef):
-        return head
+    found = find_merge_chain(client, context.head_sha, rules.diff_rule)
+    if not isinstance(found, MergeChain):
+        return found
     try:
-        return _evidence(context, client, head, rules)
+        blocked = _merge_parents(context, client, found, rules)
+        return _evidence(context, client, found, rules) if blocked is None else blocked
     except Exception as error:
         status = f" {error.code}" if isinstance(error, urllib.error.HTTPError) else ""
         return Decision(False, RULE_API_ERROR, f"{type(error).__name__}{status}")

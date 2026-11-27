@@ -47,13 +47,14 @@ from sandbox_executor.redaction import redact_agent_secrets
 
 
 class PipelineEngine:
-    STAGE_ORDER: ClassVar[list[FlowStage]] = [
-        FlowStage.INTENT,
-        FlowStage.PLAN,
-        FlowStage.EXECUTE,
-        FlowStage.REVIEW,
-        FlowStage.CALIBRATE,
-    ]
+    STAGE_HANDLERS: ClassVar[dict[FlowStage, Callable[[PipelineEngine], StageResult]]] = {
+        FlowStage.INTENT: lambda engine: run_intent_stage(engine.context),
+        FlowStage.PLAN: lambda engine: run_plan_stage(engine.context),
+        FlowStage.EXECUTE: lambda engine: engine._run_execute_stage(),
+        FlowStage.REVIEW: lambda engine: run_review_stage(engine.context),
+        FlowStage.CALIBRATE: lambda engine: engine._run_calibrate_stage(),
+    }
+    STAGE_ORDER: ClassVar[list[FlowStage]] = list(STAGE_HANDLERS)
     # why: a post-hoc stage-budget overrun only records these stages' finished results, never downgrades them.
     POST_HOC_BUDGET_EXEMPT: ClassVar[frozenset[FlowStage]] = frozenset({FlowStage.REVIEW, FlowStage.CALIBRATE})
 
@@ -156,29 +157,27 @@ class PipelineEngine:
     def before_stage(self, stage: FlowStage) -> None:
         self.context.log(f"--> [Flow Engine] Entering stage: {stage.value.upper()}")
 
-    def execute_stage(self, stage: FlowStage) -> StageResult:  # noqa: PLR0911
-        if stage == FlowStage.INTENT:
-            return run_intent_stage(self.context)
-        elif stage == FlowStage.PLAN:
-            return run_plan_stage(self.context)
-        elif stage == FlowStage.EXECUTE:
-            # why: only the first Execute stage of a Stage 3 resume continues partial work; a re-plan starts afresh.
-            resume_partial, self._resume_partial_pending = self._resume_partial_pending, False
-            previous = self.context.stage_results.get(FlowStage.EXECUTE.value)
-            if has_recorded_decomposition(previous, self.context.plan_branch):
-                # why: a decomposed Stage 3 never re-dispatches the parent; its children resume from their progress.
-                return resume_children(self.context, previous)
-            if resume_partial:
-                return run_execute_stage(self.context, resume_partial=True)
-            return run_execute_stage(self.context)
-        elif stage == FlowStage.REVIEW:
-            return run_review_stage(self.context)
-        elif stage == FlowStage.CALIBRATE:
-            if self.context.skip_calibrate:
-                return _skipped_by_flag(FlowStage.CALIBRATE)
-            return run_calibrate_stage(self.context)
-        else:
+    def _run_execute_stage(self) -> StageResult:
+        # why: only the first Execute stage of a Stage 3 resume continues partial work; a re-plan starts afresh.
+        resume_partial, self._resume_partial_pending = self._resume_partial_pending, False
+        previous = self.context.stage_results.get(FlowStage.EXECUTE.value)
+        if has_recorded_decomposition(previous, self.context.plan_branch):
+            # why: a decomposed Stage 3 never re-dispatches the parent; its children resume from their progress.
+            return resume_children(self.context, previous)
+        if resume_partial:
+            return run_execute_stage(self.context, resume_partial=True)
+        return run_execute_stage(self.context)
+
+    def _run_calibrate_stage(self) -> StageResult:
+        if self.context.skip_calibrate:
+            return _skipped_by_flag(FlowStage.CALIBRATE)
+        return run_calibrate_stage(self.context)
+
+    def execute_stage(self, stage: FlowStage) -> StageResult:
+        handler = self.STAGE_HANDLERS.get(stage)
+        if handler is None:
             return StageResult(stage=stage, status=StageStatus.FAILED, error=f"Unsupported stage '{stage}'")
+        return handler(self)
 
     def after_stage(self, stage: FlowStage, result: StageResult) -> None:
         if result.budget_seconds is None:

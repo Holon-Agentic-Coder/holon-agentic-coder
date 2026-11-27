@@ -21,6 +21,9 @@ from sandbox_executor.calibration_self_check import (
     target_only_paths,
 )
 
+from tests.calibrate_scenarios import build_self_check_flow_repo, own_path_copy
+from tests.repo_templates import shared_template
+
 PLAN = "I-1-sc/P-2-sc/_"
 EXEC_ID = "E-3-sc"
 EXEC = f"I-1-sc/P-2-sc/{EXEC_ID}/_"
@@ -152,24 +155,19 @@ def commit(repo: Path, message: str, files: dict[str, str]) -> str:
     return git(repo, "rev-parse", "HEAD")
 
 
+@pytest.fixture(scope="session")
+def flow_repo_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> Path:
+    root, _ = shared_template(
+        tmp_path_factory,
+        "calibrate-self-check-flow-repo",
+        lambda r: build_self_check_flow_repo(r, PLAN, EXEC, _row(EXEC_ID, "success", 1)),
+    )
+    return root
+
+
 @pytest.fixture
-def flow_repo(tmp_path: Path) -> Path:
-    """main, plan and execution branches; the execution branch merges an advanced main between two PR commits."""
-    git(tmp_path, "init", "-q", "-b", "main")
-    commit(tmp_path, "base", {"base.txt": "base\n"})
-    git(tmp_path, "checkout", "-qb", PLAN)
-    commit(tmp_path, "plan", {"plans/I-1-sc/P-2-sc.md": "# Plan\n"})
-    git(tmp_path, "checkout", "-qb", EXEC)
-    commit(tmp_path, "pr one", {"src/own.py": "one\n"})
-    git(tmp_path, "checkout", "-q", "main")
-    commit(tmp_path, "main moves", {"main/other.py": "other\n"})
-    git(tmp_path, "checkout", "-q", EXEC)
-    git(tmp_path, "merge", "-q", "--no-edit", "main")
-    rows = [_row(EXEC_ID, "success", 1)]
-    ledger = "".join(json.dumps(row) + "\n" for row in rows)
-    commit(tmp_path, "pr two", {"src/own.py": "two\n", "holon-knowledge/ledger/executions.jsonl": ledger})
-    git(tmp_path, "update-ref", "refs/remotes/origin/main", "refs/heads/main")
-    return tmp_path
+def flow_repo(flow_repo_template: Path, tmp_path: Path) -> Path:
+    return own_path_copy(flow_repo_template, tmp_path)
 
 
 def test_target_only_paths_excludes_the_pr_own_files(flow_repo: Path) -> None:

@@ -10,9 +10,12 @@ import json
 import os
 from pathlib import Path
 
+import pytest
 from sandbox_executor.ledger.fragments import pending_rel_dir
 
 from tests.flow.helpers import _git
+from tests.flow_repo_templates import template_name
+from tests.repo_templates import copy_template, shared_template
 from tests.review_loop_stubs import EXEC_TARGET
 
 LEDGER = "holon-knowledge/ledger/executions.jsonl"
@@ -38,6 +41,18 @@ def build_flow_worktree(tmp_path: Path, branch: str = EXEC_TARGET) -> tuple[Path
     _git(work, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
     _git(work, "fetch", "-q", "origin")
     return origin, work
+
+
+def flow_worktree_copy(
+    tmp_path_factory: pytest.TempPathFactory, target: Path, branch: str = EXEC_TARGET
+) -> tuple[Path, Path]:
+    template, _ = shared_template(
+        tmp_path_factory,
+        template_name("flow-worktree", branch),
+        lambda root: (build_flow_worktree(root, branch), None)[1],
+    )
+    copy_template(template, target)
+    return target / "origin.git", target / "work"
 
 
 def append_row(work: Path, row: dict, rel: str = LEDGER) -> None:

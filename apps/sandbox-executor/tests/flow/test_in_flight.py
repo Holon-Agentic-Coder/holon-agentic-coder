@@ -149,6 +149,7 @@ def test_local_checkpoints_keep_live_flows_only(flow_repos, tmp_path):
     (second / ".holon" / "flow" / "checkpoint-broken.json").write_text("{not json", encoding="utf-8")
     (second / ".holon" / "flow" / "checkpoint-list.json").write_text("[]", encoding="utf-8")
     own_worktree = host
+    # why: the caller's own worktree is never read when discovering other in-flight checkpoints
     write_checkpoint(own_worktree, OTHER_PLAN, executing, "this-worktree")
 
     checkpoints = other_checkpoints(str(host), "I-100-own")

@@ -5,10 +5,11 @@ from dataclasses import dataclass, field
 
 from sandbox_executor.flow.github.adapter import GitHubAdapter
 from sandbox_executor.flow.github.ci_head_checks import HeadCheck, RunRerunner, is_cancelled
+from sandbox_executor.flow.github.forge import GitForge
 
 
 def gh_run_rerunner(
-    repo_dir: str, proxy_env: Mapping[str, str] | None = None, github: GitHubAdapter | None = None
+    repo_dir: str, proxy_env: Mapping[str, str] | None = None, github: GitForge | None = None
 ) -> RunRerunner:
     adapter = github or GitHubAdapter(repo_dir, dict(proxy_env) if proxy_env else None)
 

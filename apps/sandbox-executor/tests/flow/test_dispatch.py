@@ -21,6 +21,7 @@ from sandbox_executor.flow import (
     save_checkpoint,
 )
 from sandbox_executor.flow.dispatch import _recorded_test_fields
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 from sandbox_executor.launcher.coherence import FlowProxyChoice
 
 from tests.flow.github.fake_github import FakeGitHub
@@ -87,6 +88,7 @@ class TestFlowRoleDispatch:
             host,
             agents,
             intent_data={
+                **default_assumptions_fields(),
                 "slug": "Resolved Q",
                 "goal": "Build stage 1",
                 "questions": ["What protocol?"],
@@ -122,6 +124,7 @@ class TestFlowRoleDispatch:
     def _child_intent(goal: str) -> dict[str, Any]:
         parent = "I-1-parent/_"
         return {
+            **default_assumptions_fields(),
             "branch": "I-1-parent--1-add-the-parser",
             "slug": "add-the-parser",
             "goal": goal,
@@ -692,7 +695,7 @@ class TestFlowRoleDispatch:
         dispatcher = MagicMock(return_value=0)
         ctx = FlowContext(
             repo_dir=str(tmp_path),
-            intent_data={"slug": "dry", "goal": "Dry run"},
+            intent_data={**default_assumptions_fields(), "slug": "dry", "goal": "Dry run"},
             dry_run=True,
             skip_push=True,
             dispatcher=dispatcher,
@@ -731,7 +734,9 @@ class TestFlowDispatchMergeInteractions:
 
         host, _origin = flow_repos
         intent_file = host.parent / "intent.json"
-        intent_file.write_text(json.dumps({"slug": "resolved-runner", "goal": "g"}), encoding="utf-8")
+        intent_file.write_text(
+            json.dumps({**default_assumptions_fields(), "slug": "resolved-runner", "goal": "g"}), encoding="utf-8"
+        )
         monkeypatch.setenv("HOLON_AGENT", "claude-agent")
         monkeypatch.setenv("HOLON_MODEL", DEFAULT_MODELS["claude"])
         monkeypatch.delenv("HOLON_SKIP_PREFLIGHT", raising=False)

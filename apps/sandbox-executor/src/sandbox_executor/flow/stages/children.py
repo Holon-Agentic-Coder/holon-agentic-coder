@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 import re
 from datetime import UTC, datetime
@@ -25,6 +26,7 @@ from sandbox_executor.flow.github.merge import merge_child_pr
 from sandbox_executor.flow.stage_status import REVIEW_BOUNDARY_STATUSES
 from sandbox_executor.flow.stages.integration import integrate_children
 from sandbox_executor.flow.target_sync_hooks import at_turn_boundary, consume_target_merge_notice
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 from sandbox_executor.redaction import redact_agent_secrets
 
 _PR_URL_RE = re.compile(r"https?://\S+/pull/\d+")
@@ -87,6 +89,13 @@ def _build_child_intent(context: FlowContext, payload: dict[str, Any], entry: di
         child_data["labels"] = list(labels)
     if entry.get("original_slug"):
         child_data["original_slug"] = entry["original_slug"]
+    for field_name, default_value in default_assumptions_fields().items():
+        if field_name in item and item[field_name] is not None:
+            child_data[field_name] = copy.deepcopy(item[field_name])
+        elif field_name in context.intent_data and context.intent_data[field_name] is not None:
+            child_data[field_name] = copy.deepcopy(context.intent_data[field_name])
+        else:
+            child_data[field_name] = copy.deepcopy(default_value)
     return child_data
 
 

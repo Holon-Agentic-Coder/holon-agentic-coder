@@ -32,8 +32,19 @@ from sandbox_executor.review_ensemble import build_review_request
 from sandbox_executor.review_target import ReviewTarget
 
 from tests.flow.helpers import _git
-from tests.flow.test_sync_boundaries import APP, BASE_ROW, LEDGER, FakeResolverDispatcher, _inject_ledger_conflict
-from tests.ledger_conflict_repos import FLOW_BRANCH, build_flow_repos, commit_on
+from tests.flow.sync_boundary_repos import (
+    APP,
+    BASE,
+    CODE_BASE,
+    FLOW_CODE,
+    LEDGER,
+    TARGET_CODE,
+    ledger_conflict,
+    sync_work,
+)
+from tests.flow.test_sync_boundaries import FakeResolverDispatcher, _inject_ledger_conflict
+from tests.flow_repo_templates import FlowCommit, flow_history_copy
+from tests.ledger_conflict_repos import FLOW_BRANCH
 
 
 def _resolve_app(work: Path) -> None:
@@ -116,11 +127,11 @@ def test_format_conflict_block_reason_labels_code_conflicts_only_for_code(
     assert must_not_contain not in reason
 
 
-def test_stage4_iteration_and_resolver_turn_boundaries_resolve_injected_conflicts(tmp_path: Path) -> None:
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
-    commit_on(work, "main", {APP: "y = 2\n"}, "target code")
-    commit_on(work, FLOW_BRANCH, {APP: "x = 1\n"}, "flow code")
-    before = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
+def test_stage4_iteration_and_resolver_turn_boundaries_resolve_injected_conflicts(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    repos = flow_history_copy(tmp_path_factory, tmp_path, CODE_BASE, (TARGET_CODE, FLOW_CODE))
+    work, before = repos.work, repos.shas[1]
     dispatcher = FakeResolverDispatcher([(_resolve_app, "resolved")])
     ctx = _ctx(work, dispatcher=dispatcher)
     target = ReviewTarget(raw=FLOW_BRANCH, head_branch=FLOW_BRANCH, head_sha=before)
@@ -139,11 +150,13 @@ def test_stage4_iteration_and_resolver_turn_boundaries_resolve_injected_conflict
     assert ctx.review_scope_paths == []  # Unapproved PR must never be narrowed to conflict-resolved paths.
 
     # When already in a post-approval scoped re-review, a further agent merge unions into review_scope_paths.
-    ctx.review_scope_paths = ["src/other.py"]
-    commit_on(work, "main", {APP: "y = 3\n", "src/unrelated_target.py": "u = 1\n"}, "target code 2")
-    commit_on(work, FLOW_BRANCH, {APP: "x = 2\n"}, "flow code 2")
-    before_union = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
-    ctx.dispatcher = FakeResolverDispatcher([(_resolve_app, "resolved")])
+    target_with_unrelated = FlowCommit(
+        "main", {APP: "y = 2\n", "src/unrelated_target.py": "u = 1\n"}, "target code with unrelated file"
+    )
+    repos_u = flow_history_copy(tmp_path_factory, tmp_path / "union", CODE_BASE, (target_with_unrelated, FLOW_CODE))
+    before_union = repos_u.shas[1]
+    ctx_u = _ctx(repos_u.work, dispatcher=FakeResolverDispatcher([(_resolve_app, "resolved")]))
+    ctx_u.review_scope_paths = ["src/other.py"]
     probes_u = iter(
         [
             {"mergeable": "CONFLICTING", "merge_state_status": "DIRTY", "is_dirty": True},
@@ -151,20 +164,20 @@ def test_stage4_iteration_and_resolver_turn_boundaries_resolve_injected_conflict
         ]
     )
     updated_u, _, _, err_u = sync_iteration_mergeability(
-        ctx,
+        ctx_u,
         ReviewTarget(raw=FLOW_BRANCH, head_branch=FLOW_BRANCH, head_sha=before_union),
         "main",
         2,
         lambda: next(probes_u),
     )
     assert err_u is None and updated_u is not None and updated_u.head_sha != before_union
-    assert ctx.review_scope_paths == [APP, "src/other.py"]
+    assert ctx_u.review_scope_paths == [APP, "src/other.py"]
 
     # Resolver turn boundary also resolves a newly injected target ledger conflict.
-    _inject_ledger_conflict(work, FLOW_BRANCH, 4)
-    before_turn = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
+    repos_turn = flow_history_copy(tmp_path_factory, tmp_path / "turn", CODE_BASE, ledger_conflict(2))
+    before_turn = repos_turn.shas[1]
     updated2, err2 = sync_after_resolver_turn(
-        ctx, ReviewTarget(raw=FLOW_BRANCH, head_branch=FLOW_BRANCH, head_sha=before_turn), "main", 1
+        _ctx(repos_turn.work), ReviewTarget(raw=FLOW_BRANCH, head_branch=FLOW_BRANCH, head_sha=before_turn), "main", 1
     )
     assert err2 is None
     assert updated2 is not None and updated2.head_sha != before_turn
@@ -233,10 +246,16 @@ def test_agent_resolved_merge_never_carries_approval_and_preserves_scope_across_
     assert restored.review_scope_paths == [APP, "tests/test_app.py"]
 
 
-def test_build_review_request_scopes_diff_and_falls_back_when_empty(tmp_path: Path) -> None:
-    _, work = build_flow_repos(tmp_path, {APP: "x = 0\n", "src/other.py": "z = 0\n"})
-    commit_on(work, FLOW_BRANCH, {APP: "x = 1\n", "src/other.py": "z = 1\n"}, "edit both files")
-    head_sha = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
+def test_build_review_request_scopes_diff_and_falls_back_when_empty(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    repos = flow_history_copy(
+        tmp_path_factory,
+        tmp_path,
+        {APP: "x = 0\n", "src/other.py": "z = 0\n"},
+        (FlowCommit(FLOW_BRANCH, {APP: "x = 1\n", "src/other.py": "z = 1\n"}, "edit both files"),),
+    )
+    work, head_sha = repos.work, repos.shas[0]
     target = ReviewTarget(raw=FLOW_BRANCH, head_branch=FLOW_BRANCH, head_sha=head_sha)
 
     scoped = build_review_request(target, "origin/main", 1, "T", "Body", str(work), review_paths=[APP])
@@ -272,9 +291,10 @@ def test_dispatch_review_ensemble_passes_review_paths_flag(tmp_path: Path, monke
     assert captured and f"--review-paths={APP},tests/test_app.py" in captured[0]
 
 
-def test_stage5_entry_and_retry_sync_resolve_conflicts_and_block_cleanly(tmp_path: Path) -> None:
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
-    _inject_ledger_conflict(work, FLOW_BRANCH, 2)
+def test_stage5_entry_and_retry_sync_resolve_conflicts_and_block_cleanly(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    work = sync_work(tmp_path_factory, tmp_path, ledger_conflict(2), base=CODE_BASE)
     ctx = _ctx(work)
 
     # Stage 5 entry sync resolves mechanical ledger conflict.
@@ -306,22 +326,20 @@ def test_stage5_entry_and_retry_sync_resolve_conflicts_and_block_cleanly(tmp_pat
     assert calls == 2
 
     # A blocked retry sync raises permanent CalibrationSyncError without retrying further.
-    commit_on(work, "main", {APP: "main = 1\n"}, "main code")
-    commit_on(work, FLOW_BRANCH, {APP: "flow = 1\n"}, "flow code")
-    ctx_fail = _ctx(work, dispatcher=FakeResolverDispatcher([(None, "cannot_decide")] * 3))
+    work_fail = sync_work(tmp_path_factory, tmp_path / "blocked", (TARGET_CODE, FLOW_CODE), base=CODE_BASE)
+    ctx_fail = _ctx(work_fail, dispatcher=FakeResolverDispatcher([(None, "cannot_decide")] * 3))
     with pytest.raises(CalibrationSyncError, match=r"code conflicts with main in: src/app\.py"):
         make_calibrate_retry_sync(ctx_fail)(1)
 
 
-def test_finalize_resolver_turn_commits_pending_ledger_rows_and_preserves_full_scope(tmp_path: Path) -> None:
+def test_finalize_resolver_turn_commits_pending_ledger_rows_and_preserves_full_scope(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
     from sandbox_executor.flow.review.resolver import ResolverOutcome
     from sandbox_executor.flow.review.sync_points import finalize_resolver_turn
 
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
-    commit_on(work, "main", {APP: "y = 2\n"}, "target code")
-    commit_on(work, FLOW_BRANCH, {APP: "x = 1\n"}, "flow code")
-    _git(work, "checkout", FLOW_BRANCH)
-    before = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
+    repos = flow_history_copy(tmp_path_factory, tmp_path, CODE_BASE, (TARGET_CODE, FLOW_CODE))
+    work, before = repos.work, repos.shas[1]
     # Append uncommitted ACT-REV row to tracked executions.jsonl before finalize_resolver_turn.
     with open(work / LEDGER, "a", encoding="utf-8") as fh:
         fh.write(json.dumps({"action_id": "ACT-REV-1", "execution_id": "REV-1", "action": "review"}) + "\n")
@@ -377,28 +395,23 @@ def test_conflict_gate_blocks_dry_run_head_and_deferred_or_unprobed_unchanged(
 
 
 def test_prepare_execution_branch_syncs_before_calibrated_and_retry_reanchors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from sandbox_executor.flow.calibrate_sync import publish_calibration
     from sandbox_executor.flow.stages import calibrate as cal_stage
     from sandbox_executor.ref_names import calibration_branch
 
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
+    work = sync_work(tmp_path_factory, tmp_path, (TARGET_CODE, FLOW_CODE), base=CODE_BASE)
     calibrated = calibration_branch(FLOW_BRANCH)
 
     # Blocked sync_before_calibration does not create/leak /calibrated.
-    commit_on(work, "main", {APP: "main = 1\n"}, "main code")
-    commit_on(work, FLOW_BRANCH, {APP: "flow = 1\n"}, "flow code")
     ctx_blk = _ctx(work, dispatcher=FakeResolverDispatcher([(None, "cannot_decide")] * 3))
     failure, sha, created = cal_stage._prepare_execution_branch(ctx_blk, "2026-11-24T00:00:00Z")
     assert failure is not None and sha is None and created is False
     assert _git(work, "branch", "--list", calibrated) == ""
 
     # Mechanical sync_before_calibration runs before prepare_calibrated_branch so /calibrated starts at merged SHA.
-    r2 = tmp_path / "r2"
-    r2.mkdir()
-    _, work2 = build_flow_repos(r2, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
-    _inject_ledger_conflict(work2, FLOW_BRANCH, 2)
+    work2 = sync_work(tmp_path_factory, tmp_path / "r2", ledger_conflict(2), base=CODE_BASE)
     ctx_ok = _ctx(work2)
     failure2, start_sha, created2 = cal_stage._prepare_execution_branch(ctx_ok, "2026-11-24T00:00:00Z")
     assert failure2 is None and created2 is True and start_sha is not None
@@ -419,12 +432,8 @@ def test_prepare_execution_branch_syncs_before_calibrated_and_retry_reanchors(
     assert publish_calibration(ctx_ok) is True
 
     # Agent-resolved sync_before_calibration triggers Stage 4 review restart via stage5_merged_head_gate.
-    r3 = tmp_path / "r3"
-    r3.mkdir()
-    _, work3 = build_flow_repos(r3, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
-    commit_on(work3, "main", {APP: "y = 2\n"}, "main code")
-    commit_on(work3, FLOW_BRANCH, {APP: "x = 1\n"}, "flow code")
-    approved_sha = _git(work3, "rev-parse", f"origin/{FLOW_BRANCH}")
+    repos3 = flow_history_copy(tmp_path_factory, tmp_path / "r3", CODE_BASE, (TARGET_CODE, FLOW_CODE))
+    work3, approved_sha = repos3.work, repos3.shas[1]
     ctx_r = _ctx(work3, dispatcher=FakeResolverDispatcher([(_resolve_app, "resolved")]))
     ctx_r.stage_results["review"] = StageResult(
         stage=FlowStage.REVIEW,
@@ -439,7 +448,7 @@ def test_prepare_execution_branch_syncs_before_calibrated_and_retry_reanchors(
 
 
 def test_containerised_run_review_loop_skips_target_sync_and_dispatches_reviewers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from sandbox_executor.flow import run_review_loop
     from sandbox_executor.flow.target_probe import TargetProbeError
@@ -448,9 +457,8 @@ def test_containerised_run_review_loop_skips_target_sync_and_dispatches_reviewer
 
     from tests.review_fakes import FakeEnsemble
 
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n"})
-    commit_on(work, FLOW_BRANCH, {APP: "x = 1\n"}, "flow edit")
-    head_sha = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
+    repos = flow_history_copy(tmp_path_factory, tmp_path, BASE, (FLOW_CODE,))
+    work, head_sha = repos.work, repos.shas[0]
     ctx = _ctx(work)
 
     def _boom(*_a, **_k):
@@ -501,13 +509,13 @@ def test_containerised_run_review_loop_skips_target_sync_and_dispatches_reviewer
     assert res["consensus"]["approved"] is True
 
 
-def test_stage4_start_boundary_unions_rereview_scope_when_already_scoped(tmp_path: Path) -> None:
+def test_stage4_start_boundary_unions_rereview_scope_when_already_scoped(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
     from sandbox_executor.flow.target_sync_hooks import at_stage_boundary
     from sandbox_executor.flow.target_sync_result import SyncBoundary
 
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
-    commit_on(work, "main", {APP: "y = 2\n"}, "target code")
-    commit_on(work, FLOW_BRANCH, {APP: "x = 1\n"}, "flow code")
+    work = sync_work(tmp_path_factory, tmp_path, (TARGET_CODE, FLOW_CODE), base=CODE_BASE)
 
     # Already scoped Stage 4 entry unions newly agent-resolved paths into review_scope_paths.
     ctx = _ctx(work, dispatcher=FakeResolverDispatcher([(_resolve_app, "resolved")]))
@@ -516,18 +524,15 @@ def test_stage4_start_boundary_unions_rereview_scope_when_already_scoped(tmp_pat
     assert ctx.review_scope_paths == [APP, "src/existing.py"]
 
     # Unscoped Stage 4 entry keeps review_scope_paths empty (full PR review).
-    commit_on(work, "main", {APP: "y = 3\n"}, "target code 2")
-    commit_on(work, FLOW_BRANCH, {APP: "x = 2\n"}, "flow code 2")
-    ctx_full = _ctx(work, dispatcher=FakeResolverDispatcher([(_resolve_app, "resolved")]))
+    work_full = sync_work(tmp_path_factory, tmp_path / "full", (TARGET_CODE, FLOW_CODE), base=CODE_BASE)
+    ctx_full = _ctx(work_full, dispatcher=FakeResolverDispatcher([(_resolve_app, "resolved")]))
     assert at_stage_boundary(ctx_full, FlowStage.REVIEW, SyncBoundary.STAGE_START) is None
     assert ctx_full.review_scope_paths == []
 
 
-def _approved_stage5_ctx(work: Path) -> tuple[FlowContext, str]:
+def _approved_stage5_ctx(work: Path, approved_sha: str) -> tuple[FlowContext, str]:
     from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of
 
-    commit_on(work, FLOW_BRANCH, {APP: "x = 1\n"}, "pr change")
-    approved_sha = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
     fp = approval_fingerprint_of(str(work), approved_sha, "main")
     assert fp is not None
     ctx = _ctx(work)
@@ -546,13 +551,15 @@ def _approved_stage5_ctx(work: Path) -> tuple[FlowContext, str]:
     return ctx, approved_sha
 
 
-def test_sync_before_calibration_gates_ci_on_mechanical_merge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sync_before_calibration_gates_ci_on_mechanical_merge(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from sandbox_executor.flow.github.ci_head_checks import FAILED
     from sandbox_executor.flow.review.merged_head_gate import gate_record
 
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
-    ctx, _ = _approved_stage5_ctx(work)
-    _inject_ledger_conflict(work, FLOW_BRANCH, 10)
+    repos = flow_history_copy(tmp_path_factory, tmp_path, CODE_BASE, (FLOW_CODE, *ledger_conflict(2)))
+    work = repos.work
+    ctx, _ = _approved_stage5_ctx(work, repos.shas[0])
     gate_heads: list[str] = []
 
     def _ci_fail(_ctx, _repo, head, _seams):
@@ -568,7 +575,7 @@ def test_sync_before_calibration_gates_ci_on_mechanical_merge(tmp_path: Path, mo
 
 
 def test_calibrate_retry_sync_from_calibrated_branch_commits_carry_over_and_gates_ci(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from sandbox_executor.flow.calibrate_sync import prepare_calibrated_branch, publish_calibration
     from sandbox_executor.flow.calibrate_target_sync import _CalibrateRestartRequired
@@ -576,8 +583,9 @@ def test_calibrate_retry_sync_from_calibrated_branch_commits_carry_over_and_gate
     from sandbox_executor.flow.review.merged_head_gate import gate_record
     from sandbox_executor.ref_names import calibration_branch
 
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
-    ctx, approved = _approved_stage5_ctx(work)
+    repos = flow_history_copy(tmp_path_factory, tmp_path, CODE_BASE, (FLOW_CODE,))
+    work = repos.work
+    ctx, approved = _approved_stage5_ctx(work, repos.shas[0])
     calibrated = calibration_branch(FLOW_BRANCH)
     assert prepare_calibrated_branch(ctx, approved) is True
     _git(work, "checkout", calibrated)
@@ -738,13 +746,15 @@ def _stub_review_loop(monkeypatch: pytest.MonkeyPatch, head_sha: str) -> None:
 
 
 @pytest.mark.parametrize("blocked", [False, True])
-def test_pre_iteration_sync_records_the_scope_before_reviewers_run(tmp_path, monkeypatch, blocked) -> None:
+def test_pre_iteration_sync_records_the_scope_before_reviewers_run(
+    tmp_path, tmp_path_factory, monkeypatch, blocked
+) -> None:
     from sandbox_executor.flow import run_review_loop
 
     from tests.review_fakes import FakeEnsemble, fake_review_request
 
-    _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n"})
-    head_sha = commit_on(work, FLOW_BRANCH, {APP: "x = 1\n"}, "flow edit")
+    repos = flow_history_copy(tmp_path_factory, tmp_path, BASE, (FLOW_CODE,))
+    work, head_sha = repos.work, repos.shas[0]
     merge = _code_merge() if not blocked else SyncResult("blocked", "", "", "", code_paths=(APP,), error="boom")
     monkeypatch.setattr(sync_points, "sync_review_head", lambda *a, **k: merge)
     _stub_review_loop(monkeypatch, head_sha)

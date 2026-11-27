@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -62,6 +63,7 @@ from sandbox_executor.review_target import (
     is_pr_reference,
     resolve_review_target,
 )
+from sandbox_executor.touch_set import TouchSet, out_of_set_files
 from sandbox_executor.turns import run_turn
 from sandbox_executor.worktree_head import ReattachStatus, head_guard, reattach_branch
 
@@ -320,12 +322,57 @@ def _load_resolver_findings(findings_file: str | None) -> tuple[list[FindingRow]
     return rows, action_ids
 
 
+def _parse_touch_set(raw: Any) -> TouchSet | None:
+    if isinstance(raw, TouchSet):
+        entries = tuple(entry for entry in raw.entries if entry.path)
+        return TouchSet(entries) if entries else None
+    if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence) or not raw:
+        return None
+    parsed = TouchSet.from_row(list(raw))
+    if parsed is None:
+        return None
+    entries = tuple(entry for entry in parsed.entries if entry.path)
+    return TouchSet(entries) if entries else None
+
+
+def _load_resolver_touch_set(findings_file: str | None) -> tuple[str, ...]:
+    if not findings_file or not os.path.exists(findings_file):
+        return ()
+    try:
+        with open(findings_file, encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, ValueError):
+        return ()
+    if not isinstance(payload, dict):
+        return ()
+    parsed = _parse_touch_set(payload.get("touch_set"))
+    return tuple(entry.path for entry in parsed.entries) if parsed else ()
+
+
+def _touch_set_prompt_section(touch_set: Any) -> str:
+    parsed = _parse_touch_set(touch_set)
+    if parsed is None:
+        return ""
+    allowed = "\n".join(f"- `{entry.path}`" for entry in parsed.entries)
+    return (
+        "\n## Allowed Touch Set\n"
+        "You may ONLY edit files matching the plan Touch Set below; never edit, add, or delete any file outside "
+        "this list (the pre-commit guard refuses out-of-set edits):\n"
+        f"{allowed}\n"
+        "If fixing a finding requires editing a file outside this Touch Set, do NOT edit the unlisted file; "
+        'instead record a structured disposition (`"disposition": "open"`, or `"rejected"` with '
+        '`"rejection_reason": "out of scope"` for nits) whose `"evidence"` explicitly names the required external '
+        "path (for example `requires out-of-touch-set edit: path/to/file.py`).\n"
+    )
+
+
 def _build_resolver_prompt(
     repo_dir: str,
     head_branch: str,
     iteration: int,
     findings: list[FindingRow],
     dispositions_path: str,
+    **kwargs: Any,
 ) -> str:
     serialized = [
         {
@@ -346,6 +393,7 @@ def _build_resolver_prompt(
         if has_ci
         else ""
     )
+    touch_section = _touch_set_prompt_section(kwargs.get("touch_set"))
     return (
         f"# Holon Stage 4 Resolver Pass (Iteration {iteration})\n\n"
         f"You are operating in `{repo_dir}` on branch `{head_branch}`.\n"
@@ -369,7 +417,8 @@ def _build_resolver_prompt(
         "Never force-push or rewrite git history. Do not run git commit or git push yourself; leave your edits "
         "in the working tree so the harness can verify, attach review trailers, commit, and push. "
         f"Write the JSON list of dispositions to `{dispositions_path}` "
-        "with keys `id`, `disposition`, `rejection_reason` and `evidence`.\n\n"
+        "with keys `id`, `disposition`, `rejection_reason` and `evidence`.\n"
+        f"{touch_section}\n"
         f"```json\n{json.dumps(serialized, indent=2)}\n```\n"
     )
 
@@ -429,6 +478,64 @@ class CommitOptions:
     dry_run: bool = False
     pre_resolver_head: str | None = None
     intent_data: dict[str, Any] = dataclasses.field(default_factory=dict)
+    touch_set: tuple[str, ...] = ()
+
+
+def _worktree_changed_paths(repo_dir: str) -> list[str] | None:
+    status_proc = run_cmd(
+        ["git", "status", "--porcelain", "-z", "--untracked-files=all", *_RESOLVER_PATHSPEC],
+        cwd=repo_dir,
+        check=False,
+    )
+    if status_proc.returncode != 0:
+        return None
+    raw = status_proc.stdout or ""
+    if not raw:
+        return []
+    tokens = raw.split("\0")
+    paths: list[str] = []
+    idx = 0
+    while idx < len(tokens):
+        token = tokens[idx]
+        idx += 1
+        if len(token) <= 3:
+            continue
+        status = token[:2]
+        paths.append(token[3:])
+        if ("R" in status or "C" in status) and idx < len(tokens):
+            if tokens[idx]:
+                paths.append(tokens[idx])
+            idx += 1
+    return list(dict.fromkeys(paths))
+
+
+def _touch_set_commit_refusal(repo_dir: str, touch_set: Any) -> str | None:
+    declared = _parse_touch_set(touch_set)
+    if declared is None:
+        return None
+    changed = _worktree_changed_paths(repo_dir)
+    if changed is None:
+        return "touch_set_violation: failed to inspect worktree changes via git status"
+    violating = sorted(dict.fromkeys(out_of_set_files(declared, changed)))
+    if not violating:
+        return None
+    return (
+        f"touch_set_violation: resolver modified {len(violating)} file(s) outside the plan's touch set: "
+        f"{', '.join(violating)}"
+    )
+
+
+def _resolver_commit_message(iteration: int, applied_items: list[FindingDisposition]) -> str:
+    ids_csv = ", ".join(d.id for d in applied_items) or f"ITER-{iteration}"
+    severities = [d.severity for d in applied_items] or ["nit"]
+    worst = max(severities, key=lambda s: _SEVERITY_ORDER.get(s, 1))
+    return (
+        f"fix(review): resolve findings {ids_csv} (iteration {iteration})\n\n"
+        "Action-Origin: pr_review\n"
+        f"Review-Iteration: {iteration}\n"
+        f"Review-Finding-Ids: {ids_csv}\n"
+        f"Review-Severity: {worst}\n"
+    )
 
 
 def _commit_resolution(
@@ -441,6 +548,7 @@ def _commit_resolution(
 ) -> tuple[tuple[FindingDisposition, ...], str, bool, bool, str | None]:
     opts = options or CommitOptions()
     pre_resolver_head: str | None = kwargs.get("pre_resolver_head", opts.pre_resolver_head)
+    touch_set = kwargs.get("touch_set", opts.touch_set)
     current_head = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
     if pre_resolver_head and current_head != pre_resolver_head:
         reset_cmd = ["git", "reset", "--soft", pre_resolver_head]
@@ -458,24 +566,18 @@ def _commit_resolution(
     if opts.dry_run:
         return dispositions, initial_head, False, False, None
 
+    touch_refusal = _touch_set_commit_refusal(repo_dir, touch_set)
+    if touch_refusal:
+        _log_stderr(f"Resolver: {touch_refusal}")
+        return dispositions, initial_head, False, False, touch_refusal
+
     lint_ok, tests_ok, verify_err = _verify_before_push(repo_dir, iteration)
     # why: a verification failure, a missing verification tool included, never stages, commits or pushes anything
     if not lint_ok or not tests_ok:
         return dispositions, initial_head, lint_ok, tests_ok, verify_err
 
     run_cmd(["git", "add", "-A", *_RESOLVER_PATHSPEC], cwd=repo_dir, check=True)
-    finding_ids = [d.id for d in applied_items]
-    ids_csv = ", ".join(finding_ids) or f"ITER-{iteration}"
-    severities = [d.severity for d in applied_items] or ["nit"]
-    worst = max(severities, key=lambda s: _SEVERITY_ORDER.get(s, 1))
-    commit_msg = (
-        f"fix(review): resolve findings {ids_csv} (iteration {iteration})\n\n"
-        "Action-Origin: pr_review\n"
-        f"Review-Iteration: {iteration}\n"
-        f"Review-Finding-Ids: {ids_csv}\n"
-        f"Review-Severity: {worst}\n"
-    )
-    commit_cmd = ["git", "commit", "-m", commit_msg]
+    commit_cmd = ["git", "commit", "-m", _resolver_commit_message(iteration, applied_items)]
     _assert_safe_git_args(commit_cmd)
     # why: the review git identity reaches only the resolver commit, never the process environment
     commit_res = run_cmd(commit_cmd, cwd=repo_dir, env=_review_git_env(os.environ), check=False)
@@ -533,6 +635,7 @@ def _run_resolver_mode(
 ) -> None:
     findings_source = args.findings_file or args.result_file
     findings, action_ids = _load_resolver_findings(findings_source)
+    touch_set = _load_resolver_touch_set(findings_source)
     dispositions_path = os.path.join(repo_dir, ".holon", "review", f"iter-{args.iteration}", "dispositions.json")
     error: str | None = None
     output_tail = ""
@@ -541,7 +644,9 @@ def _run_resolver_mode(
     intent_data = _intent_row(repo_dir, head_branch)
     with_module_budget_flag(os.environ, intent_data)
     if findings and not args.dry_run:
-        prompt = _build_resolver_prompt(repo_dir, head_branch, args.iteration, findings, dispositions_path)
+        prompt = _build_resolver_prompt(
+            repo_dir, head_branch, args.iteration, findings, dispositions_path, touch_set=touch_set
+        )
         prompt += previous_failure_section(repo_dir, pre_resolver_head)
         label = f"resolver turn (iteration {args.iteration})"
         try:
@@ -572,6 +677,7 @@ def _run_resolver_mode(
                     dry_run=args.dry_run,
                     pre_resolver_head=pre_resolver_head,
                     intent_data=intent_data,
+                    touch_set=touch_set,
                 ),
                 pre_resolver_head=pre_resolver_head,
             )

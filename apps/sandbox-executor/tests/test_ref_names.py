@@ -11,6 +11,7 @@ from sandbox_executor import ref_names
 from sandbox_executor.budgets import MAX_SUB_INTENT_DEPTH
 from sandbox_executor.flow.context import FlowContext, StageStatus
 from sandbox_executor.flow.stages.intent import run_intent_stage
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 from sandbox_executor.ledger import build_execution_id, build_plan_id
 from sandbox_executor.naming import model_code, ticker_for
 from sandbox_executor.ref_names import (
@@ -208,7 +209,7 @@ def test_stage_one_fails_before_any_branch_exists(tmp_path):
     ctx = FlowContext(
         target_worktree=str(tmp_path),
         dry_run=True,
-        intent_data={"goal": "g", "slug": "x", "branch": "I-1-" + "p" * 300},
+        intent_data={**default_assumptions_fields(), "goal": "g", "slug": "x", "branch": "I-1-" + "p" * 300},
     )
     result = run_intent_stage(ctx)
     assert result.status == StageStatus.FAILED
@@ -219,7 +220,7 @@ def test_stage_one_fails_before_any_branch_exists(tmp_path):
 
 def test_stage_one_rejects_a_supplied_root_slug_over_the_limit_before_any_branch_exists(tmp_path):
     long_slug = "a-supplied-slug-that-is-far-too-long-for-a-branch"
-    intent = {"goal": "g", "slug": long_slug}
+    intent = {**default_assumptions_fields(), "goal": "g", "slug": long_slug}
     ctx = FlowContext(target_worktree=str(tmp_path), dry_run=True, agent=AGENT, model=MODEL, intent_data=intent)
     result = run_intent_stage(ctx)
     assert result.status == StageStatus.FAILED
@@ -230,7 +231,13 @@ def test_stage_one_rejects_a_supplied_root_slug_over_the_limit_before_any_branch
 
 def test_stage_one_cuts_a_slug_derived_from_the_goal_at_a_word_boundary(tmp_path):
     goal = "Rework the calibration report so it names every plan and execution it covers"
-    ctx = FlowContext(target_worktree=str(tmp_path), dry_run=True, agent=AGENT, model=MODEL, intent_data={"goal": goal})
+    ctx = FlowContext(
+        target_worktree=str(tmp_path),
+        dry_run=True,
+        agent=AGENT,
+        model=MODEL,
+        intent_data={**default_assumptions_fields(), "goal": goal},
+    )
     result = run_intent_stage(ctx)
     assert result.status == StageStatus.SUCCESS, result.error
     slug = ctx.intent_data["slug"]

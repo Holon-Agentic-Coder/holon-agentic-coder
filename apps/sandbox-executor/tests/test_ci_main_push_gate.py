@@ -46,6 +46,7 @@ from tests.ci_bookkeeping_fakes import (
     TOKEN,
     UNIT_JOB,
     FakeGitHub,
+    cancelled_job,
     comparison,
     gate_skipped_job,
     job,
@@ -120,14 +121,43 @@ def test_a_merge_commit_with_the_tested_tree_skips() -> None:
 
 
 def test_a_gate_skipped_head_job_skips_and_says_so() -> None:
-    fake = merged_scene(gate_skipped_job())
+    fake = merged_scene(gate_skipped_job()).add_run(HEAD_RUN - 1, OTHER, real_success_job())
     fake.commits[HEAD] = (TREE, [OTHER])
+    fake.compares[(OTHER, HEAD)] = comparison("plans/x.md")
 
     decision = judge(push_context(), fake)
 
     assert decision.skip is True
     assert decision.rule == "main-push-tested-tree"
     assert decision.detail.endswith("gate-skipped")
+
+
+def test_a_single_parent_bookkeeping_head_over_skipped_merge_runs_on_main() -> None:
+    fake = merged_scene(gate_skipped_job())
+    fake.add_run(HEAD_RUN - 1, OTHER, gate_skipped_job())
+    fake.add_run(HEAD_RUN - 2, PRE_MERGE, real_success_job())
+    fake.commits[HEAD] = (TREE, [OTHER])
+    fake.commits[OTHER] = (TREE, [PRE_MERGE, MAIN_TIP])
+    fake.compares[(PRE_MERGE, HEAD)] = comparison("scripts/from_main.py", "executions/E-1.md")
+
+    decision = judge(push_context(), fake)
+
+    assert (decision.skip, decision.rule) == (False, "main-push-head-skip-unproven")
+    assert "non-bookkeeping-change scripts/from_main.py" in decision.detail
+    assert f"since {PRE_MERGE[:12]}" in decision.detail
+
+
+def test_a_single_parent_bookkeeping_head_over_cancelled_merge_runs_on_main() -> None:
+    fake = merged_scene(gate_skipped_job())
+    fake.add_run(HEAD_RUN - 1, OTHER, cancelled_job())
+    fake.add_run(HEAD_RUN - 2, PRE_MERGE, real_success_job())
+    fake.commits[HEAD] = (TREE, [OTHER])
+    fake.commits[OTHER] = (TREE, [PRE_MERGE, MAIN_TIP])
+
+    decision = judge(push_context(), fake)
+
+    assert (decision.skip, decision.rule) == (False, "main-push-head-skip-unproven")
+    assert "previous-run-not-successful cancelled" in decision.detail
 
 
 def merge_head_scene(*changed: str) -> FakeGitHub:

@@ -166,7 +166,7 @@ def _record_telemetry(
                     1 if elapsed_ms < _CACHE_HIT_LATENCY_MS_THRESHOLD else 0,
                 ),
             )
-    except Exception as e:
+    except (sqlite3.Error, OSError) as e:
         logger.debug("Failed to record consult telemetry: %s", e)
 
 

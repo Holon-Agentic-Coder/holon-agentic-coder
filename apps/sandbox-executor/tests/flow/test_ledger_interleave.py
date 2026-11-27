@@ -69,6 +69,7 @@ def test_sorted_sides_merge_sorted_and_as_additions_only():
 
 
 def test_each_side_keeps_its_own_order_and_ours_wins_a_tie():
+    # why: ours is appended out of time order because interleaving never reorders a side's own rows
     ours = [*BASE, _row("o-late", "2026-11-09T00:00:00Z"), _row("o-early", "2026-11-03T00:00:00Z")]
     theirs = [*BASE, _row("t-tie", "2026-11-09T00:00:00Z")]
 
@@ -83,6 +84,7 @@ def test_rows_without_created_at_follow_the_timed_rows_in_side_order():
 
     merged = interleave_ledger_rows(BASE, ours, theirs)
 
+    # why: ours never moves; theirs' untimed row stays glued after the timed row it followed
     assert merged[2:] == [ours[2], ours[3], theirs[2], theirs[3], theirs[4]]
 
 

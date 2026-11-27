@@ -4,9 +4,9 @@ from collections.abc import Callable
 from typing import Any
 
 from sandbox_executor.flow.constants import CI_REGISTRATION_POLL_SECONDS
-from sandbox_executor.flow.github.adapter import GitHubAdapter
 from sandbox_executor.flow.github.ci import _extract_failed_ci_check_names
 from sandbox_executor.flow.github.ci_failure_detail import STEP_LOOKUP_TIMEOUT_SECONDS
+from sandbox_executor.flow.github.forge import GitForge
 
 MAX_TIMING_RERUNS = 3
 
@@ -24,7 +24,7 @@ def _wait_for_rerun_start(probe: Callable[[], dict[str, Any]], names: list[str],
         policy.sleep(max(0.0, min(CI_REGISTRATION_POLL_SECONDS, remaining)))
 
 
-def _dispatch_rerun(github: GitHubAdapter, run_id: str) -> bool:
+def _dispatch_rerun(github: GitForge, run_id: str) -> bool:
     try:
         return github.rerun_failed(run_id, timeout=STEP_LOOKUP_TIMEOUT_SECONDS)
     except Exception:

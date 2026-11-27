@@ -88,7 +88,7 @@ class TelemetryCollector:
                         1 if cache_hit else 0,
                     ),
                 )
-        except Exception as e:
+        except (sqlite3.Error, OSError) as e:
             logger.debug("Failed to record consult telemetry: %s", e)
         finally:
             conn.close()

@@ -15,12 +15,13 @@ def load_metrics_physics(target_worktree: str = ".") -> tuple[float, float]:
         try:
             with open(ev_config_path, encoding="utf-8") as f:
                 data = json.load(f)
-                l_val = float(data.get("lambda", default_lambda))
-                m_val = float(data.get("mu", default_mu))
-                if 0 < l_val <= 1.0:
-                    default_lambda = l_val
-                if 0 < m_val <= 1.0:
-                    default_mu = m_val
-        except Exception as e:
+                if isinstance(data, dict):
+                    l_val = float(data.get("lambda", default_lambda))
+                    m_val = float(data.get("mu", default_mu))
+                    if 0 < l_val <= 1.0:
+                        default_lambda = l_val
+                    if 0 < m_val <= 1.0:
+                        default_mu = m_val
+        except (OSError, ValueError, TypeError, KeyError) as e:
             logger.debug("Failed loading ev_config.json: %s", e)
     return default_lambda, default_mu

@@ -15,7 +15,7 @@ TEST_MEASUREMENT_KEYS = (
 
 
 def recorded_test_pass_rate(value: Any) -> float | None:
-    # why: None means not measured and is never a pass; a measured rate below 1.0 or a completed non-zero run fails
+    # why: None means not measured and is never a pass, so an invalid rate is reported as unmeasured
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
     rate = float(value)

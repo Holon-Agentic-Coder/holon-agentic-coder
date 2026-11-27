@@ -32,9 +32,9 @@ def unmerged_paths(worktree: str) -> list[str]:
 
 def merge_verification_error(worktree: str, conflicted_paths: tuple[str, ...] | list[str]) -> str:
     remaining = unmerged_paths(worktree)
-    # why: only conflicted paths are scanned, so a cleanly merged file with marker-like lines never blocks every sync
     if remaining:
         return f"unmerged paths remain: {', '.join(remaining)}"
+    # why: only conflicted paths are scanned, so a cleanly merged file with marker-like lines never blocks every sync
     files = [(p, Path(worktree) / p) for p in conflicted_paths]
     marked = [p for p, file in files if file.is_file() and has_conflict_markers(file)]
     return f"conflict markers remain in: {', '.join(marked)}" if marked else ""

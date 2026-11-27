@@ -51,7 +51,7 @@ def _branch_tip(repo_dir: str, local: str | None, origin: str | None) -> str | N
         return origin
     if _is_ancestor_commit(repo_dir, origin, local):
         return local
-    # why: a branch whose local head and origin tip diverged is not adopted
+    # why: adopting either side of a diverged local head and origin tip could drop the other side's commits
     return None
 
 

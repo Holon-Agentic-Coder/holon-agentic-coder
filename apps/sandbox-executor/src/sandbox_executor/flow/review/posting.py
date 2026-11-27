@@ -24,11 +24,11 @@ logger = logging.getLogger(__name__)
 class PostFacts:
     dry_run: bool
     skip_post: bool
-    # why: a refused diff or host run counts as failed, and so does an infrastructure error.
+    # why: infrastructure errors share this flag so they fail closed like a refused run and never post.
     failed: bool
     reviewer_completed: bool
     consensus_reached: bool
-    # why: unmeasured tests and no convergence halt early, as do resolver errors, budget stops and unresolved refs.
+    # why: every early stop shares one flag so a halted loop keeps its report local unless consensus was reached.
     halted_early: bool
     iteration: int
     last_label: int

@@ -1,10 +1,3 @@
-"""Classify the paths an in-progress merge of the target left unmerged: mechanical classes, else ``CODE``.
-
-Each path is read from the index stages git keeps during a merge (1: merge base, 2: the flow branch, 3: the target).
-A mechanical class is chosen only on positive evidence; anything doubtful, unreadable or unparsable is ``CODE``, which
-only a code resolver (never this module) may resolve.
-"""
-
 from __future__ import annotations
 
 import json
@@ -23,8 +16,6 @@ _IMPORT_LINE = re.compile(r"^(?:import|from)\s")
 
 
 class ConflictClass(Enum):
-    """How an unmerged path is resolved: four mechanical classes, or ``CODE`` for the code resolver."""
-
     LEDGER = "ledger"
     KB_TIMESTAMP_ONLY = "kb_timestamp_only"
     DELETE_VS_TOUCH = "delete_vs_touch"
@@ -34,8 +25,6 @@ class ConflictClass(Enum):
 
 @dataclass(frozen=True)
 class ConflictSides:
-    """The three index stages of one unmerged path; ``None`` marks a side that deleted (or never had) the path."""
-
     path: str
     base: str | None
     ours: str | None
@@ -47,7 +36,6 @@ def _is_ledger_path(path: str) -> bool:
 
 
 def unmerged_stages(worktree: str, path: str) -> set[int]:
-    """The index stage numbers (1-3) ``path`` holds while unmerged; empty when it is not unmerged."""
     res = run_git(["ls-files", "-u", "-z", "--", path], cwd=worktree, check=False)
     out = res.stdout if res.returncode == 0 and isinstance(res.stdout, str) else ""
     return {int(entry.split("\t", 1)[0].split()[2]) for entry in out.split("\0") if "\t" in entry}
@@ -59,7 +47,6 @@ def _stage_text(worktree: str, stage: int, path: str) -> str | None:
 
 
 def read_sides(worktree: str, path: str) -> ConflictSides:
-    """Read the base, flow-branch and target copies of an unmerged ``path`` from the index."""
     stages = unmerged_stages(worktree, path)
     texts = {stage: _stage_text(worktree, stage, path) if stage in stages else None for stage in (1, 2, 3)}
     return ConflictSides(path, texts[1], texts[2], texts[3])
@@ -90,13 +77,10 @@ def _indent(line: str) -> str:
 
 
 def _normalised_lines(text: str, python: bool) -> list[str] | None:
-    """Non-blank lines with interior whitespace collapsed and leading indentation kept; Python import blocks sorted.
-
-    Indentation is semantic in Python, YAML and Makefiles, so a re-indent is a real change and never mechanical. Python
-    is compared token by token, so whitespace inside a string literal stays significant; ``None`` if it won't tokenize.
-    """
     if not python:
+        # why: indentation is semantic in Python, YAML and Makefiles, so a re-indent is never mechanical.
         return [_indent(line) + " ".join(line.split()) for line in text.splitlines() if line.strip()]
+    # why: Python is compared token by token so whitespace inside a string literal stays significant.
     lines = python_lines(text)
     if lines is None:
         return None
@@ -127,7 +111,6 @@ def _is_appended_list(sides: ConflictSides) -> bool:
 
 
 def classify_sides(sides: ConflictSides) -> ConflictClass:
-    """The class of one unmerged path given its three sides; ``CODE`` unless a mechanical class fits exactly."""
     if _is_ledger_path(sides.path.replace("\\", "/")):
         return ConflictClass.LEDGER
     if _is_timestamp_only(sides):
@@ -136,11 +119,11 @@ def classify_sides(sides: ConflictSides) -> ConflictClass:
         return ConflictClass.DELETE_VS_TOUCH
     if _is_appended_list(sides):
         return ConflictClass.APPENDED_LIST
+    # why: a mechanical class needs positive evidence; anything doubtful is left to the code resolver.
     return ConflictClass.CODE
 
 
 def classify_path(worktree: str, path: str) -> ConflictClass:
-    """The class of one unmerged ``path``; a side that is not UTF-8 text (a binary file) is ``CODE``."""
     try:
         return classify_sides(read_sides(worktree, path))
     except UnicodeDecodeError:
@@ -148,5 +131,4 @@ def classify_path(worktree: str, path: str) -> ConflictClass:
 
 
 def classify_merge_conflicts(worktree: str, paths: list[str]) -> list[tuple[str, ConflictClass]]:
-    """Classify each unmerged path of the in-progress merge in ``worktree``, keeping the order of ``paths``."""
     return [(path, classify_path(worktree, path)) for path in paths]

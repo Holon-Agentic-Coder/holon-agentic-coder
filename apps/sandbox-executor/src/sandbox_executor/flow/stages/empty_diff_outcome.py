@@ -1,5 +1,3 @@
-"""Stage 3 empty-diff guard outcome: fail an execution whose diff is empty, superseding a container-claimed success."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -19,12 +17,6 @@ def empty_diff_failure(
     summary_row: dict[str, Any] | None,
     base_payload: dict[str, Any],
 ) -> StageResult:
-    """The failed Stage 3 result for an execution whose diff against the plan branch is empty.
-
-    A superseding ``failed`` row (failure_reason ``empty_diff``) is appended on ``exec_branch`` only when the container
-    recorded a summary row that is not already a failure. ``base_payload`` carries the execution id, exit code and
-    container status; the result payload adds ``container_status`` and ``superseding_row_recorded``.
-    """
     guard_summary = empty_diff_summary(context.plan_branch)
     outcome, recorded = _empty_diff_outcome(context, exec_branch, summary_row, base_payload, guard_summary)
     guard_payload = {
@@ -50,7 +42,6 @@ def _empty_diff_outcome(
     base_payload: dict[str, Any],
     guard_summary: str,
 ) -> tuple[str, bool]:
-    """The outcome clause of the empty-diff failure and whether a superseding row was recorded (written here)."""
     exec_id, container_status = base_payload["execution_id"], base_payload["status"]
     agent_exit = f"the executor agent exited with code {base_payload['exit_code']}"
     if summary_row is None:

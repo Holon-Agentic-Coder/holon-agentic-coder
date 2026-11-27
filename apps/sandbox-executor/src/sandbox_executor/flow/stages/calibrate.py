@@ -1,7 +1,3 @@
-"""Stage 5 (Post-Execution Calibration): run the calibration engine on the execution branch and commit the
-calibrated artefacts.
-"""
-
 from __future__ import annotations
 
 import dataclasses
@@ -53,15 +49,6 @@ logger = logging.getLogger(__name__)
 
 
 def _commit_stage5_reconciliation(context: FlowContext, repo_dir: str) -> None:
-    """Commit the Stage 5 reconciliation rows onto the /calibrated branch.
-
-    ``reconcile_records`` appends after ``run_calibrate`` has committed the calibration report,
-    so the rows are committed in a follow-up commit on the same /calibrated branch, before it is
-    pushed and fast-forwarded into the execution branch. Call it only after ``run_calibrate``
-    returned: when ``run_calibrate`` raised, Stage 5 fails closed before reconciliation, so this
-    is never reached. As a further guard, nothing is committed when HEAD is not the /calibrated
-    branch. Never raises.
-    """
     branch = context.calibrated_branch
     if not branch:
         return
@@ -74,7 +61,8 @@ def _commit_stage5_reconciliation(context: FlowContext, repo_dir: str) -> None:
             )
             return
         ledger_paths = ledger_commit_paths(repo_dir, "executions.jsonl")
-        if not ledger_paths:  # an empty pathspec would make ``git commit --`` commit the whole index
+        # why: an empty pathspec would make ``git commit --`` commit the whole index
+        if not ledger_paths:
             return
         run_git(["add", *ledger_paths], cwd=repo_dir, check=False)
         commit_res = run_git(
@@ -96,8 +84,8 @@ def _commit_stage5_reconciliation(context: FlowContext, repo_dir: str) -> None:
         context.log(msg)
 
 
+# why: the steps are read from this module's globals at call time so test patches here take effect
 def stage5_steps() -> Stage5Steps:
-    """The Stage 5 step callables, read from this module's globals at call time so test patches here take effect."""
     return Stage5Steps(
         calibrate=run_calibrate,
         reconcile=reconcile_records,
@@ -109,10 +97,6 @@ def stage5_steps() -> Stage5Steps:
 
 
 def run_calibrate_stage(context: FlowContext) -> StageResult:
-    """Execute Stage 5 unless the conflict gate or the merged-head CI gate stops it, then restore the starting branch.
-
-    The merged-head CI gate runs after the conflict gate's merge and before any calibration commit is pushed.
-    """
     try:
         refused = _stage5_conflict_gate(context)
         if refused is not None:
@@ -124,16 +108,12 @@ def run_calibrate_stage(context: FlowContext) -> StageResult:
 
 
 def _report_rel(context: FlowContext) -> str:
-    """The calibration report path beside the plan file; a branch naming no plan uses the flat legacy location."""
     execution_branch = str(context.execution_branch)
     plan_id = split_plan_branch(execution_branch)[1] or "P-unknown"
     return calibration_report_for_branch(execution_branch) or legacy_calibration_report_rel(plan_id)
 
 
 def _fail_calibration(context: FlowContext, start_time: str, calibrated_created: bool, exc: Exception) -> StageResult:
-    """FAILED for a calibration that raised with no retries left: no report, commit, push, reconciliation or
-    promotion; an empty /calibrated branch is discarded, a real run appends the failure ACT-CAL row (left
-    uncommitted for a ``--from-stage calibrate`` resume to commit), and the checkpoint stays at CALIBRATE."""
     execution_branch, repo_dir = str(context.execution_branch), context.target_worktree
     calibrated = calibration_branch(execution_branch)
     _leave_calibrated_branch(context)
@@ -167,7 +147,6 @@ def _fail_calibration(context: FlowContext, start_time: str, calibrated_created:
 
 
 def _prepare_execution_branch(context: FlowContext, start_time: str) -> tuple[StageResult | None, str | None, bool]:
-    """Check out and sync the execution branch and prepare /calibrated: (failure, start sha, calibrated created)."""
     checkout_err = _checkout_execution_branch(context)
     if checkout_err:
         failure = (
@@ -192,8 +171,6 @@ def _fail_closed(
     calibrated_created: bool,
     exc: CalibrationFormatError | CalibrationSelfCheckError,
 ) -> StageResult:
-    """FAILED for a report that failed the Prettier check or its self-check: nothing is committed, pushed or
-    fast-forwarded, and the checkpoint stays at CALIBRATE."""
     discard_empty_calibrated_branch(context, calibrated_created)
     if isinstance(exc, CalibrationSelfCheckError):
         return _stage_failure(
@@ -214,7 +191,6 @@ def _fail_closed(
 
 
 def _review_pr_number(context: FlowContext) -> str | None:
-    """The pull request Stage 4 reviewed (its consensus, else its ``pr`` entry), approved or not; None if unknown."""
     review = context.stage_results.get("review")
     payload = review.payload if review is not None and isinstance(review.payload, dict) else {}
     entries = (payload.get("consensus"), payload.get("pr"))
@@ -223,7 +199,6 @@ def _review_pr_number(context: FlowContext) -> str | None:
 
 
 def _supersede_stale_warning(context: FlowContext, evaluated_sha: str) -> dict[str, Any]:
-    """Mark an open stale-calibration warning superseded by the report just published; never posts, never raises."""
     record = resolve_stale(context, _review_pr_number(context), evaluated_sha)
     if record.get("edited"):
         context.log(f"Stage 5: the stale-calibration warning is superseded by the report on {evaluated_sha[:12]}.")
@@ -233,7 +208,6 @@ def _supersede_stale_warning(context: FlowContext, evaluated_sha: str) -> dict[s
 def _publish_and_supersede(
     context: FlowContext, report_dict: dict[str, Any] | None, start_sha: str | None
 ) -> tuple[bool, dict[str, Any] | None]:
-    """Publish /calibrated, then supersede the stale warning before the final-head CI wait: (pushed, its record)."""
     if not publish_calibration(context):
         return False, None
     evaluated_sha = str((report_dict or {}).get("evaluated_commit_sha") or start_sha or "")
@@ -250,7 +224,6 @@ def _log_calibration_complete(context: FlowContext, calibrated_head: str | None)
 
 
 def _calibrate_execution_branch(context: FlowContext, merged_head_ci: dict[str, Any] | None = None) -> StageResult:
-    """Execute Stage 5: Post-Execution Calibration on the execution branch and check final-head CI."""
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     context.log("Starting Stage 5: Post-Execution Calibration")
 
@@ -299,7 +272,7 @@ def _calibrate_execution_branch(context: FlowContext, merged_head_ci: dict[str, 
 
     end_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     pushed, stale_warning = False, None
-    # run_stage5 raises on every calibration failure, so reaching here means the report was generated.
+    # why: run_stage5 raises on every calibration failure, so reaching here means the report was generated.
     publish_attempted = not context.dry_run and bool(context.calibrated_branch)
     if publish_attempted:
         pushed, stale_warning = _publish_and_supersede(context, report_dict, start_sha)
@@ -307,11 +280,12 @@ def _calibrate_execution_branch(context: FlowContext, merged_head_ci: dict[str, 
     final_head_ci = check_final_head_ci(context, repo_dir, context.execution_branch) if pushed else not_pushed_record()
     context.log(format_final_head_ci(final_head_ci))
     reverified = reverify_and_report(context, repo_dir, final_head_ci, pushed)
-    # A report that never reached origin does not cover the head: only claim it when published or no push was due.
+    # why: a report that never reached origin does not cover the head; claim it only when published or not due.
     published = pushed or context.skip_push or not publish_attempted
     calibrated_head = start_sha if published else None
     _log_calibration_complete(context, calibrated_head)
-    blocked = reverified["verdict"] == RED  # deliberate: pending/unmeasured stays SUCCESS, logged in ci_verdict
+    # why: deliberate: a pending or unmeasured verdict stays SUCCESS and is logged in ci_verdict
+    blocked = reverified["verdict"] == RED
     result = StageResult(
         stage=FlowStage.CALIBRATE,
         status=StageStatus.FAILED if blocked else StageStatus.SUCCESS,

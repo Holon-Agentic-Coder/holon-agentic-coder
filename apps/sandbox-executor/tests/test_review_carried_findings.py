@@ -195,14 +195,29 @@ def test_resume_refuses_approval_while_a_carried_finding_has_no_disposition(tmp_
     log: list[str] = []
     dispositions = [{"id": "R1-F2", "disposition": "rejected", "rejection_reason": "inaccurate"}]
 
-    ctx, res = _resume(halted_checkpoint, log, _resolved(dispositions, "a" * 40))
+    _ctx, res = _resume(halted_checkpoint, log, _resolved(dispositions, "a" * 40))
 
-    assert log == ["resolver:R1-F1,R1-F2", "ensemble"]
+    # why: a finding still without an outcome goes back to the resolver until the no-convergence guard trips.
+    assert log == ["resolver:R1-F1,R1-F2", *["ensemble", "resolver:R1-F1"] * 2, "ensemble"]
     assert res["ensemble_verdict"] != str(ConsensusVerdict.APPROVED)
     assert res["consensus"]["approved"] is False
     assert any("R1-F1" in blocker for blocker in res["consensus_blockers"])
-    assert [f["id"] for f in ctx.carried_review_findings] == ["R1-F1"]
-    assert [r["review_finding_ids"] for r in _res_rows(tmp_path) if r["review_disposition"]] == [["R1-F2"]]
+
+
+def test_a_carried_finding_left_open_on_an_unchanged_head_halts_as_no_convergence(
+    tmp_path: Path, halted_checkpoint: str
+):
+    log: list[str] = []
+    dispositions = [{"id": "R1-F2", "disposition": "rejected", "rejection_reason": "inaccurate"}]
+
+    ctx, res = _resume(halted_checkpoint, log, _resolved(dispositions, "a" * 40))
+
+    assert res["no_convergence"] is True
+    assert log.count("ensemble") == 3
+    assert ctx.carried_review_findings == []
+    rows = {r["review_finding_ids"][0]: r for r in _res_rows(tmp_path) if r["review_disposition"]}
+    assert (rows["R1-F1"]["review_disposition"], rows["R1-F1"]["rejection_reason"]) == ("rejected", "no-convergence")
+    assert rows["R1-F2"]["rejection_reason"] == "inaccurate"
 
 
 def test_resume_whose_resolver_fails_again_starts_no_review_iteration(tmp_path: Path, halted_checkpoint: str):
@@ -217,7 +232,7 @@ def test_resume_whose_resolver_fails_again_starts_no_review_iteration(tmp_path: 
     assert [f["id"] for f in ctx.carried_review_findings] == ["R1-F1", "R1-F2"]
 
 
-def test_resume_with_an_unpushed_applied_fix_records_it_and_approves(tmp_path: Path, halted_checkpoint: str):
+def test_resume_with_an_unpushed_applied_fix_records_it_and_blocks_approval(tmp_path: Path, halted_checkpoint: str):
     log: list[str] = []
     dispositions = [
         {"id": "R1-F1", "disposition": "applied"},
@@ -226,10 +241,18 @@ def test_resume_with_an_unpushed_applied_fix_records_it_and_approves(tmp_path: P
 
     ctx, res = _resume(halted_checkpoint, log, _resolved(dispositions, ""))
 
-    assert log == ["resolver:R1-F1,R1-F2", "ensemble"]
-    assert res["consensus"]["approved"] is True
-    rows = {r["review_finding_ids"][0]: r["review_disposition"] for r in _res_rows(tmp_path)}
-    assert rows == {"R1-F1": "applied", "R1-F2": "rejected"}
+    # why: a finding still without an outcome goes back to the resolver on every later iteration.
+    assert log[:3] == ["resolver:R1-F1,R1-F2", "ensemble", "resolver:R1-F1"]
+    assert set(log[2:]) == {"ensemble", "resolver:R1-F1"}
+    assert res["consensus"]["approved"] is False
+    assert any(
+        b.endswith("without a resolver outcome (applied with a commit or rejected with a reason): R1-F1")
+        for b in res["consensus_blockers"]
+    )
+    # why: a fix never pushed leaves the head unchanged, so the no-convergence guard rejects the carried finding.
+    assert res["no_convergence"] is True
+    rows = {r["review_finding_ids"][0]: r.get("rejection_reason") for r in _res_rows(tmp_path)}
+    assert rows == {"R1-F1": "no-convergence", "R1-F2": "inaccurate"}
     assert ctx.carried_review_findings == []
 
 

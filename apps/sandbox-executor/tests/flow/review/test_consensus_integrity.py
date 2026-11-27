@@ -20,6 +20,7 @@ from sandbox_executor.flow.review.adjudication import (
 )
 from sandbox_executor.flow.review.approval_gates import approved
 from sandbox_executor.flow.review.verdict import (
+    _finding_outcome_blockers,
     consensus_blockers,
     decide_returned_consensus,
     not_approved_verdicts,
@@ -35,7 +36,7 @@ from sandbox_executor.review_ensemble import (
     reviewer_report_rel,
     serialize_review_outcome,
 )
-from sandbox_executor.review_report import FindingDisposition, finding_signature, with_reviewer_detail
+from sandbox_executor.review_report import FindingDisposition, FindingRow, finding_signature, with_reviewer_detail
 
 from tests.review_fakes import FAKE_HEAD_SHA, FakeEnsemble, clean_reviewer, install_fake_reviewers
 from tests.test_review_dispatch import EXEC_TARGET
@@ -118,7 +119,9 @@ def _assert_no_false_consensus(
         assert _posted_verdict(body) != "APPROVED"
         assert flag != "--approve"
     assert [call["iteration"] for call in calls] == [1, 2]
-    assert [row.severity for row in calls[1]["findings"]] == [severity]
+    # why: the bare rejection leaves the iteration-1 finding open, so it is carried ahead of the fresh one.
+    assert [row.severity for row in calls[1]["findings"]][-1] == severity
+    assert {row.summary for row in calls[0]["findings"]} <= {row.summary for row in calls[1]["findings"]}
     third = res["reviewers"][2]
     assert third["verdict"] == "CHANGES_REQUESTED"
     assert third["counts"][severity] == 1
@@ -302,12 +305,62 @@ def test_a_reviewer_whose_findings_were_all_suppressed_is_logged_and_never_appro
 
 
 def test_decide_returned_consensus_downgrades_approval_only_while_a_blocker_stands():
-    clean = [clean_reviewer(1)]
+    clean = [clean_reviewer(1), clean_reviewer(2), clean_reviewer(3)]
 
-    assert decide_returned_consensus(clean, 1, True, True, []) is ConsensusVerdict.APPROVED
-    assert decide_returned_consensus(clean, 1, True, True, ["x"]) is ConsensusVerdict.CHANGES_REQUESTED
-    assert decide_returned_consensus([], 1, True, True, ["x"]) is ConsensusVerdict.FAILED
+    assert decide_returned_consensus(clean, 3, True, True, []) is ConsensusVerdict.APPROVED
+    assert decide_returned_consensus(clean, 3, True, True, ["x"]) is ConsensusVerdict.CHANGES_REQUESTED
+    assert decide_returned_consensus([], 3, True, True, ["x"]) is ConsensusVerdict.FAILED
     assert consensus_blockers(clean, None, _filter_adjudicated_findings(clean, {})) == []
+
+
+_PRIOR_NIT = FindingRow("R1-F1", "nit", "src/app.py", 4, (1,), "Trailing whitespace.", "Strip it.")
+
+
+def _gated_verdict(reviewers, findings=(), dispositions=()):
+    blockers = _finding_outcome_blockers(reviewers, findings, dispositions)
+    return blockers, decide_returned_consensus(reviewers, len(reviewers), True, True, blockers)
+
+
+def _prior_nit_outcome(disposition, **fields):
+    row = _PRIOR_NIT
+    return FindingDisposition(
+        row.id, row.severity, row.path, row.line, row.summary, row.recommendation, disposition, **fields
+    )
+
+
+@pytest.mark.parametrize("size", [2, 4])
+def test_a_clean_ensemble_of_other_than_three_verdicts_is_not_approved(size):
+    reviewers = [clean_reviewer(i) for i in range(1, size + 1)]
+
+    blockers, verdict = _gated_verdict(reviewers)
+
+    assert blockers == [f"{size} reviewer verdict(s) returned; approval needs exactly 3"]
+    assert verdict is ConsensusVerdict.CHANGES_REQUESTED
+
+
+def test_an_undisposed_prior_finding_blocks_a_clean_three_verdict_approval():
+    reviewers = [clean_reviewer(1), clean_reviewer(2), clean_reviewer(3)]
+
+    blockers, verdict = _gated_verdict(reviewers, [_PRIOR_NIT], [_prior_nit_outcome("open")])
+
+    assert len(blockers) == 1 and blockers[0].endswith(": R1-F1")
+    assert verdict is ConsensusVerdict.CHANGES_REQUESTED
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        {"disposition": "applied", "commit_sha": "abc123"},
+        {"disposition": "rejected", "rejection_reason": "style matches the module convention"},
+    ],
+)
+def test_a_complete_three_verdict_approval_still_passes(outcome):
+    reviewers = [clean_reviewer(1), clean_reviewer(2), clean_reviewer(3)]
+
+    blockers, verdict = _gated_verdict(reviewers, [_PRIOR_NIT], [_prior_nit_outcome(**outcome)])
+
+    assert blockers == []
+    assert verdict is ConsensusVerdict.APPROVED
 
 
 def test_final_verdicts_name_every_reviewer_and_role_objection():
@@ -503,13 +556,13 @@ def test_an_open_critical_finding_with_green_ci_approves_neither_gate_nor_their_
 
 
 def test_clean_reviewers_with_red_ci_approve_the_diff_but_not_the_review(tmp_path, monkeypatch):
-    install_fake_reviewers(monkeypatch, FakeEnsemble([clean_reviewer(1), clean_reviewer(2)]))
+    install_fake_reviewers(monkeypatch, FakeEnsemble([clean_reviewer(1), clean_reviewer(2), clean_reviewer(3)]))
     ctx = _ensemble_ctx(tmp_path)
     with _LoopStubs(ci=_RED_CI):
-        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1, ensemble_size=2)
+        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1, ensemble_size=3)
 
     gates = res["consensus"]["gates"]
-    assert gates["diff"]["approved"] is True and gates["diff"]["verdicts"] == ["APPROVED", "APPROVED"]
+    assert gates["diff"]["approved"] is True and gates["diff"]["verdicts"] == ["APPROVED"] * 3
     assert gates["pipeline"]["state"] == "red"
     assert gates["diff"]["reviewed_head"] == gates["pipeline"]["head_sha"] == FAKE_HEAD_SHA
     assert res["consensus"]["approved"] is False and res["ensemble_verdict"] == "CHANGES_REQUESTED"
@@ -517,10 +570,10 @@ def test_clean_reviewers_with_red_ci_approve_the_diff_but_not_the_review(tmp_pat
 
 
 def test_clean_reviewers_with_green_ci_hold_both_gates(tmp_path, monkeypatch):
-    install_fake_reviewers(monkeypatch, FakeEnsemble([clean_reviewer(1)]))
+    install_fake_reviewers(monkeypatch, FakeEnsemble())
     ctx = _ensemble_ctx(tmp_path)
     with _LoopStubs():
-        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1, ensemble_size=1)
+        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=1, ensemble_size=3)
 
     assert res["consensus"]["approved"] is True
     assert approved(ctx, str(tmp_path), FAKE_HEAD_SHA) is True

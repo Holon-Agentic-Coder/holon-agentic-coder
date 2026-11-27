@@ -1,12 +1,3 @@
-"""Head test evidence selection for the review loop test gate.
-
-Selects the test evidence for the current git head commit and folds it into the CI probe, without subprocess calls.
-1. Resolver evidence (passing run confirmed locally on this head)
-2. Green CI on this PR head SHA
-3. Stage 3 on an unchanged head
-4. Local test re-run (review_local)
-"""
-
 from __future__ import annotations
 
 import re
@@ -26,15 +17,13 @@ TEST_SOURCE_CI = "ci"
 
 @dataclass(frozen=True)
 class _LocalTestOutcome:
-    """The review-local measurement as the loop consumes it: a rate (None when unmeasured) and whether it failed."""
-
     rate: float | None
     failed: bool
     measurement: TestMeasurement
 
 
 def _failed(measurement: TestMeasurement) -> bool:
-    """A measured rate below 1.0 or a non-zero exit of a completed run; an unrunnable run is unmeasured, not failed."""
+    # why: an unrunnable run is unmeasured, not failed.
     if measurement.run_error:
         return False
     return measurement.exit_code != 0 or (measurement.rate is not None and measurement.rate < 1.0)
@@ -42,8 +31,6 @@ def _failed(measurement: TestMeasurement) -> bool:
 
 @dataclass(frozen=True)
 class HeadEvidenceDecisionInput:
-    """Inputs to choose_evidence."""
-
     ci_status: dict[str, Any]
     stage_3_evidence: tuple[float | None, bool]
     stage_3_head: str
@@ -70,7 +57,6 @@ def _is_stage_3_measured(stage_3_evidence: tuple[float | None, bool], stage_3_he
 
 
 def _needs_pr_head(ci_status: dict[str, Any], current_head: str, resolver_heads: frozenset[str] | set[str]) -> bool:
-    """True only when green GitHub CI could decide the head and resolver evidence does not already cover it."""
     if not current_head or current_head in resolver_heads:
         return False
     return (
@@ -86,14 +72,12 @@ def _needs_ci_registration(
     current_head: str,
     resolver_heads: frozenset[str] | set[str],
 ) -> bool:
-    """True when the current head has neither confirmed resolver evidence nor a Stage 3 measurement."""
     if current_head and current_head in resolver_heads:
         return False
     return not _is_stage_3_measured(stage_3_evidence, stage_3_head, current_head)
 
 
 def _attach_local_counts(ci_status: dict[str, Any], outcome: _LocalTestOutcome) -> None:
-    """Populate ``test_counts`` (and any ``test_run_error``) on ``ci_status`` from a local measurement."""
     m = outcome.measurement
     ci_status["test_counts"] = {"passed": m.passed, "failed": m.failed, "errored": m.errored}
     if m.run_error:
@@ -101,7 +85,6 @@ def _attach_local_counts(ci_status: dict[str, Any], outcome: _LocalTestOutcome) 
 
 
 def _attach_stage_3_counts(ci_status: dict[str, Any], stage_3: dict[str, Any] | None) -> None:
-    """Populate ``test_counts`` on ``ci_status`` when Stage 3 recorded counts or a run error."""
     if stage_3 and (stage_3.get("test_pass_rate") is not None or stage_3.get("test_run_error")):
         ci_status["test_counts"] = {
             "passed": stage_3.get("tests_passed"),
@@ -111,14 +94,6 @@ def _attach_stage_3_counts(ci_status: dict[str, Any], stage_3: dict[str, Any] | 
 
 
 def choose_evidence(inp: HeadEvidenceDecisionInput) -> str:
-    """Decide which test evidence source to use for the current head commit.
-
-    Applying rules in priority order:
-    1. Resolver evidence confirmed on current head -> resolver_evidence
-    2. Green CI on PR head matching current head -> ci_head
-    3. Stage 3 on an unchanged head when measured -> stage_3
-    4. Otherwise (unmeasured, or head moved) -> review_local
-    """
     current_head = inp.current_head
     if current_head and current_head in inp.resolver_heads:
         return TEST_SOURCE_RESOLVER_EVIDENCE
@@ -133,7 +108,6 @@ def choose_evidence(inp: HeadEvidenceDecisionInput) -> str:
 
 
 def _discard_stale_github_pass(ci_status: dict[str, Any], source: str | None = None) -> None:
-    """Reset a green github_cli probe when local or Stage 3 evidence governs instead of ci_head."""
     if source is not None and source not in (TEST_SOURCE_STAGE_3, TEST_SOURCE_REVIEW_LOCAL):
         return
     if (
@@ -157,7 +131,6 @@ def _discard_stale_github_pass(ci_status: dict[str, Any], source: str | None = N
 def _attribute_test_source(
     ci_status: dict[str, Any], stage_3: dict[str, Any] | None, review_local: _LocalTestOutcome | None
 ) -> None:
-    """Record on the CI probe where its test evidence came from (``stage_3``, ``ci`` or ``review_local``)."""
     if ci_status.get("source") == "github_cli":
         ci_status["test_source"] = TEST_SOURCE_CI
         return
@@ -170,7 +143,6 @@ def _attribute_test_source(
 
 
 def has_pass_marker(text: str) -> bool:
-    """True when the text reports a pass without negated pass phrases or non-zero failures/errors."""
     clean = text.lower()
     if re.search(r"\b(?:not|0)\s+passed\b", clean) or re.search(r"\b[1-9]\d*\s+(?:failed|errors?|errored)\b", clean):
         return False
@@ -182,7 +154,6 @@ def _disp_field(disp: Any, name: str) -> str:
 
 
 def _has_passing_ci_rejection(dispositions: Sequence[Any]) -> bool:
-    """True when a disposition rejects a ``FIND-CI`` finding with code/test evidence containing a pass marker."""
     for disp in dispositions:
         ev = _disp_field(disp, "evidence")
         if (

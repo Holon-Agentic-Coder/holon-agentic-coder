@@ -50,6 +50,7 @@ GOVERNED_MODULES_BY_PACKAGE: dict[str, tuple[str, ...]] = {
         "preflight.py",
         "ref_names.py",
         "review_failure.py",
+        "review_finding_outcomes.py",
         "review_paths.py",
         "review_report.py",
         "review_target.py",
@@ -198,8 +199,8 @@ def _under_ceiling(source: str, ceiling: int) -> bool:
     return count_lines(source) < ceiling
 
 
-def test_registry_has_146_unique_modules() -> None:
-    assert len(GOVERNED_MODULES) == 146
+def test_registry_has_147_unique_modules() -> None:
+    assert len(GOVERNED_MODULES) == 147
     assert len(set(GOVERNED_MODULES)) == len(GOVERNED_MODULES)
     assert set(BASELINE_LINE_CEILINGS) <= set(GOVERNED_MODULES)
 

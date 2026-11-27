@@ -263,9 +263,12 @@ def short_circuit_result(
 
 
 def sync_probe_result(result: PreflightResult, *, now: float | None = None, state_dir: str | None = None) -> None:
-    if result.skipped:
+    # why: lazy import avoids a circular dependency and skips non-PreflightResult test doubles.
+    from sandbox_executor.preflight import PreflightResult, PreflightStatus
+
+    if not isinstance(result, PreflightResult) or result.skipped:
         return
-    if result.status.value == "quota_exhausted":
+    if result.status is PreflightStatus.QUOTA_EXHAUSTED:
         record_cooldown(result, now=now, state_dir=state_dir)
-    elif result.status.value == "ok":
+    elif result.status is PreflightStatus.OK:
         clear_cooldown(result.agent, state_dir=state_dir)

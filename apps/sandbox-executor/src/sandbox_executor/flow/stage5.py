@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from sandbox_executor.calibration import LEDGER_EXECUTIONS_REL
-from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.git_refs import _execution_parent_plan_branch, _resolve_branch_ref
 from sandbox_executor.flow.github.ci_reverify import approved_head_of
+from sandbox_executor.flow.review.approval_fingerprint import FINGERPRINT_VERSION, is_current_version
+from sandbox_executor.flow.review.consensus_withdrawal import withdrawn_consensus_of
 from sandbox_executor.flow.stage5_ledger import recorded_verdicts
 from sandbox_executor.flow.stages.touch_set_guard import (
     TOUCH_SET_VIOLATION,
@@ -66,6 +68,72 @@ class _Stage5TouchSetError(RuntimeError):
         self.out_of_scope_files = readiness.out_of_scope_files
         self.failure_reason = readiness.reason or TOUCH_SET_VIOLATION
         super().__init__("\n".join(readiness.format_lines()))
+
+
+class Stage5PrerequisiteError(RuntimeError):
+    pass
+
+
+def _is_concrete_commit(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip()) and value.strip() != "HEAD"
+
+
+def _has_reviewed_pr(payload: Mapping[str, Any], consensus: Mapping[str, Any]) -> bool:
+    pr = payload.get("pr")
+    entries = (consensus, pr) if isinstance(pr, Mapping) else (consensus,)
+    return any(entry.get("pr_number") or entry.get("pr_url") for entry in entries)
+
+
+def _is_posted_consensus_review(payload: Mapping[str, Any]) -> bool:
+    review_package = payload.get("review_package")
+    fallback_posting = review_package.get("posting") if isinstance(review_package, Mapping) else None
+    posting = payload.get("posting") or fallback_posting
+    if not isinstance(posting, Mapping):
+        return False
+    if posting.get("dual_posted"):
+        return True
+    official = posting.get("official_review")
+    return isinstance(official, Mapping) and bool(official.get("success"))
+
+
+def _has_valid_carried_consensus(payload: Mapping[str, Any], consensus: Mapping[str, Any]) -> bool:
+    fingerprint = consensus.get("approval_fingerprint")
+    if not isinstance(fingerprint, str) or not is_current_version(fingerprint):
+        return False
+    if not fingerprint.removeprefix(f"{FINGERPRINT_VERSION}:").strip():
+        return False
+    if not (_is_concrete_commit(consensus.get("carried_from")) and _is_concrete_commit(consensus.get("carried_to"))):
+        return False
+    return _has_reviewed_pr(payload, consensus)
+
+
+def _review_consensus_error(context: FlowContext, review: StageResult) -> str | None:
+    payload = review.payload if isinstance(review.payload, Mapping) else None
+    consensus = payload.get("consensus") if payload is not None else None
+    if not isinstance(consensus, Mapping) or not consensus.get("approved") or not approved_head_of(context):
+        return "Stage 4 review has no recorded consensus approval head"
+    if withdrawn_consensus_of(context) is not None:
+        return "Stage 4 consensus approval was withdrawn"
+    if not (_is_posted_consensus_review(payload) or _has_valid_carried_consensus(payload, consensus)):
+        return (
+            "Stage 4 review has no posted GitHub consensus review or valid carried consensus fingerprint "
+            "on a reviewed PR"
+        )
+    return None
+
+
+def stage5_prerequisite_error(context: FlowContext) -> str | None:
+    execute = context.stage_results.get(FlowStage.EXECUTE.value)
+    if execute is None:
+        return "Stage 3 execute result is missing"
+    if execute.status != StageStatus.SUCCESS:
+        return f"Stage 3 execute status is '{execute.status.value}', expected 'success'"
+    review = context.stage_results.get(FlowStage.REVIEW.value)
+    if review is None:
+        return "Stage 4 review result is missing"
+    if review.status != StageStatus.APPROVED:
+        return f"Stage 4 review status is '{review.status.value}', expected 'approved'"
+    return _review_consensus_error(context, review)
 
 
 @dataclass
@@ -204,6 +272,11 @@ def _promote_candidates(context: FlowContext, steps: Stage5Steps) -> list[dict[s
 def run_stage5(
     context: FlowContext, steps: Stage5Steps, verdict: str | None, report_only: bool = False
 ) -> Stage5Outcome:
+    if not getattr(context, "_standalone_stage5", False):
+        prereq_error = stage5_prerequisite_error(context)
+        if prereq_error is not None:
+            context.log(f"Stage 5 calibration refused: {prereq_error}")
+            raise Stage5PrerequisiteError(prereq_error)
     readiness = _check_stage5_readiness(context)
     if not readiness.ready:
         for line in readiness.format_lines():
@@ -240,6 +313,9 @@ def run_stage5(
 
 
 def standalone_context(execution_branch: str, target_worktree: str, no_commit: bool) -> FlowContext:
-    return FlowContext(
+    context = FlowContext(
         target_worktree=target_worktree, execution_branch=execution_branch, dry_run=no_commit, token_reduce=False
     )
+    # why: standalone holon calibrate CLI has no flow checkpoint stage_results
+    setattr(context, "_standalone_stage5", True)
+    return context

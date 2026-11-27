@@ -257,9 +257,7 @@ def _merge_parents(context: GateContext, client: GateClient, rules: GateRules) -
     return head
 
 
-def _previous_head_check(
-    context: GateContext, client: GateClient, rules: GateRules, pr_parent: str
-) -> str | Decision:
+def _previous_head_check(context: GateContext, client: GateClient, rules: GateRules, pr_parent: str) -> str | Decision:
     """Return the "run" decision unless the job really succeeded on the previous head, over bookkeeping-only pushes."""
     query = JobQuery(
         context.workflow_file, context.branch, context.job_name, context.os_name, context.run_number, context.before

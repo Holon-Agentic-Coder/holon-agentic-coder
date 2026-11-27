@@ -185,6 +185,7 @@ def test_stage3_resume_conflict_on_plan_branch_blocks_cleanly_with_prior_executi
         intent_data={"target_branch": "main"},
         plan_branch=FLOW_BRANCH,
         execution_branch=prior_failed,
+        dispatcher=lambda *_a, **_k: 1,
     )
 
     failure = at_flow_start(ctx, FlowStage.EXECUTE)

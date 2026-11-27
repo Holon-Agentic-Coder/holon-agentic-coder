@@ -562,6 +562,7 @@ def _stage3_engine_context(repo: Path, prior_execution_branch: str | None = None
         agent="claude-agent",
         model="claude-opus-5-5",
         admission=None,
+        dispatcher=lambda *_a, **_k: 1,
     )
     ctx.stage_results["intent"] = StageResult(stage=FlowStage.INTENT, status=StageStatus.SUCCESS)
     ctx.stage_results["plan"] = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)

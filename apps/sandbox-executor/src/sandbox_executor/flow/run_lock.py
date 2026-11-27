@@ -125,8 +125,8 @@ def acquire_flow_run_lock(target_worktree: str, slug: str, run_id: str) -> HeldR
     held = _attempt(slug, path, holder, None)
     if isinstance(held, HeldRunLock):
         return held
-    # why: contenders for a dead holder's lock take it over one at a time under a guard lock and re-check the file
-    # why: there, so none can unlink a lock file another has just created and locked.
+    # why: contenders for a dead holder's lock take it over one at a time under a guard lock
+    # why: re-checking the lock file under the guard stops one contender unlinking a file another has just locked
     guard = os.open(f"{path}.takeover", os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(guard, fcntl.LOCK_EX)

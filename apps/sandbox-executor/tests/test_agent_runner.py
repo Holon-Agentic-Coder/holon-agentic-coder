@@ -17,21 +17,16 @@ from sandbox_executor.agent_runner import (
 
 
 def _docker_image_available(image_name: str) -> bool:
-    """Return True when the named image is present in the local Docker image store.
-
-    An unbuilt image is an absent fixture, not a result: ``docker run`` exits 125 for an image it
-    cannot resolve, so an assertion that only rejects 127 (command not found) would pass without
-    ever having run anything inside the image.
-    """
+    # why: docker run exits 125 for an unresolvable image, so rejecting only 127 would pass without running anything
     probe = subprocess.run(["docker", "image", "inspect", image_name], capture_output=True, text=True)
     return probe.returncode == 0
 
 
 SETTINGS_FILE = "<private settings file>"
+COMMAND_NOT_FOUND_EXIT = 127
 
 
 def _split_settings(cmd: list[str]) -> tuple[list[str], dict]:
-    """Return ``cmd`` with a private-file ``--settings`` value masked, and the parsed settings it carries."""
     at = cmd.index("--settings") + 1
     value = cmd[at]
     if value.startswith("{"):
@@ -42,7 +37,6 @@ def _split_settings(cmd: list[str]) -> tuple[list[str], dict]:
 
 class TestAgentRunner(unittest.TestCase):
     def test_runner_mappings(self):
-        """Test that get_runner correctly maps agent names and validates support."""
         supported_agents = ["pi", "pi-agent", "claude-agent", "antigravity-agent"]
         for agent in supported_agents:
             runner = get_runner(agent)
@@ -52,7 +46,6 @@ class TestAgentRunner(unittest.TestCase):
             get_runner("unsupported-agent-name")
 
     def test_standard_runner_cmd(self):
-        """Test command construction for all agents in the registry."""
         import os
         from unittest.mock import patch
 
@@ -87,8 +80,7 @@ class TestAgentRunner(unittest.TestCase):
             "ANTHROPIC_API_KEY": "dummy",
         }
         with patch.dict(os.environ, dummy_env):
-            # Hermetic against the ambient sandbox/host env: these add --settings/--effort flags to the commands.
-            # patch.dict restores the removed values on exit.
+            # why: the ambient sandbox or host env adds --settings/--effort flags to the commands
             for var in (
                 "CLAUDE_CODE_OAUTH_TOKEN",
                 "HOLON_AGENT_SETTINGS",
@@ -112,7 +104,6 @@ class TestAgentRunner(unittest.TestCase):
                     self.assertEqual(cmd, expected_cmd)
 
     def test_runner_validation_failures(self):
-        """Test that validation fails with SystemExit when credentials are missing."""
         import os
         from unittest.mock import patch
 
@@ -124,11 +115,9 @@ class TestAgentRunner(unittest.TestCase):
                         runner.build_cmd("model", "/tmp/p", "/tmp/i", "prompt")
 
     def test_runner_env_vars(self):
-        """Test that runners correctly append configurations derived from environment variables."""
         import os
         from unittest.mock import patch
 
-        # 1. Claude settings
         claude_env = {
             "HOLON_AGENT_SETTINGS": "/path/to/settings.json",
             "HOLON_AGENT_KEY": "dummy",
@@ -141,7 +130,6 @@ class TestAgentRunner(unittest.TestCase):
             _, settings = _split_settings(cmd)
             self.assertIs(settings["includeCoAuthoredBy"], False)
 
-        # 2. Codex OSS and local provider configurations
         env = {
             "HOLON_AGENT_OSS_MODE": "true",
             "HOLON_AGENT_LOCAL_PROVIDER": "ollama",
@@ -156,9 +144,7 @@ class TestAgentRunner(unittest.TestCase):
             self.assertIn("-c", cmd)
             self.assertIn("temperature=0.2", cmd)
 
-        # 3. Pi provider (auth handled internally via HOLON_AGENT_KEY -> PI_API_KEY)
-        # Note: --api-key is NOT a CLI flag anymore; the pi CLI reads PI_API_KEY from
-        # os.environ directly. _apply_generic_token() maps HOLON_AGENT_KEY -> PI_API_KEY.
+        # why: the pi CLI reads PI_API_KEY, which _apply_generic_token maps from HOLON_AGENT_KEY
         env = {
             "HOLON_AGENT_PROVIDER": "anthropic",
             "HOLON_AGENT_KEY": "sk-ant-123",
@@ -169,7 +155,6 @@ class TestAgentRunner(unittest.TestCase):
             self.assertIn("--provider", cmd)
             self.assertIn("anthropic", cmd)
 
-        # 5. Antigravity skip permissions
         with patch.dict(os.environ, {"HOLON_AGENT_SKIP_PERMISSIONS": "true", "HOLON_AGENT_KEY": "dummy"}):
             runner = get_runner("antigravity")
             cmd = runner.build_cmd("gemini-3.5-flash", "/tmp/p", "/tmp/i", "prompt")
@@ -177,7 +162,6 @@ class TestAgentRunner(unittest.TestCase):
             self.assertIn("--effort", cmd)
 
     def test_three_tier_fallback_contract(self):
-        """Test that Tier 1 (HOLON_AGENT_KEY) passes validation for all runners."""
         import os
         from unittest.mock import patch
 
@@ -186,11 +170,9 @@ class TestAgentRunner(unittest.TestCase):
             for agent_name in runners:
                 with self.subTest(agent=agent_name):
                     runner = get_runner(agent_name)
-                    # Should pass validation without raising SystemExit
                     runner.validate()
 
     def test_secret_bundle_parsing_and_filtering(self):
-        """Test secret bundle parsing, agent filtering, and config_files unpacking."""
         import json
         import os
         import tempfile
@@ -208,18 +190,16 @@ class TestAgentRunner(unittest.TestCase):
             with open(bundle_path, "w") as f:
                 json.dump(bundle_data, f)
 
-            # Test targeting matching agent (claude)
             fake_home = os.path.join(tmpdir, "home")
             os.makedirs(fake_home, exist_ok=True)
             env = {"HOLON_SECRET_BUNDLE_PATH": bundle_path, "HOME": fake_home}
             with patch.dict(os.environ, env, clear=True):
                 runner = get_runner("claude")
                 runner.validate()
-                # The claude runner never consults HOLON_AGENT_KEY, so the bundle key is not promoted to it.
+                # why: the claude runner never consults HOLON_AGENT_KEY, so the bundle key is not promoted to it
                 self.assertIsNone(os.getenv("HOLON_AGENT_KEY"))
                 self.assertTrue(os.path.exists(os.path.join(fake_home, ".config/claude/config.json")))
 
-            # Test targeting non-matching agent (opencode) -> should not set HOLON_AGENT_KEY
             with (
                 patch.dict(os.environ, env, clear=True),
                 patch("os.path.exists", side_effect=lambda p: p == bundle_path),
@@ -230,7 +210,6 @@ class TestAgentRunner(unittest.TestCase):
                 self.assertIsNone(os.getenv("HOLON_AGENT_KEY"))
 
     def test_secret_bundle_path_traversal(self):
-        """Test that path traversal attempts in secret bundle config_files are detected and blocked."""
         import json
         import os
         import tempfile
@@ -263,9 +242,6 @@ class TestAgentRunner(unittest.TestCase):
                     self.assertIn("Path traversal detected", str(mock_warn.call_args))
 
     def test_secret_bundle_api_key_only(self):
-        """Assert that a secret bundle containing only api_key (with no config files)
-        successfully validates and propagates the token.
-        """
         import json
         import os
         import tempfile
@@ -290,10 +266,6 @@ class TestAgentRunner(unittest.TestCase):
 
     @pytest.mark.integration_test
     def test_real_images_have_binaries(self):
-        """Integration test to verify that the configured agent runner binaries
-
-        actually exist and are runnable inside the corresponding real Docker images.
-        """
         import shutil
 
         if not shutil.which("docker"):
@@ -315,29 +287,23 @@ class TestAgentRunner(unittest.TestCase):
                 if not _docker_image_available(image_name):
                     self.skipTest(f"Docker image '{image_name}' is not built in this environment.")
 
-                # Run 'docker run --rm <image> <binary> --help'
                 cmd = ["docker", "run", "--rm", image_name, runner.binary_name, "--help"]
                 try:
                     result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-                    # Verify command was found (127 means command not found)
                     self.assertNotEqual(
                         result.returncode,
-                        127,
+                        COMMAND_NOT_FOUND_EXIT,
                         f"Binary '{runner.binary_name}' not found (exited 127) inside image '{image_name}'.\n"
                         f"Stderr:\n{result.stderr}",
                     )
                 except subprocess.TimeoutExpired:
-                    # Timeout is fine since it means the binary started up and block-waited
+                    # why: a timeout means the binary started and blocked waiting
                     pass
                 except Exception as e:
                     self.fail(f"Failed to run container for agent {agent_id}: {e}")
 
     @pytest.mark.integration_test
     def test_real_images_get_version(self):
-        """Integration test to verify that get_version() resolves correctly
-
-        inside each real built Docker image for all supported agents.
-        """
         import re
         import shutil
 
@@ -383,7 +349,6 @@ class TestAgentRunner(unittest.TestCase):
                     self.fail(f"Failed get_version integration test for container agent {agent_id}: {e}")
 
     def test_get_version_success(self):
-        """Test get_version when the binary returns a version successfully."""
         from unittest.mock import MagicMock, patch
 
         runner = get_runner("pi")
@@ -403,7 +368,6 @@ class TestAgentRunner(unittest.TestCase):
             mock_run.assert_not_called()
 
     def test_get_version_fallback(self):
-        """Test get_version when the subprocess call fails or returns no version."""
         from unittest.mock import patch
 
         runner = get_runner("claude")
@@ -425,7 +389,6 @@ class TestAgentRunner(unittest.TestCase):
             runner.agent_id = original_agent_id
 
     def test_get_version_nonzero_returncode(self):
-        """Test get_version when subprocess returns a non-zero exit code."""
         from unittest.mock import MagicMock, patch
 
         runner = get_runner("pi")
@@ -441,7 +404,6 @@ class TestAgentRunner(unittest.TestCase):
             self.assertEqual(version, "unknown")
 
     def test_get_version_timeout(self):
-        """Test get_version handling when subprocess times out."""
         import subprocess
         from unittest.mock import patch
 
@@ -453,8 +415,6 @@ class TestAgentRunner(unittest.TestCase):
             self.assertEqual(version, "unknown")
 
     def test_open_codex_removed(self):
-        """Test that open-codex is removed and accessing it raises KeyError in runners dict
-        and SystemExit in get_runner."""
         with self.assertRaises(KeyError):
             _ = runners["open-codex"]
         with self.assertRaises(SystemExit):
@@ -463,7 +423,6 @@ class TestAgentRunner(unittest.TestCase):
 
 class TestGuards(unittest.TestCase):
     def test_guard_no_hardcoded_holon_agentic_coder_repo_in_src(self):
-        """Guard test: assert no file under apps/sandbox-executor/src mentions 'holon-agentic-coder.git'."""
         src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
         for root, _, files in os.walk(src_dir):
             for file in files:
@@ -478,7 +437,6 @@ class TestGuards(unittest.TestCase):
                     )
 
     def test_guard_no_retired_reference_repo(self):
-        """Guard test: assert no file under apps/sandbox-executor/src mentions holon-agentic-coder-ref."""
         src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
         for root, _, files in os.walk(src_dir):
             for file in files:
@@ -495,7 +453,6 @@ class TestGuards(unittest.TestCase):
 
 class TestWorkspaceDirAndCleanup(unittest.TestCase):
     def test_get_workspace_dir_override(self):
-        """Test get_workspace_dir respects HOLON_TARGET_WORKTREE when set."""
         import os
         from unittest.mock import patch
 
@@ -505,7 +462,6 @@ class TestWorkspaceDirAndCleanup(unittest.TestCase):
             self.assertEqual(get_workspace_dir(), "/custom/workspace/path")
 
     def test_get_workspace_dir_sandbox(self):
-        """Test get_workspace_dir returns sandbox workspace path when HOLON_IN_SANDBOX is set."""
         import os
         from unittest.mock import patch
 
@@ -518,7 +474,6 @@ class TestWorkspaceDirAndCleanup(unittest.TestCase):
             self.assertEqual(get_workspace_dir(), "/fake/home/.holon-sandbox/workspace")
 
     def test_get_workspace_dir_default(self):
-        """Test get_workspace_dir returns default repo path outside sandbox."""
         import os
         from unittest.mock import patch
 
@@ -532,7 +487,6 @@ class TestWorkspaceDirAndCleanup(unittest.TestCase):
             self.assertEqual(get_workspace_dir(), "/fake/home/.holon/repo")
 
     def test_cleanup_repo_dir_nonexistent(self):
-        """Test cleanup_repo_dir does nothing if directory does not exist."""
         from unittest.mock import patch
 
         from sandbox_executor.agent_runner import cleanup_repo_dir
@@ -541,14 +495,12 @@ class TestWorkspaceDirAndCleanup(unittest.TestCase):
             cleanup_repo_dir("/path/does/not/exist")
 
     def test_cleanup_repo_dir_forbidden_root(self):
-        """Test cleanup_repo_dir raises RuntimeError for forbidden root directories."""
         from sandbox_executor.agent_runner import cleanup_repo_dir
 
         with self.assertRaises(RuntimeError):
             cleanup_repo_dir("/etc", raise_on_error=True)
 
     def test_cleanup_invariant_descendant_of_fixture(self):
-        """Test invariant: cleanup operations only operate within designated fixture path."""
         import os
         import tempfile
         from unittest.mock import patch
@@ -571,7 +523,6 @@ class TestWorkspaceDirAndCleanup(unittest.TestCase):
                     )
 
     def test_cleanup_ephemeral_credentials(self):
-        """Verify ephemeral files unpacked during resolve_credentials are wiped on cleanup."""
         import json
         import os
         import tempfile
@@ -613,7 +564,6 @@ CLAUDE_DEFAULT_SETTINGS = {**ATTRIBUTION_OFF, "env": {"CLAUDE_CODE_EXPERIMENTAL_
 
 @pytest.fixture
 def claude_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
-    """Hermetic environment for the claude runner: dummy key, no ambient bypass, settings or secret bundle."""
     monkeypatch.setenv("HOLON_AGENT_KEY", "dummy")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy")
     for var in ("HOLON_AGENT_SKIP_PERMISSIONS", "HOLON_AGENT_SETTINGS", "HOLON_CLAUDE_CODE_MODE"):
@@ -694,17 +644,13 @@ def test_other_runners_never_emit_claude_bypass(claude_env: pytest.MonkeyPatch, 
 
 
 def test_real_registered_runners_build_command_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify that all real registered runners implement build_command identically to compose_cmd without mocks."""
     monkeypatch.delenv("HOLON_AGENT_SETTINGS", raising=False)
-    # 1. Iterate over all registered runner instances in the runners dictionary directly without mocks
     for runner in runners.values():
         cmd_build = runner.build_command("test-prompt", "test-model")
         cmd_compose = runner.compose_cmd("test-model", "test-prompt")
 
-        # Assert strict equality between build_command and compose_cmd
         assert cmd_build == cmd_compose
 
-        # Assert command structure invariants
         assert isinstance(cmd_build, list)
         assert all(isinstance(arg, str) for arg in cmd_build)
         assert cmd_build[0] == runner.binary_name
@@ -712,7 +658,6 @@ def test_real_registered_runners_build_command_contract(monkeypatch: pytest.Monk
         assert "test-model" in cmd_build
         assert cmd_build[-1] == "test-prompt"
 
-    # 2. Specifically verify all supported agent aliases via get_runner()
     agent_aliases = ["pi", "claude", "opencode", "codex", "antigravity-agent"]
     for alias in agent_aliases:
         runner = get_runner(alias)
@@ -721,12 +666,10 @@ def test_real_registered_runners_build_command_contract(monkeypatch: pytest.Monk
         cmd_compose = runner.compose_cmd("test-model", "test-prompt")
         assert cmd_build == cmd_compose
 
-    # 3. Specifically verify AntigravityAgentRunner class hierarchy
     antigravity_runner = get_runner("antigravity-agent")
     assert isinstance(antigravity_runner, AntigravityAgentRunner)
     assert isinstance(antigravity_runner, StandardAgentRunner)
 
-    # 4. Verify runtime environment evaluation operates identically across build_command and compose_cmd
     monkeypatch.setenv("HOLON_AGENT_EFFORT", "high")
     monkeypatch.setenv("HOLON_AGENT_SKIP_PERMISSIONS", "true")
     cmd_build = antigravity_runner.build_command("eval-prompt", "eval-model")
@@ -772,7 +715,6 @@ def test_validate_prints_spec_message_and_exits_1(agent_id, monkeypatch, tmp_pat
 
 @pytest.fixture
 def permissive_umask():
-    """Run the test under umask 0o000 and restore the previous umask afterwards."""
     previous = os.umask(0o000)
     try:
         yield
@@ -783,7 +725,6 @@ def permissive_umask():
 def _unpack_bundle(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, config_files: dict[str, str]
 ) -> StandardAgentRunner:
-    """Unpack a bundle for the test agent into a temporary home and return the runner."""
     home = Path(os.path.realpath(tmp_path)) / "home"
     home.mkdir(exist_ok=True)
     bundle = tmp_path / "bundle.json"

@@ -1,18 +1,4 @@
-"""Review accounting: how many full and scoped reviews, pipeline runs and reruns a flow spent, and why it churned.
-
-The record lives in ``context.review_state["accounting"]`` (checkpointed with the flow context) and only this module
-writes it: one integer per ``COUNTER_KEYS`` entry, ``non_defect_churn`` (one integer per ``CHURN_REASONS`` entry: a
-target merge the approval was carried across, a bookkeeping-only move the approval still covers, CI noise that was
-rerun), ``seen_events`` (the events already counted, so a resumed pass or a re-inspected run is never counted twice) and
-``generation`` (bumped by every Stage 4 restart, so a pass after a restart is a new event even at the same head and
-label). The module imports nothing from the flow package, so a reader outside it (the calibration report, the
-``holon calibrate`` CLI) never loads the flow.
-
-A missing or malformed record (a legacy checkpoint or payload, or a run with no flow context) reads as None and renders
-"not recorded", never as zeros: an unknown count must not read as "no churn". A record first created after review passes
-already ran (a flow resumed from a checkpoint that predates the record) is marked ``partial`` and rendered as such.
-"""
-
+# why: imports nothing from the flow package, so the calibration report and CLI read accounting without loading it.
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -29,12 +15,10 @@ GENERATION = "generation"
 
 
 def int_or_zero(value: Any) -> int:
-    """``value`` when it is an integer (not a bool), else 0."""
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _valid_counts(record: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, int] | None:
-    """The non-negative integer ``keys`` of ``record``, or None when any is missing or not an integer."""
     values = [record.get(key) for key in keys]
     if not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in values):
         return None
@@ -42,15 +26,14 @@ def _valid_counts(record: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str,
 
 
 def _raw_record(source: Any) -> Any:
-    """The accounting a context, a Stage 4 payload or a loop result carries, unvalidated."""
     if isinstance(source, Mapping):
         return source.get("review_accounting", source.get("accounting"))
     review_state = getattr(source, "review_state", None)
     return review_state.get("accounting") if isinstance(review_state, Mapping) else None
 
 
+# why: a missing or malformed record reads as None ("not recorded"), never zeros: unknown must not read as no churn.
 def accounting_of(source: Any) -> dict[str, Any] | None:
-    """A copy of the counters and ``partial`` flag a context or a mapping carries; None when absent or malformed."""
     record = _raw_record(source)
     if not isinstance(record, Mapping) or not isinstance(record.get(NON_DEFECT_CHURN), Mapping):
         return None
@@ -62,7 +45,6 @@ def accounting_of(source: Any) -> dict[str, Any] | None:
 
 
 def render_accounting_lines(accounting: Mapping[str, Any] | None) -> list[str]:
-    """Flow summary lines for ``accounting`` (an :func:`accounting_of` result); "not recorded" for None."""
     if accounting is None:
         return [f"  Review churn   : {NOT_RECORDED}"]
     churn = accounting[NON_DEFECT_CHURN]
@@ -78,13 +60,10 @@ def render_accounting_lines(accounting: Mapping[str, Any] | None) -> list[str]:
 
 
 def _accounting_state(context: Any) -> dict[str, Any]:
-    """The mutable accounting record, created (every counter at zero) when absent or malformed.
-
-    A record created once review passes already ran missed their counts, so it is marked ``partial``.
-    """
     state = context.review_state.get("accounting")
     if not isinstance(state, dict):
         state = context.review_state["accounting"] = {}
+        # why: a record created after review passes already ran missed their counts.
         if int_or_zero(getattr(context, "review_iterations_done", 0)) > 0:
             state[PARTIAL] = True
     for key in COUNTER_KEYS:
@@ -100,7 +79,6 @@ def _accounting_state(context: Any) -> dict[str, Any]:
 
 
 def _validated_key(key: str, reason: str | None) -> None:
-    """Raise ``ValueError`` for an unknown counter, or a churn count without a known reason."""
     if key == NON_DEFECT_CHURN:
         if reason not in CHURN_REASONS:
             raise ValueError(f"unknown non-defect churn reason: {reason!r}")
@@ -109,7 +87,6 @@ def _validated_key(key: str, reason: str | None) -> None:
 
 
 def count_accounting(context: Any, key: str, reason: str | None = None, event: str | None = None) -> bool:
-    """Count one ``key`` (or one ``non_defect_churn`` of ``reason``); False when ``event`` was already counted."""
     _validated_key(key, reason)
     state = _accounting_state(context)
     seen = state["seen_events"]
@@ -125,22 +102,17 @@ def count_accounting(context: Any, key: str, reason: str | None = None, event: s
 
 
 def count_carry_over(context: Any, approved_head: str, merged_head: str) -> None:
-    """Count one approval carried across a target merge, once however many stages record it."""
     event = f"carry:{approved_head}:{merged_head}"
     if count_accounting(context, "approval_carry_overs", event=event):
         count_accounting(context, NON_DEFECT_CHURN, "target_merge")
 
 
 def review_generation(context: Any) -> int:
-    """How many times Stage 4 restarted its iteration count; part of every review-pass event key."""
     return int_or_zero(_accounting_state(context).get(GENERATION))
 
 
 def restart_review_passes(context: Any) -> None:
-    """Restart Stage 4's iteration count and clear its carried findings, starting a new review-pass generation.
-
-    The record is touched before the counter resets, so a legacy checkpoint is still marked ``partial``.
-    """
+    # why: touch the record before the counter resets, so a legacy checkpoint is still marked partial.
     state = _accounting_state(context)
     state[GENERATION] = int_or_zero(state.get(GENERATION)) + 1
     context.review_iterations_done, context.carried_review_findings = 0, []

@@ -1,10 +1,3 @@
-"""Review request construction and scoped conflict-resolution diff building for Stage 4.
-
-Every review diff passes through ``bound_review_diff`` before a reviewer prompt is built: bulk deletions and generated
-files are summarised by count and sample, other file sections are inlined whole up to ``INLINED_DIFF_MAX_BYTES``, and
-the sections left out are listed by parent directory. A diff that needs none of this is returned unchanged.
-"""
-
 from __future__ import annotations
 
 import fnmatch
@@ -18,7 +11,7 @@ from typing import Any
 from sandbox_executor.git import EMPTY_DIFF_EXCLUDES, run_git
 from sandbox_executor.redaction import redact_agent_secrets
 
-# Reviewer turns are single passes, so the loop-level placeholders get neutral text.
+# why: reviewer turns are single passes, so the loop-level placeholders get neutral text.
 _SINGLE_PASS = "n/a (single reviewer turn)"
 _PLACEHOLDER_NAMES = (
     "repo_dir",
@@ -34,15 +27,14 @@ _PLACEHOLDER_NAMES = (
     "change_diff",
     "sha",
 )
-# One pass over the template, so text substituted in (a diff that contains ``{diff}``) is never expanded again.
+# why: one pass over the template, so substituted text (a diff that contains `{diff}`) is never expanded again.
 _PLACEHOLDER = re.compile(r"\{(" + "|".join(_PLACEHOLDER_NAMES) + r")\}")
 
-# A directory holding at least this many deleted files is a bulk deletion, summarised rather than inlined.
 BULK_DELETION_MIN_FILES = 25
 SUMMARY_SAMPLE_SIZE = 5
 GENERATED_PATTERNS = ("*.lock", "package-lock.json", "*.min.js", "*.map")
 INLINED_DIFF_MAX_BYTES = 400_000
-# Each summary listing names at most this many directories, so the summary itself stays bounded.
+# why: caps the directories each summary listing names, so the summary itself stays bounded.
 _SUMMARY_MAX_DIRECTORIES = 200
 _SUMMARY_HEADING = "# Review diff summary (not inlined)"
 _SUMMARY_RULE = (
@@ -56,10 +48,9 @@ _CAP_RULE = (
 )
 
 
+# why: nothing in a request comes from another reviewer, so each reviewer judges independently.
 @dataclass(frozen=True)
 class ReviewRequest:
-    """What every reviewer is asked to judge; nothing in it comes from another reviewer."""
-
     repo_dir: str
     head_sha: str
     base_ref: str
@@ -75,12 +66,6 @@ def build_scoped_diff(
     head_sha: str,
     review_paths: Sequence[str] | None = None,
 ) -> tuple[str, list[str]]:
-    """Return ``(diff_text, active_scope_paths)`` between ``base_ref`` and ``head_sha``.
-
-    Excludes ledgers, plans, and execution notes. When ``review_paths`` is non-empty, scopes the diff to those paths
-    and falls back to the full PR diff if the scoped diff is empty. The returned diff is bounded by
-    ``bound_review_diff``.
-    """
     excludes = [f":(exclude){prefix}" for prefix in EMPTY_DIFF_EXCLUDES]
     scoped = [str(p).strip() for p in (review_paths or ()) if str(p).strip()]
     pathspec = ["--", *scoped, *excludes] if scoped else ["--", ".", *excludes]
@@ -99,21 +84,18 @@ def build_scoped_diff(
 
 @dataclass(frozen=True)
 class _DiffSection:
-    """One ``diff --git`` file section, verbatim, with the path it is grouped and sampled by."""
-
     path: str
     text: str
     deleted: bool
 
 
+# why: split on `\n` only (not str.splitlines), so joining the lines gives the text back exactly.
 def _diff_lines(text: str) -> list[str]:
-    """``text`` split after each newline only, so joining the lines gives ``text`` back exactly."""
     parts = text.split("\n")
     return [f"{part}\n" for part in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
 
 
 def _display_path(raw: str, prefixed: bool) -> str:
-    """A path from a diff header line, best-effort unquoted and without its ``a/``/``b/`` prefix."""
     path = raw.rstrip("\n").rstrip("\t")
     if len(path) > 1 and path.startswith('"') and path.endswith('"'):
         path = path[1:-1]
@@ -121,7 +103,6 @@ def _display_path(raw: str, prefixed: bool) -> str:
 
 
 def _header_path(header_line: str) -> str:
-    """The path of a ``diff --git a/X b/X`` line, for sections without ``---``/``+++`` lines."""
     rest = header_line[len("diff --git ") :].rstrip("\n")
     if rest.startswith('"'):
         return _display_path(rest[: rest.find('"', 1) + 1], prefixed=True)
@@ -129,7 +110,6 @@ def _header_path(header_line: str) -> str:
 
 
 def _section(lines: list[str]) -> _DiffSection:
-    """The section of ``lines``; its path prefers ``+++``, then ``---``, then ``rename to``, then the header."""
     header = []
     for line in lines[1:]:
         if line.startswith("@@"):
@@ -151,7 +131,6 @@ def _section(lines: list[str]) -> _DiffSection:
 
 
 def _split_sections(diff_text: str) -> tuple[str, list[_DiffSection]]:
-    """``(preamble, sections)`` of a unified diff; the preamble is whatever precedes the first section."""
     preamble: list[str] = []
     chunks: list[list[str]] = []
     for line in _diff_lines(diff_text):
@@ -174,7 +153,6 @@ def _parent(path: str) -> str:
 
 
 def _within_cap(sections: list[_DiffSection]) -> tuple[list[_DiffSection], list[_DiffSection]]:
-    """``(inlined, omitted)``: whole sections in git order while the inlined total stays within the cap."""
     inlined: list[_DiffSection] = []
     omitted: list[_DiffSection] = []
     total = 0
@@ -189,7 +167,6 @@ def _within_cap(sections: list[_DiffSection]) -> tuple[list[_DiffSection], list[
 
 
 def _grouped_lines(sections: list[_DiffSection], label: str, *, sample: bool) -> list[str]:
-    """One summary line per parent directory: its file count and, when ``sample``, the first few paths."""
     groups: dict[str, list[str]] = {}
     for section in sections:
         groups.setdefault(_parent(section.path), []).append(section.path)
@@ -204,7 +181,6 @@ def _grouped_lines(sections: list[_DiffSection], label: str, *, sample: bool) ->
 
 
 def _summary_block(bulk: list[_DiffSection], generated: list[_DiffSection], omitted: list[_DiffSection]) -> str:
-    """The plain-text summary of every section not inlined, as diff-comment lines after the inlined sections."""
     lines = [_SUMMARY_HEADING]
     if bulk or generated:
         lines.append(_SUMMARY_RULE)
@@ -216,12 +192,6 @@ def _summary_block(bulk: list[_DiffSection], generated: list[_DiffSection], omit
 
 
 def bound_review_diff(diff_text: str) -> str:
-    """``diff_text`` bounded for a reviewer prompt; returned unchanged (the same object) when no rule applies.
-
-    Generated files and deletions in a directory with at least ``BULK_DELETION_MIN_FILES`` deleted files are
-    summarised by count and sample; every other section is inlined whole, in git order, while the inlined total stays
-    within ``INLINED_DIFF_MAX_BYTES``, and the sections that do not fit are listed by parent directory.
-    """
     preamble, sections = _split_sections(diff_text)
     generated = [section for section in sections if _is_generated(section.path)]
     rest = [section for section in sections if not _is_generated(section.path)]
@@ -241,7 +211,6 @@ def bound_review_diff(diff_text: str) -> str:
 
 
 def format_scoped_body(body: str, scoped_paths: Sequence[str]) -> str:
-    """Append the conflict-resolution re-review scope notice to ``body`` when ``scoped_paths`` is non-empty."""
     if not scoped_paths:
         return body
     bullets = "\n".join(f"- `{p}`" for p in scoped_paths)
@@ -250,8 +219,6 @@ def format_scoped_body(body: str, scoped_paths: Sequence[str]) -> str:
 
 @dataclass(frozen=True)
 class ScopedDelta:
-    """What a scoped delta review shows besides the diff; the file contents are already redacted and bounded."""
-
     base: str
     head: str
     context_files: tuple[tuple[str, str], ...] = ()
@@ -260,7 +227,6 @@ class ScopedDelta:
 
 
 def _fenced(text: str) -> str:
-    """``text`` in a code fence longer than any backtick run inside it."""
     fence = "`" * max([3, *(len(run) + 1 for run in re.findall(r"`+", text))])
     return f"{fence}\n{text.rstrip(chr(10))}\n{fence}"
 
@@ -271,7 +237,6 @@ def _addressed_line(row: Mapping[str, Any]) -> str:
 
 
 def format_delta_body(body: str, delta: ScopedDelta) -> str:
-    """Append the scoped delta review notice, the addressed findings and the modified files' full content."""
     parts = [
         body,
         "## Scoped Delta Review",
@@ -289,7 +254,6 @@ def format_delta_body(body: str, delta: ScopedDelta) -> str:
 
 
 def _placeholder_values(request: ReviewRequest) -> dict[str, str]:
-    """Value for each allow-listed template placeholder."""
     return {
         "repo_dir": request.repo_dir,
         "target": request.head_sha,
@@ -307,7 +271,6 @@ def _placeholder_values(request: ReviewRequest) -> dict[str, str]:
 
 
 def _missing_inputs(template_text: str, request: ReviewRequest) -> str:
-    """The change description and diff, for templates that do not already include them."""
     parts = []
     if "{pr_description}" not in template_text and "{change_description}" not in template_text:
         parts.append(f"Change description:\n\n```markdown\n{request.pr_body}\n```\n\n")

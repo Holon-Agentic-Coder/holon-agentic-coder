@@ -13,6 +13,7 @@ from sandbox_executor.budgets import resolve_entropy_budget
 from sandbox_executor.decomposition_rule import DecompositionDecision, should_decompose
 from sandbox_executor.entrypoint.executor import OVER_BUDGET_EXIT_CODE
 from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 from sandbox_executor.ledger import read_merged_rows, read_merged_rows_at_ref
 from sandbox_executor.naming import model_code, ticker_for
 from sandbox_executor.review_ensemble import (
@@ -236,7 +237,12 @@ class FakeRoleAgents:
 def _dispatch_context(host: Path, agents: FakeRoleAgents, **overrides: Any) -> FlowContext:
     params: dict[str, Any] = {
         "repo_dir": str(host),
-        "intent_data": {"slug": "dispatch-test", "goal": "Change the application", "labels": ["flow"]},
+        "intent_data": {
+            **default_assumptions_fields(),
+            "slug": "dispatch-test",
+            "goal": "Change the application",
+            "labels": ["flow"],
+        },
         "agent": "claude-agent",
         "model": "claude-opus-5-5",
         "dry_run": False,
@@ -508,7 +514,13 @@ SUB_INTENT_LIST = "\n## Sub-intent list\n\n- Add the parser\n- Add the CLI flag\
 
 
 def _budget_context(host: Path, agents: FakeRoleAgents, budget: float, **intent_extra: Any) -> FlowContext:
-    intent = {"slug": "budget-test", "goal": "Change the application", "labels": ["flow"], "entropy_budget": budget}
+    intent = {
+        **default_assumptions_fields(),
+        "slug": "budget-test",
+        "goal": "Change the application",
+        "labels": ["flow"],
+        "entropy_budget": budget,
+    }
     intent.update(intent_extra)
     return _dispatch_context(host, agents, intent_data=intent)
 

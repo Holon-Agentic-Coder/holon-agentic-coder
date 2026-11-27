@@ -106,3 +106,29 @@ def test_non_anthropic_claude_coauthor_is_ignored(repo: Path) -> None:
     base = _git(repo, "rev-parse", "HEAD").strip()
     _commit(repo, "b", "feat: x\n\nCo-Authored-By: Claude Smith <claude@example.com>")
     assert find_attribution_trailers(base, _runner(repo)) == []
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        FileNotFoundError("git missing"),
+        RuntimeError("git log failed"),
+        subprocess.CalledProcessError(1, ["git", "log"]),
+    ],
+)
+def test_expected_git_runner_errors_return_empty(exc: Exception) -> None:
+    def failing_runner(_args: list[str]) -> str:
+        raise exc
+
+    assert find_attribution_trailers("main", failing_runner) == []
+    assert check_attribution("main", failing_runner) == (True, "")
+
+
+def test_unexpected_git_runner_error_propagates() -> None:
+    def broken_runner(_args: list[str]) -> str:
+        raise TypeError("unexpected runner bug")
+
+    with pytest.raises(TypeError, match="unexpected runner bug"):
+        find_attribution_trailers("main", broken_runner)
+    with pytest.raises(TypeError, match="unexpected runner bug"):
+        check_attribution("main", broken_runner)

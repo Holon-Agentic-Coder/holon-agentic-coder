@@ -1,11 +1,3 @@
-"""The single Stage 5 core shared by the flow's calibrate stage and ``holon calibrate``.
-
-Stage 5 runs three steps in order, each committed on the execution's /calibrated branch: the calibration report
-(``run_calibrate``), the execution reconciliation in ``executions.jsonl`` (``reconcile_records``) and the
-knowledge/wisdom promotion (``promote_pending_candidates``). The callers pass the step callables in through
-``Stage5Steps`` (built by ``flow.stages.calibrate.stage5_steps``), so both entry points run the same objects.
-"""
-
 from __future__ import annotations
 
 import os
@@ -27,8 +19,6 @@ ACTION_INDEX_REL = "holon-knowledge/.index/action_index.db"
 
 @dataclass(frozen=True)
 class Stage5Steps:
-    """The step callables of Stage 5, with the signatures of the functions they stand for."""
-
     calibrate: Callable[..., Any]
     reconcile: Callable[..., dict[str, Any]]
     promote: Callable[..., list[dict[str, Any]]]
@@ -39,8 +29,6 @@ class Stage5Steps:
 
 @dataclass
 class Stage5Outcome:
-    """What one Stage 5 run did: the report, the reconciliation outcome and the newly promoted candidates."""
-
     report_dict: dict[str, Any] = field(default_factory=dict)
     report_only: bool = False
     reconciliation: dict[str, Any] = field(default_factory=dict)
@@ -48,11 +36,9 @@ class Stage5Outcome:
 
     @property
     def newly_promoted_count(self) -> int:
-        """Number of knowledge/wisdom candidates this run newly promoted."""
         return len(self.promoted_candidates)
 
     def to_json_dict(self) -> dict[str, Any]:
-        """The ``stage5`` object of ``holon calibrate --json``."""
         return {
             "mode": "report_only" if self.report_only else "full",
             "reconciliation": dict(self.reconciliation),
@@ -65,10 +51,8 @@ def _reconciliation(status: str, verdict: str | None, rows_appended: int = 0) ->
 
 
 def _reconcile_execution(context: FlowContext, steps: Stage5Steps, verdict: str | None) -> dict[str, Any]:
-    """Append the execution's reconciliation rows once and commit them."""
     repo_dir = context.target_worktree
     executions_file = os.path.join(repo_dir, LEDGER_EXECUTIONS_REL)
-    # Dry runs append nothing, so the reconciliation events are only written on a real run.
     if context.dry_run:
         return _reconciliation("skipped_no_commit", verdict)
     if not os.path.exists(executions_file) and not iter_fragment_files(executions_file):
@@ -84,7 +68,7 @@ def _reconcile_execution(context: FlowContext, steps: Stage5Steps, verdict: str 
                 f"Stage 5 verdict '{verdict}' differs from the recorded reconciliation verdict '{recorded[-1]}' "
                 f"for '{context.execution_branch}': the recorded verdict is kept."
             )
-        # Commits rows an earlier failed calibration left uncommitted; a no-op when there are none.
+        # why: commits rows an earlier failed calibration left uncommitted; a no-op when there are none
         steps.commit_reconciliation(context, repo_dir)
         return _reconciliation("already_recorded", verdict)
     result = steps.reconcile(
@@ -101,7 +85,6 @@ def _reconcile_execution(context: FlowContext, steps: Stage5Steps, verdict: str 
 
 
 def _promote_candidates(context: FlowContext, steps: Stage5Steps) -> list[dict[str, Any]]:
-    """Promote qualified knowledge/wisdom candidates and commit the artefacts (outside a dry run)."""
     repo_dir = context.target_worktree
     db_path = os.path.join(repo_dir, ACTION_INDEX_REL)
     if not os.path.exists(db_path):
@@ -119,7 +102,7 @@ def _promote_candidates(context: FlowContext, steps: Stage5Steps) -> list[dict[s
         if new_count
         else "Stage 5 promoted no new knowledge/wisdom candidates this run."
     )
-    # Runs even when nothing is new, so artefacts an earlier failed calibration left behind are committed.
+    # why: runs even when nothing is new, so artefacts an earlier failed calibration left behind are committed
     if not context.dry_run:
         steps.commit_promoted(context, repo_dir, new_count)
     return promoted
@@ -128,14 +111,8 @@ def _promote_candidates(context: FlowContext, steps: Stage5Steps) -> list[dict[s
 def run_stage5(
     context: FlowContext, steps: Stage5Steps, verdict: str | None, report_only: bool = False
 ) -> Stage5Outcome:
-    """Run Stage 5: calibrate, then reconcile and commit, then promote and commit.
-
-    Every calibration exception propagates: no report is substituted and nothing is reconciled, promoted or
-    committed (the flow's calibrate stage fails closed; ``holon calibrate`` fails loudly).
-    ``report_only`` stops after the calibration report; a None ``verdict`` (CLI only) skips reconciliation and
-    promotion.
-    """
     outcome = Stage5Outcome(report_only=report_only)
+    # why: calibration exceptions propagate uncaught so the flow's calibrate stage fails closed and no report is faked
     report = steps.calibrate(
         execution_branch=context.execution_branch,
         target_worktree=context.target_worktree,
@@ -153,7 +130,7 @@ def run_stage5(
     outcome.reconciliation = _reconciliation("failed", verdict)
     try:
         outcome.reconciliation = _reconcile_execution(context, steps, verdict)
-        # An execution with no verdict is unknown to the ledger: it contributes no lessons, so nothing is promoted.
+        # why: an execution with no verdict is unknown to the ledger, so it contributes no lessons to promote
         if verdict is not None:
             outcome.promoted_candidates = _promote_candidates(context, steps)
     except LedgerRewriteError:
@@ -165,7 +142,6 @@ def run_stage5(
 
 
 def standalone_context(execution_branch: str, target_worktree: str, no_commit: bool) -> FlowContext:
-    """The minimal ``FlowContext`` ``holon calibrate`` passes to ``run_stage5``."""
     return FlowContext(
         target_worktree=target_worktree, execution_branch=execution_branch, dry_run=no_commit, token_reduce=False
     )

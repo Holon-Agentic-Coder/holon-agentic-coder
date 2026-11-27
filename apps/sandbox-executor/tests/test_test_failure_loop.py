@@ -22,8 +22,11 @@ from sandbox_executor.entrypoint.test_failure_loop import (
     measure_selection,
     next_tier,
 )
-from sandbox_executor.entrypoint.test_failure_record import STAGE_3, TestFailureEvidence
+from sandbox_executor.entrypoint.test_failure_record import STAGE_3, TestFailureEvidence, record_test_failure
 from sandbox_executor.entrypoint.test_measurement import TestMeasurement
+from sandbox_executor.flow import parked_record_from_ci_status
+from sandbox_executor.flow.review.local_tests import _attach_test_failure
+from sandbox_executor.knowledge.wisdom import promote_repeated_failure_signatures
 
 ALPHA = "tests/test_a.py::test_alpha"
 BETA = "tests/test_a.py::test_beta"
@@ -364,3 +367,118 @@ def test_a_fix_turn_that_raises_is_blocked_with_the_reason() -> None:
 
     assert outcome.status == "blocked"
     assert outcome.blocked_reason == "fix turn failed: fix turn moved HEAD branch"
+
+
+def test_environment_failure_parks_with_blocked_on_and_ledger_rows() -> None:
+    def identity_sensitive(ids: tuple[str, ...], env: Mapping[str, str]) -> RerunResult:
+        return FAIL if "GIT_AUTHOR_NAME" in env else PASS
+
+    ledger = MemoryLedger()
+    checkpoint = "/tmp/checkpoints/I-1795780932.json"
+    outcome = _loop(
+        FakeSuite(),
+        FakeRerun(),
+        rerun_ids=identity_sensitive,
+        record=ledger,
+        fix_turn=FakeFix(),
+        environment=lambda: {"GIT_AUTHOR_NAME": "Reviewer"},
+        blocker_map={"GIT_AUTHOR_NAME": "BEAN-42"},
+        checkpoint_path=checkpoint,
+    ).run(*_failing())
+
+    assert outcome.status == "blocked"
+    assert outcome.parked is True
+    assert outcome.blocked_on == "BEAN-42"
+    assert outcome.parked_record is not None
+    assert outcome.parked_record["status"] == "parked"
+    assert outcome.parked_record["blocked_on"] == "BEAN-42"
+    assert outcome.parked_record["classification"] == "environment"
+    assert outcome.parked_record["failing_ids"] == [ALPHA]
+    assert outcome.parked_record["signature"] == outcome.signature
+    assert ALPHA in outcome.parked_record["evidence"]
+    assert outcome.parked_record["ledger_rows"] == ledger.rows
+    assert outcome.parked_record["checkpoint_path"] == checkpoint
+
+
+def test_pre_existing_failure_extracts_pr_blocker_from_evidence() -> None:
+    measurement, output = _failing(message="AssertionError: waiting on PR#77 migration")
+    outcome = _loop(FakeSuite(), FakeRerun(FAIL, FAIL), base=FAIL, fix_turn=FakeFix()).run(measurement, output)
+
+    assert outcome.status == "blocked"
+    assert outcome.parked is True
+    assert outcome.blocked_on == "PR#77"
+    assert outcome.parked_record is not None
+    assert outcome.parked_record["blocked_on"] == "PR#77"
+    assert outcome.parked_record["classification"] == "pre-existing"
+
+
+def test_exhausted_unresolved_failure_without_blocker_parks_with_none_and_watcher_schema() -> None:
+    fix, ledger = FakeFix(), MemoryLedger()
+    suite = FakeSuite(_failing(), _failing(), _failing())
+    checkpoint = "/tmp/checkpoints/flow-exhausted.json"
+
+    outcome = _loop(
+        suite,
+        FakeRerun(FAIL, FAIL),
+        fix_turn=fix,
+        record=ledger,
+        checkpoint_path=checkpoint,
+    ).run(*_failing())
+
+    assert outcome.status == "exhausted"
+    assert outcome.parked is True
+    assert outcome.blocked_on == "none"
+    assert outcome.parked_record is not None
+    assert outcome.parked_record["blocked_on"] == "none"
+    assert outcome.parked_record["evidence"]
+    assert outcome.parked_record["ledger_rows"] == ledger.rows
+    assert len(outcome.parked_record["ledger_rows"]) == 4
+    assert outcome.parked_record["checkpoint_path"] == checkpoint
+
+    ci_status: dict[str, object] = {}
+    _attach_test_failure(ci_status, outcome, checkpoint_path=checkpoint)
+    extracted = parked_record_from_ci_status(ci_status)
+    assert extracted is not None
+    assert extracted["status"] == "parked"
+    assert extracted["blocked_on"] == "none"
+    assert extracted["classification"] == "introduced"
+    assert extracted["failing_ids"] == [ALPHA]
+    assert extracted["signature"] == outcome.signature
+    assert extracted["evidence"] == outcome.evidence_text
+    assert extracted["ledger_rows"] == ledger.rows
+    assert extracted["checkpoint_path"] == checkpoint
+
+
+def test_introduced_failure_fixed_by_runner_does_not_park() -> None:
+    outcome = _loop(FakeSuite(_passing()), FakeRerun(FAIL, FAIL), fix_turn=FakeFix()).run(*_failing())
+
+    assert outcome.status == "passed"
+    assert outcome.parked is False
+    assert outcome.blocked_on is None
+    assert outcome.parked_record is None
+
+
+def test_single_run_failure_signature_creates_no_kb_failure_mode(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger" / "executions.jsonl"
+    kb_dir = tmp_path / "kb"
+    suite = FakeSuite(_failing(), _failing(), _failing())
+
+    outcome = _loop(
+        suite,
+        FakeRerun(FAIL, FAIL),
+        fix_turn=FakeFix(),
+        record=lambda evidence: record_test_failure(
+            str(ledger_path),
+            evidence,
+            branch="I-1795780932-exhausted-ladder-blocked-on",
+            execution_id="E-single-run",
+        ),
+    ).run(*_failing())
+
+    assert outcome.status == "exhausted"
+    assert outcome.parked is True
+    assert len(outcome.rows) == 4
+    promoted = promote_repeated_failure_signatures(str(ledger_path), kb_dir=str(kb_dir))
+    assert promoted == []
+    failure_modes_dir = kb_dir / "failure_modes"
+    assert not failure_modes_dir.exists() or list(failure_modes_dir.glob("*.json")) == []

@@ -98,7 +98,7 @@ def nested_layout_absent_template(
         drop_plan_ref(own, "absent")
         return own
 
-    root, built = shared_template(tmp_path_factory, "calibrate-nested-layout-absent", build)
+    root, built = shared_template(tmp_path_factory, "calibrate-nested-absent-layout", build)
     return SimpleNamespace(root=root, repos=built)
 
 

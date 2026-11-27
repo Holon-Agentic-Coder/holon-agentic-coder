@@ -11,6 +11,7 @@ from typing import Any
 
 from sandbox_executor.flow.git_refs import EXECUTOR_GIT_ENV, _fetch_refspecs_error
 from sandbox_executor.flow.github.adapter import GitHubAdapter, merge_argv, parse_gh_json
+from sandbox_executor.flow.github.forge import GitForge
 from sandbox_executor.flow.github.merge_method import lookup_merge_flag
 from sandbox_executor.flow.github.mergeability_policy import PROTECTED_BRANCHES as PROTECTED_BRANCHES
 from sandbox_executor.flow.github.mergeability_policy import _bare_branch as _bare_branch
@@ -34,7 +35,7 @@ def run_gh(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
     return GitHubAdapter(cwd).gh(args)
 
 
-def gh_runner(runner: GhRunner | None, github: GitHubAdapter | None = None) -> GhRunner:
+def gh_runner(runner: GhRunner | None, github: GitForge | None = None) -> GhRunner:
     return runner or (github.gh if github is not None else run_gh)
 
 
@@ -51,7 +52,7 @@ def _gh_json(repo_dir: str, args: list[str], runner: GhRunner) -> Any:
 
 
 def lookup_default_branch(
-    repo_dir: str, runner: GhRunner | None = None, *, github: GitHubAdapter | None = None
+    repo_dir: str, runner: GhRunner | None = None, *, github: GitForge | None = None
 ) -> str | None:
     data = _gh_json(repo_dir, ["repo", "view", "--json", "defaultBranchRef"], gh_runner(runner, github))
     ref = data.get("defaultBranchRef") if isinstance(data, dict) else None
@@ -60,7 +61,7 @@ def lookup_default_branch(
 
 
 def view_pr(
-    repo_dir: str, pr: str, runner: GhRunner | None = None, *, github: GitHubAdapter | None = None
+    repo_dir: str, pr: str, runner: GhRunner | None = None, *, github: GitForge | None = None
 ) -> dict[str, Any] | None:
     data = _gh_json(repo_dir, ["pr", "view", str(pr), "--json", PR_VIEW_FIELDS], gh_runner(runner, github))
     return data if isinstance(data, dict) else None

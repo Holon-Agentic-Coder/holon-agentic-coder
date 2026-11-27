@@ -9,6 +9,9 @@ from sandbox_executor.redaction import carries_url_password, is_secret_env_name,
 logger = logging.getLogger(__name__)
 
 ENV_FILE_PREFIX = "holon-env-"
+REPLAN_FEEDBACK_FILE_PREFIX = "holon-replan-feedback-"
+# why: Linux MAX_ARG_STRLEN caps a single execve environment entry (KEY=VALUE + NUL) at 128 KiB.
+MAX_ENV_VAR_BYTES = 128 * 1024
 _ENV_FILE_STALE_SECONDS = 24 * 60 * 60
 _OWNER_ONLY_DIR_MODE = 0o700
 _GROUP_AND_OTHER_PERMS_MASK = 0o077
@@ -35,7 +38,7 @@ def sweep_stale_env_files(directory: str, max_age_seconds: float = _ENV_FILE_STA
     except OSError:
         return
     for name in entries:
-        if not name.startswith(ENV_FILE_PREFIX):
+        if not name.startswith((ENV_FILE_PREFIX, REPLAN_FEEDBACK_FILE_PREFIX)):
             continue
         path = os.path.join(directory, name)
         try:
@@ -55,6 +58,31 @@ def write_env_file(env: dict[str, str]) -> str:
         os.fchmod(fd, _OWNER_ONLY_FILE_MODE)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.writelines(f"{key}={value}\n" for key, value in sorted(env.items()))
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(path)
+        raise
+    return path
+
+
+def env_var_byte_size(key: str, value: str) -> int:
+    return len(f"{key}={value}".encode("utf-8", errors="surrogateescape")) + 1
+
+
+def validate_env_var_size(key: str, value: str, max_bytes: int = MAX_ENV_VAR_BYTES) -> None:
+    size = env_var_byte_size(key, value)
+    if size > max_bytes:
+        raise ValueError(
+            f"environment variable {key} is {size} bytes, exceeding the {max_bytes}-byte per-variable limit"
+        )
+
+
+def write_replan_feedback_file(content: str) -> str:
+    fd, path = tempfile.mkstemp(prefix=REPLAN_FEEDBACK_FILE_PREFIX, suffix=".txt", dir=env_file_dir())
+    try:
+        os.fchmod(fd, _OWNER_ONLY_FILE_MODE)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
             os.remove(path)

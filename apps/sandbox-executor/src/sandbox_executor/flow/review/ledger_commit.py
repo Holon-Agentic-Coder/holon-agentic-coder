@@ -20,6 +20,20 @@ logger = logging.getLogger(__name__)
 
 # why: every row Stage 4 writes lands in one of these append-only ledgers; nothing else may enter the commit.
 LEDGER_RELS: tuple[str, ...] = ENGINE_OWNED_LEDGER_PATHS
+_SUPPRESS_COMMIT_ATTR = "_suppress_ledger_commit"
+
+
+def set_ledger_commit_suppressed(context: FlowContext, suppressed: bool) -> None:
+    setattr(context, _SUPPRESS_COMMIT_ATTR, bool(suppressed))
+
+
+def is_ledger_commit_suppressed(context: FlowContext) -> bool:
+    return bool(getattr(context, _SUPPRESS_COMMIT_ATTR, False))
+
+
+def suppress_if_empty_pre_iter(context: FlowContext, passes: int, head_changed: bool, halted: bool) -> None:
+    if passes == 0 and not head_changed and halted:
+        set_ledger_commit_suppressed(context, True)
 
 
 @dataclass(frozen=True)
@@ -108,7 +122,13 @@ def _warn(context: FlowContext, detail: str) -> None:
 def _commit_pending_ledger_rows(context: FlowContext, iteration: int, reason: str = "") -> _LedgerCommit | None:
     branch = context.execution_branch
     # why: inside a role container the host commits the mounted worktree.
-    if context.dry_run or workspace_mounted() or not branch or _bare_branch(branch) in PROTECTED_BRANCHES:
+    if (
+        is_ledger_commit_suppressed(context)
+        or context.dry_run
+        or workspace_mounted()
+        or not branch
+        or _bare_branch(branch) in PROTECTED_BRANCHES
+    ):
         return None
     try:
         message = _ledger_commit_message(iteration, reason)
@@ -133,7 +153,10 @@ def _advance_past_ledger_commit(
 
 
 def _close_review_stage(context: FlowContext, on_branch: list[str], restore: Callable[..., object]) -> None:
-    if on_branch:
-        # why: restoring first re-attaches a HEAD left detached at the tip, so its rows are committed, not skipped.
-        restore(context.target_worktree, on_branch[0], "Stage 4 review loop", context.log, run_git)
-        _commit_pending_ledger_rows(context, context.review_iterations_done, "stage 4 exit")
+    try:
+        if on_branch:
+            # why: restoring first re-attaches a HEAD left detached at the tip, so its rows are committed, not skipped.
+            restore(context.target_worktree, on_branch[0], "Stage 4 review loop", context.log, run_git)
+            _commit_pending_ledger_rows(context, context.review_iterations_done, "stage 4 exit")
+    finally:
+        set_ledger_commit_suppressed(context, False)

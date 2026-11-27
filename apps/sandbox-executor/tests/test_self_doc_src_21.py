@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from scripts.self_explaining_comments import is_allowed_comment
 
+from scripts.self_explaining_comments import is_allowed_comment
 from tests.self_doc_scanner import find_comments, find_docstrings_and_string_statements
 
 PACKAGE_DIR = Path(__file__).resolve().parents[1] / "src" / "sandbox_executor"

@@ -169,7 +169,9 @@ def _attach_test_failure(
         "signature": outcome.signature,
         "rows": [row.get("action_id") for row in outcome.rows],
     }
-    if outcome.status == "exhausted" or (outcome.status == "blocked" and outcome.classification in BLOCKED_CLASSIFICATIONS):
+    if outcome.status == "exhausted" or (
+        outcome.status == "blocked" and outcome.classification in BLOCKED_CLASSIFICATIONS
+    ):
         blocked_on = outcome.blocked_on or UNATTRIBUTED_BLOCKER
         ci_status["test_failure"]["blocked_evidence"] = outcome.evidence_text
         ci_status["test_failure"]["blocked_on"] = blocked_on

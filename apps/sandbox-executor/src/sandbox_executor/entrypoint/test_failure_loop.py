@@ -191,9 +191,10 @@ def _blocker_texts(case: _Case, reason: str | None) -> tuple[str, ...]:
 
 
 def _resolve_blocked_on(case: _Case, classification: str | None, reason: str | None, ports: LoopPorts) -> str:
-    if ports.resolve_blocker is not None:
-        if resolved := ports.resolve_blocker(classification, case.failing_ids, case.signature, case.excerpts):
-            return str(resolved).strip()
+    if ports.resolve_blocker is not None and (
+        resolved := ports.resolve_blocker(classification, case.failing_ids, case.signature, case.excerpts)
+    ):
+        return str(resolved).strip()
     for key in _blocker_candidates(case, classification):
         if (mapped := ports.blocker_map.get(key)) and str(mapped).strip():
             return str(mapped).strip()

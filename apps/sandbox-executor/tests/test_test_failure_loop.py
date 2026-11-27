@@ -22,8 +22,14 @@ from sandbox_executor.entrypoint.test_failure_loop import (
     measure_selection,
     next_tier,
 )
-from sandbox_executor.entrypoint.test_failure_record import STAGE_3, TestFailureEvidence
+from sandbox_executor.entrypoint.test_failure_record import STAGE_3, TestFailureEvidence, record_test_failure
 from sandbox_executor.entrypoint.test_measurement import TestMeasurement
+from sandbox_executor.flow.review.local_test_finding import (
+    local_test_failure_finding,
+    parked_record_from_ci_status,
+)
+from sandbox_executor.flow.review.local_tests import _attach_test_failure
+from sandbox_executor.knowledge.wisdom import promote_repeated_failure_signatures
 
 ALPHA = "tests/test_a.py::test_alpha"
 BETA = "tests/test_a.py::test_beta"
@@ -364,3 +370,159 @@ def test_a_fix_turn_that_raises_is_blocked_with_the_reason() -> None:
 
     assert outcome.status == "blocked"
     assert outcome.blocked_reason == "fix turn failed: fix turn moved HEAD branch"
+
+
+def test_environment_failure_parks_with_blocked_on_and_watcher_record() -> None:
+    def identity_sensitive(ids: tuple[str, ...], env: Mapping[str, str]) -> RerunResult:
+        return FAIL if "GIT_AUTHOR_NAME" in env else PASS
+
+    ledger = MemoryLedger()
+    checkpoint = "/tmp/flow-checkpoints/ckpt-env.json"
+    loop = TestFailureLoop(
+        LoopPorts(
+            run_selection=FakeSuite(),
+            rerun_ids=identity_sensitive,
+            base_rerun=lambda ids: PASS,
+            record=ledger,
+            stage=STAGE_3,
+            fix_turn=FakeFix(),
+            environment=lambda: {"GIT_AUTHOR_NAME": "Reviewer"},
+            blocker_map={"GIT_AUTHOR_NAME": "bean-42"},
+            checkpoint_path=checkpoint,
+        )
+    )
+
+    outcome = loop.run(*_failing())
+    record = outcome.to_parked_record()
+
+    assert outcome.status == "blocked"
+    assert outcome.parked is True
+    assert outcome.blocked_on == "bean-42"
+    assert "blocked_on: bean-42" in outcome.evidence_text
+    assert record is not None
+    assert record["parked"] is True
+    assert record["blocked_on"] == "bean-42"
+    assert record["classification"] == "environment"
+    assert record["failing_ids"] == [ALPHA]
+    assert record["signature"] == outcome.signature
+    assert record["evidence"] == outcome.evidence_text
+    assert record["ledger_rows"] == ledger.rows
+    assert record["checkpoint_path"] == checkpoint
+
+
+def test_pre_existing_failure_extracts_pr_blocker_from_base_rerun_output() -> None:
+    base_with_pr = RerunResult(passed=False, failing_ids=(ALPHA,), exit_code=1, output="known issue tracked in PR #123")
+    checkpoint = "/tmp/flow-checkpoints/ckpt-preexisting.json"
+
+    outcome = _loop(
+        FakeSuite(),
+        FakeRerun(FAIL, FAIL),
+        base=base_with_pr,
+        fix_turn=FakeFix(),
+        checkpoint_path=checkpoint,
+    ).run(*_failing())
+    record = outcome.to_parked_record()
+
+    assert outcome.status == "blocked"
+    assert outcome.classification == "pre-existing"
+    assert outcome.parked is True
+    assert outcome.blocked_on == "PR #123"
+    assert record is not None
+    assert record["blocked_on"] == "PR #123"
+    assert record["checkpoint_path"] == checkpoint
+
+
+def test_exhausted_ladder_without_blocker_parks_with_none_and_full_ledger_rows() -> None:
+    fix, ledger = FakeFix(), MemoryLedger()
+    suite = FakeSuite(_failing(), _failing(), _failing())
+    checkpoint = "/tmp/flow-checkpoints/ckpt-exhausted.json"
+
+    outcome = _loop(
+        suite,
+        FakeRerun(FAIL, FAIL),
+        fix_turn=fix,
+        record=ledger,
+        checkpoint_path=checkpoint,
+    ).run(*_failing())
+    record = outcome.to_parked_record()
+
+    assert outcome.status == "exhausted"
+    assert outcome.parked is True
+    assert outcome.blocked_on == "none"
+    assert [request.tier for request in fix.requests] == list(LADDER)
+    assert record is not None
+    assert record["parked"] is True
+    assert record["status"] == "exhausted"
+    assert record["blocked_on"] == "none"
+    assert record["classification"] == "introduced"
+    assert record["failing_ids"] == [ALPHA]
+    assert record["signature"] == outcome.signature
+    assert record["checkpoint_path"] == checkpoint
+    assert ALPHA in record["evidence"]
+    assert "ACT-3" in record["evidence"]
+    assert len(record["ledger_rows"]) == 4
+    assert record["ledger_rows"] == ledger.rows
+
+
+def test_fixed_introduced_failure_does_not_park() -> None:
+    fix = FakeFix()
+
+    outcome = _loop(
+        FakeSuite(_passing()),
+        FakeRerun(FAIL, FAIL),
+        fix_turn=fix,
+        checkpoint_path="/tmp/flow-checkpoints/ckpt-fixed.json",
+    ).run(*_failing())
+
+    assert outcome.status == "passed"
+    assert outcome.parked is False
+    assert outcome.blocked_on is None
+    assert outcome.to_parked_record() is None
+
+
+def test_single_occurrence_failure_signature_creates_no_kb_failure_mode(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger" / "executions.jsonl"
+    kb_dir = tmp_path / "kb"
+    fix = FakeFix()
+    suite = FakeSuite(_failing(), _failing(), _failing())
+
+    def persist(evidence: TestFailureEvidence) -> dict | None:
+        return record_test_failure(str(ledger_path), evidence, branch="feature/test", execution_id="E-1")
+
+    outcome = _loop(suite, FakeRerun(FAIL, FAIL), fix_turn=fix, record=persist).run(*_failing())
+    promoted = promote_repeated_failure_signatures(str(ledger_path), kb_dir=str(kb_dir))
+
+    assert outcome.status == "exhausted"
+    assert outcome.parked is True
+    assert len(outcome.rows) == 4
+    assert promoted == []
+    assert not list((kb_dir / "failure_modes").glob("KB-failure-*.json"))
+
+
+def test_review_gate_and_finding_expose_parked_record_and_blocked_on() -> None:
+    fix, ledger = FakeFix(), MemoryLedger()
+    suite = FakeSuite(_failing(), _failing(), _failing())
+    checkpoint = "/tmp/flow-checkpoints/ckpt-review.json"
+    outcome = _loop(
+        suite,
+        FakeRerun(FAIL, FAIL),
+        fix_turn=fix,
+        record=ledger,
+        blocker_map={ALPHA: "bean-99"},
+        checkpoint_path=checkpoint,
+    ).run(*_failing())
+    ci_status: dict[str, object] = {}
+
+    _attach_test_failure(ci_status, outcome, checkpoint_path=checkpoint)
+    watcher_record = parked_record_from_ci_status(ci_status)
+    finding = local_test_failure_finding(1, ci_status)
+
+    assert watcher_record is not None
+    assert watcher_record["parked"] is True
+    assert watcher_record["blocked_on"] == "bean-99"
+    assert watcher_record["signature"] == outcome.signature
+    assert watcher_record["checkpoint_path"] == checkpoint
+    assert len(watcher_record["ledger_rows"]) == 4
+    assert finding is not None
+    assert "(blocked_on: bean-99)" in finding.summary
+    assert "Blocked, not fixable in code:" in finding.summary

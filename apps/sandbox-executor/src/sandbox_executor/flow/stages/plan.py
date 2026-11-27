@@ -149,11 +149,11 @@ class PlanStage:
         if plan_content is None:
             return self.fail(self.no_plan_error, plan_branch=self.plan_branch)
         self.plan_content = plan_content
-        if out_of_scope := plan_scope_guard.out_of_scope_touch_set_paths(
+        if out_of_scope := plan_scope_guard._out_of_scope_touch_set_paths(
             self.context.intent_data, self.plan_content, self.plan_row
         ):
             return self.fail(
-                plan_scope_guard.plan_scope_failure_message(self.plan_branch, out_of_scope),
+                plan_scope_guard._plan_scope_failure_message(self.plan_branch, out_of_scope),
                 plan_branch=self.plan_branch,
                 plan_file=self.plan_file,
                 failure_reason=plan_scope_guard.PLAN_SCOPE_VIOLATION,

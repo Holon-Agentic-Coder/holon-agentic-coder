@@ -27,7 +27,7 @@ _PLACEHOLDER_WRAPPERS = "()[]{}<>\"'`*_~\u2018\u2019\u201c\u201d"
 _PLACEHOLDER_PUNCTUATION = ".,;:"
 
 
-def is_provenance_path(path: str) -> bool:
+def _is_provenance_path(path: str) -> bool:
     clean = normalise_touch_path(path)
     if not clean:
         return False
@@ -157,14 +157,14 @@ def _plan_touch_set_paths(plan_content: str, plan_row: Mapping[str, Any]) -> lis
     seen: set[str] = set()
     for entry in candidates:
         clean = normalise_touch_path(entry.path)
-        if not clean or clean in seen or is_provenance_path(clean):
+        if not clean or clean in seen or _is_provenance_path(clean):
             continue
         seen.add(clean)
         paths.append(clean)
     return paths
 
 
-def out_of_scope_touch_set_paths(
+def _out_of_scope_touch_set_paths(
     intent_data: Mapping[str, Any] | None,
     plan_content: str,
     plan_row: Mapping[str, Any] | None = None,
@@ -185,7 +185,7 @@ def out_of_scope_touch_set_paths(
     ]
 
 
-def plan_scope_failure_message(plan_branch: str, out_of_scope: list[str]) -> str:
+def _plan_scope_failure_message(plan_branch: str, out_of_scope: list[str]) -> str:
     joined = ", ".join(out_of_scope)
     return (
         f"Plan stage failed: plan {plan_branch} lists ## Touch Set path(s) outside intent.scope without a recorded "

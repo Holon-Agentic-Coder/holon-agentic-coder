@@ -12,6 +12,7 @@ from sandbox_executor.redaction import redact_agent_secrets
 
 STAGE_3 = "stage_3"
 STAGE_4 = "stage_4"
+STAGE_5 = "stage_5"
 MAX_RECORDED_IDS = 50
 EXCERPT_CHARS_PER_TEST = 600
 SIGNATURE_HEX_CHARS = 16

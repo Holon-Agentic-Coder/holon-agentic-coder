@@ -1,11 +1,29 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+import os
+import re
+import subprocess
+from collections.abc import Callable, Mapping
 from typing import Any
 
+from sandbox_executor.entrypoint.test_failure_classify import FailureClass
+from sandbox_executor.entrypoint.test_failure_record import (
+    LEDGER_RELPATH,
+    STAGE_5,
+    TestFailureEvidence,
+    excerpts_by_test,
+    failing_ids_from_output,
+    record_test_failure,
+)
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.github.approval_invalidation import invalidate_approval
-from sandbox_executor.flow.github.ci_failure_detail import bare_detail, describe_failure, short_sha
+from sandbox_executor.flow.github.ci_failure_detail import (
+    STEP_LOOKUP_TIMEOUT_SECONDS,
+    bare_detail,
+    describe_failure,
+    short_sha,
+)
 from sandbox_executor.git import run_git
 
 GREEN = "green"
@@ -14,6 +32,10 @@ UNVERIFIED = "unverified"
 SKIPPED = "skipped"
 _VERDICT_BY_STATE = {"success": GREEN, "failed": RED, "skipped": SKIPPED}
 _SYMBOLIC_HEAD = "HEAD"
+MAX_FAILED_RUNS = 3
+_LOG_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\S*Z ?")
+
+FailedCheckOutput = Callable[[str, str], str]
 
 
 def _same_commit(first: str | None, second: str | None) -> bool:
@@ -100,11 +122,72 @@ def blocked_error(reverified: Mapping[str, Any]) -> str:
     return f"Stage 5 blocked: {reverified['report']}{note}"
 
 
-def reverify_and_report(context: FlowContext, repo_dir: str, record: Mapping[str, Any], pushed: bool) -> dict[str, Any]:
+def _gh_stdout(args: list[str], repo_dir: str, run: Callable[..., Any]) -> str:
+    proc = run(
+        ["gh", *args],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=STEP_LOOKUP_TIMEOUT_SECONDS,
+    )
+    return str(proc.stdout or "") if proc.returncode == 0 else ""
+
+
+def _gh_failed_check_output(repo_dir: str, final_head: str, run: Callable[..., Any] = subprocess.run) -> str:
+    list_args = ["run", "list", "--commit", final_head, "--status", "failure", "--json", "databaseId"]
+    try:
+        runs = json.loads(_gh_stdout([*list_args, "--limit", str(MAX_FAILED_RUNS)], repo_dir, run) or "[]")
+        run_ids = [str(entry["databaseId"]) for entry in runs[:MAX_FAILED_RUNS]]
+        return "\n".join(_gh_stdout(["run", "view", run_id, "--log-failed"], repo_dir, run) for run_id in run_ids)
+    except Exception:
+        # why: the lookup only annotates a verdict that is already decided.
+        return ""
+
+
+def _check_log_text(output: str) -> str:
+    return "\n".join(_LOG_TIMESTAMP.sub("", line.rsplit("\t", 1)[-1]) for line in output.splitlines())
+
+
+def _execution_id_of(branch: str) -> str:
+    return next((part for part in branch.split("/") if part.startswith("E-")), "")
+
+
+def _record_stage5_test_failure(context: FlowContext, final_head: str, output: str) -> dict[str, Any] | None:
+    text = _check_log_text(output)
+    ids = failing_ids_from_output(text)
+    if not ids:
+        return None
+    branch = context.execution_branch or context.intent_branch or ""
+    execution_id = _execution_id_of(branch)
+    evidence = TestFailureEvidence(
+        run_id=f"{execution_id}:{final_head}",
+        stage=STAGE_5,
+        head_sha=final_head,
+        failing_ids=ids,
+        excerpts=excerpts_by_test(text, ids),
+        # why: Stage 5 cannot re-run CI tests to diagnose, so the final head's own CI failure counts as introduced.
+        classification=FailureClass.INTRODUCED.value,
+    )
+    ledger_path = os.path.join(context.target_worktree, *LEDGER_RELPATH)
+    return record_test_failure(ledger_path, evidence, branch=branch, execution_id=execution_id)
+
+
+def reverify_and_report(
+    context: FlowContext,
+    repo_dir: str,
+    record: Mapping[str, Any],
+    pushed: bool,
+    *,
+    failed_output: FailedCheckOutput = _gh_failed_check_output,
+) -> dict[str, Any]:
     carried = bool(_consensus_of(context).get("carried_to"))
     final_head = published_head_of(repo_dir) if pushed else None
     reverified = reverify_final_head(record, approved_head_of(context), final_head, carried)
     context.log(f"Stage 5 re-verification: {reverified['report']}")
     if reverified["verdict"] == RED:
         reverified["invalidation"] = invalidate_approval(context, reverified)
+        if final_head:
+            output = failed_output(repo_dir, final_head)
+            reverified["test_failure_record"] = _record_stage5_test_failure(context, final_head, output)
     return reverified

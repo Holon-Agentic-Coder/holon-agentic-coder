@@ -40,6 +40,7 @@ from sandbox_executor.e2e_types import (
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.pipeline import PipelineEngine
 from sandbox_executor.git import GitRunnerCallable, run_git
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 from sandbox_executor.ledger import LedgerRewriteError
 from sandbox_executor.local_llm import LocalLLMConfigError
 
@@ -436,13 +437,11 @@ def run_e2e_flow_test(
     resolved_model = model or os.getenv("HOLON_MODEL", "").strip() or _DEFAULT_E2E_MODEL
 
     def _resolve_attempt_worktree(_attempt: int, intent_prefix: str) -> tuple[str, str]:
-        slug = _intent_slug_from_prefix(intent_prefix)
-        worktree_branch = f"flow-{slug}"
+        worktree_branch = f"flow-{_intent_slug_from_prefix(intent_prefix)}"
         disposable_worktree = os.path.join(os.path.dirname(os.path.abspath(repo_dir)), worktree_branch)
         return disposable_worktree, worktree_branch
 
     def _run_single_attempt(_attempt: int, intent_prefix: str) -> Mapping[str, Any]:
-        slug = _intent_slug_from_prefix(intent_prefix)
         disposable_worktree, worktree_branch = _resolve_attempt_worktree(_attempt, intent_prefix)
         if not os.path.exists(disposable_worktree):
             add_result = _invoke_git(
@@ -457,7 +456,8 @@ def run_e2e_flow_test(
                 )
 
         intent_data: dict[str, Any] = {
-            "slug": slug,
+            **default_assumptions_fields(),
+            "slug": _intent_slug_from_prefix(intent_prefix),
             "branch": intent_prefix,
             "target_branch": "main",
             "description": "Disposable E2E flow verification intent.",
@@ -476,8 +476,7 @@ def run_e2e_flow_test(
             dispatcher=dispatcher,
         )
         checkpoint_file = os.path.join(disposable_worktree, ".holon", "e2e_checkpoint.json")
-        engine = E2EPipelineEngine(flow_context, checkpoint_path=checkpoint_file)
-        results = engine.run()
+        results = E2EPipelineEngine(flow_context, checkpoint_path=checkpoint_file).run()
         _check_stage_results_succeeded(results)
         review_result = results.get(FlowStage.REVIEW.value)
         if review_result is None or not review_result.payload.get("stopped_before_pr"):

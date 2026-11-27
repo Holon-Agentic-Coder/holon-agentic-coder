@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -21,6 +23,9 @@ from sandbox_executor.calibration import (
 from sandbox_executor.calibration_format import LINT_DOCS_PRETTIER, PRETTIER_PASSES
 from sandbox_executor.cli import main as cli_main
 from sandbox_executor.ledger import merged_jsonl_text, read_merged_rows_at_ref, read_merged_text
+
+from tests.calibrate_scenarios import build_calibration_commit_repo, own_path_copy, run_guarded_template
+from tests.repo_templates import shared_template
 
 _REAL_EXECUTIONS_LEDGER = Path(__file__).resolve().parents[3] / "holon-knowledge" / "ledger" / "executions.jsonl"
 _EXEC_BRANCH = "I-1-cal/P-2/E-3/_"
@@ -46,38 +51,96 @@ def guard_real_ledger():
     assert _fingerprint(_REAL_EXECUTIONS_LEDGER) == before, "Real executions.jsonl was modified"
 
 
+@pytest.fixture(scope="session")
+def calibration_commit_repo_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> Path:
+    root, _ = shared_template(
+        tmp_path_factory, "calibration-commit-repo", lambda r: build_calibration_commit_repo(r, _EXEC_BRANCH)
+    )
+    return root
+
+
 @pytest.fixture
-def calibration_repo(tmp_path, monkeypatch, guard_real_ledger):
+def calibration_repo(calibration_commit_repo_template: Path, tmp_path, monkeypatch, guard_real_ledger):
     for key, value in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, value)
+    repo = own_path_copy(calibration_commit_repo_template, tmp_path)
 
     def git(*args: str) -> str:
-        return subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True, text=True).stdout
+        return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout
 
-    git("init", "-q", "-b", "main")
-    ledger = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
-    ledger.parent.mkdir(parents=True)
-    summary = {
-        "execution_id": "E-3",
-        "plan_branch": "I-1-cal/P-2/_",
-        "agent": "test-agent",
-        "model": "test-model",
-        "status": "success",
-        "entry_type": "summary",
-        "created_at": "2026-01-01T00:00:00.000Z",
-        "duration": 12.0,
-        "exit_code": 0,
-    }
-    ledger.write_text(json.dumps(summary) + "\n", encoding="utf-8")
-    git("add", "-A")
-    git("commit", "-q", "-m", "base")
-    git("checkout", "-q", "-b", "I-1-cal/P-2/_")
-    git("checkout", "-q", "-b", _EXEC_BRANCH)
-    (tmp_path / "feature.py").write_text("print('hello')\n", encoding="utf-8")
-    git("add", "feature.py")
-    git("commit", "-q", "-m", "feature")
-    (tmp_path / "untracked_scratch.txt").write_text("not for commit\n", encoding="utf-8")
-    return tmp_path, git
+    return repo, git
+
+
+@pytest.fixture
+def _template_guards(
+    monkeypatch,
+    gh_write_guard: list[str],
+    network_guard_fixture: list[str],
+) -> tuple[list[str], list[str]]:
+    for key, value in _GIT_IDENTITY.items():
+        monkeypatch.setenv(key, value)
+    return (gh_write_guard, network_guard_fixture)
+
+
+@pytest.fixture
+def calibrated_committed_template(
+    calibration_commit_repo_template: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    guard_real_ledger,
+    _template_guards: tuple[list[str], list[str]],
+) -> SimpleNamespace:
+    def build(root: Path) -> SimpleNamespace:
+        repo = own_path_copy(calibration_commit_repo_template, root)
+        with patch("sandbox_executor.calibration.run.format_calibration_report"):
+            report = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
+        return SimpleNamespace(report=report)
+
+    root, built = run_guarded_template(tmp_path_factory, "calibration-commit-committed", build, _template_guards)
+    return SimpleNamespace(root=root, report=built.report)
+
+
+@pytest.fixture
+def calibrated_committed(calibrated_committed_template: SimpleNamespace, tmp_path, monkeypatch, guard_real_ledger):
+    for key, value in _GIT_IDENTITY.items():
+        monkeypatch.setenv(key, value)
+    repo = own_path_copy(calibrated_committed_template.root, tmp_path / "committed")
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout
+
+    return repo, git, copy.deepcopy(calibrated_committed_template.report)
+
+
+@pytest.fixture
+def calibrated_skip_commit_template(
+    calibration_commit_repo_template: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    guard_real_ledger,
+    _template_guards: tuple[list[str], list[str]],
+) -> SimpleNamespace:
+    def build(root: Path) -> SimpleNamespace:
+        repo = own_path_copy(calibration_commit_repo_template, root)
+        ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
+        before, merged_before = ledger.read_bytes(), _merged_ledger_text(repo)
+        with patch("sandbox_executor.calibration.run.format_calibration_report"):
+            report = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
+        return SimpleNamespace(report=report, before=before, merged_before=merged_before)
+
+    root, built = run_guarded_template(tmp_path_factory, "calibration-commit-skip-commit", build, _template_guards)
+    return SimpleNamespace(root=root, report=built.report, before=built.before, merged_before=built.merged_before)
+
+
+@pytest.fixture
+def calibrated_skip_commit(calibrated_skip_commit_template: SimpleNamespace, tmp_path, monkeypatch, guard_real_ledger):
+    for key, value in _GIT_IDENTITY.items():
+        monkeypatch.setenv(key, value)
+    repo = own_path_copy(calibrated_skip_commit_template.root, tmp_path / "skip-commit")
+    return SimpleNamespace(
+        repo=repo,
+        report=copy.deepcopy(calibrated_skip_commit_template.report),
+        before=calibrated_skip_commit_template.before,
+        merged_before=calibrated_skip_commit_template.merged_before,
+    )
 
 
 _FRAGMENT_REL = "holon-knowledge/ledger/pending/executions/I-1-cal.jsonl"
@@ -169,10 +232,8 @@ def test_cli_calibrate_rejected_report_commit_exits_one_with_redacted_error(cali
     assert "committed" not in captured.out
 
 
-def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
-    repo, git = calibration_repo
-    with patch("sandbox_executor.calibration.run.format_calibration_report"):
-        report = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
+def test_run_calibrate_appends_and_commits_act_cal(calibrated_committed):
+    repo, git, report = calibrated_committed
 
     ledger_rel = "holon-knowledge/ledger/executions.jsonl"
     rows = _cal_rows(_merged_ledger_text(repo))
@@ -221,24 +282,20 @@ def test_run_calibrate_appends_and_commits_act_cal(calibration_repo):
     ]
 
 
-def test_run_calibrate_metrics_unaffected_by_act_cal_rows(calibration_repo):
-    repo, _ = calibration_repo
+def test_run_calibrate_metrics_unaffected_by_act_cal_rows(calibrated_skip_commit, calibrated_committed):
+    first = calibrated_skip_commit.report
+    repo, _, second = calibrated_committed
     with patch("sandbox_executor.calibration.run.format_calibration_report"):
-        first = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
-        second = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
         third = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
     assert first.actual.to_dict() == second.actual.to_dict() == third.actual.to_dict()
     assert first.predicted.to_dict() == third.predicted.to_dict()
 
 
-def test_run_calibrate_skip_commit_appends_nothing(calibration_repo):
-    repo, _ = calibration_repo
+def test_run_calibrate_skip_commit_appends_nothing(calibrated_skip_commit):
+    repo = calibrated_skip_commit.repo
     ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
-    before, merged_before = ledger.read_bytes(), _merged_ledger_text(repo)
-    with patch("sandbox_executor.calibration.run.format_calibration_report"):
-        run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
-    assert ledger.read_bytes() == before
-    assert _merged_ledger_text(repo) == merged_before
+    assert ledger.read_bytes() == calibrated_skip_commit.before
+    assert _merged_ledger_text(repo) == calibrated_skip_commit.merged_before
 
 
 def test_run_calibrate_ledger_failure_warns_and_still_commits_report(calibration_repo, caplog):

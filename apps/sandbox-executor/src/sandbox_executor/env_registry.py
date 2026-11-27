@@ -354,6 +354,21 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         internal=True,
     ),
     EnvironmentVariable(
+        name="HOLON_REPLAN_FEEDBACK_FILE",
+        area=Area.RUNNER_AND_AGENT,
+        purpose="Path to a read-only mounted file carrying replan or target-merge feedback; never written to a ledger.",
+        value_type="file path",
+        default="set by the flow or launcher for large feedback",
+        when_unset="falls back to `HOLON_REPLAN_FEEDBACK` when set",
+        when_invalid=(
+            "a missing host file aborts container launch; inside the container a missing or unreadable "
+            "file logs a warning and falls back to `HOLON_REPLAN_FEEDBACK`"
+        ),
+        read_side="both",
+        since=BUDGETS_DOC,
+        internal=True,
+    ),
+    EnvironmentVariable(
         name="HOLON_ROLE",
         area=Area.RUNNER_AND_AGENT,
         purpose="Role the container runs; the role dispatcher starts its entrypoint. Also marks a sandbox.",

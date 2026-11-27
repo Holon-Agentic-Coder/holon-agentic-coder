@@ -44,6 +44,7 @@ from sandbox_executor.ledger.fragments import ledger_commit_paths
 from sandbox_executor.plan_paths import calibration_report_for_branch, legacy_calibration_report_rel, split_plan_branch
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.ref_names import calibration_branch
+from sandbox_executor.submodule_gitfile import repair_submodule_gitfiles
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,12 @@ def _fail_calibration(context: FlowContext, start_time: str, calibrated_created:
 
 
 def _prepare_execution_branch(context: FlowContext, start_time: str) -> tuple[StageResult | None, str | None, bool]:
+    repair = repair_submodule_gitfiles(context.target_worktree, run=run_git)
+    if repair.error is not None:
+        failure = f"Calibrate stage failed: {redact_agent_secrets(repair.error)}"
+        return _stage_failure(context, FlowStage.CALIBRATE, start_time, failure), None, False
+    if repair.repaired:
+        context.log(f"Repaired submodule gitfile(s) before calibration checkout: {', '.join(repair.repaired)}")
     checkout_err = _checkout_execution_branch(context)
     if checkout_err:
         failure = (

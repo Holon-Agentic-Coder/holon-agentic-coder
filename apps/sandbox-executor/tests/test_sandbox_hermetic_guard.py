@@ -74,6 +74,7 @@ class TestSandboxHermeticGuard(unittest.TestCase):
                 f"Command: {' '.join(cmd)}\n"
                 f"Stdout:\n{res.stdout}\nStderr:\n{res.stderr}",
             )
+            # why: knowledge index, workspace, canary marker, dummy repo file, and dummy .git must all stay untouched
             self.assertEqual(canary_violations(context, seed, REPO_ROOT, index_before), [])
 
     def test_negative_control_canary_is_actually_live(self):

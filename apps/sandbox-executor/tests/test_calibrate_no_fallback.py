@@ -11,6 +11,7 @@ import subprocess
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -25,8 +26,9 @@ from sandbox_executor.flow.stage5 import Stage5Steps, run_stage5, standalone_con
 from sandbox_executor.flow.stages.calibrate import stage5_steps
 from sandbox_executor.ledger import read_merged_rows, read_merged_text
 
-from tests.flow.helpers import _configure_identity
+from tests.calibrate_scenarios import build_no_fallback_repo, clone_flow_pair, own_path_copy, run_guarded_template
 from tests.flow.sleep_patch import scoped_sleep_patch
+from tests.repo_templates import shared_template
 
 EXECUTION_BRANCH = "I-100-intent/P-200-plan/E-300-exec/_"
 CALIBRATED_BRANCH = "I-100-intent/P-200-plan/E-300-exec/calibrated"
@@ -41,21 +43,54 @@ def _git(repo: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout
 
 
+@pytest.fixture(scope="session")
+def no_fallback_repo_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> Path:
+    root, _ = shared_template(
+        tmp_path_factory,
+        "calibrate-no-fallback-repo",
+        lambda r: build_no_fallback_repo(r, EXECUTION_BRANCH, LEDGER_REL, SEED_ROW),
+    )
+    return root
+
+
 @pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    """A git repository on the execution branch with a seeded ledger and one execution commit."""
-    _git(tmp_path, "init", "-q", "-b", "main")
-    _configure_identity(tmp_path)
-    ledger = tmp_path / LEDGER_REL
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(SEED_ROW, encoding="utf-8")
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-q", "-m", "initial")
-    _git(tmp_path, "checkout", "-q", "-b", EXECUTION_BRANCH)
-    (tmp_path / "src.py").write_text("x = 1\n", encoding="utf-8")
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-q", "-m", "execution change")
-    return tmp_path
+def repo(no_fallback_repo_template: Path, tmp_path: Path) -> Path:
+    return own_path_copy(no_fallback_repo_template, tmp_path)
+
+
+@pytest.fixture
+def permanent_failure_template(
+    no_fallback_repo_template: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    gh_write_guard: list[str],
+    network_guard_fixture: list[str],
+) -> SimpleNamespace:
+    def build(root: Path) -> SimpleNamespace:
+        own = own_path_copy(no_fallback_repo_template, root)
+        tip = _git(own, "rev-parse", EXECUTION_BRANCH).strip()
+        ctx = _context(own)
+        with scoped_sleep_patch("sandbox_executor.flow.calibrate_retry") as mock_sleep:
+            res, calibrate, reconcile, promote = _run(ctx, _raising(RuntimeError(f"{PR_249_ERROR} {TOKEN}")))
+            sleep_calls = mock_sleep.call_count
+        return SimpleNamespace(
+            tip=tip,
+            stage_run=(ctx, res),
+            counts=(calibrate.call_count, reconcile.call_count, promote.call_count, sleep_calls),
+        )
+
+    root, ran = run_guarded_template(
+        tmp_path_factory, "calibrate-no-fallback-permanent", build, (gh_write_guard, network_guard_fixture)
+    )
+    return SimpleNamespace(root=root, tip=ran.tip, stage_run=ran.stage_run, counts=ran.counts)
+
+
+@pytest.fixture
+def permanent_failure(permanent_failure_template: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
+    own = own_path_copy(permanent_failure_template.root, tmp_path)
+    ctx, res = clone_flow_pair(permanent_failure_template.root, permanent_failure_template.stage_run, own)
+    return SimpleNamespace(
+        repo=own, tip=permanent_failure_template.tip, ctx=ctx, res=res, counts=permanent_failure_template.counts
+    )
 
 
 @pytest.fixture
@@ -121,12 +156,11 @@ def _new_rows(repo: Path) -> list[dict[str, Any]]:
     return rows[len(seed) :]
 
 
-def test_permanent_error_fails_closed(repo, sleep):
-    tip = _git(repo, "rev-parse", EXECUTION_BRANCH).strip()
-    ctx = _context(repo)
-    res, calibrate, reconcile, promote = _run(ctx, _raising(RuntimeError(f"{PR_249_ERROR} {TOKEN}")))
+def test_permanent_error_fails_closed(permanent_failure: SimpleNamespace):
+    repo, tip, ctx, res = permanent_failure.repo, permanent_failure.tip, permanent_failure.ctx, permanent_failure.res
+    calibrate_calls, reconcile_calls, promote_calls, sleep_calls = permanent_failure.counts
 
-    assert calibrate.call_count == 1
+    assert calibrate_calls == 1
     assert res.status == StageStatus.FAILED
     assert res.summary_line().startswith("calibrate: failed")
     assert PR_249_ERROR in (res.error or "")
@@ -137,13 +171,11 @@ def test_permanent_error_fails_closed(repo, sleep):
     assert _git(repo, "rev-parse", EXECUTION_BRANCH).strip() == tip
     assert _git(repo, "branch", "--list", "*calibrated").strip() == ""
     assert ctx.calibrated_branch is None
-    reconcile.assert_not_called()
-    promote.assert_not_called()
-    sleep.assert_not_called()
+    assert (reconcile_calls, promote_calls, sleep_calls) == (0, 0, 0)
 
 
-def test_failure_row_is_a_pure_append(repo, sleep):
-    res, *_ = _run(_context(repo), _raising(RuntimeError(f"{PR_249_ERROR} {TOKEN}")))
+def test_failure_row_is_a_pure_append(permanent_failure: SimpleNamespace):
+    repo, res = permanent_failure.repo, permanent_failure.res
 
     assert res.status == StageStatus.FAILED
     rows = _new_rows(repo)

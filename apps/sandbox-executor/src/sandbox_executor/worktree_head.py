@@ -145,6 +145,7 @@ def head_guard(
             try:
                 report.outcome = _repair(repo_dir, branch, step_label, log, git)
             except Exception as exc:
+                # why: head_guard is diagnostic/repair only and must never mask the wrapped block's outcome
                 log(f"Warning: could not check the worktree HEAD after {step_label}: {exc}")
 
 
@@ -165,4 +166,5 @@ def restore_branch(
         detail = res.stderr.strip() if isinstance(res.stderr, str) else ""
         log(f"Warning: could not check out '{branch}' after {step_label}: {redact_agent_secrets(detail)}")
     except Exception as exc:
+        # why: branch restoration is best-effort and must not hide the step's own result or exception
         log(f"Warning: could not restore '{branch}' after {step_label}: {exc}")

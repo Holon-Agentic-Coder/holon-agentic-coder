@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from sandbox_executor import claude_token_migration, local_llm
+from sandbox_executor import claude_token_migration, local_llm, preflight_cooldown
 from sandbox_executor.agent_defaults import AGENT_IMAGE_MAPPING, normalise_agent_id
 from sandbox_executor.claude_credential import pin_claude_credential, resolve_claude_credential_with_lookup
 from sandbox_executor.preflight_model_error import is_model_error
@@ -105,7 +105,8 @@ _PATTERNS: tuple[tuple[PreflightStatus, re.Pattern[str]], ...] = (
         re.compile(
             r"(?:HTTP|status|code|error)[\s:=]*429\b|\b429\b\W*(?:too\s+many|quota|rate|resource)|RESOURCE_EXHAUSTED"
             r"|quota\s+(?:exceeded|exhausted)|exceeded\s+(?:your|the)\s+(?:current\s+)?quota"
-            r"|rate[\s_-]?limit(?:ed)?|too\s+many\s+requests|usage\s+limit",
+            r"|rate[\s_-]?limit(?:ed)?|too\s+many\s+requests|usage\s+limit"
+            r"|spend(?:ing)?\s+limit|billing\s+(?:hard\s+)?limit|credit\s+balance\s+is\s+too\s+low|out\s+of\s+credits",
             re.IGNORECASE,
         ),
     ),
@@ -299,7 +300,24 @@ def _result(  # noqa: PLR0913
     )
 
 
-def run_preflight_probe(  # noqa: PLR0911
+def _early_probe_result(agent: str, agent_id: str, model: str, image: str) -> PreflightResult | None:
+    from sandbox_executor.agent_runner import runners
+
+    if agent_id not in runners or agent_id not in AGENT_IMAGE_MAPPING:
+        return _result(PreflightStatus.UNKNOWN, agent, model, image, hint=f"Unsupported agent runner '{agent}'.")
+    if agent_id == "pi" and local_llm.local_llm_requested():
+        return _result(
+            PreflightStatus.OK,
+            agent,
+            model,
+            image,
+            hint="Probe skipped: host-local model mode has no provider quota or login to check.",
+            skipped=True,
+        )
+    return preflight_cooldown.active_cooldown_result(agent, model, image)
+
+
+def run_preflight_probe(
     agent: str,
     model: str,
     timeout: float | None = None,
@@ -311,20 +329,8 @@ def run_preflight_probe(  # noqa: PLR0911
     image = AGENT_IMAGE_MAPPING.get(agent_id, f"holon/agent-{agent_id}")
     limit = resolve_timeout(timeout)
 
-    from sandbox_executor.agent_runner import runners
-
-    if agent_id not in runners or agent_id not in AGENT_IMAGE_MAPPING:
-        return _result(PreflightStatus.UNKNOWN, agent, model, image, hint=f"Unsupported agent runner '{agent}'.")
-
-    if agent_id == "pi" and local_llm.local_llm_requested():
-        return _result(
-            PreflightStatus.OK,
-            agent,
-            model,
-            image,
-            hint="Probe skipped: host-local model mode has no provider quota or login to check.",
-            skipped=True,
-        )
+    if early := _early_probe_result(agent, agent_id, model, image):
+        return early
 
     if runner_fn is None and not shutil.which("docker"):
         return _result(
@@ -371,7 +377,9 @@ def run_preflight_probe(  # noqa: PLR0911
         docker_cmd[_DOCKER_RUN_ENV_FILE_INSERT_INDEX:_DOCKER_RUN_ENV_FILE_INSERT_INDEX] = ["--env-file", env_file]
     target = _ProbeTarget(agent=agent, model=model, image=image, limit=limit)
     try:
-        return _run_probe_with_retries(run, docker_cmd, target, max_attempts)
+        result = _run_probe_with_retries(run, docker_cmd, target, max_attempts)
+        preflight_cooldown.sync_cooldown_for_result(result)
+        return result
     finally:
         if env_file:
             with contextlib.suppress(FileNotFoundError):

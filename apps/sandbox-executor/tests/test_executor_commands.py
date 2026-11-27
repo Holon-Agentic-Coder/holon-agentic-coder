@@ -192,6 +192,7 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
         expected_yaml = "cfg:\n  secret:\n    api_key: *******\n"
         self.assertEqual(redact_text(yaml_input), expected_yaml)
 
+        # why: a multiline match on parent secret: must mask only the quoted child value, not the child key name
         yaml_quoted = 'cfg:\n  secret:\n    "api_key": "secret_val"\n'
         expected_yaml_quoted = 'cfg:\n  secret:\n    "api_key": "*******"\n'
         self.assertEqual(redact_text(yaml_quoted), expected_yaml_quoted)

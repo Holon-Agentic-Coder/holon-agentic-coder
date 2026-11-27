@@ -30,6 +30,7 @@ from sandbox_executor.git_flow import (
     is_working_tree,
     prune_worktrees,
 )
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 from sandbox_executor.ledger import read_merged_rows, read_merged_text
 
 from tests.flow.helpers import SteppingClock, _dispatch_context, _prefix, _review_loop_gh_stubs, seed_empty_ledger
@@ -49,6 +50,7 @@ class TestFlowStages:
         ctx = FlowContext(
             repo_dir=str(tmp_path),
             intent_data={
+                **default_assumptions_fields(),
                 "slug": "unresolved-q",
                 "goal": "Build stage 1",
                 "open_questions": ["What authentication protocol should we use?"],
@@ -590,7 +592,10 @@ class TestStageBudgets:
     def test_every_stage_reports_elapsed_against_budget(self, tmp_path):
         (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
         ctx = FlowContext(
-            repo_dir=str(tmp_path), intent_data={"slug": "budget", "goal": "Budgets"}, auto_calibrate=True, dry_run=True
+            repo_dir=str(tmp_path),
+            intent_data={**default_assumptions_fields(), "slug": "budget", "goal": "Budgets"},
+            auto_calibrate=True,
+            dry_run=True,
         )
         results = PipelineEngine(ctx).run()
         expected_budgets = {"intent": 600, "plan": 2100, "execute": 2700, "review": 7200, "calibrate": 600}
@@ -605,7 +610,11 @@ class TestStageBudgets:
 
     def test_stage_breach_under_fake_clock_fails_the_stage(self, tmp_path):
         (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
-        ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "slow", "goal": "Slow"}, dry_run=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={**default_assumptions_fields(), "slug": "slow", "goal": "Slow"},
+            dry_run=True,
+        )
         results = PipelineEngine(ctx, clock=SteppingClock(step=3000)).run()
         assert results["intent"].status == StageStatus.FAILED
         assert "exceeded its stage budget" in results["intent"].error
@@ -618,7 +627,11 @@ class TestStageBudgets:
         from sandbox_executor.budgets import Budgets
 
         (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True)
-        ctx = FlowContext(repo_dir=str(tmp_path), intent_data={"slug": "fast", "goal": "Fast"}, dry_run=True)
+        ctx = FlowContext(
+            repo_dir=str(tmp_path),
+            intent_data={**default_assumptions_fields(), "slug": "fast", "goal": "Fast"},
+            dry_run=True,
+        )
         engine = PipelineEngine(ctx, budgets=Budgets(stage_override_seconds=20), clock=SteppingClock(step=30))
         results = engine.run()
         assert results["intent"].status == StageStatus.FAILED

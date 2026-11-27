@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from sandbox_executor import preflight
 from sandbox_executor.preflight import PreflightStatus, run_preflight_probe
+from sandbox_executor.preflight_cooldown import COOLDOWN_HINT_PREFIX, read_active_cooldown
 
 from tests.flow.sleep_patch import scoped_sleep_patch
 
@@ -218,3 +219,43 @@ def test_probe_clear_auth_quota_and_model_errors_fail_immediately_without_retry(
     assert res.status is expected
     assert runner_fn.call_count == 1
     sleep_mock.assert_not_called()
+
+
+def test_probe_spend_limit_fails_immediately_records_cooldown_and_short_circuits(probe_env, monkeypatch):
+    monkeypatch.setattr(preflight, "DEFAULT_RETRY_DELAY_SECONDS", 2.0)
+    runner_fn = MagicMock(
+        return_value=subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="Error: org spend limit reached"
+        )
+    )
+
+    with scoped_sleep_patch("sandbox_executor.preflight") as sleep_mock:
+        first = run_preflight_probe("antigravity-agent", "m", timeout=5, runner_fn=runner_fn)
+
+    assert first.status is PreflightStatus.QUOTA_EXHAUSTED
+    assert runner_fn.call_count == 1
+    sleep_mock.assert_not_called()
+    assert read_active_cooldown("antigravity-agent") is not None
+
+    followup_runner = MagicMock()
+    second = run_preflight_probe("antigravity-agent", "m", timeout=5, runner_fn=followup_runner)
+    assert second.status is PreflightStatus.QUOTA_EXHAUSTED
+    assert second.hint.startswith(COOLDOWN_HINT_PREFIX)
+    followup_runner.assert_not_called()
+
+
+def test_probe_timeout_with_decisive_quota_output_records_cooldown_and_short_circuits(probe_env):
+    def runner_fn(cmd, **kwargs):
+        if cmd[:2] == ["docker", "run"]:
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"), output="", stderr="billing hard limit reached")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    first = run_preflight_probe("antigravity-agent", "m", timeout=5, runner_fn=runner_fn)
+    assert first.status is PreflightStatus.QUOTA_EXHAUSTED
+    assert read_active_cooldown("antigravity-agent") is not None
+
+    followup_runner = MagicMock()
+    second = run_preflight_probe("antigravity-agent", "m", timeout=5, runner_fn=followup_runner)
+    assert second.status is PreflightStatus.QUOTA_EXHAUSTED
+    assert second.hint.startswith(COOLDOWN_HINT_PREFIX)
+    followup_runner.assert_not_called()

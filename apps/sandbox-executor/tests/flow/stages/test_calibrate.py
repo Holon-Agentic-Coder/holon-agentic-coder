@@ -1,10 +1,12 @@
 """Tests for the Stage 5 commits of promoted knowledge base and wisdom artefacts."""
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from sandbox_executor.flow import FlowContext, StageStatus, run_calibrate_stage
 from sandbox_executor.ledger import read_merged_text
 
@@ -338,3 +340,126 @@ def test_stage5_forwards_the_context_review_accounting_to_the_calibrate_step(tmp
     assert seen[0]["review_accounting"]["scoped_reviews"] == 1
     assert "seen_events" not in seen[0]["review_accounting"]
     assert seen[1]["review_accounting"] is None
+
+
+def _setup_repo_with_broken_submodule(
+    tmp_path: Path,
+    execution_branch: str,
+    *,
+    already_on_exec: bool,
+) -> tuple[Path, Path]:
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    TestStage5PromotedArtifactsCommit._setup_repo(repo_dir, execution_branch)
+
+    def git(cwd: Path, *args: str) -> str:
+        return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+    sub_src = tmp_path / "holon_coherence_src"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(sub_src)], check=True)
+    _configure_identity(sub_src)
+    (sub_src / "README.md").write_text("coherence\n", encoding="utf-8")
+    git(sub_src, "add", "README.md")
+    git(sub_src, "commit", "-qm", "init submodule")
+
+    git(repo_dir, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub_src), "holon-coherence")
+    git(repo_dir, "commit", "-qm", "add submodule")
+    if not already_on_exec:
+        git(repo_dir, "checkout", "-q", "-b", "operator")
+
+    raw_mod = git(repo_dir, "rev-parse", "--git-path", "modules/holon-coherence")
+    module_git_dir = Path(raw_mod) if os.path.isabs(raw_mod) else repo_dir / raw_mod
+    (repo_dir / "holon-coherence" / ".git").write_text(
+        "gitdir: /nonexistent-container/workspace/.git/modules/holon-coherence\n",
+        encoding="utf-8",
+    )
+    git(
+        repo_dir,
+        "config",
+        "--file",
+        str(module_git_dir / "config"),
+        "core.worktree",
+        "/nonexistent-container/workspace/holon-coherence",
+    )
+    return repo_dir, module_git_dir
+
+
+@pytest.mark.parametrize("already_on_exec", [False, True])
+def test_stage5_repairs_broken_submodule_gitfile_before_checkout(tmp_path: Path, already_on_exec: bool) -> None:
+    execution_branch = "I-100-intent/P-200-plan/E-300-exec/_"
+    calibrated_branch = "I-100-intent/P-200-plan/E-300-exec/calibrated"
+    repo_dir, module_git_dir = _setup_repo_with_broken_submodule(
+        tmp_path,
+        execution_branch,
+        already_on_exec=already_on_exec,
+    )
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=repo_dir, check=True, capture_output=True, text=True).stdout.strip()
+
+    def fake_run_calibrate(**_kwargs):
+        git("checkout", "-q", "-B", calibrated_branch)
+        (repo_dir / "plans").mkdir(exist_ok=True)
+        (repo_dir / "plans" / "P-200-plan_calibration.md").write_text("# Calibration\n", encoding="utf-8")
+        git("add", "plans")
+        git("commit", "-q", "-m", "calibration report")
+        report = MagicMock()
+        report.calibrated_branch = calibrated_branch
+        report.to_dict.return_value = {"calibrated_branch": calibrated_branch}
+        return report
+
+    ctx = FlowContext(
+        repo_dir=str(repo_dir),
+        execution_branch=execution_branch,
+        plan_branch="I-100-intent/P-200-plan/_",
+        dry_run=False,
+        skip_push=True,
+    )
+    with (
+        patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=fake_run_calibrate),
+        patch("sandbox_executor.flow.stages.calibrate.reconcile_records"),
+        patch("sandbox_executor.flow.stages.calibrate.promote_pending_candidates", return_value=[]),
+    ):
+        res = run_calibrate_stage(ctx)
+
+    assert res.status == StageStatus.SUCCESS
+    gitdir_line = (repo_dir / "holon-coherence" / ".git").read_text(encoding="utf-8").strip()
+    assert gitdir_line.startswith("gitdir: ")
+    assert not os.path.isabs(gitdir_line.removeprefix("gitdir: "))
+    worktree = git("config", "--file", str(module_git_dir / "config"), "--get", "core.worktree")
+    assert not os.path.isabs(worktree)
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=repo_dir / "holon-coherence",
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        == "true"
+    )
+
+
+def test_stage5_fails_closed_when_submodule_gitfile_cannot_be_repaired(tmp_path: Path) -> None:
+    execution_branch = "I-100-intent/P-200-plan/E-300-exec/_"
+    repo_dir, module_git_dir = _setup_repo_with_broken_submodule(
+        tmp_path,
+        execution_branch,
+        already_on_exec=False,
+    )
+    shutil.rmtree(module_git_dir)
+
+    mock_calibrate = MagicMock()
+    ctx = FlowContext(
+        repo_dir=str(repo_dir),
+        execution_branch=execution_branch,
+        plan_branch="I-100-intent/P-200-plan/_",
+        dry_run=False,
+        skip_push=True,
+    )
+    with patch("sandbox_executor.flow.stages.calibrate.run_calibrate", mock_calibrate):
+        res = run_calibrate_stage(ctx)
+
+    assert res.status == StageStatus.FAILED
+    assert "holon-coherence/.git" in (res.error or "")
+    mock_calibrate.assert_not_called()

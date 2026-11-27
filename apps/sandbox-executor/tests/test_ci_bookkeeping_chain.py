@@ -23,11 +23,17 @@ from scripts.ci_bookkeeping_chain import (
     RULE_PREVIOUS_RUN_UNVERIFIED,
     RULE_SHARED_HEAD_BRANCH,
     UNVERIFIED,
+    Decision,
     JobQuery,
+    MergeChain,
     classify_job,
+    find_merge_chain,
     find_real_success,
+    find_real_success_for_merge_chain,
     match_job,
+    verify_bookkeeping_chain,
 )
+from scripts.ci_bookkeeping_gate import diff_rule
 from tests.ci_bookkeeping_fakes import (
     BRANCH,
     MACOS_JOB,
@@ -36,6 +42,7 @@ from tests.ci_bookkeeping_fakes import (
     UNIT_JOB,
     WORKFLOW,
     FakeGitHub,
+    cancelled_job,
     comparison,
     gate_skipped_job,
     job,
@@ -413,3 +420,132 @@ def test_the_token_is_sent_as_a_header_and_never_in_a_url_or_the_repr() -> None:
     assert all(TOKEN not in url for url in fake.urls)
     assert fake.auth == [f"Bearer {TOKEN}"] * 3
     assert TOKEN not in repr(client)
+
+
+def test_find_merge_chain_handles_direct_and_stacked_bookkeeping_merges() -> None:
+    sha_m = "1" * 40
+    sha_s2 = "2" * 40
+    sha_s3 = "3" * 40
+    fake = FakeGitHub({(sha_m, sha_s2): comparison("plans/a.md"), (sha_s2, sha_s3): comparison("executions/E-1.md")})
+    fake.commits[sha_m] = ("t" * 40, [SHA_A, SHA_B])
+    fake.commits[sha_s2] = ("t" * 40, [sha_m])
+    fake.commits[sha_s3] = ("t" * 40, [sha_s2])
+
+    direct = find_merge_chain(client_for(fake), sha_m, diff_rule)
+    stacked = find_merge_chain(client_for(fake), sha_s3, diff_rule)
+
+    assert isinstance(direct, MergeChain) and direct.merge.sha == sha_m and direct.post_shas == ()
+    assert isinstance(stacked, MergeChain) and stacked.merge.sha == sha_m and stacked.post_shas == (sha_s3, sha_s2)
+
+
+def test_find_merge_chain_rejects_non_bookkeeping_intermediate_and_octopus_merges() -> None:
+    sha_m = "1" * 40
+    sha_s2 = "2" * 40
+    sha_s3 = "3" * 40
+    fake = FakeGitHub({(sha_m, sha_s2): comparison("scripts/x.py"), (sha_s2, sha_s3): comparison("plans/a.md")})
+    fake.commits[sha_m] = ("t" * 40, [SHA_A, SHA_B])
+    fake.commits[sha_s2] = ("t" * 40, [sha_m])
+    fake.commits[sha_s3] = ("t" * 40, [sha_s2])
+
+    assert find_merge_chain(client_for(fake), sha_s2, diff_rule) is None
+    assert find_merge_chain(client_for(fake), sha_s3, diff_rule) == Decision(
+        False, "non-bookkeeping-change", "scripts/x.py"
+    )
+
+    fake.commits[SHA_C] = ("t" * 40, [SHA_A, SHA_B, sha_m])
+    assert find_merge_chain(client_for(fake), SHA_C, diff_rule) == Decision(
+        False, "merge-push-not-two-parents", "3 parents"
+    )
+
+
+def test_find_merge_chain_returns_none_at_root_or_hop_limit() -> None:
+    fake = FakeGitHub()
+    fake.commits[SHA_A] = ("t" * 40, [])
+    assert find_merge_chain(client_for(fake), SHA_A, diff_rule) is None
+
+    prev = SHA_A
+    for index in range(MAX_CHAIN_HOPS + 2):
+        curr = f"{index:040x}"
+        fake.commits[curr] = ("t" * 40, [prev])
+        fake.compares[(prev, curr)] = comparison("plans/x.md")
+        prev = curr
+    assert find_merge_chain(client_for(fake), prev, diff_rule) is None
+
+
+def test_verify_bookkeeping_chain_checks_each_single_parent_step() -> None:
+    fake = FakeGitHub({(SHA_A, SHA_B): comparison("plans/a.md"), (SHA_B, SHA_C): comparison("executions/b.md")})
+    fake.commits[SHA_B] = ("t" * 40, [SHA_A])
+    fake.commits[SHA_C] = ("t" * 40, [SHA_B])
+
+    assert verify_bookkeeping_chain(client_for(fake), SHA_A, SHA_C, diff_rule) is None
+
+    fake.compares[(SHA_A, SHA_B)] = comparison("scripts/x.py")
+    assert verify_bookkeeping_chain(client_for(fake), SHA_A, SHA_C, diff_rule) == Decision(
+        False, "non-bookkeeping-change", "scripts/x.py"
+    )
+
+    fake.commits[SHA_B] = ("t" * 40, [SHA_A, "9" * 40])
+    fake.compares[(SHA_A, SHA_B)] = comparison("plans/a.md")
+    nested = verify_bookkeeping_chain(client_for(fake), SHA_A, SHA_C, diff_rule)
+    assert nested is not None and nested.rule == "force-push-or-diverged"
+
+
+def test_verify_bookkeeping_chain_stops_at_hop_limit() -> None:
+    fake = FakeGitHub()
+    prev = SHA_A
+    for index in range(1, MAX_CHAIN_HOPS + 3):
+        curr = f"{index:040x}"
+        fake.commits[curr] = ("t" * 40, [prev])
+        fake.compares[(prev, curr)] = comparison("plans/x.md")
+        prev = curr
+
+    result = verify_bookkeeping_chain(client_for(fake), SHA_A, prev, diff_rule)
+
+    assert result is not None and result.rule == RULE_CHAIN_TOO_LONG
+
+
+def test_find_real_success_for_merge_chain_walks_cancelled_and_skipped_runs() -> None:
+    fake = FakeGitHub()
+    fake.add_run(47, SHA_A, real_success_job())
+    fake.add_run(48, SHA_B, gate_skipped_job())
+    fake.add_run(49, SHA_C, cancelled_job())
+
+    result, walked_cancelled = find_real_success_for_merge_chain(client_for(fake), query(SHA_B), (SHA_B, SHA_C))
+
+    assert (result.real_sha, result.rule, walked_cancelled) == (SHA_A, RULE_PREVIOUS_RUN_SUCCEEDED, True)
+
+
+@pytest.mark.parametrize(
+    ("older_job", "overrides", "expected_rule"),
+    [
+        (job(conclusion="failure"), {}, RULE_PREVIOUS_RUN_NOT_SUCCESSFUL),
+        (real_success_job(), {"status": "in_progress"}, RULE_PREVIOUS_RUN_NOT_FINISHED),
+        (legacy_success_job(), {}, RULE_PREVIOUS_RUN_UNVERIFIED),
+        (real_success_job(), {"pull_requests": [{"number": 7}, {"number": 8}]}, RULE_SHARED_HEAD_BRANCH),
+    ],
+)
+def test_find_real_success_for_merge_chain_stops_on_untrusted_or_failed_runs(
+    older_job: dict[str, object], overrides: dict[str, object], expected_rule: str
+) -> None:
+    fake = FakeGitHub().add_run(48, SHA_A, older_job, **overrides).add_run(49, SHA_C, cancelled_job())
+
+    result, walked_cancelled = find_real_success_for_merge_chain(client_for(fake), query(SHA_B), (SHA_B, SHA_C))
+
+    assert (result.real_sha, result.rule, walked_cancelled) == (None, expected_rule, True)
+
+
+def test_find_real_success_for_merge_chain_rejects_unrelated_head_or_cancelled_only() -> None:
+    unrelated = FakeGitHub().add_run(49, "9" * 40, real_success_job())
+    result, walked_cancelled = find_real_success_for_merge_chain(client_for(unrelated), query(SHA_B), (SHA_B, SHA_C))
+    assert (result.real_sha, result.rule, walked_cancelled) == (None, RULE_PREVIOUS_RUN_MISSING, False)
+
+    cancelled_only = FakeGitHub().add_run(48, SHA_B, cancelled_job()).add_run(49, SHA_C, cancelled_job())
+    result, walked_cancelled = find_real_success_for_merge_chain(
+        client_for(cancelled_only), query(SHA_B), (SHA_B, SHA_C)
+    )
+    assert (result.real_sha, result.rule, result.detail, walked_cancelled) == (
+        None,
+        RULE_PREVIOUS_RUN_NOT_SUCCESSFUL,
+        "cancelled in run 49",
+        True,
+    )

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -150,3 +152,71 @@ def test_no_review_stage_module_checks_out_a_bare_commit(module: str) -> None:
     source = (PACKAGE / module).read_text(encoding="utf-8")
     for verb in ("checkout", "switch"):
         assert not re.search(rf'"{verb}",\s*"--detach"', source), f"{module} detaches HEAD with git {verb}"
+
+
+def _add_submodule_and_break_gitfile(worktree: Path, tmp_path: Path, *, switch_to: str | None = None) -> Path:
+    sub_src = tmp_path / "holon_coherence_src"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(sub_src)], check=True)
+    (sub_src / "README.md").write_text("coherence\n", encoding="utf-8")
+    _git(sub_src, "add", "README.md")
+    _git(sub_src, "commit", "-qm", "init submodule")
+    _git(worktree, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(sub_src), "holon-coherence")
+    _git(worktree, "commit", "-qm", "add submodule")
+    if switch_to is not None:
+        _git(worktree, "checkout", "-q", "-b", switch_to)
+    raw_mod = _git(worktree, "rev-parse", "--git-path", "modules/holon-coherence")
+    module_git_dir = Path(raw_mod) if os.path.isabs(raw_mod) else worktree / raw_mod
+    (worktree / "holon-coherence" / ".git").write_text(
+        "gitdir: /nonexistent-container/workspace/.git/modules/holon-coherence\n",
+        encoding="utf-8",
+    )
+    _git(
+        worktree,
+        "config",
+        "--file",
+        str(module_git_dir / "config"),
+        "core.worktree",
+        "/nonexistent-container/workspace/holon-coherence",
+    )
+    return module_git_dir
+
+
+def test_stage4_repairs_broken_submodule_gitfile_before_branch_switch(flow_worktree: Path, tmp_path: Path) -> None:
+    _add_submodule_and_break_gitfile(flow_worktree, tmp_path, switch_to="operator")
+
+    ctx, result, _calls = _run_stage(flow_worktree, _approved_loop)
+
+    assert result.status is StageStatus.APPROVED
+    gitdir_line = (flow_worktree / "holon-coherence" / ".git").read_text(encoding="utf-8").strip()
+    assert gitdir_line.startswith("gitdir: ")
+    assert not os.path.isabs(gitdir_line.removeprefix("gitdir: "))
+    assert _git(flow_worktree / "holon-coherence", "rev-parse", "--is-inside-work-tree") == "true"
+    assert any("holon-coherence/.git" in line for line in ctx.logs)
+
+
+def test_stage4_repairs_broken_submodule_gitfile_when_already_on_execution_branch(
+    flow_worktree: Path,
+    tmp_path: Path,
+) -> None:
+    _add_submodule_and_break_gitfile(flow_worktree, tmp_path)
+
+    ctx, result, calls = _run_stage(flow_worktree, _approved_loop)
+
+    assert result.status is StageStatus.APPROVED
+    assert ["checkout", EXEC] not in calls
+    gitdir_line = (flow_worktree / "holon-coherence" / ".git").read_text(encoding="utf-8").strip()
+    assert gitdir_line.startswith("gitdir: ")
+    assert not os.path.isabs(gitdir_line.removeprefix("gitdir: "))
+    assert _git(flow_worktree / "holon-coherence", "rev-parse", "--is-inside-work-tree") == "true"
+    assert any("holon-coherence/.git" in line for line in ctx.logs)
+
+
+def test_stage4_fails_closed_when_submodule_gitfile_cannot_be_repaired(flow_worktree: Path, tmp_path: Path) -> None:
+    module_git_dir = _add_submodule_and_break_gitfile(flow_worktree, tmp_path, switch_to="operator")
+    shutil.rmtree(module_git_dir)
+
+    _ctx, result, calls = _run_stage(flow_worktree, _approved_loop)
+
+    assert result.status is StageStatus.FAILED
+    assert "holon-coherence/.git" in (result.error or "")
+    assert ["checkout", EXEC] not in calls

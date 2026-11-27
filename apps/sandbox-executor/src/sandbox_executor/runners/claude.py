@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from sandbox_executor import claude_keychain
-from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES
-from sandbox_executor.runners.spec import RunnerSpec, any_path_exists, has_api_key
+from sandbox_executor.claude_credential import CLAUDE_CREDENTIAL_ENV_NAMES, resolve_claude_credential
+from sandbox_executor.runners.spec import ModelCapability, RunnerSpec, SessionMountRule, any_path_exists, has_api_key
 
 _SESSION_PATHS = ("/home/holon/.config/claude", "~/.config/claude")
 
@@ -18,6 +20,10 @@ def _check_credentials(spec: RunnerSpec) -> str | None:
     )
 
 
+def _detect_api_key(env: Mapping[str, str]) -> bool:
+    return resolve_claude_credential(env) is not None
+
+
 SPEC = RunnerSpec(
     agent_id="claude",
     image="holon/agent-claude",
@@ -25,4 +31,40 @@ SPEC = RunnerSpec(
     ticker="CLA",
     api_key_env_vars=tuple(CLAUDE_CREDENTIAL_ENV_NAMES),
     credential_check=_check_credentials,
+    uses_holon_agent_key=False,
+    api_key_detector=_detect_api_key,
+    session_detect_paths=("~/.config/claude", "~/.claude", "/home/holon/.config/claude"),
+    harness_markers=(("CLAUDECODE", "exact"), ("CLAUDE_CODE_ENTRYPOINT", "exact")),
+    harness_marker_priority=20,
+    model_capabilities=(
+        ModelCapability(
+            runner="claude-agent",
+            canonical_model="claude-fable-5-2",
+            aliases=["fable", "claude-fable"],
+            effort_levels=[],
+            fallback_tier="Primary (Cloud/CLI)",
+        ),
+        ModelCapability(
+            runner="claude-agent",
+            canonical_model="claude-opus-5-5",
+            aliases=["opus", "claude-opus"],
+            effort_levels=[],
+            fallback_tier="Primary (Cloud/CLI)",
+        ),
+        ModelCapability(
+            runner="claude-agent",
+            canonical_model="claude-sonnet-4-6",
+            aliases=["sonnet", "claude-sonnet"],
+            effort_levels=[],
+            fallback_tier="Primary (Cloud/CLI)",
+        ),
+        ModelCapability(
+            runner="claude-agent",
+            canonical_model="claude-haiku-4-5",
+            aliases=["haiku", "claude-haiku"],
+            effort_levels=[],
+            fallback_tier="Primary (Cloud/CLI)",
+        ),
+    ),
+    session_mount_rules=(SessionMountRule(".config/claude", "/home/holon/.config/claude"),),
 )

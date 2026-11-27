@@ -1,12 +1,3 @@
-"""The ``APPENDED_LIST`` class: both sides only appended entries to the same top-level list or mapping literal.
-
-``appended_list_union`` checks this with ``ast`` (every other top-level statement identical on all three sides, and
-each side's literal is the base literal plus appended entries) and returns the target file with the flow branch's
-new entries appended in branch order. The flow branch's copy minus those entries must match the base token for token,
-comments included. The result is re-parsed and compared with the target; any doubt returns ``None``, which leaves the
-path to the code resolver.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -32,7 +23,6 @@ def _parse(text: str) -> _ListSide | None:
 
 
 def _literal(node: ast.stmt) -> _Literal | None:
-    """The list or dict literal a single-name top-level (annotated) assignment binds, else ``None``."""
     if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
         value: ast.expr | None = node.value
     elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
@@ -50,7 +40,6 @@ def _entries(literal: _Literal) -> list[str]:
 
 
 def _shell(node: ast.stmt) -> str:
-    """The statement's dump with its literal emptied, so two statements differing only in entries compare equal."""
     emptied = copy.deepcopy(node)
     literal = _literal(emptied)
     if isinstance(literal, ast.List):
@@ -61,7 +50,6 @@ def _shell(node: ast.stmt) -> str:
 
 
 def _differing_index(base: ast.Module, ours: ast.Module, theirs: ast.Module) -> int | None:
-    """The one top-level statement index where the sides differ only in a literal's entries, else ``None``."""
     if not len(base.body) == len(ours.body) == len(theirs.body):
         return None
     differing = [
@@ -78,7 +66,6 @@ def _differing_index(base: ast.Module, ours: ast.Module, theirs: ast.Module) -> 
 
 
 def _offset(data: bytes, line: int, col: int) -> int:
-    """The byte offset of an ``ast`` (1-based line, UTF-8 byte column) position."""
     start = 0
     for _ in range(line - 1):
         start = data.index(b"\n", start) + 1
@@ -107,13 +94,11 @@ def _appended_nodes(literal: _Literal, prefix: int) -> list[tuple[ast.expr | Non
 
 
 def _line_end(data: bytes, pos: int) -> int:
-    """The offset of the newline ending the line at ``pos`` (the end of ``data`` on its last line)."""
     newline = data.find(b"\n", pos)
     return len(data) if newline < 0 else newline
 
 
 def _insert(side: _ListSide, literal: _Literal, segments: list[bytes]) -> bytes | None:
-    """The target file with ``segments`` appended after the literal's last entry, in the literal's own layout."""
     last = (literal.elts or [None])[-1] if isinstance(literal, ast.List) else (literal.values or [None])[-1]
     if last is None:
         return None
@@ -128,7 +113,8 @@ def _insert(side: _ListSide, literal: _Literal, segments: list[bytes]) -> bytes 
     comma = len(rest) - len(rest.lstrip(b" \t")) if rest.lstrip(b" \t").startswith(b",") else -1
     insert_at = end + comma + 1 if comma >= 0 else end
     line_rest = side.data[insert_at : _line_end(side.data, insert_at)]
-    if line_rest.strip().startswith(b"#"):  # keep the last entry's trailing comment on its own line
+    # why: the last entry's trailing comment must stay on that entry's line.
+    if line_rest.strip().startswith(b"#"):
         insert_at += len(line_rest)
     prefix = side.data[:end] + (b"" if comma >= 0 else b",") + side.data[end:insert_at]
     lines = b"".join(b"\n" + indent + segment + b"," for segment in segments)
@@ -136,7 +122,6 @@ def _insert(side: _ListSide, literal: _Literal, segments: list[bytes]) -> bytes 
 
 
 def _branch_only(start: int, ours_entries: list[str], theirs_entries: list[str]) -> list[int]:
-    """The indexes of the flow branch's appended entries the target lacks, first occurrence only."""
     seen = set(theirs_entries)
     picked: list[int] = []
     for index in range(start, len(ours_entries)):
@@ -147,19 +132,15 @@ def _branch_only(start: int, ours_entries: list[str], theirs_entries: list[str])
 
 
 def _overlapping_keys(ours: _Literal, theirs: _Literal, branch_only: list[int]) -> bool:
-    """Whether an appended flow-branch dict entry is a ``**`` splat or reuses a key the target already has.
-
-    Either would let the flow branch's value silently override the target's, so the union is not mechanical.
-    """
     if not isinstance(ours, ast.Dict) or not isinstance(theirs, ast.Dict):
         return False
+    # why: a splat or a reused key would let the flow branch's value silently override the target's.
     target_keys = {ast.dump(key) for key in theirs.keys if key is not None}
     appended = [ours.keys[i] for i in branch_only]
     return any(key is None or ast.dump(key) in target_keys for key in appended)
 
 
 def _verified(result: bytes, theirs: _ListSide, index: int, expected: list[str]) -> str | None:
-    """``result`` decoded when it parses and equals the target except the literal, which holds ``expected``."""
     parsed = _parse(result.decode("utf-8"))
     if parsed is None or len(parsed.tree.body) != len(theirs.tree.body):
         return None
@@ -172,10 +153,6 @@ def _verified(result: bytes, theirs: _ListSide, index: int, expected: list[str])
 
 
 def appended_list_union(base_text: str, ours_text: str, theirs_text: str) -> str | None:
-    """The target file plus the flow branch's appended entries when both sides only appended to one literal.
-
-    Returns ``None`` unless every check holds, including a re-parse of the result.
-    """
     base, ours, theirs = _parse(base_text), _parse(ours_text), _parse(theirs_text)
     if base is None or ours is None or theirs is None:
         return None
@@ -190,7 +167,8 @@ def appended_list_union(base_text: str, ours_text: str, theirs_text: str) -> str
     prefix = len(base_entries)
     branch_only = _branch_only(prefix, ours_entries, theirs_entries)
     appended_only = ours_entries[:prefix] == base_entries and theirs_entries[:prefix] == base_entries
-    unchanged = unchanged_outside(base_text, ours_text, _appended_nodes(ours_lit, prefix))  # keeps flow comments
+    # why: the flow branch's comments outside the appended entries must survive the union unchanged.
+    unchanged = unchanged_outside(base_text, ours_text, _appended_nodes(ours_lit, prefix))
     if not appended_only or not unchanged or _overlapping_keys(ours_lit, theirs_lit, branch_only):
         return None
     if not branch_only:

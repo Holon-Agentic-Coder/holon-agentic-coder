@@ -6,7 +6,8 @@ from unittest.mock import patch
 import pytest
 from sandbox_executor.cli.preflight import preflight_gate
 from sandbox_executor.preflight import PreflightResult, PreflightStatus
-from sandbox_executor.preflight_outage import backoff_schedule, connectivity_reason
+from sandbox_executor.preflight_cooldown import COOLDOWN_HINT_PREFIX, read_active_cooldown
+from sandbox_executor.preflight_outage import backoff_schedule, connectivity_reason, wait_out_outage
 
 _PROBE = "sandbox_executor.cli.preflight.run_preflight_probe"
 _NO_OUTPUT_TIMEOUT_HINT = (
@@ -164,3 +165,47 @@ def test_skip_bypasses_probe_and_wait(fake_time, monkeypatch, bypass):
         assert _gate(fake_time, skip=bypass == "flag") is None
     probe.assert_not_called()
     assert fake_time.sleeps == []
+
+
+def test_preflight_gate_records_cooldown_and_short_circuits_next_call(fake_time, monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    exhausted = _result(PreflightStatus.QUOTA_EXHAUSTED, output="Organization spend limit reached")
+    with patch(_PROBE, return_value=exhausted) as first_probe:
+        first = _gate(fake_time)
+    assert first is exhausted
+    assert first_probe.call_count == 1
+    assert fake_time.sleeps == []
+    assert read_active_cooldown("claude-agent") is not None
+    capsys.readouterr()
+
+    with patch(_PROBE) as second_probe:
+        second = _gate(fake_time)
+    assert second is not None
+    assert second.status is PreflightStatus.QUOTA_EXHAUSTED
+    assert second.hint.startswith(COOLDOWN_HINT_PREFIX)
+    assert second_probe.call_count == 0
+    assert fake_time.sleeps == []
+    err = capsys.readouterr().err
+    assert COOLDOWN_HINT_PREFIX in err
+    assert "Aborting before any branch" in err
+
+
+def test_connectivity_reason_returns_none_for_cooldown_short_circuit():
+    result = _result(
+        PreflightStatus.UNKNOWN,
+        output="",
+        hint=f"{COOLDOWN_HINT_PREFIX} for 'claude' (120s remaining).",
+        exit_code=None,
+    )
+    assert connectivity_reason(result) is None
+
+
+def test_wait_out_outage_stops_and_records_cooldown_when_retry_hits_quota(fake_time, monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    first = _result(output="getaddrinfo ENOTFOUND api.anthropic.com")
+    quota = _result(PreflightStatus.QUOTA_EXHAUSTED, output="org spend limit reached")
+    outcome = wait_out_outage(lambda: quota, first, fake_time.clock(), sleep=fake_time.sleep, clock=fake_time.clock)
+    assert outcome.result is quota
+    assert outcome.gave_up is False
+    assert fake_time.sleeps == [30]
+    assert read_active_cooldown("claude-agent") is not None

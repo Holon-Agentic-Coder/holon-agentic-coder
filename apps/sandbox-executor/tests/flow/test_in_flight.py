@@ -1,5 +1,3 @@
-"""Discovery of in-flight flows for Stage 3 admission (flow/in_flight.py): pull requests, checkpoints, lineage."""
-
 from __future__ import annotations
 
 import json

@@ -1,10 +1,3 @@
-"""Tests for discovery in scripts/check_module_budgets.py: every tracked source module is budgeted, with no allowlist.
-
-Every tracked ``.py`` file under ``apps/*/src/`` or ``scripts/`` (``__init__.py`` included) is measured; tests,
-untracked files and other file types are not. ``exclude`` entries (each with a reason) are skipped, and overrides only
-ratchet down: growing past one fails, shrinking below one produces a notice to lower it.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path

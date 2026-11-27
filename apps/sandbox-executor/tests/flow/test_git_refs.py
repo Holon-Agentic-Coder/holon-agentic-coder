@@ -1,5 +1,3 @@
-"""Tests that later stages name their branch refs instead of relying on the operator's checkout."""
-
 import os
 import subprocess
 import tempfile

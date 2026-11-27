@@ -1,5 +1,3 @@
-"""validate_intent_questions labels each unresolved question by its kind, as Stage 1 reports it."""
-
 from __future__ import annotations
 
 import pytest

@@ -1,5 +1,3 @@
-"""Tests for the insertion-only ledger conflict union in ``sandbox_executor.flow.ledger_reconcile``."""
-
 import difflib
 import json
 from collections import Counter

@@ -1,5 +1,3 @@
-"""A refused Stage 3 push keeps the execution's commits on a named recovery ref (local bare remotes only)."""
-
 from __future__ import annotations
 
 import stat
@@ -30,7 +28,7 @@ def _install_hook(origin: Path, body: str) -> None:
     hook = origin / "hooks" / "pre-receive"
     hook.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
     hook.chmod(hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    # The suite's global git config points core.hooksPath at an empty directory; the remote opts back in.
+    # why: the suite's global git config points core.hooksPath at an empty directory; the remote opts back in.
     _git(origin, "config", "core.hooksPath", str(hook.parent))
 
 
@@ -71,7 +69,8 @@ def test_a_workflow_scope_refusal_keeps_the_commits_on_a_local_recovery_ref(flow
     assert len(recovered) == 1
     kept = recovered[0]
     assert kept.local_ref == f"{RECOVERY_REF_PREFIX}{EXEC_ID}" and kept.sha == tip
-    assert kept.remote_branch is None  # the content-based refusal refuses the recovery branch too
+    # why: the content-based refusal refuses the recovery branch too
+    assert kept.remote_branch is None
     assert _git(host, "rev-parse", kept.local_ref) == tip
     error = rejected_push_error(WORKFLOW_REFUSAL, recovered)
     assert kept.local_ref in error and REFRESH_COMMAND in error

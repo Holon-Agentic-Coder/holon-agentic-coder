@@ -1,5 +1,3 @@
-"""The host-side remote module: fetches and pushes go through the worktree's remote and fail with a named error."""
-
 from __future__ import annotations
 
 import ast
@@ -60,7 +58,6 @@ def test_push_branch_publishes_the_local_branch_and_refuses_a_non_fast_forward(f
     push_branch(str(host), "work/_")
 
     assert _git(origin, "rev-parse", "refs/heads/work/_") == tip
-    # A diverged local branch is refused, never forced.
     _git(host, "reset", "-q", "--hard", "main")
     _commit_on(host, "work/_", "diverged")
     with pytest.raises(HostRemoteError) as raised:
@@ -120,10 +117,9 @@ def test_the_module_imports_nothing_from_the_entrypoints_or_the_cli():
     assert not [name for name in imported if name.startswith(("sandbox_executor.entrypoint", "sandbox_executor.cli"))]
 
 
+# why: a refused push input that reached git would run a real push, which can hang
 @pytest.fixture
 def no_git(monkeypatch):
-    """Fail fast if a refused push input reaches git, instead of letting a real push run (and possibly hang)."""
-
     def forbidden(*args, **kwargs):
         raise AssertionError(f"validation let git run: {args}")
 

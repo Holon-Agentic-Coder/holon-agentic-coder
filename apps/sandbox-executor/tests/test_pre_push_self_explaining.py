@@ -142,6 +142,25 @@ def test_repair_turn_that_removes_the_docstring_lets_the_branch_be_recorded(
     assert last_ledger_row(gated_repository)["execution_id"] == "E-base"
 
 
+def test_repair_turn_that_commits_its_own_fix_lets_the_branch_be_recorded(
+    gated_repository: Path, sync_calls: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_lines(gated_repository, "pkg/module.py", DOCSTRING_MODULE_LINES)
+    commit_all(gated_repository, "add module")
+
+    def committing_turn(repo_dir: str, runner: str, model: str, prompt: str) -> None:
+        write_lines(gated_repository, "pkg/module.py", WHY_COMMENT_MODULE_LINES)
+        commit_all(gated_repository, "agent repair")
+
+    monkeypatch.setattr(pre_push, "run_agent_turn", committing_turn)
+    run = GatedRun(gated_repository)
+
+    run.record_branch()
+
+    assert run.branch_recorded is True
+    assert git(gated_repository, "log", "-1", "--format=%s") == "agent repair"
+
+
 def test_failed_repair_turn_leaves_the_branch_refused(
     gated_repository: Path, sync_calls: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

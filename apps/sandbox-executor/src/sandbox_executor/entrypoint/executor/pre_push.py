@@ -198,7 +198,7 @@ def repair_self_explaining_violations(
         return False
     repo.add(["-u", "--", ".", f":(exclude){_LEDGER_DIR_PREFIX}"], check=False)
     if repo.diff(cached=True, quiet=True).returncode == 0:
-        return False
+        return True
     return repo.commit(f"execute: repair self-explaining violations for {exec_id}", check=False).returncode == 0
 
 

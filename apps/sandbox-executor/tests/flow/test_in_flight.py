@@ -65,7 +65,8 @@ def test_pull_requests_keep_flow_heads_outside_own_lineage(flow_repos):
     assert [flow.label for flow in flows] == [f"pull request #7 (branch {OTHER_HEAD})"]
     assert flows[0].plan_branch == OTHER_PLAN
     assert flows[0].changed_files == ("src/app.py",)
-    assert flows[0].declared is None  # a pull request is compared by its diff, never by its planned touch set
+    # why: a pull request is compared by its diff, never by its planned touch set
+    assert flows[0].declared is None
     assert [call[:3] for call in gh.calls] == [["pr", "list", "--state"], ["pr", "diff", "7"]]
 
 
@@ -75,7 +76,8 @@ def test_pull_request_without_its_plan_branch_on_the_host_compares_only_its_diff
     flows = discover_in_flight_flows(str(host), OWN_HEAD, gh, lambda args, cwd: _ok("worktree " + cwd))
     assert not isinstance(flows, AdmissionUnavailable)
     assert flows[0].declared is None and flows[0].changed_files == ("src/app.py",)
-    assert caplog.records == []  # its plan row is never read, so a missing plan branch warns of nothing
+    # why: its plan row is never read, so a missing plan branch warns of nothing
+    assert caplog.records == []
 
 
 def test_a_pull_requests_planned_touch_set_is_never_read(flow_repos, monkeypatch):
@@ -146,7 +148,8 @@ def test_local_checkpoints_keep_live_flows_only(flow_repos, tmp_path):
     write_checkpoint(second, CHILD_PLAN, executing, "own-child")
     (second / ".holon" / "flow" / "checkpoint-broken.json").write_text("{not json", encoding="utf-8")
     (second / ".holon" / "flow" / "checkpoint-list.json").write_text("[]", encoding="utf-8")
-    write_checkpoint(host, OTHER_PLAN, executing, "this-worktree")  # this run's own worktree is never read
+    own_worktree = host
+    write_checkpoint(own_worktree, OTHER_PLAN, executing, "this-worktree")
 
     checkpoints = other_checkpoints(str(host), "I-100-own")
     assert not isinstance(checkpoints, AdmissionUnavailable)
@@ -195,7 +198,7 @@ def test_a_blocked_checkpoint_is_not_in_flight_but_is_a_waiter(flow_repos, tmp_p
     executing = [FlowStage.INTENT, FlowStage.PLAN]
     write_checkpoint(second, OTHER_PLAN, executing, "blocked", BLOCKED)
     write_checkpoint(second, THIRD_PLAN, executing, "admitted", {"state": "admitted"})
-    write_checkpoint(second, FOURTH_PLAN, executing, "older-flow")  # no admission field: still in flight
+    write_checkpoint(second, FOURTH_PLAN, executing, "older-flow", admission=None)
 
     checkpoints = other_checkpoints(str(host), "I-100-own")
     assert not isinstance(checkpoints, AdmissionUnavailable)
@@ -226,8 +229,6 @@ DIFF_TOO_LARGE_STDERR = "gh: PullRequest.diff too_large: sorry, this diff is tak
 
 
 class _FallbackGh:
-    """Local GhRunner test double supporting per-PR ``gh pr diff`` and ``gh api --paginate --slurp`` responses."""
-
     def __init__(
         self,
         prs: list[dict[str, Any]],

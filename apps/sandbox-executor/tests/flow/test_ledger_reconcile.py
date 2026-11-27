@@ -44,8 +44,6 @@ def _only_additions(before: list[str], after: list[str]) -> bool:
 
 
 class TestLedgerReconciliation:
-    """Tests for deterministic ledger union reconciliation and conflict resolution."""
-
     def test_extract_valid_ledger_rows_filters_conflict_markers(self):
         conflicted_content = (
             "<<<<<<< HEAD\n"
@@ -61,8 +59,8 @@ class TestLedgerReconciliation:
         assert rows[0]["slug"] == "s1"
         assert rows[1]["slug"] == "s2"
 
-    # The ledgers are append-only: these cases used to assert key-based dedupe and a created_at sort. They now
-    # assert that marker-free content is returned byte for byte and that conflicts resolve by pure append.
+    # why: the ledgers are append-only, so these cases, which once asserted key-based dedupe and a created_at sort,
+    # why: now assert marker-free content comes back byte for byte and conflicts resolve by pure append
 
     def test_reconcile_intents_ledger_keeps_order_and_repeated_keys(self):
         content = (
@@ -105,17 +103,16 @@ class TestLedgerReconciliation:
         assert "=======" not in reconciled
         assert ">>>>>>>" not in reconciled
         lines = [json.loads(line) for line in reconciled.splitlines() if line.strip()]
-        # Ours (E-head) is kept unchanged and theirs' older row is inserted before it, not appended.
-        assert [r["execution_id"] for r in lines] == ["E-main", "E-head"]
+        theirs_older_row_inserted_before_ours = ["E-main", "E-head"]
+        assert [r["execution_id"] for r in lines] == theirs_older_row_inserted_before_ours
         assert reconciled.splitlines()[1] == '{"execution_id": "E-head", "created_at": "2026-10-06T10:00:00Z"}'
 
     def test_reconcile_ledger_file_atomic(self, tmp_path):
         ledger_file = tmp_path / "plans.jsonl"
         ledger_file.write_text('{"plan_id": "p1", "created_at": "2026-10-06T10:00:00Z"}\n')
         assert reconcile_ledger_file(str(ledger_file)) is True
-        # Verify no temp files remain in directory
-        dir_files = [f.name for f in tmp_path.iterdir()]
-        assert dir_files == ["plans.jsonl"]
+        files_left_in_directory = [f.name for f in tmp_path.iterdir()]
+        assert files_left_in_directory == ["plans.jsonl"]
 
 
 @pytest.mark.parametrize("prefix_side", ["ours", "theirs"])
@@ -139,7 +136,7 @@ def test_an_unsorted_kept_side_is_never_reordered() -> None:
 
     assert [line for line in merged if line in kept] == kept
     assert _only_additions(kept, merged)
-    # Running maximum of the kept instants is 10:00, 10:00, 12:00, 12:00, so 09:30 goes first and 13:00 last.
+    # why: the running maximum of the kept instants is 10:00, 10:00, 12:00, 12:00, so 09:30 goes first and 13:00 last
     assert _ids(merged) == ["I-mid", "B3", "B1", "B5", "B2", "I-late"]
 
 

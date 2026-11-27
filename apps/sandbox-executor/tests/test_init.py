@@ -21,11 +21,9 @@ class TestHolonInit(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_init_scaffolds_default_python_directories_and_files(self):
-        """Verify full directory scaffolding with default python template."""
         ret = init_project(target_dir=self.target_dir, template="python", force=False)
         self.assertEqual(ret, 0)
 
-        # Verify holon-config structure
         expected_config_files = [
             "holon-config/world/ruleset.md",
             "holon-config/world/constraints.md",
@@ -41,20 +39,17 @@ class TestHolonInit(unittest.TestCase):
             full_path = os.path.join(self.target_dir, rel_path)
             self.assertTrue(os.path.exists(full_path), f"Expected file {rel_path} was not created")
 
-        # Verify python-specific ruleset content
         with open(os.path.join(self.target_dir, "holon-config/world/ruleset.md"), encoding="utf-8") as f:
             content = f.read()
             self.assertIn("Python Runtime:", content)
             self.assertIn("uv run pytest", content)
 
-        # Verify metrics config JSON validity
         for json_file in ["entropy_config.json", "ev_config.json", "system_entropy_config.json"]:
             full_path = os.path.join(self.target_dir, "holon-config/metrics", json_file)
             with open(full_path, encoding="utf-8") as f:
                 data = json.load(f)
                 self.assertIsInstance(data, dict)
 
-        # Verify holon-knowledge ledgers and directories
         expected_knowledge_files = [
             "holon-knowledge/ledger/intents.jsonl",
             "holon-knowledge/ledger/plans.jsonl",
@@ -70,7 +65,6 @@ class TestHolonInit(unittest.TestCase):
 
         self.assertTrue(os.path.isdir(os.path.join(self.target_dir, "intents")))
 
-        # Verify .gitignore creation and entries
         gitignore_path = os.path.join(self.target_dir, ".gitignore")
         self.assertTrue(os.path.exists(gitignore_path))
         with open(gitignore_path, encoding="utf-8") as f:
@@ -81,8 +75,7 @@ class TestHolonInit(unittest.TestCase):
             for item in PYTHON_GITIGNORE:
                 self.assertIn(item, lines)
 
-    def test_init_template_generic(self):
-        """Verify generic template creates generic ruleset and ignores."""
+    def test_init_generic_template_writes_generic_ruleset_and_ignores(self):
         ret = init_project(target_dir=self.target_dir, template="generic", force=False)
         self.assertEqual(ret, 0)
 
@@ -99,11 +92,8 @@ class TestHolonInit(unittest.TestCase):
             self.assertNotIn(".pytest_cache/", lines)
 
     def test_idempotency_invariant_never_truncates_ledgers(self):
-        """IDEMPOTENCY INVARIANT: Ledger files must NEVER be truncated or overwritten, even with --force."""
-        # 1. First init
         init_project(target_dir=self.target_dir, template="python")
 
-        # 2. Write real data into ledgers
         intents_path = os.path.join(self.target_dir, "holon-knowledge/ledger/intents.jsonl")
         plans_path = os.path.join(self.target_dir, "holon-knowledge/ledger/plans.jsonl")
         execs_path = os.path.join(self.target_dir, "holon-knowledge/ledger/executions.jsonl")
@@ -119,7 +109,6 @@ class TestHolonInit(unittest.TestCase):
         with open(execs_path, "w", encoding="utf-8") as f:
             f.write(exec_data)
 
-        # 3. Second init WITHOUT force - data must persist
         ret1 = init_project(target_dir=self.target_dir, template="python", force=False)
         self.assertEqual(ret1, 0)
         with open(intents_path, encoding="utf-8") as f:
@@ -131,7 +120,6 @@ class TestHolonInit(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.target_dir, "holon-knowledge/ledger/.gitkeep")))
         self.assertTrue(os.path.exists(os.path.join(self.target_dir, "intents/.gitkeep")))
 
-        # 4. Third init WITH force - data must STILL persist!
         ret2 = init_project(target_dir=self.target_dir, template="python", force=True)
         self.assertEqual(ret2, 0)
         with open(intents_path, encoding="utf-8") as f:
@@ -144,18 +132,15 @@ class TestHolonInit(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.target_dir, "intents/.gitkeep")))
 
     def test_force_overwrites_config_files(self):
-        """Verify that --force overwrites config files, while non-force preserves modifications."""
         ruleset_path = os.path.join(self.target_dir, "holon-config/world/ruleset.md")
         os.makedirs(os.path.dirname(ruleset_path), exist_ok=True)
         with open(ruleset_path, "w", encoding="utf-8") as f:
             f.write("CUSTOM USER RULESET")
 
-        # Without force: must preserve custom content
         init_project(target_dir=self.target_dir, template="python", force=False)
         with open(ruleset_path, encoding="utf-8") as f:
             self.assertEqual(f.read(), "CUSTOM USER RULESET")
 
-        # With force: must overwrite with standard template
         init_project(target_dir=self.target_dir, template="python", force=True)
         with open(ruleset_path, encoding="utf-8") as f:
             content = f.read()
@@ -163,7 +148,6 @@ class TestHolonInit(unittest.TestCase):
             self.assertIn("Holon World Ruleset", content)
 
     def test_gitignore_appends_without_duplication(self):
-        """Verify .gitignore updates existing files without creating duplicates."""
         gitignore_path = os.path.join(self.target_dir, ".gitignore")
         initial_content = "# Pre-existing ignores\nnode_modules/\n.venv/\n"
         with open(gitignore_path, "w", encoding="utf-8") as f:
@@ -175,16 +159,12 @@ class TestHolonInit(unittest.TestCase):
             content = f.read()
             lines = [line.strip() for line in content.splitlines() if line.strip()]
 
-        # node_modules/ preserved
         self.assertIn("node_modules/", lines)
-        # .venv/ appears exactly once
         self.assertEqual(lines.count(".venv/"), 1)
-        # new entries added
         self.assertIn(".holon-cache/", lines)
         self.assertIn("__pycache__/", lines)
         self.assertIn(".pytest_cache/", lines)
 
-        # Run again to ensure total idempotency (no duplicates added on second run)
         init_project(target_dir=self.target_dir, template="python")
         with open(gitignore_path, encoding="utf-8") as f:
             content2 = f.read()
@@ -192,8 +172,7 @@ class TestHolonInit(unittest.TestCase):
         self.assertEqual(lines, lines2)
 
     @patch("sandbox_executor.cli.init_project", return_value=0)
-    def test_cli_main_init_subcommand(self, mock_init):
-        """Verify holon init CLI arguments parsing and dispatch."""
+    def test_cli_main_parses_and_dispatches_init_subcommand(self, mock_init):
         test_args = ["holon", "init", "/custom/path", "--template", "generic", "--force"]
         with patch("sys.argv", test_args):
             with self.assertRaises(SystemExit) as cm:
@@ -218,8 +197,7 @@ class TestHolonInit(unittest.TestCase):
             )
 
     @patch("os.makedirs", side_effect=OSError("Permission denied"))
-    def test_init_oserror_returns_nonzero_with_stderr(self, mock_makedirs):
-        """Verify init_project handles OSError gracefully, logs to stderr, and returns 1."""
+    def test_init_oserror_reports_to_stderr_and_returns_one(self, mock_makedirs):
         with patch("sys.stderr") as mock_stderr:
             ret = init_project(target_dir=self.target_dir)
             self.assertEqual(ret, 1)

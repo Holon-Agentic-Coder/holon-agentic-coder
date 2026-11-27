@@ -1,5 +1,3 @@
-"""Unit and concurrency tests for LedgerLock advisory file locking."""
-
 import concurrent.futures
 import json
 import os
@@ -20,8 +18,7 @@ from sandbox_executor.ledger import (
 )
 
 
-def test_ledger_lock_basic() -> None:
-    """Verify LedgerLock acquires, writes, and releases cleanly."""
+def test_ledger_lock_acquires_writes_and_releases_cleanly() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         ledger_file = os.path.join(tmpdir, "test.jsonl")
 
@@ -35,8 +32,7 @@ def test_ledger_lock_basic() -> None:
         assert json.loads(lines[0]) == {"test": 1}
 
 
-def test_ledger_lock_timeout() -> None:
-    """Verify LedgerLock raises TimeoutError when lock is held beyond timeout threshold."""
+def test_ledger_lock_raises_timeout_error_while_lock_is_held() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         ledger_file = os.path.join(tmpdir, "test.jsonl")
 
@@ -50,7 +46,6 @@ def test_ledger_lock_timeout() -> None:
 
 
 def test_atomic_ledger_append_context_manager() -> None:
-    """Verify atomic_ledger_append functions correctly with LedgerLock."""
     with tempfile.TemporaryDirectory() as tmpdir:
         ledger_file = os.path.join(tmpdir, "test.jsonl")
 
@@ -68,8 +63,7 @@ def test_atomic_ledger_append_context_manager() -> None:
         assert lines[1]["action"] == "second"
 
 
-def test_canonical_aliases() -> None:
-    """Verify append_action_ledger and append_execution_record canonical aliases work."""
+def test_canonical_append_aliases_write_action_and_execution_records() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         actions_file = os.path.join(tmpdir, "actions.jsonl")
         executions_file = os.path.join(tmpdir, "executions.jsonl")
@@ -106,8 +100,7 @@ def test_canonical_aliases() -> None:
         assert json.loads(act_lines[0])["action"] == "build_package"
 
 
-def test_ledger_lock_concurrency() -> None:
-    """Verify high-concurrency writes from multiple workers append without line interleaving."""
+def test_ledger_lock_concurrent_worker_writes_never_interleave_lines() -> None:
     num_workers = 10
     writes_per_worker = 20
     total_expected = num_workers * writes_per_worker
@@ -130,7 +123,7 @@ def test_ledger_lock_concurrency() -> None:
             futures = [executor.submit(worker_task, wid) for wid in range(num_workers)]
             concurrent.futures.wait(futures)
             for fut in futures:
-                fut.result()  # Re-raise any unexpected exceptions
+                fut.result()
 
         assert os.path.exists(ledger_file)
         with open(ledger_file, encoding="utf-8") as f:
@@ -138,7 +131,6 @@ def test_ledger_lock_concurrency() -> None:
 
         assert len(raw_lines) == total_expected, f"Expected {total_expected} lines, got {len(raw_lines)}"
 
-        # Validate that every line is valid JSON with zero interleaving
         seen_records: set[tuple[int, int]] = set()
         for idx, line in enumerate(raw_lines):
             try:
@@ -153,15 +145,10 @@ def test_ledger_lock_concurrency() -> None:
         assert len(seen_records) == total_expected
 
 
-# ---------------------------------------------------------------------------
-# Validated, shape-preserving action appends (Stage 4/5 ledger provenance)
-# ---------------------------------------------------------------------------
-
 _LARGE_PAYLOAD = "p" * 8192
 
 
 def _review_record(worker_id: int, seq: int) -> dict:
-    """Build a Stage 4 shaped action record of roughly 8 KiB."""
     return {
         "action_id": f"ACT-REV-{worker_id}-{seq:04d}",
         "execution_id": f"REV-ITR-{seq + 1}-{worker_id}",
@@ -181,7 +168,6 @@ def _review_record(worker_id: int, seq: int) -> dict:
 
 
 def _process_append_worker(ledger_file: str, worker_id: int, count: int) -> None:
-    """Append ``count`` records from a separate process."""
     for seq in range(count):
         append_action_record(ledger_file, _review_record(worker_id, seq), preserve_shape=True)
 
@@ -210,7 +196,6 @@ def _assert_clean_ledger(ledger_file: str, expected: int) -> None:
 
 
 def test_preserve_shape_keeps_key_order_and_extra_keys(tmp_path: Path) -> None:
-    """preserve_shape=True writes the dictionary verbatim after validation."""
     ledger_file = tmp_path / "executions.jsonl"
     record = {
         "action_id": "ACT-CAL-1-abcdef12",
@@ -230,7 +215,6 @@ def test_preserve_shape_keeps_key_order_and_extra_keys(tmp_path: Path) -> None:
 
 
 def test_default_append_action_record_shape_unchanged(tmp_path: Path) -> None:
-    """The default (normalising) path still emits the full ActionRecord field set."""
     ledger_file = tmp_path / "executions.jsonl"
     written = append_action_record(
         str(ledger_file),
@@ -257,7 +241,6 @@ def test_default_append_action_record_shape_unchanged(tmp_path: Path) -> None:
     ],
 )
 def test_preserve_shape_rejects_invalid_records_before_writing(tmp_path: Path, bad: dict) -> None:
-    """Invalid records raise ValueError and leave no partial write behind."""
     ledger_file = tmp_path / "executions.jsonl"
     with pytest.raises(ValueError):
         append_action_record(str(ledger_file), bad, preserve_shape=True)
@@ -265,7 +248,6 @@ def test_preserve_shape_rejects_invalid_records_before_writing(tmp_path: Path, b
 
 
 def test_try_append_action_record_warns_on_failure(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    """A failed append returns None, logs a WARNING with the path and mirrors it to log_fn."""
     caplog.set_level("WARNING", logger="sandbox_executor.ledger")
     blocker = tmp_path / "not-a-directory"
     blocker.write_text("", encoding="utf-8")
@@ -282,7 +264,6 @@ def test_try_append_action_record_warns_on_failure(tmp_path: Path, caplog: pytes
 
 
 def test_try_append_action_record_redacts_credentials(tmp_path: Path) -> None:
-    """Credentials in any string field are redacted before the row is written; key order is kept."""
     ledger_file = tmp_path / "executions.jsonl"
     sample_value = "ghp_" + "W" * 36
     record = {**_review_record(1, 0), "outcome": "failure", "error_context": f"push rejected for {sample_value}"}
@@ -298,7 +279,6 @@ def test_try_append_action_record_redacts_credentials(tmp_path: Path) -> None:
 def test_try_append_action_record_redacts_credentials_in_failure_warning(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The WARNING emitted for a failed append never echoes a credential from the exception text."""
     caplog.set_level("WARNING", logger="sandbox_executor.ledger")
     sample_value = "ghp_" + "V" * 36
 
@@ -319,10 +299,9 @@ def test_try_append_action_record_redacts_credentials_in_failure_warning(
 
 
 def test_concurrent_process_appends_do_not_interleave(tmp_path: Path) -> None:
-    """Eight processes appending ~8 KiB records via LedgerLock produce 400 intact lines."""
     ledger_file = str(tmp_path / "executions.jsonl")
-    # Fresh interpreters that import only sandbox_executor: forking a threaded xdist worker can hang, and
-    # spawn would need to import this test module, which is not importable under --import-mode=importlib.
+    # why: fresh interpreters importing only sandbox_executor; forking a threaded xdist worker can hang,
+    # why: and spawn cannot import this module under --import-mode=importlib
     procs = [
         subprocess.Popen(
             [sys.executable, "-c", _CHILD_APPEND_SCRIPT, ledger_file],
@@ -347,7 +326,6 @@ def test_concurrent_process_appends_do_not_interleave(tmp_path: Path) -> None:
 
 
 def test_concurrent_thread_appends_do_not_interleave(tmp_path: Path) -> None:
-    """Eight threads appending ~8 KiB records via LedgerLock produce 400 intact lines."""
     ledger_file = str(tmp_path / "executions.jsonl")
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         futures = [executor.submit(_process_append_worker, ledger_file, wid, 50) for wid in range(8)]

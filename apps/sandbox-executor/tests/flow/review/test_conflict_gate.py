@@ -24,8 +24,86 @@ from sandbox_executor.review_report import _mergeability_word
 from tests.flow.github.fake_github import view_for
 from tests.flow.helpers import _git
 from tests.ledger_conflict_repos import BRANCH, LEDGER, build_conflicting_repos, refuse_test_runs
+from tests.repo_templates import copy_template, shared_template
 from tests.review_fakes import FakeEnsemble
 from tests.review_loop_stubs import _CLEAN_MERGE, EXEC_TARGET, _ensemble_ctx, _LoopStubs, _rows
+
+
+def _build_conflicting_template(root: Path) -> tuple[str, str]:
+    from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of
+
+    origin, work = build_conflicting_repos(root)
+    head = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
+    fingerprint = approval_fingerprint_of(str(work), head, "main")
+    return head, fingerprint
+
+
+def _build_branch_template(root: Path, base_template: Path) -> None:
+    copy_template(base_template, root, names=("origin.git", "work"))
+    _git(root / "work", "checkout", "-q", BRANCH)
+
+
+def _build_diverged_template(root: Path, branch_template: Path) -> None:
+    copy_template(branch_template, root, names=("origin.git", "work"))
+    _git(root / "work", "reset", "-q", "--hard", "HEAD~1")
+
+
+@pytest.fixture
+def conflicting_template(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str, str]:
+    template, (head, fingerprint) = shared_template(
+        tmp_path_factory, "conflict-gate-repos", _build_conflicting_template
+    )
+    return template, head, fingerprint
+
+
+@pytest.fixture
+def conflicting_repos(tmp_path: Path, conflicting_template: tuple[Path, str, str]) -> tuple[Path, Path, str, str]:
+    template, head, fingerprint = conflicting_template
+    copy_template(template, tmp_path, names=("origin.git", "work"))
+    return tmp_path / "origin.git", tmp_path / "work", head, fingerprint
+
+
+@pytest.fixture
+def branch_repos(
+    tmp_path_factory: pytest.TempPathFactory,
+    tmp_path: Path,
+    conflicting_template: tuple[Path, str, str],
+) -> tuple[Path, Path, str, str]:
+    base_template, head, fingerprint = conflicting_template
+    template, _ = shared_template(
+        tmp_path_factory,
+        "conflict-gate-branch",
+        lambda root: _build_branch_template(root, base_template),
+    )
+    copy_template(template, tmp_path, names=("origin.git", "work"))
+    return tmp_path / "origin.git", tmp_path / "work", head, fingerprint
+
+
+@pytest.fixture
+def diverged_repos(
+    tmp_path_factory: pytest.TempPathFactory,
+    tmp_path: Path,
+    conflicting_template: tuple[Path, str, str],
+) -> tuple[Path, Path]:
+    base_template, _, _ = conflicting_template
+    branch_template, _ = shared_template(
+        tmp_path_factory,
+        "conflict-gate-branch",
+        lambda root: _build_branch_template(root, base_template),
+    )
+    template, _ = shared_template(
+        tmp_path_factory,
+        "conflict-gate-diverged",
+        lambda root: _build_diverged_template(root, branch_template),
+    )
+    copy_template(template, tmp_path, names=("origin.git", "work"))
+    return tmp_path / "origin.git", tmp_path / "work"
+
+
+def _append_pending_row(work: Path) -> None:
+    with (work / LEDGER).open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"execution_id": "E-pending", "created_at": "2026-11-06T00:00:00Z"}) + "\n")
+
 
 CONFLICTING = {"mergeable": "CONFLICTING", "merge_state_status": "DIRTY", "is_dirty": True}
 DIRTY = {"mergeable": "UNKNOWN", "merge_state_status": "DIRTY", "is_dirty": True}
@@ -157,10 +235,9 @@ def test_stage5_proceeds_on_a_clean_or_freshly_merged_head(tmp_path, monkeypatch
     assert calibrate.run_calibrate_stage(_stage5_context(tmp_path)) is expected
 
 
-def test_ledger_only_conflict_is_merged_and_pushed_but_the_approval_is_not_posted(tmp_path, monkeypatch):
+def test_ledger_only_conflict_is_merged_and_pushed_but_the_approval_is_not_posted(conflicting_repos, monkeypatch):
     refuse_test_runs(monkeypatch)
-    origin, work = build_conflicting_repos(tmp_path)
-    before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
+    origin, work, before, _fingerprint = conflicting_repos
     exec_file = work / "review-ledger.jsonl"
     post = MagicMock()
     ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
@@ -218,15 +295,6 @@ class _SpySync:
 _REAL_SYNC = sync_points.sync_review_head
 
 
-def _pending_rows_repos(tmp_path: Path) -> tuple[Path, Path]:
-    """The ledger-only conflict, with the flow worktree on the head branch and one uncommitted row pending."""
-    origin, work = build_conflicting_repos(tmp_path)
-    _git(work, "checkout", "-q", BRANCH)
-    with (work / LEDGER).open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps({"execution_id": "E-pending", "created_at": "2026-11-06T00:00:00Z"}) + "\n")
-    return origin, work
-
-
 def _through_the_post_gate(work: Path, exec_file: Path) -> None:
     request = PostRequest(
         repo_dir=str(work),
@@ -250,9 +318,12 @@ def _through_the_stage5_gate(work: Path, exec_file: Path) -> None:
 
 
 @pytest.mark.parametrize("gate", [_through_the_post_gate, _through_the_stage5_gate])
-def test_a_conflict_merge_starts_from_a_clean_tree_with_pending_rows_committed_and_pushed(tmp_path, monkeypatch, gate):
+def test_a_conflict_merge_starts_from_a_clean_tree_with_pending_rows_committed_and_pushed(
+    branch_repos, tmp_path, monkeypatch, gate
+):
     refuse_test_runs(monkeypatch)
-    origin, work = _pending_rows_repos(tmp_path)
+    origin, work, _head, _fingerprint = branch_repos
+    _append_pending_row(work)
     monkeypatch.setattr(conflict_gate.stage_conflicts, "check_pr_mergeability", lambda *a, **k: dict(CONFLICTING))
     spy = _SpySync(origin, work)
     monkeypatch.setattr(sync_points, "sync_review_head", spy)
@@ -263,23 +334,15 @@ def test_a_conflict_merge_starts_from_a_clean_tree_with_pending_rows_committed_a
     assert status == ""
     assert "E-pending" in origin_ledger
     merged = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
-    assert _git(work, "rev-parse", "HEAD") == merged  # The local branch followed the pushed merge.
+    assert _git(work, "rev-parse", "HEAD") == merged
     assert _git(work, "status", "--porcelain") == ""
     ids = [json.loads(line)["execution_id"] for line in _git(origin, "show", f"{merged}:{LEDGER}").splitlines()]
     assert ids[:5] == ["E-base", "E-early", "E-main", "E-late", "E-pending"]
 
 
-def _unpushable_rows_repos(tmp_path: Path) -> tuple[Path, Path]:
-    """The pending-rows repos with the local branch behind origin, so a ledger commit cannot fast-forward."""
-    origin, work = _pending_rows_repos(tmp_path)
-    _git(work, "stash", "-q")
-    _git(work, "reset", "-q", "--hard", "HEAD~1")
-    _git(work, "stash", "pop", "-q")
-    return origin, work
-
-
-def test_pending_rows_that_cannot_be_pushed_block_the_gate_without_merging(tmp_path, monkeypatch):
-    origin, work = _unpushable_rows_repos(tmp_path)
+def test_pending_rows_that_cannot_be_pushed_block_the_gate_without_merging(diverged_repos, monkeypatch):
+    origin, work = diverged_repos
+    _append_pending_row(work)
     before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
     merge = _RecordingSync(CODE_CONFLICT)
     monkeypatch.setattr(sync_points, "sync_review_head", merge)
@@ -292,11 +355,12 @@ def test_pending_rows_that_cannot_be_pushed_block_the_gate_without_merging(tmp_p
     assert gate.blocked_reason == conflict_gate.UNPUSHED_ROWS_REASON
     assert merge.calls == []
     assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") == before
-    assert _git(work, "status", "--porcelain") == ""  # The rows are safe in the local commit.
+    assert _git(work, "status", "--porcelain") == ""
 
 
-def test_stage5_rows_whose_push_was_rejected_block_the_merge(tmp_path, monkeypatch):
-    origin, work = _unpushable_rows_repos(tmp_path)
+def test_stage5_rows_whose_push_was_rejected_block_the_merge(diverged_repos, monkeypatch):
+    origin, work = diverged_repos
+    _append_pending_row(work)
     before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
     merge = _RecordingSync(CODE_CONFLICT)
     monkeypatch.setattr(sync_points, "sync_review_head", merge)
@@ -313,16 +377,11 @@ def test_stage5_rows_whose_push_was_rejected_block_the_merge(tmp_path, monkeypat
     assert "(before Stage 5)" in message and "Review-Iteration: 2" in message
 
 
-def _committed_rows_repos(tmp_path: Path, *, diverged: bool) -> tuple[Path, Path]:
-    """An earlier ledger commit left unpushed on the local branch (diverged from origin when ``diverged``)."""
-    origin, work = _unpushable_rows_repos(tmp_path) if diverged else _pending_rows_repos(tmp_path)
-    _git(work, "commit", "-q", "-am", "earlier ledger rows")
-    return origin, work
-
-
-def test_an_earlier_unpushed_ledger_commit_is_pushed_before_the_merge(tmp_path, monkeypatch):
+def test_an_earlier_unpushed_ledger_commit_is_pushed_before_the_merge(branch_repos, monkeypatch):
     refuse_test_runs(monkeypatch)
-    origin, work = _committed_rows_repos(tmp_path, diverged=False)
+    origin, work, _head, _fingerprint = branch_repos
+    _append_pending_row(work)
+    _git(work, "commit", "-q", "-am", "earlier ledger rows")
     spy = _SpySync(origin, work)
     monkeypatch.setattr(sync_points, "sync_review_head", spy)
     ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
@@ -337,8 +396,10 @@ def test_an_earlier_unpushed_ledger_commit_is_pushed_before_the_merge(tmp_path, 
     assert _git(work, "rev-parse", "HEAD") == _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
 
 
-def test_an_earlier_ledger_commit_that_cannot_be_pushed_blocks_the_merge(tmp_path, monkeypatch):
-    origin, work = _committed_rows_repos(tmp_path, diverged=True)
+def test_an_earlier_ledger_commit_that_cannot_be_pushed_blocks_the_merge(diverged_repos, monkeypatch):
+    origin, work = diverged_repos
+    _append_pending_row(work)
+    _git(work, "commit", "-q", "-am", "earlier ledger rows")
     before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
     merge = _RecordingSync(CODE_CONFLICT)
     monkeypatch.setattr(sync_points, "sync_review_head", merge)
@@ -353,14 +414,12 @@ def test_an_earlier_ledger_commit_that_cannot_be_pushed_blocks_the_merge(tmp_pat
     assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") == before
 
 
-def test_an_unpushed_code_commit_blocks_the_merge_and_is_never_pushed(tmp_path, monkeypatch):
-    origin, work = _pending_rows_repos(tmp_path)
-    _git(work, "stash", "-q")
+def test_an_unpushed_code_commit_blocks_the_merge_and_is_never_pushed(branch_repos, monkeypatch):
+    origin, work, before, _fingerprint = branch_repos
     (work / "resolver.py").write_text("x = 1\n", encoding="utf-8")
     _git(work, "add", "resolver.py")
     _git(work, "commit", "-q", "-m", "resolver commit the host refused to push")
-    _git(work, "stash", "pop", "-q")
-    before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
+    _append_pending_row(work)
     merge = _RecordingSync(CODE_CONFLICT)
     monkeypatch.setattr(sync_points, "sync_review_head", merge)
     ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
@@ -374,13 +433,13 @@ def test_an_unpushed_code_commit_blocks_the_merge_and_is_never_pushed(tmp_path, 
     assert _git(origin, "rev-parse", f"refs/heads/{BRANCH}") == before
 
 
-def test_the_gate_never_pushes_an_unpushed_code_commit(tmp_path):
-    origin, work = _pending_rows_repos(tmp_path)
+def test_the_gate_never_pushes_an_unpushed_code_commit(branch_repos):
+    origin, work, before, _fingerprint = branch_repos
+    _append_pending_row(work)
     _git(work, "commit", "-q", "-am", "earlier ledger rows")
     (work / "resolver.py").write_text("x = 1\n", encoding="utf-8")
     _git(work, "add", "resolver.py")
     _git(work, "commit", "-q", "-m", "resolver commit the host refused to push")
-    before = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
     ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
 
     assert conflict_gate._local_commits_unpushed(ctx, BRANCH)
@@ -392,16 +451,16 @@ def test_the_gate_never_pushes_an_unpushed_code_commit(tmp_path):
 GREEN_AT_A = {"total": 2, "passed": 2, "failed": 0, "pending": 0, "measured": True}
 
 
-def _approved_at_head(work: Path, origin: Path, *, fingerprinted: bool = True) -> dict:
-    """The consensus data of an approval of origin's head commit, fingerprinted against origin/main."""
-    from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of
-
-    head = _git(origin, "rev-parse", f"refs/heads/{BRANCH}")
-    _git(work, "fetch", "-q", "origin")
-    data = {"approved": True, "base_branch": "main", "target_commit": head, "ci_checks": dict(GREEN_AT_A)}
-    data["mergeability"] = {"merge_state_status": "CLEAN", "mergeable": "MERGEABLE", "is_dirty": False}  # A's probe.
+def _approved_at_head(head: str, fingerprint: str, *, fingerprinted: bool = True) -> dict:
+    data = {
+        "approved": True,
+        "base_branch": "main",
+        "target_commit": head,
+        "ci_checks": dict(GREEN_AT_A),
+        "mergeability": {"merge_state_status": "CLEAN", "mergeable": "MERGEABLE", "is_dirty": False},
+    }
     if fingerprinted:
-        data["approval_fingerprint"] = approval_fingerprint_of(str(work), head, "main")
+        data["approval_fingerprint"] = fingerprint
         assert str(data["approval_fingerprint"]).startswith("pf2:")
     return data
 
@@ -427,10 +486,12 @@ def _gate_rows(exec_file: Path) -> list[dict]:
     return [json.loads(line) for line in exec_file.read_text(encoding="utf-8").splitlines()]
 
 
-def test_a_ledger_only_merge_with_the_same_fingerprint_carries_the_approval_over(tmp_path, monkeypatch):
+def test_a_ledger_only_merge_with_the_same_fingerprint_carries_the_approval_over(
+    conflicting_repos, tmp_path, monkeypatch
+):
     refuse_test_runs(monkeypatch)
-    origin, work = build_conflicting_repos(tmp_path)
-    consensus_data = _approved_at_head(work, origin)
+    origin, work, head, fingerprint = conflicting_repos
+    consensus_data = _approved_at_head(head, fingerprint)
     approved = consensus_data["target_commit"]
     exec_file = tmp_path / "gate-ledger.jsonl"
     earlier = json.dumps({"action_id": "ACT-EARLIER-1", "execution_id": "E-0"}) + "\n"
@@ -457,10 +518,10 @@ def test_a_ledger_only_merge_with_the_same_fingerprint_carries_the_approval_over
     assert carry["outcome"] == "success" and "approval-carry-over" in carry["labels"]
 
 
-def test_the_carry_over_is_logged_with_both_shas_and_the_fingerprint(tmp_path, monkeypatch):
+def test_the_carry_over_is_logged_with_both_shas_and_the_fingerprint(conflicting_repos, tmp_path, monkeypatch):
     refuse_test_runs(monkeypatch)
-    origin, work = build_conflicting_repos(tmp_path)
-    consensus_data = _approved_at_head(work, origin)
+    _origin, work, head, fingerprint = conflicting_repos
+    consensus_data = _approved_at_head(head, fingerprint)
     logged: list[str] = []
     monkeypatch.setattr(FlowContext, "log", lambda self, message: logged.append(message))
 
@@ -471,11 +532,10 @@ def test_the_carry_over_is_logged_with_both_shas_and_the_fingerprint(tmp_path, m
     assert consensus_data["approval_fingerprint"] in line and "CI on" in line
 
 
-def test_a_pr_own_change_after_approval_blocks_the_merged_head(tmp_path, monkeypatch):
+def test_a_pr_own_change_after_approval_blocks_the_merged_head(branch_repos, tmp_path, monkeypatch):
     refuse_test_runs(monkeypatch)
-    origin, work = build_conflicting_repos(tmp_path)
-    consensus_data = _approved_at_head(work, origin)
-    _git(work, "checkout", "-q", BRANCH)
+    _origin, work, head, fingerprint = branch_repos
+    consensus_data = _approved_at_head(head, fingerprint)
     (work / "src/feature.py").write_text("x = 2\n", encoding="utf-8")
     _git(work, "commit", "-q", "-am", "post-approval push")
     _git(work, "push", "-q", "origin", f"HEAD:refs/heads/{BRANCH}")
@@ -490,10 +550,10 @@ def test_a_pr_own_change_after_approval_blocks_the_merged_head(tmp_path, monkeyp
     assert [row["action_id"].split("-")[1] for row in _gate_rows(exec_file)] == ["GATE"]
 
 
-def test_a_code_conflict_still_aborts_with_a_fingerprinted_approval(tmp_path, monkeypatch):
+def test_a_code_conflict_still_aborts_with_a_fingerprinted_approval(conflicting_repos, tmp_path, monkeypatch):
     refuse_test_runs(monkeypatch)
-    origin, work = build_conflicting_repos(tmp_path)
-    consensus_data = _approved_at_head(work, origin)
+    origin, work, head, fingerprint = conflicting_repos
+    consensus_data = _approved_at_head(head, fingerprint)
     before = consensus_data["target_commit"]
     (work / "src").mkdir(exist_ok=True)
     (work / "src/feature.py").write_text("x = 3\n", encoding="utf-8")
@@ -516,10 +576,10 @@ def test_a_code_conflict_still_aborts_with_a_fingerprinted_approval(tmp_path, mo
     assert [row["action_id"].split("-")[1] for row in _gate_rows(exec_file)] == ["GATE"]
 
 
-def test_a_legacy_approval_without_a_fingerprint_is_blocked_as_before(tmp_path, monkeypatch):
+def test_a_legacy_approval_without_a_fingerprint_is_blocked_as_before(conflicting_repos, tmp_path, monkeypatch):
     refuse_test_runs(monkeypatch)
-    origin, work = build_conflicting_repos(tmp_path)
-    consensus_data = _approved_at_head(work, origin, fingerprinted=False)
+    _origin, work, head, fingerprint = conflicting_repos
+    consensus_data = _approved_at_head(head, fingerprint, fingerprinted=False)
     exec_file = tmp_path / "gate-ledger.jsonl"
 
     post_error, _, post = _post_through_gate(work, exec_file, consensus_data)
@@ -558,11 +618,10 @@ def test_a_carried_approval_ends_the_loop_approved_without_another_reviewer_disp
     assert not _rows(tmp_path, "ACT-GATE")
 
 
-def test_stage5_records_one_carry_over_row_for_a_merge_that_kept_the_change(tmp_path, monkeypatch):
+def test_stage5_records_one_carry_over_row_for_a_merge_that_kept_the_change(branch_repos, monkeypatch):
     refuse_test_runs(monkeypatch)
-    origin, work = build_conflicting_repos(tmp_path)
-    consensus_data = _approved_at_head(work, origin)
-    _git(work, "checkout", "-q", BRANCH)
+    origin, work, head, fingerprint = branch_repos
+    consensus_data = _approved_at_head(head, fingerprint)
     monkeypatch.setattr(conflict_gate.stage_conflicts, "check_pr_mergeability", lambda *a, **k: dict(CONFLICTING))
     ctx = FlowContext(repo_dir=str(work), execution_branch=BRANCH, token_reduce=False)
     ctx.stage_results["review"] = StageResult(

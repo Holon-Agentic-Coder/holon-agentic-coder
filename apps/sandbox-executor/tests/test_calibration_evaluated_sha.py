@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sandbox_executor.calibration import is_calibration_stale
@@ -12,6 +13,9 @@ from sandbox_executor.calibration_evaluated_sha import (
     is_calibration_commit,
     is_ledger_only_commit,
 )
+
+from tests.calibrate_scenarios import build_evaluated_sha_calibrated_repo, build_evaluated_sha_repo, own_path_copy
+from tests.repo_templates import shared_template
 
 REPORT = "plans/I-1-x/P-2-x_calibration.md"
 LEDGER = "holon-knowledge/ledger/executions.jsonl"
@@ -32,12 +36,32 @@ def commit(repo: Path, message: str, *paths: str) -> str:
     return git(repo, "rev-parse", "HEAD")
 
 
+@pytest.fixture(scope="session")
+def evaluated_sha_repo_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> Path:
+    root, _ = shared_template(tmp_path_factory, "calibration-evaluated-sha-repo", build_evaluated_sha_repo)
+    return root
+
+
+@pytest.fixture(scope="session")
+def evaluated_sha_calibrated_template(
+    tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str
+) -> SimpleNamespace:
+    root, built = shared_template(
+        tmp_path_factory,
+        "calibration-evaluated-sha-calibrated",
+        lambda r: build_evaluated_sha_calibrated_repo(r, REPORT, LEDGER),
+    )
+    return SimpleNamespace(root=root, code=built.code)
+
+
 @pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    git(tmp_path, "init", "-q", "-b", "main")
-    commit(tmp_path, "base", "base.txt")
-    git(tmp_path, "checkout", "-qb", "exec")
-    return tmp_path
+def repo(evaluated_sha_repo_template: Path, tmp_path: Path) -> Path:
+    return own_path_copy(evaluated_sha_repo_template, tmp_path)
+
+
+@pytest.fixture
+def calibrated_repo(evaluated_sha_calibrated_template: SimpleNamespace, tmp_path: Path) -> tuple[Path, str]:
+    return own_path_copy(evaluated_sha_calibrated_template.root, tmp_path), evaluated_sha_calibrated_template.code
 
 
 def calibrate(repo: Path) -> None:
@@ -53,9 +77,8 @@ def test_one_calibration_commit_on_top_is_skipped(repo: Path) -> None:
     assert evaluated_code_commit("HEAD", str(repo)) == code
 
 
-def test_a_full_stage5_run_on_top_is_skipped(repo: Path) -> None:
-    code = commit(repo, "feat: code", "src/a.py")
-    calibrate(repo)
+def test_a_full_stage5_run_on_top_is_skipped(calibrated_repo: tuple[Path, str]) -> None:
+    repo, code = calibrated_repo
     assert evaluated_code_commit("HEAD", str(repo)) == code
 
 
@@ -100,9 +123,8 @@ def test_unknown_head_returns_none(repo: Path) -> None:
     assert evaluated_code_commit("refs/heads/missing", str(repo)) is None
 
 
-def test_a_report_is_fresh_on_its_own_calibration_commits(repo: Path) -> None:
-    code = commit(repo, "feat: code", "src/a.py")
-    calibrate(repo)
+def test_a_report_is_fresh_on_its_own_calibration_commits(calibrated_repo: tuple[Path, str]) -> None:
+    repo, code = calibrated_repo
     report = f"- **Evaluated Commit SHA:** `{code}`\n"
     assert is_calibration_stale(report, target_worktree=str(repo))[0] is False
     commit(repo, "feat: more code", "src/b.py")

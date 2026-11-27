@@ -15,7 +15,9 @@ from tests.calibrate_scenarios import (
     build_rebuild_stale_repos,
     build_sync_repos,
     build_sync_repos_ahead,
+    clone_flow_pair,
     own_copy,
+    run_guarded_template,
 )
 from tests.repo_templates import shared_template
 from tests.test_calibrate_sync import CALIBRATED, EXEC, git, push_ahead, run_stage
@@ -62,6 +64,48 @@ def rebuild_stale(rebuild_stale_template: SimpleNamespace, tmp_path: Path) -> Si
     return own
 
 
+@pytest.fixture
+def sync_stage5_ran_template(
+    sync_repos_ahead_template: SimpleNamespace,
+    tmp_path_factory: pytest.TempPathFactory,
+    gh_write_guard: list[str],
+    network_guard_fixture: list[str],
+) -> SimpleNamespace:
+    def build(root: Path) -> SimpleNamespace:
+        own = own_copy(sync_repos_ahead_template, root)
+        ctx, result = run_stage(own)
+        return SimpleNamespace(
+            repos=own,
+            origin_head=sync_repos_ahead_template.origin_head,
+            stage_run=(ctx, result),
+        )
+
+    root, ran = run_guarded_template(
+        tmp_path_factory, "calibrate-sync-stage5-ran", build, (gh_write_guard, network_guard_fixture)
+    )
+    return SimpleNamespace(root=root, repos=ran.repos, origin_head=ran.origin_head, stage_run=ran.stage_run)
+
+
+@pytest.fixture
+def foreign_notes_failed_template(
+    sync_repos_template: SimpleNamespace,
+    tmp_path_factory: pytest.TempPathFactory,
+    gh_write_guard: list[str],
+    network_guard_fixture: list[str],
+) -> SimpleNamespace:
+    def build(root: Path) -> SimpleNamespace:
+        own = own_copy(sync_repos_template, root)
+        old = calibrated_on_origin(own, "notes.txt", "add notes")
+        push_ahead(own)
+        ctx, result = run_stage(own)
+        return SimpleNamespace(repos=own, old=old, stage_run=(ctx, result))
+
+    root, ran = run_guarded_template(
+        tmp_path_factory, "calibrate-rebuild-foreign-notes", build, (gh_write_guard, network_guard_fixture)
+    )
+    return SimpleNamespace(root=root, repos=ran.repos, old=ran.old, stage_run=ran.stage_run)
+
+
 def commit_as(repo: Path, path: str, subject: str) -> str:
     (repo / path).parent.mkdir(parents=True, exist_ok=True)
     (repo / path).write_text(f"{subject}\n")
@@ -101,14 +145,28 @@ def test_own_diverged_calibrated_branch_is_rebuilt_from_the_origin_head(rebuild_
     ("path", "subject"),
     [("notes.txt", "add notes"), ("src/x.py", "chore(calibration): add calibration report for P-2-y")],
 )
-def test_foreign_commit_still_stops_and_changes_nothing(repos: SimpleNamespace, path: str, subject: str) -> None:
-    old = calibrated_on_origin(repos, path, subject)
-    push_ahead(repos)
-    _, result = run_stage(repos)
+def test_foreign_commit_still_stops_and_changes_nothing(
+    repos: SimpleNamespace,
+    foreign_notes_failed_template: SimpleNamespace,
+    tmp_path: Path,
+    path: str,
+    subject: str,
+) -> None:
+    if (path, subject) == ("notes.txt", "add notes"):
+        own = own_copy(foreign_notes_failed_template, tmp_path / "foreign-notes")
+        old = foreign_notes_failed_template.old
+        _, result = clone_flow_pair(
+            foreign_notes_failed_template.root, foreign_notes_failed_template.stage_run, own.host
+        )
+    else:
+        own = repos
+        old = calibrated_on_origin(own, path, subject)
+        push_ahead(own)
+        _, result = run_stage(own)
     assert result.status == StageStatus.FAILED
     assert "does not contain the execution head" in result.error and "git branch -D" in result.error
-    assert git(repos.host, "rev-parse", CALIBRATED) == old
-    assert origin_sha(repos, CALIBRATED) == old
+    assert git(own.host, "rev-parse", CALIBRATED) == old
+    assert origin_sha(own, CALIBRATED) == old
     assert result.payload["calibrated_head"] is None
 
 
@@ -159,12 +217,14 @@ def test_stale_local_with_current_origin_calibrated_follows_origin(rebuild_stale
 
 
 def test_flow_summary_names_the_calibrated_head(
-    repos_ahead: SimpleNamespace, capsys: pytest.CaptureFixture[str]
+    sync_stage5_ran_template: SimpleNamespace, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    head = repos_ahead.origin_head
-    ctx, _ = run_stage(repos_ahead)
+    own = own_copy(sync_stage5_ran_template, tmp_path)
+    ctx, _ = clone_flow_pair(sync_stage5_ran_template.root, sync_stage5_ran_template.stage_run, own.host)
     _report_flow_summary(ctx, {}, json_output=False)
-    assert f"calibration report covers execution head {head[:12]}" in capsys.readouterr().out
+    assert f"calibration report covers execution head {sync_stage5_ran_template.origin_head[:12]}" in (
+        capsys.readouterr().out
+    )
 
 
 def test_failed_publish_does_not_report_a_calibrated_head(repos_ahead: SimpleNamespace) -> None:
@@ -174,11 +234,10 @@ def test_failed_publish_does_not_report_a_calibrated_head(repos_ahead: SimpleNam
 
 
 def test_flow_summary_says_a_failed_stage_5_refreshed_nothing(
-    repos: SimpleNamespace, capsys: pytest.CaptureFixture[str]
+    foreign_notes_failed_template: SimpleNamespace, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    calibrated_on_origin(repos, "notes.txt", "add notes")
-    push_ahead(repos)
-    ctx, _ = run_stage(repos)
+    own = own_copy(foreign_notes_failed_template, tmp_path)
+    ctx, _ = clone_flow_pair(foreign_notes_failed_template.root, foreign_notes_failed_template.stage_run, own.host)
     _report_flow_summary(ctx, {}, json_output=False)
     assert "calibration report not refreshed for the current head" in capsys.readouterr().out
 

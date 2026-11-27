@@ -166,6 +166,56 @@ def calibrated_rerun(calibrated_rerun_template: SimpleNamespace, tmp_path: Path)
 
 
 @pytest.fixture
+def calibrated_outran_template(
+    calibrated_moved_template: SimpleNamespace,
+    tmp_path_factory: pytest.TempPathFactory,
+    gh_write_guard: list[str],
+    network_guard_fixture: list[str],
+) -> SimpleNamespace:
+    def build(root: Path) -> SimpleNamespace:
+        own = own_copy(calibrated_moved_template, root)
+        ctx, result = clone_flow_pair(calibrated_moved_template.root, calibrated_moved_template.first_run, own.host)
+        approve_pr(ctx)
+        thread, attempts, posted_at_attempt = FakeThread(), [], []
+
+        def never_catching_up(context: FlowContext) -> StageResult:
+            attempts.append("stage")
+            posted_at_attempt.append(len(thread.posted))
+            return result
+
+        stale = rerun_calibration(ctx, result, never_catching_up, seams=thread.seams())
+        return SimpleNamespace(
+            repos=own,
+            first_run=(ctx, result),
+            stale=stale,
+            new_head=calibrated_moved_template.new_head,
+            attempts=attempts,
+            posted_at_attempt=posted_at_attempt,
+            posted=list(thread.posted),
+            edits=list(thread.edits),
+            records=list(thread.records),
+        )
+
+    root, done = run_guarded_template(
+        tmp_path_factory, "calibrated-outran-template", build, (gh_write_guard, network_guard_fixture)
+    )
+    return SimpleNamespace(root=root, **vars(done))
+
+
+@pytest.fixture
+def calibrated_outran(calibrated_outran_template: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
+    t = calibrated_outran_template
+    own = own_copy(t, tmp_path / "outran")
+    own.ctx, own.result = clone_flow_pair(t.root, t.first_run, own.host)
+    own.stale = copy.deepcopy(t.stale)
+    assert str(t.root) not in repr(own.stale), "the cached outran run recorded a path of the shared template"
+    own.thread = FakeThread()
+    own.thread.records, own.thread.posted, own.thread.edits = copy.deepcopy(t.records), list(t.posted), list(t.edits)
+    own.new_head, own.attempts, own.posted_at_attempt = t.new_head, list(t.attempts), list(t.posted_at_attempt)
+    return own
+
+
+@pytest.fixture
 def pr258_repos_template(
     rerun_repos_template: SimpleNamespace,
     tmp_path_factory: pytest.TempPathFactory,
@@ -347,21 +397,13 @@ def test_a_rerun_does_not_loop_on_its_own_calibration_commits(calibrated_rerun: 
     assert len(calls) == 2
 
 
-def test_a_head_that_outruns_both_attempts_marks_the_payload_stale(calibrated_moved: SimpleNamespace) -> None:
+def test_a_head_that_outruns_both_attempts_marks_the_payload_stale(calibrated_outran: SimpleNamespace) -> None:
     from sandbox_executor.cli.commands.flow import _calibrated_head_line
 
-    ctx, result, _, _ = calibrated_flow(calibrated_moved)
-    new_head = calibrated_moved.new_head
-    attempts: list[str] = []
-
-    def never_catching_up(context: FlowContext) -> StageResult:
-        attempts.append("stage")
-        return result
-
-    stale = rerun_calibration(ctx, result, never_catching_up)
-    assert len(attempts) == 2
+    stale = calibrated_outran.stale
+    assert len(calibrated_outran.attempts) == 2
     assert stale.payload["calibration_stale"] is True
-    assert new_head[:12] in stale.payload["stale_reason"]
+    assert calibrated_outran.new_head[:12] in stale.payload["stale_reason"]
     line = _calibrated_head_line(stale)
     assert line.startswith("calibration report is STALE")
     assert "not ready to merge" in line and "covers" in line
@@ -498,22 +540,12 @@ def test_a_successful_rerun_on_a_code_push_posts_no_stale_warning(calibrated_rer
     assert "Calibration refreshed" in note and calibrated_rerun.new_head[:7] in note
 
 
-def test_a_still_stale_head_never_duplicates_the_stale_comment(calibrated_moved: SimpleNamespace) -> None:
-    ctx, result, _, _ = calibrated_flow(calibrated_moved)
-    approve_pr(ctx)
-    seams, thread = recording_thread()
-    new_head = calibrated_moved.new_head
-    posted_at_attempt: list[int] = []
-
-    def never_catching_up(context: FlowContext) -> StageResult:
-        posted_at_attempt.append(len(thread.posted))
-        return result
-
-    rerun_calibration(ctx, result, never_catching_up, seams=seams)
-    assert posted_at_attempt == [0, 0]
+def test_a_still_stale_head_never_duplicates_the_stale_comment(calibrated_outran: SimpleNamespace) -> None:
+    ctx, result, thread = calibrated_outran.ctx, calibrated_outran.result, calibrated_outran.thread
+    assert calibrated_outran.posted_at_attempt == [0, 0]
     (warning,) = thread.stale_bodies()
-    assert "Calibration report is stale" in warning and new_head[:7] in warning
-    rerun_calibration(ctx, result, never_catching_up, seams=seams)
+    assert "Calibration report is stale" in warning and calibrated_outran.new_head[:7] in warning
+    rerun_calibration(ctx, result, lambda context: result, seams=thread.seams())
     assert (len(thread.posted), len(thread.edits)) == (1, 0)
 
 

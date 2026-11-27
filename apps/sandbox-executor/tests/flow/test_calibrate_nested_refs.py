@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import json
+import logging
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +13,7 @@ from sandbox_executor.calibration import PredictedMetrics, generate_calibration,
 from sandbox_executor.flow import FlowContext, StageStatus, run_calibrate_stage
 from sandbox_executor.ref_names import calibration_branch
 
-from tests.calibrate_scenarios import own_copy
+from tests.calibrate_scenarios import own_copy, run_guarded_template
 from tests.repo_templates import shared_template
 
 ROOT_INTENT = "I-1794000000-root/_"
@@ -87,18 +89,71 @@ def nested_layout_template(tmp_path_factory: pytest.TempPathFactory, hermetic_gi
     return SimpleNamespace(root=root, repos=built)
 
 
+@pytest.fixture(scope="session")
+def nested_layout_absent_template(
+    nested_layout_template: SimpleNamespace, tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str
+) -> SimpleNamespace:
+    def build(root: Path) -> SimpleNamespace:
+        own = own_copy(nested_layout_template, root)
+        drop_plan_ref(own, "absent")
+        return own
+
+    root, built = shared_template(tmp_path_factory, "calibrate-nested-layout-absent", build)
+    return SimpleNamespace(root=root, repos=built)
+
+
 @pytest.fixture
 def layout(nested_layout_template: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
     return own_copy(nested_layout_template, tmp_path)
+
+
+@pytest.fixture
+def layout_absent(nested_layout_absent_template: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
+    return own_copy(nested_layout_absent_template, tmp_path / "absent")
+
+
+@pytest.fixture
+def absent_report(
+    nested_layout_absent_template: SimpleNamespace,
+    tmp_path_factory: pytest.TempPathFactory,
+    gh_write_guard: list[str],
+    network_guard_fixture: list[str],
+) -> SimpleNamespace:
+    def build(root: Path) -> SimpleNamespace:
+        own = own_copy(nested_layout_absent_template, root)
+        warnings: list[str] = []
+
+        class Collector(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                warnings.append(record.getMessage())
+
+        logger = logging.getLogger()
+        handler = Collector(logging.WARNING)
+        logger.addHandler(handler)
+        try:
+            report = generate_calibration(EXEC, target_worktree=str(own.host))
+        finally:
+            logger.removeHandler(handler)
+        return SimpleNamespace(report=report, warnings=warnings)
+
+    _, built = run_guarded_template(
+        tmp_path_factory, "calibrate-nested-absent-report", build, (gh_write_guard, network_guard_fixture)
+    )
+    return SimpleNamespace(report=copy.deepcopy(built.report), warnings=list(built.warnings))
 
 
 @pytest.mark.parametrize(
     ("case", "diff_base"),
     [("local", "plan"), ("remote_only", "plan"), ("absent", "merge_base_fallback")],
 )
-def test_generate_calibration_on_nested_layout(layout: SimpleNamespace, case: str, diff_base: str) -> None:
-    drop_plan_ref(layout, case)
-    report = generate_calibration(EXEC, target_worktree=str(layout.host))
+def test_generate_calibration_on_nested_layout(
+    layout: SimpleNamespace, absent_report: SimpleNamespace, case: str, diff_base: str
+) -> None:
+    if case == "absent":
+        report = absent_report.report
+    else:
+        drop_plan_ref(layout, case)
+        report = generate_calibration(EXEC, target_worktree=str(layout.host))
     assert report.plan_id == PLAN_ID
     assert report.execution_id == EXEC_ID
     assert report.actual.files_changed == 1
@@ -108,22 +163,22 @@ def test_generate_calibration_on_nested_layout(layout: SimpleNamespace, case: st
         assert report.base_sha == git(layout.host, "rev-parse", f"origin/{PLAN}")
 
 
-def test_absent_plan_ref_degrades_with_a_warning(layout: SimpleNamespace, caplog: pytest.LogCaptureFixture) -> None:
-    drop_plan_ref(layout, "absent")
-    with caplog.at_level("WARNING"):
-        report = generate_calibration(EXEC, target_worktree=str(layout.host))
-    assert report.base_sha is None
-    assert any(PLAN in rec.getMessage() and CHILD_INTENT in rec.getMessage() for rec in caplog.records)
+def test_absent_plan_ref_degrades_with_a_warning(absent_report: SimpleNamespace) -> None:
+    assert absent_report.report.base_sha is None
+    assert any(PLAN in msg and CHILD_INTENT in msg for msg in absent_report.warnings)
 
 
-def test_absent_plan_ref_keeps_plan_branch_ledger_match_and_skips_a_ledger_only_tip(layout: SimpleNamespace) -> None:
-    drop_plan_ref(layout, "absent")
-    git(layout.host, "checkout", "-q", EXEC)
+def test_absent_plan_ref_keeps_plan_branch_ledger_match_and_skips_a_ledger_only_tip(
+    layout_absent: SimpleNamespace,
+) -> None:
+    git(layout_absent.host, "checkout", "-q", EXEC)
     row = {"entry_type": "summary", "execution_id": "E-1794000009-other-a-m", "plan_branch": PLAN, "exit_code": 0}
-    commit_file(layout.host, "holon-knowledge/ledger/executions.jsonl", json.dumps({**row, "duration": 34.0}) + "\n")
-    git(layout.host, "push", "-q", "origin", EXEC)
-    git(layout.host, "checkout", "-q", "main")
-    report = generate_calibration(EXEC, target_worktree=str(layout.host))
+    commit_file(
+        layout_absent.host, "holon-knowledge/ledger/executions.jsonl", json.dumps({**row, "duration": 34.0}) + "\n"
+    )
+    git(layout_absent.host, "push", "-q", "origin", EXEC)
+    git(layout_absent.host, "checkout", "-q", "main")
+    report = generate_calibration(EXEC, target_worktree=str(layout_absent.host))
     assert report.actual.duration_seconds == 34.0
     assert (report.actual.files_changed, report.actual.insertions) == (1, 2)
     assert "merge_base_fallback" in report.markdown_content

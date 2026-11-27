@@ -1,5 +1,8 @@
+import json
+import os
 import re
 import subprocess
+import sys
 import textwrap
 import tomllib
 from pathlib import Path
@@ -8,7 +11,7 @@ import pytest
 
 from scripts import check_self_explaining, pre_commit_check, self_explaining_diff
 from scripts.self_explaining_comments import find_comments_and_docstrings
-from scripts.self_explaining_diff import added_line_numbers
+from scripts.self_explaining_diff import added_line_numbers, removed_line_numbers
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -27,6 +30,13 @@ BASE_PYTHON = textwrap.dedent(
 )
 BASE_SHELL = "#!/usr/bin/env bash\n# Existing shell comment.\necho hello\n"
 BASE_YAML = "# Existing YAML comment.\nname: base\n"
+CHECK_SCRIPT = REPO_ROOT / "scripts" / "check_self_explaining.py"
+STEP_SUMMARY_VARIABLE = "GITHUB_STEP_SUMMARY"
+
+
+@pytest.fixture(autouse=True)
+def without_inherited_step_summary(monkeypatch):
+    monkeypatch.delenv(STEP_SUMMARY_VARIABLE, raising=False)
 
 
 def kinds_and_lines(path: str, text: str) -> list[tuple[str, int]]:
@@ -163,6 +173,30 @@ def test_unscanned_files_report_nothing(path):
 )
 def test_added_line_numbers_reads_unified_zero_context_hunks(diff_text, expected):
     assert {path: set(lines) for path, lines in added_line_numbers(diff_text).items()} == expected
+
+
+@pytest.mark.parametrize(
+    ("diff_text", "expected"),
+    [
+        ("diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -3,2 +3 @@\n-x\n-y\n+z\n", {"a.py": {3, 4}}),
+        ("diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -5 +4,0 @@\n-x\n", {"a.py": {5}}),
+        ("diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -2,0 +3 @@\n+x\n", {"a.py": set()}),
+        (
+            "diff --git a/gone.sh b/gone.sh\ndeleted file mode 100644\n--- a/gone.sh\n+++ /dev/null\n"
+            "@@ -1,3 +0,0 @@\n-a\n-b\n-c\n",
+            {"gone.sh": {1, 2, 3}},
+        ),
+        (
+            "diff --git a/old.py b/new.py\nsimilarity index 90%\nrename from old.py\nrename to new.py\n"
+            "--- a/old.py\n+++ b/new.py\n@@ -2 +2 @@\n-x\n+y\n",
+            {"old.py": {2}},
+        ),
+        ("diff --git a/b.sh b/b.sh\nnew file mode 100644\n--- /dev/null\n+++ b/b.sh\n@@ -0,0 +1,2 @@\n+a\n+b\n", {}),
+        ("diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n---- a/fake\n+x\n", {"a.py": {1}}),
+    ],
+)
+def test_removed_line_numbers_reads_old_side_hunks(diff_text, expected):
+    assert {path: set(lines) for path, lines in removed_line_numbers(diff_text).items()} == expected
 
 
 def git(repo: Path, *args: str) -> None:
@@ -370,3 +404,95 @@ def test_pre_commit_runs_the_check_only_in_staged_mode(monkeypatch, argv, expect
         pre_commit_check.main()
     assert calls == expected_calls
     assert exit_info.value.code == (1 if expected_calls else 0)
+
+
+def run_check_script(repo: Path, env_overrides: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    inherited = {name: value for name, value in os.environ.items() if name != STEP_SUMMARY_VARIABLE}
+    return subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(repo), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**inherited, **env_overrides},
+    )
+
+
+DOCSTRING_AND_COMMENT_ADDITION = '\n\ndef added():\n    """Added docstring."""\n    return 1  # explains\n'
+
+
+def test_step_summary_lists_counts_on_failure(repo, tmp_path):
+    summary = tmp_path / "summary.md"
+    append(repo / "module.py", DOCSTRING_AND_COMMENT_ADDITION)
+    completed = run_check_script(repo, {STEP_SUMMARY_VARIABLE: str(summary)})
+    assert completed.returncode == 1
+    text = summary.read_text(encoding="utf-8")
+    assert "Status: failed" in text
+    assert "| Changed files checked | 1 |" in text
+    assert "| Added docstrings | 1 |" in text
+    assert "| Added comments (not '# why:') | 1 |" in text
+
+
+def test_step_summary_lists_counts_on_pass(repo, tmp_path):
+    summary = tmp_path / "summary.md"
+    append(repo / "module.py", "VALUE_TWO = 2\n")
+    completed = run_check_script(repo, {STEP_SUMMARY_VARIABLE: str(summary)})
+    assert completed.returncode == 0
+    text = summary.read_text(encoding="utf-8")
+    assert "Status: passed" in text
+    assert "| Changed files checked | 1 |" in text
+    assert "| Added docstrings | 0 |" in text
+    assert "| Added comments (not '# why:') | 0 |" in text
+
+
+def test_no_step_summary_without_the_variable(repo, tmp_path):
+    before = set(tmp_path.rglob("*"))
+    append(repo / "module.py", DOCSTRING_AND_COMMENT_ADDITION)
+    assert run_check_script(repo, {}).returncode == 1
+    git(repo, "checkout", "-q", "--", "module.py")
+    append(repo / "module.py", "VALUE_TWO = 2\n")
+    assert run_check_script(repo, {}).returncode == 0
+    assert not (tmp_path / "summary.md").exists()
+    assert set(tmp_path.rglob("*")) == before
+
+
+def test_unwritable_step_summary_keeps_the_exit_code(repo, tmp_path):
+    append(repo / "module.py", "VALUE_TWO = 2\n")
+    completed = run_check_script(repo, {STEP_SUMMARY_VARIABLE: str(tmp_path / "missing" / "summary.md")})
+    assert completed.returncode == 0
+    assert "could not append the step summary" in completed.stderr
+
+
+def test_step_summary_counts_removed_docstrings_and_comments(repo, tmp_path):
+    summary = tmp_path / "summary.md"
+    module = repo / "module.py"
+    text = module.read_text(encoding="utf-8")
+    module.write_text(
+        text.replace("# Existing comment.\n", "").replace('    """Existing function docstring."""\n', ""), "utf-8"
+    )
+    completed = run_check_script(repo, {STEP_SUMMARY_VARIABLE: str(summary)})
+    assert completed.returncode == 0
+    summary_text = summary.read_text(encoding="utf-8")
+    assert "| Removed docstrings | 1 |" in summary_text
+    assert "| Removed comments (not '# why:') | 1 |" in summary_text
+    assert "| Added docstrings | 0 |" in summary_text
+
+
+def test_counts_json_compares_head_with_merge_base(tmp_path):
+    work = committed_repo(tmp_path / "work", {"module.py": BASE_PYTHON})
+    git(work, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(work, "checkout", "-q", "-b", "feature")
+    module = work / "module.py"
+    module.write_text(module.read_text(encoding="utf-8").replace("# Existing comment.\n", ""), "utf-8")
+    append(module, '\n\ndef added():\n    """Added docstring."""\n')
+    git(work, "commit", "-q", "-am", "feature")
+    git(work, "checkout", "-q", "main")
+    append(module, "OTHER = 2  # working tree comment\n")
+    completed = run_check_script(work, {}, "--head", "feature", "--counts-json")
+    assert completed.returncode == 0
+    assert json.loads(completed.stdout) == {
+        "files_checked": 1,
+        "added_docstrings": 1,
+        "added_comments": 0,
+        "removed_docstrings": 0,
+        "removed_comments": 1,
+    }

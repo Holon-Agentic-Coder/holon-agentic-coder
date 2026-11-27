@@ -13,6 +13,7 @@ from sandbox_executor.agent_defaults import AGENT_TICKERS
 from sandbox_executor.cli import doctor as cli_doctor
 from sandbox_executor.flow.context import FlowContext, StageStatus
 from sandbox_executor.flow.stages.intent import run_intent_stage
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 from sandbox_executor.naming import (
     GENERATION_LEGACY_HEX,
     GENERATION_LEGACY_LABELS,
@@ -200,7 +201,13 @@ def test_intent_open_rejects_a_runner_without_a_ticker_before_any_branch(tmp_pat
         target_worktree=str(tmp_path),
         dry_run=True,
         agent="codex-agent",
-        intent_data={"goal": "g", "slug": "x"},
+        intent_data={
+            "goal": "g",
+            "slug": "x",
+            **default_assumptions_fields(
+                "Runner ticker is checked before branch creation.", "Verified by naming tests."
+            ),
+        },
     )
     result = run_intent_stage(ctx)
     assert result.status == StageStatus.FAILED

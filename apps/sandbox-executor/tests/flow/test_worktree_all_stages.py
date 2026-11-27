@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 import subprocess
@@ -15,6 +16,7 @@ from sandbox_executor.cli import run_docker_container
 from sandbox_executor.flow import PipelineEngine, StageStatus
 from sandbox_executor.flow.review.resolver import _push_resolver_head
 from sandbox_executor.flow.stages.intent import run_intent_stage
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 from sandbox_executor.review_target import ReviewTarget
 
 from tests.flow.helpers import FakeRoleAgents, _dispatch_context, _git, stage4_halts_at_consensus
@@ -29,6 +31,7 @@ REMOTE_VERBS = {"clone", "fetch", "pull", "push", "ls-remote", "remote"}
 REMOTE_GIT_REPOSITORY_METHODS = {"fetch", "push", "pull", "clone"}
 ENTRYPOINT_DIR = Path(git_flow.__file__).parent / "entrypoint"
 APP_DIR = Path(__file__).resolve().parents[2]
+_ASSUMPTIONS = default_assumptions_fields("Worktree fixture is initialized.", "Verified by worktree stage tests.")
 
 
 @pytest.fixture
@@ -193,7 +196,10 @@ def test_the_intent_creator_issues_no_remote_git_command_when_it_runs(sandbox_re
     intent_json = Path("/tmp/intent.json")
     if intent_json.exists():
         pytest.skip("/tmp/intent.json belongs to someone else")
-    intent_json.write_text('{"slug": "demo", "goal": "g", "description": "d", "branch": "I-1-demo"}', encoding="utf-8")
+    intent_json.write_text(
+        json.dumps({"slug": "demo", "goal": "g", "description": "d", "branch": "I-1-demo", **_ASSUMPTIONS}),
+        encoding="utf-8",
+    )
     try:
         intent_creator.main()
     finally:
@@ -297,7 +303,7 @@ def test_a_stale_repository_url_leaves_the_intent_stage_outcome_unchanged(flow_r
     host2, origin2 = host, origin
     _git(host2, "checkout", "-q", "main")
     monkeypatch.setenv("HOLON_REPO_URL", "git@github.com:stale/repo.git")
-    intent = {"slug": "dispatch-test-2", "goal": "Change the application", "labels": ["flow"]}
+    intent = {"slug": "dispatch-test-2", "goal": "Change the application", "labels": ["flow"], **_ASSUMPTIONS}
 
     stale = run_intent_stage(_dispatch_context(host2, FakeRoleAgents(tmp_path / "b", origin2), intent_data=intent))
 
@@ -326,7 +332,7 @@ def test_a_failed_host_fetch_fails_the_intent_stage_with_the_named_error(flow_re
     ctx = _dispatch_context(
         host,
         FakeRoleAgents(tmp_path, origin),
-        intent_data={"slug": "fetch-fail", "goal": "g", "target_branch": "no-such-base"},
+        intent_data={"slug": "fetch-fail", "goal": "g", "target_branch": "no-such-base", **_ASSUMPTIONS},
     )
 
     result = run_intent_stage(ctx)

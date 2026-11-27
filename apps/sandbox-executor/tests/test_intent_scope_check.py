@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from sandbox_executor.harness_reference_patterns import find_references, sample_reference
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 from sandbox_executor.intent_scope_check import (
     DraftIntent,
     IntentScopeReport,
@@ -59,8 +60,15 @@ def _touch_together(repo: Path, paths: list[str], times: int) -> None:
         _commit(repo, f"co-change {round_number}")
 
 
+_ASSUMPTIONS = default_assumptions_fields("Scope files exist in fixture repo.", "Checked by intent_scope_check tests.")
+
+
 def _check(repo: Path, scope: list[str], criteria: list[str] | None = None) -> IntentScopeReport:
-    intent = DraftIntent(scope=[ScopeEntry.parse(entry) for entry in scope], acceptance_criteria=criteria or [])
+    intent = DraftIntent(
+        scope=[ScopeEntry.parse(entry) for entry in scope],
+        acceptance_criteria=criteria or [],
+        payload={"scope": scope, "acceptance_criteria": criteria or [], **_ASSUMPTIONS},
+    )
     return check_intent_scope(intent, str(repo))
 
 
@@ -228,7 +236,14 @@ def test_loaded_payload_text_fields_are_checked(tmp_path: Path) -> None:
     sample = sample_reference("task id")
     intent_file = tmp_path / "intent.json"
     intent_file.write_text(
-        json.dumps({"goal": f"Close {sample}.", "scope": ["src/pkg/core.py"], "acceptance_criteria": ["core.py"]}),
+        json.dumps(
+            {
+                "goal": f"Close {sample}.",
+                "scope": ["src/pkg/core.py"],
+                "acceptance_criteria": ["core.py"],
+                **_ASSUMPTIONS,
+            }
+        ),
         encoding="utf-8",
     )
     report = check_intent_scope(load_intent(str(intent_file)), str(repo))

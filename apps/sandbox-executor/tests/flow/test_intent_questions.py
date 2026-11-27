@@ -11,7 +11,12 @@ from sandbox_executor.flow.intent_questions import (
     validate_intent_questions,
 )
 from sandbox_executor.harness_reference_patterns import find_references, sample_reference
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 from sandbox_executor.intent_payload_rules import check_intent_payload
+
+_ASSUMPTIONS = default_assumptions_fields(
+    "Intent questions are resolved before Stage 1.", "Verified by Stage 1 question tests."
+)
 
 
 @pytest.mark.parametrize(
@@ -32,17 +37,28 @@ from sandbox_executor.intent_payload_rules import check_intent_payload
     ],
 )
 def test_unresolved_questions_keep_their_per_kind_label_and_text(intent, expected):
-    assert validate_intent_questions(intent) == (False, expected)
+    assert validate_intent_questions({**_ASSUMPTIONS, **intent}) == (False, expected)
 
 
 def test_a_clarification_is_not_answered_through_its_id():
-    intent = {"clarifications": [{"id": "c1", "clarification": "Which DB?"}], "answers": {"c1": "Postgres"}}
+    intent = {
+        **_ASSUMPTIONS,
+        "clarifications": [{"id": "c1", "clarification": "Which DB?"}],
+        "answers": {"c1": "Postgres"},
+    }
     assert validate_intent_questions(intent) == (False, ["Which DB? (unanswered clarification)"])
 
 
 def test_a_question_is_answered_through_its_id_or_text():
-    assert validate_intent_questions({"questions": [{"id": "q1"}], "answers": {"q1": "yes"}}) == (True, [])
-    intent = {"clarifications": [{"clarification": "Which DB?"}], "answers": [{"question": "Which DB?", "answer": "x"}]}
+    assert validate_intent_questions({**_ASSUMPTIONS, "questions": [{"id": "q1"}], "answers": {"q1": "yes"}}) == (
+        True,
+        [],
+    )
+    intent = {
+        **_ASSUMPTIONS,
+        "clarifications": [{"clarification": "Which DB?"}],
+        "answers": [{"question": "Which DB?", "answer": "x"}],
+    }
     assert validate_intent_questions(intent) == (True, [])
 
 
@@ -145,6 +161,7 @@ def _clean_intent() -> dict[str, object]:
         "goal": "Reject directory scope entries.",
         "scope": ["src/pkg/core.py", "tests/test_core.py (new)"],
         "acceptance_criteria": ["core.py rejects a directory entry."],
+        **_ASSUMPTIONS,
     }
 
 

@@ -21,6 +21,7 @@ from sandbox_executor.flow import (
     save_checkpoint,
 )
 from sandbox_executor.flow.dispatch import _recorded_test_fields
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 from sandbox_executor.launcher.coherence import FlowProxyChoice
 
 from tests.flow.github.fake_github import FakeGitHub
@@ -37,6 +38,7 @@ from tests.flow.helpers import (
 from tests.flow.lookup_patch import patch_lookup_sites
 
 _NO_PROXY = FlowProxyChoice(spawn_sidecar=False, attach_running_proxy=False)
+_ASSUMPTIONS = default_assumptions_fields("Dispatch fixture repo is initialized.", "Verified by flow dispatch tests.")
 # why: a sentinel tells a summary row without the key apart from one that records None.
 _ABSENT = object()
 
@@ -91,6 +93,7 @@ class TestFlowRoleDispatch:
                 "goal": "Build stage 1",
                 "questions": ["What protocol?"],
                 "answers": {"What protocol?": "OAuth2"},
+                **_ASSUMPTIONS,
             },
         )
 
@@ -129,6 +132,7 @@ class TestFlowRoleDispatch:
             "parent_intent_id": parent,
             "target_branch": "main",
             "sub_intent_depth": 1,
+            **_ASSUMPTIONS,
         }
 
     def test_stage1_reuses_existing_child_branch_recording_the_same_goal(self, flow_repos, tmp_path):
@@ -692,7 +696,7 @@ class TestFlowRoleDispatch:
         dispatcher = MagicMock(return_value=0)
         ctx = FlowContext(
             repo_dir=str(tmp_path),
-            intent_data={"slug": "dry", "goal": "Dry run"},
+            intent_data={"slug": "dry", "goal": "Dry run", **_ASSUMPTIONS},
             dry_run=True,
             skip_push=True,
             dispatcher=dispatcher,
@@ -731,7 +735,7 @@ class TestFlowDispatchMergeInteractions:
 
         host, _origin = flow_repos
         intent_file = host.parent / "intent.json"
-        intent_file.write_text(json.dumps({"slug": "resolved-runner", "goal": "g"}), encoding="utf-8")
+        intent_file.write_text(json.dumps({"slug": "resolved-runner", "goal": "g", **_ASSUMPTIONS}), encoding="utf-8")
         monkeypatch.setenv("HOLON_AGENT", "claude-agent")
         monkeypatch.setenv("HOLON_MODEL", DEFAULT_MODELS["claude"])
         monkeypatch.delenv("HOLON_SKIP_PREFLIGHT", raising=False)

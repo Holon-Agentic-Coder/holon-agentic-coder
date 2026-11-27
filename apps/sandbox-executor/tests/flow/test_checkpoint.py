@@ -6,6 +6,9 @@ import pytest
 from sandbox_executor.flow import FlowContext, FlowStage, PipelineEngine, StageResult, StageStatus, run_review_stage
 from sandbox_executor.flow.admission_state import AdmissionRecord, BlockedBy, admitted_record, blocked_record
 from sandbox_executor.flow.checkpoint import load_checkpoint, save_checkpoint
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
+
+_ASSUMPTIONS = default_assumptions_fields("Dry-run pipeline runs in tmp_path.", "Verified by checkpoint tests.")
 
 
 class TestFlowResumptionAndErrorHandling:
@@ -15,7 +18,7 @@ class TestFlowResumptionAndErrorHandling:
 
         ctx = FlowContext(
             repo_dir=str(tmp_path),
-            intent_data={"slug": "e2e-flow", "goal": "End to end test"},
+            intent_data={"slug": "e2e-flow", "goal": "End to end test", **_ASSUMPTIONS},
             auto_calibrate=True,
             dry_run=True,
         )
@@ -83,7 +86,7 @@ class TestFlowResumptionAndErrorHandling:
 
         ctx = FlowContext(
             repo_dir=str(tmp_path),
-            intent_data={"slug": "review-runs-flow", "goal": "Review always runs"},
+            intent_data={"slug": "review-runs-flow", "goal": "Review always runs", **_ASSUMPTIONS},
             auto_calibrate=True,
             dry_run=True,
         )
@@ -155,7 +158,7 @@ class TestFlowResumptionAndErrorHandling:
 
         ctx = FlowContext(
             repo_dir=str(tmp_path),
-            intent_data={"slug": "skip-cal-flow", "goal": "Skip calibrate"},
+            intent_data={"slug": "skip-cal-flow", "goal": "Skip calibrate", **_ASSUMPTIONS},
             skip_calibrate=True,
             auto_calibrate=False,
             dry_run=True,
@@ -190,7 +193,7 @@ class TestFlowResumptionAndErrorHandling:
 
         ctx = FlowContext(
             repo_dir=str(tmp_path),
-            intent_data={"slug": "halt-skip-cal", "goal": "Test halt with skip cal"},
+            intent_data={"slug": "halt-skip-cal", "goal": "Test halt with skip cal", **_ASSUMPTIONS},
             skip_calibrate=True,
             dry_run=True,
         )

@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 from sandbox_executor.harness_reference_patterns import HARNESS_PATTERNS, find_references, sample_reference
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 from sandbox_executor.intent_payload_rules import (
     check_intent_payload,
     harness_reference_violations,
@@ -25,6 +26,7 @@ def _clean_intent() -> dict[str, Any]:
             "apps/sandbox-executor/tests/test_intent_payload_rules.py (new)",
         ],
         "acceptance_criteria": ["intent_payload_rules.py rejects a directory entry.", "Lint passes."],
+        **default_assumptions_fields("Scope entries name concrete files.", "Verified by intent payload rules tests."),
     }
 
 

@@ -1,5 +1,3 @@
-"""Tests for ledger-only merge conflict resolution: ours kept in place, theirs' rows inserted on ``created_at``."""
-
 from __future__ import annotations
 
 import difflib
@@ -71,7 +69,6 @@ def test_sorted_sides_merge_sorted_and_as_additions_only():
 
 
 def test_each_side_keeps_its_own_order_and_ours_wins_a_tie():
-    # Ours appended out of time order: interleaving never reorders a side's own rows.
     ours = [*BASE, _row("o-late", "2026-11-09T00:00:00Z"), _row("o-early", "2026-11-03T00:00:00Z")]
     theirs = [*BASE, _row("t-tie", "2026-11-09T00:00:00Z")]
 
@@ -86,7 +83,6 @@ def test_rows_without_created_at_follow_the_timed_rows_in_side_order():
 
     merged = interleave_ledger_rows(BASE, ours, theirs)
 
-    # Ours never moves; theirs' untimed row stays glued after the timed row it followed.
     assert merged[2:] == [ours[2], ours[3], theirs[2], theirs[3], theirs[4]]
 
 
@@ -119,7 +115,6 @@ def test_a_side_that_changed_a_base_row_is_refused(rewritten):
 
 
 def _conflicting_repo(tmp_path: Path, extra_conflict: bool = False) -> Path:
-    """A repository with a merge in progress whose executions.jsonl (and optionally src/app.py) conflict."""
     repo = tmp_path / "repo"
     subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, capture_output=True)
     ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
@@ -159,7 +154,6 @@ def test_a_non_ledger_conflict_is_left_for_the_caller_to_abort(tmp_path):
     repo = _conflicting_repo(tmp_path, extra_conflict=True)
 
     assert resolve_ledger_only_conflicts(str(repo)) is False
-    # Nothing was resolved behind the caller's back.
     assert "executions.jsonl" in _git(repo, "diff", "--name-only", "--diff-filter=U")
 
 

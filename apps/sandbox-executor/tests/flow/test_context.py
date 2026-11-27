@@ -1,5 +1,3 @@
-"""Tests for the flow data model: stages, statuses, stage results, the context and its serialisation."""
-
 import json
 import os
 
@@ -20,8 +18,6 @@ from tests.leak_assertions import make_gh_probe, make_probe
 
 
 class TestFlowDataModels:
-    """Test data structures, enums, serialisation, and atomic checkpoint persistence."""
-
     def test_flow_stage_enum(self):
         assert FlowStage.INTENT.value == "intent"
         assert FlowStage.PLAN.value == "plan"
@@ -225,9 +221,9 @@ class TestFlowDataModels:
             "I-1-add-the-parser--1-add-the-parser--1-add-the-parser",
         ]
 
-        # Test non-existent checkpoint
+        missing_checkpoint_path = str(tmp_path / "does_not_exist.json")
         with pytest.raises(FileNotFoundError):
-            load_checkpoint(str(tmp_path / "does_not_exist.json"))
+            load_checkpoint(missing_checkpoint_path)
 
     def test_checkpoint_schema_version_serialized(self, tmp_path):
         ctx = FlowContext(

@@ -1,11 +1,3 @@
-"""Hermetic tests of the Stage 3 plan refresh after an admission wait (flow/plan_refresh.py, run by stages/execute).
-
-Each test builds a local bare origin and a clone (the host worktree): ``main`` with the ledgers, an intent branch and a
-plan branch cut from it, then a later commit on ``main`` (the overlapping change the flow waited for). Stage 3 runs for
-real up to the dispatch, which a fake executor replaces: it records the plan tip it was dispatched on and commits an
-execution branch from it. No network, container or ``gh`` call is made.
-"""
-
 from __future__ import annotations
 
 import json
@@ -41,7 +33,7 @@ PLAN = f"{PREFIX}/_"
 AGENT, MODEL = "claude-agent", "claude-opus-5-5"
 EXECUTIONS = "holon-knowledge/ledger/executions.jsonl"
 PLANS = "holon-knowledge/ledger/plans.jsonl"
-# The root conftest stubs check_admission for every test; these tests record the real admission state.
+# why: the root conftest stubs check_admission for every test; these tests need the real admission state
 REAL_CHECK = check_admission
 WAITED_SINCE = "2026-11-20T01:00:00.000Z"
 BLOCKED = {
@@ -62,8 +54,9 @@ def row(name: str, created_at: str) -> str:
     return json.dumps({"entry_type": "note", "id": name, "created_at": created_at}) + "\n"
 
 
-def commit_on(repo: Path, branch: str, files: dict[str, str], message: str, *, append: bool = True) -> str:
-    """Commit ``files`` (appended, or overwritten) on ``branch`` from its origin tip, push it and go back to main."""
+def commit_and_push_on_branch(
+    repo: Path, branch: str, files: dict[str, str], message: str, *, append: bool = True
+) -> str:
     git(repo, "checkout", "-q", "-B", branch, f"origin/{branch}")
     for path, text in files.items():
         target = repo / path
@@ -77,11 +70,7 @@ def commit_on(repo: Path, branch: str, files: dict[str, str], message: str, *, a
     return git(repo, "rev-parse", f"origin/{branch}")
 
 
-def _build_host(root: Path, *, main_moved: bool) -> str | None:
-    """The host worktree on main; origin holds main, the intent branch and the plan branch cut from it.
-
-    With ``main_moved``, ``move_main``'s default overlapping change follows; its sha is returned.
-    """
+def _build_host_on_main_with_plan_branch(root: Path, *, main_moved: bool) -> str | None:
     origin = root / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
     repo = root / "host"
@@ -99,37 +88,37 @@ def _build_host(root: Path, *, main_moved: bool) -> str | None:
     for parent, branch, path in (("main", INTENT, "intents/I-1-x.md"), (INTENT, PLAN, "plans/I-1-x/P-2.md")):
         git(repo, "push", "-q", "origin", f"refs/remotes/origin/{parent}:refs/heads/{branch}")
         git(repo, "fetch", "-q", "origin")
-        commit_on(repo, branch, {path: "# doc\n"}, f"add {path}")
-    return move_main(repo) if main_moved else None
+        commit_and_push_on_branch(repo, branch, {path: "# doc\n"}, f"add {path}")
+    return merge_overlapping_change_on_main(repo) if main_moved else None
 
 
-def _host_copy(
+def _private_copy_of_host_template(
     tmp_path_factory: pytest.TempPathFactory, tmp_path: Path, *, main_moved: bool
 ) -> tuple[Path, str | None]:
-    """A private copy of the fixed host and origin, built once per test run as a read-only template (git only)."""
     name = f"plan-refresh-host{'-main-moved' if main_moved else ''}"
-    template, main_sha = shared_template(tmp_path_factory, name, lambda root: _build_host(root, main_moved=main_moved))
+    template, main_sha = shared_template(
+        tmp_path_factory, name, lambda root: _build_host_on_main_with_plan_branch(root, main_moved=main_moved)
+    )
     copy_template(template, tmp_path)
     return tmp_path / "host", main_sha
 
 
 @pytest.fixture
 def host(tmp_path_factory: pytest.TempPathFactory, tmp_path: Path) -> Path:
-    """The host worktree on main; origin holds main, the intent branch and the plan branch cut from it."""
-    return _host_copy(tmp_path_factory, tmp_path, main_moved=False)[0]
+    return _private_copy_of_host_template(tmp_path_factory, tmp_path, main_moved=False)[0]
 
 
 @pytest.fixture
-def moved_host(tmp_path_factory: pytest.TempPathFactory, tmp_path: Path) -> tuple[Path, str]:
-    """``host`` after ``move_main(host)``: the default overlapping change merged on main; and its sha."""
-    repo, main_sha = _host_copy(tmp_path_factory, tmp_path, main_moved=True)
+def host_with_overlap_merged_on_main(tmp_path_factory: pytest.TempPathFactory, tmp_path: Path) -> tuple[Path, str]:
+    repo, main_sha = _private_copy_of_host_template(tmp_path_factory, tmp_path, main_moved=True)
     assert main_sha is not None
     return repo, main_sha
 
 
-def move_main(repo: Path, files: dict[str, str] | None = None) -> str:
-    """The overlapping change that merged on main while the flow waited."""
-    return commit_on(repo, "main", files or {"docs/overlap.md": "merged while the flow waited\n"}, "overlap")
+def merge_overlapping_change_on_main(repo: Path, files: dict[str, str] | None = None) -> str:
+    return commit_and_push_on_branch(
+        repo, "main", files or {"docs/overlap.md": "merged while the flow waited\n"}, "overlap"
+    )
 
 
 def stage_context(repo: Path, admission: dict | None) -> FlowContext:
@@ -147,9 +136,7 @@ def stage_context(repo: Path, admission: dict | None) -> FlowContext:
     return ctx
 
 
-class FakeExecutor:
-    """Records the plan tip each dispatch saw and commits an execution branch with a success row from it."""
-
+class PlanTipRecordingExecutor:
     def __init__(self, repo: Path) -> None:
         self.repo, self.plan_tips, self.branches = repo, [], []
 
@@ -170,7 +157,7 @@ class FakeExecutor:
 
 
 @contextmanager
-def stage_seams(executor: FakeExecutor) -> Iterator[None]:
+def stage_seams(executor: PlanTipRecordingExecutor) -> Iterator[None]:
     admitted = AdmissionDecision(admitted=True)
     with (
         patch("sandbox_executor.flow.stages.execute.at_stage_boundary", return_value=None),
@@ -183,7 +170,7 @@ def stage_seams(executor: FakeExecutor) -> Iterator[None]:
         yield
 
 
-def run_stage(repo: Path, ctx: FlowContext, executor: FakeExecutor) -> StageResult:
+def run_stage(repo: Path, ctx: FlowContext, executor: PlanTipRecordingExecutor) -> StageResult:
     with stage_seams(executor):
         result = run_execute_stage(ctx)
     git(repo, "checkout", "-q", "main")
@@ -203,36 +190,44 @@ def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     return subprocess.run(["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=repo).returncode == 0
 
 
-def test_ac1_a_flow_admitted_after_a_wait_gets_main_merged_before_dispatch(moved_host: tuple[Path, str]) -> None:
-    host, main_sha = moved_host
+def test_ac1_a_flow_admitted_after_a_wait_gets_main_merged_before_dispatch(
+    host_with_overlap_merged_on_main: tuple[Path, str],
+) -> None:
+    host, main_sha = host_with_overlap_merged_on_main
     old_tip = git(host, "rev-parse", f"origin/{PLAN}")
-    executor = FakeExecutor(host)
+    executor = PlanTipRecordingExecutor(host)
 
     result = run_stage(host, stage_context(host, BLOCKED), executor)
 
     assert result.status == StageStatus.SUCCESS, result.error
-    plan_tip = git(host, "rev-parse", f"origin/{PLAN}")
-    assert executor.plan_tips == [plan_tip]  # dispatched on the refreshed tip
-    assert is_ancestor(host, main_sha, plan_tip) and is_ancestor(host, main_sha, f"origin/{executor.branches[0]}")
-    assert is_ancestor(host, old_tip, plan_tip)  # nothing rewritten: no force-push
-    merge = git(host, "rev-parse", f"{plan_tip}~1")
+    refreshed_plan_tip = git(host, "rev-parse", f"origin/{PLAN}")
+    assert executor.plan_tips == [refreshed_plan_tip]
+    assert is_ancestor(host, main_sha, refreshed_plan_tip) and is_ancestor(
+        host, main_sha, f"origin/{executor.branches[0]}"
+    )
+    plan_branch_was_not_force_pushed = is_ancestor(host, old_tip, refreshed_plan_tip)
+    assert plan_branch_was_not_force_pushed
+    merge = git(host, "rev-parse", f"{refreshed_plan_tip}~1")
     assert git(host, "rev-list", "--parents", "-n", "1", merge).split()[1:] == [old_tip, main_sha]
     assert git(host, "log", "-1", "--format=%s", merge).startswith(REFRESH_MERGE_PREFIX)
-    assert git(host, "rev-parse", f"refs/heads/{PLAN}") == plan_tip  # the local plan branch was fast-forwarded
+    fast_forwarded_local_plan_tip = git(host, "rev-parse", f"refs/heads/{PLAN}")
+    assert fast_forwarded_local_plan_tip == refreshed_plan_tip
 
-    # AC5: the refreshed main commit is in the checkpoint, the Stage 3 payload and the plan's executions ledger.
     assert saved_admission(host) == {**REFRESHED, "refreshed_to": main_sha}
     assert result.payload["plan_refreshed_to"] == main_sha
     [recorded] = refresh_rows(host)
     assert recorded["refreshed_to"] == main_sha and recorded["merge_commit"] == merge
     assert recorded["plan_branch"] == PLAN and recorded["waited_since"] == WAITED_SINCE
-    assert len(refresh_rows(host, f"refs/remotes/origin/{executor.branches[0]}")) == 1  # carried by the execution
+    execution_branch_ref = f"refs/remotes/origin/{executor.branches[0]}"
+    assert len(refresh_rows(host, execution_branch_ref)) == 1
 
 
-def test_ac2_a_flow_admitted_on_its_first_check_is_left_untouched(moved_host: tuple[Path, str]) -> None:
-    host, _main_sha = moved_host
+def test_ac2_a_flow_admitted_on_its_first_check_is_left_untouched(
+    host_with_overlap_merged_on_main: tuple[Path, str],
+) -> None:
+    host, _main_sha = host_with_overlap_merged_on_main
     old_tip = git(host, "rev-parse", f"origin/{PLAN}")
-    executor = FakeExecutor(host)
+    executor = PlanTipRecordingExecutor(host)
 
     result = run_stage(host, stage_context(host, None), executor)
 
@@ -243,11 +238,15 @@ def test_ac2_a_flow_admitted_on_its_first_check_is_left_untouched(moved_host: tu
 
 
 def test_ac3_ledger_only_conflicts_are_interleaved_by_created_at(host: Path) -> None:
-    commit_on(host, PLAN, {EXECUTIONS: row("plan-1", "2026-11-20T01:00:00.000Z"), PLANS: row("plan", "1")}, "plan")
-    commit_on(host, PLAN, {EXECUTIONS: row("plan-3", "2026-11-20T03:00:00.000Z")}, "plan again")
-    main_sha = move_main(host, {EXECUTIONS: row("main-2", "2026-11-20T02:00:00.000Z"), PLANS: row("main", "2")})
+    commit_and_push_on_branch(
+        host, PLAN, {EXECUTIONS: row("plan-1", "2026-11-20T01:00:00.000Z"), PLANS: row("plan", "1")}, "plan"
+    )
+    commit_and_push_on_branch(host, PLAN, {EXECUTIONS: row("plan-3", "2026-11-20T03:00:00.000Z")}, "plan again")
+    main_sha = merge_overlapping_change_on_main(
+        host, {EXECUTIONS: row("main-2", "2026-11-20T02:00:00.000Z"), PLANS: row("main", "2")}
+    )
     base = git(host, "show", f"origin/main~1:{EXECUTIONS}") + "\n"
-    executor = FakeExecutor(host)
+    executor = PlanTipRecordingExecutor(host)
 
     result = run_stage(host, stage_context(host, BLOCKED), executor)
 
@@ -262,9 +261,9 @@ def test_ac3_ledger_only_conflicts_are_interleaved_by_created_at(host: Path) -> 
 
 
 def test_ac4_a_non_ledger_conflict_stops_stage_3_before_dispatch_and_stays_resumable(host: Path) -> None:
-    old_tip = commit_on(host, PLAN, {"src/app.py": "APP = 2\n"}, "plan edits app", append=False)
-    main_sha = move_main(host, {"src/app.py": "APP = 3\n", "README.md": "readme\n"})
-    executor = FakeExecutor(host)
+    old_tip = commit_and_push_on_branch(host, PLAN, {"src/app.py": "APP = 2\n"}, "plan edits app", append=False)
+    main_sha = merge_overlapping_change_on_main(host, {"src/app.py": "APP = 3\n", "README.md": "readme\n"})
+    executor = PlanTipRecordingExecutor(host)
 
     result = run_stage(host, stage_context(host, BLOCKED), executor)
 
@@ -274,9 +273,10 @@ def test_ac4_a_non_ledger_conflict_stops_stage_3_before_dispatch_and_stays_resum
     assert git(host, "rev-parse", f"origin/{PLAN}") == old_tip
     assert len(git(host, "worktree", "list").splitlines()) == 1
     assert subprocess.run(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=host).returncode != 0
-    assert saved_admission(host) == {"state": "admitted", "waited_since": WAITED_SINCE}  # the refresh is still due
+    refresh_still_due = {"state": "admitted", "waited_since": WAITED_SINCE}
+    assert saved_admission(host) == refresh_still_due
 
-    # The operator merges by hand (merge, not rebase); the resumed flow retries the refresh, which is now a no-op.
+    # why: the operator merges by hand (merge, not rebase); the resumed flow retries the refresh, now a no-op
     git(host, "checkout", "-q", "-B", PLAN, f"origin/{PLAN}")
     subprocess.run(["git", "merge", "-q", "origin/main"], cwd=host, capture_output=True)
     (host / "src/app.py").write_text("APP = 23\n", encoding="utf-8")
@@ -295,20 +295,23 @@ def test_ac4_a_non_ledger_conflict_stops_stage_3_before_dispatch_and_stays_resum
     assert recorded["refreshed_to"] == main_sha and recorded["merge_commit"] is None
 
 
-def test_a_rerun_after_a_lost_checkpoint_write_records_no_second_row(moved_host: tuple[Path, str]) -> None:
-    host, main_sha = moved_host
+def test_a_rerun_after_a_lost_checkpoint_write_records_no_second_row(
+    host_with_overlap_merged_on_main: tuple[Path, str],
+) -> None:
+    host, main_sha = host_with_overlap_merged_on_main
     waited = {"state": "admitted", "waited_since": WAITED_SINCE}
     assert plan_refresh_stage_failure(stage_context(host, dict(waited)), "t") is None
     tip = git(host, "rev-parse", f"origin/{PLAN}")
 
-    assert plan_refresh_stage_failure(stage_context(host, dict(waited)), "t") is None  # refreshed_to was not kept
+    admission_that_lost_refreshed_to = dict(waited)
+    assert plan_refresh_stage_failure(stage_context(host, admission_that_lost_refreshed_to), "t") is None
 
     assert git(host, "rev-parse", f"origin/{PLAN}") == tip and len(refresh_rows(host)) == 1
     assert saved_admission(host)["refreshed_to"] == main_sha
 
 
-def test_a_dry_run_only_logs_the_refresh(moved_host: tuple[Path, str]) -> None:
-    host, _main_sha = moved_host
+def test_a_dry_run_only_logs_the_refresh(host_with_overlap_merged_on_main: tuple[Path, str]) -> None:
+    host, _main_sha = host_with_overlap_merged_on_main
     old_tip = git(host, "rev-parse", f"origin/{PLAN}")
     ctx = stage_context(host, BLOCKED)
     ctx.dry_run = True
@@ -326,16 +329,20 @@ def test_a_plan_already_containing_main_is_recorded_without_a_merge_commit(host:
     assert plan_refresh_stage_failure(ctx, "t") is None
 
     main_sha = git(host, "rev-parse", "origin/main")
-    assert git(host, "rev-parse", f"origin/{PLAN}~1") == old_tip  # only the plan_refresh row commit was added
+    tip_before_the_refresh_row_commit = git(host, "rev-parse", f"origin/{PLAN}~1")
+    assert tip_before_the_refresh_row_commit == old_tip
     [recorded] = refresh_rows(host)
     assert recorded["refreshed_to"] == main_sha and recorded["merge_commit"] is None
     assert ctx.admission == {**REFRESHED, "refreshed_to": main_sha}
-    assert plan_refresh_stage_failure(ctx, "t") is None and len(refresh_rows(host)) == 1  # not retried
+    rerun_failure = plan_refresh_stage_failure(ctx, "t")
+    assert rerun_failure is None and len(refresh_rows(host)) == 1
 
 
-def test_a_re_planned_branch_is_refreshed_although_an_earlier_plan_was(moved_host: tuple[Path, str]) -> None:
-    """A re-plan (touch_set_violation, over budget) cuts a new plan branch from the stale intent tip: refresh it too."""
-    host, main_sha = moved_host
+def test_a_re_planned_branch_is_refreshed_although_an_earlier_plan_was(
+    host_with_overlap_merged_on_main: tuple[Path, str],
+) -> None:
+    # why: a re-plan (touch_set_violation, over budget) cuts a new plan branch from the stale intent tip
+    host, main_sha = host_with_overlap_merged_on_main
     earlier = {**REFRESHED, "refreshed_to": main_sha, "refreshed_branch": "I-1-x/P-1-claude-agent-claude-opus-5-5/_"}
     ctx = stage_context(host, earlier)
     old_tip = git(host, "rev-parse", f"origin/{PLAN}")

@@ -14,7 +14,10 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 SELF_DOC_LABEL_TOKENS = ("self-doc", "self_doc", "self-explaining", "self_explaining")
-SELF_DOC_TITLE_PATTERN = re.compile(r"\bself[-_ ]?(?:doc|explaining)\b", re.IGNORECASE)
+SELF_DOC_TOKEN = r"self[-_ ]?(?:doc|explaining)"
+SELF_DOC_TAG_PATTERN = re.compile(rf"(?:\[{SELF_DOC_TOKEN}\]|^\w+\({SELF_DOC_TOKEN}\)!?:)", re.IGNORECASE)
+SELF_DOC_TITLE_PATTERN = re.compile(rf"\b{SELF_DOC_TOKEN}\b", re.IGNORECASE)
+NON_SELF_DOC_CONVENTIONAL_PREFIX = re.compile(r"^(?:feat|fix|ci|test|build|perf)(?:\([^)]+\))?!?:", re.IGNORECASE)
 SELF_DOC_TEST_PATTERN = re.compile(r"^test_.*self_(?:doc|explaining).*\.py$")
 
 
@@ -123,7 +126,12 @@ def matches_self_doc_label(labels: Iterable[str]) -> bool:
 
 
 def matches_self_doc_title(title: str) -> bool:
-    return bool(SELF_DOC_TITLE_PATTERN.search(title))
+    stripped = title.strip()
+    if SELF_DOC_TAG_PATTERN.search(stripped):
+        return True
+    if NON_SELF_DOC_CONVENTIONAL_PREFIX.match(stripped):
+        return False
+    return bool(SELF_DOC_TITLE_PATTERN.search(stripped))
 
 
 def is_self_doc_test_path(path: str) -> bool:
@@ -193,17 +201,31 @@ def parse_name_status_z(payload: bytes) -> list[tuple[str, str, str]]:
     return records
 
 
-def diff_entries(root: Path, base: str, head: str) -> list[ChangedFileEntry]:
-    result = run_git(root, "-c", "core.quotePath=false", "diff", "--name-status", "-z", "--find-renames", base, head)
+def resolve_merge_base(root: Path, base: str, head: str) -> str:
+    result = run_git(root, "merge-base", base, head)
     if result.returncode != 0:
         message = result.stderr.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(f"git diff {base}..{head} failed: {message}")
+        raise RuntimeError(f"git merge-base {base} {head} failed: {message}")
+    merge_base = result.stdout.decode("utf-8").strip()
+    if not merge_base:
+        raise RuntimeError(f"git merge-base {base} {head} returned empty revision")
+    return merge_base
+
+
+def diff_entries(root: Path, base: str, head: str) -> list[ChangedFileEntry]:
+    diff_base = resolve_merge_base(root, base, head)
+    result = run_git(
+        root, "-c", "core.quotePath=false", "diff", "--name-status", "-z", "--find-renames", diff_base, head
+    )
+    if result.returncode != 0:
+        message = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"git diff {diff_base}..{head} failed: {message}")
     entries: list[ChangedFileEntry] = []
     for status, old_path, new_path in parse_name_status_z(result.stdout):
         before_text: str | None = None
         after_text: str | None = None
         if status[:1] in {"M", "R"} and new_path.endswith(".py"):
-            before_text = read_blob_text(root, base, old_path)
+            before_text = read_blob_text(root, diff_base, old_path)
             after_text = read_blob_text(root, head, new_path)
         entries.append(ChangedFileEntry(status, old_path, new_path, before_text, after_text))
     return entries
@@ -225,7 +247,9 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Verify self-doc Python edits preserve normalised ASTs.")
     parser.add_argument("--base", help="Base git revision.")
     parser.add_argument("--head", help="Head git revision.")
-    parser.add_argument("--range", dest="revision_range", help="Git revision range formatted as BASE..HEAD.")
+    parser.add_argument(
+        "--range", dest="revision_range", help="Git revision range formatted as BASE..HEAD or BASE...HEAD."
+    )
     parser.add_argument("--root", type=Path, default=REPOSITORY_ROOT, help="Repository root.")
     parser.add_argument("--auto-trigger", action="store_true", help="Run only when PR metadata or diff is self-doc.")
     parser.add_argument("--pr-title", default=os.environ.get("PR_TITLE", ""), help="Pull request title.")
@@ -242,9 +266,10 @@ def resolve_revisions(arguments: argparse.Namespace) -> tuple[str, str]:
     if arguments.revision_range:
         if arguments.base or arguments.head:
             raise ValueError("--range cannot be combined with --base or --head")
-        parts = arguments.revision_range.split("..", 1)
-        if len(parts) != 2 or not parts[0] or not parts[1]:
-            raise ValueError("--range must be formatted as BASE..HEAD")
+        separator = "..." if "..." in arguments.revision_range else ".."
+        parts = arguments.revision_range.split(separator)
+        if len(parts) != 2 or not parts[0] or not parts[1] or parts[0].endswith(".") or parts[1].startswith("."):
+            raise ValueError("--range must be formatted as BASE..HEAD or BASE...HEAD")
         return parts[0], parts[1]
     if not arguments.base or not arguments.head:
         raise ValueError("provide either --range BASE..HEAD or both --base and --head")

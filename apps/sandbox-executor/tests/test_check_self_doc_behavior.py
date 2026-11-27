@@ -165,10 +165,35 @@ def test_should_run_self_doc_gate_on_label_even_with_code_change() -> None:
     assert should_run_self_doc_gate(["self-doc"], "unrelated title", code_change) == TriggerDecision(True, "label")
 
 
-@pytest.mark.parametrize("title", ["refactor: self-doc cleanup", "[self-doc] strip comments", "Self Explaining pass"])
+@pytest.mark.parametrize(
+    "title",
+    [
+        "refactor: self-doc cleanup",
+        "[self-doc] strip comments",
+        "Self Explaining pass",
+        "feat(self-doc): strip docstrings",
+        "feat: [self-explaining] strip comments",
+    ],
+)
 def test_should_run_self_doc_gate_on_title_even_with_code_change(title: str) -> None:
     code_change = [ChangedFileEntry("M", "app.py", "app.py", "x = 1\n", "x = 2\n")]
     assert should_run_self_doc_gate([], title, code_change) == TriggerDecision(True, "title")
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "feat: add self-doc AST behavior gate",
+        "feat(self): add self-doc AST behavior gate",
+        "feat(measure): Self-doc slices delete explanatory reason comments",
+        "fix: handle self-explaining edge case",
+        "ci: add self-doc behavior workflow",
+        "test: add unit tests for self-doc behavior gate",
+    ],
+)
+def test_should_not_trigger_on_tooling_pr_titles_mentioning_self_doc(title: str) -> None:
+    code_change = [ChangedFileEntry("M", "app.py", "app.py", "x = 1\n", "x = 2\n")]
+    assert should_run_self_doc_gate([], title, code_change) == TriggerDecision(False, "not-self-doc")
 
 
 def test_should_run_self_doc_gate_on_diff_only() -> None:
@@ -255,6 +280,29 @@ def test_cli_skips_normal_code_change_under_auto_trigger(tmp_path: Path, capsys:
     assert "skipped" in capsys.readouterr().out
 
 
+def test_cli_uses_merge_base_when_base_branch_advances(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    repo = _init_repo(tmp_path)
+    common = _commit_files(
+        repo,
+        {
+            "pkg/target.py": 'def greet() -> str:\n    """Say hi."""\n    return "hi"\n',
+            "pkg/unrelated.py": "VALUE = 1\n",
+        },
+        "common ancestor",
+    )
+    _git(repo, "checkout", "-b", "feature", common)
+    head = _commit_files(repo, {"pkg/target.py": 'def greet() -> str:\n    return "hi"\n'}, "strip docstring")
+    _git(repo, "checkout", "-b", "advanced-base", common)
+    advanced_base = _commit_files(repo, {"pkg/unrelated.py": "VALUE = 2\n"}, "advance base")
+
+    assert main(["--root", str(repo), "--base", advanced_base, "--head", head, "--auto-trigger"]) == 0
+    assert "passed (1 Python file(s) checked)" in capsys.readouterr().out
+    assert main(["--root", str(repo), "--range", f"{advanced_base}...{head}", "--auto-trigger"]) == 0
+    assert "passed (1 Python file(s) checked)" in capsys.readouterr().out
+
+
 def test_cli_returns_two_on_invalid_revisions(tmp_path: Path) -> None:
     assert main(["--root", str(tmp_path), "--range", "invalid-range"]) == 2
+    assert main(["--root", str(tmp_path), "--range", "HEAD....HEAD"]) == 2
+    assert main(["--root", str(tmp_path), "--range", "A..B..C"]) == 2
     assert main(["--root", str(tmp_path), "--base", "HEAD", "--head", "HEAD", "--range", "HEAD..HEAD"]) == 2

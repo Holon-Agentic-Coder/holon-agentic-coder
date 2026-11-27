@@ -3,7 +3,7 @@ name: Test - Self-Doc Behavior
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited, labeled]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 permissions:
   contents: read

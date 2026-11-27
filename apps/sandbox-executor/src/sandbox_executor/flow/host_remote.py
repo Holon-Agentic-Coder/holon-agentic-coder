@@ -62,7 +62,7 @@ def _push_input_error(source: str, branch: str, remote: str) -> str | None:
     return _name_error("push", branch, remote)
 
 
-def push_commit_once(repo_dir: str, source: str, branch: str, remote: str = DEFAULT_REMOTE) -> None:
+def _push_commit_once(repo_dir: str, source: str, branch: str, remote: str = DEFAULT_REMOTE) -> None:
     unsafe = _push_input_error(source, branch, remote)
     if unsafe:
         raise HostRemoteError("push", branch, remote, unsafe)
@@ -97,7 +97,7 @@ def push_commit(
 ) -> None:
     for attempt in range(1, PUSH_ATTEMPTS + 1):
         try:
-            push_commit_once(repo_dir, source, branch, remote)
+            _push_commit_once(repo_dir, source, branch, remote)
             return
         except HostRemoteError as exc:
             if log is not None:

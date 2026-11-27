@@ -11,8 +11,8 @@ from sandbox_executor.flow import FlowContext, StageStatus
 from sandbox_executor.flow.checkpoint import load_checkpoint
 from sandbox_executor.flow.execution_recovery import (
     RECOVERY_REF_PREFIX,
+    _republish_recorded_execution,
     keep_rejected_executions,
-    republish_recorded_execution,
 )
 from sandbox_executor.flow.host_remote import HostRemoteError, push_commit
 from sandbox_executor.flow.stages.execute import ExecuteStage
@@ -231,7 +231,7 @@ def test_reuse_skips_branch_already_on_origin(flow_repos):
     context = _make_context(host)
     context.execution_branch = EXEC_BRANCH
 
-    branch, error = republish_recorded_execution(context, PLAN_PREFIX, set())
+    branch, error = _republish_recorded_execution(context, PLAN_PREFIX, set())
 
     assert (branch, error) == (None, None)
 
@@ -245,7 +245,7 @@ def test_reuse_never_pushes_recorded_branch_without_summary_row(flow_repos):
     context = _make_context(host)
     context.execution_branch = EXEC_BRANCH
 
-    branch, error = republish_recorded_execution(context, PLAN_PREFIX, set())
+    branch, error = _republish_recorded_execution(context, PLAN_PREFIX, set())
 
     assert (branch, error) == (None, None)
     assert _remote_execution_branches(origin) == []
@@ -297,7 +297,7 @@ def test_real_bare_remote_rejects_first_push_and_accepts_the_retry(flow_repos):
     context = _make_context(host)
     context.execution_branch = EXEC_BRANCH
     with scoped_sleep_patch(HOST_REMOTE) as republish_sleep:
-        branch, error = republish_recorded_execution(context, PLAN_PREFIX, {first_branch})
+        branch, error = _republish_recorded_execution(context, PLAN_PREFIX, {first_branch})
 
     assert (branch, error) == (EXEC_BRANCH, None)
     assert _git(origin, "rev-parse", f"refs/heads/{EXEC_BRANCH}") == second_tip

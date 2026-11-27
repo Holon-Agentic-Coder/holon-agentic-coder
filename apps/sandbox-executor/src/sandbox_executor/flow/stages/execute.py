@@ -18,10 +18,10 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, S
 from sandbox_executor.flow.dispatch import _dispatch_role, _recorded_test_fields, _stage_failure
 from sandbox_executor.flow.execution_publish import held_execution_failure, hold_unrecorded_executions
 from sandbox_executor.flow.execution_recovery import (
-    record_execution_before_push,
+    _record_execution_before_push,
+    _republish_recorded_execution,
     rejected_push_failure,
     rejected_push_recovery,
-    republish_recorded_execution,
 )
 from sandbox_executor.flow.git_refs import (
     _discover_child_branch,
@@ -211,7 +211,7 @@ class ExecuteStage:
         if not self.resume_partial:
             return None
         context, state = self.context, self.state
-        branch, reuse_error = republish_recorded_execution(context, state.plan_prefix, state.existing_executions)
+        branch, reuse_error = _republish_recorded_execution(context, state.plan_prefix, state.existing_executions)
         if reuse_error:
             return self._fail(reuse_error, dispatched=False, execution_branch=branch)
         if branch:
@@ -238,7 +238,7 @@ class ExecuteStage:
             state.exit_code = exit_code = _dispatch_role(context, "executor", state.executor_args)
         # why: the container only commits; the host pushes each committed branch with its ledger row, failed included
         left_alone = hold_unrecorded_executions(context, state.plan_prefix, state.existing_executions)
-        recorded = record_execution_before_push(context, state.plan_prefix, left_alone)
+        recorded = _record_execution_before_push(context, state.plan_prefix, left_alone)
         state.push_error = remote_error(
             publish_new_child_branches, state.repo_dir, state.plan_prefix, "E", left_alone, context.log
         )

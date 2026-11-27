@@ -11,9 +11,9 @@ from sandbox_executor.flow.git_refs import _latest_execution_summary, _origin_ha
 from sandbox_executor.flow.github.token_scopes import REFRESH_COMMAND
 from sandbox_executor.flow.host_remote import (
     DEFAULT_REMOTE,
+    _push_commit_once,
     new_local_child_branches,
     push_commit,
-    push_commit_once,
     remote_error,
 )
 from sandbox_executor.flow.partial_head import _execution_id, _execution_seq
@@ -47,7 +47,7 @@ def _pin(repo_dir: str, branch: str, source: str | None = None) -> RecoveredExec
         return None
     # why: best effort: only a refusal tied to the branch name, not the content, lets this succeed
     remote_branch = f"{RECOVERY_BRANCH_PREFIX}{exec_id}"
-    pushed = remote_error(push_commit_once, repo_dir, sha, remote_branch) is None
+    pushed = remote_error(_push_commit_once, repo_dir, sha, remote_branch) is None
     return RecoveredExecution(branch, local_ref, sha, remote_branch if pushed else None)
 
 
@@ -102,20 +102,25 @@ def rejected_push_failure(
         return None
     error, payload = recovery
     if execution_branch is not None:
+        context.execution_branch = execution_branch
         payload = {**payload, "execution_branch": execution_branch}
     return _stage_failure(context, FlowStage.EXECUTE, start_time, error, exit_code=exit_code, **payload)
 
 
-def record_execution_before_push(context: FlowContext, plan_prefix: str, before: set[str]) -> str | None:
+def _record_execution_before_push(context: FlowContext, plan_prefix: str, before: set[str]) -> str | None:
     branches = new_local_child_branches(context.target_worktree, plan_prefix, "E", before)
     if not branches:
         return None
-    # why: the record must exist before the push so a refused push cannot lead to a second execution branch
-    context.execution_branch = branch = max(branches, key=_execution_seq)
+    # why: persist on disk before the push without leaving in-memory context set if later adoption fails
+    branch = max(branches, key=_execution_seq)
+    previous = context.execution_branch
     try:
+        context.execution_branch = branch
         save_checkpoint(context, context.checkpoint_path)
     except OSError as exc:
         context.log(f"Stage 3: could not record '{branch}' in the checkpoint before the host push: {exc}")
+    finally:
+        context.execution_branch = previous
     return branch
 
 
@@ -145,7 +150,7 @@ def _reusable_execution(context: FlowContext, plan_prefix: str, existing: set[st
     return branch, source, label
 
 
-def republish_recorded_execution(
+def _republish_recorded_execution(
     context: FlowContext, plan_prefix: str, existing: set[str]
 ) -> tuple[str | None, str | None]:
     reusable = _reusable_execution(context, plan_prefix, existing)

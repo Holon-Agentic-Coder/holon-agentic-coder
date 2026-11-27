@@ -1,17 +1,3 @@
-"""Classes of a post-approval CI failure, and the rerun budget shared by Stage 4 and Stage 5.
-
-A red pipeline after the reviewers approved is either noise (``noise_timing``: only the CI timing gate failed;
-``noise_infra``: the runner failed to start, the job timed out or only setup and teardown steps failed;
-``noise_cancelled``: every failed run was cancelled or stale) or a ``defect``. Noise is rerun once per run id and head
-(``CI_NOISE_RERUNS``) while the diff approval stands; a defect, or noise still red after its rerun, goes to the
-resolver. The rule fails safe: no run, a run without an Actions run id, more than ``MAX_JOBS_DESCRIBED`` failed jobs, an
-unreadable job detail, a failed test step or any mix of classes is a ``defect``. A repeated timing-gate failure keeps
-the slowest-tests finding (:mod:`sandbox_executor.flow.review.ci_timing_finding`).
-
-The budget and the last decision live in ``context.review_state["ci_routing"]``, checkpointed with the context, so a
-resume never reruns twice.
-"""
-
 from __future__ import annotations
 
 import os
@@ -33,21 +19,18 @@ NOISE_CLASSES = frozenset({NOISE_TIMING, NOISE_INFRA, NOISE_CANCELLED})
 RERUN, RESOLVE = "rerun", "resolve"
 INFRA_CONCLUSIONS = frozenset({"startup_failure", "timed_out"})
 INFRA_STEP_PREFIXES = ("Set up job", "Checkout", "Install uv", "Set up Python", "Post ", "Complete job")
-CI_NOISE_RERUNS = 1  # Reruns of one run id on one head before the failure goes to the resolver.
+CI_NOISE_RERUNS = 1
 CLASS_LABELS = {NOISE_TIMING: "timing gate", NOISE_INFRA: "runner failure", NOISE_CANCELLED: "cancelled run"}
 
 
 @dataclass(frozen=True)
 class FailedRun:
-    """One failed check: its name, Actions run id (None when unknown) and lower-case conclusion."""
-
     name: str
     run_id: str | None
     conclusion: str
 
 
 def _failed_runs_from_status(ci_status: Mapping[str, Any]) -> list[FailedRun]:
-    """The failed or cancelled checks of a Stage 4 ``gh pr checks`` status."""
     runs = []
     for check in ci_status.get("checks") or []:
         bucket = str(check.get("bucket") or "").lower() if isinstance(check, Mapping) else ""
@@ -58,7 +41,6 @@ def _failed_runs_from_status(ci_status: Mapping[str, Any]) -> list[FailedRun]:
 
 
 def failed_runs_from_record(record: Mapping[str, Any]) -> list[FailedRun]:
-    """The runs of a Stage 5 merged-head record that did not pass and are not pending."""
     settled = PASSING_CONCLUSIONS | PENDING_STATUSES
     runs = [run for run in record.get("runs") or [] if str(run.get("conclusion")) not in settled]
     return [
@@ -74,7 +56,6 @@ def _infra_step(step: str) -> bool:
 
 
 def _run_class(run: FailedRun, lookup: DetailLookup) -> str:
-    """The class of one failed (not cancelled) run from its conclusion and failed steps."""
     if run.conclusion in INFRA_CONCLUSIONS:
         return NOISE_INFRA
     detail = lookup({"name": run.name, "link": f"/actions/runs/{run.run_id}"})
@@ -87,7 +68,7 @@ def _run_class(run: FailedRun, lookup: DetailLookup) -> str:
 
 
 def classify_ci_failure(runs: Sequence[FailedRun], lookup: DetailLookup) -> str:
-    """The class of a red pipeline; anything unknown, unreadable or mixed is ``defect``."""
+    # why: fail safe: an unknown, unreadable or mixed failure is a defect, so noise is never assumed
     if not runs or len(runs) > MAX_JOBS_DESCRIBED or any(run.run_id is None for run in runs):
         return DEFECT
     if all(run.conclusion in CANCELLED_CONCLUSIONS for run in runs):
@@ -97,6 +78,7 @@ def classify_ci_failure(runs: Sequence[FailedRun], lookup: DetailLookup) -> str:
 
 
 def _routing_state(context: FlowContext) -> dict[str, Any]:
+    # why: the rerun budget lives in the checkpointed review_state, so a resume never reruns twice
     state = context.review_state.get("ci_routing")
     if not isinstance(state, dict):
         state = context.review_state["ci_routing"] = {}
@@ -108,14 +90,12 @@ def _run_ids(runs: Iterable[FailedRun]) -> list[str]:
 
 
 def _reruns_spent(context: FlowContext, head: str, run_id: str) -> int:
-    """How many noise reruns of ``run_id`` were dispatched on ``head``."""
     spent = (_routing_state(context).get("reruns") or {}).get(head) or {}
     count = spent.get(run_id) if isinstance(spent, Mapping) else None
     return count if isinstance(count, int) else 0
 
 
 def note_rerun(context: FlowContext, head: str, run_ids: Iterable[str]) -> None:
-    """Count one dispatched rerun of each of ``run_ids`` on ``head``."""
     reruns = _routing_state(context).setdefault("reruns", {})
     spent = reruns.setdefault(head, {})
     for run_id in run_ids:
@@ -124,7 +104,6 @@ def note_rerun(context: FlowContext, head: str, run_ids: Iterable[str]) -> None:
 
 
 def route_failure(context: FlowContext, head: str, cls: str, runs: Sequence[FailedRun]) -> str:
-    """``rerun`` for noise whose every run id is under the budget on ``head``, else ``resolve``."""
     run_ids = _run_ids(runs)
     if cls not in NOISE_CLASSES or not run_ids or not head:
         return RESOLVE
@@ -132,13 +111,11 @@ def route_failure(context: FlowContext, head: str, cls: str, runs: Sequence[Fail
 
 
 def _last_routing(context: FlowContext) -> dict[str, Any] | None:
-    """The last routing decision, or None when no failure was routed."""
     last = _routing_state(context).get("last")
     return last if isinstance(last, dict) else None
 
 
 def apply_last_classification(context: FlowContext, head: str | None) -> None:
-    """Set the red pipeline gate's classification from the last routing decision on the same ``head``."""
     last, gate = _last_routing(context), pipeline_gate_of(context)
     if last and gate is not None and gate.state == RED and head and gate.head_sha == head == last.get("head_sha"):
         record_pipeline_gate(context, replace(gate, classification=str(last.get("classification"))))
@@ -164,8 +141,8 @@ def _routing_row(context: FlowContext, last: Mapping[str, Any]) -> dict[str, Any
 def record_routing(
     context: FlowContext, head: str, cls: str, decision: str, runs: Sequence[FailedRun]
 ) -> dict[str, Any]:
-    """Store the decision as the last one, classify the pipeline gate on ``head`` and append one ACT row."""
-    from sandbox_executor.flow.review.records import record_review_action  # Lazy: records imports review_report.
+    # why: records imports review_report, so a module-level import would cycle
+    from sandbox_executor.flow.review.records import record_review_action
 
     run_ids = _run_ids(runs)
     spent = max((_reruns_spent(context, head, run_id) for run_id in run_ids), default=0)

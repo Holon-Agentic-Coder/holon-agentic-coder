@@ -79,6 +79,7 @@ class GatedRun(PrePushSteps):
 @pytest.fixture
 def sync_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
+    monkeypatch.delenv("HOLON_TARGET_BRANCH", raising=False)
 
     def recording_sync(repo_dir: str, target_branch: str = "main") -> tuple[bool, str]:
         calls.append(repo_dir)
@@ -136,7 +137,34 @@ def test_untracked_file_with_a_docstring_does_not_block(gated_repository: Path, 
     assert run.branch_recorded is True
 
 
-def test_repository_without_the_checker_skips_the_gate(gated_repository: Path, sync_calls: list[str]) -> None:
+def test_non_ascii_tracked_path_with_a_docstring_is_refused(gated_repository: Path, sync_calls: list[str]) -> None:
+    write_lines(gated_repository, "pkg/módulo.py", DOCSTRING_MODULE_LINES)
+    commit_all(gated_repository, "add module")
+    run = GatedRun(gated_repository)
+
+    run.record_branch()
+
+    assert run.branch_recorded is False
+    assert "pkg/módulo.py:2" in last_ledger_row(gated_repository)["summary"]
+
+
+def test_non_main_target_skips_the_gate_with_a_notice(
+    gated_repository: Path, sync_calls: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_lines(gated_repository, "pkg/module.py", DOCSTRING_MODULE_LINES)
+    commit_all(gated_repository, "add module")
+    run = GatedRun(gated_repository)
+    run.intent_data = {"target_branch": "release"}
+
+    run.record_branch()
+
+    assert run.branch_recorded is True
+    assert "skipped for target release" in capsys.readouterr().out
+
+
+def test_repository_without_the_checker_skips_the_gate(
+    gated_repository: Path, sync_calls: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
     git(gated_repository, "rm", "-q", "-r", "scripts")
     write_lines(gated_repository, "pkg/module.py", DOCSTRING_MODULE_LINES)
     commit_all(gated_repository, "add module without checker")
@@ -145,6 +173,7 @@ def test_repository_without_the_checker_skips_the_gate(gated_repository: Path, s
     run.record_branch()
 
     assert run.branch_recorded is True
+    assert "self-explaining check was skipped" in capsys.readouterr().out
 
 
 def test_failed_execution_skips_the_gate_so_salvaged_work_stays_publishable(

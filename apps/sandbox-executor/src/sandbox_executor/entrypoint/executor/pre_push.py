@@ -23,6 +23,7 @@ _LEDGER_FILE_SUFFIX = ".jsonl"
 _CONFLICT_STATUS_PREFIXES: tuple[str, ...] = ("UU ", "AA ", "UD ", "DU ", "AU ", "UA ", "DD ")
 _PUBLISHED_TARGET_PREFIX_SIDE = "theirs"
 SELF_EXPLAINING_CHECKER = "scripts/check_self_explaining.py"
+SELF_EXPLAINING_BASE_BRANCH = "main"
 SELF_EXPLAINING_VIOLATION_EXIT = 1
 SELF_EXPLAINING_TIMEOUT_SECONDS = 600
 SELF_EXPLAINING_SUMMARY_LIMIT = 20
@@ -114,7 +115,7 @@ def _reconcile_conflicted_merge(repo: GitRepository, repo_dir: str, target_ref: 
 
 
 def violations_on_tracked_paths(repo_dir: str, checker_stderr: str) -> list[str]:
-    tracked_paths = set(_get_repo(repo_dir).run(["ls-files"], check=False).stdout.splitlines())
+    tracked_paths = set(_get_repo(repo_dir).run(["ls-files", "-z"], check=False).stdout.split("\0"))
     return [
         line for line in checker_stderr.splitlines() if ": added " in line and line.split(":", 1)[0] in tracked_paths
     ]
@@ -123,7 +124,9 @@ def violations_on_tracked_paths(repo_dir: str, checker_stderr: str) -> list[str]
 def run_self_explaining_check(repo_dir: str) -> tuple[bool, str]:
     checker = os.path.join(repo_dir, SELF_EXPLAINING_CHECKER)
     if not os.path.isfile(checker):
-        return True, f"{SELF_EXPLAINING_CHECKER} not found; the pre-push self-explaining check was skipped"
+        notice = f"Notice: {SELF_EXPLAINING_CHECKER} not found; the pre-push self-explaining check was skipped."
+        print(notice)
+        return True, notice
     try:
         completed = subprocess.run(
             [sys.executable, checker, "--root", repo_dir],
@@ -171,8 +174,18 @@ def record_self_explaining_refusal(
 
 
 class PrePushSteps:
+    def target_base(self) -> str:
+        intent_data = self.intent_data
+        return os.getenv("HOLON_TARGET_BRANCH") or (intent_data.get("target_branch") if intent_data else None) or "main"
+
     def self_explaining_gate(self) -> bool:
         if self.exec_entry.get("status") != "success":
+            return True
+        if self.target_base() != SELF_EXPLAINING_BASE_BRANCH:
+            print(
+                f"Notice: {SELF_EXPLAINING_CHECKER} diffs against origin/{SELF_EXPLAINING_BASE_BRANCH}; "
+                f"the pre-push self-explaining check was skipped for target {self.target_base()}."
+            )
             return True
         passed, output = run_self_explaining_check(self.repo_dir)
         if passed:
@@ -183,11 +196,7 @@ class PrePushSteps:
         return False
 
     def pre_push_sync(self) -> bool:
-        intent_data = self.intent_data
-        target_base = (
-            os.getenv("HOLON_TARGET_BRANCH") or (intent_data.get("target_branch") if intent_data else None) or "main"
-        )
-        sync_ok, sync_msg = executor_facade.sync_and_reconcile_pre_push(self.repo_dir, target_branch=target_base)
+        sync_ok, sync_msg = executor_facade.sync_and_reconcile_pre_push(self.repo_dir, target_branch=self.target_base())
         if sync_ok:
             return True
         return record_sync_failure(self.repo, self.exec_entry, self.exec_id, self.ledger_dir, sync_msg)

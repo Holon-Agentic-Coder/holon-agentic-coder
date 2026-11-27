@@ -339,7 +339,9 @@ SUCCESS_STDOUT = [
     "Running: git diff --cached --quiet",
     *_IDENTITY_STDOUT,
     "Running: git commit -m execute: E-<id> completed for plan I-456/P-123/_",
-    *_RECORD_STDOUT,
+    *_RECORD_STDOUT[:2],
+    "Notice: scripts/check_self_explaining.py not found; the pre-push self-explaining check was skipped.",
+    *_RECORD_STDOUT[2:],
     "execute: ok (<n> min / 45 min)",
     "",
 ]

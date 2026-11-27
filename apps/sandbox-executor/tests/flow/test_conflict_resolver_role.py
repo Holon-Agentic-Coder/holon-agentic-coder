@@ -73,8 +73,6 @@ APP_CONFLICT = (FlowCommit("main", {APP: "y = 2\n"}, "target"), FlowCommit(FLOW_
 
 @pytest.fixture
 def work_with(tmp_path_factory: pytest.TempPathFactory, tmp_path: Path) -> Callable[..., Path]:
-    # why: each flow clone is a copy of a template built once per run
-
     def make(*commits: FlowCommit, base: dict[str, str] = BASE_FILES) -> Path:
         return flow_history_copy(tmp_path_factory, tmp_path, base, (*APP_CONFLICT, *commits)).work
 
@@ -229,7 +227,6 @@ def test_a_container_without_a_verdict_counts_as_agent_failure(work, pushes):
     assert result.test_result.startswith("agent_failed")
 
 
-# why: imitates a role launcher that aborts or crashes mid-dispatch
 class RaisingDispatcher(FakeDispatcher):
     def __init__(self, error: BaseException) -> None:
         super().__init__([])

@@ -46,7 +46,6 @@ def _plan_markdown() -> str:
     )
 
 
-# why: the patch-size diff compares the child plan branch with the execution branch on this nested layout
 # why: an unresolvable plan ref must never reach `git diff` as a bare name, or git exits 128 "ambiguous argument"
 def make_nested_layout(tmp_path: Path) -> SimpleNamespace:
     origin = tmp_path / "origin.git"

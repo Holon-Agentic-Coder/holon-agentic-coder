@@ -27,8 +27,6 @@ Merging = Callable[[dict[str, str | None], dict[str, str | None]], Path]
 
 @pytest.fixture
 def merging(tmp_path_factory: pytest.TempPathFactory, tmp_path: Path) -> Merging:
-    # why: the merge state (MERGE_HEAD, the conflicted index) is built once per run as a template and copied here
-
     def make(ours: dict[str, str | None], theirs: dict[str, str | None]) -> Path:
         commits = (FlowCommit("main", theirs, "target change"), FlowCommit(FLOW_BRANCH, ours, "flow change"))
         work = flow_history_copy(tmp_path_factory, tmp_path, BASE, commits, then=MERGE).work

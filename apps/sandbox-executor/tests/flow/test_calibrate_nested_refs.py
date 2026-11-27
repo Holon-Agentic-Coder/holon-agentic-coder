@@ -1,10 +1,3 @@
-"""Stage 5 calibration on a nested sub-intent branch layout: local bare origin only, no network, no model call.
-
-A decomposed flow calibrates a child execution branch such as ``I-1-root--1-child/P-2-ab-a-m/E-3-cd-a-m/_``. The
-patch-size diff compares the child plan branch with that execution branch, so a plan ref git cannot resolve must
-never reach ``git diff`` as a bare name (git then reports exit 128 "ambiguous argument").
-"""
-
 from __future__ import annotations
 
 import json
@@ -53,8 +46,8 @@ def _plan_markdown() -> str:
     )
 
 
+# why: an unresolvable plan ref must never reach `git diff` as a bare name, or git exits 128 "ambiguous argument"
 def make_nested_layout(tmp_path: Path) -> SimpleNamespace:
-    """A bare origin and a host clone holding root intent, child intent, child plan and child execution branches."""
     origin = tmp_path / "origin.git"
     git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     host = tmp_path / "host"
@@ -77,7 +70,6 @@ def make_nested_layout(tmp_path: Path) -> SimpleNamespace:
 
 
 def drop_plan_ref(layout: SimpleNamespace, case: str) -> None:
-    """Remove the child plan branch: locally only (``remote_only``) or locally and on origin (``absent``)."""
     if case == "local":
         return
     git(layout.host, "branch", "-D", PLAN)

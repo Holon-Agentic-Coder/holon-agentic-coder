@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import io
 import re
+import textwrap
 import tokenize
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -24,6 +25,8 @@ YAML_SUFFIXES = frozenset({".yml", ".yaml"})
 SHELL_LIKE_NAMES = frozenset({"Dockerfile"})
 MAKEFILE_NAMES = frozenset({"Makefile", "GNUmakefile"})
 JAVASCRIPT_SUFFIXES = frozenset({".js", ".mjs", ".cjs"})
+MARKDOWN_CHECKED_ROOTS = frozenset({"plans", "executions"})
+FENCE_OPEN = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
 JAVASCRIPT_TOKEN = re.compile(
     r"\"(?:\\.|[^\"\\\n])*\"?|'(?:\\.|[^'\\\n])*'?|`(?:\\.|[^`\\])*`?|//[^\n]*|/\*.*?(?:\*/|\Z)",
     re.DOTALL,
@@ -138,17 +141,102 @@ def javascript_findings(text: str) -> list[Finding]:
     return findings
 
 
+SUFFIX_FINDERS: dict[str, Callable[[str], list[Finding]]] = {
+    ".py": python_findings,
+    ".toml": toml_findings,
+    ".mk": makefile_findings,
+    **dict.fromkeys(JAVASCRIPT_SUFFIXES, javascript_findings),
+    **dict.fromkeys(YAML_SUFFIXES, yaml_findings),
+}
+FENCE_LANGUAGE_FINDERS: dict[str, Callable[[str], list[Finding]]] = {
+    "python": python_findings,
+    "py": python_findings,
+    "sh": shell_findings,
+    "bash": shell_findings,
+    "shell": shell_findings,
+    "yaml": yaml_findings,
+    "yml": yaml_findings,
+}
+
+
+def is_checked_markdown(path: PurePosixPath) -> bool:
+    return path.suffix == ".md" and bool(path.parts) and path.parts[0] in MARKDOWN_CHECKED_ROOTS
+
+
+def parse_opening_fence(line: str) -> tuple[str, int, str] | None:
+    match = FENCE_OPEN.match(line)
+    if match is None:
+        return None
+    marker, info = match.group(1), match.group(2)
+    if marker[0] == "`" and "`" in info:
+        return None
+    stripped = info.strip()
+    language = stripped.split(None, 1)[0].lower() if stripped else ""
+    return marker[0], len(marker), language
+
+
+def is_closing_fence(line: str, fence_char: str, min_length: int) -> bool:
+    stripped = line.strip(" \t\r\n")
+    return len(stripped) >= min_length and set(stripped) == {fence_char}
+
+
+def iter_fenced_blocks(text: str) -> Iterable[tuple[int, str, str]]:
+    open_fence: tuple[str, int, str, int] | None = None
+    body_lines: list[str] = []
+    for line_number, line in enumerate(text.splitlines(keepends=True), start=1):
+        if open_fence is None:
+            parsed = parse_opening_fence(line)
+            if parsed is not None:
+                open_fence = (*parsed, line_number)
+                body_lines = []
+            continue
+        fence_char, fence_length, language, open_line = open_fence
+        if is_closing_fence(line, fence_char, fence_length):
+            yield open_line, language, "".join(body_lines)
+            open_fence = None
+            body_lines = []
+        else:
+            body_lines.append(line)
+    if open_fence is not None:
+        _, _, language, open_line = open_fence
+        yield open_line, language, "".join(body_lines)
+
+
+def filter_findings(findings: Iterable[Finding]) -> list[Finding]:
+    return [
+        finding
+        for finding in findings
+        if "docstring" in finding.kind or not is_allowed_comment(finding.text, finding.first_line)
+    ]
+
+
+def markdown_findings(text: str) -> list[Finding]:
+    findings: list[Finding] = []
+    for open_line, language, body in iter_fenced_blocks(text):
+        finder = FENCE_LANGUAGE_FINDERS.get(language)
+        if finder is None:
+            continue
+        dedented = textwrap.dedent(body)
+        for finding in filter_findings(finder(dedented)):
+            findings.append(
+                Finding(
+                    finding.first_line + open_line,
+                    finding.last_line + open_line,
+                    finding.kind,
+                    finding.text,
+                )
+            )
+    return findings
+
+
 def language_finder(path: str, text: str) -> Callable[[str], list[Finding]] | None:
     pure_path = PurePosixPath(path)
-    if pure_path.suffix == ".py":
-        return python_findings
-    if pure_path.suffix in JAVASCRIPT_SUFFIXES:
-        return javascript_findings
-    if pure_path.suffix in YAML_SUFFIXES:
-        return yaml_findings
-    if pure_path.suffix == ".toml":
-        return toml_findings
-    if pure_path.name in MAKEFILE_NAMES or pure_path.suffix == ".mk":
+    if is_checked_markdown(pure_path):
+        return markdown_findings
+    finder = SUFFIX_FINDERS.get(pure_path.suffix)
+    if finder is not None:
+        return finder
+    if pure_path.name in MAKEFILE_NAMES:
         return makefile_findings
     return shell_findings if is_shell_like(pure_path, text) else None
 
@@ -157,8 +245,6 @@ def find_comments_and_docstrings(path: str, text: str) -> list[Finding]:
     finder = language_finder(path, text)
     if finder is None:
         return []
-    return [
-        finding
-        for finding in finder(text)
-        if "docstring" in finding.kind or not is_allowed_comment(finding.text, finding.first_line)
-    ]
+    if finder is markdown_findings:
+        return finder(text)
+    return filter_findings(finder(text))

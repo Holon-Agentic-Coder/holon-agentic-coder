@@ -1,8 +1,3 @@
-"""A failed pre-push test run names its failed tests, keeps the tail and writes the full redacted output file.
-
-Hermetic: ``run_cmd`` is faked and every file lands under ``tmp_path``.
-"""
-
 from __future__ import annotations
 
 import subprocess

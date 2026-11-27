@@ -1,5 +1,3 @@
-"""The resolver's Markdown gate formats only changed Markdown, hermetically, with a fake ``npx`` on PATH."""
-
 from __future__ import annotations
 
 import os
@@ -13,7 +11,7 @@ from sandbox_executor.entrypoint.review_markdown_gate import changed_markdown_fi
 
 PATHSPEC = review_loop._RESOLVER_PATHSPEC
 
-# A fake Prettier: a Markdown file is "formatted" when it has no trailing whitespace. It logs every invocation.
+# why: a Markdown file counts as formatted when it has no trailing whitespace, so no real Prettier is needed
 FAKE_NPX = """#!/usr/bin/env python3
 import sys, os
 args = sys.argv[1:]

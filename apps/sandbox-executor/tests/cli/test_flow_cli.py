@@ -1,5 +1,3 @@
-"""Unit tests for ``holon flow``, ``holon review-loop``, and top-level CLI error masking."""
-
 from __future__ import annotations
 
 import io
@@ -18,8 +16,6 @@ from tests.leak_assertions import assert_no_fragment, make_probe
 
 
 class TestHolonFlowCLI(unittest.TestCase):
-    """Hermetic unit tests for 'holon flow' CLI argument parsing, flags, and dispatching."""
-
     def setUp(self):
         self._env_patcher = patch.dict(
             os.environ,
@@ -37,27 +33,21 @@ class TestHolonFlowCLI(unittest.TestCase):
             with open(intent_file, "w", encoding="utf-8") as f:
                 json.dump({"slug": "test", "goal": "test"}, f)
 
-            # Fails fast when agent runner is omitted
-            with (
-                patch.dict(os.environ, {"HOLON_IN_SANDBOX": "1"}, clear=True),
-                patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
-                patch("sys.argv", ["holon", "flow", intent_file]),
-                self.assertRaises(SystemExit) as cm,
-            ):
-                main()
-            self.assertEqual(cm.exception.code, 1)
-            self.assertIn("Agent runner is mandatory", mock_stderr.getvalue())
+            self.assert_flow_fails_fast(["holon", "flow", intent_file], "Agent runner is mandatory")
+            self.assert_flow_fails_fast(
+                ["holon", "flow", intent_file, "--agent", "antigravity-agent"], "Model is mandatory"
+            )
 
-            # Fails fast when model is omitted
-            with (
-                patch.dict(os.environ, {"HOLON_IN_SANDBOX": "1"}, clear=True),
-                patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
-                patch("sys.argv", ["holon", "flow", intent_file, "--agent", "antigravity-agent"]),
-                self.assertRaises(SystemExit) as cm,
-            ):
-                main()
-            self.assertEqual(cm.exception.code, 1)
-            self.assertIn("Model is mandatory", mock_stderr.getvalue())
+    def assert_flow_fails_fast(self, argv, expected_error):
+        with (
+            patch.dict(os.environ, {"HOLON_IN_SANDBOX": "1"}, clear=True),
+            patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
+            patch("sys.argv", argv),
+            self.assertRaises(SystemExit) as cm,
+        ):
+            main()
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn(expected_error, mock_stderr.getvalue())
 
     def test_flow_rejects_the_removed_skip_review_flag(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -110,7 +100,6 @@ class TestHolonFlowCLI(unittest.TestCase):
                 mock_exit.assert_called_with(0)
 
     def test_flow_skip_push_rejected_outside_dry_run_for_any_resume(self):
-        """--skip-push without --dry-run is rejected before the pre-flight probe or the pipeline runs."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             intent_file = os.path.join(tmp_dir, "intent.json")
             with open(intent_file, "w", encoding="utf-8") as f:
@@ -124,7 +113,7 @@ class TestHolonFlowCLI(unittest.TestCase):
                 ["holon", "flow", intent_file, "--skip-push"],
                 ["holon", "flow", intent_file, "--skip-push", "--from-stage", "review"],
                 ["holon", "flow", intent_file, "--skip-push", "--from-stage", "calibrate"],
-                # A --skip-push resume is rejected without --dry-run, even when the checkpoint recorded a dry run.
+                # why: a checkpoint that recorded a dry run must not stand in for --dry-run on resume
                 ["holon", "flow", "--checkpoint", checkpoint_file, "--skip-push"],
             ]
             for argv in argvs:
@@ -188,7 +177,7 @@ class TestHolonFlowCLI(unittest.TestCase):
                 self.assertTrue(ctx.mitm_web)
                 mock_exit.assert_called_with(0)
 
-            # Test coupling: --mitm-web alone automatically enables token_reduce
+            # why: --mitm-web alone enables token_reduce, because the dashboard needs the token-reduce proxy
             with patch("sandbox_executor.cli.run_flow_pipeline") as mock_pipeline, patch("sys.exit") as mock_exit:
                 mock_pipeline.return_value = {"status": "ok"}
                 with patch("sys.argv", ["holon", "flow", intent_file, "--mitm-web"]):
@@ -473,19 +462,17 @@ class TestHolonFlowCLI(unittest.TestCase):
             self.assertTrue(parsed["consensus"]["approved"])
 
 
-def _password_head_error(head: str) -> ValueError:
-    """The `ValueError` `urlparse` raises when a raw delimiter cuts a password into the port."""
+def _urlparse_port_cast_error(head: str) -> ValueError:
     return ValueError(f"Port could not be cast to integer value as '{head}'")
 
 
 @pytest.mark.parametrize("delim", ["/", "?", "#"])
 def test_review_loop_handler_masks_a_quoted_password_head(monkeypatch, capsys, delim):
-    """The review-loop top-level handler never prints a password piece quoted by an exception."""
     head, tail = make_probe("a"), make_probe("b")
     monkeypatch.setenv("HOLON_PROXY_URL", f"http://alice:{head}{delim}{tail}@127.0.0.1:3128")
     with (
         patch("sys.argv", ["holon", "review-loop", "1"]),
-        patch("sandbox_executor.cli.detect_holon_coherence", side_effect=_password_head_error(head)),
+        patch("sandbox_executor.cli.detect_holon_coherence", side_effect=_urlparse_port_cast_error(head)),
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
@@ -499,14 +486,13 @@ def test_review_loop_handler_masks_a_quoted_password_head(monkeypatch, capsys, d
 
 
 def test_flow_handler_masks_a_quoted_password_head(monkeypatch, capsys, tmp_path):
-    """The flow top-level handler never prints a password piece quoted by an exception."""
     head, tail = make_probe("a"), make_probe("b")
     monkeypatch.setenv("HOLON_PROXY_URL", f"alice:{head}/{tail}@127.0.0.1:3128")
     checkpoint = tmp_path / "checkpoint.json"
     checkpoint.write_text("{}", encoding="utf-8")
     with (
         patch("sys.argv", ["holon", "flow", "--checkpoint", str(checkpoint)]),
-        patch("sandbox_executor.cli.load_checkpoint", side_effect=_password_head_error(head)),
+        patch("sandbox_executor.cli.load_checkpoint", side_effect=_urlparse_port_cast_error(head)),
         pytest.raises(SystemExit) as exit_info,
     ):
         main()
@@ -519,7 +505,6 @@ def test_flow_handler_masks_a_quoted_password_head(monkeypatch, capsys, tmp_path
 
 
 def test_calibrate_handler_masks_a_quoted_password_head(monkeypatch, capsys):
-    """The calibrate top-level handler never prints a password piece quoted by an exception."""
     head, tail = make_probe("a"), make_probe("b")
     monkeypatch.setenv("HOLON_LOCAL_BASE_URL", f"socks5://alice:{head}#{tail}@127.0.0.1:3128")
     with (

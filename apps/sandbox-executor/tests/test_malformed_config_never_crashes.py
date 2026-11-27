@@ -1,24 +1,3 @@
-"""Malformed ``models.json`` and settings never crash ``holon doctor`` or the run path.
-
-A fixed matrix of malformed documents (bad encodings, lone surrogate escapes, oversized and non-finite numbers,
-deep nesting, a wrong type at every level, missing fields), malformed numeric environment values and string settings
-holding text that cannot be encoded as UTF-8 (a lone surrogate, or a non-UTF-8 byte as decoded by ``surrogateescape``)
-is thrown at:
-
-- ``holon doctor`` (``cli.run_doctor``) in text and ``--json`` form: no exception escapes, the exit code is 0 or 1,
-  and ``--json`` prints one valid JSON document whose ``environment`` section has the documented keys;
-- the run path (``cli.run_docker_container`` for the pi planner, inside a timed host stage so the budget hand-down
-  runs): no exception escapes, an invalid ``models.json`` or envelope value is a clean ``Error:`` with exit 1, and a
-  handed-down ``HOLON_STAGE_BUDGET_SECONDS`` is always a finite positive integer or the ``unlimited`` sentinel.
-
-stdout, stderr and the log are strict UTF-8 byte streams (``errors="strict"``), like a real terminal or pipe, so text
-that a ``StringIO`` would accept but a terminal cannot encode fails the case. Every document and value carries a
-fake credential drawn from a generator seeded by ``seeded_secrets`` (a fixed default seed; set
-``CREDENTIAL_TEST_SEED=<n>`` to rerun a seed, or ``CREDENTIAL_TEST_SEED=random`` for a stress run); no fragment of it
-may reach stdout, stderr or a log line. The credential uses letters that occur in no message (``FGJQVZ``) and is
-compared case-insensitively. Failures are collected and reported by case id and seed, never by value.
-"""
-
 import argparse
 import contextlib
 import io
@@ -42,7 +21,7 @@ _LOOPBACK = "http://127.0.0.1:8081/v1"
 
 
 def _credential(label: str) -> str:
-    """Return the fake credential of the test named `label`, drawn from its seeded generator."""
+    # why: these letters occur in no message, so a leak check that ignores case finds only the credential
     alphabet = "FGJQVZ0123456789"
     rng = seeded_secrets.generator(f"malformed-config:{label}")
     return "sk-" + "".join(rng.choice(alphabet) for _ in range(32))
@@ -72,13 +51,11 @@ def _wrong_values(credential: str) -> list:
 
 
 def _documents(credential: str) -> Iterator[tuple[str, bytes, bool]]:  # noqa: C901, PLR0912
-    """``(case id, file bytes, must be rejected)``; ``False`` means the document may legitimately be accepted."""
-
     def dump(doc) -> bytes:
         return json.dumps(doc).encode("utf-8")
 
     cred = credential.encode()
-    # Encodings: the credential sits next to the bad bytes, so an echoed decode error would leak it.
+    # why: the credential sits next to the bad bytes, so an echoed decode error would leak it
     for name, raw in {
         "latin1-byte": b'{"providers": {"p": {"apiKey": "' + cred + b'\xff"}}}',
         "lone-continuation": b'{"k": "' + cred + b'\x80"}',
@@ -90,7 +67,7 @@ def _documents(credential: str) -> Iterator[tuple[str, bytes, bool]]:  # noqa: C
         "empty-file": b"",
     }.items():
         yield f"encoding:{name}", raw, True
-    # Lone surrogates (built at runtime): json.loads accepts a \\ud800 escape; no terminal can print the str.
+    # why: json.loads accepts a lone surrogate escape, yet no terminal can print the resulting str
     lone, escaped = chr(0xD800), chr(0xDCFF)
 
     def with_provider(**fields) -> dict:
@@ -112,7 +89,6 @@ def _documents(credential: str) -> Iterator[tuple[str, bytes, bool]]:  # noqa: C
     }.items():
         yield f"surrogate:{name}", dump(doc), True
     yield "surrogate:utf8-encoded", b'{"providers": {"p": {"models": [{"id": "m\xed\xa0\x80"}]}}}', True
-    # Numbers out of range, anywhere in the document.
     for name, literal in {
         "5000-digit-int": b"9" * 5000,
         "neg-5000-digit-int": b"-" + b"9" * 5000,
@@ -131,7 +107,6 @@ def _documents(credential: str) -> Iterator[tuple[str, bytes, bool]]:  # noqa: C
             ),
             True,
         )
-    # Nesting deep enough to exhaust the interpreter stack, and just past the bounded depth.
     yield "nesting:200k-list", b"[" * 200_000, True
     yield "nesting:100k-object", b'{"a":' * 100_000, True
     deep: dict = {"apiKey": credential}
@@ -140,7 +115,6 @@ def _documents(credential: str) -> Iterator[tuple[str, bytes, bool]]:  # noqa: C
     provider = _valid_provider(credential)
     provider["extra"] = deep
     yield "nesting:past-bound", dump({"providers": {"p": provider}}), True
-    # A wrong type at every level the loader reads.
     for index, value in enumerate(_wrong_values(credential)):
         yield f"type:top:{index}", dump(value), not isinstance(value, dict)
         if value is not None and not isinstance(value, dict):
@@ -169,7 +143,7 @@ def _documents(credential: str) -> Iterator[tuple[str, bytes, bool]]:  # noqa: C
             provider = _valid_provider(credential)
             provider["models"] = [model]
             yield f"type:model.{key}:{index}", dump({"providers": {"p": provider}}), True
-    # Missing fields: these may be accepted (synthesised fallback or env window) or rejected, but never crash.
+    # why: missing fields may be accepted (synthesised fallback or env window) or rejected, but never crash
     for name, doc in {
         "no-providers": {"apiKey": credential},
         "empty-providers": {"providers": {}},
@@ -210,7 +184,7 @@ def _numeric_values(credential: str) -> list[str]:
         "0x10",
         "1_0",
         " 12 ",
-        # Sentinel-like strings: only the exact (case-insensitive, trimmed) word means "no ceiling".
+        # why: only the exact (case-insensitive, trimmed) word means "no ceiling"
         "unlimited",
         " UnLimited\t",
         "unlimitedd",
@@ -223,8 +197,7 @@ def _numeric_values(credential: str) -> list[str]:
     ]
 
 
-# Plain stand-ins built once, not per-call `MagicMock`s: building the mocks was a large share of each case's cost.
-# The probe result is a frozen dataclass, so one object serves every case.
+# why: plain stand-ins built once, since building per-call MagicMocks was a large share of each case's cost
 _PROBE = PreflightResult(
     status=PreflightStatus.OK,
     agent="pi-agent",
@@ -237,12 +210,10 @@ _PROBE = PreflightResult(
 
 
 def _probe(*_args, **_kwargs) -> PreflightResult:
-    """`cli_doctor.run_preflight_probe` stand-in: an OK probe for any runner and model."""
     return _PROBE
 
 
 def _docker_only(name: str, *_args, **_kwargs) -> str | None:
-    """`shutil.which` stand-in: a docker binary and no other tool."""
     return "/usr/bin/docker" if name == "docker" else None
 
 
@@ -255,8 +226,6 @@ def _no_token_reduction(*_args, **_kwargs) -> tuple[list[str], dict[str, str]]:
 
 
 class _DockerRun:
-    """`subprocess.run` stand-in: records the argv of the last call and reports success."""
-
     def __init__(self) -> None:
         self.argv: list[str] = []
 
@@ -266,8 +235,6 @@ class _DockerRun:
 
 
 class _Workspace:
-    """A temp HOME with a pi agent directory; output is scrubbed of its path before the leak check."""
-
     def __init__(self, root: str, models: bytes | None, extra_env: dict[str, str], credential: str) -> None:
         self.root = root
         self.agent_dir = os.path.join(root, "agent")
@@ -311,7 +278,6 @@ def _deep_health(_url: str, _timeout: float) -> bytes:
 
 
 def _strict_stream() -> io.TextIOWrapper:
-    """A strict UTF-8 text stream over bytes, like a terminal or pipe: unencodable text raises, as it would there."""
     return io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict", write_through=True)
 
 
@@ -368,7 +334,8 @@ def _check(case: str, failures: list[str], body: Callable[[], None]) -> None:
         body()
     except AssertionError as exc:
         failures.append(f"{case}: {exc}")
-    except BaseException as exc:  # The property under test: nothing escapes.
+    # why: the property under test is that nothing escapes
+    except BaseException as exc:
         failures.append(f"{case}: raised {type(exc).__name__}")
 
 
@@ -379,7 +346,7 @@ def _handed_down(argv: list[str]) -> list[str]:
 
 def _assert_handdown_finite(argv: list[str]) -> None:
     for value in _handed_down(argv):
-        if value == budget_limits.UNLIMITED:  # the documented sentinel, never inf
+        if value == budget_limits.UNLIMITED:
             continue
         assert value.isdigit() and int(value) >= 1, "hand-down is not a positive integer or 'unlimited'"
 
@@ -466,10 +433,7 @@ _STRING_VARS = (
 
 
 def _unencodable_values(var: str) -> list[str]:
-    """Each value holds text no UTF-8 stream can encode: a non-UTF-8 byte as ``os.environ`` decodes it
-    (``surrogateescape``), at the end and inside an otherwise valid value. A lone surrogate such as ``\\ud800`` cannot
-    reach ``os.environ`` at all (it is not encodable back to bytes), so the bytes of a UTF-8-encoded surrogate stand in
-    for it."""
+    # why: a lone surrogate cannot reach os.environ, so the bytes of a UTF-8-encoded surrogate stand in for it
     base = {
         local_llm.ENV_LOCAL_BASE_URL: "http://localhost:8082/v1",
         local_llm.ENV_HOST_LOCAL_HOSTS: "localhost:8082",
@@ -482,7 +446,6 @@ def _unencodable_values(var: str) -> list[str]:
 
 
 def test_unencodable_string_env_never_crashes_doctor_or_run_path():
-    """A string ``HOLON_*`` setting that cannot be encoded as UTF-8 is a clean, value-free error naming the variable."""
     credential = _credential("unencodable_string_env_never_crashes_doctor_or_run_path")
     failures: list[str] = []
     valid = json.dumps({"providers": {"p": _valid_provider(credential)}}).encode()

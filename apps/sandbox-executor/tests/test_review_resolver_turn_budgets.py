@@ -1,5 +1,3 @@
-"""Tests that the resolver turn honours the turn and stall budgets the environment configures."""
-
 import json
 from pathlib import Path
 from unittest.mock import ANY, create_autospec, patch
@@ -12,8 +10,6 @@ from sandbox_executor.turns import TurnResult
 
 
 class TestResolverTurnBudgets:
-    """The resolver turn is supervised with the turn and stall budgets the environment configures."""
-
     def _captured_turn_budgets(self, tmp_path: Path) -> object:
         dispositions_path = str(tmp_path / "dispositions.json")
         captured: dict[str, object] = {}
@@ -51,10 +47,7 @@ class TestResolverTurnBudgets:
 
 
 class TestResolverTurnCallShape:
-    """The resolver passes the runner's command and the turn budgets to run_turn."""
-
     def test_run_resolver_agent_with_autospec_agent_runner(self, tmp_path: Path) -> None:
-        """Verify _run_resolver_agent executes with an autospec of AgentRunner."""
         repo_dir = str(tmp_path)
         dispositions_path = str(tmp_path / "dispositions.json")
         spec_runner = create_autospec(AgentRunner, instance=True)
@@ -74,7 +67,6 @@ class TestResolverTurnCallShape:
         )
 
     def test_run_resolver_agent_fallback_to_compose_cmd(self, tmp_path: Path) -> None:
-        """Verify _run_resolver_agent falls back to compose_cmd when build_command is absent."""
         repo_dir = str(tmp_path)
         dispositions_path = str(tmp_path / "dispositions.json")
 

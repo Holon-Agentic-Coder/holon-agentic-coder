@@ -14,7 +14,7 @@ from sandbox_executor.flow.calibrate_sync import record_starting_branch
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _stage_failure, _test_evidence
 from sandbox_executor.flow.github.adapter import GitHubAdapter
-from sandbox_executor.flow.review.ci_outcome import describe_ci_outcome
+from sandbox_executor.flow.review.ci_outcome import NO_BLOCKER_RECORDED, describe_ci_outcome
 from sandbox_executor.flow.review.ledger_commit import _close_review_stage
 from sandbox_executor.flow.review.loop import _reviewers_objected, _run_engine_review_loop
 from sandbox_executor.flow.review.proxy_env import review_proxy_env
@@ -241,9 +241,6 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
                 f"Autonomous review requested changes: reviewers reported findings or did not approve ({summaries}). "
                 "Findings and dispositions are recorded in executions.jsonl; no automatic resolver runs."
             )
-        elif blockers := loop_res.get("consensus_blockers"):
-            # Every reviewer approved cleanly, but a role, container or adjudication check withheld consensus.
-            err_msg = f"Autonomous review blocked: consensus withheld by {'; '.join(blockers)} ({summaries})."
         else:
             # The CI failure class, named only when it was routed on the head the reviewers saw.
             routing = (context.review_state.get("ci_routing") or {}).get("last") or {}
@@ -251,6 +248,11 @@ def _run_review_stage_body(context: FlowContext, on_branch: list[str]) -> StageR
             err_msg = describe_ci_outcome(
                 ci_checks, loop_res.get("ci_wait"), bool(loop_res.get("tests_failed")), routing=routing
             )
+            if blockers := loop_res.get("consensus_blockers"):
+                # why: a red or pending CI outcome stays named next to the checks that withheld consensus.
+                withheld = f"consensus withheld by {'; '.join(blockers)} ({summaries})."
+                ci_text = "" if err_msg == NO_BLOCKER_RECORDED else f"{err_msg} "
+                err_msg = f"{ci_text}Autonomous review blocked: {withheld}"
 
     if err_msg is not None:
         # Every Stage 4 failure, mergeability halts included, reports the reviewers' final verdicts.

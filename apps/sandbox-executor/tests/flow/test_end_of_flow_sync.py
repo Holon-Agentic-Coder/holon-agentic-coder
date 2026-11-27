@@ -1,5 +1,3 @@
-"""Tests for bounded end-of-flow target sync (finish_flow), pipeline integration, ledger provenance, and CLI gating."""
-
 from __future__ import annotations
 
 from unittest.mock import patch

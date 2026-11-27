@@ -1,5 +1,3 @@
-"""CLI tests for ``holon intent-check``: discovery, exit codes, JSON output and read-only behaviour."""
-
 from __future__ import annotations
 
 import json

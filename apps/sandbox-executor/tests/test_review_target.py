@@ -1,5 +1,3 @@
-"""Unit tests for fail-closed review target resolution and the empty-diff verdict."""
-
 import json
 import subprocess
 from pathlib import Path
@@ -48,8 +46,6 @@ def _repo(tmp_path: Path, branch: str = "main") -> Path:
 
 
 class FakeGh:
-    """Records gh argv and answers with one canned result."""
-
     def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "", raises: Exception | None = None):
         self.calls: list[tuple[list[str], str | None]] = []
         self._result = subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
@@ -75,11 +71,6 @@ def _pr_json(**overrides: Any) -> str:
     return json.dumps(data)
 
 
-# --------------------------------------------------------------------------------------
-# is_pr_reference
-# --------------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     ("target", "expected"),
     [
@@ -97,11 +88,6 @@ def _pr_json(**overrides: Any) -> str:
 )
 def test_is_pr_reference(target, expected):
     assert is_pr_reference(target) is expected
-
-
-# --------------------------------------------------------------------------------------
-# resolve_review_target: PR references
-# --------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("target", ["90", "https://github.com/acme/widgets/pull/90"])
@@ -172,11 +158,6 @@ def test_empty_target_raises(tmp_path):
         resolve_review_target(str(tmp_path), "  ")
 
 
-# --------------------------------------------------------------------------------------
-# resolve_review_target: branch targets
-# --------------------------------------------------------------------------------------
-
-
 def test_branch_target_resolves_to_its_full_tip_sha(tmp_path):
     repo = _repo(tmp_path)
     _git(repo, "checkout", "-q", "-b", "feature")
@@ -194,11 +175,6 @@ def test_unknown_branch_raises(tmp_path):
 
     with pytest.raises(ReviewTargetError, match="could not be resolved"):
         resolve_review_target(str(repo), "does-not-exist")
-
-
-# --------------------------------------------------------------------------------------
-# verify_review_diff
-# --------------------------------------------------------------------------------------
 
 
 def _execution_repo(tmp_path: Path, change_source: bool) -> Path:
@@ -247,7 +223,6 @@ def test_pr_head_equal_to_its_base_is_empty(tmp_path):
 
 
 def _release_repo(tmp_path: Path) -> tuple[Path, str]:
-    """A repository whose 'release' branch carries a code change that 'main' does not."""
     repo = _repo(tmp_path)
     _git(repo, "checkout", "-q", "-b", "release")
     release_sha = _commit(repo, "app.py", "x = 2\n", "release change")
@@ -324,8 +299,6 @@ def test_missing_base_branch_is_unverified(tmp_path):
 
 
 class FakeOriginGit:
-    """Wraps the real ``run_git`` and fakes an 'origin' remote plus the outcome of every fetch from it."""
-
     def __init__(self, real: Any, fetch_returncode: int, fetch_stderr: str = "", failing_branch: str | None = None):
         self.real = real
         self.fetch_returncode = fetch_returncode
@@ -334,7 +307,6 @@ class FakeOriginGit:
         self.fetches: list[list[str]] = []
 
     def _fetch_returncode(self, args: list[str]) -> int:
-        """Fail every fetch, or only the fetch of ``failing_branch`` when one is named."""
         if self.failing_branch is None or f"refs/heads/{self.failing_branch}:" in " ".join(args):
             return self.fetch_returncode
         return 0
@@ -388,12 +360,9 @@ def test_pr_base_fetched_from_origin_keeps_the_empty_and_verified_verdicts(tmp_p
 
 
 def test_pr_base_without_origin_uses_the_local_branch(tmp_path, monkeypatch):
-    """With no 'origin' remote there is nothing to fetch, so the local base branch is the base.
-
-    A repository without origin is a local-only checkout: no PR is opened from a remote copy, so the
-    local branch is the only base there is, and the guard must not refuse it for lacking a fetch.
-    """
     from sandbox_executor import flow
+
+    # why: a repository without origin is a local-only checkout, so its local branch is the only base there is
 
     repo = _repo(tmp_path)
     _git(repo, "checkout", "-q", "-b", "feature/x")
@@ -500,11 +469,6 @@ def test_verify_review_diff_never_calls_gh(tmp_path, monkeypatch):
     assert verify_review_diff(str(repo), "main")[0] is DiffVerdict.EMPTY
 
 
-# --------------------------------------------------------------------------------------
-# classify_review_diff: resolve a raw PR reference, then run the guard
-# --------------------------------------------------------------------------------------
-
-
 def test_classify_review_diff_resolves_a_pr_and_diffs_against_its_base(tmp_path):
     repo, release_sha = _release_repo(tmp_path)
     gh = FakeGh(stdout=_pr_json(headRefOid=release_sha, baseRefName="release"))
@@ -533,13 +497,7 @@ def test_classify_review_diff_passes_a_branch_straight_to_the_guard(tmp_path):
     assert gh.calls == []
 
 
-# --------------------------------------------------------------------------------------
-# mounted role container: no fetch, the host has fetched the refs
-# --------------------------------------------------------------------------------------
-
-
 def _mounted_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A repo with an unreachable origin URL whose origin tracking refs were 'fetched by the host'."""
     from sandbox_executor.flow import git_refs
 
     repo = _repo(tmp_path)

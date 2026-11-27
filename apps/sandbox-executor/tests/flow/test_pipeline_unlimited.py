@@ -1,5 +1,3 @@
-"""Pipeline tests for an ``unlimited`` stage budget: no breach, the sentinel in results and the container hand-down."""
-
 from unittest.mock import patch
 
 from sandbox_executor.flow import FlowContext, FlowStage, PipelineEngine, StageResult, StageStatus
@@ -32,10 +30,9 @@ class TestUnlimitedStageBudgets:
         logs = "\n".join(ctx.logs)
         assert "execute: ok (73.2 min / unlimited)" in logs
         assert "WARNING: Stage 'execute' runs with no wall-clock ceiling" in logs
-        # The checkpoint round trip keeps the unlimited marker and the summary.
-        restored = StageResult.from_dict(result.to_dict())
-        assert restored.summary_line() == "execute: ok (73.2 min / unlimited)"
-        assert restored.payload["stage_budget"] == "unlimited"
+        restored_from_checkpoint = StageResult.from_dict(result.to_dict())
+        assert restored_from_checkpoint.summary_line() == "execute: ok (73.2 min / unlimited)"
+        assert restored_from_checkpoint.payload["stage_budget"] == "unlimited"
 
     def test_unlimited_review_iteration_makes_the_review_stage_unlimited(self, tmp_path):
         from sandbox_executor.budgets import load_budgets

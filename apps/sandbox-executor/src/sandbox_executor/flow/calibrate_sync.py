@@ -1,12 +1,3 @@
-"""Stage 5 host-side git hygiene: base calibration on the origin execution head and restore the starting branch.
-
-Containers and out-of-band conflict resolution push to ``origin/<execution_branch>`` without moving the local ref,
-so Stage 5 syncs first. A local ref that is behind is fast-forwarded, a local ref holding commits origin lacks is
-refused, and the calibrated branch is created from the origin head so that it fast-forwards onto the execution
-branch. Nothing here resets, forces or merges to ``main``; the flow's own /calibrated branch is the only ref that may
-be replaced, and on origin only with a lease (calibrate_rebuild.py).
-"""
-
 from __future__ import annotations
 
 from sandbox_executor.flow.calibrate_fetch_retry import _fetch_execution_branch_with_retry
@@ -51,12 +42,6 @@ def _fetch_execution_branch(context: FlowContext, branch: str) -> None:
 
 
 def sync_execution_ref(context: FlowContext) -> str | None:
-    """Fetch origin, level the local execution ref with it, return the SHA calibration starts from.
-    None in a dry run or with no commit; the local SHA when origin lacks the branch.
-
-    Raises:
-        CalibrationSyncError: If the local ref holds commits origin lacks, or the fetch fails with a stale origin ref.
-    """
     branch = context.execution_branch
     if context.dry_run or not branch:
         return None
@@ -79,15 +64,6 @@ def sync_execution_ref(context: FlowContext) -> str | None:
 
 
 def prepare_calibrated_branch(context: FlowContext, start_sha: str | None) -> bool:
-    """Create the local /calibrated branch at ``start_sha`` unless one exists; rebuild the flow's own stale one.
-
-    ``run_calibrate`` checks out an existing local branch, so creating it here fixes its start point.
-
-    Returns:
-        True only when this call created or rebuilt the branch.
-    Raises:
-        CalibrationSyncError: If an existing /calibrated branch lacks the execution head and holds foreign commits.
-    """
     branch = context.execution_branch
     if not branch or not start_sha or context.dry_run:
         return False
@@ -96,6 +72,7 @@ def prepare_calibrated_branch(context: FlowContext, start_sha: str | None) -> bo
     local_sha = _rev(repo_dir, f"refs/heads/{calibrated}")
     remote_sha = _rev(repo_dir, f"refs/remotes/{DEFAULT_REMOTE}/{calibrated}")
     if not local_sha and not remote_sha:
+        # why: run_calibrate checks out an existing local branch, so creating it here fixes its start point
         res = run_git(["branch", "--no-track", calibrated, start_sha], cwd=repo_dir, check=False)
         if res.returncode != 0:
             context.log(f"Warning: could not create '{calibrated}' at {start_sha[:12]}.")
@@ -108,13 +85,12 @@ def prepare_calibrated_branch(context: FlowContext, start_sha: str | None) -> bo
             f"existing '{calibrated}' does not contain the execution head {start_sha[:12]}, so it cannot "
             f"fast-forward onto '{branch}'. Delete it (`git branch -D {calibrated}`) and resume to rebuild."
         )
-    # A current origin /calibrated may hold calibration commits past the head; keep them so the push fast-forwards.
+    # why: a current origin /calibrated may hold calibration commits past the head; keep them so the push fast-forwards
     rebuild_calibrated_branch(context, remote_sha if remote_sha and not stale[1] else start_sha, *stale)
     return True
 
 
 def discard_empty_calibrated_branch(context: FlowContext, created: bool) -> None:
-    """Delete the /calibrated branch this stage created when calibration then failed without a commit."""
     branch = context.execution_branch
     if not branch or not created:
         return
@@ -127,13 +103,7 @@ def discard_empty_calibrated_branch(context: FlowContext, created: bool) -> None
 
 
 def record_starting_branch(context: FlowContext, run=None) -> None:
-    """Remember the branch (or detached SHA) HEAD was on before the flow moved it; set once, never overwritten.
-
-    A HEAD detached exactly at the execution branch tip is recorded as that branch, so the pipeline exit restores the
-    branch instead of running 'checkout --detach' at its tip again.
-
-    ``run`` is the caller's git runner, so a stage whose tests replace its runner never spawns a real git process here.
-    """
+    # why: run is the caller's git runner, so a stage whose tests replace it never spawns a real git process here
     if context.dry_run or context.starting_branch:
         return
     repo_dir = context.target_worktree
@@ -144,14 +114,14 @@ def record_starting_branch(context: FlowContext, run=None) -> None:
         return
     sha = _rev(repo_dir, "HEAD", git)
     if sha and context.execution_branch and sha == _rev(repo_dir, f"refs/heads/{context.execution_branch}", git):
-        context.starting_branch = context.execution_branch  # detached at its tip: never re-detach on exit
+        # why: the worktree is detached at the branch tip, so exit must never re-detach it
+        context.starting_branch = context.execution_branch
     elif sha:
         context.starting_branch = sha
         context.starting_detached = True
 
 
 def restore_starting_branch(context: FlowContext) -> None:
-    """Return the host worktree to where the flow started. Warns instead of raising."""
     target = context.starting_branch
     if context.dry_run or not target:
         return
@@ -172,7 +142,6 @@ def restore_starting_branch(context: FlowContext) -> None:
 
 
 def publish_calibration(context: FlowContext) -> bool:
-    """Fast-forward the execution branch onto the calibrated branch and push both; return True when pushed."""
     repo_dir = context.target_worktree
     calibrated = context.calibrated_branch
     branch = context.execution_branch

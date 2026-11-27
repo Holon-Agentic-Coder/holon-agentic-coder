@@ -1,6 +1,3 @@
-"""The resolver commit restores an unauthorised change to the frozen module budget configuration, and the resolver
-lint sees ``HOLON_ALLOW_MODULE_BUDGET_CHANGE`` only when the intent authorises a budget change."""
-
 import json
 import os
 import subprocess

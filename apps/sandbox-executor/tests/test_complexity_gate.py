@@ -1,12 +1,3 @@
-"""Complexity gate and ratchet tests for sandbox-executor.
-
-Scanning constraint: the scan is a textual, line-by-line regex pass (not a tokenizer).
-A string literal containing text such as ``"# noqa: C901"`` would be matched if it
-appeared on a function ``def`` line; on any other line it is ignored by the ratchet
-counters but would be flagged by ``test_no_complexity_noqa_outside_def_lines``. Keep
-complexity-rule noqa text out of string literals in ``apps/sandbox-executor/src``.
-"""
-
 from __future__ import annotations
 
 import re
@@ -18,7 +9,7 @@ import pytest
 
 COMPLEXITY_RULES: frozenset[str] = frozenset({"C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915"})
 
-# Baseline established for intent I-1793334797-hac-ruff-complexity-gate-with-inline-baseline
+# why: baseline frozen by intent I-1793334797-hac-ruff-complexity-gate-with-inline-baseline
 BASELINE_COMPLEXITY_NOQA_COUNT: int = 142
 BASELINE_ANNOTATED_FUNCTIONS_COUNT: int = 73
 
@@ -27,11 +18,7 @@ DEF_LINE_PATTERN = re.compile(r"^\s*(?:async\s+)?def\b")
 
 SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 
-# Identity baseline: the exact multiset of (path relative to src/, complexity rule codes)
-# annotations frozen at the baseline above. Unlike the raw counts, this snapshot also
-# rejects one-in-one-out swaps: removing a legacy annotation never licenses adding a new
-# one in a different file (or with different rule codes). Removals are allowed (ratchet
-# down); any entry not present in this snapshot fails.
+# why: unlike the raw counts, the frozen (path, rule codes) multiset rejects one-in-one-out swaps
 BASELINE_SNAPSHOT: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("sandbox_executor/agent_runner.py", ("C901",)),
     ("sandbox_executor/agent_runner.py", ("C901",)),
@@ -58,7 +45,7 @@ BASELINE_SNAPSHOT: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("sandbox_executor/flow/github/ci.py", ("PLR0913",)),
     ("sandbox_executor/flow/github/ci.py", ("PLR0913",)),
     ("sandbox_executor/flow/github/pr.py", ("PLR0913",)),
-    # Narrowed from ("PLR0912", "PLR0913", "PLR0915"): post_pr_review_consensus keeps its six-parameter signature.
+    # why: narrowed from PLR0912/PLR0913/PLR0915; post_pr_review_consensus keeps its six-parameter signature
     ("sandbox_executor/flow/github/review_post.py", ("PLR0913",)),
     ("sandbox_executor/flow/intent_questions.py", ("C901", "PLR0912", "PLR0915")),
     ("sandbox_executor/flow/pipeline.py", ("C901", "PLR0915")),
@@ -103,7 +90,6 @@ BASELINE_SNAPSHOT: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 
 def extract_complexity_rules_from_line(line: str) -> list[str]:
-    """Extract complexity rule codes from a function definition line if # noqa is present."""
     if not DEF_LINE_PATTERN.match(line):
         return []
     match = NOQA_DIRECTIVE_PATTERN.search(line)
@@ -117,7 +103,6 @@ def extract_complexity_rules_from_line(line: str) -> list[str]:
 
 
 def scan_complexity_noqa(src_dir: Path | str) -> dict[str, Any]:
-    """Scan all python files in src_dir for complexity # noqa directives on function definitions."""
     path = Path(src_dir)
     total_rule_count = 0
     annotated_functions_count = 0
@@ -152,7 +137,6 @@ def assert_complexity_baseline(
     annotated_functions: int | None = None,
     baseline_functions: int = BASELINE_ANNOTATED_FUNCTIONS_COUNT,
 ) -> None:
-    """Assert that the complexity count and annotated functions do not exceed baseline."""
     assert current_count <= baseline_count, (
         f"Complexity # noqa baseline exceeded: current={current_count} > baseline={baseline_count}. "
         "Adding new complex functions or unapproved # noqa suppressions is strictly forbidden. "
@@ -166,7 +150,6 @@ def assert_complexity_baseline(
 
 
 def test_complexity_noqa_baseline_ratchet():
-    """Verify that complexity # noqa directives across apps/sandbox-executor/src do not exceed baseline."""
     assert SRC_DIR.is_dir(), f"Source directory not found: {SRC_DIR}"
     scan_result = scan_complexity_noqa(SRC_DIR)
 
@@ -181,7 +164,6 @@ def test_complexity_noqa_baseline_ratchet():
     )
 
     if current_rules < BASELINE_COMPLEXITY_NOQA_COUNT:
-        # Code was simplified! The ratchet allows updating BASELINE_COMPLEXITY_NOQA_COUNT downwards.
         print(
             f"Notice: Complexity rules reduced from {BASELINE_COMPLEXITY_NOQA_COUNT} to {current_rules}. "
             "Update BASELINE_COMPLEXITY_NOQA_COUNT to ratchet down."
@@ -189,14 +171,6 @@ def test_complexity_noqa_baseline_ratchet():
 
 
 def test_complexity_noqa_identity_baseline():
-    """Verify every complexity # noqa annotation is one frozen in BASELINE_SNAPSHOT.
-
-    The counts in the ratchet test above bound the totals; this test additionally rejects
-    one-in-one-out swaps by requiring the current multiset of (relative path, rule codes)
-    annotations to be a sub-multiset of the frozen baseline. Removals pass (ratchet down,
-    then prune the removed entries from BASELINE_SNAPSHOT); any new or relocated
-    annotation fails.
-    """
     assert SRC_DIR.is_dir(), f"Source directory not found: {SRC_DIR}"
     scan_result = scan_complexity_noqa(SRC_DIR)
 
@@ -215,18 +189,14 @@ def test_complexity_noqa_identity_baseline():
 
 
 def test_complexity_counting_logic_filters_correctly():
-    """Verify that non-complexity # noqa comments are ignored and complexity rules are extracted."""
-    # Non-complexity noqa comments
     assert extract_complexity_rules_from_line("def foo():  # noqa: F401") == []
     assert extract_complexity_rules_from_line("def foo():  # noqa: E501") == []
     assert extract_complexity_rules_from_line("def foo():  # noqa: UP036") == []
     assert extract_complexity_rules_from_line("def foo():  # noqa") == []
 
-    # Non-def lines
     assert extract_complexity_rules_from_line("x = 1  # noqa: C901") == []
     assert extract_complexity_rules_from_line("    return True  # noqa: PLR0911") == []
 
-    # Valid complexity rules
     assert extract_complexity_rules_from_line("def foo():  # noqa: C901") == ["C901"]
     assert extract_complexity_rules_from_line("def foo():  # noqa: C901, PLR0912") == ["C901", "PLR0912"]
     assert extract_complexity_rules_from_line("async def bar():  # noqa: PLR0911, PLR0913") == [
@@ -239,12 +209,10 @@ def test_complexity_counting_logic_filters_correctly():
         "PLR0915",
     ]
 
-    # Mixed complexity and non-complexity rules
     assert extract_complexity_rules_from_line("def foo():  # noqa: F401, C901, E501") == ["C901"]
 
 
 def test_complexity_ratchet_failure_mode():
-    """Verify that exceeding the baseline raises an AssertionError with an informative message."""
     with pytest.raises(AssertionError, match="Complexity # noqa baseline exceeded"):
         assert_complexity_baseline(
             current_count=BASELINE_COMPLEXITY_NOQA_COUNT + 1,
@@ -260,14 +228,8 @@ def test_complexity_ratchet_failure_mode():
         )
 
 
+# why: the scan matches raw line text, so complexity-rule noqa text must stay out of string literals in src
 def test_no_complexity_noqa_outside_def_lines():
-    """Verify that complexity # noqa directives are not placed on lines other than function definitions.
-
-    Textual-scan constraint: this check matches raw line text, so a string literal
-    containing e.g. "# noqa: C901" on a non-def line is reported as a violation.
-    That is intentional (see module docstring): keep complexity-rule noqa text out of
-    string literals in src rather than special-casing them here.
-    """
     violations: list[str] = []
     for py_file in sorted(SRC_DIR.rglob("*.py")):
         with open(py_file, encoding="utf-8") as f:

@@ -1,11 +1,3 @@
-"""Tests for the command helpers the executor re-exports.
-
-Covers ``entrypoint/executor/commands.py`` (``run_cmd``, its git env, ``safe_float``), the
-``redaction.py`` helpers it prints through (``redact_args``, ``redact_text``), and the
-``agent_runner.py`` repo-dir cleanup (``cleanup_repo_dir``, ``_clear_dir_contents``,
-``_check_forbidden_root``, ``_handle_remove_readonly``).
-"""
-
 import os
 import subprocess
 import tempfile
@@ -22,8 +14,9 @@ from sandbox_executor.entrypoint import executor
 
 from tests.executor_fixtures import (
     GitRemoteHarness,
-    _agent_turns_use_run_cmd,  # noqa: F401  (autouse fixture)
-    _workspace_is_mounted,  # noqa: F401  (autouse fixture)
+    # why: imported for their autouse fixtures
+    _agent_turns_use_run_cmd,  # noqa: F401
+    _workspace_is_mounted,  # noqa: F401
 )
 
 
@@ -97,26 +90,21 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
         self.assertEqual(redacted[30], "--private-key")
         self.assertEqual(redacted[31], "*******")
 
-        # When --token is followed by another flag, the positional value
-        # after that flag is NOT masked (known limitation — by design).
+        # why: a positional value after a chained flag is not masked (known limitation, by design)
         chained = redact_args(["--token", "--verbose", "secret"])
         self.assertEqual(chained, ["--token", "--verbose", "secret"])
 
-        # Equal-sign formatted secret flags
         equal_fmt = redact_args(["--token=secret123", "--password=mypass", "--author=alice", "--github-token=gh123"])
         self.assertEqual(
             equal_fmt, ["--token=*******", "--password=*******", "--author=alice", "--github-token=*******"]
         )
 
-        # Trailing secret flags at the end of args
         trailing = redact_args(["git", "clone", "--token"])
         self.assertEqual(trailing, ["git", "clone", "--token"])
 
-        # Secret values starting with - or --
         secret_dash = redact_args(["--token", "-secret-value"])
         self.assertEqual(secret_dash, ["--token", "-secret-value"])
 
-        # Single-character non-flag value after a secret flag should be masked
         single_char = redact_args(["cmd", "--password", "s"])
         self.assertEqual(single_char, ["cmd", "--password", "*******"])
 
@@ -139,13 +127,11 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
         )
         self.assertEqual(redacted_ext, expected_ext)
 
-        # Quoted secrets and JSON key redaction tests
         quoted_text = 'token="secret" github_token=\'secret_abc\' {"api_key": "secret"} "auth_key": \'secret\''
         redacted_quoted = redact_text(quoted_text)
         expected_quoted = 'token="*******" github_token=\'*******\' {"api_key": "*******"} "auth_key": \'*******\''
         self.assertEqual(redacted_quoted, expected_quoted)
 
-        # Quoted secret values with spaces
         quoted_spaces = (
             'token="secret with spaces" api_key=\'my secret key\' {"auth_token": "bearer token with spaces"}'
         )
@@ -153,7 +139,6 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
         expected_spaces = 'token="*******" api_key=\'*******\' {"auth_token": "*******"}'
         self.assertEqual(redacted_spaces, expected_spaces)
 
-        # Diagnostic keys unmasked check
         diagnostic_text = "sort_key=xyz cache_key=xyz"
         self.assertEqual(redact_text(diagnostic_text), diagnostic_text)
 
@@ -168,12 +153,10 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
     def test_witness_pattern_1_bare_keys_and_credentials(self):
         from sandbox_executor.entrypoint.executor import redact_text
 
-        # Bare key masking
         self.assertEqual(redact_text('key = "synthetic_val"'), 'key = "*******"')
         self.assertEqual(redact_text("key: synthetic_val"), "key: *******")
         self.assertEqual(redact_text("key=val"), "key=*******")
 
-        # Expanded credential alternations
         self.assertEqual(redact_text('pwd = "my_pass"'), 'pwd = "*******"')
         self.assertEqual(redact_text('passwd = "secret"'), 'passwd = "*******"')
         self.assertEqual(redact_text('client_secret = "cs_xyz"'), 'client_secret = "*******"')
@@ -184,7 +167,6 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
     def test_witness_pattern_2_multiline_url_query_isolation(self):
         from sandbox_executor.entrypoint.executor import redact_text
 
-        # Anchor prefix with trailing newline must not swallow following line's '=' expression
         wp2_1 = "https://example.com/api?token=\nmode=debug\n"
         self.assertEqual(redact_text(wp2_1), "https://example.com/api?token=\nmode=debug\n")
 
@@ -194,7 +176,6 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
         wp2_3 = "https://example.com/api?token=dummy_val\nmode=debug\n"
         self.assertEqual(redact_text(wp2_3), "https://example.com/api?token=*******\nmode=debug\n")
 
-        # Benign URL query parameters must remain unmasked and not bleed across &
         wp2_4 = "https://example.com/api?keyword=search_term&token=secret_val"
         self.assertEqual(
             redact_text(wp2_4),
@@ -207,17 +188,14 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
     def test_witness_pattern_3_multiline_yaml_json_nested_keys(self):
         from sandbox_executor.entrypoint.executor import redact_text
 
-        # Multiline YAML nested dictionary keys should not be swallowed
         yaml_input = "cfg:\n  secret:\n    api_key: synthetic_secret_value\n"
         expected_yaml = "cfg:\n  secret:\n    api_key: *******\n"
         self.assertEqual(redact_text(yaml_input), expected_yaml)
 
-        # Multiline YAML with quoted child key must mask value and preserve child key name
         yaml_quoted = 'cfg:\n  secret:\n    "api_key": "secret_val"\n'
         expected_yaml_quoted = 'cfg:\n  secret:\n    "api_key": "*******"\n'
         self.assertEqual(redact_text(yaml_quoted), expected_yaml_quoted)
 
-        # Multiline JSON nested dictionary keys should not be swallowed
         json_input = '{\n  "secret": {\n    "api_key": "synthetic_secret_value"\n  }\n}'
         expected_json = '{\n  "secret": {\n    "api_key": "*******"\n  }\n}'
         self.assertEqual(redact_text(json_input), expected_json)
@@ -225,14 +203,12 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
     def test_diagnostic_retention_invariants(self):
         from sandbox_executor.entrypoint.executor import redact_text
 
-        # Benign diagnostic keys must remain unmasked
         benign_text = (
             "sort_key=asc cache_key=123 primary_key=id foreign_key=user_id "
             "compat=1.0.0 compact=true impact=high monkey=banana donkey=kong"
         )
         self.assertEqual(redact_text(benign_text), benign_text)
 
-        # Kebab-case diagnostic keys must remain unmasked
         kebab_text = "sort-key=asc cache-key=123 --sort-key=val"
         self.assertEqual(redact_text(kebab_text), kebab_text)
 
@@ -247,19 +223,13 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
     def test_redact_text_oversized_input(self):
         from sandbox_executor.entrypoint.executor import _MAX_REDACT_INPUT_LEN, redact_text
 
-        # Input exceeding the limit should be truncated and redacted.
         big_text = "token=secret " + "x" * (_MAX_REDACT_INPUT_LEN) + " tail end"
         result = redact_text(big_text)
 
         half_len = _MAX_REDACT_INPUT_LEN // 2
 
-        # The head is truncated before redaction, so it takes the first half_len chars of big_text.
-        # "token=secret " is 13 chars, so the head has half_len - 13 "x"s.
-        # Then redaction changes "secret" (6) to "*******" (7), making it 14 + (half_len - 13) chars.
         expected_head = "token=******* " + "x" * (half_len - len("token=secret "))
 
-        # The tail takes the last half_len chars of big_text.
-        # " tail end" is 9 chars, so the tail has half_len - 9 "x"s.
         expected_tail = "x" * (half_len - len(" tail end")) + " tail end"
 
         expected = expected_head + "\n... (truncated) ...\n" + expected_tail
@@ -289,7 +259,6 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
             self.assertTrue(os.path.exists(tmp_dir))
             self.assertEqual(os.listdir(tmp_dir), [])
 
-            # Test guard clause when path is a file, not a directory
             with open(file_path, "w") as f:
                 f.write("hello")
             _clear_dir_contents(file_path)
@@ -341,7 +310,6 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx_sys.exception))
 
     def test_check_forbidden_root_blocked_paths(self):
-        # Paths outside the safelist should raise RuntimeError
         with self.assertRaises(RuntimeError) as ctx:
             _check_forbidden_root("/var")
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx.exception))
@@ -355,11 +323,9 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
         self.assertIn("Refusing to perform operation on system root-level directory", str(ctx3.exception))
 
     def test_check_forbidden_root_mac_var_folders_allowed(self):
-        # Should not raise any error
         _check_forbidden_root("/private/var/folders/xx/yyyy/T/workspace")
 
     def test_check_forbidden_root_linux_var_allowed(self):
-        # Should not raise any error
         _check_forbidden_root("/var/tmp/workspace")
 
         with self.assertRaises(RuntimeError) as ctx:
@@ -369,7 +335,6 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
     @patch("sandbox_executor.agent_runner.os.path.realpath")
     @patch("sandbox_executor.agent_runner.os.path.abspath")
     def test_check_forbidden_root_symlinks(self, mock_abspath, mock_realpath):
-        # Even if abs_path is allowed, realpath being forbidden should trigger rejection
         mock_abspath.return_value = "/var/folders/etc_symlink"
         mock_realpath.return_value = "/private/etc"
         with self.assertRaises(RuntimeError) as ctx:
@@ -379,7 +344,6 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
     @patch("sandbox_executor.agent_runner.os.listdir", return_value=[])
     @patch("sandbox_executor.agent_runner.os.path.isdir", return_value=True)
     def test_clear_dir_contents_allowed_roots(self, mock_isdir, mock_listdir):
-        # Should not raise any error
         _clear_dir_contents("/home/user/workspace/repo", raise_on_error=True)
         mock_listdir.assert_called_once_with("/home/user/workspace/repo")
 
@@ -392,9 +356,7 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
                 "sandbox_executor.agent_runner.os.unlink", side_effect=PermissionError("Permission denied")
             )
             with unlink_patch:
-                # Default raise_on_error=False swallows error
                 _clear_dir_contents(tmp_dir, raise_on_error=False)
-                # raise_on_error=True propagates error
                 with self.assertRaises(PermissionError):
                     _clear_dir_contents(tmp_dir, raise_on_error=True)
 
@@ -416,7 +378,6 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
 
         mock_func = MagicMock()
 
-        # Test for directory
         mock_isdir.return_value = True
         _handle_remove_readonly(mock_func, "/fake/dir", PermissionError("error"))
         mock_chmod.assert_called_with("/fake/dir", stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR, follow_symlinks=False)
@@ -425,7 +386,6 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
         mock_chmod.reset_mock()
         mock_func.reset_mock()
 
-        # Test for file
         mock_isdir.return_value = False
         _handle_remove_readonly(mock_func, "/fake/file.txt", PermissionError("error"))
         mock_chmod.assert_called_with("/fake/file.txt", stat.S_IWUSR | stat.S_IRUSR, follow_symlinks=False)

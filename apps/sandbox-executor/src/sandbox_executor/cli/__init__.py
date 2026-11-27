@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""Host wrapper CLI for running Holon Docker sandbox roles (intent, plan, execute).
-
-Pure re-export facade: implementation logic lives in focused ``sandbox_executor.cli.*`` submodules.
-"""
 
 from sandbox_executor import config_env as config_env
 from sandbox_executor import git_flow as git_flow
 from sandbox_executor import local_llm as local_llm
 from sandbox_executor.agent_defaults import (
-    AGENT_IMAGE_MAPPING as AGENT_IMAGE_MAPPING,  # re-exported: the mapping moved to agent_defaults
+    AGENT_IMAGE_MAPPING as AGENT_IMAGE_MAPPING,
 )
 from sandbox_executor.agent_defaults import (
     FALLBACK_AGENT as FALLBACK_AGENT,
@@ -111,8 +107,7 @@ from sandbox_executor.knowledge import (
 from sandbox_executor.knowledge.consult import format_consult_results_table
 from sandbox_executor.knowledge.stats import format_stats_dashboard
 
-# The container plumbing lives in sandbox_executor.launcher; every name it took from this module stays importable here.
-# `name as name` marks a re-export this module no longer uses itself.
+# why: names moved to sandbox_executor.launcher stay importable here for existing patch targets and callers.
 from sandbox_executor.launcher.coherence import (
     _EXPLICIT_OPT_OUT_VALUES as _EXPLICIT_OPT_OUT_VALUES,
 )

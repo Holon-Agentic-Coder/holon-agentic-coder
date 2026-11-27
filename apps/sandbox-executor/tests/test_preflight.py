@@ -3,10 +3,11 @@ import logging
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sandbox_executor import claude_keychain, preflight
+from sandbox_executor import claude_keychain, preflight, preflight_cooldown
 from sandbox_executor.cli import PACKAGE_LOGGER_NAME, _CurrentStderrHandler, configure_cli_logging, main
 from sandbox_executor.flow import get_default_checkpoint_path
 from sandbox_executor.launcher.coherence import FlowProxyChoice
@@ -79,6 +80,10 @@ def _result(status: PreflightStatus, agent: str = "antigravity-agent") -> Prefli
         (1, "cache expired; aborting", PreflightStatus.UNKNOWN),
         (1, "HTTP 401", PreflightStatus.EXPIRED_KEY),
         (1, "status code: 429", PreflightStatus.QUOTA_EXHAUSTED),
+        (1, "Organization spend limit reached", PreflightStatus.QUOTA_EXHAUSTED),
+        (1, "Your credit balance is too low to access the API", PreflightStatus.QUOTA_EXHAUSTED),
+        (1, "error: insufficient_quota", PreflightStatus.QUOTA_EXHAUSTED),
+        (1, "Billing hard limit has been reached", PreflightStatus.QUOTA_EXHAUSTED),
         (1, "OK", PreflightStatus.UNKNOWN),
     ],
 )
@@ -864,3 +869,107 @@ def test_probe_remaps_a_mis_named_explicit_token_and_drops_the_wrong_variable(
 
     assert f"CLAUDE_CODE_OAUTH_TOKEN={value}" in seen["lines"]
     assert not any(line.startswith("ANTHROPIC_API_KEY=") for line in seen["lines"])
+
+
+@pytest.mark.parametrize(
+    ("stderr_suffix", "expected_ttl"),
+    [
+        ("Retry-After: 120", 120.0),
+        ("resets at 2026-11-27T22:10:00Z", 600.0),
+        ("", preflight_cooldown.DEFAULT_COOLDOWN_TTL_SECONDS),
+    ],
+    ids=["retry-after", "iso-reset", "default-ttl"],
+)
+def test_probe_spend_limit_writes_redacted_cooldown_marker(probe_env, monkeypatch, stderr_suffix, expected_ttl):
+    fixed_now = datetime(2026, 11, 27, 22, 0, 0, tzinfo=UTC).timestamp()
+    monkeypatch.setattr(preflight_cooldown.time, "time", lambda: fixed_now)
+    stderr = f"Organization spend limit reached for sk-test-very-secret-value. {stderr_suffix}".strip()
+    runner_fn = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=stderr))
+
+    res = run_preflight_probe("antigravity-agent", "gemini-3.8-flash-medium", runner_fn=runner_fn)
+
+    assert res.status is PreflightStatus.QUOTA_EXHAUSTED
+    marker_file = probe_env / ".holon" / "preflight" / "cooldowns" / "antigravity.json"
+    assert marker_file.is_file()
+    assert os.stat(marker_file).st_mode & 0o777 == 0o600
+    payload = json.loads(marker_file.read_text(encoding="utf-8"))
+    assert payload["agent_id"] == "antigravity"
+    assert payload["reason"] == "spend_limit"
+    assert payload["recorded_at"] == fixed_now
+    assert payload["expires_at"] == fixed_now + expected_ttl
+    assert "sk-test-very-secret-value" not in payload["output_excerpt"]
+
+
+def test_active_cooldown_short_circuits_probe_flow_and_resume(flow_repo, monkeypatch, capsys):
+    repo, intent_file = flow_repo
+    fixed_now = 1795730400.0
+    monkeypatch.setattr(preflight_cooldown.time, "time", lambda: fixed_now)
+    monkeypatch.setenv("HOLON_AGENT", "antigravity-agent")
+    monkeypatch.setenv("HOLON_MODEL", "gemini-3.8-flash-medium")
+
+    first_runner = MagicMock(
+        return_value=subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="Monthly spend limit exceeded. Retry-After: 180"
+        )
+    )
+    first = run_preflight_probe("antigravity-agent", "gemini-3.8-flash-medium", runner_fn=first_runner)
+    assert first.status is PreflightStatus.QUOTA_EXHAUSTED
+    assert first_runner.call_count == 1
+
+    second_runner = MagicMock()
+    second = run_preflight_probe("antigravity-agent", "gemini-3.8-flash-medium", runner_fn=second_runner)
+    assert second.status is PreflightStatus.QUOTA_EXHAUSTED
+    assert second.exit_code is None
+    assert "cooldown" in second.hint.lower()
+    second_runner.assert_not_called()
+
+    checkpoint = _write_checkpoint(repo, "plan")
+    with (
+        patch("sandbox_executor.cli.preflight.run_preflight_probe") as probe,
+        patch("sandbox_executor.cli.run_flow_pipeline", return_value={}) as pipeline,
+        patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY),
+    ):
+        assert _run_main(["holon", "flow", str(intent_file), "--target-worktree", str(repo)]) == 1
+        assert _run_main(["holon", "flow", "--checkpoint", checkpoint, "--target-worktree", str(repo)]) == 1
+        probe.assert_not_called()
+        pipeline.assert_not_called()
+        assert "cooldown" in capsys.readouterr().err.lower()
+
+        assert _run_main(["holon", "flow", str(intent_file), "--target-worktree", str(repo), "--skip-preflight"]) == 0
+        assert pipeline.call_count == 1
+        probe.assert_not_called()
+
+
+def test_expired_cooldown_marker_is_cleaned_up_and_probe_recovers(probe_env, monkeypatch):
+    clock = {"now": 1795730400.0}
+    monkeypatch.setattr(preflight_cooldown.time, "time", lambda: clock["now"])
+
+    fail_runner = MagicMock(
+        return_value=subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="Organization spend limit reached. Retry-After: 30"
+        )
+    )
+    assert run_preflight_probe("antigravity-agent", "gemini-3.8-flash-medium", runner_fn=fail_runner).status is (
+        PreflightStatus.QUOTA_EXHAUSTED
+    )
+    marker_file = probe_env / ".holon" / "preflight" / "cooldowns" / "antigravity.json"
+    assert marker_file.is_file()
+
+    clock["now"] += 31.0
+    ok_runner = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="OK\n", stderr=""))
+    res = run_preflight_probe("antigravity-agent", "gemini-3.8-flash-medium", runner_fn=ok_runner)
+    assert res.ok
+    assert ok_runner.call_count == 1
+    assert not marker_file.exists()
+
+
+def test_malformed_cooldown_marker_fails_open(probe_env):
+    marker_file = probe_env / ".holon" / "preflight" / "cooldowns" / "antigravity.json"
+    marker_file.parent.mkdir(parents=True, exist_ok=True)
+    marker_file.write_text("{not-valid-json", encoding="utf-8")
+
+    ok_runner = MagicMock(return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="OK\n", stderr=""))
+    res = run_preflight_probe("antigravity-agent", "gemini-3.8-flash-medium", runner_fn=ok_runner)
+    assert res.ok
+    assert ok_runner.call_count == 1
+    assert not marker_file.exists()

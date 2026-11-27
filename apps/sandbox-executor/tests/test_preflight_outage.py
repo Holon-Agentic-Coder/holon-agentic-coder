@@ -4,9 +4,10 @@ import logging
 from unittest.mock import patch
 
 import pytest
+from sandbox_executor import preflight_cooldown
 from sandbox_executor.cli.preflight import preflight_gate
 from sandbox_executor.preflight import PreflightResult, PreflightStatus
-from sandbox_executor.preflight_outage import backoff_schedule, connectivity_reason
+from sandbox_executor.preflight_outage import backoff_schedule, connectivity_reason, wait_out_outage
 
 _PROBE = "sandbox_executor.cli.preflight.run_preflight_probe"
 _NO_OUTPUT_TIMEOUT_HINT = (
@@ -164,3 +165,63 @@ def test_skip_bypasses_probe_and_wait(fake_time, monkeypatch, bypass):
         assert _gate(fake_time, skip=bypass == "flag") is None
     probe.assert_not_called()
     assert fake_time.sleeps == []
+
+
+def test_spend_limit_and_cooldown_short_circuit_are_not_connectivity():
+    spend_limit = _result(output="Your credit balance is too low to access the API")
+    marker = preflight_cooldown.CooldownMarker(
+        agent_id="claude",
+        agent="claude-agent",
+        model="m",
+        reason="spend_limit",
+        recorded_at=1000.0,
+        expires_at=1300.0,
+        output_excerpt="Organization spend limit reached",
+    )
+    short_circuit = preflight_cooldown.build_short_circuit_result(
+        marker, "claude-agent", "m", "holon/agent-claude", now=1050.0
+    )
+    assert connectivity_reason(spend_limit) is None
+    assert connectivity_reason(short_circuit) is None
+
+
+def test_preflight_gate_records_cooldown_and_short_circuits_subsequent_call(fake_time, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(preflight_cooldown.time, "time", lambda: 2000.0)
+    quota = _result(PreflightStatus.QUOTA_EXHAUSTED, output="Organization spend limit reached. Retry-After: 240")
+    with patch(_PROBE, return_value=quota) as probe:
+        first = _gate(fake_time)
+        second = _gate(fake_time)
+    assert first is quota
+    assert second is not None
+    assert second.status is PreflightStatus.QUOTA_EXHAUSTED
+    assert second.exit_code is None
+    assert "cooldown" in second.hint.lower()
+    assert probe.call_count == 1
+    assert fake_time.sleeps == []
+    assert "Aborting before any branch" in capsys.readouterr().err
+
+
+def test_wait_out_outage_short_circuits_when_cooldown_appears_during_sleep(fake_time, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(preflight_cooldown.time, "time", lambda: 3000.0)
+    outage = _result(output="getaddrinfo ENOTFOUND api.anthropic.com")
+    quota = _result(PreflightStatus.QUOTA_EXHAUSTED, output="Billing hard limit reached. Retry-After: 300")
+
+    def sleep_and_record(seconds: float) -> None:
+        fake_time.sleep(seconds)
+        preflight_cooldown.record_cooldown(quota, now=3000.0)
+
+    calls = 0
+
+    def probe() -> PreflightResult:
+        nonlocal calls
+        calls += 1
+        return outage
+
+    outcome = wait_out_outage(probe, outage, fake_time.clock(), sleep=sleep_and_record, clock=fake_time.clock)
+    assert outcome.result.status is PreflightStatus.QUOTA_EXHAUSTED
+    assert outcome.result.exit_code is None
+    assert outcome.gave_up is False
+    assert calls == 0
+    assert fake_time.sleeps == [30]

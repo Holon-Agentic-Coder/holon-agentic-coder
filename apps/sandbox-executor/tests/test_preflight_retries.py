@@ -6,7 +6,7 @@ import subprocess
 from unittest.mock import MagicMock
 
 import pytest
-from sandbox_executor import preflight
+from sandbox_executor import preflight, preflight_cooldown
 from sandbox_executor.preflight import PreflightStatus, run_preflight_probe
 
 from tests.flow.sleep_patch import scoped_sleep_patch
@@ -218,3 +218,34 @@ def test_probe_clear_auth_quota_and_model_errors_fail_immediately_without_retry(
     assert res.status is expected
     assert runner_fn.call_count == 1
     sleep_mock.assert_not_called()
+
+
+@pytest.mark.parametrize("timed_out", [False, True], ids=["exit-nonzero", "timeout"])
+def test_spend_limit_fails_immediately_records_cooldown_and_short_circuits_next_probe(
+    probe_env, monkeypatch, timed_out
+):
+    monkeypatch.setattr(preflight, "DEFAULT_RETRY_DELAY_SECONDS", 2.0)
+    monkeypatch.setattr(preflight_cooldown.time, "time", lambda: 4000.0)
+    stderr = "Organization spend limit reached. Retry-After: 180"
+    run_calls = []
+
+    def runner_fn(cmd, **kwargs):
+        if cmd[:2] != ["docker", "run"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        run_calls.append(cmd)
+        if timed_out:
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"), output="", stderr=stderr)
+        return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr=stderr)
+
+    with scoped_sleep_patch("sandbox_executor.preflight") as sleep_mock:
+        first = run_preflight_probe("antigravity-agent", "m", timeout=5, runner_fn=runner_fn)
+        second = run_preflight_probe("antigravity-agent", "m", timeout=5, runner_fn=runner_fn)
+
+    assert first.status is PreflightStatus.QUOTA_EXHAUSTED
+    assert second.status is PreflightStatus.QUOTA_EXHAUSTED
+    assert second.exit_code is None
+    assert "cooldown" in second.hint.lower()
+    assert len(run_calls) == 1
+    sleep_mock.assert_not_called()
+    marker_file = probe_env / ".holon" / "preflight" / "cooldowns" / "antigravity.json"
+    assert marker_file.is_file()

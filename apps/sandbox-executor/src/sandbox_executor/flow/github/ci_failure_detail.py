@@ -1,8 +1,3 @@
-"""Detail of a failed CI check for reports: failed step names and the job duration, through ``gh run view``.
-
-The lookup only annotates a failure. It never decides whether a check failed, and every error yields None.
-"""
-
 from __future__ import annotations
 
 import json
@@ -14,7 +9,7 @@ from datetime import datetime
 from typing import Any
 
 TIMING_GATE_STEP_PREFIX = "CI Timing Gate"
-# The Workspace survival and build-images jobs run the same gate script in a step named only "Timing gate".
+# why: the Workspace survival and build-images jobs run the same gate script in a step named only "Timing gate".
 TIMING_GATE_STEP_NAMES = frozenset({"Timing gate"})
 STEP_LOOKUP_TIMEOUT_SECONDS = 30.0
 MAX_STEP_LOOKUPS = 5
@@ -25,13 +20,11 @@ DetailLookup = Callable[[dict[str, Any]], "dict[str, Any] | None"]
 
 
 def parse_run_id(link: str | None) -> str | None:
-    """The Actions run id in a check link, or None when the link is not an Actions run URL."""
     match = _RUN_ID_PATTERN.search(str(link or ""))
     return match.group(1) if match else None
 
 
 def _seconds_between(started: Any, completed: Any) -> float | None:
-    """Whole seconds between two ISO 8601 timestamps, or None when either is missing or malformed."""
     try:
         start = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
         end = datetime.fromisoformat(str(completed).replace("Z", "+00:00"))
@@ -41,12 +34,10 @@ def _seconds_between(started: Any, completed: Any) -> float | None:
 
 
 def _is_timing_gate_step(step: str) -> bool:
-    """Whether a CI step name is a timing gate: a ``CI Timing Gate ...`` step or a bare ``Timing gate`` step."""
     return step.startswith(TIMING_GATE_STEP_PREFIX) or step in TIMING_GATE_STEP_NAMES
 
 
 def failure_detail(name: str, job: Mapping[str, Any] | None) -> dict[str, Any]:
-    """The detail record of one failed check: its failed step names, duration and timing gate flag."""
     steps = (job or {}).get("steps") or []
     failed_steps = [str(s.get("name")) for s in steps if str(s.get("conclusion")).lower() == "failure"]
     return {
@@ -58,14 +49,12 @@ def failure_detail(name: str, job: Mapping[str, Any] | None) -> dict[str, Any]:
 
 
 def bare_detail(name: str) -> dict[str, Any]:
-    """The detail record of a failed check nothing more is known about."""
     return failure_detail(name, None)
 
 
 def gh_detail_lookup(
     repo_dir: str, proxy_env: Mapping[str, str], run: Callable[..., Any] = subprocess.run
 ) -> DetailLookup:
-    """A lookup of the detail of a failed check through ``gh run view``; every error yields None."""
     env = {**os.environ, **proxy_env, "DOCKER_CLI_HINTS": "false"}
 
     def lookup(check: dict[str, Any]) -> dict[str, Any] | None:
@@ -87,6 +76,7 @@ def gh_detail_lookup(
             for job in json.loads(proc.stdout).get("jobs") or []:
                 if job.get("name") == check.get("name"):
                     return failure_detail(str(check.get("name")), job)
+        # why: the detail only annotates a failure and never decides one, so every lookup error yields None
         except Exception:
             return None
         return None
@@ -95,7 +85,6 @@ def gh_detail_lookup(
 
 
 def describe_failure(detail: Mapping[str, Any]) -> str:
-    """``name`` or ``name (CI Timing Gate, 6.0 min)`` for a report line."""
     name = str(detail.get("name"))
     if not detail.get("timing_gate"):
         return name
@@ -105,5 +94,4 @@ def describe_failure(detail: Mapping[str, Any]) -> str:
 
 
 def short_sha(sha: str | None) -> str:
-    """The first seven characters of a commit SHA, or ``unknown`` when none is recorded."""
     return str(sha or "")[:SHORT_SHA_CHARS] or "unknown"

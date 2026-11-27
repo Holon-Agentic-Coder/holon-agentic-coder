@@ -12,6 +12,7 @@ from sandbox_executor.redaction import redact_agent_secrets
 
 STAGE_3 = "stage_3"
 STAGE_4 = "stage_4"
+STAGE_5 = "stage_5"
 MAX_RECORDED_IDS = 50
 EXCERPT_CHARS_PER_TEST = 600
 SIGNATURE_HEX_CHARS = 16
@@ -20,6 +21,7 @@ IDENTITY_PREFIXES = ("GIT_AUTHOR_", "GIT_COMMITTER_")
 SUMMARISED_PREFIXES = ("GIT_", "PYTEST_", "UV_", "PYTHON", "HOLON_")
 SAFE_VALUE_NAMES = frozenset({"PYTEST_ADDOPTS", "UV_FROZEN", "PYTHONHASHSEED"})
 LEDGER_RELPATH = ("holon-knowledge", "ledger", "executions.jsonl")
+ACTION_ORIGIN_BY_STAGE = {STAGE_4: "ci_fix", STAGE_5: "calibration"}
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _SECTION_HEADER = re.compile(r"^_{3,}\s+(?P<name>.+?)\s+_{3,}$")
@@ -116,7 +118,7 @@ def _row(evidence: TestFailureEvidence, branch: str, execution_id: str) -> dict[
         "category": "test",
         "target": evidence.stage,
         "outcome": "blocked" if evidence.classification in BLOCKED_CLASSIFICATIONS else evidence.outcome,
-        "action_origin": "ci_fix" if evidence.stage == STAGE_4 else "initial_implementation",
+        "action_origin": ACTION_ORIGIN_BY_STAGE.get(evidence.stage, "initial_implementation"),
         "event_type": "test_run",
         "stage": evidence.stage,
         "branch": branch,

@@ -1,5 +1,3 @@
-"""Stage 3 outcome for an execution branch that kept its commits but could not merge the target branch."""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -14,7 +12,6 @@ from sandbox_executor.flow.target_sync_result import SyncBoundary
 
 
 def _superseding_success_row(summary_row: dict[str, Any], exec_id: str, paths: list[str]) -> dict[str, Any]:
-    """Build the superseding ``entry_type="summary"`` row with ``status="success"`` after host conflict resolution."""
     try:
         prior_revision = int(summary_row.get("ledger_revision") or 1)
     except (TypeError, ValueError):
@@ -37,14 +34,6 @@ def _superseding_success_row(summary_row: dict[str, Any], exec_id: str, paths: l
 def sync_conflict_result(
     context: FlowContext, start_time: str, summary_row: dict[str, Any] | None, base_payload: dict[str, Any]
 ) -> StageResult | None:
-    """Resolve a ``sync_conflict`` summary row via host-side ``sync_with_target`` at Stage 3 end, or fail closed.
-
-    When ``summary_row`` has ``status == SYNC_CONFLICT_STATUS``, runs ``at_stage_boundary(context, FlowStage.EXECUTE,
-    SyncBoundary.STAGE_END)`` on ``context.execution_branch``. If the host sync resolves the conflict (or is a no-op),
-    persists a superseding ``entry_type="summary"`` row with ``status="success"`` to ``executions.jsonl``, updates
-    ``summary_row`` and ``base_payload["status"]`` to ``"success"``, and returns ``None`` so Stage 3 proceeds through
-    the empty-diff and touch-set checks. If the host sync is blocked, returns the failed :class:`StageResult`.
-    """
     if summary_row is None or summary_row.get("status") != SYNC_CONFLICT_STATUS:
         return None
     paths = [str(path) for path in summary_row.get("conflicted_paths") or []]

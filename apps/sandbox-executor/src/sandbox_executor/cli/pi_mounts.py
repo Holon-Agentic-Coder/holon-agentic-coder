@@ -1,5 +1,3 @@
-"""Re-export shim: the pi runner mounts moved to `sandbox_executor.launcher.pi_mounts`."""
-
 from sandbox_executor.launcher.pi_mounts import CONTAINER_HOME as CONTAINER_HOME
 from sandbox_executor.launcher.pi_mounts import OWNED_TMPFS_OPTIONS as OWNED_TMPFS_OPTIONS
 from sandbox_executor.launcher.pi_mounts import get_pi_mounts as get_pi_mounts

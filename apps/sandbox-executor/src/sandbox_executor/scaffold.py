@@ -1,9 +1,3 @@
-"""Project scaffolding logic for `holon init`.
-
-Automates onboarding and scaffolding of new or existing projects into the Holon ecosystem.
-Creates holon-config/, holon-knowledge/, and configures .gitignore with idempotency guarantees.
-"""
-
 import json
 import os
 import sys
@@ -475,8 +469,7 @@ The final lines of a report with no findings:
 ````
 """
 
-# The project layer of the layered configuration (see config_env) may hold secrets, so it is never committed;
-# .env.example stays tracked.
+# why: the project layer of the layered configuration may hold secrets, so it is never committed; .env.example is.
 ENV_GITIGNORE = ".env"
 
 PYTHON_GITIGNORE = [
@@ -496,7 +489,6 @@ GENERIC_GITIGNORE = [
 
 
 def _format_rel(path: str) -> str:
-    """Formats a path relative to the current working directory for clean display."""
     try:
         return os.path.relpath(path, os.getcwd())
     except ValueError:
@@ -504,10 +496,6 @@ def _format_rel(path: str) -> str:
 
 
 def _write_file(path: str, content: str, force: bool = False) -> tuple[bool, str]:
-    """Writes a file if it does not exist, or overwrites if force=True.
-
-    Returns (written, message).
-    """
     rel_path = _format_rel(path)
     if os.path.exists(path):
         if not force:
@@ -522,20 +510,19 @@ def _write_file(path: str, content: str, force: bool = False) -> tuple[bool, str
     return True, f"Created {rel_path}"
 
 
+# why: ledgers are append-only, so an existing ledger file is never overwritten or truncated.
 def _ensure_ledger_file(path: str) -> tuple[bool, str]:
-    """Ensures ledger file exists. NEVER overwrites or truncates existing ledger files."""
     rel_path = _format_rel(path)
     if os.path.exists(path):
         return False, f"Preserved existing ledger {rel_path}"
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8"):
-        pass  # create empty file
+        pass
     return True, f"Created ledger {rel_path}"
 
 
 def _update_gitignore(target_dir: str, template: str) -> tuple[bool, str]:
-    """Creates or updates .gitignore with standard ignore patterns without duplicates."""
     gitignore_path = os.path.join(target_dir, ".gitignore")
     rel_path = _format_rel(gitignore_path)
     patterns = PYTHON_GITIGNORE if template == "python" else GENERIC_GITIGNORE
@@ -575,16 +562,6 @@ def _update_gitignore(target_dir: str, template: str) -> tuple[bool, str]:
 
 
 def init_project(target_dir: str = ".", template: str = "python", force: bool = False) -> int:
-    """Scaffolds Holon directories, templates, and ledgers in target_dir.
-
-    Args:
-        target_dir: The project root directory to initialise.
-        template: Project template type ('python' or 'generic').
-        force: If True, overwrite configuration files (ledger files are never overwritten).
-
-    Returns:
-        0 on success, non-zero on error.
-    """
     try:
         target_dir = os.path.abspath(target_dir)
         os.makedirs(target_dir, exist_ok=True)
@@ -593,7 +570,6 @@ def init_project(target_dir: str = ".", template: str = "python", force: bool = 
 
         print(f"Initialising Holon project in {_format_rel(target_dir)} (template: {template})...")
 
-        # 1. Scaffolding holon-config/
         config_dir = os.path.join(target_dir, "holon-config")
         files_to_scaffold = [
             (os.path.join(config_dir, "world", "ruleset.md"), ruleset_content),
@@ -614,7 +590,7 @@ def init_project(target_dir: str = ".", template: str = "python", force: bool = 
             (os.path.join(config_dir, "prompts", "planner.template.md"), PLANNER_TEMPLATE),
             (os.path.join(config_dir, "prompts", "executor.template.md"), EXECUTOR_TEMPLATE),
             (os.path.join(config_dir, "prompts", "review_loop.template.md"), REVIEW_LOOP_TEMPLATE),
-            # Commented example only: init never creates .env itself, so no tooling ever writes a secret file.
+            # why: init never creates .env itself, only the commented example, so no tooling ever writes a secret file.
             (os.path.join(target_dir, ".env.example"), env_example_text()),
         ]
 
@@ -622,7 +598,6 @@ def init_project(target_dir: str = ".", template: str = "python", force: bool = 
             _, msg = _write_file(path, content, force=force)
             print(f"  - {msg}")
 
-        # 2. Scaffolding holon-knowledge/
         knowledge_dir = os.path.join(target_dir, "holon-knowledge")
         ledger_files = [
             os.path.join(knowledge_dir, "ledger", "intents.jsonl"),
@@ -649,7 +624,6 @@ def init_project(target_dir: str = ".", template: str = "python", force: bool = 
                     pass
                 print(f"  - Created {_format_rel(gitkeep)}")
 
-        # 3. Scaffolding intents/
         intents_dir = os.path.join(target_dir, "intents")
         os.makedirs(intents_dir, exist_ok=True)
         intents_gitkeep = os.path.join(intents_dir, ".gitkeep")
@@ -658,7 +632,6 @@ def init_project(target_dir: str = ".", template: str = "python", force: bool = 
                 pass
             print(f"  - Created {_format_rel(intents_gitkeep)}")
 
-        # 4. Updating .gitignore
         _, gitignore_msg = _update_gitignore(target_dir, template)
         print(f"  - {gitignore_msg}")
 

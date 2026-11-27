@@ -1,9 +1,3 @@
-"""Tests for host-local LLM support in the sandbox launcher.
-
-Covers the authority rewrite decision table, the generated container-side agent directory, the gateway host mapping, and
-the keyless validation path for local providers.
-"""
-
 import contextlib
 import http.server
 import io
@@ -26,8 +20,6 @@ from tests.loopback_http import serve_on_loopback
 
 
 class TestRewriteAuthority(unittest.TestCase):
-    """Only loopback and explicitly declared authorities may be redirected to the Docker gateway."""
-
     def test_loopback_hosts_are_rewritten(self):
         cases = {
             "http://localhost:11434/v1": "http://host.docker.internal:11434/v1",
@@ -54,7 +46,7 @@ class TestRewriteAuthority(unittest.TestCase):
         )
 
     def test_undeclared_lan_authority_is_untouched(self):
-        """Safety invariant inherited from the server-connect rewrite: never blanket-rewrite RFC1918 ranges."""
+        # why: safety invariant from the server-connect rewrite: never blanket-rewrite RFC1918 ranges
         self.assertEqual(
             local_llm.rewrite_authority("http://192.168.2.13:8081/v1"),
             "http://192.168.2.13:8081/v1",
@@ -149,7 +141,7 @@ class TestBuildContainerConfig(unittest.TestCase):
         self.assertEqual(providers["vmlx"]["baseUrl"], "http://host.docker.internal:8081/v1")
         self.assertEqual(providers["vmlx"]["api"], "openai-completions")
         self.assertEqual(providers["vmlx"]["models"][0]["contextWindow"], 999424)
-        # Cloud providers are stripped to prevent host credentials crossing the sandbox boundary
+        # why: host credentials must never cross the sandbox boundary
         self.assertNotIn("cloud", providers)
 
     def test_cloud_providers_with_api_keys_are_pruned(self):
@@ -270,8 +262,6 @@ class TestBuildContainerConfig(unittest.TestCase):
 
 
 class TestBaseUrlEchoRedaction(unittest.TestCase):
-    """A credential in a provider baseUrl's userinfo never reaches a log line or an error message."""
-
     def _url(self, probe: str, authority: str) -> str:
         return f"http://alice:{probe}@{authority}/v1"
 
@@ -342,7 +332,7 @@ class TestPrepareAgentDir(unittest.TestCase):
                     on_disk = json.load(handle)
                 self.assertEqual(on_disk, config)
                 self.assertEqual(on_disk["providers"]["vmlx"]["baseUrl"], "http://host.docker.internal:8081/v1")
-                # 0777 directory and 0644 file allow non-root container user (uid=1000) to access them on Linux
+                # why: a non-root container user (uid=1000) must be able to read these on Linux
                 self.assertEqual(stat.S_IMODE(os.stat(dest).st_mode), 0o777)
                 self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o644)
         finally:
@@ -381,8 +371,6 @@ class TestPrepareAgentDir(unittest.TestCase):
                 )
 
     def test_host_models_json_invalid_raises_naming_the_file(self):
-        # A present but malformed models.json is a clean config error naming the file, never silently skipped
-        # either; its content never reaches the message.
         with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, "models.json"), "w") as handle:
                 handle.write("{not json")
@@ -402,8 +390,7 @@ class TestPrepareAgentDir(unittest.TestCase):
 
 class TestLauncherIntegration(unittest.TestCase):
     def setUp(self):
-        # The launcher really writes the generated agent files into whatever the mocked mkdtemp returns, so each test
-        # gets its own directories rather than a fixed path that parallel workers would share.
+        # why: per-test dirs; a fixed path would be shared by parallel workers
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.default_agent_dir = os.path.join(tmp.name, "holon-pi-agent-test")
@@ -412,7 +399,7 @@ class TestLauncherIntegration(unittest.TestCase):
         os.mkdir(self.generated_agent_dir)
 
     def _run(self, env, mounts=None, tr_envs=None, mkdtemp_dir=None, agent_id="pi", token_reduce=False):  # noqa: PLR0913
-        # Synthesised model entries declare no contextWindow; the envelope needs one.
+        # why: synthesised model entries declare no contextWindow; the envelope needs one
         merged_env = {
             "GITHUB_TOKEN": "mock-token",
             "HOLON_LOCAL_CONTEXT_WINDOW": "32768",
@@ -436,14 +423,14 @@ class TestLauncherIntegration(unittest.TestCase):
                 token_reduce=token_reduce,
             )
         args = mock_run.call_args[0][0] if mock_run.called else []
-        self.assertFalse(any(a.startswith("HOLON_") for a in args))  # every HOLON_* item goes in the env-file
+        self.assertFalse(any(a.startswith("HOLON_") for a in args))
         self.forwarded = docker.env_files[-1] if docker.env_files else {}
         return code, args, mock_rmtree
 
     def test_gateway_host_mapping_is_added_to_every_run(self):
         code, args, _ = self._run({})
         self.assertEqual(code, 0)
-        # Emitted on Linux; on Docker Desktop the name already resolves and the flag is a no-op.
+        # why: the flag is only emitted on Linux; Docker Desktop already resolves the name
         if sys.platform not in ("darwin", "win32"):
             self.assertIn("--add-host", args)
             self.assertIn("host.docker.internal:host-gateway", args)
@@ -456,8 +443,7 @@ class TestLauncherIntegration(unittest.TestCase):
             self.assertEqual(args.count("--add-host"), 1 + len(cli.BLOCKED_METADATA_HOSTS))
 
     def test_setup_token_reduction_proxy_excludes_gateway_host_args(self):
-        # The proxy creates its cache, wire-log and proxy-cache directories under the repository root and the home
-        # directory; keep them in this test's own directory.
+        # why: the proxy writes cache dirs under the repo root and home; keep them in this test's dir
         root = os.path.dirname(self.default_agent_dir)
         with (
             patch.object(proxy_paths, "_find_git_root", return_value=os.path.join(root, "repo")),
@@ -588,7 +574,6 @@ class TestLauncherIntegration(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("NO_PROXY=localhost,127.0.0.1,host.docker.internal:8081", args)
 
-        # With token reduction active, bare gateway host is also added for domain-only NO_PROXY matchers
         code, args, _ = self._run(env, tr_envs=tr_envs, token_reduce=True)
         self.assertEqual(code, 0)
         self.assertIn("NO_PROXY=localhost,127.0.0.1,host.docker.internal,host.docker.internal:8081", args)
@@ -617,7 +602,6 @@ class TestLauncherIntegration(unittest.TestCase):
             models_file = os.path.join(agent_dir, "models.json")
             with open(models_file, "w") as handle:
                 handle.write("{}")
-            # Sensitive files (auth.json, sessions/) must never be mounted
             with open(os.path.join(agent_dir, "auth.json"), "w") as handle:
                 handle.write("{}")
             os.makedirs(os.path.join(agent_dir, "sessions"))
@@ -664,7 +648,7 @@ class TestRunnerValidation(unittest.TestCase):
             get_runner("pi-agent").validate()
 
     def test_non_pi_runners_still_require_keys_in_local_mode(self):
-        """Host-local model mode is currently pi-only; claude and opencode must not bypass validation."""
+        # why: host-local model mode is currently pi-only
         env = {
             "HOLON_LOCAL_LLM": "1",
             "HOLON_LOCAL_BASE_URL": "http://localhost:8081/v1",
@@ -750,8 +734,6 @@ def _config(*models, base_url="http://localhost:8081/v1"):
 
 
 class TestModelEnvelope(unittest.TestCase):
-    """Model envelope: explicit maxTokens and reasoning mode on every generated model entry."""
-
     def apply(self, config, env=None):
         return local_llm.apply_model_envelope(config, env or {})
 
@@ -820,7 +802,6 @@ class TestModelEnvelope(unittest.TestCase):
                 self.assertEqual(envelope.reasoning_line(), f"reasoning={expected[0]} source={expected[1]}")
 
     def test_env_reasoning_mode_never_overrides_host_reasoning_false(self):
-        # A model declared unable to reason keeps reasoning off; the env mode is ignored with a warning.
         config = _config(
             {"id": "plain", "contextWindow": 32768, "reasoning": False},
             {"id": "thinker", "contextWindow": 32768, "reasoning": True},
@@ -833,7 +814,6 @@ class TestModelEnvelope(unittest.TestCase):
         self.assertIs(models[0]["reasoning"], False)
         self.assertIs(models[1]["reasoning"], True)
         self.assertTrue(any("'plain'" in line and "reasoning: false" in line for line in logs.output))
-        # An explicit "off" agrees with the host entry, so nothing is warned about.
         with self.assertNoLogs("sandbox_executor.local_llm", level="WARNING"):
             (envelope,) = self.apply(
                 _config({"id": "m", "contextWindow": 32768, "reasoning": False}), {"HOLON_REASONING_MODE": "off"}
@@ -858,7 +838,6 @@ class TestModelEnvelope(unittest.TestCase):
                 on_disk = json.load(f)
             with open(os.path.join(dest, "settings.json")) as f:
                 settings = json.load(f)
-            # Rewrite behaviour is unchanged; the envelope is added on top.
             self.assertEqual(on_disk["providers"]["vmlx"]["baseUrl"], "http://host.docker.internal:8081/v1")
             self.assertEqual(on_disk, config)
             entry = on_disk["providers"]["vmlx"]["models"][0]
@@ -869,7 +848,7 @@ class TestModelEnvelope(unittest.TestCase):
             self.assertEqual(local_llm.container_env(dest), {"PI_CODING_AGENT_DIR": local_llm.CONTAINER_AGENT_DIR})
 
 
-# Frozen health fixtures: shapes for parser coverage only, not performance claims.
+# why: frozen fixtures for parser coverage only, not performance claims
 HEALTH_OFF = {"status": "ok", "prefill_cache": {"enabled": False}, "effective_defaults": {"max_output_tokens": 8192}}
 HEALTH_COLD = {
     "status": "ok",
@@ -996,7 +975,7 @@ class TestGatewayHealth(unittest.TestCase):
         self.assertEqual(local_llm.health_url("http://[::1]:8081/v1"), "http://[::1]:8081/health")
 
     def test_redact_url_drops_userinfo_query_and_fragment(self):
-        # Base URLs echoed into errors or logs must never carry credentials. Built at runtime, not literals.
+        # why: probe credentials are built at runtime rather than written as literals
         sample = "pw-" + "x" * 8
         url = f"http://someone:{sample}@gpu.example.com:8000/v1?key={sample}#{sample}"
         self.assertEqual(local_llm.redact_url(url), "http://***@gpu.example.com:8000/v1")
@@ -1008,8 +987,7 @@ class TestGatewayHealth(unittest.TestCase):
         self.assertNotIn(sample, str(caught.exception))
 
     def test_redact_url_drops_userinfo_with_unencoded_delimiters(self):
-        # urlsplit ends the authority at the first "/", "?" or "#", so such a password must not leak.
-        # The host after such a segment cannot be trusted, so it is withheld rather than shown.
+        # why: urlsplit ends the authority at the first / ? or #, so the host after it cannot be trusted
         sample = "pw-" + "x" * 8
         head = "hd-" + "q" * 5
         for sep in ("/", "?", "#"):
@@ -1022,7 +1000,6 @@ class TestGatewayHealth(unittest.TestCase):
                         self.assertNotIn(fragment, redacted)
         bracketed = f"http://someone:{head}/{sample}@[::1]:8081/v1"
         self.assertEqual(local_llm.redact_url(bracketed), "http://***")
-        # The same password without an unencoded delimiter still shows the real host.
         plain = f"http://someone:{head}{sample}@[::1]:8081/v1"
         self.assertEqual(local_llm.redact_url(plain), "http://***@[::1]:8081/v1")
 
@@ -1035,13 +1012,10 @@ class TestGatewayHealth(unittest.TestCase):
         ):
             with self.subTest(url=url):
                 self.assertEqual(local_llm.redact_url(url), url)
-        # #96 message rule: an unparseable authority is withheld even without any "@".
         self.assertEqual(local_llm.redact_url("http://[::1/v1"), "http://***")
-        # A URL without any "@" is byte-identical (even its scheme case); only a query or fragment is dropped.
         self.assertEqual(local_llm.redact_url("HTTP://Host.Example:80/a/b"), "HTTP://Host.Example:80/a/b")
         self.assertEqual(local_llm.redact_url("http://localhost:8000/v1?key=k#f"), "http://localhost:8000/v1")
-        # An "@" in the path, query or fragment of a credential-free URL is over-redacted, and the text after
-        # it is never presented as the host: the host is withheld instead of showing a believable wrong one.
+        # why: withholding the host beats presenting a believable wrong one
         other = "other" + ".example.net"
         for url in (
             "http://localhost:8000/v1/@scope/models",
@@ -1056,7 +1030,7 @@ class TestGatewayHealth(unittest.TestCase):
         self.assertEqual(local_llm.redact_url(f"gpu.lan:8000/v1?owner=ops@{other}"), "***")
 
     def test_redact_url_never_leaks_userinfo_over_probe_matrix(self):
-        # The strip up to the last "@" is unconditional, so no host shape can gate it. Built at runtime.
+        # why: the strip up to the last @ is unconditional, so no host shape may gate it
         head = "hd-" + "q" * 5
         sample = "pw-" + "x" * 8
         name = "some" + "one"
@@ -1080,7 +1054,7 @@ class TestGatewayHealth(unittest.TestCase):
                         with self.subTest(url=url):
                             redacted = local_llm.redact_url(url)
                             ambiguous = any(c in userinfo for c in "/?#")
-                            # #96 message rule: a host that does not validate is withheld, never shown.
+                            # why: #96 message rule: a host that does not validate is withheld
                             withheld = ambiguous or host not in validated
                             expected = f"{prefix}***" if withheld else f"{prefix}***@{host}"
                             self.assertEqual(redacted, expected)
@@ -1105,7 +1079,6 @@ class TestGatewayHealth(unittest.TestCase):
         self.assertFalse(any(sample in line for line in logs.output))
 
     def test_only_http_and_https_are_probed(self):
-        # A loopback file:// or ftp:// base URL must never make the doctor open a file or an FTP session.
         calls = []
         for url in ("file://localhost/etc", "ftp://127.0.0.1:21/x", "gopher://localhost:70/x"):
             with self.subTest(url=url):
@@ -1124,7 +1097,7 @@ class TestGatewayHealth(unittest.TestCase):
                 self.send_response(200)
                 self.send_header("Content-Length", str(size))
                 self.end_headers()
-                # The client stops reading at the cap and hangs up, so the rest of the write may fail.
+                # why: the client hangs up at the cap, so the rest of the write may fail
                 with contextlib.suppress(OSError):
                     self.wfile.write(b"x" * size)
 
@@ -1162,8 +1135,6 @@ class TestGatewayHealth(unittest.TestCase):
 
 
 class TestValidatedModelsConfig(unittest.TestCase):
-    """One validated loader; malformed shapes are clean config errors, never crashes."""
-
     def _write(self, tmp, raw: bytes) -> str:
         path = os.path.join(tmp, "models.json")
         with open(path, "wb") as handle:
@@ -1171,7 +1142,7 @@ class TestValidatedModelsConfig(unittest.TestCase):
         return path
 
     def test_loader_rejects_bad_encoding_huge_numbers_and_deep_nesting(self):
-        # UnicodeDecodeError, the 4300-digit int limit and RecursionError all used to escape.
+        # why: regression: UnicodeDecodeError, int digit limit and RecursionError used to escape
         probe = make_probe("k")
         for case, raw in {
             "non-utf8": b'{"apiKey": "' + probe.encode() + b'\xff"}',
@@ -1197,7 +1168,7 @@ class TestValidatedModelsConfig(unittest.TestCase):
                 local_llm.load_models_json(path)
 
     def test_non_dict_providers_is_a_config_error_everywhere(self):
-        # host_base_urls used to raise AttributeError on a list of providers.
+        # why: regression: host_base_urls used to raise AttributeError on a list of providers
         for providers in ([1, 2], "x", 5):
             config = {"providers": providers}
             for consumer in (
@@ -1213,7 +1184,7 @@ class TestValidatedModelsConfig(unittest.TestCase):
                     consumer(config)
 
     def test_non_list_models_is_a_config_error(self):
-        # apply_model_envelope used to raise TypeError iterating models=5.
+        # why: regression: apply_model_envelope used to raise TypeError iterating models=5
         for models in (5, True, "m", {"id": "m"}):
             config = {"providers": {"p": {"baseUrl": "http://localhost:8080/v1", "models": models}}}
             with (
@@ -1223,7 +1194,7 @@ class TestValidatedModelsConfig(unittest.TestCase):
                 local_llm.apply_model_envelope(config, {})
 
     def test_run_path_reports_non_list_models_cleanly(self):
-        # Repro on the run path: prepare_agent_dir -> TypeError used to escape run_docker_container.
+        # why: regression: a TypeError from prepare_agent_dir used to escape run_docker_container
         config = {"providers": {"p": {"baseUrl": "http://localhost:8080/v1", "models": 5}}}
         with tempfile.TemporaryDirectory() as tmp:
             stderr = io.StringIO()
@@ -1260,7 +1231,7 @@ class TestValidatedModelsConfig(unittest.TestCase):
             self.assertNotIn(raw, str(ctx.exception))
 
     def test_loader_rejects_lone_surrogate_strings(self):
-        # json.loads accepts a \\ud800 escape; the str it yields cannot be printed on a UTF-8 terminal.
+        # why: json.loads accepts a lone surrogate escape that cannot be printed on a UTF-8 terminal
         for case, raw in {
             "model-id": b'{"providers": {"p": {"models": [{"id": "bad\\ud800id"}]}}}',
             "object-key": b'{"providers": {"p": {"k\\udcff": 1}}}',
@@ -1289,7 +1260,7 @@ class TestValidatedModelsConfig(unittest.TestCase):
             str(ctx.exception).encode("utf-8")
 
     def test_text_settings_must_be_utf8(self):
-        # os.environ decodes a non-UTF-8 byte with surrogateescape; the value is rejected, named, never shown.
+        # why: os.environ decodes non-UTF-8 bytes with surrogateescape
         for name in local_llm.TEXT_SETTINGS:
             value = "v" + os.fsdecode(b"\xff")
             with self.subTest(name=name), self.assertRaises(local_llm.LocalLLMConfigError) as ctx:
@@ -1312,7 +1283,7 @@ class TestValidatedModelsConfig(unittest.TestCase):
         str(ctx.exception).encode("utf-8")
 
     def test_probe_survives_deeply_nested_health_body(self):
-        # A 200 KB body of "[" (under the 1 MiB cap) raised RecursionError out of the probe.
+        # why: regression: a 200 KB body of [ raised RecursionError out of the probe
         health = local_llm.probe_gateway_health("http://127.0.0.1:8081/v1", fetch=lambda url, timeout: b"[" * 200_000)
         self.assertEqual(health.prefill_cache, "unknown")
         self.assertIn("nested deeper than", health.error)

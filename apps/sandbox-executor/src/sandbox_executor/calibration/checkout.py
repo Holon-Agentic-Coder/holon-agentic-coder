@@ -1,5 +1,3 @@
-"""Switch the worktree to an execution's ``/calibrated`` branch: append to it, track it, or create it."""
-
 from __future__ import annotations
 
 import logging
@@ -12,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 
 def _append_to_local(calibrated_branch: str, remote_exists: bool, target_worktree: str) -> None:
-    """Check out the existing local branch and fast-forward it to its remote copy when one exists."""
     res_co = run_git(["checkout", calibrated_branch], cwd=target_worktree, check=False, timeout=30)
     if res_co.returncode != 0:
         raise RuntimeError(
@@ -30,7 +27,6 @@ def _append_to_local(calibrated_branch: str, remote_exists: bool, target_worktre
 
 
 def _track_remote(calibrated_branch: str, target_worktree: str) -> None:
-    """Create the local branch from its remote-only copy."""
     res_co = run_git(
         ["checkout", "-b", calibrated_branch, f"refs/remotes/origin/{calibrated_branch}"],
         cwd=target_worktree,
@@ -44,7 +40,6 @@ def _track_remote(calibrated_branch: str, target_worktree: str) -> None:
 
 
 def _create_from_evaluated(report: CalibrationReport, execution_branch: str, target_worktree: str) -> None:
-    """Create the branch at the evaluated commit, else at the resolved execution ref, else at the branch name."""
     calibrated_branch = report.calibrated_branch
     start_point = (
         report.evaluated_commit_sha
@@ -58,10 +53,6 @@ def _create_from_evaluated(report: CalibrationReport, execution_branch: str, tar
 
 
 def switch_to_calibrated_branch(report: CalibrationReport, execution_branch: str, target_worktree: str) -> None:
-    """Switch to ``report.calibrated_branch``: append to the local branch, track the remote one, or create it.
-
-    Both existence probes (local, then remote) run first. Raises ``RuntimeError`` if the checkout fails.
-    """
     calibrated_branch = report.calibrated_branch
     local_check = run_git(
         ["rev-parse", "--verify", f"refs/heads/{calibrated_branch}"], cwd=target_worktree, check=False

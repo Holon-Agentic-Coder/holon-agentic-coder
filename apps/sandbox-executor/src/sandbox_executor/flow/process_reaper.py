@@ -1,15 +1,3 @@
-"""Ends what a ``holon flow`` run started when it exits, halts, fails or is signalled.
-
-:func:`start_reaper_run` (called once the run lock is held) makes the run active in ``launcher.run_tracking``, so its
-role containers are named, labelled and tracked, and turns SIGTERM and SIGINT into a reap followed by
-``SystemExit(143)`` or ``KeyboardInterrupt``. Reaping first, in the signal handler, matters: stage worker threads block
-interpreter shutdown until their docker clients exit, so an ``atexit`` reap alone would never run.
-:func:`reap_flow_run` (also run at exit, before the run lock is released) stops the run's containers by name and run
-label, sends SIGTERM and then SIGKILL to the tracked docker clients' process groups, and does the same to any other
-process still descended from the flow process. It never signals pid 0 or 1, the flow process itself or the flow's own
-process group, and does nothing in a forked child.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -30,9 +18,7 @@ from sandbox_executor.launcher.run_tracking import FLOW_RUN_LABEL
 
 logger = logging.getLogger(__name__)
 
-#: Wait after SIGTERM before the processes still alive get SIGKILL.
 REAP_GRACE_SECONDS = 5.0
-#: Seconds ``docker stop`` gives a container before docker kills it.
 CONTAINER_STOP_SECONDS = 10
 DOCKER_TIMEOUT_SECONDS = 60
 _POLL_SECONDS = 0.05
@@ -42,7 +28,6 @@ DockerRunner = Callable[[list[str]], "subprocess.CompletedProcess[str] | None"]
 
 
 def _host_docker(args: list[str]) -> subprocess.CompletedProcess[str] | None:
-    """``docker <args>``; None when docker is not installed or the call fails to run."""
     if not shutil.which("docker"):
         return None
     try:
@@ -56,8 +41,6 @@ def _host_docker(args: list[str]) -> subprocess.CompletedProcess[str] | None:
 
 @dataclass(frozen=True)
 class ReapSeams:
-    """How the reaper reaches docker, signals processes, reads the process table and waits."""
-
     docker: DockerRunner = _host_docker
     kill: Callable[[int, int], None] = os.kill
     killpg: Callable[[int, int], None] = os.killpg
@@ -70,7 +53,6 @@ _reaping = threading.Lock()
 
 
 def start_reaper_run(slug: str, run_id: str, stale_run_ids: Sequence[str] = (), seams: ReapSeams | None = None) -> None:
-    """Make ``run_id`` this process's flow run, install the signal handlers and sweep a dead holder's containers."""
     run_tracking.start_run(slug, run_id, stale_run_ids)
     if threading.current_thread() is threading.main_thread():
         for signum in _HANDLED_SIGNALS:
@@ -82,7 +64,6 @@ def start_reaper_run(slug: str, run_id: str, stale_run_ids: Sequence[str] = (), 
 
 
 def reset_reaper() -> None:
-    """End the active run without reaping and restore the signal handlers (tests, and a run that ends in-process)."""
     run_tracking.end_run()
     if threading.current_thread() is threading.main_thread():
         for signum, previous in _previous_handlers.items():
@@ -92,6 +73,7 @@ def reset_reaper() -> None:
 
 def _on_signal(signum: int, frame: FrameType | None) -> None:
     del frame
+    # why: worker threads block interpreter shutdown until their docker clients exit, so an atexit reap never runs.
     reap_flow_run()
     if signum == signal.SIGINT:
         raise KeyboardInterrupt
@@ -99,7 +81,6 @@ def _on_signal(signum: int, frame: FrameType | None) -> None:
 
 
 def reap_flow_run(seams: ReapSeams | None = None) -> None:
-    """Stop every container and process the active run started; a no-op without one, or while already reaping."""
     run = run_tracking.active_run()
     if run is None or not _reaping.acquire(blocking=False):
         return
@@ -126,7 +107,6 @@ def _stop_containers(run: run_tracking.FlowRun, seams: ReapSeams) -> int:
 
 
 def _sweep_labels(run_ids: Sequence[str], seams: ReapSeams) -> int:
-    """Force-remove every container labelled with one of ``run_ids`` (an exact label value match)."""
     removed = 0
     for run_id in run_ids:
         listed = seams.docker(["ps", "-aq", "--filter", f"label={FLOW_RUN_LABEL}={run_id}"])
@@ -153,7 +133,6 @@ def _descendants(owner_pid: int, seams: ReapSeams) -> list[int]:
 
 
 def _signal(pid: int, own_group: bool, signum: int, seams: ReapSeams) -> bool:
-    """Send ``signum`` to ``pid`` (its group when it leads one); False once nothing is left to receive it."""
     try:
         (seams.killpg if own_group else seams.kill)(pid, signum)
     except ProcessLookupError:
@@ -164,7 +143,7 @@ def _signal(pid: int, own_group: bool, signum: int, seams: ReapSeams) -> bool:
 
 
 def _zombie(pid: int) -> bool:
-    """Whether ``pid`` has exited but not been collected; read from ``/proc`` so its ``Popen`` keeps the exit status."""
+    # why: read from /proc instead of waiting, so the process's Popen keeps its exit status.
     try:
         with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as handle:
             return handle.read().rpartition(")")[2].split()[:1] == ["Z"]
@@ -173,12 +152,10 @@ def _zombie(pid: int) -> bool:
 
 
 def _alive(pid: int, own_group: bool, seams: ReapSeams) -> bool:
-    """Probe without reaping: a group counts while any member answers signal 0; a lone zombie counts as gone."""
     return _signal(pid, own_group, 0, seams) and (own_group or not _zombie(pid))
 
 
 def _end_processes(targets: dict[int, bool], owner_pid: int, seams: ReapSeams) -> int:
-    """SIGTERM each target, wait out the grace period, then SIGKILL whatever is still alive; returns how many."""
     owner_group = os.getpgid(owner_pid)
     targets = {pid: own for pid, own in targets.items() if pid > 1 and pid not in (owner_pid, owner_group)}
     signalled = {pid: own for pid, own in targets.items() if _signal(pid, own, signal.SIGTERM, seams)}

@@ -4,6 +4,7 @@ import time
 
 _LOCK_AGE_ENV = "HOLON_GIT_LOCK_AGE_SECONDS"
 _DEFAULT_LOCK_AGE_SECONDS = 60.0
+# why: these lock files may belong to another live git process and must never be removed here
 _PROTECTED_LOCK_NAMES = ("config.lock", "packed-refs.lock", "shallow.lock", "HEAD.lock")
 _LOCK_SUBTREES = ("refs", "logs")
 _MIN_SHA_HEX_LEN = 40

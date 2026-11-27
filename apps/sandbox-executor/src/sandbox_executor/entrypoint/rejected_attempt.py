@@ -79,6 +79,7 @@ def _write(workspace: str, relative: str, text: str) -> bool:
     atomic_tmp_path = target + ".tmp"
     try:
         os.makedirs(os.path.join(workspace, REJECTED_DIR), exist_ok=True)
+        # why: write to a temporary sibling and atomically replace so a partial file is never recorded
         with open(atomic_tmp_path, "w", encoding="utf-8") as handle:
             handle.write(text)
         os.replace(atomic_tmp_path, target)

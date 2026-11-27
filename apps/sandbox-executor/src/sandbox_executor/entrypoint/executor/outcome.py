@@ -118,6 +118,7 @@ class CheckWorkSteps:
             self.repo_dir, probe_err, default_branch=self.exec_branch, plan_branch=self.plan_branch
         )
         if not repaired:
+            # why: the mounted worktree's .git pointer is read-only and points to the host git dir; never re-init
             raise RuntimeError(
                 f"the mounted worktree's git repository is unusable after the agent ran ({probe_err}); its "
                 "files are kept in the host worktree"
@@ -232,6 +233,7 @@ class OutcomeSteps:
         if self.exec_status == "success":
             commit_msg = f"execute: {self.exec_id} completed for plan {self.plan_branch}"
         else:
+            # why: the failure commit (ledger row and notes after partial work) must never read as completed
             commit_msg = f"execute: {self.exec_id} failed for plan {self.plan_branch}"
         trailers = format_commit_trailers(
             action_origin=self.action_origin,

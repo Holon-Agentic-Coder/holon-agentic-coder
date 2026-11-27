@@ -13,14 +13,13 @@ from sandbox_executor.entrypoint.test_failure_record import (
     failing_ids_from_output,
     record_test_failure,
 )
+from sandbox_executor.failure_classification import UNDIAGNOSED_CLASSIFICATION
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.host_remote import DEFAULT_REMOTE
 from sandbox_executor.git import run_git
 from sandbox_executor.ledger.fragments import ledger_commit_paths
 from sandbox_executor.redaction import redact_agent_secrets
 
-# why: Stage 5 only sees the CI log, never a base-branch rerun, so it cannot tell introduced from pre-existing.
-UNDIAGNOSED_CLASSIFICATION = "undiagnosed"
 UNKNOWN_EXECUTION_ID = "E-unknown"
 _LOG_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\S*Z ?")
 _GH_LOG_PREFIX_COLUMNS = 2
@@ -36,13 +35,13 @@ def _execution_id_of(branch: str) -> str:
     return next((part for part in branch.split("/") if part.startswith("E-")), UNKNOWN_EXECUTION_ID)
 
 
-def _commit_and_push_ledger(context: FlowContext, branch: str) -> bool:
+def _commit_and_push_ledger(context: FlowContext, branch: str) -> str | None:
     repo_dir = context.target_worktree
     head = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_dir, check=False)
     ledger_paths = ledger_commit_paths(repo_dir, LEDGER_RELPATH[-1])
     if head.returncode != 0 or head.stdout.strip() != branch or not ledger_paths:
         context.log(f"Stage 5 test-failure row left uncommitted: HEAD is not '{branch}' or no ledger path exists.")
-        return False
+        return None
     run_git(["add", *ledger_paths], cwd=repo_dir, check=False)
     message = "chore(calibration): record stage 5 test failure"
     commit = run_git(
@@ -50,11 +49,13 @@ def _commit_and_push_ledger(context: FlowContext, branch: str) -> bool:
     )
     if commit.returncode != 0:
         context.log(f"Warning: committing the Stage 5 test-failure row failed: {redact_agent_secrets(commit.stderr)}")
-        return False
+        return None
     if context.skip_push:
-        return False
+        return None
     pushed = run_git(["push", DEFAULT_REMOTE, branch], cwd=repo_dir, check=False)
-    return pushed.returncode == 0
+    if pushed.returncode != 0:
+        return None
+    return run_git(["rev-parse", "HEAD"], cwd=repo_dir).stdout.strip()
 
 
 def record_stage5_test_failure(context: FlowContext, final_head: str, output: str) -> dict[str, Any] | None:
@@ -77,8 +78,8 @@ def record_stage5_test_failure(context: FlowContext, final_head: str, output: st
     if row is None or context.dry_run:
         return row
     try:
-        pushed = _commit_and_push_ledger(context, branch)
+        head_after_push = _commit_and_push_ledger(context, branch)
     except Exception as exc:
         context.log(f"Warning: committing the Stage 5 test-failure row failed: {redact_agent_secrets(str(exc))}")
-        pushed = False
-    return {**row, "pushed": pushed}
+        head_after_push = None
+    return {**row, "pushed": head_after_push is not None, "head_after_push": head_after_push}

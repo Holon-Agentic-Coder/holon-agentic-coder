@@ -7,6 +7,7 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
+from sandbox_executor.failure_classification import UNDIAGNOSED_CLASSIFICATION
 from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, ActionIndexDatabase
 from sandbox_executor.knowledge.promotion import evaluate_action_promotion
 from sandbox_executor.knowledge.promotion_rules import is_review_chatter_context
@@ -25,7 +26,7 @@ DEFAULT_WB_DIR = "holon-knowledge/wisdom"
 TEST_FAILURE_ACTION = "test_failure"
 MIN_SIGNATURE_RUNS = 2
 EXECUTIONS_LEDGER_NAME = "executions.jsonl"
-UNMEASURED_CLASSIFICATIONS = frozenset({"undiagnosed"})
+UNMEASURED_CLASSIFICATIONS = frozenset({UNDIAGNOSED_CLASSIFICATION})
 
 
 _INDEX_FIELDS: dict[str, tuple[str, ...]] = {

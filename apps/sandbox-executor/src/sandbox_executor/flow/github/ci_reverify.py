@@ -149,5 +149,10 @@ def reverify_and_report(
         reverified["invalidation"] = invalidate_approval(context, reverified)
         if final_head:
             output = failed_output(repo_dir, final_head)
-            reverified["test_failure_record"] = record_stage5_test_failure(context, final_head, output)
+            failure_record = record_stage5_test_failure(context, final_head, output)
+            reverified["test_failure_record"] = failure_record
+            if failure_record and failure_record.get("head_after_push"):
+                reverified["report"] += (
+                    f" A ledger-only commit {failure_record['head_after_push']} followed the verified final head."
+                )
     return reverified

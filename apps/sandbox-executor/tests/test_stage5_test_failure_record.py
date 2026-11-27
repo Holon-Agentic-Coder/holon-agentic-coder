@@ -187,4 +187,7 @@ def test_stage5_row_is_committed_and_pushed_leaving_a_clean_tree(context: FlowCo
     assert reverified["test_failure_record"]["pushed"] is True
     assert _git(repo, "status", "--porcelain") == ""
     assert _git(repo, "rev-parse", "HEAD") == _git(remote, "rev-parse", BRANCH)
+    head_after_push = _git(repo, "rev-parse", "HEAD").strip()
+    assert reverified["test_failure_record"]["head_after_push"] == head_after_push
+    assert f"ledger-only commit {head_after_push}" in reverified["report"]
     assert "test_failure" in _git(remote, "show", BRANCH)

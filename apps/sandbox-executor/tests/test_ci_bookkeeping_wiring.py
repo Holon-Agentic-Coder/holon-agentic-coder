@@ -54,10 +54,18 @@ class Wiring:
     job_key: str
     job_name: str
     matrix: bool
+    shown_name: str = ""
+    os_input: str = "${{ matrix.os }}"
 
 
 WIRING = {
-    "test-unit.yml": Wiring("unit", "unit", True),
+    "test-unit.yml": Wiring(
+        "unit",
+        "unit",
+        True,
+        shown_name="unit (${{ matrix.os }}${{ matrix.shards > 1 && format(', {0}', matrix.gate-leg) || '' }})",
+        os_input="${{ matrix.gate-leg }}",
+    ),
     "test-stress.yml": Wiring("workspace-survival", "Workspace survival", True),
     "test-integration.yml": Wiring("integration", "integration", True),
     "test-hygiene.yml": Wiring("hygiene", "hygiene", True),
@@ -168,6 +176,12 @@ def test_every_workflow_that_runs_on_a_pull_request_is_wired() -> None:
     assert all("bookkeeping-gate" not in workflow_text(workflow) for workflow in UNGATED)
 
 
+def expected_shown_names(wiring: Wiring) -> list[str]:
+    if wiring.shown_name:
+        return [wiring.shown_name]
+    return [] if wiring.job_name == wiring.job_key else [wiring.job_name]
+
+
 @EACH_WORKFLOW
 def test_job_keeps_its_key_and_its_name(workflow: str) -> None:
     text = workflow_text(workflow)
@@ -176,7 +190,7 @@ def test_job_keeps_its_key_and_its_name(workflow: str) -> None:
 
     assert re.findall(r"^  ([\w-]+):$", jobs, flags=re.MULTILINE) == [wiring.job_key]
     shown_names = re.findall(r"^    name: (.+)$", jobs, flags=re.MULTILINE)
-    assert shown_names == ([] if wiring.job_name == wiring.job_key else [wiring.job_name])
+    assert shown_names == expected_shown_names(wiring)
     assert ("runs-on: ${{ matrix.os }}" in jobs) is wiring.matrix
 
 
@@ -201,7 +215,7 @@ def test_gate_is_told_the_job_name_and_the_runner_label(workflow: str) -> None:
     wiring = WIRING[workflow]
 
     assert re.findall(r"^          job-name: (.+)$", gate.text, flags=re.MULTILINE) == [wiring.job_name]
-    assert ("          os: ${{ matrix.os }}" in gate.text.splitlines()) is wiring.matrix
+    assert (f"          os: {wiring.os_input}" in gate.text.splitlines()) is wiring.matrix
     assert ("          os:" in gate.text) is wiring.matrix
 
 

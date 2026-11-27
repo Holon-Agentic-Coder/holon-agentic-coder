@@ -8,6 +8,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from sandbox_executor.flow.context import FlowContext, FlowStage, StageStatus
+from sandbox_executor.flow.target_sync_hooks import at_flow_start, at_stage_boundary
 from sandbox_executor.flow.target_sync_merge import SYNC_MERGE_PREFIX, merge_in_progress
 from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest
 from sandbox_executor.flow.target_sync_resume import adopt_merge_in_progress
@@ -147,3 +149,47 @@ def test_markers_staged_before_the_interruption_block_the_resumed_merge(repos_wi
     assert adoption is not None and adoption.action == "aborted"
     assert "conflict markers remain in: src/app.py" in adoption.error
     assert _git(work, "rev-parse", "HEAD") == head
+
+
+def test_stage3_resume_syncs_plan_branch_with_prior_failed_execution_branch(repos_with):
+    work = repos_with(FlowCommit("main", {"docs/main-advance.md": "m\n"}, "main advances")).work
+    prior_failed = "I-1-x/P-2/E-failed/_"
+    _git(work, "push", "-q", "origin", f"refs/remotes/origin/{FLOW_BRANCH}:refs/heads/{prior_failed}")
+    _git(work, "fetch", "-q", "origin")
+    prior_tip_before = _git(work, "rev-parse", f"origin/{prior_failed}")
+    main_sha = _git(work, "rev-parse", "origin/main")
+    ctx = FlowContext(
+        target_worktree=str(work),
+        intent_data={"target_branch": "main"},
+        plan_branch=FLOW_BRANCH,
+        execution_branch=prior_failed,
+    )
+
+    assert at_flow_start(ctx, FlowStage.EXECUTE) is None
+    assert at_stage_boundary(ctx, FlowStage.EXECUTE, SyncBoundary.STAGE_START) is None
+    plan_tip = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
+    assert subprocess.run(["git", "merge-base", "--is-ancestor", main_sha, plan_tip], cwd=work).returncode == 0
+    assert _git(work, "rev-parse", f"origin/{prior_failed}") == prior_tip_before
+    assert not merge_in_progress(str(work))
+    assert _git(work, "status", "--porcelain") == ""
+
+
+def test_stage3_resume_conflict_on_plan_branch_blocks_cleanly_with_prior_execution_branch(repos_with):
+    work = repos_with(*CODE_CONFLICT).work
+    prior_failed = "I-1-x/P-2/E-failed/_"
+    _git(work, "push", "-q", "origin", f"refs/remotes/origin/{FLOW_BRANCH}:refs/heads/{prior_failed}")
+    _git(work, "fetch", "-q", "origin")
+    old_plan_tip = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
+    ctx = FlowContext(
+        target_worktree=str(work),
+        intent_data={"target_branch": "main"},
+        plan_branch=FLOW_BRANCH,
+        execution_branch=prior_failed,
+    )
+
+    failure = at_flow_start(ctx, FlowStage.EXECUTE)
+
+    assert failure is not None and failure.status == StageStatus.FAILED
+    assert _git(work, "rev-parse", f"origin/{FLOW_BRANCH}") == old_plan_tip
+    assert not merge_in_progress(str(work))
+    assert _git(work, "status", "--porcelain") == ""

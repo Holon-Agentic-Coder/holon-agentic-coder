@@ -14,8 +14,10 @@ from sandbox_executor.flow import (
     target_probe,
     target_sync_merge,
 )
+from sandbox_executor.flow.context import FlowContext, FlowStage
 from sandbox_executor.flow.target_probe import TargetProbe
 from sandbox_executor.flow.target_sync import sync_with_target
+from sandbox_executor.flow.target_sync_hooks import active_flow_branch, at_flow_start, at_stage_boundary
 from sandbox_executor.flow.target_sync_result import CodeResolution, SyncBoundary, SyncRequest
 from sandbox_executor.git import run_git
 from sandbox_executor.ledger import read_merged_rows
@@ -292,3 +294,43 @@ def test_an_error_after_the_merge_commit_adds_no_second_row(repos_with, monkeypa
     assert result.head_after == _git(work, "rev-parse", "HEAD") != result.head_before
     assert len(_sync_rows(work)) == 1
     assert _git(work, "status", "--porcelain") == ""
+
+
+def test_active_flow_branch_selects_plan_branch_for_stage3_pre_dispatch_boundaries():
+    ctx = FlowContext(
+        intent_branch="I-1-x/_",
+        plan_branch="I-1-x/P-2/_",
+        execution_branch="I-1-x/P-2/E-1/_",
+    )
+
+    assert active_flow_branch(ctx, FlowStage.EXECUTE, SyncBoundary.FLOW_START) == "I-1-x/P-2/_"
+    assert active_flow_branch(ctx, FlowStage.EXECUTE, SyncBoundary.STAGE_START) == "I-1-x/P-2/_"
+    assert active_flow_branch(ctx, FlowStage.EXECUTE, SyncBoundary.STAGE_END) == "I-1-x/P-2/E-1/_"
+    assert active_flow_branch(ctx, FlowStage.EXECUTE, SyncBoundary.TURN) == "I-1-x/P-2/E-1/_"
+    assert active_flow_branch(ctx, FlowStage.EXECUTE) == "I-1-x/P-2/E-1/_"
+
+
+@pytest.mark.parametrize("boundary", [SyncBoundary.FLOW_START, SyncBoundary.STAGE_START])
+def test_stage3_pre_dispatch_sync_updates_plan_branch_not_prior_execution_branch(repos_with, boundary):
+    work = repos_with(TARGET_MOVE).work
+    prior_exec = "I-1-x/P-2/E-prior/_"
+    _git(work, "push", "-q", "origin", f"refs/remotes/origin/{FLOW_BRANCH}:refs/heads/{prior_exec}")
+    _git(work, "fetch", "-q", "origin")
+    prior_sha_before = _git(work, "rev-parse", f"origin/{prior_exec}")
+    main_sha = _git(work, "rev-parse", "origin/main")
+    ctx = FlowContext(
+        target_worktree=str(work),
+        intent_data={"target_branch": "main"},
+        plan_branch=FLOW_BRANCH,
+        execution_branch=prior_exec,
+    )
+
+    if boundary is SyncBoundary.FLOW_START:
+        failure = at_flow_start(ctx, FlowStage.EXECUTE)
+    else:
+        failure = at_stage_boundary(ctx, FlowStage.EXECUTE, SyncBoundary.STAGE_START)
+
+    assert failure is None
+    plan_sha = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
+    assert run_git(["merge-base", "--is-ancestor", main_sha, plan_sha], cwd=str(work), check=False).returncode == 0
+    assert _git(work, "rev-parse", f"origin/{prior_exec}") == prior_sha_before

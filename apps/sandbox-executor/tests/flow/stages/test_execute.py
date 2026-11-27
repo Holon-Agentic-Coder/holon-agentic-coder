@@ -1,6 +1,8 @@
 """Tests for Stage 3 resumption from a failed partial execution branch."""
 
 from contextlib import ExitStack
+from pathlib import Path
+import subprocess
 from typing import Any
 from unittest.mock import patch
 
@@ -510,3 +512,109 @@ class TestStage3EmptyDiffGuard:
         else:
             assert_failed(result, "failed, so the ledger still shows 'success': push rejected")
             assert any("could not record the empty-diff failure row" in line for line in ctx.logs)
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def _make_stage3_refresh_repo(
+    tmp_path: Path, *, plan_files: dict[str, str] | None = None, main_files: dict[str, str] | None = None
+) -> tuple[Path, str]:
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+    repo = tmp_path / "host"
+    subprocess.run(["git", "clone", "-q", str(origin), str(repo)], check=True, capture_output=True)
+    for key, value in (("user.email", "t@holon.com"), ("user.name", "T"), ("commit.gpgsign", "false")):
+        _git(repo, "config", key, value)
+    _git(repo, "checkout", "-q", "-b", "main")
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    (repo / "src/app.py").write_text("APP = 1\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    _git(repo, "push", "-q", "origin", "main")
+    _git(repo, "checkout", "-q", "-b", PLAN, "origin/main")
+    for rel, text in (plan_files or {"plans/P-2.md": "# plan\n"}).items():
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        _git(repo, "add", rel)
+    _git(repo, "commit", "-q", "-m", "plan commit")
+    _git(repo, "push", "-q", "origin", PLAN)
+    _git(repo, "checkout", "-q", "main")
+    for rel, text in (main_files or {"docs/new.md": "advanced\n"}).items():
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        _git(repo, "add", rel)
+    _git(repo, "commit", "-q", "-m", "main advances")
+    _git(repo, "push", "-q", "origin", "main")
+    return repo, _git(repo, "rev-parse", "origin/main")
+
+
+def _stage3_engine_context(repo: Path, prior_execution_branch: str | None = None) -> FlowContext:
+    ctx = FlowContext(
+        target_worktree=str(repo),
+        plan_branch=PLAN,
+        intent_branch="I-1-x/_",
+        execution_branch=prior_execution_branch,
+        intent_data={"slug": "x", "target_branch": "main"},
+        agent="claude-agent",
+        model="claude-opus-5-5",
+        admission=None,
+    )
+    ctx.stage_results["intent"] = StageResult(stage=FlowStage.INTENT, status=StageStatus.SUCCESS)
+    ctx.stage_results["plan"] = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS)
+    return ctx
+
+
+class TestStage3FromStagePlanRefresh:
+    @pytest.mark.parametrize("with_prior_execution", [False, True])
+    def test_from_stage_execute_refreshes_plan_branch_before_dispatch(self, tmp_path: Path, with_prior_execution: bool):
+        repo, main_sha = _make_stage3_refresh_repo(tmp_path)
+        prior_branch: str | None = None
+        if with_prior_execution:
+            prior_branch = f"I-1-x/P-2-claude-agent-claude-opus-5-5/E-1-claude-agent-claude-opus-5-5/_"
+            _git(repo, "push", "-q", "origin", f"refs/remotes/origin/{PLAN}:refs/heads/{prior_branch}")
+            _git(repo, "fetch", "-q", "origin")
+        ctx = _stage3_engine_context(repo, prior_execution_branch=prior_branch)
+        seen_tips: list[str] = []
+
+        def dispatch(_ctx, _role, _args):
+            seen_tips.append(_git(repo, "rev-parse", f"origin/{PLAN}"))
+            return 1
+
+        with (
+            patch(f"{EXECUTE}._plan_budget_decision", return_value=None),
+            patch(f"{EXECUTE}.salvage_for_resume", side_effect=lambda _c, _p, existing: (existing, None)),
+            patch(f"{EXECUTE}.publish_new_child_branches", return_value=[]),
+            patch(f"{EXECUTE}._dispatch_role", side_effect=dispatch),
+        ):
+            PipelineEngine(ctx, from_stage=FlowStage.EXECUTE).run()
+
+        assert len(seen_tips) == 1
+        assert subprocess.run(["git", "merge-base", "--is-ancestor", main_sha, seen_tips[0]], cwd=repo).returncode == 0
+        if prior_branch is not None:
+            prior_tip = _git(repo, "rev-parse", f"origin/{prior_branch}")
+            assert subprocess.run(["git", "merge-base", "--is-ancestor", main_sha, prior_tip], cwd=repo).returncode != 0
+
+    def test_from_stage_execute_conflict_halts_fail_closed_before_dispatch(self, tmp_path: Path):
+        repo, _ = _make_stage3_refresh_repo(
+            tmp_path,
+            plan_files={"src/app.py": "APP = 2\n"},
+            main_files={"src/app.py": "APP = 3\n"},
+        )
+        old_plan_tip = _git(repo, "rev-parse", f"origin/{PLAN}")
+        ctx = _stage3_engine_context(repo)
+        dispatched: list[list[str]] = []
+
+        with (
+            patch(f"{EXECUTE}._plan_budget_decision", return_value=None),
+            patch(f"{EXECUTE}._dispatch_role", side_effect=lambda _c, _r, args: dispatched.append(args) or 0),
+        ):
+            PipelineEngine(ctx, from_stage=FlowStage.EXECUTE).run()
+
+        assert dispatched == []
+        assert ctx.stage_results["execute"].status == StageStatus.FAILED
+        assert _git(repo, "rev-parse", f"origin/{PLAN}") == old_plan_tip
+        assert subprocess.run(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=repo).returncode != 0

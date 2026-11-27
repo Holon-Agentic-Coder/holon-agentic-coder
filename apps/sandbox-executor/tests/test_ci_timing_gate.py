@@ -380,13 +380,13 @@ def test_parser_accepts_the_unit_workflow_command_with_every_flag_unchanged() ->
     flags += ["--junit", "--repo", "--output", "--override-label-present"]
     assert re.findall(r"--[a-z-]+", command) == flags
 
-    values = ["test-unit", "unit", "macos-latest", "1795524851", "5", "0.5", "150", "600"]
+    values = ["test-unit", "unit-shard-1", "macos-latest", "1795524851", "5", "0.5", "150", "600"]
     values += ["unit-report.xml", "owner/repo", "ci-timing/record.json", "true"]
     argv = ["compare", *(part for pair in zip(flags, values, strict=True) for part in pair)]
     assert vars(build_parser().parse_args(argv)) == {
         "mode": "compare",
         "workflow": "test-unit",
-        "job": "unit",
+        "job": "unit-shard-1",
         "os_name": "macos-latest",
         "start": 1795524851.0,
         "runs": 5,
@@ -550,7 +550,8 @@ def test_unit_workflow_compares_with_main_per_runner_os() -> None:
     # Label-proof absolute ceiling, the override label forwarded, and baselines keyed per workflow/job/OS.
     assert "--ceiling 900" in content
     assert "timing-regression-accepted" in content
-    assert "name: ci-timing-test-unit-unit-${{ matrix.os }}" in content
+    assert '--job "${{ matrix.timing-job }}"' in content
+    assert "name: ci-timing-test-unit-${{ matrix.timing-job }}-${{ matrix.os }}" in content
     assert "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" in content
 
 

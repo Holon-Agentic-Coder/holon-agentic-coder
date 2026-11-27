@@ -74,6 +74,7 @@ def _expires_within(ca_cert_path: str, window_seconds: int) -> bool:
 
 
 def _precreate_owner_only_key_file(ca_key_path: str) -> None:
+    # why: pre-create with 0o600 so the private key is never world-readable, even briefly, regardless of umask.
     key_fd = os.open(ca_key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _OWNER_ONLY_KEY_MODE)
     os.close(key_fd)
 

@@ -85,6 +85,7 @@ from sandbox_executor.flow.review.resolver import (
 )
 from sandbox_executor.flow.review.sync_points import sync_iteration_mergeability
 from sandbox_executor.flow.review.verdict import (
+    _finding_outcome_blockers,
     _loop_status,
     consensus_blockers,
     decide_returned_consensus,
@@ -108,6 +109,7 @@ from sandbox_executor.review_ensemble import (
     _any_reviewer_objects,
     run_ensemble,
 )
+from sandbox_executor.review_finding_outcomes import rejected_as, undisposed_findings, with_commit
 from sandbox_executor.review_report import (
     FindingDisposition,
     FindingRow,
@@ -386,6 +388,11 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             context.log(f"[Review Loop] Consensus blocked at iteration {iteration}: {blocker}.")
         reviewer_findings = collect_review_data(reviewers).findings
         reviewer_objected = _any_reviewer_objects(reviewers) or bool(reviewer_findings) or bool(blockers)
+        # why: added after reviewer_objected so the CI fast path and dry runs never see these blockers.
+        recorded = (*all_dispositions, *pending_dispositions, *rejected_history.values())
+        for blocker in _finding_outcome_blockers(reviewers, merge_findings(iter_findings, carried_rows), recorded):
+            context.log(f"[Review Loop] Consensus blocked at iteration {iteration}: {blocker}.")
+            blockers.append(blocker)
 
         # 3. CI status inspection: post-review gate or fast-path probe (see ci_inspection.py)
         ci_inputs = dataclasses.replace(
@@ -503,7 +510,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             break
 
         # 8. Termination and Resolver Pass
-        # A carried fix applied but not yet pushed is recorded with the pending dispositions; it blocks nothing.
+        # why: an unpushed carried fix has no commit, so the outcome gate above already blocks it.
         if ensemble_verdict is ConsensusVerdict.APPROVED and undisposed(carried_rows, pending_dispositions):
             carried_block = carried_blocker(undisposed(carried_rows, pending_dispositions))
             blockers.append(carried_block)
@@ -550,7 +557,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 sig_key = str(finding_signature(ci_row.severity, ci_row.path, ci_row.line, ci_row.summary))
                 finding_action_ids.setdefault(sig_key, act_id)
 
-        if not resolver_enabled or not iter_findings or is_dirty or resolved_target is None:
+        to_resolve = merge_findings(iter_findings, carried_rows)
+        if not resolver_enabled or not to_resolve or is_dirty or not resolved_target:
             context.log(
                 f"[Review Loop] Halting review loop at iteration {iteration}: verdict "
                 f"{ensemble_verdict} (no resolver pass applicable"
@@ -559,7 +567,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             break
 
         # 3-iteration unchanged-finding no-convergence guard
-        current_sigs = frozenset(finding_signature(f.severity, f.path, f.line, f.summary) for f in iter_findings)
+        current_sigs = frozenset(finding_signature(f.severity, f.path, f.line, f.summary) for f in to_resolve)
         current_sha = (resolved_target.head_sha if resolved_target else "") or ""
         if current_sigs and current_sigs == prev_finding_sigs and current_sha == prev_head_sha:
             unchanged_streak += 1
@@ -570,20 +578,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
 
         if unchanged_streak >= 3:
             no_convergence = True
-            nc_dispositions = tuple(
-                FindingDisposition(
-                    id=row.id,
-                    severity=row.severity,
-                    path=row.path,
-                    line=row.line,
-                    summary=row.summary,
-                    recommendation=row.recommendation,
-                    disposition="rejected",
-                    rejection_reason="no-convergence",
-                    introduced_by_action_id=_lookup_introducing_action_id(row, finding_action_ids),
-                )
-                for row in iter_findings
-            )
+            introduced_by = functools.partial(_lookup_introducing_action_id, action_ids=finding_action_ids)
+            nc_dispositions = rejected_as(to_resolve, "no-convergence", introduced_by)
             suppressed_ledger_records += recorder.record(iteration, nc_dispositions)
             pending_dispositions = ()
             context.log(
@@ -592,13 +588,13 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             )
             break
 
-        delta_review.record_addressed_findings(context, merge_findings(iter_findings, carried_rows))
+        delta_review.record_addressed_findings(context, to_resolve)
         resolver_outcome = _invoke_resolver_pass(
             context,
             resolved_target,
             iteration,
             ResolverInput(
-                findings=merge_findings(iter_findings, carried_rows),
+                findings=to_resolve,
                 action_ids=finding_action_ids,
                 rejected_findings=tuple(rejected_history.values()),  # Rejected nits only.
             ),
@@ -630,13 +626,15 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         head_changed = bool(resolver_outcome.pushed)
         if applied_now or (head_changed and pending_dispositions):
             if head_changed or iteration >= last_label:
-                to_record = (*pending_dispositions, *applied_now)
+                commit_sha = resolver_outcome.head_sha if head_changed else None
+                to_record = with_commit((*pending_dispositions, *applied_now), commit_sha)
                 if to_record:
                     suppressed_ledger_records += recorder.record(iteration, to_record)
                 pending_dispositions = ()
             else:
                 pending_dispositions = (*pending_dispositions, *applied_now)
-        carried_rows = undisposed(carried_rows, all_dispositions)
+        # why: the outcome gate checks every finding raised so far, so each goes back until it has an outcome.
+        carried_rows = undisposed_findings(to_resolve, all_dispositions)
 
         if head_changed and resolved_target is not None:
             new_sha = resolver_outcome.head_sha or f"{current_sha or '0' * 32}-iter{iteration}"

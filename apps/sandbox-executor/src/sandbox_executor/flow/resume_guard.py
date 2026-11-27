@@ -1,12 +1,3 @@
-"""The pre-run resume guard: a resume that cannot start never overwrites the checkpoint it would save to.
-
-A ``--from-stage`` run whose context lacks the branch its first stage needs would fail in that stage and then save the
-sparse context over an existing checkpoint, losing the recorded branches. The engine checks this guard next to
-:func:`sandbox_executor.flow_guard.pre_run_guard_error`, before any stage runs, so such a resume records its failure in
-memory only and leaves the file byte-for-byte as it was. Without an existing checkpoint there is nothing to lose and
-the stage reports the missing branch itself.
-"""
-
 from __future__ import annotations
 
 import os
@@ -19,7 +10,6 @@ from sandbox_executor.flow.target_sync_result import SyncBoundary, SyncRequest
 from sandbox_executor.flow.target_sync_resume import adopt_merge_in_progress
 from sandbox_executor.git import run_git
 
-# The branch each stage reads from the flow context and fails without (Stage 1 needs none).
 REQUIRED_BRANCH: dict[FlowStage, str] = {
     FlowStage.PLAN: "intent_branch",
     FlowStage.EXECUTE: "plan_branch",
@@ -31,7 +21,6 @@ _STAGE_ORDER = (FlowStage.INTENT, FlowStage.PLAN, FlowStage.EXECUTE, FlowStage.R
 
 
 def _first_running_stage(context: FlowContext, start_stage: FlowStage) -> FlowStage | None:
-    """The first stage from ``start_stage`` on that is not skipped by --skip-calibrate."""
     skipped = {FlowStage.CALIBRATE: context.skip_calibrate}
     for stage in _STAGE_ORDER[_STAGE_ORDER.index(start_stage) :]:
         if not skipped.get(stage):
@@ -40,7 +29,6 @@ def _first_running_stage(context: FlowContext, start_stage: FlowStage) -> FlowSt
 
 
 def _resume_sync_request(context: FlowContext, start_stage: FlowStage) -> SyncRequest | None:
-    """The sync request a resume adopts its worktree's merge with, or ``None`` when no branch is checked out."""
     worktree = context.target_worktree
     res = run_git(["symbolic-ref", "-q", "--short", "HEAD"], cwd=worktree, check=False)
     branch = (res.stdout or "").strip() if res.returncode == 0 and isinstance(res.stdout, str) else ""
@@ -55,12 +43,6 @@ def _resume_sync_request(context: FlowContext, start_stage: FlowStage) -> SyncRe
 
 
 def resume_merge_error(context: FlowContext, start_stage: FlowStage | None) -> str | None:
-    """Adopt a target merge the resumed flow left in progress; why the run must not start, or ``None``.
-
-    Only resumed runs adopt; a dry run never touches the worktree. An aborted adoption is not redone here: the flow's
-    next boundary sync merges the target again. The error is returned only when adoption could not leave the worktree
-    without a merge in progress (for example a merge an operator started by hand).
-    """
     worktree = context.target_worktree
     if start_stage is None or not merge_in_progress(worktree):
         return None
@@ -78,14 +60,9 @@ def resume_merge_error(context: FlowContext, start_stage: FlowStage | None) -> s
 def _resume_context_error(
     context: FlowContext, start_stage: FlowStage | None, checkpoint_path: str | None = None
 ) -> str | None:
-    """Why a run resumed at ``start_stage`` must not start, or ``None`` (always ``None`` for a run from Stage 1).
-
-    The run is refused when its first running stage lacks its branch and the checkpoint it would save to already
-    exists: ``checkpoint_path``, else the intent's default checkpoint in the target worktree.
-    """
     if start_stage is None:
         return None
-    # The branch check runs first, so a resume it refuses never adopts (merges, records and pushes) a merge.
+    # why: the branch check runs first, so a resume it refuses never adopts (merges, records and pushes) a merge.
     return _missing_branch_error(context, start_stage, checkpoint_path) or resume_merge_error(context, start_stage)
 
 
@@ -97,6 +74,7 @@ def _missing_branch_error(context: FlowContext, start_stage: FlowStage, checkpoi
     target = checkpoint_path or get_default_checkpoint_path(
         context.target_worktree, _checkpoint_names(context.intent_data)[1]
     )
+    # why: without an existing checkpoint nothing can be lost, and the stage reports the missing branch itself.
     if not os.path.isfile(target):
         return None
     return (

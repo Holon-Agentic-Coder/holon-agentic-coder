@@ -1,10 +1,3 @@
-"""Stage 3 child loop of a decomposed plan: run each sub-intent under the plan branch, merge it, then integrate.
-
-Children run strictly one after another. Each child is a new intent whose ``target_branch`` and ``parent_intent_id`` are
-the plan branch, so Stage 1 cuts it from the plan branch tip on origin, which already holds every earlier child's merge
-commit. A child is merged into the plan branch only after its Stage 4 approval and Stage 5 calibration.
-"""
-
 from __future__ import annotations
 
 import os
@@ -38,7 +31,6 @@ _PR_URL_RE = re.compile(r"https?://\S+/pull/\d+")
 
 
 def _child_review_pr(results: dict[str, StageResult]) -> tuple[Any, Any]:
-    """Return the ``(pr_url, pr_number)`` a child pipeline's Stage 4 recorded, or ``(None, None)``."""
     review = results.get(FlowStage.REVIEW.value)
     pr = review.payload.get("pr") if review is not None else None
     if not isinstance(pr, dict):
@@ -51,7 +43,6 @@ def _child_review_pr(results: dict[str, StageResult]) -> tuple[Any, Any]:
 
 
 def _child_context(context: FlowContext, intent_data: dict[str, Any]) -> FlowContext:
-    """Build the FlowContext of one child intent, inheriting the parent's runner, flags and dispatcher."""
     child = FlowContext(
         repo_dir=context.target_worktree,
         intent_data=intent_data,
@@ -75,7 +66,6 @@ def _child_context(context: FlowContext, intent_data: dict[str, Any]) -> FlowCon
 
 
 def _build_child_intent(context: FlowContext, payload: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any]:
-    """The intent payload of one child: nested under the plan branch, which is also its merge target."""
     items = payload.get("sub_intents") or []
     index = int(entry["index"])
     item = items[index - 1] if 0 < index <= len(items) and isinstance(items[index - 1], dict) else {}
@@ -101,7 +91,6 @@ def _build_child_intent(context: FlowContext, payload: dict[str, Any], entry: di
 
 
 def _save_progress(context: FlowContext, start_time: str, payload: dict[str, Any]) -> None:
-    """Checkpoint the parent with Stage 3 still running, so a crash never loses a child's recorded progress."""
     context.stage_results[FlowStage.EXECUTE.value] = StageResult(
         stage=FlowStage.EXECUTE, status=StageStatus.RUNNING, start_time=start_time, payload=payload
     )
@@ -109,7 +98,6 @@ def _save_progress(context: FlowContext, start_time: str, payload: dict[str, Any
 
 
 def _set_child_summary(payload: dict[str, Any], summary: dict[str, Any]) -> None:
-    """Record a child's summary in ``payload["children"]``, replacing an earlier summary of the same child."""
     children = payload.setdefault("children", [])
     for position, existing in enumerate(children):
         if isinstance(existing, dict) and existing.get("index") == summary["index"]:
@@ -119,7 +107,6 @@ def _set_child_summary(payload: dict[str, Any], summary: dict[str, Any]) -> None
 
 
 def _child_summary(entry: dict[str, Any], child: FlowContext, results: dict[str, StageResult]) -> dict[str, Any]:
-    """Summary of one child run for the flow summary; a child that itself decomposed carries its own children."""
     final_stage = next(reversed(results)) if results else None
     summary: dict[str, Any] = {
         "index": entry["index"],
@@ -140,13 +127,9 @@ def _child_summary(entry: dict[str, Any], child: FlowContext, results: dict[str,
 
 
 def _load_child_checkpoint(context: FlowContext, child: FlowContext, entry: dict[str, Any]) -> tuple[Any, str | None]:
-    """Load a resumed child's own checkpoint into ``child``; return ``(from_stage, error)``.
-
-    Without a checkpoint a child that has an execution branch or a PR is refused (re-running it would dispatch its
-    executor again); a child with at most its intent branch starts from Stage 1, which reuses that branch.
-    """
     path = child_checkpoint_path(context, str(entry["intent_branch"]))
     if not os.path.exists(path):
+        # why: re-running a child with an execution branch or PR would dispatch its executor again
         if entry.get("execution_branch") or entry.get("pr_number"):
             return (
                 None,
@@ -165,8 +148,6 @@ def _load_child_checkpoint(context: FlowContext, child: FlowContext, entry: dict
 
 
 def _merge_readiness_error(results: dict[str, StageResult]) -> str | None:
-    """Why a child's results are not ready to merge: Stage 4 must have reached consensus approval, Stage 5 succeeded
-    or been skipped by flag."""
     review = results.get(FlowStage.REVIEW.value)
     calibrate = results.get(FlowStage.CALIBRATE.value)
     consensus = review.payload.get("consensus") if review is not None else None
@@ -180,13 +161,12 @@ def _merge_readiness_error(results: dict[str, StageResult]) -> str | None:
 
 
 def _run_one_child(context: FlowContext, payload: dict[str, Any], entry: dict[str, Any], resume: bool) -> str | None:
-    """Run (or resume) one child pipeline up to its merge boundary; return why it is not ready to merge, or None."""
     child = _child_context(context, _build_child_intent(context, payload, entry))
     from_stage, error = _load_child_checkpoint(context, child, entry) if resume else (None, None)
     if error:
         return error
     plan_branch = str(payload["plan_branch"])
-    # Stage 1 cuts the child from origin's plan branch tip; refresh the local view of it first.
+    # why: Stage 1 cuts the child from origin's plan branch tip, so the local view of it must be fresh first.
     refspec = f"+refs/heads/{plan_branch}:refs/remotes/origin/{plan_branch}"
     if fetch_error := _fetch_refspecs_error(context.target_worktree, [refspec]):
         return f"could not refresh plan branch '{plan_branch}' before cutting it: {fetch_error}"
@@ -195,7 +175,8 @@ def _run_one_child(context: FlowContext, payload: dict[str, Any], entry: dict[st
         if from_stage == FlowStage.COMPLETED:
             results = child.stage_results
         else:
-            from sandbox_executor.flow.pipeline import PipelineEngine  # pipeline imports this module: import late
+            # why: pipeline imports this module, so importing it at module load would be circular
+            from sandbox_executor.flow.pipeline import PipelineEngine
 
             results = PipelineEngine(child, from_stage=from_stage).run()
     finally:
@@ -215,12 +196,11 @@ def _run_one_child(context: FlowContext, payload: dict[str, Any], entry: dict[st
 
 
 def _merge_ready_child(context: FlowContext, payload: dict[str, Any], entry: dict[str, Any]) -> str | None:
-    """Merge a child whose review and calibration completed into the plan branch; return a refusal, or None."""
     plan_branch = str(payload["plan_branch"])
     expected_head = str(entry.get("execution_branch") or "")
     result = merge_child_pr(context.target_worktree, entry["pr_number"], plan_branch, expected_head=expected_head)
     if not result.merged:
-        # Stay review_done so a resume retries only this guarded merge, not the child's Stage 4/5.
+        # why: stay review_done so a resume retries only this guarded merge, not the child's Stage 4/5.
         entry["merge_error"] = result.reason
         return f"could not be merged into '{plan_branch}' (PR #{entry['pr_number']}): {result.reason}"
     entry["status"], entry["merge_commit"] = MERGED, result.merge_commit
@@ -231,7 +211,6 @@ def _merge_ready_child(context: FlowContext, payload: dict[str, Any], entry: dic
 
 
 def _sync_sub_intent_plan_branch(context: FlowContext, payload: dict[str, Any], index: int) -> StageResult | None:
-    """Sync the active ``plan_branch`` (which sub-intents cut from) at a sub-intent turn boundary."""
     prev_plan, prev_exec = context.plan_branch, context.execution_branch
     context.plan_branch = str(payload.get("plan_branch") or context.plan_branch or "") or None
     context.execution_branch = None
@@ -242,10 +221,9 @@ def _sync_sub_intent_plan_branch(context: FlowContext, payload: dict[str, Any], 
 
 
 def _advance_child(context: FlowContext, start_time: str, payload: dict[str, Any], entry: dict[str, Any]) -> str | None:
-    """Take one child from wherever its progress says it is to merged; return why it stopped, or None."""
     action = next_child_action(entry, checkpoint_exists(context, entry))
     if action == "skip":
-        # A child promoted to merged by origin reconciliation has no merged summary yet; record it.
+        # why: a child promoted to merged by origin reconciliation has no merged summary yet.
         merged = {"index": entry["index"], "merged": True, "merge_commit": entry.get("merge_commit")}
         _set_child_summary(payload, merged)
         return None
@@ -265,12 +243,6 @@ def _advance_child(context: FlowContext, start_time: str, payload: dict[str, Any
 
 
 def _drive_children(context: FlowContext, start_time: str, payload: dict[str, Any]) -> StageResult:
-    """Drive every child of ``payload["children_progress"]`` to merged, in order, then integrate the plan branch.
-
-    The first child that fails or is not ready to merge is marked ``failed``; one refused only by the merge guard stays
-    ``review_done`` with a ``merge_error`` so a resume retries just the merge. The parent checkpoint is saved, and
-    Stage 3 fails naming the child; later children do not start.
-    """
     progress = payload[PROGRESS_KEY]
     total = len(progress)
     for entry in progress:
@@ -291,35 +263,23 @@ def _drive_children(context: FlowContext, start_time: str, payload: dict[str, An
 
 
 def run_children(context: FlowContext, start_time: str, payload: dict[str, Any]) -> StageResult:
-    """Reconcile the progress with origin, then drive the children; an unexpected exception keeps the progress.
-
-    Reconciling first (origin wins) means even a fresh Stage 3 entered without the parent checkpoint
-    (``--from-stage execute``) never re-dispatches a child that already has an execution branch or PR. An exception
-    that escaped to the pipeline would store a payload-less failure and overwrite the checkpointed
-    ``children_progress``, so it is turned into a Stage 3 failure that keeps the entries' last status instead.
-    """
     try:
         for note in reconcile_with_origin(context.target_worktree, payload[PROGRESS_KEY], str(payload["plan_branch"])):
             context.log(f"Stage 3: {note} (origin wins).")
         return _drive_children(context, start_time, payload)
+    # why: an exception reaching the pipeline would store a payload-less failure over the checkpointed progress
     except Exception as exc:
         error = f"Execute stage failed: the sub-intent loop raised {type(exc).__name__}: {exc}"
         try:
             _save_progress(context, start_time, payload)
         except Exception as save_exc:
-            # A failing save never replaces the original failure: it is reported next to it.
+            # why: a failing save never replaces the original failure; it is reported next to it.
             error += f" (the progress checkpoint could not be saved either: {type(save_exc).__name__}: {save_exc})"
         error = redact_agent_secrets(error)
         return _stage_failure(context, FlowStage.EXECUTE, start_time, error, **payload)
 
 
 def resume_children(context: FlowContext, previous: StageResult) -> StageResult:
-    """Resume a checkpointed decomposed Stage 3 without dispatching the parent executor.
-
-    The recorded progress is reconciled with origin first (origin wins), then the loop continues: merged children are
-    skipped, a child whose review finished is merged, any other child with recorded work resumes from its own
-    checkpoint, and only a child with nothing recorded anywhere is dispatched.
-    """
     start_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     payload = {**previous.payload, PROGRESS_KEY: [dict(e) for e in previous.payload[PROGRESS_KEY]]}
     payload["children"] = [dict(c) for c in payload.get("children") or [] if isinstance(c, dict)]

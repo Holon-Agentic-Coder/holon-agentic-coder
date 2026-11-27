@@ -123,9 +123,7 @@ def violations_on_tracked_paths(repo_dir: str, checker_stderr: str) -> list[str]
 def run_self_explaining_check(repo_dir: str) -> tuple[bool, str]:
     checker = os.path.join(repo_dir, SELF_EXPLAINING_CHECKER)
     if not os.path.isfile(checker):
-        notice = f"Notice: {SELF_EXPLAINING_CHECKER} not found; skipping the pre-push self-explaining check."
-        print(notice)
-        return True, notice
+        return True, f"{SELF_EXPLAINING_CHECKER} not found; the pre-push self-explaining check was skipped"
     try:
         completed = subprocess.run(
             [sys.executable, checker, "--root", repo_dir],
@@ -136,11 +134,13 @@ def run_self_explaining_check(repo_dir: str) -> tuple[bool, str]:
             timeout=SELF_EXPLAINING_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return _tolerated_checker_error(redact_agent_secrets(str(exc)))
+        return _continue_since_ci_fails_closed(redact_agent_secrets(str(exc)))
     if completed.returncode == 0:
         return True, completed.stdout
     if completed.returncode != SELF_EXPLAINING_VIOLATION_EXIT:
-        return _tolerated_checker_error(f"exit code {completed.returncode}: {redact_agent_secrets(completed.stderr)}")
+        return _continue_since_ci_fails_closed(
+            f"exit code {completed.returncode}: {redact_agent_secrets(completed.stderr)}"
+        )
     violations = violations_on_tracked_paths(repo_dir, completed.stderr)
     if not violations:
         notice = "Notice: the self-explaining check flagged only untracked files; continuing."
@@ -149,8 +149,7 @@ def run_self_explaining_check(repo_dir: str) -> tuple[bool, str]:
     return False, "\n".join(violations)
 
 
-def _tolerated_checker_error(detail: str) -> tuple[bool, str]:
-    # why: CI is the fail-closed gate; a container without origin/main must not block every push.
+def _continue_since_ci_fails_closed(detail: str) -> tuple[bool, str]:
     warning = f"Warning: the pre-push self-explaining check could not run ({detail}); continuing."
     print(warning, file=sys.stderr)
     return True, warning

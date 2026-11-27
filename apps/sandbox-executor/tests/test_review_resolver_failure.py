@@ -1,9 +1,3 @@
-"""A resolver pass that cannot verify, crashes or exits non-zero fails loudly and halts the Stage 4 review loop.
-
-Hermetic: real git only in temporary repositories, ``uv`` hidden by a PATH holding nothing but a ``git`` symlink, and
-fakes for every reviewer, resolver, container dispatch, CI probe and post.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -42,7 +36,6 @@ UV_MISSING_ERROR = verification_error(
 
 
 def _git(repo: Path, *args: str) -> str:
-    """Run git in ``repo`` with a fixed identity and return its stripped stdout."""
     proc = subprocess.run(
         ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", *args],
         cwd=repo,
@@ -55,7 +48,6 @@ def _git(repo: Path, *args: str) -> str:
 
 @pytest.fixture
 def path_without_uv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Replace PATH with a directory holding only a ``git`` symlink, so ``uv`` cannot be found."""
     real_git = shutil.which("git")
     assert real_git, "git is required for these tests"
     bin_dir = tmp_path / "bin-git-only"
@@ -63,9 +55,6 @@ def path_without_uv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (bin_dir / "git").symlink_to(real_git)
     monkeypatch.setenv("PATH", str(bin_dir))
     return bin_dir
-
-
-# --- (a) _verify_before_push with uv absent -------------------------------------------------------------------------
 
 
 def test_verify_before_push_without_uv_returns_a_failure_naming_uv(tmp_path: Path, monkeypatch) -> None:
@@ -105,12 +94,8 @@ def test_run_cmd_with_check_exits_127_for_a_missing_tool(tmp_path: Path, monkeyp
     assert "required tool 'uv' was not found on PATH" in capsys.readouterr().err
 
 
-# --- (b, entrypoint half) a resolver run without uv records a failure, commits nothing and pushes nothing ----------
-
-
 @pytest.fixture
 def resolver_checkout(tmp_path: Path) -> Path:
-    """A one-commit checkout on ``feature`` whose ``origin`` is a local bare repository holding the same commit."""
     origin = tmp_path / "origin.git"
     repo = tmp_path / "repo"
     subprocess.run(["git", "init", "--bare", "-b", "feature", str(origin)], capture_output=True, check=True)
@@ -131,7 +116,7 @@ def test_resolver_mode_without_uv_records_the_failure_without_commit_or_push(
     head_before = _git(repo, "rev-parse", "HEAD")
     origin_before = _git(origin, "rev-parse", "refs/heads/feature")
     commits_before = _git(repo, "rev-list", "--count", "HEAD")
-    # The container uses one file for the host's findings payload and the resolver result.
+    # why: the container uses one file for the host's findings payload and the resolver result
     result_file = tmp_path / "review_result.json"
     findings = [{"id": "R1-F1", "severity": "nit", "path": "app.py", "line": 1, "summary": "prints bug"}]
     result_file.write_text(json.dumps({"iteration": 1, "findings": findings}), encoding="utf-8")
@@ -199,17 +184,12 @@ def test_resolver_mode_writes_a_result_when_commit_raises(resolver_checkout: Pat
     assert outcome["exit_code"] == 1
 
 
-# --- (b, loop half) the review loop halts on the resolver failure --------------------------------------------------
-
-
 @pytest.fixture
 def in_simulated_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Run the loop as if inside the sandbox, with fake target resolution and diff; each test injects its ensemble."""
     install_fake_reviewers(monkeypatch)
 
 
 def _entrypoint_failure(findings: list[FindingRow], head_sha: str) -> dict:
-    """The resolver result the entrypoint writes when its pre-push verification cannot run uv."""
     return {
         "resolver": True,
         "dispositions": [{"id": f.id, "disposition": "applied", "rejection_reason": None} for f in findings],
@@ -263,7 +243,6 @@ def _ledger_rows(tmp_path: Path) -> list[dict]:
 
 @pytest.mark.usefixtures("in_simulated_sandbox")
 def test_incident_failed_resolver_never_turns_a_dissent_into_unanimous_approval(tmp_path: Path) -> None:
-    """The observed incident: the resolver crashes on a missing uv while one reviewer still flags a nit."""
     ensemble = FakeEnsemble([clean_reviewer(1), clean_reviewer(2), objecting_reviewer(3, "nit")])
 
     def crashing_resolver(target, iteration, findings, action_ids, rejected_findings):
@@ -288,11 +267,7 @@ def test_incident_failed_resolver_never_turns_a_dissent_into_unanimous_approval(
     assert not _rows(tmp_path, "ACT-POST")
 
 
-# --- (c) a resolver container that exits non-zero halts the loop ----------------------------------------------------
-
-
 def _resolve_dispatcher(resolve_exit: int, resolver_result: dict | None, calls: list[list[str]]):
-    """Reviewers object every iteration; the resolver exits ``resolve_exit`` and writes ``resolver_result`` if given."""
 
     def fake_dispatcher(_role, _runner, _model, positional_args, **kwargs):
         calls.append(list(positional_args))
@@ -366,9 +341,6 @@ def test_dispatch_review_resolver_reads_an_untouched_input_payload_as_no_result(
     assert outcome.head_sha == "a" * 40
 
 
-# --- the shared resolver result contract ---------------------------------------------------------------------------
-
-
 def test_clean_exit_with_a_marked_result_keeps_the_payload() -> None:
     data = {"resolver": True, "dispositions": [], "head_sha": "b" * 40, "error": None}
 
@@ -402,11 +374,7 @@ def test_resolver_error_text_names_the_exit_code_once_and_skips_a_repeated_tail(
     assert resolver_error_text("exited with code 3", 3, None) == "exited with code 3"
 
 
-# --- the host pushes the head the resolver container committed -----------------------------------------------------
-
-
 def _resolver_dispatch(tmp_path: Path, *, commit: bool = True, **ctx_kwargs):
-    """Run one host resolver pass whose fake container commits in the clone; returns (outcome, origin, clone, base)."""
     origin = tmp_path / "origin.git"
     clone = tmp_path / "clone"
     subprocess.run(["git", "init", "--bare", "-b", "feature", str(origin)], capture_output=True, check=True)
@@ -499,9 +467,6 @@ def test_failed_host_push_names_the_operation_branch_and_remote_without_credenti
     assert "SECRET" not in outcome.error
 
 
-# --- a rejection without a stated reason never reaches the ledger --------------------------------------------------
-
-
 @pytest.mark.parametrize("reason", [None, "", "unspecified"])
 def test_recorder_refuses_a_hand_built_rejection_without_a_reason(tmp_path: Path, reason: str | None) -> None:
     from sandbox_executor.flow.review.resolver import DispositionRecorder
@@ -518,13 +483,9 @@ def test_recorder_refuses_a_hand_built_rejection_without_a_reason(tmp_path: Path
     assert recorder.recorded_keys == set()
 
 
-# --- a container resolver turn without usable output is a failed turn ----------------------------------------------
-
-
 def _resolver_turn(
     tmp_path: Path, returncode: int, stdout: str = "", file_payload: object | None = None, breach: object = None
 ) -> list:
-    """Run ``_run_resolver_agent`` with a fake turn exiting ``returncode`` that may leave a dispositions file."""
     from sandbox_executor.entrypoint.review_loop import _run_resolver_agent
     from sandbox_executor.turns import TurnResult
 
@@ -586,13 +547,11 @@ def test_a_clean_resolver_turn_returns_the_dispositions_it_wrote(tmp_path: Path)
     assert _resolver_turn(tmp_path, 0, file_payload={"dispositions": written}) == written
 
 
-# --- the PR #203 incident: a resolver on a usage limit leaves its findings open and writes no ACT-RES row ----------
-
+# why: reproduces the PR #203 incident, a resolver on a usage limit leaving reviewer 1's two nits open
 SESSION_LIMIT = "You've hit your session limit"
 
 
 def _two_nit_reviewer() -> ReviewerResult:
-    """Reviewer 1 of iteration 3 on PR #203: two nits in flow/calibrate_rerun.py."""
     from sandbox_executor.review_ensemble import ParsedTrailer, ReviewCounts, ReviewFinding
 
     nits = (

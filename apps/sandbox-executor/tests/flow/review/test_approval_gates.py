@@ -28,6 +28,7 @@ from sandbox_executor.flow.review.approval_gates import (
     record_iteration_gates,
     record_pipeline_gate,
 )
+from sandbox_executor.flow.review.verdict import _finding_outcome_blockers
 from sandbox_executor.review_ensemble import ConsensusVerdict, ReviewerVerdict
 
 from tests.review_fakes import clean_reviewer, objecting_reviewer
@@ -172,7 +173,10 @@ def _three_clean():
 
 def test_a_clean_two_reviewer_ensemble_never_approves_the_diff(tmp_path):
     ctx = _ctx(tmp_path)
-    record_iteration_gates(ctx, _facts([clean_reviewer(1), clean_reviewer(2)], True), ConsensusVerdict.APPROVED)
+    two = [clean_reviewer(1), clean_reviewer(2)]
+    record_iteration_gates(
+        ctx, _facts(two, True, blockers=_finding_outcome_blockers(two, (), ())), ConsensusVerdict.CHANGES_REQUESTED
+    )
 
     assert diff_gate_of(ctx).approved is False and diff_gate_of(ctx).fingerprint is None
     assert approved(ctx, REPO, HEAD) is False

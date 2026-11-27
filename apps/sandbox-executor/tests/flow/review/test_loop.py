@@ -637,6 +637,47 @@ class TestEveryFindingNeedsAResolverOutcome:
         assert res["consensus"]["approved"] is True
         assert res["consensus_blockers"] == []
 
+    @staticmethod
+    def _run_three(tmp_path: Path, outcomes: list[dict]) -> tuple[dict, list[list[str]]]:
+        calls: list[list[str]] = []
+
+        def ensemble(size: int):
+            first = not ensemble_fake.calls[1:]
+            return with_clean_peers([objecting_reviewer(1, "nit")] if first else [], size)
+
+        def resolver(target, iteration, findings, action_ids, rejected_findings):
+            calls.append([row.id for row in findings])
+            outcome = outcomes[min(len(calls), len(outcomes)) - 1]
+            return {"dispositions": [{**row, **outcome} for row in _applied(findings)], **_pushes(outcome)}
+
+        ensemble_fake = FakeEnsemble(ensemble)
+        with _LoopStubs():
+            res = run_review_loop(
+                _ensemble_ctx(tmp_path),
+                target=EXEC_TARGET,
+                max_iterations=3,
+                ensemble_size=3,
+                run_ensemble_fn=ensemble_fake,
+                run_resolver_fn=resolver,
+            )
+        return res, calls
+
+    def test_an_unpushed_fix_goes_back_to_the_resolver_and_approves_once_pushed(self, tmp_path):
+        res, calls = self._run_three(
+            tmp_path, [{"disposition": "applied", "pushed": False}, {"disposition": "applied", "pushed": True}]
+        )
+
+        assert calls == [["R1-F1"], ["R1-F1"]]
+        assert res["consensus"]["approved"] is True
+        assert res["consensus_blockers"] == []
+
+    def test_a_finding_left_open_two_iterations_back_still_blocks_approval(self, tmp_path):
+        res, calls = self._run_three(tmp_path, [{"disposition": "open", "evidence": "could not reproduce"}])
+
+        assert calls == [["R1-F1"]] * 3
+        assert res["consensus"]["approved"] is False
+        assert any(b.endswith("with a reason): R1-F1") for b in res["consensus_blockers"])
+
 
 def _pushes(outcome: dict) -> dict:
     return {"head_sha": "c" * 40, "pushed": True} if outcome.get("pushed") else {"pushed": False}

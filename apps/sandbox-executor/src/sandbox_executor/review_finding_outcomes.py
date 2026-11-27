@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace
 
 from sandbox_executor.resolver_evidence import has_stated_reason
@@ -25,14 +25,32 @@ def with_commit(dispositions: Iterable[FindingDisposition], head_sha: str | None
     )
 
 
-def undisposed_finding_ids(findings: Sequence[FindingRow], dispositions: Iterable[FindingDisposition]) -> list[str]:
+def undisposed_findings(findings: Sequence[FindingRow], dispositions: Iterable[FindingDisposition]) -> list[FindingRow]:
     disposed = {finding_signature(d.severity, d.path, d.line, d.summary) for d in dispositions if is_disposed(d)}
-    undisposed: list[str] = []
-    for row in findings:
-        if finding_signature(row.severity, row.path, row.line, row.summary) in disposed or row.id in undisposed:
-            continue
-        undisposed.append(row.id)
-    return undisposed
+    return [row for row in findings if finding_signature(row.severity, row.path, row.line, row.summary) not in disposed]
+
+
+def undisposed_finding_ids(findings: Sequence[FindingRow], dispositions: Iterable[FindingDisposition]) -> list[str]:
+    return list(dict.fromkeys(row.id for row in undisposed_findings(findings, dispositions)))
+
+
+def rejected_as(
+    findings: Iterable[FindingRow], reason: str, introduced_by: Callable[[FindingRow], str | None]
+) -> tuple[FindingDisposition, ...]:
+    return tuple(
+        FindingDisposition(
+            id=row.id,
+            severity=row.severity,
+            path=row.path,
+            line=row.line,
+            summary=row.summary,
+            recommendation=row.recommendation,
+            disposition="rejected",
+            rejection_reason=reason,
+            introduced_by_action_id=introduced_by(row),
+        )
+        for row in findings
+    )
 
 
 def returned_verdict_count(reviewers: Sequence[ReviewerResult]) -> int:

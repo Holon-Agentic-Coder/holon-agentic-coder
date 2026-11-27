@@ -197,7 +197,9 @@ def test_resume_refuses_approval_while_a_carried_finding_has_no_disposition(tmp_
 
     ctx, res = _resume(halted_checkpoint, log, _resolved(dispositions, "a" * 40))
 
-    assert log == ["resolver:R1-F1,R1-F2", "ensemble"]
+    # why: a finding still without an outcome goes back to the resolver on every later iteration.
+    assert log[:3] == ["resolver:R1-F1,R1-F2", "ensemble", "resolver:R1-F1"]
+    assert set(log[2:]) == {"ensemble", "resolver:R1-F1"}
     assert res["ensemble_verdict"] != str(ConsensusVerdict.APPROVED)
     assert res["consensus"]["approved"] is False
     assert any("R1-F1" in blocker for blocker in res["consensus_blockers"])
@@ -226,7 +228,9 @@ def test_resume_with_an_unpushed_applied_fix_records_it_and_blocks_approval(tmp_
 
     ctx, res = _resume(halted_checkpoint, log, _resolved(dispositions, ""))
 
-    assert log == ["resolver:R1-F1,R1-F2", "ensemble"]
+    # why: a finding still without an outcome goes back to the resolver on every later iteration.
+    assert log[:3] == ["resolver:R1-F1,R1-F2", "ensemble", "resolver:R1-F1"]
+    assert set(log[2:]) == {"ensemble", "resolver:R1-F1"}
     assert res["consensus"]["approved"] is False
     assert any(
         b.endswith("without a resolver outcome (applied with a commit or rejected with a reason): R1-F1")

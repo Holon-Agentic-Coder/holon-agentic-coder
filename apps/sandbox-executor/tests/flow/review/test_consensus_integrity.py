@@ -119,7 +119,9 @@ def _assert_no_false_consensus(
         assert _posted_verdict(body) != "APPROVED"
         assert flag != "--approve"
     assert [call["iteration"] for call in calls] == [1, 2]
-    assert [row.severity for row in calls[1]["findings"]] == [severity]
+    # why: the bare rejection leaves the iteration-1 finding open, so it is carried ahead of the fresh one.
+    assert [row.severity for row in calls[1]["findings"]][-1] == severity
+    assert {row.summary for row in calls[0]["findings"]} <= {row.summary for row in calls[1]["findings"]}
     third = res["reviewers"][2]
     assert third["verdict"] == "CHANGES_REQUESTED"
     assert third["counts"][severity] == 1

@@ -1,5 +1,3 @@
-"""Stage 5 commit of promoted knowledge base and wisdom artefacts onto the /calibrated branch."""
-
 from __future__ import annotations
 
 import logging
@@ -14,15 +12,6 @@ logger = logging.getLogger(__name__)
 
 
 def _commit_stage5_promoted_artifacts(context: FlowContext, repo_dir: str, promoted_count: int = 0) -> None:
-    """Commit the Stage 5 promoted knowledge base and wisdom artifacts onto the /calibrated branch.
-
-    Promoted candidates write JSON files into holon-knowledge/kb and holon-knowledge/wisdom
-    after reconciliation. This helper stages and commits them onto the /calibrated branch so they
-    are fast-forwarded into the execution branch and appear in the PR diff and main history.
-    Call after every successful non-dry-run calibration, whatever ``promoted_count`` is, so it also
-    commits artefacts left behind by an earlier flow whose calibration failed; the "unchanged" message
-    is logged only when this run promoted something. Never raises.
-    """
     branch = context.calibrated_branch
     if not branch:
         return
@@ -43,6 +32,7 @@ def _commit_stage5_promoted_artifacts(context: FlowContext, repo_dir: str, promo
         if status_res.returncode != 0:
             return
         if not status_res.stdout.strip():
+            # why: this also runs after calibrations that promoted nothing, to commit an earlier failed flow's files
             if promoted_count > 0:
                 context.log("Stage 5 promoted knowledge/wisdom artifacts unchanged: zero modifications to commit.")
             return

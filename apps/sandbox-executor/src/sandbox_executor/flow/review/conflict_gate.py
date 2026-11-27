@@ -1,5 +1,3 @@
-"""The mergeability gate in front of an approved consensus post and in front of Stage 5."""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
@@ -35,8 +33,6 @@ UNPUSHED_ROWS_REASON = "pending ledger rows could not be pushed"
 
 @dataclass(frozen=True)
 class _ConflictGateResult:
-    """The gate's decision: ``blocked_reason`` is None only when the head may be approved or calibrated."""
-
     conflicting: bool
     merged: bool = False
     ledger_only: bool = False
@@ -47,7 +43,6 @@ class _ConflictGateResult:
 
 
 def _is_conflicting(mergeability: Mapping[str, Any] | None) -> bool:
-    """True for an explicit ``CONFLICTING`` or ``DIRTY`` probe; ``UNKNOWN`` and ``MISSING_REF`` are not conflicts."""
     probe = mergeability or {}
     state = str(probe.get("merge_state_status") or "").upper()
     if state == "MISSING_REF":
@@ -56,7 +51,6 @@ def _is_conflicting(mergeability: Mapping[str, Any] | None) -> bool:
 
 
 def _blocked_reason(outcome: _MergeOutcome, target_branch: str) -> str:
-    """Why the head stays blocked after a legacy merge attempt."""
     if outcome.merged:
         return MERGED_REASON
     if outcome.conflicting_paths:
@@ -67,8 +61,6 @@ def _blocked_reason(outcome: _MergeOutcome, target_branch: str) -> str:
 
 @dataclass(frozen=True)
 class _GateMerge:
-    """What a non-dry-run gate merges with: trailers, iteration, any already-committed ledger, and sync boundary."""
-
     trailers: str
     iteration: int = 0
     committed: _LedgerCommit | None = None
@@ -76,7 +68,6 @@ class _GateMerge:
 
 
 def _local_commits_unpushed(context: FlowContext, branch: str) -> bool:
-    """True when ``refs/heads/<branch>`` holds commits ``origin/<branch>`` lacks and they cannot be pushed now."""
     repo_dir, local = context.target_worktree, f"refs/heads/{branch}"
     if run_git(["rev-parse", "--verify", "-q", local], cwd=repo_dir, check=False).returncode != 0:
         return False
@@ -101,7 +92,6 @@ def _gate_conflicting_head(
     mergeability: Mapping[str, Any],
     merge: _GateMerge | None,
 ) -> _ConflictGateResult:
-    """Decide on a probed head: pass a clean one, otherwise sync with the target branch and block."""
     if not _is_conflicting(mergeability):
         return _ConflictGateResult(conflicting=False)
     if merge is None or not branch:
@@ -131,7 +121,6 @@ def _gate_conflicting_head(
 
 
 def _gate_record(review_target: str, gate: _ConflictGateResult) -> dict[str, Any]:
-    """The ACT row recording a blocked approval; its ``error_context`` is redacted."""
     return {
         "action_id": generate_action_id("ACT-GATE"),
         "execution_id": f"REV-GATE-{int(datetime.now(UTC).timestamp())}",
@@ -150,8 +139,8 @@ def _gate_record(review_target: str, gate: _ConflictGateResult) -> dict[str, Any
 def _approved_post_gate(
     context: FlowContext, exec_file: str, request: PostRequest, probe: MergeabilityProbe
 ) -> tuple[str, dict[str, Any]] | None:
-    """Gate an approved post: None lets it proceed, else the post error and the ``posting_res`` to return."""
-    from sandbox_executor.flow.review.records import record_review_action  # Lazy: records imports review_report.
+    # why: imported lazily because records imports review_report, which would form an import cycle.
+    from sandbox_executor.flow.review.records import record_review_action
 
     review_target, target_branch = request.review_target, str(request.consensus_data.get("base_branch") or "main")
     mergeability = probe(target_branch=target_branch)
@@ -168,13 +157,13 @@ def _approved_post_gate(
         and gate.mechanical_only
         and carry_approval_over(context, exec_file, request.consensus_data, review_target, gate.merged_head)
     ):
-        return None  # The approval stands for the merged head; Stage 5 still waits for its CI.
+        # why: a mechanical-only merge carries the approval to the merged head; Stage 5 still waits for its CI.
+        return None
     record_review_action(context, exec_file, _gate_record(review_target, gate))
     return f"conflict gate: {gate.blocked_reason}", {"posted": False, "conflict_gate": asdict(gate)}
 
 
 def _stage5_conflict_gate(context: FlowContext) -> StageResult | None:
-    """Fail Stage 5 on a conflicting execution head; None lets it start."""
     if not context.execution_branch:
         return None
     target_branch = str(context.intent_data.get("target_branch") or "main")

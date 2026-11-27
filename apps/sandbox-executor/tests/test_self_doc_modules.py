@@ -281,10 +281,28 @@ def test_intent_creator_keeps_shebang() -> None:
         (10, "# pragma: no cover extra text", 0, False),
         (10, "# pragma note about coverage", 0, False),
         (10, "# mentions pragma: no cover in prose", 0, False),
+        (10, "# fmt: off", 0, True),
+        (10, "# fmt: skip", 0, True),
+        (10, "# fmt: off because reasons", 0, False),
+        (10, "# why: git refuses a shallow file here", 0, False),
     ],
 )
 def test_comment_allowlist_rules(line_number: int, comment_text: str, column: int, expected: bool) -> None:
     assert is_allowlisted_comment(line_number, comment_text, column) is expected
+
+
+@pytest.mark.parametrize(
+    ("comment_text", "expected"),
+    [
+        ("# why: git refuses a shallow file here", True),
+        ("#why: no space after the hash", True),
+        ("# why:", False),
+        ("# whyever not", False),
+        ("# explains the code", False),
+    ],
+)
+def test_why_comment_rules(comment_text: str, expected: bool) -> None:
+    assert is_allowlisted_comment(10, comment_text, allow_why=True) is expected
 
 
 def test_find_disallowed_comments_reports_line_numbers_and_columns() -> None:

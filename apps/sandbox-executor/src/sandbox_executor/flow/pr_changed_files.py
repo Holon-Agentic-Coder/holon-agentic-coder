@@ -1,13 +1,3 @@
-"""Pull request changed-file discovery for Stage 3 admission, with HTTP 406 paginated REST fallback.
-
-Primary discovery parses ``gh pr diff <number> --color never`` via :func:`patch_paths`. When GitHub rejects the diff
-because the pull request exceeds its diff ceiling (HTTP 406 / ``too_large``), discovery falls back to paginated REST
-file listing (``gh api --paginate --slurp repos/{owner}/{repo}/pulls/{number}/files``), extracting both ``filename``
-and ``previous_filename`` (for renames/copies) and applying the same path normalisation, order-preserving deduplication
-and metadata filtering as the diff path. All non-406 errors, API failures and malformed payloads fail closed by
-returning an error message string for the caller to wrap in :class:`AdmissionUnavailable`.
-"""
-
 from __future__ import annotations
 
 import json
@@ -25,25 +15,21 @@ _DIFF_TOO_LARGE_MARKERS = ("http 406", "too_large")
 
 
 def _normalise_changed_paths(raw_paths: Iterable[str]) -> tuple[str, ...]:
-    """Normalise, drop empty and metadata paths, and deduplicate preserving first-seen order."""
     normalised = (normalise_touch_path(path) for path in raw_paths)
     return tuple(dict.fromkeys(path for path in normalised if path and not is_metadata_path(path)))
 
 
 def _format_command_failure(command: str, result: subprocess.CompletedProcess[str]) -> str:
-    """Format a failed ``gh`` invocation with secret-redacted stderr truncated to 300 characters."""
     detail = redact_agent_secrets((result.stderr or "").strip())[:300]
     return f"'{command}' failed: {detail or 'no output'}"
 
 
 def _is_diff_too_large(result: subprocess.CompletedProcess[str]) -> bool:
-    """Return True only when ``gh pr diff`` failed specifically with GitHub's HTTP 406 / ``too_large`` error."""
     output = ((result.stderr or "").strip() or (result.stdout or "")).lower()
     return any(marker in output for marker in _DIFF_TOO_LARGE_MARKERS)
 
 
 def _extract_entry_paths(entry: Any, command: str) -> list[str] | str:
-    """Validate one REST pull-request file entry and return its raw ``filename`` and optional ``previous_filename``."""
     if not isinstance(entry, dict):
         return f"'{command}' returned a non-object file entry"
     filename = entry.get("filename")
@@ -56,7 +42,6 @@ def _extract_entry_paths(entry: Any, command: str) -> list[str] | str:
 
 
 def _parse_slurped_pr_files(stdout: str, command: str) -> tuple[str, ...] | str:
-    """Strictly validate ``gh api --paginate --slurp`` JSON pages and return normalised changed paths or an error."""
     if not stdout.strip():
         return f"'{command}' returned empty output"
     try:
@@ -78,7 +63,6 @@ def _parse_slurped_pr_files(stdout: str, command: str) -> tuple[str, ...] | str:
 
 
 def _pull_request_files_via_api(run_gh: merge.GhRunner, number: int, repo_dir: str) -> tuple[str, ...] | str:
-    """List pull request changed files via paginated GitHub REST API when ``gh pr diff`` hits HTTP 406."""
     endpoint = f"repos/{{owner}}/{{repo}}/pulls/{number}/files"
     command = f"gh api {endpoint}"
     result = run_gh(["api", "--paginate", "--slurp", endpoint], repo_dir)
@@ -88,7 +72,6 @@ def _pull_request_files_via_api(run_gh: merge.GhRunner, number: int, repo_dir: s
 
 
 def _pull_request_changed_files(run_gh: merge.GhRunner, number: int, repo_dir: str) -> tuple[str, ...] | str:
-    """Return normalised non-metadata changed paths for PR ``number``, or a fail-closed error message string."""
     result = run_gh(["pr", "diff", str(number), "--color", "never"], repo_dir)
     if result.returncode == 0:
         return _normalise_changed_paths(patch_paths(result.stdout or ""))

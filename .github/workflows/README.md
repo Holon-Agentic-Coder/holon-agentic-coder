@@ -66,11 +66,11 @@ The flow pushes plan files, execution reports and ledger rows to a pull request 
 a test result, yet every push used to run every job in full. `scripts/ci_bookkeeping_gate.py`, called through the
 composite action `.github/actions/bookkeeping-gate`, lets a job skip its expensive steps after such a push. Every job
 still starts, reports under its usual name and ends green, so required status checks are satisfied. The script uses the
-standard library only and runs on the runner's own `python3`, with three sibling modules: `ci_bookkeeping_api.py` (the
-event of the run and the REST reads), `ci_bookkeeping_chain.py` (the walk through earlier runs) and
-`ci_main_push_gate.py` (the decision for a push to `main`, see "Pushes to main"). It also imports
-`scripts/ci_timing_gate.py`, the source of the request builder, the opener, the override label name and the step-summary
-writer.
+standard library only and runs on the runner's own `python3`, with four sibling modules: `ci_bookkeeping_api.py` (the
+REST reads), `ci_bookkeeping_context.py` (the event of the run, re-exported by `ci_bookkeeping_api.py`),
+`ci_bookkeeping_chain.py` (the walk through earlier runs) and `ci_main_push_gate.py` (the decision for a push to `main`,
+see "Pushes to main"). It also imports `scripts/ci_timing_gate.py`, the source of the request builder, the opener, the
+override label name and the step-summary writer.
 
 ### Bookkeeping paths
 
@@ -360,8 +360,8 @@ path is one of:
 - any `pyproject.toml` or `uv.lock`, at any depth;
 - every path under `.github/` (workflows, actions, this README);
 - the gate itself and the CI gates it runs with: `scripts/macos_relevance*.py`, `scripts/ci_bookkeeping_gate.py`,
-  `scripts/ci_bookkeeping_api.py`, `scripts/ci_bookkeeping_chain.py`, `scripts/ci_timing_gate.py` and
-  `apps/sandbox-executor/tests/test_macos_relevance*.py`;
+  `scripts/ci_bookkeeping_api.py`, `scripts/ci_bookkeeping_context.py`, `scripts/ci_bookkeeping_chain.py`,
+  `scripts/ci_timing_gate.py` and `apps/sandbox-executor/tests/test_macos_relevance*.py`;
 - shell: `*.sh`, `*.bash`, `*.zsh`, `Makefile`, the repository launcher `holon`, and any Python or extension-less file
   whose first line is a `#!` shebang naming `sh`, `bash` or `zsh`;
 - containers: `Dockerfile`, `Dockerfile.*`, `*.Dockerfile`, `docker-bake.hcl`;

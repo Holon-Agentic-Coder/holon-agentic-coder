@@ -1,5 +1,3 @@
-"""The Holon Flow pipeline engine: runs the five stages in order, with checkpoints and resumption."""
-
 from __future__ import annotations
 
 import contextlib
@@ -49,8 +47,6 @@ from sandbox_executor.redaction import redact_agent_secrets
 
 
 class PipelineEngine:
-    """Orchestrates the lifecycle stages of the Holon Flow pipeline."""
-
     STAGE_ORDER: ClassVar[list[FlowStage]] = [
         FlowStage.INTENT,
         FlowStage.PLAN,
@@ -58,8 +54,7 @@ class PipelineEngine:
         FlowStage.REVIEW,
         FlowStage.CALIBRATE,
     ]
-    # Stages whose finished result a post-hoc stage-budget overrun only records, never downgrades (see
-    # timed_execute_stage).
+    # why: a post-hoc stage-budget overrun only records these stages' finished results, never downgrades them.
     POST_HOC_BUDGET_EXEMPT: ClassVar[frozenset[FlowStage]] = frozenset({FlowStage.REVIEW, FlowStage.CALIBRATE})
 
     def __init__(
@@ -72,42 +67,37 @@ class PipelineEngine:
     ) -> None:
         self.context = context
         self.from_stage = FlowStage.from_str(from_stage) if from_stage else None
-        self.checkpoint_path = context.checkpoint_path = checkpoint_path  # Stage 3 saves its admission state there too
+        # why: Stage 3 saves its admission state to the same checkpoint, so the context carries the path too.
+        self.checkpoint_path = context.checkpoint_path = checkpoint_path
         self.budgets = budgets or load_budgets(os.environ)
         self.clock = clock
-        # True only while the first stage of a run resumed at Stage 3 is pending; deliberately not checkpointed.
+        # why: deliberately not checkpointed; it holds only while the first stage of a Stage 3 resume is pending.
         self._resume_partial_pending = False
         self.worktree_validator: Callable[[str], str | None] | None = None
 
     def stage_budget_seconds(self, stage: FlowStage, result: StageResult | None = None) -> float | None:
-        """Ceiling for ``stage`` (``None`` when unlimited); the review stage gets one iteration budget per pass."""
         if stage == FlowStage.REVIEW:
             iterations = 1
             if result is not None:
                 consensus = result.payload.get("consensus") if isinstance(result.payload, dict) else None
                 if isinstance(consensus, dict):
                     try:
-                        # Passes run, not the last label: a resumed engine labels its single pass N. A present
-                        # "passes" wins even at 0 (a dispatchless run), falling back to the label only when absent.
+                        # why: a resumed engine labels its single pass N, so passes run count, not the last label;
+                        # why: a present "passes" wins even at 0 (a dispatchless run).
                         raw = consensus["passes"] if "passes" in consensus else consensus.get("iterations", 1)
                         iterations = max(1, int(raw))
                     except (TypeError, ValueError):
                         iterations = 1
-            # Same source as run_review_loop's per-iteration timer, so HOLON_STAGE_BUDGET_SECONDS applies to both.
+            # why: same source as run_review_loop's per-iteration timer, so HOLON_STAGE_BUDGET_SECONDS applies to both.
             per_iteration = self.budgets.stage_seconds("review_iteration")
             return None if per_iteration is None else per_iteration * iterations
         return self.budgets.stage_seconds(stage.value)
 
     def timed_execute_stage(self, stage: FlowStage) -> StageResult:
-        """Run a stage under its wall-clock ceiling and attach elapsed and budget to the result.
-
-        Stages run in-process, so the ceiling is enforced on return; REVIEW and CALIBRATE are exempt from post-hoc
-        downgrade and record ``budget_overrun`` instead. While a non-review stage runs, its timer is the active host
-        stage timer (:func:`budgets.active_stage_timer`) so role containers receive ``HOLON_STAGE_BUDGET_SECONDS``.
-        """
         timer = StageTimer(stage.value, self.stage_budget_seconds(stage), clock=self.clock)
         if timer.unlimited:
             self.context.log(f"WARNING: {unlimited_stage_warning(stage.value)}")
+        # why: role containers read HOLON_STAGE_BUDGET_SECONDS from the active stage timer; review times each pass.
         scope = active_stage_timer(timer) if stage != FlowStage.REVIEW else contextlib.nullcontext(timer)
         try:
             with scope:
@@ -118,11 +108,11 @@ class PipelineEngine:
         budget_seconds = self.stage_budget_seconds(stage, result)
         result.elapsed_seconds = round(elapsed, 3)
         result.budget_seconds = budget_seconds
-        if budget_seconds is None:  # an unlimited stage never overruns; record the budget with the stage
+        if budget_seconds is None:
             result.payload = {**result.payload, "stage_budget": UNLIMITED}
             return result
         if elapsed > budget_seconds and result.status not in (StageStatus.FAILED, StageStatus.SKIPPED):
-            # A decomposed Execute stage spans whole child pipelines, each of whose stages ran under its own budget.
+            # why: a decomposed Execute stage spans whole child pipelines whose stages ran under their own budgets.
             if stage in self.POST_HOC_BUDGET_EXEMPT or result.payload.get("decomposed"):
                 result.payload = {
                     **result.payload,
@@ -150,41 +140,33 @@ class PipelineEngine:
         return result
 
     def _rerun_if_calibrate(self, stage: FlowStage, result: StageResult) -> StageResult:
-        """Pass a completed Stage 5 through the head-move rerun trigger; any other stage returns unchanged.
-
-        Catches a head that moved during the stage's own CI wait; an unmoved head is a no-op. Runs before
-        ``after_stage``/``save_checkpoint``, so the checkpoint records the refreshed result.
-        """
         if stage != FlowStage.CALIBRATE:
             return result
         return rerun_calibration(self.context, result, run_calibrate_stage)
 
     def _run_stage_once(self, stage: FlowStage) -> StageResult:
-        """Enter ``stage`` and run it under its budget, rerunning Stage 5 if the head moved during its CI wait."""
         self.before_stage(stage)
+        # why: the Stage 5 rerun happens before the result is recorded, so the checkpoint holds the refreshed result.
         return self._rerun_if_calibrate(stage, self.timed_execute_stage(stage))
 
     def _record_stage(self, stage: FlowStage, result: StageResult) -> None:
-        """Record ``result`` as the stage's result and checkpoint it."""
         self.after_stage(stage, result)
         self.save_checkpoint()
 
     def before_stage(self, stage: FlowStage) -> None:
-        """Lifecycle hook invoked before executing a stage."""
         self.context.log(f"--> [Flow Engine] Entering stage: {stage.value.upper()}")
 
     def execute_stage(self, stage: FlowStage) -> StageResult:  # noqa: PLR0911
-        """Dispatch stage execution to the appropriate handler."""
         if stage == FlowStage.INTENT:
             return run_intent_stage(self.context)
         elif stage == FlowStage.PLAN:
             return run_plan_stage(self.context)
         elif stage == FlowStage.EXECUTE:
-            # Only the first Execute stage of a Stage 3 resume continues partial work; a re-plan starts afresh.
+            # why: only the first Execute stage of a Stage 3 resume continues partial work; a re-plan starts afresh.
             resume_partial, self._resume_partial_pending = self._resume_partial_pending, False
             previous = self.context.stage_results.get(FlowStage.EXECUTE.value)
             if has_recorded_decomposition(previous, self.context.plan_branch):
-                # A decomposed Stage 3 never re-dispatches the parent executor: its children resume from their progress.
+                # why: a decomposed Stage 3 never re-dispatches the parent; its children resume from their progress.
                 return resume_children(self.context, previous)
             if resume_partial:
                 return run_execute_stage(self.context, resume_partial=True)
@@ -199,7 +181,6 @@ class PipelineEngine:
             return StageResult(stage=stage, status=StageStatus.FAILED, error=f"Unsupported stage '{stage}'")
 
     def after_stage(self, stage: FlowStage, result: StageResult) -> None:
-        """Lifecycle hook invoked after executing a stage."""
         if result.budget_seconds is None:
             result.budget_seconds = self.stage_budget_seconds(stage, result)
         if result.elapsed_seconds is None and result.status == StageStatus.SKIPPED:
@@ -212,7 +193,6 @@ class PipelineEngine:
         validate_stage_ledger(repo_dir, stage)
 
     def handle_stage_failure(self, stage: FlowStage, error: Exception) -> StageResult:
-        """Handle unexpected exceptions during stage execution."""
         err_msg = redact_agent_secrets(f"Unhandled exception in stage '{stage.value}': {error}")
         self.context.log(err_msg)
         res = StageResult(stage=stage, status=StageStatus.FAILED, error=err_msg)
@@ -220,11 +200,9 @@ class PipelineEngine:
         return res
 
     def save_checkpoint(self) -> str:
-        """Save active pipeline state to checkpoint file."""
         return save_checkpoint(self.context, self.checkpoint_path)
 
     def _replan_feedback(self, result: StageResult) -> str:
-        """Log the return to Stage 2 and give the planner's transient feedback for a refused Stage 3 result."""
         attempt, files = self.context.replan_attempts, result.payload.get(TOUCH_SET_VIOLATION)
         entropy = _format_entropy(result.payload.get("entropy"))
         budget = _format_entropy(result.payload.get("entropy_budget"))
@@ -237,7 +215,7 @@ class PipelineEngine:
         if _sub_intent_depth_error(self.context) is None:
             request = "write a smaller plan within the budget, or add an explicit sub-intent list."
         else:
-            # A sub-intent list here would be refused for depth, wasting the attempt: ask for one smaller plan only.
+            # why: a sub-intent list here would be refused for depth, wasting the attempt.
             request = (
                 "write a smaller single plan within the budget. Do not add a sub-intent list: this intent is at "
                 f"the sub-intent depth limit of {MAX_SUB_INTENT_DEPTH}, so a sub-intent list would be refused."
@@ -248,7 +226,6 @@ class PipelineEngine:
         )
 
     def _replan_exhausted_error(self, result: StageResult) -> str | None:
-        """The Stage 3 error once the re-plans are spent, or ``None`` when ``result`` asks for no re-plan."""
         if not _replan_requested(result):
             return None
         attempts = self.context.replan_attempts
@@ -261,20 +238,13 @@ class PipelineEngine:
         )
 
     def _replan_after_over_budget(self, result: StageResult) -> StageResult:
-        """Return a refused plan to Stage 2 up to ``MAX_REPLAN_ATTEMPTS`` times, then fail Stage 3 clearly.
-
-        A plan is refused when it is over budget, or when its execution changed files outside its touch set
-        (``touch_set_violation``); both share the one attempt counter. Each attempt asks the planner, through
-        transient feedback that is never checkpointed or written to a ledger, for a plan within the budget or an
-        explicit sub-intent list (only a smaller plan at the sub-intent depth limit, where a list would be refused),
-        or for a touch set widened to the listed files, and re-runs Stage 2 and Stage 3 (admission included) in place.
-        """
         while _replan_requested(result) and self.context.replan_attempts < MAX_REPLAN_ATTEMPTS:
             self.context.replan_attempts += 1
             feedback = self._replan_feedback(result)
             self.context.plan_branch = None
             if (turn_err := at_turn_boundary(self.context, FlowStage.PLAN, self.context.replan_attempts)) is not None:
                 return turn_err
+            # why: re-plan feedback is transient, never checkpointed or written to a ledger.
             self.context.intent_data["replan_feedback"] = feedback
             try:
                 plan_result = self._run_stage_once(FlowStage.PLAN)
@@ -296,7 +266,6 @@ class PipelineEngine:
         return result
 
     def run(self) -> dict[str, StageResult]:
-        """Execute the configured stages, then return the host worktree to the branch the flow started on."""
         try:
             return self._run_stages()
         finally:
@@ -312,9 +281,8 @@ class PipelineEngine:
             raise ValueError(f"Invalid resumption stage '{self.from_stage}'. Must be one of: {valid}") from None
 
     def _run_stages(self) -> dict[str, StageResult]:
-        """Execute the configured pipeline stages sequentially."""
         start_idx = self._start_index()
-        # A --from-stage execute or --checkpoint resume at Stage 3 (cli.py sets from_stage from the checkpoint).
+        # why: cli.py sets from_stage from the checkpoint, so a --checkpoint resume at Stage 3 counts too.
         self._resume_partial_pending = self.from_stage == FlowStage.EXECUTE
         first_stage = self.STAGE_ORDER[start_idx]
         self.context.log(
@@ -340,7 +308,8 @@ class PipelineEngine:
                 self._skip_calibration()
                 continue
 
-            if stage == FlowStage.CALIBRATE:  # A resumed Stage 5 may restart Stage 4 on a red merged head too.
+            # why: a resumed Stage 5 may restart Stage 4 on a red merged head too.
+            if stage == FlowStage.CALIBRATE:
                 result = calibrate_with_review_restart(self.context, self._run_stage_once, self._record_stage)
             else:
                 result = self._run_stage_once(stage)
@@ -350,11 +319,11 @@ class PipelineEngine:
                 result = self._replan_after_over_budget(result)
 
             if result.status == StageStatus.FAILED:
-                # result.stage, not stage: a failed re-plan ends the run in Stage 2.
+                # why: result.stage, not stage, because a failed re-plan ends the run in Stage 2.
                 self.context.log(f"Pipeline halted due to failure in stage '{result.stage.value}'.")
                 break
 
-            # Stage 4 ends at the consensus boundary before merge; no earlier stage halts or waits for human.
+            # why: Stage 4 ends at the consensus boundary before merge; no earlier stage halts or waits for a human.
             if result.status in REVIEW_BOUNDARY_STATUSES:
                 self._handle_review_boundary(stage, result)
                 break
@@ -365,7 +334,6 @@ class PipelineEngine:
         return self.context.stage_results
 
     def _handle_review_boundary(self, stage: FlowStage, result: StageResult) -> None:
-        """Handle calibrate dispatch and logging when Stage 4 ends at the consensus boundary."""
         if stage == FlowStage.REVIEW:
             self._calibrate_after_consensus_halt()
         cal = self.context.stage_results.get(FlowStage.CALIBRATE.value)
@@ -387,25 +355,21 @@ class PipelineEngine:
         self.context.log(f"Pipeline finished at the merge boundary: {done}")
 
     def _calibrate_after_consensus_halt(self) -> None:
-        """Run Stage 5 (or record it as skipped by --skip-calibrate) after Stage 4 ended at the consensus boundary."""
         if self.context.skip_calibrate:
             self._skip_calibration()
         elif self.context.auto_calibrate:
             calibrate_with_review_restart(self.context, self._run_stage_once, self._record_stage)
 
     def _skip_calibration(self) -> None:
-        """Record Stage 5 as skipped by --skip-calibrate and checkpoint it."""
         self.context.log("Stage 5 (CALIBRATE) skipped due to --skip-calibrate flag.")
         self._record_stage(FlowStage.CALIBRATE, _skipped_by_flag(FlowStage.CALIBRATE))
 
 
 def _skipped_by_flag(stage: FlowStage) -> StageResult:
-    """The result of Stage 5 skipped by --skip-calibrate."""
     return StageResult(stage=stage, status=StageStatus.SKIPPED, payload={"skipped_by_flag": True})
 
 
 def _replan_requested(result: StageResult) -> bool:
-    """Whether a failed Stage 3 result asks to return to Stage 2 (over budget, or a touch-set violation)."""
     refused = result.payload.get("over_budget") or result.payload.get(TOUCH_SET_VIOLATION)
     return result.stage == FlowStage.EXECUTE and result.status == StageStatus.FAILED and bool(refused)
 
@@ -415,7 +379,6 @@ def run_flow_pipeline(
     from_stage: FlowStage | str | None = None,
     checkpoint_path: str | None = None,
 ) -> dict[str, Any]:
-    """Top-level invocation wrapper for running the Holon Flow pipeline."""
     try:
         engine = PipelineEngine(context, from_stage=from_stage, checkpoint_path=checkpoint_path)
         engine.worktree_validator = target_worktree_problem

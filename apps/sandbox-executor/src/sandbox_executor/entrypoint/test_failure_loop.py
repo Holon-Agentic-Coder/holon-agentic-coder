@@ -173,21 +173,7 @@ def _case_of(measurement: TestMeasurement, output: str) -> _Case:
 
 
 def _extract_blocker_token(texts: tuple[str, ...]) -> str | None:
-    for text in texts:
-        for pattern in _BLOCKER_PATTERNS:
-            if (match := pattern.search(text)) is not None:
-                return match.group(0)
-    return None
-
-
-def _blocker_candidates(case: _Case, classification: str | None) -> tuple[str, ...]:
-    suspects = case.diagnosis.environment_suspects if case.diagnosis else ()
-    return tuple(key for key in (case.signature, *case.failing_ids, classification or "", *suspects) if key)
-
-
-def _blocker_texts(case: _Case, reason: str | None) -> tuple[str, ...]:
-    diag_outputs = (case.diagnosis.same_env.output, case.diagnosis.base.output) if case.diagnosis else ()
-    return tuple(text for text in (reason or "", *case.excerpts.values(), *diag_outputs) if text)
+    return next((m.group(0) for text in texts for p in _BLOCKER_PATTERNS if (m := p.search(text))), None)
 
 
 def _resolve_blocked_on(case: _Case, classification: str | None, reason: str | None, ports: LoopPorts) -> str:
@@ -195,10 +181,33 @@ def _resolve_blocked_on(case: _Case, classification: str | None, reason: str | N
         resolved := ports.resolve_blocker(classification, case.failing_ids, case.signature, case.excerpts)
     ):
         return str(resolved).strip()
-    for key in _blocker_candidates(case, classification):
-        if (mapped := ports.blocker_map.get(key)) and str(mapped).strip():
+    suspects = case.diagnosis.environment_suspects if case.diagnosis else ()
+    for key in (case.signature, *case.failing_ids, classification or "", *suspects):
+        if key and (mapped := ports.blocker_map.get(key)) and str(mapped).strip():
             return str(mapped).strip()
-    return _extract_blocker_token(_blocker_texts(case, reason)) or UNATTRIBUTED_BLOCKER
+    diag_outputs = (case.diagnosis.same_env.output, case.diagnosis.base.output) if case.diagnosis else ()
+    texts = tuple(text for text in (reason or "", *case.excerpts.values(), *diag_outputs) if text)
+    return _extract_blocker_token(texts) or UNATTRIBUTED_BLOCKER
+
+
+def parked_record_from_ci_status(ci_status: Mapping[str, Any]) -> dict[str, Any] | None:
+    evidence = ci_status.get("test_failure")
+    record = evidence.get("parked_record") if isinstance(evidence, Mapping) else None
+    if not isinstance(evidence, Mapping) or not isinstance(record, Mapping):
+        return None
+    return {
+        "parked": bool(record.get("parked", True)),
+        "status": record.get("status") or evidence.get("status"),
+        "blocked_on": str(record.get("blocked_on") or evidence.get("blocked_on") or UNATTRIBUTED_BLOCKER),
+        "classification": record.get("classification") or evidence.get("classification"),
+        "failing_ids": [str(test_id) for test_id in record.get("failing_ids") or ()],
+        "signature": str(record.get("signature") or evidence.get("signature") or ""),
+        "evidence": str(record.get("evidence") or evidence.get("blocked_evidence") or ""),
+        "excerpts": dict(record.get("excerpts") or {}),
+        "ledger_rows": list(record.get("ledger_rows") or ()),
+        "final_tier": record.get("final_tier"),
+        "checkpoint_path": record.get("checkpoint_path"),
+    }
 
 
 class TestFailureLoop:

@@ -3,6 +3,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from sandbox_executor.entrypoint.test_failure_loop import (
+    parked_record_from_ci_status as parked_record_from_ci_status,
+)
 from sandbox_executor.review_report import FindingRow
 
 MAX_IDS_NAMED = 5
@@ -13,28 +16,6 @@ BLOCKED_ADVICE = (
     "Report this failure as blocked with the evidence above; do not mask it in code by weakening, skipping or "
     "deleting the tests."
 )
-
-
-def parked_record_from_ci_status(ci_status: Mapping[str, Any]) -> dict[str, Any] | None:
-    evidence = ci_status.get("test_failure")
-    if not isinstance(evidence, Mapping):
-        return None
-    record = evidence.get("parked_record")
-    if not isinstance(record, Mapping):
-        return None
-    return {
-        "parked": bool(record.get("parked", True)),
-        "status": record.get("status") or evidence.get("status"),
-        "blocked_on": str(record.get("blocked_on") or evidence.get("blocked_on") or "none"),
-        "classification": record.get("classification") or evidence.get("classification"),
-        "failing_ids": [str(test_id) for test_id in record.get("failing_ids") or ()],
-        "signature": str(record.get("signature") or evidence.get("signature") or ""),
-        "evidence": str(record.get("evidence") or evidence.get("blocked_evidence") or ""),
-        "excerpts": dict(record.get("excerpts") or {}),
-        "ledger_rows": list(record.get("ledger_rows") or ()),
-        "final_tier": record.get("final_tier"),
-        "checkpoint_path": record.get("checkpoint_path"),
-    }
 
 
 def _blocked_on_of(evidence: Mapping[str, Any]) -> str | None:

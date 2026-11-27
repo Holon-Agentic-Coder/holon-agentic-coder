@@ -82,9 +82,7 @@ def _git_head(repo_dir: str) -> str:
 def _default_review_failure_loop(repo_dir: str, context: FlowContext) -> TestFailureLoop:
     branch = context.execution_branch or context.intent_branch or ""
     raw_blockers = context.intent_data.get("blocker_map")
-    blocker_map = (
-        {str(key): str(val) for key, val in raw_blockers.items()} if isinstance(raw_blockers, Mapping) else {}
-    )
+    blocker_map = {str(key): str(val) for key, val in raw_blockers.items()} if isinstance(raw_blockers, Mapping) else {}
     ports = LoopPorts(
         run_selection=functools.partial(_measured_with_output, repo_dir),
         rerun_ids=functools.partial(run_failing_ids, cwd=repo_dir),

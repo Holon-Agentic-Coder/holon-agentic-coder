@@ -1,9 +1,3 @@
-"""The conflict gate's merge: ``origin/<target>`` into ``origin/<head>`` in a temporary worktree, then pushed.
-
-Ledger-only conflicts are resolved without a test run (target rows stay in place, head-only rows are inserted at
-their ``created_at`` slot); a code conflict aborts the merge. :mod:`.conflict_gate` decides when to merge.
-"""
-
 from __future__ import annotations
 
 import os
@@ -23,27 +17,18 @@ from sandbox_executor.redaction import redact_agent_secrets
 
 @dataclass(frozen=True)
 class _MergeOutcome:
-    """How merging the target branch went: ``ledger_only`` when only ledgers conflicted; tests are never run."""
-
     merged: bool
     ledger_only: bool = False
     conflicting_paths: tuple[str, ...] = ()
     error: str = ""
-    head_sha: str = ""  # The pushed merge commit, when merged.
+    head_sha: str = ""
 
 
 def _is_ledger_path(path: str) -> bool:
-    """True for an append-only JSONL ledger under ``holon-knowledge/ledger/``."""
     return path.startswith("holon-knowledge/ledger/") and path.endswith(".jsonl")
 
 
 def _merge_target_ledger_only(worktree: str, target_ref: str, message: str) -> _MergeOutcome:
-    """Merge ``target_ref`` into the worktree's HEAD; resolve a ledger-only conflict, abort on any code conflict.
-
-    The ledgers keep the target side's (``theirs`` in a merge) rows in place and insert the head rows by
-    ``created_at``. No test command runs.
-    The merge commit carries ``message`` (with its provenance trailers) whether or not a ledger conflict was resolved.
-    """
     env = {**os.environ, **REVIEW_GIT_ENV}
     merge = run_git(["merge", "--no-ff", "-m", message, target_ref], cwd=worktree, check=False, env=env)
     if merge.returncode == 0:
@@ -54,6 +39,7 @@ def _merge_target_ledger_only(worktree: str, target_ref: str, message: str) -> _
         run_git(["merge", "--abort"], cwd=worktree, check=False)
         error = "" if paths else redact_agent_secrets((merge.stderr or merge.stdout or "").strip())
         return _MergeOutcome(merged=False, conflicting_paths=paths, error=error)
+    # why: ledger rows reconcile mechanically by created_at, so a ledger-only merge runs no tests.
     for path in paths:
         if not reconcile_ledger_file(os.path.join(worktree, path), prefix_side="theirs"):
             run_git(["merge", "--abort"], cwd=worktree, check=False)
@@ -64,11 +50,6 @@ def _merge_target_ledger_only(worktree: str, target_ref: str, message: str) -> _
 
 
 def _follow_merged_head(repo_dir: str, branch: str, merged_sha: str) -> None:
-    """Fast-forward the local ``branch`` to the pushed merge, so its next ledger commit still pushes as a fast-forward.
-
-    Never forced: a local branch that is not an ancestor of the merge, or a fast-forward git refuses, stays as it is
-    (Stage 5's sync levels it with origin).
-    """
     ref = f"refs/heads/{branch}"
     old = run_git(["rev-parse", "--verify", "--quiet", ref], cwd=repo_dir, check=False).stdout.strip()
     if not old or run_git(["merge-base", "--is-ancestor", old, merged_sha], cwd=repo_dir, check=False).returncode:
@@ -80,11 +61,6 @@ def _follow_merged_head(repo_dir: str, branch: str, merged_sha: str) -> None:
 
 
 def _merge_and_push(repo_dir: str, branch: str, target_branch: str, trailers: str = "") -> _MergeOutcome:
-    """Merge ``origin/<target_branch>`` into ``origin/<branch>`` in a temporary worktree and push the result.
-
-    Like :func:`sandbox_executor.flow.github.merge.merge_branch_detailed`, a protected ``branch`` is refused and a
-    failed fetch stops the merge; unlike it, the target's ledger rows stay in place (see the module docstring).
-    """
     if _bare_branch(branch) in PROTECTED_BRANCHES:
         return _MergeOutcome(merged=False, error=f"refusing to push to protected branch '{branch}'")
     fetch_error = _fetch_refspecs_error(

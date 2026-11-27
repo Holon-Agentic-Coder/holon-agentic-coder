@@ -3,7 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from sandbox_executor.flow import admission_state
-from sandbox_executor.flow.admission_decision import AdmissionDecision, decide_admission
+from sandbox_executor.flow.admission_decision import (
+    AdmissionConflict,
+    AdmissionDecision,
+    decide_admission,
+    format_blocker_provenance,
+)
 from sandbox_executor.flow.admission_lock import AdmissionLockError, admission_lock
 from sandbox_executor.flow.admission_record import ADMISSION_OVERRIDE_KIND, override_already_recorded
 from sandbox_executor.flow.admission_state import AdmissionRecord, admitted_record, blocked_record
@@ -13,6 +18,7 @@ from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.git_refs import _append_ledger_row
 from sandbox_executor.flow.github.merge import GhRunner
 from sandbox_executor.flow.in_flight import GitRunner
+from sandbox_executor.flow.in_flight_liveness import ProcessCmdlines
 
 
 def record_admission(context: FlowContext, decision: AdmissionDecision) -> AdmissionDecision:
@@ -31,13 +37,16 @@ def record_admission(context: FlowContext, decision: AdmissionDecision) -> Admis
 
 
 def check_admission(
-    context: FlowContext, run_gh: GhRunner | None = None, run_git: GitRunner | None = None
+    context: FlowContext,
+    run_gh: GhRunner | None = None,
+    run_git: GitRunner | None = None,
+    cmdlines: ProcessCmdlines | None = None,
 ) -> AdmissionDecision:
     if context.dry_run:
-        return decide_admission(context, run_gh, run_git)
+        return decide_admission(context, run_gh, run_git, cmdlines)
     try:
         with admission_lock(context.target_worktree, run_git):
-            return record_admission(context, decide_admission(context, run_gh, run_git))
+            return record_admission(context, decide_admission(context, run_gh, run_git, cmdlines))
     # why: even under --allow-overlap an admission must be recorded under the lock, or discovery could miss it
     except AdmissionLockError as exc:
         return AdmissionDecision(False, reason=f"the admission lock could not be taken: {exc}")
@@ -52,9 +61,17 @@ def _file_list(files: tuple[str, ...]) -> str:
     return f"{shown} and {len(files) - MAX_REFUSAL_FILES} more" if len(files) > MAX_REFUSAL_FILES else shown
 
 
+def _conflict_label(conflict: AdmissionConflict) -> str:
+    if conflict.ref_source == "local" and conflict.ref_name and "local" not in conflict.label.lower():
+        return f"{conflict.label} (local ref {conflict.ref_name})"
+    return conflict.label
+
+
 def format_refusal(decision: AdmissionDecision) -> str:
     if decision.conflicts:
-        overlaps = "; ".join(f"{conflict.label} on {_file_list(conflict.files)}" for conflict in decision.conflicts)
+        overlaps = "; ".join(
+            f"{_conflict_label(conflict)} on {_file_list(conflict.files)}" for conflict in decision.conflicts
+        )
         return (
             f"Stage 3 refused: the touch set overlaps {overlaps}; finish or merge that flow first, "
             "or rerun with --allow-overlap."
@@ -86,6 +103,8 @@ def admission_stage_failure(context: FlowContext, start_time: str) -> StageResul
     if decision.admitted and not decision.overridden:
         context.log("Stage 3 admission: the touch set overlaps no flow in flight.")
         return None
+    for conflict in decision.conflicts:
+        context.log(f"Stage 3 admission blocker: {format_blocker_provenance(conflict)}")
     message = format_refusal(decision)
     if context.dry_run:
         context.log(f"Stage 3 (dry run) admission: {message}")

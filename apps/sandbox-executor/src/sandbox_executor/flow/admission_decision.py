@@ -21,6 +21,7 @@ from sandbox_executor.flow.in_flight import (
     read_plan_touch_set,
     root_intent,
 )
+from sandbox_executor.flow.in_flight_liveness import ProcessCmdlines, fetch_prune_origin
 from sandbox_executor.touch_set import TouchSet
 from sandbox_executor.touch_set_overlap import TouchSetOnBase, changed_files_overlap, declared_overlap
 
@@ -30,6 +31,10 @@ class AdmissionConflict:
     label: str
     files: tuple[str, ...]
     paths: tuple[str, ...] = field(default=(), compare=False)
+    ref_name: str | None = field(default=None, compare=False)
+    ref_source: str | None = field(default=None, compare=False)
+    pr_number: int | None = field(default=None, compare=False)
+    pr_state: str | None = field(default=None, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {"flow": self.label, "files": list(self.files)}
@@ -47,13 +52,34 @@ class AdmissionDecision:
         return {"conflicts": [conflict.to_dict() for conflict in self.conflicts], "admission_reason": self.reason}
 
 
+def format_blocker_provenance(conflict: AdmissionConflict) -> str:
+    ref = conflict.ref_name or "unknown"
+    source = conflict.ref_source or "local"
+    if conflict.pr_number is not None:
+        state = conflict.pr_state or "UNKNOWN"
+        return f"ref={ref} source={source} pr=#{conflict.pr_number} pr_state={state}"
+    return f"ref={ref} source={source} pr=none"
+
+
 def _conflict(own: TouchSet, flow: InFlightFlow, base_files: frozenset[str]) -> AdmissionConflict | None:
     # why: an open pull request is judged by its diff, never by its planned touch set
     if flow.changed_files is not None:
         files = changed_files_overlap(own, flow.changed_files, base_files)
     else:
         files = declared_overlap(own, flow.declared, base_files) if flow.declared is not None else []
-    return AdmissionConflict(flow.label, tuple(files), tuple(files)) if files else None
+    if not files:
+        return None
+    ref_name = flow.ref_name or flow.head or flow.plan_branch
+    ref_source = flow.ref_source or "local"
+    return AdmissionConflict(
+        flow.label,
+        tuple(files),
+        tuple(files),
+        ref_name=ref_name,
+        ref_source=ref_source,
+        pr_number=flow.number,
+        pr_state=flow.pr_state,
+    )
 
 
 def refusal(
@@ -79,29 +105,29 @@ def _no_touch_set_reason(plan_branch: str) -> str:
     )
 
 
-def _filter_live_flows_and_waiters(
+def _filter_live_waiters(
     repo_dir: str,
-    flows: list[InFlightFlow],
     waiters: list[BlockedWaiter],
     run_git: GitRunner | None,
-) -> tuple[list[InFlightFlow], list[BlockedWaiter]] | AdmissionUnavailable:
-    if not waiters and all(flow.number is not None for flow in flows):
-        return flows, waiters
+) -> list[BlockedWaiter] | AdmissionUnavailable:
+    if not waiters:
+        return waiters
     try:
         live_worktrees = _live_runner_worktrees(repo_dir, run_git)
     except AdmissionLockError as exc:
         return AdmissionUnavailable(str(exc))
-    # why: open pull requests always block, while parked local flows release their planned touch set
-    live_flows = [
-        flow
-        for flow in flows
-        if flow.number is not None or (flow.worktree is not None and os.path.realpath(flow.worktree) in live_worktrees)
-    ]
-    live_waiters = [waiter for waiter in waiters if os.path.realpath(waiter.worktree) in live_worktrees]
-    return live_flows, live_waiters
+    return [waiter for waiter in waiters if os.path.realpath(waiter.worktree) in live_worktrees]
 
 
-def decide_admission(context: FlowContext, run_gh: GhRunner | None, run_git: GitRunner | None) -> AdmissionDecision:
+def decide_admission(
+    context: FlowContext,
+    run_gh: GhRunner | None,
+    run_git: GitRunner | None,
+    cmdlines: ProcessCmdlines | None = None,
+) -> AdmissionDecision:
+    fetch_error = fetch_prune_origin(context.target_worktree, run_git)
+    if fetch_error is not None:
+        return refusal(context, reason=f"origin refs could not be refreshed before admission: {fetch_error.reason}")
     plan_branch = str(context.plan_branch or "")
     own = read_plan_touch_set(context.target_worktree, plan_branch) if plan_branch else None
     if own is None:
@@ -110,15 +136,14 @@ def decide_admission(context: FlowContext, run_gh: GhRunner | None, run_git: Git
     checkpoints = other_checkpoints(context.target_worktree, root_intent(own_branch), run_git)
     if isinstance(checkpoints, AdmissionUnavailable):
         return refusal(context, reason=f"the flows in flight could not be discovered: {checkpoints.reason}")
-    flows = discover_in_flight_flows(context.target_worktree, own_branch, run_gh, checkpoints=checkpoints)
+    flows = discover_in_flight_flows(context.target_worktree, own_branch, run_gh, run_git, cmdlines)
     if isinstance(flows, AdmissionUnavailable):
         return refusal(context, reason=f"the flows in flight could not be discovered: {flows.reason}")
     waiters = local_blocked_waiters(context.target_worktree, checkpoints)
-    filtered = _filter_live_flows_and_waiters(context.target_worktree, flows, waiters, run_git)
-    if isinstance(filtered, AdmissionUnavailable):
-        return refusal(context, reason=f"the flows in flight could not be discovered: {filtered.reason}")
-    live_flows, live_waiters = filtered
-    return _overlap_decision(context, own, live_flows, live_waiters, run_git)
+    live_waiters = _filter_live_waiters(context.target_worktree, waiters, run_git)
+    if isinstance(live_waiters, AdmissionUnavailable):
+        return refusal(context, reason=f"the flows in flight could not be discovered: {live_waiters.reason}")
+    return _overlap_decision(context, own, flows, live_waiters, run_git)
 
 
 def _overlap_decision(

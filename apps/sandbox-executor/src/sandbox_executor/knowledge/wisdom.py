@@ -1,98 +1,47 @@
 from __future__ import annotations
 
-import glob
-import json
 import logging
 import os
 from datetime import UTC, datetime
 from typing import Any
 
-from sandbox_executor.failure_classification import UNDIAGNOSED_CLASSIFICATION
+from sandbox_executor.knowledge.failure_signature_promotion import (
+    EXECUTIONS_LEDGER_NAME,
+    MIN_SIGNATURE_RUNS,
+    TEST_FAILURE_ACTION,
+    UNMEASURED_CLASSIFICATIONS,
+    executions_ledger_of,
+    promote_repeated_failure_signatures,
+)
 from sandbox_executor.knowledge.index import DEFAULT_PROJECT_DB_PATH, ActionIndexDatabase
 from sandbox_executor.knowledge.promotion import evaluate_action_promotion
 from sandbox_executor.knowledge.promotion_rules import is_review_chatter_context
-from sandbox_executor.knowledge.stable_envelope import (
-    build_kb_envelope,
-    build_wb_envelope,
-    stable_advisory_text,
-    write_envelope_once,
+from sandbox_executor.knowledge.stable_envelope import stable_advisory_text
+from sandbox_executor.knowledge.wisdom_store import (
+    DEFAULT_KB_DIR,
+    DEFAULT_WB_DIR,
+    load_index,
+    persist_kb_fact,
+    persist_wb_rule,
 )
-from sandbox_executor.ledger.merged import read_merged_rows
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_KB_DIR = "holon-knowledge/kb"
-DEFAULT_WB_DIR = "holon-knowledge/wisdom"
-TEST_FAILURE_ACTION = "test_failure"
-MIN_SIGNATURE_RUNS = 2
-EXECUTIONS_LEDGER_NAME = "executions.jsonl"
-UNMEASURED_CLASSIFICATIONS = frozenset({UNDIAGNOSED_CLASSIFICATION})
-
-
-_INDEX_FIELDS: dict[str, tuple[str, ...]] = {
-    "kb_id": ("kb_id", "kb_type", "status", "created_ts", "tags"),
-    "wb_id": ("wb_id", "wb_type", "status", "created_ts"),
-}
-
-
-def _index_entry(path: str) -> dict[str, Any] | None:
-    try:
-        with open(path, encoding="utf-8") as f:
-            envelope = json.load(f)
-    except (OSError, ValueError) as exc:
-        logger.warning("Skipping unreadable knowledge entry %s: %s", path, exc)
-        return None
-    id_key = next((k for k in _INDEX_FIELDS if isinstance(envelope, dict) and k in envelope), None)
-    if id_key is None:
-        logger.warning("Skipping knowledge entry without kb_id or wb_id: %s", path)
-        return None
-    entry: dict[str, Any] = {field: envelope.get(field) for field in _INDEX_FIELDS[id_key]}
-    entry["file"] = os.path.basename(path)
-    if id_key == "kb_id" and entry["tags"] is None:
-        entry["tags"] = []
-    return entry
-
-
-def load_index(subfolder: str) -> list[dict[str, Any]]:
-    if not os.path.isdir(subfolder):
-        return []
-    paths = sorted(glob.glob(os.path.join(subfolder, "KB-*.json")) + glob.glob(os.path.join(subfolder, "WB-*.json")))
-    entries = [entry for entry in map(_index_entry, paths) if entry is not None]
-    return sorted(entries, key=lambda e: (str(e.get("created_ts") or ""), str(e.get("kb_id") or e.get("wb_id"))))
-
-
-def persist_kb_fact(fact_data: dict[str, Any], kb_dir: str = DEFAULT_KB_DIR) -> str:
-    data = dict(fact_data)
-    kb_type = str(data.get("kb_type") or "pattern").lower()
-    kb_id = str(data.get("kb_id") or f"KB-{kb_type}-{data.get('context_fingerprint', 'item')[:8]}")
-
-    subfolder = "patterns"
-    if "failure" in kb_type:
-        subfolder = "failure_modes"
-    elif "tactic" in kb_type:
-        subfolder = "tactics"
-
-    target_dir = os.path.join(kb_dir, subfolder)
-    out_file = os.path.join(target_dir, f"{kb_id}.json")
-    if os.path.exists(out_file):
-        return out_file
-    return write_envelope_once(out_file, build_kb_envelope(data, kb_id, kb_type))
-
-
-def persist_wb_rule(rule_data: dict[str, Any], wb_dir: str = DEFAULT_WB_DIR) -> str:
-    data = dict(rule_data)
-    wb_type = str(data.get("wb_type") or "heuristic").lower()
-    wb_id = str(data.get("wb_id") or f"WB-{wb_type}-{data.get('context_fingerprint', 'rule')[:8]}")
-
-    subfolder = "heuristics"
-    if "invariant" in wb_type:
-        subfolder = "invariants"
-
-    target_dir = os.path.join(wb_dir, subfolder)
-    out_file = os.path.join(target_dir, f"{wb_id}.json")
-    if os.path.exists(out_file):
-        return out_file
-    return write_envelope_once(out_file, build_wb_envelope(data, wb_id, wb_type))
+__all__ = [
+    "DEFAULT_KB_DIR",
+    "DEFAULT_WB_DIR",
+    "EXECUTIONS_LEDGER_NAME",
+    "MIN_SIGNATURE_RUNS",
+    "TEST_FAILURE_ACTION",
+    "UNMEASURED_CLASSIFICATIONS",
+    "lift_veto",
+    "list_vetoes",
+    "load_index",
+    "persist_kb_fact",
+    "persist_wb_rule",
+    "promote_pending_candidates",
+    "promote_repeated_failure_signatures",
+]
 
 
 def _already_promoted(conn: Any, sig: Any, kb_dir: str, wb_dir: str) -> bool:
@@ -234,63 +183,6 @@ def _promote_success_candidate(
     return items
 
 
-def _test_failure_rows_by_signature(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for row in rows:
-        if row.get("action") == TEST_FAILURE_ACTION and row.get("failure_signature") and row.get("run_id"):
-            grouped.setdefault(str(row["failure_signature"]), []).append(row)
-    return grouped
-
-
-def _distinct_runs(rows: list[dict[str, Any]]) -> set[str]:
-    return {str(row["run_id"]) for row in rows}
-
-
-def _signature_classification(rows: list[dict[str, Any]]) -> str:
-    measured = (row.get("classification") for row in reversed(rows))
-    return next((str(c) for c in measured if c and c not in UNMEASURED_CLASSIFICATIONS), "unclassified")
-
-
-def _signature_failure_item(signature: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    classification = _signature_classification(rows)
-    symptom = rows[0].get("error_context")
-    return {
-        "kb_id": f"KB-failure-{signature}",
-        "kb_type": "failure_mode",
-        "context_fingerprint": signature,
-        "tags": ["test", "failure_signature", classification],
-        "payload": {
-            "name": f"Repeated test failure {signature}",
-            "description": stable_advisory_text("failure", TEST_FAILURE_ACTION),
-            "action": TEST_FAILURE_ACTION,
-            "failure_signature": signature,
-            "failing_test_ids": sorted({str(i) for row in rows for i in row.get("failing_test_ids") or []}),
-            "classification": classification,
-            "stages": sorted({str(row.get("stage")) for row in rows if row.get("stage")}),
-            "symptoms": [symptom] if symptom else [],
-        },
-    }
-
-
-def promote_repeated_failure_signatures(
-    ledger_path: str, kb_dir: str = DEFAULT_KB_DIR, dry_run: bool = False
-) -> list[dict[str, Any]]:
-    promoted: list[dict[str, Any]] = []
-    for signature, rows in _test_failure_rows_by_signature(read_merged_rows(ledger_path)).items():
-        already_promoted = os.path.exists(os.path.join(kb_dir, "failure_modes", f"KB-failure-{signature}.json"))
-        if already_promoted or len(_distinct_runs(rows)) < MIN_SIGNATURE_RUNS:
-            continue
-        item = _signature_failure_item(signature, rows)
-        if not dry_run:
-            item["persisted_path"] = persist_kb_fact(item, kb_dir=kb_dir)
-        promoted.append(item)
-    return promoted
-
-
-def _executions_ledger_of(kb_dir: str) -> str:
-    return os.path.join(os.path.dirname(os.path.normpath(kb_dir)), "ledger", EXECUTIONS_LEDGER_NAME)
-
-
 def promote_pending_candidates(
     index_db: ActionIndexDatabase | None = None,
     kb_dir: str = DEFAULT_KB_DIR,
@@ -337,7 +229,7 @@ def promote_pending_candidates(
                         seen_promoted_ids.add(item_id)
                         promoted_items.append(item)
 
-        signature_items = promote_repeated_failure_signatures(_executions_ledger_of(kb_dir), kb_dir, dry_run)
+        signature_items = promote_repeated_failure_signatures(executions_ledger_of(kb_dir), kb_dir, dry_run)
         promoted_items.extend(item for item in signature_items if item["kb_id"] not in seen_promoted_ids)
         return promoted_items
     finally:

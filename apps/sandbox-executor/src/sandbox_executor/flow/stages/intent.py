@@ -85,8 +85,9 @@ class IntentStage:
             return None
         unresolved_list_str = "; ".join(unresolved)
         return (
-            f"Validation failed: Unresolved questions detected in intent payload. "
-            f"All clarifying questions must be resolved prior to completing Stage 1. Unresolved: {unresolved_list_str}"
+            f"Validation failed: Unresolved questions or intent rule violations detected in intent payload. "
+            "All clarifying questions and intent rules must be resolved prior to completing Stage 1. "
+            f"Unresolved: {unresolved_list_str}"
         )
 
     def resolve_branch(self) -> StageResult | None:

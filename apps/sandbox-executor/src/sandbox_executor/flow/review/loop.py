@@ -55,6 +55,7 @@ from sandbox_executor.flow.review.ensemble import (
 )
 from sandbox_executor.flow.review.ids import build_review_id
 from sandbox_executor.flow.review.ledger_commit import _advance_past_ledger_commit, _commit_pending_ledger_rows
+from sandbox_executor.flow.review.local_test_finding import local_test_failure_finding
 from sandbox_executor.flow.review.local_tests import _ReviewTestGate
 from sandbox_executor.flow.review.posting import (
     PostFacts,
@@ -544,9 +545,11 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         iter_findings = list(adjudication.actionable)
         if ci_finding:
             failed_names = _extract_failed_ci_check_names(last_ci_status, tests_failed)
-            ci_row = timing_gate_finding(
-                iteration, last_ci_status, failed_names, gh_timing_seams(repo_dir, proxy_env or {})
-            ) or ci_failure_finding(iteration, failed_names)
+            ci_row = (
+                timing_gate_finding(iteration, last_ci_status, failed_names, gh_timing_seams(repo_dir, proxy_env or {}))
+                or local_test_failure_finding(iteration, last_ci_status, failed_names)
+                or ci_failure_finding(iteration, failed_names)
+            )
             iter_findings.append(ci_row)
             if finding_action_ids is not None:
                 act_id = finding_action_ids.get(ci_row.id) or generate_action_id("ACT-FIND")

@@ -93,7 +93,7 @@ class TestExecutor(unittest.TestCase):
         fields = {"test_pass_rate": 0.8, "tests_passed": 8, "tests_failed": 2, "tests_errored": 0, "test_exit_code": 1}
         with patch(
             "sandbox_executor.entrypoint.executor.measure_executor_tests",
-            side_effect=lambda _dir, _repo, status: fields if status == "success" else {},
+            side_effect=lambda _dir, _repo, status, **_kw: fields if status == "success" else {},
         ):
             ok, _ = self._run_main_with_agent_diff("src/app.py\0")
             empty, _ = self._run_main_with_agent_diff("plans/P-123.md\0")

@@ -12,6 +12,7 @@ from sandbox_executor.flow import (
     StageStatus,
     run_review_loop,
 )
+from sandbox_executor.flow.review.ensemble import _semantic_pr_text
 from sandbox_executor.review_report import collect_review_data
 from sandbox_executor.review_target import ReviewTarget
 
@@ -177,3 +178,24 @@ class TestScopedDeltaRequest:
         assert seen["forwarded"]["mode"] == "scoped" and seen["forwarded"]["head"] == target.head_sha
         assert not (Path(ctx.target_worktree) / FORWARDED_REL).exists()
         assert _git(Path(ctx.target_worktree), "status", "--porcelain") == ""
+
+
+def _context_with_plan(tmp_path: Path, plan_payload: dict) -> FlowContext:
+    ctx = FlowContext(repo_dir=str(tmp_path), execution_branch="b", agent="claude-agent", model="claude-opus-5-5")
+    ctx.stage_results["plan"] = StageResult(stage=FlowStage.PLAN, status=StageStatus.SUCCESS, payload=plan_payload)
+    return ctx
+
+
+def test_semantic_pr_text_names_the_flow_runner(tmp_path):
+    ctx = _context_with_plan(tmp_path, {"plan_id": "P-1795696276-CLA-CO5.5", "ev": 76.51})
+    _, body = _semantic_pr_text(ctx)
+    assert "- **Agent:** `claude-agent`" in body.splitlines()
+    assert "- **Model:** `claude-opus-5-5`" in body.splitlines()
+    assert "- **Plan ID:** `P-1795696276-CLA-CO5.5`" in body
+
+
+def test_semantic_pr_text_prefers_the_plan_payload_runner(tmp_path):
+    ctx = _context_with_plan(tmp_path, {"plan_id": "P-1", "agent": "plan-agent", "model": "plan-model"})
+    _, body = _semantic_pr_text(ctx)
+    assert "- **Agent:** `plan-agent`" in body.splitlines()
+    assert "- **Model:** `plan-model`" in body.splitlines()

@@ -61,7 +61,7 @@ class TestFlowStages:
         )
         res = run_intent_stage(ctx)
         assert res.status == StageStatus.FAILED
-        assert "Unresolved questions detected" in (res.error or "")
+        assert "Unresolved questions or intent rule violations detected" in (res.error or "")
         assert "What authentication protocol should we use?" in (res.error or "")
 
     def test_downstream_stages_run_unattended(self, tmp_path):

@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import sys
 from typing import Any
 
 from sandbox_executor import cli
@@ -11,6 +12,7 @@ from sandbox_executor.agent_defaults import Resolution
 from sandbox_executor.cli.commands._flow_worktree import _extract_flow_slug
 from sandbox_executor.flow.checkpoint_discovery import _find_intent_checkpoint
 from sandbox_executor.git_flow import flow_worktree_layout
+from sandbox_executor.intent_refresh import IntentContractError, refresh_intent_text
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +42,21 @@ def discover_resume_checkpoint(args: argparse.Namespace) -> str | None:
     return _find_intent_checkpoint(intent_data, _candidate_worktrees(args, intent_data))
 
 
+def _refresh_intent_from_file(context: Any, args: argparse.Namespace) -> None:
+    intent_file = getattr(args, "intent_file", None)
+    if not intent_file:
+        return
+    try:
+        refresh_intent_text(context, intent_file)
+    except IntentContractError as error:
+        logger.error(str(error))
+        context.log(str(error))
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
+
+
 def apply_run_switches(context: Any, args: argparse.Namespace) -> None:
+    _refresh_intent_from_file(context, args)
     for name in RUN_SWITCHES:
         given = bool(getattr(args, name, False))
         if getattr(context, name) and not given:

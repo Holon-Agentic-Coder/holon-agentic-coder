@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts import check_self_explaining, pre_commit_check
+from scripts import check_self_explaining, pre_commit_check, self_explaining_diff
 from scripts.self_explaining_comments import find_comments_and_docstrings
 from scripts.self_explaining_diff import added_line_numbers
 
@@ -257,10 +257,91 @@ def test_staged_mode_ignores_unstaged_comments(repo):
     assert check_self_explaining.main(["--root", str(repo), "--staged"]) == 0
 
 
-def test_missing_merge_base_skips_with_notice(tmp_path, capsys):
-    git(tmp_path, "init", "-q")
-    assert check_self_explaining.main(["--root", str(tmp_path)]) == 0
-    assert check_self_explaining.NO_MERGE_BASE_NOTICE in capsys.readouterr().out
+def git_stdout(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def committed_repo(repo: Path, files: dict[str, str]) -> Path:
+    repo.mkdir(parents=True, exist_ok=True)
+    git(repo, "init", "-q", "-b", "main")
+    for name, text in files.items():
+        (repo / name).write_text(text, encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "initial")
+    return repo
+
+
+def test_missing_merge_base_without_remote_fails(tmp_path, capsys):
+    committed_repo(tmp_path, {"deploy.sh": BASE_SHELL})
+    assert check_self_explaining.main(["--root", str(tmp_path)]) != 0
+    captured = capsys.readouterr()
+    assert "origin/main" in captured.err
+    assert "passed" not in captured.out
+    assert not hasattr(check_self_explaining, "NO_MERGE_BASE_NOTICE")
+
+
+def test_unrelated_origin_history_fails_after_fetch(tmp_path, capsys):
+    upstream = committed_repo(tmp_path / "upstream", {"module.py": BASE_PYTHON})
+    git(tmp_path, "clone", "-q", "--bare", str(upstream), str(tmp_path / "remote.git"))
+    local = committed_repo(tmp_path / "local", {"deploy.sh": BASE_SHELL})
+    git(local, "remote", "add", "origin", str(tmp_path / "remote.git"))
+    assert check_self_explaining.main(["--root", str(local)]) != 0
+    assert "origin/main" in capsys.readouterr().err
+    assert git_stdout(local, "rev-parse", "refs/remotes/origin/main") == git_stdout(upstream, "rev-parse", "HEAD")
+
+
+def shallow_feature_clone(tmp_path: Path) -> tuple[Path, str]:
+    work = committed_repo(tmp_path / "work", {"deploy.sh": BASE_SHELL})
+    base = git_stdout(work, "rev-parse", "HEAD")
+    git(work, "checkout", "-q", "-b", "feature")
+    append(work / "deploy.sh", "echo feature\n")
+    git(work, "commit", "-q", "-am", "feature")
+    git(work, "checkout", "-q", "main")
+    append(work / "deploy.sh", "echo main\n")
+    git(work, "commit", "-q", "-am", "later main")
+    bare = tmp_path / "remote.git"
+    git(tmp_path, "clone", "-q", "--bare", str(work), str(bare))
+    clone = tmp_path / "clone"
+    git(tmp_path, "clone", "-q", "--depth", "1", "--single-branch", "--branch", "feature", bare.as_uri(), str(clone))
+    git(clone, "config", "user.name", "Self Explaining Test")
+    git(clone, "config", "user.email", "self-explaining@example.invalid")
+    return clone, base
+
+
+def test_merge_base_deepens_shallow_clone(tmp_path):
+    clone, base = shallow_feature_clone(tmp_path)
+    assert git_stdout(clone, "rev-parse", "--is-shallow-repository") == "true"
+    assert self_explaining_diff.existing_merge_base(clone) is None
+    assert self_explaining_diff.merge_base(clone) == base
+    assert git_stdout(clone, "rev-parse", "--is-shallow-repository") == "false"
+
+
+def test_shallow_clone_check_runs_after_deepening(tmp_path, capsys):
+    clone, _ = shallow_feature_clone(tmp_path)
+    append(clone / "deploy.sh", "# added comment\n")
+    assert check_self_explaining.main(["--root", str(clone)]) == 1
+    assert "deploy.sh:5: added comment" in capsys.readouterr().err
+
+
+def test_violation_report_counts_per_file_and_total(repo, capsys):
+    append(repo / "module.py", "OTHER = 2  # first added comment\n# second added comment\n")
+    append(repo / "deploy.sh", "# added shell comment\n")
+    assert check_self_explaining.main(["--root", str(repo)]) == 1
+    err_lines = capsys.readouterr().err.splitlines()
+    module_count = err_lines.index("module.py: 2 added docstring(s)/comment(s)")
+    shell_count = err_lines.index("deploy.sh: 1 added docstring(s)/comment(s)")
+    violation_lines = [index for index, line in enumerate(err_lines) if ": added comment (" in line]
+    assert len(violation_lines) == 3
+    assert max(violation_lines) < min(module_count, shell_count)
+    assert err_lines[-1] == "3 added docstring(s) or comment(s) found."
+
+
+def test_staged_mode_passes_without_merge_base(tmp_path, capsys):
+    committed_repo(tmp_path, {"deploy.sh": BASE_SHELL})
+    append(tmp_path / "deploy.sh", "echo staged\n")
+    git(tmp_path, "add", "deploy.sh")
+    assert check_self_explaining.main(["--root", str(tmp_path), "--staged"]) == 0
+    assert "passed (1 changed file(s))" in capsys.readouterr().out
 
 
 def test_lint_task_runs_the_check():

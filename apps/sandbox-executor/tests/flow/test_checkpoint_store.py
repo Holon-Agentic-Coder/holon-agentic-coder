@@ -1,5 +1,3 @@
-"""Tests for CheckpointStore protocol, FileCheckpointStore adapter, and FlowCheckpoint persistence."""
-
 from __future__ import annotations
 
 import json
@@ -18,8 +16,6 @@ from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, S
 
 
 class InMemoryCheckpointStore:
-    """In-memory implementation of CheckpointStore for testing protocol compliance."""
-
     def __init__(self) -> None:
         self.storage: dict[str, dict[str, Any]] = {}
 
@@ -54,7 +50,6 @@ def test_file_checkpoint_store_atomic_save_and_load(tmp_path: Path) -> None:
     loaded = store.load(target_path)
     assert loaded == data
 
-    # Non-existent file raises FileNotFoundError
     with pytest.raises(FileNotFoundError):
         store.load(tmp_path / "nonexistent.json")
 

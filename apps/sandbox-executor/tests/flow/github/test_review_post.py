@@ -1,5 +1,3 @@
-"""Tests for semantic PR metadata and the posted consensus review."""
-
 from unittest.mock import patch
 
 from sandbox_executor.flow import (
@@ -20,11 +18,7 @@ from tests.review_fakes import clean_reviewer
 
 
 class TestSemanticPRAndConsensusReview:
-    """Hermetic unit tests for semantic PR generation, single-post review consensus,
-    and granular ledger action logging."""
-
-    def test_generate_semantic_pr_metadata_conventional_categories(self):
-        """Verify category mapping to conventional commit prefixes and scope detection."""
+    def test_generate_semantic_pr_metadata_maps_categories_to_conventional_prefixes_and_scopes(self):
         cases = [
             ({"category": "feature", "slug": "my-feat", "title": "Add cool feature"}, "feat(my): Add cool feature"),
             ({"category": "fix", "labels": ["api"], "title": "Fix crash on null"}, "fix(api): Fix crash on null"),
@@ -51,8 +45,7 @@ class TestSemanticPRAndConsensusReview:
             title, _ = generate_semantic_pr_metadata(intent)
             assert title == expected_prefix, f"Expected '{expected_prefix}', got '{title}'"
 
-    def test_generate_semantic_pr_metadata_markdown_structure(self):
-        """Verify structured markdown body includes Summary, Key Changes, References, and Plan Metadata."""
+    def test_generate_semantic_pr_metadata_body_has_summary_changes_references_and_plan_sections(self):
         intent = {
             "category": "feature",
             "slug": "flow-enhancements",
@@ -85,8 +78,7 @@ class TestSemanticPRAndConsensusReview:
         assert "- **Agent:** `antigravity-agent`" in body
         assert "- **Model:** `gemini-3.8-flash-medium`" in body
 
-    def test_generate_semantic_pr_metadata_fallback_handling(self):
-        """Verify resilient fallback defaults for empty or missing intent data."""
+    def test_generate_semantic_pr_metadata_falls_back_to_defaults_for_empty_intent(self):
         title, body = generate_semantic_pr_metadata({})
         assert title == "feat(core): Update components"
         assert "## Summary" in body
@@ -97,8 +89,7 @@ class TestSemanticPRAndConsensusReview:
         assert "## Plan & Validation Metadata" in body
         assert "- **Plan ID:** `N/A`" in body
 
-    def test_generate_semantic_pr_metadata_title_length_truncation(self):
-        """Verify title truncation when length exceeds 100 characters."""
+    def test_generate_semantic_pr_metadata_truncates_titles_over_100_characters(self):
         intent = {
             "category": "feature",
             "labels": ["extremely-long-label-scope"],
@@ -108,8 +99,7 @@ class TestSemanticPRAndConsensusReview:
         assert len(title) <= 100
         assert title.endswith("...")
 
-    def test_post_pr_review_consensus_single_post(self):
-        """Verify the consensus report is posted exactly once via gh pr review --approve."""
+    def test_post_pr_review_consensus_posts_once_as_approving_review(self):
         github = FakeGitHub(review_results=[(0, "success", "")])
         consensus_data = {
             "approved": True,
@@ -136,14 +126,12 @@ class TestSemanticPRAndConsensusReview:
         assert res["official_review"]["self_approval_fallback"] is False
         assert res["official_review"]["flag"] == "--approve"
 
-        # Exactly one visible post: the official review submission, never gh pr comment.
         assert github.methods() == ["post_review"]
         target, flag, body = github.calls[0][1]
         assert (target, flag) == ("42", "--approve")
         assert body.strip()
 
-    def test_post_pr_review_consensus_self_approval_422_fallback(self):
-        """Verify HTTP 422 author self-approval restriction triggers graceful fallback to --comment."""
+    def test_post_pr_review_consensus_falls_back_to_comment_review_on_422_self_approval(self):
         github = FakeGitHub(
             review_results=[
                 (1, "", "GraphQL: Can not approve your own pull request (HTTP 422)"),
@@ -171,14 +159,12 @@ class TestSemanticPRAndConsensusReview:
         assert res["official_review"]["self_approval_fallback"] is True
         assert res["official_review"]["flag"] == "--comment"
 
-        # Both calls belong to the gh pr review ladder; no gh pr comment is issued.
         assert github.methods() == ["post_review", "post_review"]
         assert github.calls[0][1][:2] == ("42", "--approve")
         assert github.calls[1][1][:2] == ("42", "--comment")
         assert github.calls[0][1][2] == github.calls[1][1][2]
 
     def test_post_pr_review_consensus_review_failure_falls_back_to_comment(self):
-        """Verify a failed gh pr review submission falls back to a last-resort gh pr comment."""
         github = FakeGitHub(review_results=[(1, "", "API rate limit")], comment_result=(0, "comment posted", ""))
 
         consensus_data = {"approved": True}
@@ -188,12 +174,10 @@ class TestSemanticPRAndConsensusReview:
         assert res["discussion_comment"]["attempted"] is True
         assert res["discussion_comment"]["success"] is True
         assert res["dual_posted"] is True
-        # The review submission runs first; gh pr comment only after it failed.
         assert github.methods() == ["post_review", "post_comment"]
         assert github.calls[1][1][0] == "42"
 
-    def test_post_pr_review_consensus_non_422_failure_no_fallback(self):
-        """Verify a non-422 --approve error skips the self-approval fallback and goes to gh pr comment."""
+    def test_post_pr_review_consensus_non_422_failure_skips_self_approval_fallback(self):
         github = FakeGitHub(
             review_results=[(1, "", "Internal Server Error (HTTP 500)")], comment_result=(0, "commented", "")
         )
@@ -209,13 +193,11 @@ class TestSemanticPRAndConsensusReview:
 
         assert res["official_review"]["success"] is False
         assert res["official_review"]["self_approval_fallback"] is False
-        # No gh pr review --comment retry: the failed --approve goes straight to the last resort.
         assert github.methods() == ["post_review", "post_comment"]
         assert github.calls[0][1][:2] == ("42", "--approve")
         assert github.calls[1][1][0] == "42"
 
     def test_post_pr_review_consensus_when_gh_missing_returns_diagnostics(self):
-        """Verify post_pr_review_consensus returns clear diagnostics and handles gh absence cleanly."""
         github = FakeGitHub(available=False)
         consensus_data = {"approved": True, "status": "approved", "iterations": 1}
         res = post_pr_review_consensus(repo_dir="/tmp", target="42", consensus_data=consensus_data, github=github)
@@ -231,8 +213,7 @@ class TestSemanticPRAndConsensusReview:
         assert "not available in PATH" in res["official_review"]["output"]
         assert github.calls == []
 
-    def test_post_pr_review_consensus_error_output_surfaces_diagnostic_context(self):
-        """Verify non-zero gh failure captures and surfaces exit code and stderr diagnostics."""
+    def test_post_pr_review_consensus_failure_surfaces_exit_code_and_stderr(self):
         github = FakeGitHub(
             review_results=[(2, "", "GraphQL error: Network timeout")],
             comment_result=(2, "", "GraphQL error: Network timeout"),
@@ -253,7 +234,6 @@ class TestSemanticPRAndConsensusReview:
         assert "Review posting failed" in res["diagnostics"]
 
     def test_post_pr_review_consensus_spawn_failure_is_reported_as_an_exception(self):
-        """Verify a gh review that could not run (timeout) keeps the exception outcome and falls back to a comment."""
         github = FakeGitHub(review_results=[spawn_failure()], comment_result=spawn_failure())
 
         res = post_pr_review_consensus(repo_dir="/tmp", target="42", consensus_data={"approved": True}, github=github)
@@ -262,9 +242,7 @@ class TestSemanticPRAndConsensusReview:
         assert "gh pr comment encountered exception: timed out" in res["discussion_comment"]["output"]
         assert res["dual_posted"] is False
 
-    def test_create_or_update_pr(self):
-        """Verify create_or_update_pr handles creation when absent and edit when present."""
-        # Case 1: PR does not exist -> create
+    def test_create_or_update_pr_creates_when_absent_and_edits_when_present(self):
         create = FakeGitHub(create_number=1)
         res_create = create_or_update_pr("/tmp", "my-branch", "main", "feat: title", "body", github=create)
         assert res_create["action"] == "create"
@@ -272,7 +250,6 @@ class TestSemanticPRAndConsensusReview:
         assert res_create["pr_number"] == 1
         assert create.calls == [("open_or_update", ("my-branch", "main", "feat: title", "body"))]
 
-        # Case 2: PR exists -> edit
         edit = FakeGitHub(prs={"my-branch": 99})
         res_edit = create_or_update_pr("/tmp", "my-branch", "main", "feat: new title", "new body", github=edit)
         assert res_edit["action"] == "edit"
@@ -281,15 +258,13 @@ class TestSemanticPRAndConsensusReview:
         assert edit.calls == [("open_or_update", ("my-branch", "main", "feat: new title", "new body"))]
 
     def test_create_or_update_pr_not_attempted_and_error_outcomes(self):
-        """Verify a missing gh or branch is not attempted and a lookup that could not run is an error."""
         assert create_or_update_pr("/tmp", "b", github=FakeGitHub(available=False))["attempted"] is False
         assert create_or_update_pr("/tmp", "  ", github=FakeGitHub())["attempted"] is False
         res = create_or_update_pr("/tmp", "b", github=FakeGitHub(open_error="timed out"))
         assert (res["attempted"], res["success"], res["action"], res["pr_number"]) == (True, False, "error", None)
         assert res["output"] == "timed out"
 
-    def test_review_loop_granular_ledger_records(self, tmp_path):
-        """Verify executions.jsonl records the evaluation, per-reviewer rows, findings and dual-posting, no resolver."""
+    def test_review_loop_ledger_records_evaluation_reviewers_findings_and_dual_post_without_resolver(self, tmp_path):
         ledger_dir = tmp_path / "holon-knowledge" / "ledger"
         ledger_dir.mkdir(parents=True)
         ctx = FlowContext(
@@ -304,8 +279,7 @@ class TestSemanticPRAndConsensusReview:
             payload={"test_pass_rate": 1.0, "exit_code": 0},
         )
 
-        # Iteration 1: finding detected (dirty conflict). There is no resolver, so the loop stops there and the
-        # clean second view is never reached by the iteration.
+        # why: no resolver exists, so the loop stops after the dirty first view and never reaches the clean second one
         github = FakeGitHub(
             views=[
                 view_for({"is_dirty": True, "merge_state_status": "DIRTY", "mergeable": "CONFLICTING"}),
@@ -336,30 +310,25 @@ class TestSemanticPRAndConsensusReview:
 
         action_records = [r for r in records if r.get("entry_type") == "action"]
 
-        # 1. Evaluation records
         eval_records = [r for r in action_records if "evaluation for" in r.get("action", "")]
         assert len(eval_records) == 1
         assert eval_records[0]["review_iteration"] == 1
         assert eval_records[0]["category"] == "code"
 
-        # 2. One ACT-REV row per (fake) reviewer
         reviewer_records = [
             r for r in action_records if "review_reviewer_index" in r and r["action_id"][:7] == "ACT-REV"
         ]
         assert [r["review_reviewer_index"] for r in reviewer_records] == [1, 2, 3]
         assert {r["review_verdict"] for r in reviewer_records} == {"APPROVED"}
 
-        # 3. Finding detection records, one per finding
         finding_records = [r for r in action_records if "finding detected" in r.get("action", "")]
         assert len(finding_records) == 1
         assert finding_records[0]["review_finding_ids"] == ["FIND-DIRTY-001"]
         assert finding_records[0]["review_severity"] == "critical"
         assert finding_records[0]["outcome"] == "failure"
 
-        # 4. No resolver row: no automatic resolver exists
         assert not [r for r in action_records if str(r.get("action_id", "")).startswith("ACT-RES")]
 
-        # 5. Review dual-posting action record
         post_records = [r for r in action_records if "Review consensus dual-posted" in r.get("action", "")]
         assert len(post_records) == 1
         assert post_records[0]["outcome"] == "success"

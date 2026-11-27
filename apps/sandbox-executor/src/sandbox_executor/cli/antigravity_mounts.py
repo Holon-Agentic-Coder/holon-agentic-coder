@@ -1,5 +1,3 @@
-"""Re-export shim: the Antigravity session mounts moved to `sandbox_executor.launcher.antigravity_mounts`."""
-
 from sandbox_executor.launcher.antigravity_mounts import (
     ANTIGRAVITY_WRITABLE_TMPFS as ANTIGRAVITY_WRITABLE_TMPFS,
 )

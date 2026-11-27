@@ -17,8 +17,7 @@ FINGERPRINT_VERSION = "pf2"
 FINGERPRINT_HEX_CHARS = 40
 # why: mirrors scripts/ci_bookkeeping_gate.BOOKKEEPING_SUFFIXES; a parity test keeps the two equal
 BOOKKEEPING_PATH_SUFFIXES = (".md", ".json", ".jsonl")
-# why: *[!.]* needs a non-dot before the suffix, like posixpath.splitext, so a plans/.json stays reviewable here as it
-# why: does in is_bookkeeping_path and the CI gate
+# why: *[!.]* needs a non-dot before the suffix, like splitext, so plans/.json stays reviewable
 FINGERPRINT_EXCLUDED_PATHSPECS = tuple(
     f":(exclude,glob){prefix}**/*[!.]*{suffix}"
     for prefix in BOOKKEEPING_PATH_PREFIXES
@@ -62,6 +61,7 @@ def _raw_lines(raw: bytes) -> list[str]:
     return sorted(lines)
 
 
+# why: patch-id context lines make non-overlapping edits to a shared file change it: a re-review, never a missed one
 def pr_change_fingerprint(repo_dir: str, head: str, target_ref: str) -> str | None:
     base = run_git(["merge-base", head, target_ref], cwd=repo_dir, check=False)
     base_sha = str(base.stdout or "").strip()

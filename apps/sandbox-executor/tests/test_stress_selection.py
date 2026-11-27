@@ -1,12 +1,3 @@
-"""Controls for the canary child's selection rule (``tests/stress_selection.py``).
-
-The canary only guards the modules its child runs, so the rule must select every module that can
-reach ``HOME`` or the workspace. Each workspace hazard the negative controls in
-``test_stress_support.py`` prove the checks catch is written here as a test module, and the rule must
-select it: a deliberately non-hermetic test can never fall outside the canary run. A hermetic module
-must not be selected, or the rule would not narrow anything.
-"""
-
 import textwrap
 from pathlib import Path
 
@@ -21,9 +12,7 @@ from tests.stress_selection import (
 )
 from tests.test_stress_support import CANARY_HAZARDS, HERMETIC_BODY, SURVIVAL_HAZARDS
 
-#: Hazards that act on ``HOME`` or the workspace. ``index-written`` writes the checkout's knowledge
-#: index instead, which the per-test ``checkout_knowledge_index_guard`` in ``conftest.py`` catches in
-#: every run, selected or not.
+# why: index-written is excluded because conftest.py's checkout_knowledge_index_guard covers it unconditionally
 WORKSPACE_HAZARDS = {
     **{name: body for name, (body, _) in CANARY_HAZARDS.items() if name != "index-written"},
     **{name: body for name, (body, _) in SURVIVAL_HAZARDS.items()},

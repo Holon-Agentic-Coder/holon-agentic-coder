@@ -1,5 +1,3 @@
-"""Tests for the per-agent runner specs (sandbox_executor.runners)."""
-
 import dataclasses
 import os
 import re
@@ -59,7 +57,6 @@ SESSION_PATHS = [
 
 @pytest.fixture
 def existing_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> set[str]:
-    """Clear the environment, point HOME at tmp_path and make only the returned set of paths exist."""
     for name in list(os.environ):
         monkeypatch.delenv(name)
     monkeypatch.setenv("HOME", str(tmp_path))

@@ -24,7 +24,7 @@ GhRunner = Callable[[Sequence[str]], Any]
 
 DEFAULT_PRS = "360-366"
 BOOKKEEPING_SUBJECT_RE = re.compile(
-    r"^(?:(?:chore|docs|ci)(?:\([^)]*\))?:\s*)?(?:ledger|calibration|review|plan|bookkeeping)\b", re.I
+    r"^(?:(?:chore|docs|ci)\()?(?:ledger|calibration|review|plan|bookkeeping)\b", re.IGNORECASE
 )
 ITERATION_RE = re.compile(r"\[Review Loop\]\s+Starting review iteration\s+(\d+)/")
 CI_WAIT_DONE_RE = re.compile(r"\[Review Loop\]\s+CI wait\s+(settled|stopped on a failure)\s+after\s+(\d+(?:\.\d+)?)s")

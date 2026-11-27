@@ -150,7 +150,10 @@ def test_stage4_iteration_and_resolver_turn_boundaries_resolve_injected_conflict
     assert ctx.review_scope_paths == []  # Unapproved PR must never be narrowed to conflict-resolved paths.
 
     # When already in a post-approval scoped re-review, a further agent merge unions into review_scope_paths.
-    repos_u = flow_history_copy(tmp_path_factory, tmp_path / "union", CODE_BASE, (TARGET_CODE, FLOW_CODE))
+    target_with_unrelated = FlowCommit(
+        "main", {APP: "y = 2\n", "src/unrelated_target.py": "u = 1\n"}, "target code with unrelated file"
+    )
+    repos_u = flow_history_copy(tmp_path_factory, tmp_path / "union", CODE_BASE, (target_with_unrelated, FLOW_CODE))
     before_union = repos_u.shas[1]
     ctx_u = _ctx(repos_u.work, dispatcher=FakeResolverDispatcher([(_resolve_app, "resolved")]))
     ctx_u.review_scope_paths = ["src/other.py"]
@@ -554,7 +557,7 @@ def test_sync_before_calibration_gates_ci_on_mechanical_merge(
     from sandbox_executor.flow.github.ci_head_checks import FAILED
     from sandbox_executor.flow.review.merged_head_gate import gate_record
 
-    repos = flow_history_copy(tmp_path_factory, tmp_path, CODE_BASE, (FLOW_CODE, *ledger_conflict(10)))
+    repos = flow_history_copy(tmp_path_factory, tmp_path, CODE_BASE, (FLOW_CODE, *ledger_conflict(2)))
     work = repos.work
     ctx, _ = _approved_stage5_ctx(work, repos.shas[0])
     gate_heads: list[str] = []

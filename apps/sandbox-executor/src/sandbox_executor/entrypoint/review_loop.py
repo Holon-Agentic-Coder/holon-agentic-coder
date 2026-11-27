@@ -424,7 +424,6 @@ def _turn_failure_label(code: int, output: str) -> str:
     return f"{label}: usage limit reached" if _USAGE_LIMIT.search(output) else label
 
 
-# why: the host pushes the committed head after the container returns
 @dataclasses.dataclass(frozen=True)
 class CommitOptions:
     dry_run: bool = False
@@ -478,6 +477,7 @@ def _commit_resolution(
     )
     commit_cmd = ["git", "commit", "-m", commit_msg]
     _assert_safe_git_args(commit_cmd)
+    # why: the review git identity reaches only the resolver commit, never the process environment
     commit_res = run_cmd(commit_cmd, cwd=repo_dir, env=_review_git_env(os.environ), check=False)
     if commit_res.returncode != 0:
         err = _bounded_error_context((commit_res.stderr or commit_res.stdout or "").strip() or "git commit failed")
@@ -609,7 +609,6 @@ def _run_resolver_mode(
     sys.exit(exit_code)
 
 
-# why: the review git identity reaches only the resolver commit, never the process environment
 def main() -> None:
     _run_main()
 

@@ -50,6 +50,7 @@ def _merge_target_ledger_only(worktree: str, target_ref: str, message: str) -> _
 
 
 def _follow_merged_head(repo_dir: str, branch: str, merged_sha: str) -> None:
+    # why: following the pushed merge lets the next ledger commit push as a fast-forward; Stage 5 syncs a diverged one.
     ref = f"refs/heads/{branch}"
     old = run_git(["rev-parse", "--verify", "--quiet", ref], cwd=repo_dir, check=False).stdout.strip()
     if not old or run_git(["merge-base", "--is-ancestor", old, merged_sha], cwd=repo_dir, check=False).returncode:

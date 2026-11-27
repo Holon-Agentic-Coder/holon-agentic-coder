@@ -1,10 +1,3 @@
-"""The sandbox_executor.flow package re-exports the names flow.py bound, from the module that now defines it.
-
-Deliberate deviation: the public definitions in ``KNOWN_UNEXPORTED`` are not re-exported (they are reached through
-their owning submodules). The guard ratchets: new unexported definitions fail, and the set can only shrink.
-Constants are intentionally outside the definitions contract.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -14,8 +7,7 @@ from pathlib import Path
 import pytest
 import sandbox_executor.flow as flow
 
-# Names flow.py imported from elsewhere that callers and tests still reach as ``sandbox_executor.flow.<name>``.
-REEXPORTED_IMPORTS = (
+IMPORTED_NAMES_CALLERS_REACH_THROUGH_FLOW = (
     "SKIP_PUSH_DISPATCH_ERROR",
     "build_pr_review_consensus_report",
     "parse_metrics",
@@ -24,21 +16,15 @@ REEXPORTED_IMPORTS = (
 )
 
 
-def owner_binding(name: str) -> object:
-    """The object ``name`` is bound to in the submodule that defines it."""
+def binding_in_defining_module(name: str) -> object:
     return getattr(importlib.import_module(DEFINITIONS[name]), name)
 
 
 FLOW_PACKAGE_DIR = Path(flow.__file__).resolve().parent
 
 
-def public_definitions(package_dir: Path, package_name: str) -> dict[str, str]:
-    """Map each public top-level function and class in the package's submodules to its owning module's dotted name.
-
-    Private (``_``-prefixed) names, ``__init__.py``, nested definitions and constants are not definitions for this
-    contract: constants and imported names are covered by ``REEXPORTED_IMPORTS`` and ``__all__`` membership.
-    Raises ``ValueError`` when two modules define the same public name, since the name would be ambiguous.
-    """
+def public_definitions_by_owning_module(package_dir: Path, package_name: str) -> dict[str, str]:
+    # why: constants and imported names are outside this contract; the imported-names tuple and __all__ cover them
     definitions: dict[str, str] = {}
     duplicates: list[str] = []
     for path in sorted(package_dir.rglob("*.py")):
@@ -57,8 +43,7 @@ def public_definitions(package_dir: Path, package_name: str) -> dict[str, str]:
     return definitions
 
 
-def declared_all(package_dir: Path) -> set[str]:
-    """Names listed in the package's ``__all__``, read from its ``__init__.py`` without importing it."""
+def names_listed_in_package_all(package_dir: Path) -> set[str]:
     tree = ast.parse((package_dir / "__init__.py").read_text(encoding="utf-8"))
     names: set[str] = set()
     found = False
@@ -85,9 +70,7 @@ def names_missing_from_all(definitions: dict[str, str], listed: set[str]) -> lis
     return sorted(set(definitions) - listed)
 
 
-# Public definitions that were never re-exported when the guard was reworked. Reachable only through their owning
-# module today; the guard fails for any definition not listed here, and for any entry here that is re-exported or gone,
-# so the set can only shrink. Re-export an entry from ``flow/__init__.py`` and delete it here.
+# why: never re-exported when the guard was reworked; the guard fails both ways, so this set can only shrink
 KNOWN_UNEXPORTED = frozenset(
     {
         "Adjudication",
@@ -160,9 +143,9 @@ KNOWN_UNEXPORTED = frozenset(
 )
 
 try:
-    DEFINITIONS = public_definitions(FLOW_PACKAGE_DIR, "sandbox_executor.flow")
+    DEFINITIONS = public_definitions_by_owning_module(FLOW_PACKAGE_DIR, "sandbox_executor.flow")
     DEFINITIONS_ERROR = None
-except ValueError as error:  # reported by test_public_definitions_are_unambiguous, not as a collection error
+except ValueError as error:  # why: reported by test_public_definitions_are_unambiguous, not as a collection error
     DEFINITIONS = {}
     DEFINITIONS_ERROR = str(error)
 
@@ -181,11 +164,15 @@ def test_every_public_definition_is_listed_in_all():
 @pytest.mark.parametrize("name", sorted(set(DEFINITIONS) - KNOWN_UNEXPORTED))
 def test_package_reexports_each_definition_from_its_module(name):
     assert name in flow.__all__
-    assert getattr(flow, name) is owner_binding(name)
+    assert getattr(flow, name) is binding_in_defining_module(name)
 
 
 def test_every_definition_listed_in_all_resolves_to_its_owning_module():
-    stale = [name for name in flow.__all__ if name in DEFINITIONS and getattr(flow, name) is not owner_binding(name)]
+    stale = [
+        name
+        for name in flow.__all__
+        if name in DEFINITIONS and getattr(flow, name) is not binding_in_defining_module(name)
+    ]
     assert stale == []
 
 
@@ -197,8 +184,8 @@ def test_the_check_reports_a_definition_added_without_being_re_exported(tmp_path
     (package / "__init__.py").write_text(
         'from fakepkg.engine import Engine, run\n\n__all__ = ["Engine", "run"]\n', encoding="utf-8"
     )
-    listed = declared_all(package)
-    assert names_missing_from_all(public_definitions(package, "fakepkg"), listed) == []
+    listed = names_listed_in_package_all(package)
+    assert names_missing_from_all(public_definitions_by_owning_module(package, "fakepkg"), listed) == []
 
     module.write_text(
         module.read_text(encoding="utf-8")
@@ -206,10 +193,13 @@ def test_the_check_reports_a_definition_added_without_being_re_exported(tmp_path
         + "\n\nclass Engine2:\n    def method(self):\n        pass\n",
         encoding="utf-8",
     )
-    assert names_missing_from_all(public_definitions(package, "fakepkg"), listed) == ["Engine2", "added"]
+    assert names_missing_from_all(public_definitions_by_owning_module(package, "fakepkg"), listed) == [
+        "Engine2",
+        "added",
+    ]
 
 
-@pytest.mark.parametrize("name", REEXPORTED_IMPORTS)
+@pytest.mark.parametrize("name", IMPORTED_NAMES_CALLERS_REACH_THROUGH_FLOW)
 def test_package_reexports_the_imported_names_callers_reach(name):
     assert name in flow.__all__
     assert hasattr(flow, name)

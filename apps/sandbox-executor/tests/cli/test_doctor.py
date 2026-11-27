@@ -1,5 +1,3 @@
-"""Unit tests for ``sandbox_executor.cli.doctor`` and ``sandbox_executor.cli.doctor_env``."""
-
 from __future__ import annotations
 
 import argparse
@@ -79,8 +77,6 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("WARNING: model=qwen3 context=65536 exceeds the server's max_prompt_tokens=32768", output)
         self.assertNotIn("max_output_tokens=16384", output)
 
-    # Two providers on one server share one probe and one line, and each model is only compared with the
-    # limits of the server that serves it.
     @staticmethod
     def two_server_fetch(urls):
         def fetch(url, timeout):
@@ -162,7 +158,6 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("local_llm=disabled", output)
 
     def run_unified_doctor(self, env, fetch, host_config=None, as_json=False, status=None):
-        """Run the single ``holon doctor`` command: runner/model resolution and pre-flight, then the environment."""
         from sandbox_executor.preflight import PreflightResult, PreflightStatus
 
         status = status or PreflightStatus.OK
@@ -182,7 +177,7 @@ class TestDoctor(unittest.TestCase):
             patch.dict(os.environ, env, clear=True),
             patch.object(local_llm, "host_models_json", return_value=host_config),
             patch("sandbox_executor.cli.doctor.run_preflight_probe", return_value=probe),
-            # A strict UTF-8 byte stream, like a terminal: text a StringIO accepts but a terminal cannot fails here.
+            # why: a strict UTF-8 byte stream fails like a terminal on text that a StringIO would accept
             patch("sys.stdout", new_callable=_strict_utf8_stream) as mock_stdout,
         ):
             code = cli.run_doctor(args, fetch=fetch)
@@ -215,11 +210,8 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("HOLON_LOCAL_CONTEXT_WINDOW", output)
 
     def test_doctor_never_prints_base_url_userinfo(self):
-        # A credential embedded in HOLON_LOCAL_BASE_URL must reach neither the text nor the --json
-        # report, including passwords with an unencoded "/", "?" or "#". Built at runtime, not literals.
-        # It also covers hosts that do not parse (bad port, non-ASCII name), the case the "invalid port" warning is for.
-        # #96 message rule: only a host validated after the userinfo is removed is shown; an unparseable or ambiguous
-        # value names the variable only.
+        # why: #96 shows only a host validated after removing the userinfo; otherwise only the variable is named
+        # why: credentials are built at runtime, not literals; the bad hosts cover the "invalid port" warning
         sample = "pw-" + "z" * 8
         head = "hd-" + "q" * 5
         name = "some" + "one"
@@ -227,7 +219,7 @@ class TestDoctor(unittest.TestCase):
         withheld = ("host withheld", "is not a valid URL")
 
         def assert_shown(text, host, sep):
-            # A "/", "?" or "#" before the last "@" leaves no parseable authority, so the host is withheld.
+            # why: a "/", "?" or "#" before the last "@" leaves no parseable authority, so the host is withheld
             if host == "gpu.example.com:8000/v1" and sep in ("", "@"):
                 self.assertIn("(host gpu.example.com:8000)", text)
             else:
@@ -257,7 +249,7 @@ class TestDoctor(unittest.TestCase):
                         assert_shown("\n".join(json.loads(output)["environment"]["lines"]), host, sep)
 
     def test_unified_doctor_rejects_non_utf8_model_ids(self):
-        # A non-UTF-8 byte in HOLON_LOCAL_MODELS (surrogateescape) used to crash the text report.
+        # why: a non-UTF-8 byte in HOLON_LOCAL_MODELS (surrogateescape) used to crash the text report
         env = {
             "HOLON_LOCAL_LLM": "1",
             "HOLON_LOCAL_BASE_URL": "http://127.0.0.1:1/v1",
@@ -271,7 +263,6 @@ class TestDoctor(unittest.TestCase):
                 self.assertIn("Error: HOLON_LOCAL_MODELS is not valid UTF-8 text", output)
 
     def test_unified_doctor_text_report_cannot_fail_to_encode(self):
-        # Output side: whatever text reaches the report is escaped, never a UnicodeEncodeError.
         def report(fetch=None, out=None):
             print("model=bad" + chr(0xD800) + "id", file=out)
             return 0

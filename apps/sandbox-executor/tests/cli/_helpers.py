@@ -1,5 +1,3 @@
-"""Shared test helpers for ``tests/cli/``."""
-
 from __future__ import annotations
 
 import os
@@ -13,16 +11,13 @@ from sandbox_executor.agent_runner import SANDBOX_WORKSPACE_MOUNT
 
 from tests.env_file_capture import bare_env_items, read_env_file
 
-# Captured at import, before the suite-wide `isolated_env_file_dir` fixture (conftest.py) replaces it.
+# why: captured at import, before the suite-wide isolated_env_file_dir fixture in conftest.py replaces it
 _REAL_ENV_FILE_DIR = cli.env_file_dir
 
-
-# What git_flow.sandbox_worktree_mounts returns for a valid worktree, reduced to its bind mount.
 _WORKTREE_MOUNTS = ["-v", f"/work/flow-x:{SANDBOX_WORKSPACE_MOUNT}"]
 
 
 def _stub_host_publish(testcase: unittest.TestCase) -> dict[str, MagicMock]:
-    """Stand in for the host fetch and push the standalone commands run around the container."""
     mocks: dict[str, MagicMock] = {}
     for name, target, kwargs in (
         ("intent_prepare", "intent.prepare_worktree", {"return_value": "/work/flow-x"}),
@@ -39,8 +34,6 @@ def _stub_host_publish(testcase: unittest.TestCase) -> dict[str, MagicMock]:
 
 
 class _RecordingDocker:
-    """Delegates git to the real subprocess.run and records each docker run with its env-file state."""
-
     def __init__(self, outcome=None):
         self.outcome = outcome if outcome is not None else MagicMock(returncode=0)
         self.argv: list[str] = []
@@ -53,13 +46,11 @@ class _RecordingDocker:
 
     @property
     def argv_env(self) -> dict[str, str]:
-        """The variables passed with `-e KEY=VALUE` on the docker command line."""
         pairs = zip(self.argv, self.argv[1:], strict=False)
         return dict(item.split("=", 1) for flag, item in pairs if flag == "-e" and "=" in item)
 
     @property
     def container_env(self) -> dict[str, str]:
-        """Everything the container receives: the `-e` variables plus the env-file contents."""
         return {**self.argv_env, **self.env_file_contents}
 
     def __call__(self, cmd, *args, **kwargs):

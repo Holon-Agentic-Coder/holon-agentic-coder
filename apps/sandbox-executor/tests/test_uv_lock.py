@@ -1,5 +1,3 @@
-"""Hermetic tests that the flow freezes ``uv.lock`` and that the committed lock needs no rewrite."""
-
 import re
 import shutil
 import subprocess

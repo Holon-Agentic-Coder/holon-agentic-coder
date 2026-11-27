@@ -1,5 +1,3 @@
-"""A red merged head withdraws the consensus and restarts Stage 4 at iteration 1, at most three times."""
-
 from __future__ import annotations
 
 import json
@@ -42,9 +40,7 @@ def _calibrated() -> StageResult:
     return StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
 
 
-class Engine:
-    """Scripted stage results per stage, and the (stage, status) of every recorded result."""
-
+class ScriptedStageEngine:
     def __init__(self, calibrate: list[StageResult], review: list[StageResult]) -> None:
         self.scripts = {FlowStage.CALIBRATE: calibrate, FlowStage.REVIEW: review}
         self.ran: list[FlowStage] = []
@@ -65,7 +61,7 @@ def _ctx(tmp_path: Path, **kwargs: Any) -> FlowContext:
 
 
 def test_a_green_stage5_needs_no_restart(tmp_path: Path) -> None:
-    engine = Engine([_calibrated()], [_review()])
+    engine = ScriptedStageEngine([_calibrated()], [_review()])
     result = calibrate_with_review_restart(_ctx(tmp_path), engine.run_stage, engine.record)
     assert result.status == StageStatus.SUCCESS
     assert engine.ran == [FlowStage.CALIBRATE]
@@ -73,7 +69,7 @@ def test_a_green_stage5_needs_no_restart(tmp_path: Path) -> None:
 
 def test_a_restart_reruns_stage4_then_stage5(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path)
-    engine = Engine([_restart(), _calibrated()], [_review()])
+    engine = ScriptedStageEngine([_restart(), _calibrated()], [_review()])
     result = calibrate_with_review_restart(ctx, engine.run_stage, engine.record)
     assert result.status == StageStatus.SUCCESS
     assert engine.ran == [FlowStage.CALIBRATE, FlowStage.REVIEW, FlowStage.CALIBRATE]
@@ -87,14 +83,14 @@ def test_a_restart_reruns_stage4_then_stage5(tmp_path: Path) -> None:
 
 def test_a_restarted_stage4_that_does_not_approve_is_returned(tmp_path: Path) -> None:
     halted = _review(StageStatus.HALTED_FOR_HUMAN)
-    engine = Engine([_restart()], [halted])
+    engine = ScriptedStageEngine([_restart()], [halted])
     result = calibrate_with_review_restart(_ctx(tmp_path), engine.run_stage, engine.record)
     assert result is halted
     assert engine.ran == [FlowStage.CALIBRATE, FlowStage.REVIEW]
 
 
 def test_an_always_red_merged_head_stops_at_the_cap(tmp_path: Path) -> None:
-    engine = Engine([_restart()], [_review()])
+    engine = ScriptedStageEngine([_restart()], [_review()])
     result = calibrate_with_review_restart(_ctx(tmp_path), engine.run_stage, engine.record)
     assert result.stage == FlowStage.CALIBRATE and result.status == StageStatus.FAILED
     assert f"after {MAX_MERGED_HEAD_REVIEW_RESTARTS} review restarts" in str(result.error)
@@ -116,17 +112,16 @@ def test_approval_stands_only_for_an_unwithdrawn_latest_approval(tmp_path: Path)
     assert not approval_stands(ctx, first)
 
 
-# --- pipeline level --------------------------------------------------------------------------------------------------
-
-
-class Flow:
-    """Fakes for one pipeline run: Stage 4 approvals, merged heads and their CI, comments and publishes."""
-
+class PipelineRunFakes:
     def __init__(
-        self, ci: dict[str, str], heads: list[str], reviews: list[str], fingerprints: dict[str, str] | None = None
+        self,
+        ci: dict[str, str],
+        heads: list[str],
+        reviews: list[str],
+        pr_own_fingerprint_by_commit: dict[str, str] | None = None,
     ) -> None:
         self.ci, self.heads, self.reviews = ci, heads, reviews
-        self.fingerprints = fingerprints or {}  # The PR-own change fingerprint of each commit; none by default.
+        self.pr_own_fingerprint_by_commit = pr_own_fingerprint_by_commit or {}
         self.iterations_at_entry: list[int] = []
         self.published: list[str] = []
         self.comments: list[str] = []
@@ -136,11 +131,12 @@ class Flow:
         self.iterations_at_entry.append(context.review_iterations_done)
         context.review_iterations_done += 2
         result = _review(target_commit=self.reviews.pop(0) if len(self.reviews) > 1 else self.reviews[0])
-        fingerprint = self.fingerprints.get(result.payload["consensus"]["target_commit"])
+        fingerprint = self.pr_own_fingerprint_by_commit.get(result.payload["consensus"]["target_commit"])
         if fingerprint:
             result.payload["consensus"].update(approval_fingerprint=fingerprint, base_branch="main")
             target = result.payload["consensus"]["target_commit"]
-            record_diff_gate(context, DiffGate(True, target, fingerprint, "main"))  # The diff approval, CI aside.
+            diff_approval_ignoring_ci = DiffGate(True, target, fingerprint, "main")
+            record_diff_gate(context, diff_approval_ignoring_ci)
         context.stage_results["review"] = result
         return result
 
@@ -186,7 +182,7 @@ class Flow:
             patch("sandbox_executor.flow.pipeline.validate_stage_ledger"),
             patch(
                 "sandbox_executor.flow.review.approval_coverage.approval_fingerprint_of",
-                side_effect=lambda _repo, head, _base: self.fingerprints.get(str(head)),
+                side_effect=lambda _repo, head, _base: self.pr_own_fingerprint_by_commit.get(str(head)),
             ),
         ):
             engine.run()
@@ -199,11 +195,15 @@ def _ledger_rows(tmp_path: Path) -> list[dict[str, Any]]:
 def test_pipeline_restarts_stage4_on_a_red_merged_head_and_calibrates_the_green_one(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path, auto_calibrate=True)
     ctx.review_iterations_done = 3
-    flow = Flow({MERGED_RED: "failure", MERGED_GREEN: "success"}, [MERGED_RED, MERGED_GREEN], [APPROVED, MERGED_RED])
+    flow = PipelineRunFakes(
+        {MERGED_RED: "failure", MERGED_GREEN: "success"}, [MERGED_RED, MERGED_GREEN], [APPROVED, MERGED_RED]
+    )
     flow.run(ctx, tmp_path / "checkpoint.json")
 
-    assert flow.iterations_at_entry == [3, 0]  # the restarted Stage 4 starts at iteration 1
-    assert flow.published == [MERGED_GREEN]  # nothing calibrated for the red head
+    first_run_then_restart_at_iteration_one = [3, 0]
+    only_the_green_head_calibrated = [MERGED_GREEN]
+    assert flow.iterations_at_entry == first_run_then_restart_at_iteration_one
+    assert flow.published == only_the_green_head_calibrated
     assert len(flow.comments) == 1 and MERGED_RED in flow.comments[0]
     rows = [row for row in _ledger_rows(tmp_path) if "consensus-withdrawn" in row.get("labels", [])]
     assert [(row["approved_head"], row["merged_head"]) for row in rows] == [(APPROVED, MERGED_RED)]
@@ -213,14 +213,15 @@ def test_pipeline_restarts_stage4_on_a_red_merged_head_and_calibrates_the_green_
 
 def test_pipeline_stops_after_the_cap_and_never_reports_the_withdrawn_approval_ready(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path, auto_calibrate=True)
-    flow = Flow({MERGED_RED: "failure"}, [MERGED_RED], [APPROVED])
+    flow = PipelineRunFakes({MERGED_RED: "failure"}, [MERGED_RED], [APPROVED])
     flow.run(ctx, tmp_path / "checkpoint.json")
 
     assert flow.published == []
     assert len(flow.iterations_at_entry) == 1 + MAX_MERGED_HEAD_REVIEW_RESTARTS
     assert ctx.stage_results["calibrate"].status == StageStatus.FAILED
     assert not any("PR ready for maintainer merge" in line for line in ctx.logs)
-    assert len(flow.comments) == 1  # once per merged head
+    one_comment_per_merged_head = 1
+    assert len(flow.comments) == one_comment_per_merged_head
     rows = [row for row in _ledger_rows(tmp_path) if "consensus-withdrawn" in row.get("labels", [])]
     assert [row["review_restarted"] for row in rows] == [True] * MAX_MERGED_HEAD_REVIEW_RESTARTS + [False]
     assert "the review was not restarted and the flow stopped" in rows[-1]["error_context"]
@@ -231,19 +232,21 @@ def test_a_resumed_stage5_with_a_withdrawn_consensus_restarts_stage4(tmp_path: P
     review = _review()
     review.payload["consensus"].update(approved=False, withdrawn={"merged_head": MERGED_RED, "approved_head": APPROVED})
     ctx.stage_results["review"] = review
-    flow = Flow({MERGED_GREEN: "success"}, [MERGED_GREEN], [MERGED_RED])
+    flow = PipelineRunFakes({MERGED_GREEN: "success"}, [MERGED_GREEN], [MERGED_RED])
     flow.run(ctx, tmp_path / "checkpoint.json", from_stage="calibrate")
 
-    assert flow.iterations_at_entry == [0]  # Stage 4 re-ran for the new head
+    stage4_reran_for_the_new_head = [0]
+    assert flow.iterations_at_entry == stage4_reran_for_the_new_head
     assert flow.published == [MERGED_GREEN]
-    assert flow.comments == [] and _ledger_rows(tmp_path) == []  # no second withdrawal
+    # why: the consensus was already withdrawn before the resume, so a second withdrawal would duplicate it
+    assert flow.comments == [] and _ledger_rows(tmp_path) == []
     assert ctx.stage_results["calibrate"].status == StageStatus.SUCCESS
 
 
 def test_the_checkpoint_after_a_restart_carries_iteration_zero(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path, auto_calibrate=True)
     ctx.review_iterations_done = 5
-    flow = Flow({MERGED_RED: "failure"}, [MERGED_RED], [APPROVED])
+    flow = PipelineRunFakes({MERGED_RED: "failure"}, [MERGED_RED], [APPROVED])
     checkpoint = tmp_path / "checkpoint.json"
     saved: list[dict[str, Any]] = []
     original = PipelineEngine.save_checkpoint
@@ -274,11 +277,13 @@ def _withdrawn_rows(tmp_path: Path) -> list[dict[str, Any]]:
 def test_a_carried_approval_with_green_ci_on_the_merged_head_runs_stage4_once(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path, auto_calibrate=True)
     fingerprints = {APPROVED: SAME_CHANGE, MERGED_GREEN: SAME_CHANGE}
-    flow = Flow({MERGED_GREEN: "success"}, [MERGED_GREEN], [APPROVED], fingerprints)
+    flow = PipelineRunFakes({MERGED_GREEN: "success"}, [MERGED_GREEN], [APPROVED], fingerprints)
     flow.run(ctx, tmp_path / "checkpoint.json")
 
-    assert len(flow.iterations_at_entry) == 1  # No reviewer is dispatched again.
-    assert flow.published == [MERGED_GREEN]  # After CI on the merged head passed.
+    single_stage4_run_without_redispatching_reviewers = 1
+    assert len(flow.iterations_at_entry) == single_stage4_run_without_redispatching_reviewers
+    published_only_after_merged_head_ci_passed = [MERGED_GREEN]
+    assert flow.published == published_only_after_merged_head_ci_passed
     assert flow.comments == [] and _withdrawn_rows(tmp_path) == []
     record = ctx.stage_results["calibrate"].payload["merged_head_ci"]
     assert record["state"] == "passed" and record["approval_carry_over"]["approved_head"] == APPROVED
@@ -288,12 +293,14 @@ def test_a_carried_approval_with_a_ci_defect_restarts_stage4_scoped_without_with
     ctx = _ctx(tmp_path, auto_calibrate=True)
     fingerprints = {APPROVED: SAME_CHANGE, MERGED_RED: SAME_CHANGE, MERGED_GREEN: SAME_CHANGE}
     ci = {MERGED_RED: "failure", MERGED_GREEN: "success"}
-    flow = Flow(ci, [MERGED_RED, MERGED_GREEN], [APPROVED, MERGED_RED], fingerprints)
+    flow = PipelineRunFakes(ci, [MERGED_RED, MERGED_GREEN], [APPROVED, MERGED_RED], fingerprints)
     flow.run(ctx, tmp_path / "checkpoint.json")
 
-    assert len(flow.iterations_at_entry) == 2  # The CI defect restarted Stage 4 once, for the resolver's fix.
+    stage4_restarted_once_for_the_resolver_fix = 2
+    assert len(flow.iterations_at_entry) == stage4_restarted_once_for_the_resolver_fix
     assert flow.published == [MERGED_GREEN]
-    assert _withdrawn_rows(tmp_path) == [] and flow.comments == []  # The diff approval stood.
+    # why: a CI defect leaves the diff approval standing, so nothing is withdrawn
+    assert _withdrawn_rows(tmp_path) == [] and flow.comments == []
     assert any(f"CI defect (defect) on merged head {MERGED_RED}" in line for line in ctx.logs)
     routed = [row for row in _ledger_rows(tmp_path) if "ci-failure-routing" in row.get("labels", [])]
     assert [row["ci_failure_routing"]["decision"] for row in routed] == ["resolve"]
@@ -306,10 +313,11 @@ def test_a_resumed_pending_scoped_restart_reruns_stage4_first(tmp_path: Path) ->
     review.payload["consensus"].update(approved=False, pipeline_defect=defect)
     ctx.stage_results["review"] = review
     assert not approval_stands(ctx, review)
-    flow = Flow({MERGED_GREEN: "success"}, [MERGED_GREEN], [MERGED_RED])
+    flow = PipelineRunFakes({MERGED_GREEN: "success"}, [MERGED_GREEN], [MERGED_RED])
     flow.run(ctx, tmp_path / "checkpoint.json", from_stage="calibrate")
 
-    assert flow.iterations_at_entry == [0]  # Stage 4 ran for the fix before anything was calibrated.
+    stage4_ran_for_the_fix_before_calibration = [0]
+    assert flow.iterations_at_entry == stage4_ran_for_the_fix_before_calibration
     assert flow.published == [MERGED_GREEN]
     assert flow.comments == [] and _withdrawn_rows(tmp_path) == []
 
@@ -331,7 +339,8 @@ def test_a_rejected_scoped_restart_withdraws_the_consensus(tmp_path: Path) -> No
     carried = [{"id": "FIND-CI-000", "severity": "important", "summary": "CI failed"}]
 
     def run_stage(stage: FlowStage) -> StageResult:
-        if stage == FlowStage.REVIEW:  # The halted scoped review leaves its count and open findings for a resume.
+        # why: a halted scoped review leaves its count and open findings so a resume can continue from them
+        if stage == FlowStage.REVIEW:
             ctx.stage_results["review"] = halted
             ctx.review_iterations_done, ctx.carried_review_findings = 2, list(carried)
             return halted
@@ -368,11 +377,13 @@ def test_a_rejected_scoped_restart_comment_names_the_approval_and_the_halt(tmp_p
 def test_a_changed_pr_own_change_restarts_stage4_for_a_fresh_review(tmp_path: Path) -> None:
     ctx = _ctx(tmp_path, auto_calibrate=True)
     fingerprints = {APPROVED: SAME_CHANGE, MERGED_GREEN: NEW_CHANGE}
-    flow = Flow({MERGED_GREEN: "success"}, [MERGED_GREEN], [APPROVED, MERGED_GREEN], fingerprints)
+    flow = PipelineRunFakes({MERGED_GREEN: "success"}, [MERGED_GREEN], [APPROVED, MERGED_GREEN], fingerprints)
     flow.run(ctx, tmp_path / "checkpoint.json")
 
-    assert len(flow.iterations_at_entry) == 2  # A fresh review of the changed change.
-    assert flow.published == [MERGED_GREEN]  # The fresh approval covers the head itself.
+    first_review_then_fresh_review_of_the_changed_change = 2
+    assert len(flow.iterations_at_entry) == first_review_then_fresh_review_of_the_changed_change
+    fresh_approval_publishes_merged_head_without_carry_over = [MERGED_GREEN]
+    assert flow.published == fresh_approval_publishes_merged_head_without_carry_over
     (row,) = _withdrawn_rows(tmp_path)
     assert "changed since approval" in row["error_context"] and row["merged_head"] == MERGED_GREEN
     assert len(flow.comments) == 1 and "changed since approval" in flow.comments[0]

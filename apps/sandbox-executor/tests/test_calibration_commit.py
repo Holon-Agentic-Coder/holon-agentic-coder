@@ -72,25 +72,30 @@ def calibration_repo(calibration_commit_repo_template: Path, tmp_path, monkeypat
 
 
 @pytest.fixture
-def calibrated_committed_template(
-    calibration_commit_repo_template: Path,
-    tmp_path_factory: pytest.TempPathFactory,
+def _template_guards(
     monkeypatch,
     gh_write_guard: list[str],
     network_guard_fixture: list[str],
-) -> SimpleNamespace:
+) -> tuple[list[str], list[str]]:
     for key, value in _GIT_IDENTITY.items():
         monkeypatch.setenv(key, value)
+    return (gh_write_guard, network_guard_fixture)
 
+
+@pytest.fixture
+def calibrated_committed_template(
+    calibration_commit_repo_template: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    guard_real_ledger,
+    _template_guards: tuple[list[str], list[str]],
+) -> SimpleNamespace:
     def build(root: Path) -> SimpleNamespace:
         repo = own_path_copy(calibration_commit_repo_template, root)
         with patch("sandbox_executor.calibration.run.format_calibration_report"):
             report = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=False)
         return SimpleNamespace(report=report)
 
-    root, built = run_guarded_template(
-        tmp_path_factory, "calibration-commit-committed", build, (gh_write_guard, network_guard_fixture)
-    )
+    root, built = run_guarded_template(tmp_path_factory, "calibration-commit-committed", build, _template_guards)
     return SimpleNamespace(root=root, report=built.report)
 
 
@@ -110,13 +115,9 @@ def calibrated_committed(calibrated_committed_template: SimpleNamespace, tmp_pat
 def calibrated_skip_commit_template(
     calibration_commit_repo_template: Path,
     tmp_path_factory: pytest.TempPathFactory,
-    monkeypatch,
-    gh_write_guard: list[str],
-    network_guard_fixture: list[str],
+    guard_real_ledger,
+    _template_guards: tuple[list[str], list[str]],
 ) -> SimpleNamespace:
-    for key, value in _GIT_IDENTITY.items():
-        monkeypatch.setenv(key, value)
-
     def build(root: Path) -> SimpleNamespace:
         repo = own_path_copy(calibration_commit_repo_template, root)
         ledger = repo / "holon-knowledge" / "ledger" / "executions.jsonl"
@@ -125,9 +126,7 @@ def calibrated_skip_commit_template(
             report = run_calibrate(_EXEC_BRANCH, target_worktree=str(repo), skip_commit=True)
         return SimpleNamespace(report=report, before=before, merged_before=merged_before)
 
-    root, built = run_guarded_template(
-        tmp_path_factory, "calibration-commit-skip-commit", build, (gh_write_guard, network_guard_fixture)
-    )
+    root, built = run_guarded_template(tmp_path_factory, "calibration-commit-skip-commit", build, _template_guards)
     return SimpleNamespace(root=root, report=built.report, before=built.before, merged_before=built.merged_before)
 
 

@@ -72,7 +72,13 @@ def test_slice_module_has_only_reason_or_directive_comments(module: str) -> None
 
 def test_runners_package_exports_are_unchanged() -> None:
     runners = importlib.import_module("sandbox_executor.runners")
-    assert runners.__all__ == ["RUNNER_SPECS", "RunnerSpec", "runner_spec_for"]
+    assert runners.__all__ == [
+        "RUNNER_SPECS",
+        "VALID_EFFORT_LEVELS",
+        "ModelCapability",
+        "RunnerSpec",
+        "runner_spec_for",
+    ]
     assert all(hasattr(runners, name) for name in runners.__all__)
     assert set(runners.RUNNER_SPECS) == {"antigravity", "claude", "pi", "codex", "opencode"}
 
@@ -91,6 +97,10 @@ def _public_module_level_names(source: str) -> set[str]:
 
 def test_runner_spec_module_public_names_are_unchanged() -> None:
     assert _public_module_level_names(_source_of("runners/spec.py")) == {
+        "VALID_EFFORT_LEVELS",
+        "ModelCapability",
+        "capability_matches_model",
+        "readonly_session_mount_builder",
         "RunnerSpec",
         "has_api_key",
         "any_path_exists",
@@ -98,7 +108,27 @@ def test_runner_spec_module_public_names_are_unchanged() -> None:
     }
     spec_module = importlib.import_module("sandbox_executor.runners.spec")
     field_names = tuple(field.name for field in dataclasses.fields(spec_module.RunnerSpec))
-    assert field_names == ("agent_id", "image", "default_model", "ticker", "api_key_env_vars", "credential_check")
+    assert field_names == (
+        "agent_id",
+        "image",
+        "default_model",
+        "ticker",
+        "api_key_env_vars",
+        "credential_check",
+        "model_capabilities",
+        "model_discovery_hook",
+        "effort_normaliser",
+        "supports_effort_suffix",
+        "session_mounts_builder",
+        "auth_api_key_env_vars",
+        "accepts_generic_api_key",
+        "api_key_detector",
+        "session_detection_paths",
+        "harness_markers",
+        "harness_marker_priority",
+        "non_marker_env_vars",
+        "local_gateway_detector",
+    )
     assert callable(spec_module.RunnerSpec.check_credentials)
 
 

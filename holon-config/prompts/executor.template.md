@@ -38,7 +38,9 @@ codebase files.
     code does. Machine directives stay allowed: shebangs, encoding lines, `# noqa`, `# type:`, `# pragma`, `# fmt:` and
     shellcheck directives. Do not remove existing docstrings or comments as part of unrelated work.
     `scripts/check_self_explaining.py` (run by `uv run task lint`) enforces this on added lines, so editing or moving a
-    docstring counts as adding one.
+    docstring counts as adding one. Stage 3 also runs `scripts/check_self_explaining.py` before the push and refuses to
+    publish a branch that adds a docstring or an explanatory comment, so run it yourself and fix every reported
+    `path:line` before you finish.
 
 **Write Protocol (incremental execution notes):**
 

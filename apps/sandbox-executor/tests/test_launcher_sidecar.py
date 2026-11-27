@@ -73,7 +73,7 @@ def test_setup_proxy_warns_about_the_cache_control_ttl_order_issue(host_paths, m
     assert "Re-run without --token-reduce" in caplog.text
 
 
-def assert_started_sidecar_removed(fake: FakeDocker) -> None:
+def _assert_started_sidecar_removed(fake: FakeDocker) -> None:
     assert "docker rm -f" in fake.joined()
     assert "docker network rm" in fake.joined()
 
@@ -88,7 +88,7 @@ def test_setup_proxy_spawn_failure_raises_and_injects_no_dead_proxy(host_paths, 
     message = str(excinfo.value)
     assert "image not found" in message
     assert "Re-run without --token-reduce" in message
-    assert_started_sidecar_removed(fake)
+    _assert_started_sidecar_removed(fake)
 
 
 def test_setup_proxy_spawn_failure_redacts_dashboard_credentials(host_paths, monkeypatch):
@@ -123,7 +123,7 @@ def test_setup_proxy_readiness_failure_raises_without_proxy_envs(host_paths, mon
 
     assert "never answered an HTTP proxy request" in str(excinfo.value)
     assert "Re-run without --token-reduce" in str(excinfo.value)
-    assert_started_sidecar_removed(fake)
+    _assert_started_sidecar_removed(fake)
 
 
 def test_setup_proxy_missing_published_port_raises(host_paths, monkeypatch):

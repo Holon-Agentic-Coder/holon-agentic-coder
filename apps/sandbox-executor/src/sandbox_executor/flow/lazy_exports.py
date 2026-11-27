@@ -106,6 +106,7 @@ LAZY_EXPORTS: dict[str, str] = {
         "review_submitted_output"
     ),
     "sandbox_executor.flow.github.review_post": "post_pr_review_consensus",
+    "sandbox_executor.flow.github.stage5_test_failure": "check_log_text record_stage5_test_failure",
     "sandbox_executor.flow.host_remote": (
         "HostRemoteError fetch_base new_local_child_branches publish_new_child_branches push_branch push_commit "
         "remote_error"

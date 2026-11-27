@@ -1,5 +1,3 @@
-"""Hermetic unit and integration tests for ActionRecord, commit trailers, and holon ledger query CLI."""
-
 import dataclasses
 import io
 import json
@@ -41,8 +39,6 @@ from sandbox_executor.ledger.query_filters import (
 
 
 class TestActionRecordModels(unittest.TestCase):
-    """Test ActionRecord and SummaryRecord dataclass behaviour and validation."""
-
     def test_action_record_creation_and_to_dict(self):
         record = ActionRecord(
             action_id="ACT-100-abc",
@@ -90,35 +86,27 @@ class TestActionRecordModels(unittest.TestCase):
         self.assertEqual(record.action_origin, "operator")
 
     def test_action_record_validation_errors(self):
-        # Empty action_id
         with self.assertRaises(ValueError):
             ActionRecord("", "E-1", "act", "code", "target", "success").validate()
 
-        # Empty execution_id
         with self.assertRaises(ValueError):
             ActionRecord("ACT-1", "", "act", "code", "target", "success").validate()
 
-        # Empty action
         with self.assertRaises(ValueError):
             ActionRecord("ACT-1", "E-1", "", "code", "target", "success").validate()
 
-        # Invalid category
         with self.assertRaises(ValueError):
             ActionRecord("ACT-1", "E-1", "act", "invalid_cat", "target", "success").validate()
 
-        # Invalid outcome
         with self.assertRaises(ValueError):
             ActionRecord("ACT-1", "E-1", "act", "code", "target", "invalid_outcome").validate()
 
-        # Invalid action_origin
         with self.assertRaises(ValueError):
             ActionRecord("ACT-1", "E-1", "act", "code", "target", "success", action_origin="invalid_origin").validate()
 
-        # Invalid review_severity
         with self.assertRaises(ValueError):
             ActionRecord("ACT-1", "E-1", "act", "code", "target", "success", review_severity="super_high").validate()
 
-        # Invalid review_disposition
         with self.assertRaises(ValueError):
             ActionRecord("ACT-1", "E-1", "act", "code", "target", "success", review_disposition="maybe").validate()
 
@@ -147,8 +135,6 @@ class TestActionRecordModels(unittest.TestCase):
 
 
 class TestCommitTrailers(unittest.TestCase):
-    """Test extraction and parsing of git commit trailers."""
-
     def test_parse_commit_trailers_standard(self):
         msg = (
             "fix: handle missing key in ledger reader\n\n"
@@ -247,8 +233,6 @@ class TestCommitTrailers(unittest.TestCase):
 
 
 class TestLedgerAppend(unittest.TestCase):
-    """Test append operations to executions.jsonl."""
-
     def test_append_action_and_summary_records(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             ledger_file = os.path.join(tmp_dir, "holon-knowledge", "ledger", "executions.jsonl")
@@ -282,14 +266,11 @@ class TestLedgerAppend(unittest.TestCase):
 
 
 class TestLedgerQueryEngine(unittest.TestCase):
-    """Test querying and multi-criteria filtering on executions.jsonl."""
-
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.ledger_file = os.path.join(self.temp_dir.name, "executions.jsonl")
 
         self.sample_records = [
-            # 1. Action: code modification
             {
                 "entry_type": "action",
                 "action_id": "ACT-1",
@@ -302,7 +283,6 @@ class TestLedgerQueryEngine(unittest.TestCase):
                 "action_origin": "initial_implementation",
                 "created_at": "2026-10-12T10:00:00Z",
             },
-            # 2. Action: test run failure
             {
                 "entry_type": "action",
                 "action_id": "ACT-2",
@@ -317,7 +297,6 @@ class TestLedgerQueryEngine(unittest.TestCase):
                 "action_origin": "ci_fix",
                 "created_at": "2026-10-12T10:05:00Z",
             },
-            # 3. Action: pr review critical fix
             {
                 "entry_type": "action",
                 "action_id": "ACT-3",
@@ -333,7 +312,6 @@ class TestLedgerQueryEngine(unittest.TestCase):
                 "review_finding_ids": ["FIND-99"],
                 "created_at": "2026-10-12T11:00:00Z",
             },
-            # 4. Action: doc update
             {
                 "entry_type": "action",
                 "action_id": "ACT-4",
@@ -347,7 +325,6 @@ class TestLedgerQueryEngine(unittest.TestCase):
                 "review_severity": "nit",
                 "created_at": "2026-10-12T11:10:00Z",
             },
-            # 5. Legacy Summary (no entry_type field)
             {
                 "execution_id": "E-10",
                 "plan_branch": "I-test/P-test-10/_",
@@ -357,7 +334,6 @@ class TestLedgerQueryEngine(unittest.TestCase):
                 "summary": "Plan execution failed",
                 "created_at": "2026-10-12T10:06:00Z",
             },
-            # 6. Modern Summary
             {
                 "entry_type": "summary",
                 "execution_id": "E-11",
@@ -390,7 +366,7 @@ class TestLedgerQueryEngine(unittest.TestCase):
     def test_query_filter_entry_type_summary(self):
         res = query_ledger(self.ledger_file, entry_type="summary")
         self.assertEqual(len(res), 2)
-        # Includes legacy row without entry_type
+        # why: legacy summary rows predate entry_type and must still count as summaries
         exec_ids = [r["execution_id"] for r in res]
         self.assertIn("E-10", exec_ids)
         self.assertIn("E-11", exec_ids)
@@ -414,7 +390,8 @@ class TestLedgerQueryEngine(unittest.TestCase):
 
     def test_query_filter_outcome(self):
         res = query_ledger(self.ledger_file, outcome="failure")
-        self.assertEqual(len(res), 2)  # 1 failed action + 1 failed summary
+        # why: the outcome filter matches the failed action and the failed legacy summary row
+        self.assertEqual(len(res), 2)
         exec_ids = [r["execution_id"] for r in res]
         self.assertIn("E-10", exec_ids)
 
@@ -444,8 +421,8 @@ class TestLedgerQueryEngine(unittest.TestCase):
 
     def test_query_corrupted_lines_resilience(self):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
-            f.write("\n")  # empty line
-            f.write("corrupted json { line\n")  # malformed JSON
+            f.write("\n")
+            f.write("corrupted json { line\n")
             f.write(
                 json.dumps(
                     {
@@ -530,8 +507,6 @@ class TestLedgerQueryEngine(unittest.TestCase):
 
 
 class TestLedgerCli(unittest.TestCase):
-    """Test CLI dispatch for 'holon ledger query'."""
-
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.ledger_file = os.path.join(self.temp_dir.name, "executions.jsonl")
@@ -627,8 +602,6 @@ class TestLedgerCli(unittest.TestCase):
 
 
 class TestAtomicLedgerLocking(unittest.TestCase):
-    """Hermetic unit tests verifying atomic ledger locking and concurrency safety."""
-
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
 
@@ -636,7 +609,6 @@ class TestAtomicLedgerLocking(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_atomic_ledger_append_success(self):
-        """Verify standard append creates parent dir, locks, writes JSONL, and releases lock."""
         ledger_path = os.path.join(self.temp_dir.name, "sub", "test_atomic.jsonl")
         with atomic_ledger_append(ledger_path) as f:
             f.write(json.dumps({"test": "value"}) + "\n")
@@ -648,7 +620,6 @@ class TestAtomicLedgerLocking(unittest.TestCase):
 
     @patch("sandbox_executor.ledger.lock.os.fsync")
     def test_atomic_ledger_append_fsync_called(self, mock_fsync):
-        """Verify os.fsync is called with file descriptor before file close."""
         ledger_path = os.path.join(self.temp_dir.name, "test_fsync.jsonl")
         with atomic_ledger_append(ledger_path) as f:
             f.write(json.dumps({"fsync": True}) + "\n")
@@ -656,7 +627,6 @@ class TestAtomicLedgerLocking(unittest.TestCase):
 
     @unittest.skipIf(sys.platform == "win32", "fcntl advisory locking requires POSIX")
     def test_atomic_ledger_contention_and_backoff(self):
-        """Simulate initial contention with BlockingIOError followed by success."""
         ledger_path = os.path.join(self.temp_dir.name, "test_contention.jsonl")
         calls = []
 
@@ -684,7 +654,6 @@ class TestAtomicLedgerLocking(unittest.TestCase):
 
     @unittest.skipIf(sys.platform == "win32", "fcntl advisory locking requires POSIX")
     def test_atomic_ledger_timeout(self):
-        """Verify TimeoutError is raised when lock contention exceeds timeout."""
         ledger_path = os.path.join(self.temp_dir.name, "test_timeout.jsonl")
 
         def mock_flock(fd, op):
@@ -702,7 +671,6 @@ class TestAtomicLedgerLocking(unittest.TestCase):
         self.assertIn("Timed out waiting for exclusive lock", str(ctx.exception))
 
     def test_atomic_ledger_non_posix_fallback(self):
-        """Verify non-POSIX systems without fcntl log warning and fall back to open."""
         ledger_path = os.path.join(self.temp_dir.name, "test_fallback.jsonl")
         with (
             patch("sandbox_executor.ledger.lock.fcntl", None),
@@ -716,7 +684,6 @@ class TestAtomicLedgerLocking(unittest.TestCase):
         self.assertEqual(data, {"fallback": True})
 
     def test_concurrent_multithreaded_appends(self):
-        """Verify concurrent multi-threaded appends preserve all records without line interleaving."""
         ledger_path = os.path.join(self.temp_dir.name, "test_threads.jsonl")
         num_threads = 10
         records_per_thread = 20
@@ -752,8 +719,6 @@ class TestAtomicLedgerLocking(unittest.TestCase):
 
 
 class TestLedgerQueryPredicates(unittest.TestCase):
-    """Pin each per-filter predicate of ``ledger/query_filters.py`` and the predicate table."""
-
     def test_parse_labels_handles_strings_lists_and_other_values(self):
         self.assertEqual(parse_labels(" UI , ,db"), ["ui", "db"])
         self.assertEqual(parse_labels(["Api", " ", 7]), ["api", "7"])

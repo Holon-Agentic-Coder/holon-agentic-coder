@@ -16,8 +16,11 @@ from scripts import check_module_budget_label_actor as actor_check
 from scripts.check_module_budget_label_actor import (
     BUDGET_CHANGE_LABEL,
     BUDGET_CONFIG,
+    INTENT_FIELD,
+    INTENT_LEDGER,
     PAGE_SIZE,
     active_label_event,
+    added_intent_lines,
     changed_paths,
     label_actor_refusal,
     main,
@@ -32,6 +35,8 @@ PULL_REQUEST = 42
 TOKEN = "ghs_secretTokenValue123"
 ARGUMENTS = ["--pr", str(PULL_REQUEST), "--repo", REPO, "--base", "base-sha", "--head", "head-sha"]
 EVENTS_PATH = f"/repos/{REPO}/issues/{PULL_REQUEST}/events"
+AUTHORISED_INTENT_LINE = json.dumps({"slug": "raise-budget", INTENT_FIELD: "Maintainer: raise the cap to 450."})
+PENDING_INTENT = "holon-knowledge/ledger/pending/intents/I-1-budget.jsonl"
 THIN_API_FUNCTIONS = {"build_request", "default_opener", "fetch_issue_events", "fetch_collaborator_permission"}
 
 
@@ -106,6 +111,7 @@ class FakeGitHub:
 @pytest.fixture
 def config_changed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(actor_check, "changed_paths", lambda base, head: ["README.md", BUDGET_CONFIG])
+    monkeypatch.setattr(actor_check, "added_intent_lines", lambda base, head: [AUTHORISED_INTENT_LINE])
 
 
 def run_check(github: FakeGitHub, token: str = TOKEN) -> int:
@@ -224,6 +230,7 @@ def test_an_unchanged_config_exits_zero_without_any_api_call(monkeypatch: pytest
 
 def test_a_git_failure_counts_as_a_changed_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(actor_check, "changed_paths", lambda base, head: None)
+    monkeypatch.setattr(actor_check, "added_intent_lines", lambda base, head: [AUTHORISED_INTENT_LINE])
     github = FakeGitHub([UNRELATED_EVENTS])
     assert run_check(github) == 1
     assert github.paths == [EVENTS_PATH]
@@ -274,6 +281,155 @@ def test_changed_paths_lists_the_three_dot_diff_and_fails_closed_on_an_unknown_c
     monkeypatch.chdir(tmp_path)
     assert changed_paths(base, head) == [BUDGET_CONFIG]
     assert changed_paths("0" * 40, head) is None
+
+
+def ledger_intent_row(**fields: object) -> dict:
+    return {
+        "slug": "raise-module-budget",
+        "target_branch": "main",
+        "description": "Raise the module budget of the flow engine.",
+        "goal": "Allow the flow engine module to grow.",
+        "scope": [BUDGET_CONFIG],
+        "status": "proposed",
+        "created_at": "2026-11-27T00:00:00.000Z",
+        **fields,
+    }
+
+
+def commit_all(repository: Path, message: str) -> str:
+    git(repository, "add", ".")
+    git(repository, "commit", "-qm", message)
+    return git(repository, "rev-parse", "HEAD").strip()
+
+
+def write_file(repository: Path, relative: str, text: str) -> None:
+    path = repository / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def budget_change_repository(
+    repository: Path, intent_row: dict | None, ledger: str = PENDING_INTENT
+) -> tuple[str, str]:
+    git(repository, "init", "-q")
+    write_file(repository, "README.md", "one\n")
+    write_file(repository, BUDGET_CONFIG, '{"default": 400}\n')
+    base = commit_all(repository, "base")
+    write_file(repository, BUDGET_CONFIG, '{"default": 450}\n')
+    if intent_row is not None:
+        write_file(repository, ledger, json.dumps(intent_row) + "\n")
+    return base, commit_all(repository, "head")
+
+
+def admin_labelled_github() -> FakeGitHub:
+    return FakeGitHub([[labeled(4, "maintainer")]], {"maintainer": "admin"})
+
+
+def run_real_check(base: str, head: str, github: FakeGitHub) -> int:
+    arguments = ["--pr", str(PULL_REQUEST), "--repo", REPO, "--base", base, "--head", head]
+    return main(arguments, {"GITHUB_TOKEN": TOKEN}, github)
+
+
+requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+
+
+@requires_git
+def test_a_budget_change_whose_intent_lacks_the_field_fails_despite_an_admin_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base, head = budget_change_repository(tmp_path, ledger_intent_row())
+    monkeypatch.chdir(tmp_path)
+    assert run_real_check(base, head, admin_labelled_github()) == 1
+    stderr = capsys.readouterr().err
+    assert INTENT_FIELD in stderr
+    assert BUDGET_CONFIG in stderr
+
+
+@requires_git
+@pytest.mark.parametrize("value", ["", "   \n\t", 42, None, ["Maintainer: raise it."]])
+def test_a_budget_change_whose_intent_field_is_empty_or_not_a_string_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], value: object
+) -> None:
+    base, head = budget_change_repository(tmp_path, ledger_intent_row(**{INTENT_FIELD: value}))
+    monkeypatch.chdir(tmp_path)
+    assert run_real_check(base, head, admin_labelled_github()) == 1
+    assert INTENT_FIELD in capsys.readouterr().err
+
+
+@requires_git
+def test_a_budget_change_with_the_field_and_an_admin_label_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    row = ledger_intent_row(**{INTENT_FIELD: "Maintainer: raise the default budget to 450 lines."})
+    base, head = budget_change_repository(tmp_path, row)
+    monkeypatch.chdir(tmp_path)
+    assert run_real_check(base, head, admin_labelled_github()) == 0
+    output = capsys.readouterr().out
+    assert INTENT_FIELD in output
+    assert "maintainer" in output
+
+
+@requires_git
+def test_a_budget_change_with_the_field_but_no_label_still_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base, head = budget_change_repository(tmp_path, ledger_intent_row(**{INTENT_FIELD: "Maintainer: raise it."}))
+    monkeypatch.chdir(tmp_path)
+    assert run_real_check(base, head, FakeGitHub([UNRELATED_EVENTS])) == 1
+    assert "never applied" in capsys.readouterr().err
+
+
+@requires_git
+@pytest.mark.parametrize(("appended_carries_field", "expected"), [(True, 0), (False, 1)])
+def test_only_rows_the_pull_request_adds_to_the_canonical_ledger_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, appended_carries_field: bool, expected: int
+) -> None:
+    git(tmp_path, "init", "-q")
+    write_file(tmp_path, BUDGET_CONFIG, '{"default": 400}\n')
+    write_file(tmp_path, INTENT_LEDGER, json.dumps(ledger_intent_row(**{INTENT_FIELD: "Maintainer: old."})) + "\n")
+    base = commit_all(tmp_path, "base")
+    write_file(tmp_path, BUDGET_CONFIG, '{"default": 450}\n')
+    appended = ledger_intent_row(**({INTENT_FIELD: "Maintainer: raise it."} if appended_carries_field else {}))
+    with (tmp_path / INTENT_LEDGER).open("a", encoding="utf-8") as ledger:
+        ledger.write(json.dumps(appended) + "\n")
+    head = commit_all(tmp_path, "head")
+    monkeypatch.chdir(tmp_path)
+    assert run_real_check(base, head, admin_labelled_github()) == expected
+
+
+@requires_git
+def test_a_pull_request_that_leaves_the_budget_unchanged_passes_without_an_intent_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git(tmp_path, "init", "-q")
+    write_file(tmp_path, BUDGET_CONFIG, '{"default": 400}\n')
+    base = commit_all(tmp_path, "base")
+    write_file(tmp_path, "README.md", "two\n")
+    head = commit_all(tmp_path, "head")
+    monkeypatch.chdir(tmp_path)
+    github = FakeGitHub([])
+    assert run_real_check(base, head, github) == 0
+    assert github.requests == []
+
+
+@requires_git
+def test_added_intent_lines_skips_headers_and_fails_closed_on_an_unknown_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    row = ledger_intent_row(**{INTENT_FIELD: "Maintainer: raise it."})
+    base, head = budget_change_repository(tmp_path, row)
+    monkeypatch.chdir(tmp_path)
+    assert added_intent_lines(base, head) == [json.dumps(row)]
+    assert added_intent_lines("0" * 40, head) is None
+    github = admin_labelled_github()
+    assert run_real_check("0" * 40, head, github) == 1
+    assert INTENT_FIELD in capsys.readouterr().err
+    assert github.requests == []
+
+
+def test_intent_rows_ignore_malformed_and_non_object_lines() -> None:
+    lines = ["not json", "[1, 2]", '"text"', AUTHORISED_INTENT_LINE]
+    assert actor_check.intent_rows(lines) == [json.loads(AUTHORISED_INTENT_LINE)]
 
 
 def label_actor_step() -> str:

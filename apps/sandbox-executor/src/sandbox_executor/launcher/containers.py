@@ -189,7 +189,7 @@ class ContainerLaunch:
             if not os.path.exists(abs_intent):
                 print(f"Error: Intent file '{self.intent_file}' does not exist.", file=sys.stderr)
                 raise _LaunchAborted(1)
-            self.docker_cmd.extend(["-v", f"{abs_intent}:{_INTENT_CONTAINER_PATH}"])
+            self.docker_cmd.extend(["-v", f"{abs_intent}:{_INTENT_CONTAINER_PATH}:ro"])
 
         if self.result_file:
             abs_result = os.path.abspath(self.result_file)

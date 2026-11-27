@@ -19,7 +19,7 @@ from sandbox_executor.git import run_git
 
 PYTEST_NO_TESTS_COLLECTED = 5
 PYTEST_USAGE_ERROR = 4
-# pytest's own line for a selected id that does not exist, e.g. ``ERROR: not found: /repo/tests/test_x.py::test_y``.
+# why: a selected id missing on the merged base means the test is new there, not failing, whatever the exit code.
 _PYTEST_NOT_FOUND = re.compile(r"^ERROR: not found: ", re.MULTILINE)
 # why: xdist start-up dominates for a handful of ids, and a serial run keeps each excerpt readable.
 RERUN_COMMAND = (

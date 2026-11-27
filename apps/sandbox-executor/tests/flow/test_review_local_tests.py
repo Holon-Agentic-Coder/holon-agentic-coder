@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from sandbox_executor.entrypoint.test_failure_loop import LoopOutcome, TestFailureBlocked
+from sandbox_executor.entrypoint.test_failure_loop import LoopOutcome
 from sandbox_executor.entrypoint.test_measurement import TestMeasurement
 from sandbox_executor.flow import FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _test_evidence
@@ -499,14 +499,27 @@ class _ScriptedLoop:
         )
 
 
-def test_an_environment_failure_stops_the_gate_with_the_evidence(tmp_path, monkeypatch):
+def test_an_environment_failure_ends_the_review_with_the_blocked_evidence(tmp_path, monkeypatch):
     loop = _ScriptedLoop("blocked", "environment")
     monkeypatch.setattr(local_tests, "_review_failure_loop", lambda *_: loop)
 
-    with pytest.raises(TestFailureBlocked, match=r"tests/test_a\.py::test_alpha"):
-        _run_without_ci(tmp_path, monkeypatch, _measurement(0.8, exit_code=1))
+    res, _calls = _run_without_ci(tmp_path, monkeypatch, _measurement(0.8, exit_code=1))
 
     assert len(loop.runs) == 1
+    assert res["tests_failed"] is True
+    assert res["consensus"]["approved"] is False
+    assert "tests/test_a.py::test_alpha" in res["ci_checks"]["test_failure"]["blocked_evidence"]
+
+
+def test_a_crashing_failure_loop_keeps_the_failed_measurement(monkeypatch):
+    failing = _measurement(0.8, exit_code=1)
+    monkeypatch.setattr(local_tests, "run_measurement", MagicMock(return_value=failing))
+    loop = MagicMock(run=MagicMock(side_effect=RuntimeError("diagnosis broke")))
+
+    outcome = local_tests._ReviewLocalTests("/w", failure_loop=lambda: loop).measure()
+
+    assert outcome.failed is True
+    assert outcome.measurement is failing
 
 
 def test_a_flaky_failure_that_passes_on_rerun_is_green(tmp_path, monkeypatch):

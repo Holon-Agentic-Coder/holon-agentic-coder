@@ -1,5 +1,3 @@
-"""The resolver finding built from the Stage 4 test failure loop's evidence."""
-
 from __future__ import annotations
 
 from sandbox_executor.flow.review.local_test_finding import MAX_IDS_NAMED, local_test_failure_finding
@@ -35,3 +33,18 @@ def test_many_failing_ids_are_capped_with_a_count():
 def test_no_loop_evidence_leaves_the_generic_finding():
     assert local_test_failure_finding(1, {}) is None
     assert local_test_failure_finding(1, _status([], {})) is None
+
+
+def test_blocked_evidence_marks_the_finding_as_not_fixable_in_code():
+    status = {
+        "test_failure": {
+            "classification": "environment",
+            "failing_ids": ["tests/test_a.py::test_alpha"],
+            "blocked_evidence": "test failure environment (blocked): leaked GIT_AUTHOR_NAME",
+        }
+    }
+
+    finding = local_test_failure_finding(1, status)
+
+    assert finding is not None
+    assert "Blocked, not fixable in code: test failure environment (blocked)" in finding.summary

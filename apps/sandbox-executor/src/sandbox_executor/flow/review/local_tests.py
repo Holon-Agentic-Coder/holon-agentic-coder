@@ -7,6 +7,7 @@ to a per-head local test run (``review_local``) when Stage 3 failed, was unmeasu
 from __future__ import annotations
 
 import functools
+import logging
 import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -16,7 +17,6 @@ from sandbox_executor.entrypoint.test_failure_classify import BaseSnapshot, run_
 from sandbox_executor.entrypoint.test_failure_loop import (
     LoopOutcome,
     LoopPorts,
-    TestFailureBlocked,
     TestFailureLoop,
     measure_selection,
 )
@@ -51,11 +51,11 @@ from sandbox_executor.flow.review.head_test_evidence import (
 )
 from sandbox_executor.git import run_git
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class _MeasurementWithOutput(TestMeasurement):
-    """A measurement that also carries the full test output, not only its bounded ``output_excerpt`` tail."""
-
     full_output: str = ""
 
 
@@ -71,7 +71,6 @@ FailureLoopFactory = Callable[[], "TestFailureLoop | None"]
 
 
 def _output_of(measurement: TestMeasurement) -> str:
-    """The full output of a run, as Stage 3 feeds its loop; the excerpt only when a replaced run kept no more."""
     return getattr(measurement, "full_output", "") or measurement.output_excerpt
 
 
@@ -129,10 +128,18 @@ class _ReviewLocalTests:
         if head not in self._cache:
             measurement = run_measurement(self._repo_dir)
             if self._failure_loop is not None and _failed(measurement) and (loop := self._failure_loop()) is not None:
-                self.loop_outcomes[head] = loop.run(measurement, _output_of(measurement))
-                measurement = self.loop_outcomes[head].measurement
+                measurement = self._diagnosed(head, loop, measurement)
             self._cache[head] = _LocalTestOutcome(measurement.rate, _failed(measurement), measurement)
         return self._cache[head]
+
+    def _diagnosed(self, head: str, loop: TestFailureLoop, measurement: TestMeasurement) -> TestMeasurement:
+        try:
+            self.loop_outcomes[head] = loop.run(measurement, _output_of(measurement))
+        except Exception:
+            # why: a broken diagnosis must not end the review; the failed measurement still feeds the CI finding.
+            logger.exception("Stage 4 test failure loop failed for %s", head[:7])
+            return measurement
+        return self.loop_outcomes[head].measurement
 
 
 def _attach_test_failure(ci_status: dict[str, Any], outcome: LoopOutcome | None) -> None:
@@ -147,7 +154,7 @@ def _attach_test_failure(ci_status: dict[str, Any], outcome: LoopOutcome | None)
         "rows": [row.get("action_id") for row in outcome.rows],
     }
     if outcome.status == "blocked" and outcome.classification in BLOCKED_CLASSIFICATIONS:
-        raise TestFailureBlocked(outcome.evidence_text)
+        ci_status["test_failure"]["blocked_evidence"] = outcome.evidence_text
 
 
 def _default_pr_head(repo_dir: str, target: str, proxy_env: Mapping[str, str] | None = None) -> str | None:

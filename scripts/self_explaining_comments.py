@@ -224,19 +224,22 @@ def markdown_fenced_findings(text: str) -> list[Finding]:
     return findings
 
 
+SUFFIX_FINDERS: dict[str, Callable[[str], list[Finding]]] = {
+    ".py": python_findings,
+    ".toml": toml_findings,
+    ".mk": makefile_findings,
+    **dict.fromkeys(JAVASCRIPT_SUFFIXES, javascript_findings),
+    **dict.fromkeys(YAML_SUFFIXES, yaml_findings),
+}
+
+
 def language_finder(path: str, text: str) -> Callable[[str], list[Finding]] | None:
     pure_path = PurePosixPath(path)
     if is_checked_markdown(pure_path):
         return markdown_fenced_findings
-    if pure_path.suffix == ".py":
-        return python_findings
-    if pure_path.suffix in JAVASCRIPT_SUFFIXES:
-        return javascript_findings
-    if pure_path.suffix in YAML_SUFFIXES:
-        return yaml_findings
-    if pure_path.suffix == ".toml":
-        return toml_findings
-    if pure_path.name in MAKEFILE_NAMES or pure_path.suffix == ".mk":
+    if pure_path.suffix in SUFFIX_FINDERS:
+        return SUFFIX_FINDERS[pure_path.suffix]
+    if pure_path.name in MAKEFILE_NAMES:
         return makefile_findings
     return shell_findings if is_shell_like(pure_path, text) else None
 

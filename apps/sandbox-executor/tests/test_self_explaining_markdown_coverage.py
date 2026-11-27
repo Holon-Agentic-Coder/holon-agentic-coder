@@ -260,7 +260,11 @@ def test_nested_four_backtick_markdown_fence_ignores_inner_code_fence():
 @pytest.mark.parametrize(
     ("path", "source", "expected"),
     [
-        ("module.py", 'def run():\n    """Doc."""\n    return 1  # comment\n', [("function docstring", 2), ("comment", 3)]),
+        (
+            "module.py",
+            'def run():\n    """Doc."""\n    return 1  # comment\n',
+            [("function docstring", 2), ("comment", 3)],
+        ),
         ("deploy.sh", "#!/usr/bin/env bash\n# shell comment\necho ok\n", [("comment", 2)]),
         ("config.yml", "key: value  # yaml comment\n", [("comment", 1)]),
         ("holon-knowledge/ledger/executions.jsonl", '{"comment":"# ignored"}\n', []),

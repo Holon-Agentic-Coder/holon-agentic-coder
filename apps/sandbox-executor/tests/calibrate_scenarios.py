@@ -11,12 +11,21 @@ from typing import Any
 
 import pytest
 from sandbox_executor.flow import FlowContext, StageResult
+from sandbox_executor.flow.calibrate_rerun import RerunSeams
+from sandbox_executor.flow.calibrate_stale_warning import STALE_MARKER_FAMILY
+from sandbox_executor.flow.github.approval_invalidation import CommentRecord
+from sandbox_executor.flow.review.conflict_merge import _merge_target_ledger_only
 from sandbox_executor.ref_names import calibration_branch
 
 from tests.repo_templates import copy_template, shared_template
 
 SYNC_EXEC = "I-1-x/P-2-y/E-3-z/_"
 SYNC_CALIBRATED = calibration_branch(SYNC_EXEC)
+PLAN_ID = "P-2-y"
+CAL_SUBJECT = f"chore(calibration): add calibration report for {PLAN_ID}"
+CAL_REPORT_REL = f"plans/I-1-x/{PLAN_ID}_calibration.md"
+LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
+TARGET_REF = "refs/remotes/origin/main"
 SYNC_GIT_ENV = {
     "GIT_AUTHOR_NAME": "t",
     "GIT_AUTHOR_EMAIL": "t@example.com",
@@ -111,6 +120,96 @@ def build_sync_repos_ahead(root: Path) -> SimpleNamespace:
     repos = build_sync_repos(root)
     origin_head = push_sync_ahead(repos)
     return SimpleNamespace(repos=repos, origin_head=origin_head)
+
+
+def commit_calibration(
+    repo: Path, rel: str = CAL_REPORT_REL, subject: str = CAL_SUBJECT, text: str = "report\n"
+) -> str:
+    path = repo / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    run_sync_git(repo, "add", rel)
+    run_sync_git(repo, "commit", "-qm", subject)
+    return run_sync_git(repo, "rev-parse", "HEAD")
+
+
+def ledger_row(repo: Path, label: str, subject: str = "chore(review): record review rows") -> str:
+    path = repo / LEDGER_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"execution_id": label}) + "\n")
+    run_sync_git(repo, "add", LEDGER_REL)
+    run_sync_git(repo, "commit", "-qm", subject)
+    return run_sync_git(repo, "rev-parse", "HEAD")
+
+
+def advance_main(repos: SimpleNamespace, name: str, text: str = "y\n") -> None:
+    other = repos.other
+    run_sync_git(other, "checkout", "-q", "main")
+    run_sync_git(other, "pull", "-q", "--ff-only", "origin", "main")
+    commit_sync_file(other, name, text)
+    ledger_row(other, f"E-main-{name}", subject=f"chore: record {name} on main")
+    run_sync_git(other, "push", "-q", "origin", "main")
+    run_sync_git(other, "checkout", "-q", SYNC_EXEC)
+    run_sync_git(other, "fetch", "-q", "origin")
+
+
+def merge_main(repos: SimpleNamespace, ledger_only: bool = False) -> str:
+    outcome = _merge_target_ledger_only(str(repos.other), TARGET_REF, "Merge main into the execution branch")
+    assert (outcome.merged, outcome.ledger_only) == (True, ledger_only), outcome
+    return run_sync_git(repos.other, "rev-parse", "HEAD")
+
+
+# why: reproduces the history of PR #258: a report on E, then a ledger-only merge of main and bookkeeping commits
+def pr258_history(repos: SimpleNamespace) -> SimpleNamespace:
+    other = repos.other
+    evaluated = commit_sync_file(other, "feature.py", "x = 1\n")
+    commit_calibration(other, text=f"# Calibration Report for {PLAN_ID}\n\n- **Evaluated Commit SHA:** {evaluated}\n")
+    advance_main(repos, "main-only.txt")
+    # why: both sides append to the ledger, so the merge conflicts there and nowhere else
+    ledger_row(other, "E-pr")
+    merge = merge_main(repos, ledger_only=True)
+    ledger_row(other, "E-review")
+    head = commit_calibration(other, rel="holon-knowledge/kb/k.json", subject="chore(calibration): record knowledge")
+    run_sync_git(other, "push", "-q", "origin", SYNC_EXEC)
+    return SimpleNamespace(evaluated=evaluated, merge=merge, head=head)
+
+
+def build_clean_merge_repos(root: Path) -> SimpleNamespace:
+    repos = build_sync_repos(root)
+    evaluated = commit_sync_file(repos.other, "feature.py", "x = 1\n")
+    advance_main(repos, "main-only.txt")
+    merge_main(repos)
+    return SimpleNamespace(repos=repos, evaluated=evaluated)
+
+
+class FakeThread:
+    def __init__(self, *bodies: str) -> None:
+        self.records = [CommentRecord(f"IC_{n}", body) for n, body in enumerate(bodies)]
+        self.posted: list[str] = []
+        self.edits: list[tuple[str, str]] = []
+
+    def comments(self, pr_number: str) -> list[CommentRecord]:
+        return list(self.records)
+
+    def poster(self, pr_number: str, body: str) -> bool:
+        self.posted.append(body)
+        self.records.append(CommentRecord(f"IC_{len(self.records)}", body))
+        return True
+
+    def editor(self, comment_id: str, body: str) -> bool:
+        index = next((i for i, record in enumerate(self.records) if comment_id and record.id == comment_id), None)
+        if index is None:
+            return False
+        self.edits.append((comment_id, body))
+        self.records[index] = CommentRecord(comment_id, body)
+        return True
+
+    def seams(self) -> RerunSeams:
+        return RerunSeams(comments=self.comments, poster=self.poster, editor=self.editor)
+
+    def stale_bodies(self) -> list[str]:
+        return [record.body for record in self.records if STALE_MARKER_FAMILY in record.body]
 
 
 def build_predicate_repo(root: Path) -> Path:

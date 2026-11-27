@@ -1,5 +1,3 @@
-"""Stage 5 target-sync helpers: calibration entry and per-retry ``sync_with_target`` wiring."""
-
 from __future__ import annotations
 
 import dataclasses
@@ -29,15 +27,12 @@ from sandbox_executor.ref_names import calibration_branch
 
 
 class _CalibrateRestartRequired(Exception):
-    """A target sync during Stage 5 produced a non-mechanical merge requiring a Stage 4 review restart."""
-
     def __init__(self, result: StageResult) -> None:
         self.result = result
         super().__init__(result.error or "Stage 4 review restart required after agent-resolved target sync")
 
 
 def _leave_calibrated_branch(context: FlowContext) -> None:
-    """Switch HEAD off /calibrated onto the execution branch if currently checked out on /calibrated."""
     branch = context.execution_branch
     if not branch or context.dry_run:
         return
@@ -51,8 +46,6 @@ def _leave_calibrated_branch(context: FlowContext) -> None:
 
 
 def _retry_safe(context: FlowContext, report_rel: str, expected_tip: list[str]) -> Callable[[], bool]:
-    """Whether a failed calibration attempt left a clean state to retry from: no change to the report path and no
-    new commit on the /calibrated branch since the attempt started (or since a retry sync re-anchored it)."""
     repo_dir = context.target_worktree
     calibrated_ref = f"refs/heads/{calibration_branch(str(context.execution_branch))}"
 
@@ -88,7 +81,6 @@ def _finalize_calibrate_merge(context: FlowContext, branch: str, target_branch: 
 
 
 def _run_calibrate_sync(context: FlowContext) -> tuple[SyncResult, str]:
-    """Run ``sync_with_target`` at ``SyncBoundary.CALIBRATE`` on ``context.execution_branch``."""
     target_branch = base_branch_name(context)
     noop = SyncResult("unchanged", "", "", "")
     worktree, branch = context.target_worktree, context.execution_branch or ""
@@ -127,7 +119,6 @@ def _run_calibrate_sync(context: FlowContext) -> tuple[SyncResult, str]:
 
 
 def sync_before_calibration(context: FlowContext, start_time: str) -> StageResult | None:
-    """Sync ``context.execution_branch`` before calibration; return a stopping ``StageResult`` if blocked or restart."""
     result, target_branch = _run_calibrate_sync(context)
     if result.status == "blocked":
         reason = f"Calibrate stage failed: {format_conflict_block_reason(result, target_branch)}"
@@ -152,7 +143,6 @@ def sync_before_calibration(context: FlowContext, start_time: str) -> StageResul
 def make_calibrate_retry_sync(
     context: FlowContext, on_head_updated: Callable[[str], None] | None = None
 ) -> Callable[[int], None]:
-    """Build a ``before_retry(attempt)`` callback that syncs ``context.execution_branch`` before each retry."""
 
     def _before_retry(attempt: int) -> None:
         _leave_calibrated_branch(context)

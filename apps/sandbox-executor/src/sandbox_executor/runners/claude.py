@@ -1,5 +1,3 @@
-"""Runner spec for the Claude agent; ``HOLON_AGENT_KEY`` is not accepted for claude."""
-
 from __future__ import annotations
 
 from sandbox_executor import claude_keychain

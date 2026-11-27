@@ -1,5 +1,3 @@
-"""Hermetic unit tests for Knowledge Base (KB) and Wisdom Base (WB) immutability."""
-
 from __future__ import annotations
 
 import hashlib
@@ -19,7 +17,6 @@ from sandbox_executor.knowledge.wisdom import (
 
 
 def _compute_sha256(file_path: str | Path) -> str:
-    """Compute the SHA-256 hexadecimal digest for a given file."""
     hasher = hashlib.sha256()
     with open(file_path, "rb") as f:
         while chunk := f.read(65536):
@@ -28,7 +25,6 @@ def _compute_sha256(file_path: str | Path) -> str:
 
 
 def _stat_metadata(file_path: str | Path) -> tuple[str, int, bytes]:
-    """Return SHA-256 digest, nanosecond modification timestamp, and raw bytes."""
     path = Path(file_path)
     stat = path.stat()
     raw = path.read_bytes()
@@ -36,7 +32,6 @@ def _stat_metadata(file_path: str | Path) -> tuple[str, int, bytes]:
 
 
 def test_persist_kb_fact_idempotency_and_immutability(tmp_path: Path) -> None:
-    """Pre-existing KB fact files are immutable and must not be touched or overwritten."""
     kb_dir = str(tmp_path / "holon-knowledge" / "kb")
 
     initial_fact = {
@@ -51,7 +46,6 @@ def test_persist_kb_fact_idempotency_and_immutability(tmp_path: Path) -> None:
 
     initial_sha, initial_mtime_ns, initial_bytes = _stat_metadata(out_file)
 
-    # Attempt to persist again with modified payload and altered timestamps
     mutated_fact = {
         "kb_type": "pattern",
         "context_fingerprint": "fp_test_immutable_001",
@@ -68,7 +62,6 @@ def test_persist_kb_fact_idempotency_and_immutability(tmp_path: Path) -> None:
     assert second_mtime_ns == initial_mtime_ns
     assert second_bytes == initial_bytes
 
-    # Verify original payload remained bit-for-bit intact
     with open(out_file, encoding="utf-8") as f:
         data = json.load(f)
     assert data["payload"]["name"] == "Initial Pattern"
@@ -76,7 +69,6 @@ def test_persist_kb_fact_idempotency_and_immutability(tmp_path: Path) -> None:
 
 
 def test_persist_wb_rule_idempotency_and_immutability(tmp_path: Path) -> None:
-    """Pre-existing WB rule files are immutable and must not be touched or overwritten."""
     wb_dir = str(tmp_path / "holon-knowledge" / "wisdom")
 
     initial_rule = {
@@ -91,7 +83,6 @@ def test_persist_wb_rule_idempotency_and_immutability(tmp_path: Path) -> None:
 
     initial_sha, initial_mtime_ns, initial_bytes = _stat_metadata(out_file)
 
-    # Attempt to persist again with modified contents
     mutated_rule = {
         "wb_type": "heuristic",
         "context_fingerprint": "fp_test_immutable_rule_001",
@@ -113,13 +104,11 @@ def test_persist_wb_rule_idempotency_and_immutability(tmp_path: Path) -> None:
     assert data["payload"]["name"] == "Initial Heuristic"
 
 
-def test_update_directory_index_is_removed() -> None:
-    """No shared index writer remains in the wisdom module."""
+def test_wisdom_module_has_no_shared_index_writer() -> None:
     assert not hasattr(wisdom_module, "_update_directory_index")
 
 
 def test_persist_writes_only_the_entry_file(tmp_path: Path) -> None:
-    """Persisting a KB fact or WB rule creates exactly the entry file and no index.json."""
     kb_file = persist_kb_fact({"kb_id": "KB-pattern-only", "kb_type": "pattern"}, kb_dir=str(tmp_path / "kb"))
     wb_file = persist_wb_rule({"wb_id": "WB-heuristic-only", "wb_type": "heuristic"}, wb_dir=str(tmp_path / "wisdom"))
 
@@ -128,7 +117,6 @@ def test_persist_writes_only_the_entry_file(tmp_path: Path) -> None:
 
 
 def test_load_index_orders_by_created_ts_then_id(tmp_path: Path) -> None:
-    """load_index sorts by created_ts then kb_id, carries the KB index fields and ignores non-entry files."""
     kb_dir = str(tmp_path / "kb")
     for kb_id, created_ts in (
         ("KB-pattern-b", "2026-11-06T10:00:00+00:00"),
@@ -150,7 +138,6 @@ def test_load_index_orders_by_created_ts_then_id(tmp_path: Path) -> None:
 
 
 def test_load_index_wb_entries_and_missing_folder(tmp_path: Path) -> None:
-    """WB entries carry the WB index fields; a missing folder yields an empty index."""
     wb_file = persist_wb_rule({"wb_id": "WB-heuristic-1", "wb_type": "heuristic"}, wb_dir=str(tmp_path / "wisdom"))
 
     entries = load_index(os.path.dirname(wb_file))
@@ -162,7 +149,6 @@ def test_load_index_wb_entries_and_missing_folder(tmp_path: Path) -> None:
 
 
 def test_load_index_skips_unreadable_entry(tmp_path: Path) -> None:
-    """One invalid entry file is skipped without hiding the valid entries."""
     kb_file = persist_kb_fact({"kb_id": "KB-pattern-good", "kb_type": "pattern"}, kb_dir=str(tmp_path / "kb"))
     subfolder = os.path.dirname(kb_file)
     Path(subfolder, "KB-pattern-bad.json").write_text("{not json", encoding="utf-8")
@@ -172,7 +158,6 @@ def test_load_index_skips_unreadable_entry(tmp_path: Path) -> None:
 
 
 def _kb_fact(success_count: int, wilson_lower: float, ladder_state: str) -> dict:
-    """A KB pattern fact whose evidence counters vary per run."""
     return {
         "kb_id": "KB-pattern-deadbeef",
         "kb_type": "pattern",
@@ -189,7 +174,6 @@ def _kb_fact(success_count: int, wilson_lower: float, ladder_state: str) -> dict
 
 
 def _wb_rule(total_executions: int, wilson_lower: float) -> dict:
-    """A WB heuristic rule whose ascension counters vary per run."""
     return {
         "wb_id": "WB-heuristic-deadbeef",
         "wb_type": "heuristic",
@@ -204,7 +188,6 @@ def _wb_rule(total_executions: int, wilson_lower: float) -> dict:
 
 
 def test_persist_kb_fact_bytes_independent_of_clock_and_counters(tmp_path: Path) -> None:
-    """Two runs with different counters write byte-identical KB files free of counters and clock times."""
     first = persist_kb_fact(_kb_fact(10, 0.7, "likely-success"), kb_dir=str(tmp_path / "a" / "kb"))
     second = persist_kb_fact(_kb_fact(37, 0.9, "proven-success"), kb_dir=str(tmp_path / "b" / "kb"))
 
@@ -215,7 +198,6 @@ def test_persist_kb_fact_bytes_independent_of_clock_and_counters(tmp_path: Path)
 
 
 def test_persist_wb_rule_bytes_independent_of_clock_and_counters(tmp_path: Path) -> None:
-    """Two runs with different counters write byte-identical WB files keeping only stable evidence."""
     first = persist_wb_rule(_wb_rule(22, 0.86), wb_dir=str(tmp_path / "a" / "wisdom"))
     second = persist_wb_rule(_wb_rule(31, 0.89), wb_dir=str(tmp_path / "b" / "wisdom"))
 
@@ -253,14 +235,12 @@ _LEGACY_WB = {
 
 
 def _write_legacy(path: Path, envelope: dict) -> Path:
-    """Write a legacy-shaped envelope by hand, as older promotion runs did."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
     return path
 
 
 def test_persist_never_rewrites_existing_file(tmp_path: Path) -> None:
-    """An existing legacy KB or WB file keeps its bytes and mtime when the same id is persisted again."""
     kb_file = _write_legacy(tmp_path / "kb" / "patterns" / "KB-pattern-legacy01.json", _LEGACY_KB)
     wb_file = _write_legacy(tmp_path / "wisdom" / "heuristics" / "WB-heuristic-legacy01.json", _LEGACY_WB)
     before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in (kb_file, wb_file)}
@@ -273,7 +253,6 @@ def test_persist_never_rewrites_existing_file(tmp_path: Path) -> None:
 
 
 def test_load_index_reads_legacy_and_stable_files(tmp_path: Path) -> None:
-    """load_index lists a legacy file and a newly written stable file together, the epoch-dated one first."""
     kb_dir = tmp_path / "kb"
     _write_legacy(kb_dir / "patterns" / "KB-pattern-legacy01.json", _LEGACY_KB)
     persist_kb_fact({"kb_id": "KB-pattern-stable01", "kb_type": "pattern"}, kb_dir=str(kb_dir))
@@ -294,8 +273,7 @@ def test_load_index_reads_legacy_and_stable_files(tmp_path: Path) -> None:
     ]
 
 
-def test_promote_pending_candidates_zero_touch_immutability(tmp_path: Path) -> None:
-    """promote_pending_candidates leaves all fact files untouched on repeat runs."""
+def test_promote_pending_candidates_leaves_fact_files_untouched_on_repeat_runs(tmp_path: Path) -> None:
     db_path = str(tmp_path / "test_action_index.db")
     db = ActionIndexDatabase(db_path=db_path)
     ledger_path = str(tmp_path / "executions.jsonl")
@@ -303,7 +281,7 @@ def test_promote_pending_candidates_zero_touch_immutability(tmp_path: Path) -> N
     kb_dir = str(tmp_path / "holon-knowledge" / "kb")
     wb_dir = str(tmp_path / "holon-knowledge" / "wisdom")
 
-    # 1. Seed ledger with 10 successes for pattern/heuristic promotion and 3 failures for failure mode promotion
+    # why: 10 successes reach pattern and heuristic promotion and 3 failures reach failure-mode promotion.
     fp_success = "fp_success_immutability"
     fp_failure = "fp_failure_immutability"
 
@@ -338,7 +316,6 @@ def test_promote_pending_candidates_zero_touch_immutability(tmp_path: Path) -> N
 
     db.sync_ledger(ledger_path)
 
-    # First promotion cycle: persists new candidate facts
     first_promoted = promote_pending_candidates(
         index_db=db,
         kb_dir=kb_dir,
@@ -348,7 +325,6 @@ def test_promote_pending_candidates_zero_touch_immutability(tmp_path: Path) -> N
     )
     assert len(first_promoted) >= 2
 
-    # Snapshot all files in kb_dir and wb_dir
     file_snapshots: dict[str, tuple[str, int, bytes]] = {}
     for base_dir in (kb_dir, wb_dir):
         for root, _dirs, files in os.walk(base_dir):
@@ -358,7 +334,6 @@ def test_promote_pending_candidates_zero_touch_immutability(tmp_path: Path) -> N
 
     assert len(file_snapshots) > 0
 
-    # Second promotion cycle against unchanged database
     second_promoted = promote_pending_candidates(
         index_db=db,
         kb_dir=kb_dir,
@@ -368,7 +343,6 @@ def test_promote_pending_candidates_zero_touch_immutability(tmp_path: Path) -> N
     )
     assert second_promoted == []
 
-    # Collect current files and assert exact identity
     current_files: set[str] = set()
     for base_dir in (kb_dir, wb_dir):
         for root, _dirs, files in os.walk(base_dir):

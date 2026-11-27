@@ -1,5 +1,3 @@
-"""CLI main entrypoint for Holon."""
-
 from __future__ import annotations
 
 import argparse
@@ -15,7 +13,6 @@ __all__ = ["build_parser", "configure_cli_logging", "main", "resolve_layered_con
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the top-level argument parser and register all discovered subcommands."""
     from sandbox_executor.cli.commands import discover
 
     try:
@@ -34,13 +31,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def resolve_layered_configuration() -> config_env.EffectiveConfig:
-    """Resolve the layered configuration once for this invocation and fold it into the host environment.
-
-    Each warning goes to stderr (redacted as defence in depth; it names keys, paths and modes only). The file-sourced
-    values fill only the variables the process environment leaves unset, so the process environment and explicit CLI
-    flags keep winning, and every role container and the pre-flight probe inherit them through the 0600 env-file.
-    The resolution is remembered with its pre-apply provenance for ``holon doctor``.
-    """
     config = config_env.load_effective_config()
     for warning in config.warnings:
         print_encodable(redact_cli_error(warning), file=sys.stderr)
@@ -50,9 +40,8 @@ def resolve_layered_configuration() -> config_env.EffectiveConfig:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Run the Holon CLI."""
     configure_cli_logging()
-    # Before the parser is built: argparse defaults may read the environment.
+    # why: argparse defaults read the environment, so the layered configuration must be folded in before build_parser.
     resolve_layered_configuration()
     parser = build_parser()
     args = parser.parse_args(argv)

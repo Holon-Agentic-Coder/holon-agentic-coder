@@ -1,5 +1,3 @@
-"""A default-branch worktree selects the repository and base branch only: flows run in flow-<slug>, never in it."""
-
 import io
 import json
 import logging
@@ -49,7 +47,6 @@ def _commit(repo: Path, name: str) -> str:
 
 
 def _snapshot(repo: Path) -> tuple[str, str, str]:
-    """HEAD, checked-out branch and porcelain status of a worktree."""
     return (
         _git(repo, "rev-parse", "HEAD"),
         _git(repo, "symbolic-ref", "--short", "HEAD"),
@@ -61,12 +58,9 @@ def _snapshot(repo: Path) -> tuple[str, str, str]:
 def main_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
 ) -> dict[str, Path]:
-    """A bare origin, a main worktree on 'main' and an origin/main one commit ahead of local main (a template copy).
-
-    The cwd is a non-git directory, so nothing can fall back to the developer's real repository.
-    """
     outside = tmp_path / "outside"
     outside.mkdir()
+    # why: a non-git cwd means nothing can fall back to the developer's real repository
     monkeypatch.chdir(outside)
     names = ("origin.git", "checkout")
     copy_of(tmp_path_factory, tmp_path, "default-branch-checkout", build_checkout_behind_origin, names=names)
@@ -77,7 +71,6 @@ def main_repo(
 
 
 def _run(argv: list[str]) -> tuple[MagicMock, MagicMock, str]:
-    """Run ``holon flow`` with the pipeline and ``sys.exit`` patched; return (pipeline mock, exit mock, stderr)."""
     with (
         patch("sandbox_executor.cli.run_flow_pipeline", return_value={"status": "ok"}) as mock_pipeline,
         patch("sys.exit") as mock_exit,
@@ -89,7 +82,6 @@ def _run(argv: list[str]) -> tuple[MagicMock, MagicMock, str]:
 
 
 def _run_real_pipeline(argv: list[str]) -> tuple[MagicMock, str]:
-    """Run ``holon flow`` through the real pipeline with ``sys.exit`` patched; return (exit mock, stderr)."""
     with (
         patch("sys.exit") as mock_exit,
         patch("sys.stderr", new_callable=io.StringIO) as mock_stderr,
@@ -101,11 +93,6 @@ def _run_real_pipeline(argv: list[str]) -> tuple[MagicMock, str]:
 
 def _flow_siblings(root: Path) -> list[str]:
     return sorted(p.name for p in root.iterdir() if p.name.startswith("flow-"))
-
-
-# ---------------------------------------------------------------------------
-# git_flow primitives
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -157,11 +144,6 @@ def test_off_default_derives_the_sibling_from_the_top_level(main_repo: dict[str,
     path = ensure_flow_worktree_off_default(str(subdir), _SLUG, "origin/main")
 
     assert path == str(main_repo["flow"])
-
-
-# ---------------------------------------------------------------------------
-# (a) + (b): redirect to flow-<slug> off origin/main; the main worktree is untouched
-# ---------------------------------------------------------------------------
 
 
 def _assert_flow_worktree_off_origin_main(main_repo: dict[str, Path]) -> None:
@@ -222,11 +204,6 @@ def test_every_stage_and_the_checkpoint_use_the_flow_worktree(main_repo: dict[st
     assert _snapshot(checkout) == before
 
 
-# ---------------------------------------------------------------------------
-# (c) reuse and (d) non-default branch
-# ---------------------------------------------------------------------------
-
-
 def test_an_existing_flow_worktree_is_reused(main_repo: dict[str, Path]) -> None:
     checkout, flow = main_repo["checkout"], main_repo["flow"]
     _git(checkout, "worktree", "add", "-q", "-b", f"flow-{_SLUG}", str(flow), "origin/main")
@@ -248,11 +225,6 @@ def test_a_target_on_another_branch_is_used_as_it_is(main_repo: dict[str, Path])
     assert pipeline.call_args[1]["context"].target_worktree == str(feature)
     assert _flow_siblings(main_repo["root"]) == []
     exit_mock.assert_called_with(0)
-
-
-# ---------------------------------------------------------------------------
-# (e) checkpoint recording a default-branch worktree
-# ---------------------------------------------------------------------------
 
 
 def _checkpoint_on(main_repo: dict[str, Path], target: Path) -> Path:
@@ -299,12 +271,9 @@ def test_a_default_branch_checkpoint_resumes_with_an_explicit_target(main_repo: 
     exit_mock.assert_called_with(0)
 
 
-# ---------------------------------------------------------------------------
-# Engine guard: run_flow_pipeline refuses a default-branch target for callers that bypass the CLI
-# ---------------------------------------------------------------------------
-
-
-def test_run_flow_pipeline_refuses_a_default_branch_target(main_repo: dict[str, Path]) -> None:
+def test_run_flow_pipeline_refuses_a_default_branch_target_for_callers_bypassing_the_cli(
+    main_repo: dict[str, Path],
+) -> None:
     from sandbox_executor import flow as flow_module
 
     checkpoint = main_repo["root"] / "c.json"
@@ -319,10 +288,6 @@ def test_run_flow_pipeline_refuses_a_default_branch_target(main_repo: dict[str, 
     assert not checkpoint.exists()
 
 
-# ---------------------------------------------------------------------------
-# (f) holon review, review-loop, pr-review-loop and calibrate
-# ---------------------------------------------------------------------------
-
 _DIRECT_COMMANDS = [
     ["review-loop", "I-1/P-2/E-3/_", "--local", "--dry-run"],
     ["review", "I-1/P-2/E-3/_", "--local", "--dry-run"],
@@ -333,7 +298,7 @@ _DIRECT_COMMANDS = [
 
 
 def _run_direct(argv: list[str]) -> tuple[int, str, list[MagicMock]]:
-    # Outside a sandbox, as on CI: HOLON_ROLE or HOLON_IN_SANDBOX would turn the container dispatch into a local run.
+    # why: outside a sandbox, as on CI, HOLON_ROLE or HOLON_IN_SANDBOX would turn the container dispatch local
     env = {k: v for k, v in os.environ.items() if k not in ("HOLON_ROLE", "HOLON_IN_SANDBOX")}
     env.update(HOLON_AGENT="antigravity-agent", HOLON_MODEL="gemini-3.8-flash-medium")
     with (
@@ -371,7 +336,7 @@ def test_direct_entry_points_refuse_a_default_branch_worktree(main_repo: dict[st
 @pytest.mark.parametrize("argv", _DIRECT_COMMANDS, ids=lambda argv: " ".join(argv[:1] + argv[2:]))
 def test_direct_entry_points_run_on_another_branch(main_repo: dict[str, Path], argv: list[str]) -> None:
     feature = main_repo["root"] / "feature"
-    # On the review branch itself: the review-loop container dispatch reviews that branch's worktree in place.
+    # why: on the review branch itself: the review-loop container dispatch reviews that branch's worktree in place.
     _git(main_repo["checkout"], "worktree", "add", "-q", "-b", "I-1/P-2/E-3/_", str(feature), "origin/main")
 
     code, stderr, callees = _run_direct([*argv, "--target-worktree", str(feature)])

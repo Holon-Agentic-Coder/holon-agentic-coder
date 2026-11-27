@@ -1,5 +1,3 @@
-"""Tests for checkpointed resumption from a stage and for engine error handling."""
-
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -11,8 +9,6 @@ from sandbox_executor.flow.checkpoint import load_checkpoint, save_checkpoint
 
 
 class TestFlowResumptionAndErrorHandling:
-    """Test engine orchestration, resumption from stages, and error handling."""
-
     def test_pipeline_engine_sequential_run(self, tmp_path):
         ledger_dir = tmp_path / "holon-knowledge" / "ledger"
         ledger_dir.mkdir(parents=True)
@@ -24,14 +20,13 @@ class TestFlowResumptionAndErrorHandling:
             dry_run=True,
         )
 
-        # tmp_path holds no git repository, so a real calibration would fail Stage 5 closed; stand in a dry-run report.
+        # why: tmp_path holds no git repository, so a real calibration would fail Stage 5 closed
         report = MagicMock(calibrated_branch=None)
         report.to_dict.return_value = {}
         engine = PipelineEngine(ctx)
         with patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=report):
             results = engine.run()
 
-        # Intent, Plan, Execute, Review (halted for human), and Calibrate should be recorded
         assert "intent" in results
         assert results["intent"].status == StageStatus.SUCCESS
         assert "plan" in results
@@ -56,7 +51,6 @@ class TestFlowResumptionAndErrorHandling:
         engine = PipelineEngine(ctx, from_stage=FlowStage.EXECUTE)
         with patch.object(engine, "execute_stage", wraps=engine.execute_stage) as mock_exec:
             engine.run()
-            # Assert INTENT and PLAN were skipped
             executed_stages = [call[0][0] for call in mock_exec.call_args_list]
             assert FlowStage.INTENT not in executed_stages
             assert FlowStage.PLAN not in executed_stages
@@ -72,15 +66,15 @@ class TestFlowResumptionAndErrorHandling:
             engine.run()
 
     def test_pipeline_stage_failure_handling(self, tmp_path):
+        invalid_intent_payload: dict = {}
         ctx = FlowContext(
             repo_dir=str(tmp_path),
-            intent_data={},  # Invalid intent payload triggers failure
+            intent_data=invalid_intent_payload,
             dry_run=True,
         )
         engine = PipelineEngine(ctx)
         results = engine.run()
         assert results["intent"].status == StageStatus.FAILED
-        # Following stages must not have executed
         assert "plan" not in results
 
     def test_pipeline_engine_runs_review_in_dry_run(self, tmp_path):
@@ -140,7 +134,8 @@ class TestFlowResumptionAndErrorHandling:
             ctx.stage_results[stage.value] = StageResult(stage=stage, status=StageStatus.SUCCESS)
         path = Path(save_checkpoint(ctx))
         data = json.loads(path.read_text(encoding="utf-8"))
-        data["context"]["skip_review"] = True  # The key a checkpoint written before --skip-review was removed carries.
+        # why: a checkpoint written before --skip-review was removed still carries this key
+        data["context"]["skip_review"] = True
         path.write_text(json.dumps(data), encoding="utf-8")
 
         loaded = load_checkpoint(str(path))
@@ -225,7 +220,8 @@ def test_checkpoint_round_trips_the_admission_record(tmp_path, record):
     context = FlowContext(target_worktree=str(tmp_path), intent_data={"slug": "adm"}, admission=record.to_dict())
     path = save_checkpoint(context)
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    assert data["admission"] == record.to_dict()  # the operator-facing top-level object
+    operator_facing_admission = data["admission"]
+    assert operator_facing_admission == record.to_dict()
     assert AdmissionRecord.from_dict(load_checkpoint(path).context.admission) == record
 
 
@@ -276,7 +272,7 @@ def test_blocked_record_keeps_the_first_blocked_since_and_replaces_blocked_by():
 
 
 def test_checkpoint_review_boundary_statuses(tmp_path):
-    # Both fresh APPROVED and legacy HALTED_FOR_HUMAN count as completed stages in checkpoint
+    # why: legacy checkpoints recorded HALTED_FOR_HUMAN, which still counts as completed alongside APPROVED
     for status in (StageStatus.APPROVED, StageStatus.HALTED_FOR_HUMAN):
         ctx = FlowContext(target_worktree=str(tmp_path), intent_data={"slug": f"boundary-{status.value}"})
         ctx.stage_results["intent"] = StageResult(stage=FlowStage.INTENT, status=StageStatus.SUCCESS)

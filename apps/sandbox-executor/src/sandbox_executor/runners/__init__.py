@@ -1,9 +1,3 @@
-"""Registry of agent runner specs, keyed by agent id.
-
-Adding or dropping a runner means adding or removing its module plus its import line and entry below. This package
-never imports ``agent_defaults`` or ``agent_runner``.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -31,5 +25,4 @@ RUNNER_SPECS: Mapping[str, RunnerSpec] = {
 
 
 def runner_spec_for(agent: str) -> RunnerSpec | None:
-    """Return the spec for ``agent`` (``claude``, ``claude-agent`` ...), or ``None`` for an unregistered runner."""
     return RUNNER_SPECS.get(local_llm.normalize_agent_id(agent))

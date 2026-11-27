@@ -1,5 +1,3 @@
-"""Stage 3 deterministic failure veto: refuse an execution whose context matches an active veto in the action index."""
-
 from __future__ import annotations
 
 import logging
@@ -12,12 +10,6 @@ logger = logging.getLogger(__name__)
 
 
 def execution_veto_error(context: FlowContext) -> str | None:
-    """The Stage 3 error for an active, non-shadow veto on this plan branch and runner, else None.
-
-    The context fingerprint is the plan branch, the agent and the ``pytest`` command prefix, looked up in
-    ``holon-knowledge/.index/action_index.db`` when that index exists. A shadow veto is only logged. Any lookup error is
-    non-fatal and allows the execution.
-    """
     exec_fp = compute_context_fingerprint(
         target=context.plan_branch or "",
         tool=context.agent,

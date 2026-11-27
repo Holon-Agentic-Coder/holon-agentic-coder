@@ -1,12 +1,3 @@
-"""Tests that pin what the shared flow fixtures promise: the test host's own ledgers, its own origin, no host ``gh``,
-and a knowledge index that differs from production's only in not waiting for the disk.
-
-``flow_repos`` points the knowledge consult at the ledger files of the temporary host (never the checkout pytest was
-started in), the flow's ``subprocess.run`` guard answers the mergeability probe's ``gh pr view`` read in-process
-(``tests/gh_probe_stub.py``), and the index of a flow test is opened with ``synchronous=OFF``. All three replace
-work that proved nothing; these tests prove the replacements.
-"""
-
 import contextlib
 import json
 import logging
@@ -34,14 +25,12 @@ FAKE_HOST_GH = "/opt/host/bin/gh"
 
 
 def _simulate_host_gh(monkeypatch: pytest.MonkeyPatch, on_path: str | None = FAKE_HOST_GH) -> None:
-    """Make the stub believe the host has ``gh`` at FAKE_HOST_GH, with ``on_path`` as what ``PATH`` resolves now."""
     real_which = shutil.which
     monkeypatch.setattr(gh_probe_stub, "HOST_GH", FAKE_HOST_GH)
     monkeypatch.setattr(shutil, "which", lambda name, *a, **k: on_path if name == "gh" else real_which(name, *a, **k))
 
 
 def _record_spawns(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    """Record the argument list of every process the test starts from here on."""
     spawned: list[list[str]] = []
     real_popen = subprocess.Popen
 
@@ -166,7 +155,6 @@ def test_stub_steps_aside_for_any_other_command(monkeypatch, cmd):
 
 @pytest.mark.parametrize("on_path", ["/tmp/fake-bin/gh", None])
 def test_stub_steps_aside_when_path_resolves_another_gh(monkeypatch, on_path):
-    """A test's own fake ``gh`` first on ``PATH`` (or ``gh`` taken off ``PATH``) must reach the code under test."""
     _simulate_host_gh(monkeypatch, on_path=on_path)
 
     assert gh_probe_stub.stubbed_mergeability_read(MERGEABILITY_READ) is None

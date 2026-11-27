@@ -67,6 +67,14 @@ into their immediate parent. If the step is small, not risky you can propose an 
   the turn supervisor stops the agent as stalled. Plans schedule every test and lint run in the foreground, and the
   planner follows the same rule for its own commands.
 
+**Environment Overlay Discipline:**
+
+- A diff that sets, overlays or removes environment variables, cwd or git config for a process that spawns children must
+  list the child processes affected and carry a test that runs one of them under the new environment.
+- The plan lists those child processes and names that test in the step that makes the change; a plan step that changes
+  such an environment without both is incomplete.
+- Typical children are `git`, `uv run task test`, `pytest` and the agent runners.
+
 You will be eliminated from the selection process if you:
 
 - fail to write the complete plan file according to the template format with a valid metrics table

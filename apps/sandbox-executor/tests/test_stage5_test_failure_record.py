@@ -38,7 +38,11 @@ PYTEST_LINES = (
     "FAILED tests/test_demo.py::test_beta - ValueError: invalid literal for int() with base 10: 'x'",
     "========================= 2 failed, 40 passed in 3.21s =========================",
 )
-LINT_LINES = ("Found 1 error.", "src/app.py:3:1: F401 `os` imported but unused", "Error: Process completed with exit code 1.")
+LINT_LINES = (
+    "Found 1 error.",
+    "src/app.py:3:1: F401 `os` imported but unused",
+    "Error: Process completed with exit code 1.",
+)
 
 
 def _gh_log(lines: tuple[str, ...], step: str = "Run tests") -> str:
@@ -90,9 +94,7 @@ def test_failed_final_head_check_appends_one_stage_5_row_with_ids_excerpts_and_c
     assert reverified["test_failure_record"]["failure_signature"] == row["failure_signature"]
 
 
-def test_green_final_head_check_appends_no_row_and_never_looks_up_the_log(
-    context: FlowContext, tmp_path: Path
-) -> None:
+def test_green_final_head_check_appends_no_row_and_never_looks_up_the_log(context: FlowContext, tmp_path: Path) -> None:
     lookups: list[str] = []
 
     def lookup(repo_dir: str, head: str) -> str:

@@ -16,11 +16,15 @@ from sandbox_executor.knowledge.stable_envelope import (
     stable_advisory_text,
     write_envelope_once,
 )
+from sandbox_executor.ledger.merged import read_merged_rows
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_KB_DIR = "holon-knowledge/kb"
 DEFAULT_WB_DIR = "holon-knowledge/wisdom"
+TEST_FAILURE_ACTION = "test_failure"
+MIN_SIGNATURE_RUNS = 2
+EXECUTIONS_LEDGER_NAME = "executions.jsonl"
 
 
 _INDEX_FIELDS: dict[str, tuple[str, ...]] = {
@@ -228,6 +232,63 @@ def _promote_success_candidate(
     return items
 
 
+def _test_failure_rows_by_signature(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if row.get("action") == TEST_FAILURE_ACTION and row.get("failure_signature") and row.get("run_id"):
+            grouped.setdefault(str(row["failure_signature"]), []).append(row)
+    return grouped
+
+
+def _distinct_runs(rows: list[dict[str, Any]]) -> set[str]:
+    return {str(row["run_id"]) for row in rows}
+
+
+def _signature_classification(rows: list[dict[str, Any]]) -> str:
+    return next((str(row["classification"]) for row in reversed(rows) if row.get("classification")), "unclassified")
+
+
+def _signature_failure_item(signature: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    classification = _signature_classification(rows)
+    symptom = rows[0].get("error_context")
+    # why: build_kb_envelope keeps no evidence keys for KB facts, so the ids and classification live in the payload.
+    return {
+        "kb_id": f"KB-failure-{signature}",
+        "kb_type": "failure_mode",
+        "context_fingerprint": signature,
+        "tags": ["test", "failure_signature", classification],
+        "payload": {
+            "name": f"Repeated test failure {signature}",
+            "description": stable_advisory_text("failure", TEST_FAILURE_ACTION),
+            "action": TEST_FAILURE_ACTION,
+            "failure_signature": signature,
+            "failing_test_ids": sorted({str(i) for row in rows for i in row.get("failing_test_ids") or []}),
+            "classification": classification,
+            "stages": sorted({str(row.get("stage")) for row in rows if row.get("stage")}),
+            "symptoms": [symptom] if symptom else [],
+        },
+    }
+
+
+def promote_repeated_failure_signatures(
+    ledger_path: str, kb_dir: str = DEFAULT_KB_DIR, dry_run: bool = False
+) -> list[dict[str, Any]]:
+    promoted: list[dict[str, Any]] = []
+    for signature, rows in _test_failure_rows_by_signature(read_merged_rows(ledger_path)).items():
+        already_promoted = os.path.exists(os.path.join(kb_dir, "failure_modes", f"KB-failure-{signature}.json"))
+        if already_promoted or len(_distinct_runs(rows)) < MIN_SIGNATURE_RUNS:
+            continue
+        item = _signature_failure_item(signature, rows)
+        if not dry_run:
+            item["persisted_path"] = persist_kb_fact(item, kb_dir=kb_dir)
+        promoted.append(item)
+    return promoted
+
+
+def _executions_ledger_of(kb_dir: str) -> str:
+    return os.path.join(os.path.dirname(os.path.normpath(kb_dir)), "ledger", EXECUTIONS_LEDGER_NAME)
+
+
 def promote_pending_candidates(
     index_db: ActionIndexDatabase | None = None,
     kb_dir: str = DEFAULT_KB_DIR,
@@ -274,6 +335,8 @@ def promote_pending_candidates(
                         seen_promoted_ids.add(item_id)
                         promoted_items.append(item)
 
+        signature_items = promote_repeated_failure_signatures(_executions_ledger_of(kb_dir), kb_dir, dry_run)
+        promoted_items.extend(item for item in signature_items if item["kb_id"] not in seen_promoted_ids)
         return promoted_items
     finally:
         conn.close()

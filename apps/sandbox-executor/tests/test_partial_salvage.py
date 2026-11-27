@@ -26,6 +26,7 @@ from sandbox_executor.flow.partial_salvage import (
 )
 from sandbox_executor.ledger import read_merged_rows_at_ref
 
+from scripts.normalise_ledgers import canonical_created_at
 from tests.repo_templates import copy_template, shared_template
 
 PLAN = "I-1-x/P-2-claude-agent-claude-opus-5-5/_"
@@ -263,3 +264,28 @@ def test_publish_partial_on_an_origin_only_branch_appends_the_row_without_a_push
         _publish_partial(ctx, target, tip, prefix(), functools.partial(_salvage_row, ctx, target, tip, 0))
     push.assert_not_called()
     assert failed_partial_head(str(work), f"refs/remotes/origin/{EXEC_BRANCH}", EXEC_ID) == tip
+
+
+def test_salvage_row_from_a_prior_row_stamps_the_canonical_z_created_at(work: Path) -> None:
+    prior = {
+        "entry_type": "summary",
+        "execution_id": EXEC_ID,
+        "plan_branch": PLAN,
+        "status": "failure",
+        "agent": "prior-agent",
+        "ledger_revision": 1,
+        "created_at": "2026-01-01T00:00:00.000000+00:00",
+    }
+    with (work / LEDGER).open("a", encoding="utf-8") as ledger:
+        ledger.write(json.dumps(prior) + "\n")
+    commit_all(work, "prior row")
+    git(work, "push", "-q", "origin", EXEC_BRANCH)
+    sha = git(work, "rev-parse", "HEAD")
+
+    row = _salvage_row(context(work), (EXEC_BRANCH, EXEC_ID), sha, 1)
+
+    assert row["created_at"].endswith("Z")
+    assert "+00:00" not in row["created_at"]
+    assert canonical_created_at(row["created_at"]) == row["created_at"]
+    assert row["ledger_revision"] == 2
+    assert row["agent"] == "prior-agent"

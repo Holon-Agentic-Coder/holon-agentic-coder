@@ -41,6 +41,7 @@ from sandbox_executor.entrypoint.rejected_attempt import (
     previous_failure_section,
     read_saved_patch,
 )
+from sandbox_executor.entrypoint.resolver_test_failure import diagnose_resolver_failure
 from sandbox_executor.entrypoint.review_failure_detail import clear_full_output, with_short_summary
 from sandbox_executor.entrypoint.review_loop_args import build_parser
 from sandbox_executor.entrypoint.review_markdown_gate import run_markdown_gate
@@ -306,7 +307,8 @@ def _assert_safe_git_args(args: list[str]) -> None:
 def _verify_before_push(repo_dir: str, iteration: int | None = None) -> tuple[bool, bool, str | None]:
     """Run lint, the changed-Markdown Prettier gate and tests before committing or pushing resolver changes.
 
-    A missing ``uv`` is a structured failure naming it (lint and tests unmeasured), never an exception.
+    A missing ``uv`` is a structured failure naming it (lint and tests unmeasured), never an exception. A failing
+    test run is recorded and classified by the test failure loop, and its classification joins the error.
     """
     try:
         lock_problem = check_lockfile(repo_dir)
@@ -325,11 +327,9 @@ def _verify_before_push(repo_dir: str, iteration: int | None = None) -> tuple[bo
     test_env = with_short_summary(frozen_env(cwd=repo_dir))
     test_res = run_cmd(["uv", "run", "task", "test"], cwd=repo_dir, env=test_env, check=False)
     if test_res.returncode != 0:
-        return (
-            True,
-            False,
-            verification_error("test", test_res, _bounded_error_context, workspace=repo_dir, iteration=iteration),
-        )
+        error = verification_error("test", test_res, _bounded_error_context, workspace=repo_dir, iteration=iteration)
+        note = diagnose_resolver_failure(repo_dir, test_res)
+        return True, False, f"{error}\n{note}" if note else error
     clear_full_output(repo_dir, "test")
     clear_rejected_attempts(repo_dir)
     return True, True, None

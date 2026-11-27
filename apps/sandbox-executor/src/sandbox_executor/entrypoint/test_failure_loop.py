@@ -46,14 +46,6 @@ Never background a command.
 """
 
 
-class TestFailureBlocked(RuntimeError):
-    __test__ = False
-
-    def __init__(self, evidence_text: str) -> None:
-        super().__init__(evidence_text)
-        self.evidence_text = evidence_text
-
-
 @dataclass(frozen=True)
 class FixRequest:
     classification: str

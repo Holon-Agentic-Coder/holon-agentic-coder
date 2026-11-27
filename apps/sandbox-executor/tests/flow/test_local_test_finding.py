@@ -16,6 +16,7 @@ def test_the_finding_names_the_failing_ids_and_quotes_their_excerpts():
     assert finding.id == "FIND-CI-002"
     assert finding.severity == "important"
     assert "(introduced): tests/test_a.py::test_alpha." in finding.summary
+    assert finding.recommendation.startswith("Fix the code so the failing tests pass")
     assert "Failed CI checks: lint." in finding.summary
     assert "`tests/test_a.py::test_alpha`: E assert 1 == 2" in finding.recommendation
 
@@ -48,3 +49,5 @@ def test_blocked_evidence_marks_the_finding_as_not_fixable_in_code():
 
     assert finding is not None
     assert "Blocked, not fixable in code: test failure environment (blocked)" in finding.summary
+    assert "Report this failure as blocked" in finding.recommendation
+    assert "Fix the code" not in finding.recommendation

@@ -8,6 +8,11 @@ from sandbox_executor.review_report import FindingRow
 MAX_IDS_NAMED = 5
 MAX_EXCERPTS_QUOTED = 3
 MAX_EXCERPT_CHARS = 600
+FIX_ADVICE = "Fix the code so the failing tests pass; do not weaken, skip or delete them."
+BLOCKED_ADVICE = (
+    "Report this failure as blocked with the evidence above; do not mask it in code by weakening, skipping or "
+    "deleting the tests."
+)
 
 
 def local_test_failure_finding(
@@ -34,6 +39,7 @@ def local_test_failure_finding(
         reviewers=(),
         summary=f"Local tests failed in iteration {iteration} ({evidence.get('classification') or 'unclassified'}): "
         f"{', '.join(ids[:MAX_IDS_NAMED])}{more}.{also}{blocked_note}",
-        recommendation="Fix the code so the failing tests pass; do not weaken, skip or delete them. Failure excerpts: "
+        recommendation=(BLOCKED_ADVICE if blocked else FIX_ADVICE)
+        + " Failure excerpts: "
         + (" | ".join(excerpts) or "none captured"),
     )

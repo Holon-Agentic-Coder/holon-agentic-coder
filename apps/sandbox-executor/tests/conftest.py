@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from sandbox_executor import config_env
 from sandbox_executor.agent_defaults import detected_harness_markers
+from sandbox_executor.entrypoint import resolver_test_failure
 from sandbox_executor.flow import process_reaper, run_lock
 from sandbox_executor.flow.admission import AdmissionDecision
 from sandbox_executor.flow.github import token_scopes
@@ -196,6 +197,12 @@ def fake_keychain(monkeypatch) -> fake_keychain_helper.FakeKeychain:
     Returns the fake; a test seeds `entry` or flips a failure switch on it.
     """
     return fake_keychain_helper.install(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def no_resolver_failure_diagnosis(monkeypatch):
+    """Keep a scripted failing resolver test run from starting real diagnosis re-runs; a test reinstalls a loop."""
+    monkeypatch.setattr(resolver_test_failure, "resolver_failure_loop", lambda _repo_dir: None)
 
 
 @pytest.fixture(autouse=True)

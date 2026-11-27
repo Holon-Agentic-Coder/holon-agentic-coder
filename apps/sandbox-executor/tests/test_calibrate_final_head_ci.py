@@ -182,7 +182,9 @@ def _run_stage(tmp_path: Path, record: dict) -> object:
     report.to_dict.return_value = {}
     ok = SimpleNamespace(returncode=0, stdout="", stderr="")
     with (
-        patch("sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate", return_value=(None, {"state": "stage4"})),
+        patch(
+            "sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate", return_value=(None, {"state": "stage4"})
+        ),
         patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=report),

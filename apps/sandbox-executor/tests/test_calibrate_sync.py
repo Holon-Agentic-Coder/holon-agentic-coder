@@ -98,7 +98,9 @@ def run_stage(repos: SimpleNamespace, **kwargs: bool):
         },
     )
     with (
-        patch("sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate", return_value=(None, {"state": "stage4"})),
+        patch(
+            "sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate", return_value=(None, {"state": "stage4"})
+        ),
         patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=fake_calibrate),
         patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", return_value={"state": "success"}),

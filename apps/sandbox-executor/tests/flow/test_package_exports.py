@@ -135,6 +135,8 @@ KNOWN_UNEXPORTED = frozenset(
         "run_gh",
         "security_objectors",
         "short_sha",
+        "Stage5PrerequisiteError",
+        "stage5_prerequisite_error",
         "timing_gate_details",
         "timing_gate_finding",
         "top_slowest",

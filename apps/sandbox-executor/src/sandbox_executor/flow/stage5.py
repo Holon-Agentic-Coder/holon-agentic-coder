@@ -317,5 +317,5 @@ def standalone_context(execution_branch: str, target_worktree: str, no_commit: b
         target_worktree=target_worktree, execution_branch=execution_branch, dry_run=no_commit, token_reduce=False
     )
     # why: standalone holon calibrate CLI has no flow checkpoint stage_results
-    setattr(context, "_standalone_stage5", True)
+    context._standalone_stage5 = True  # type: ignore[attr-defined]
     return context

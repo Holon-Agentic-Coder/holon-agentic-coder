@@ -217,9 +217,7 @@ def test_approved_review_without_posted_consensus_or_carried_fingerprint_is_refu
 ) -> None:
     ctx = _context(tmp_path)
     ctx.stage_results["execute"] = _execute_result(StageStatus.SUCCESS)
-    ctx.stage_results["review"] = _review_result(
-        StageStatus.APPROVED, consensus=_approved_consensus(), posting=posting
-    )
+    ctx.stage_results["review"] = _review_result(StageStatus.APPROVED, consensus=_approved_consensus(), posting=posting)
 
     error = stage5_prerequisite_error(ctx)
     assert error is not None and "posted GitHub consensus review" in error
@@ -239,7 +237,11 @@ def test_approved_review_without_posted_consensus_or_carried_fingerprint_is_refu
     [
         ({"approval_fingerprint": "pf1:" + "f" * 40, "carried_from": APPROVED_SHA, "carried_to": CARRIED_TO_SHA}, None),
         (
-            {"approval_fingerprint": f"{FINGERPRINT_VERSION}:", "carried_from": APPROVED_SHA, "carried_to": CARRIED_TO_SHA},
+            {
+                "approval_fingerprint": f"{FINGERPRINT_VERSION}:",
+                "carried_from": APPROVED_SHA,
+                "carried_to": CARRIED_TO_SHA,
+            },
             None,
         ),
         ({"approval_fingerprint": VALID_FINGERPRINT, "carried_from": "", "carried_to": CARRIED_TO_SHA}, None),

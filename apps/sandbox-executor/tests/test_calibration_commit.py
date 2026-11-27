@@ -364,7 +364,9 @@ def test_stage5_rejected_report_commit_fails_closed_without_push_or_reconciliati
 
     with (
         patch("sandbox_executor.calibration.run.format_calibration_report"),
-        patch("sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate", return_value=(None, {"state": "stage4"})),
+        patch(
+            "sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate", return_value=(None, {"state": "stage4"})
+        ),
         patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.review.run_git", side_effect=recording_run_git),
     ):

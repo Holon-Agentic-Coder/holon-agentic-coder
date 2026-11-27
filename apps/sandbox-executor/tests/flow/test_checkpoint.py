@@ -36,7 +36,8 @@ class TestFlowResumptionAndErrorHandling:
         assert "review" in results
         assert results["review"].status == StageStatus.HALTED_FOR_HUMAN
         assert "calibrate" in results
-        assert results["calibrate"].status == StageStatus.SUCCESS
+        assert results["calibrate"].status == StageStatus.FAILED
+        assert "Calibrate stage refused" in (results["calibrate"].error or "")
 
     def test_pipeline_resumption_from_stage(self, tmp_path):
         ctx = FlowContext(

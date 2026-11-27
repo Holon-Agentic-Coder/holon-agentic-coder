@@ -81,6 +81,26 @@ def _decide(
     return refuse_calibration(context, start, record), record
 
 
+def _evaluate_merged_head(
+    context: FlowContext, start: str, approved: str, head: str, seams: MergedHeadSeams
+) -> tuple[StageResult | None, dict[str, Any]]:
+    moved = seams.bookkeeping_move or _git_bookkeeping_move(context.target_worktree)
+    if _same_commit(approved, head) or moved(approved, head):
+        record = stage4_ci_record(context, head)
+        context.log(
+            f"Stage 5 relies on Stage 4 CI for head {head} (approved {approved}). {format_merged_head_ci(record)}"
+        )
+        return None, record
+    coverage, annotation = merged_head_coverage(context, approved, head)
+    # why: a PR-own change that differs from the approved one sends Stage 4 to review it again.
+    if coverage == CHANGED:
+        return _decide(context, start, annotation, seams)
+    context.log(f"Merged-head CI gate: head {head} is not the approved head {approved}; waiting for its CI.")
+    record = {**gate_merged_head_ci(context, context.target_worktree, head, seams), **annotation}
+    context.log(format_merged_head_ci(record))
+    return _decide(context, start, record, seams)
+
+
 def stage5_merged_head_gate(
     context: FlowContext, seams: MergedHeadSeams | None = None
 ) -> tuple[StageResult | None, dict[str, Any]]:
@@ -100,21 +120,7 @@ def stage5_merged_head_gate(
     if not head:
         record = gate_record("unknown", "", [], [], "the execution head could not be read")
         return _decide(context, start, record, seams)
-    moved = seams.bookkeeping_move or _git_bookkeeping_move(context.target_worktree)
-    if _same_commit(approved, head) or moved(approved, head):
-        record = stage4_ci_record(context, head)
-        context.log(
-            f"Stage 5 relies on Stage 4 CI for head {head} (approved {approved}). {format_merged_head_ci(record)}"
-        )
-        return None, record
-    coverage, annotation = merged_head_coverage(context, approved, head)
-    # why: a PR-own change that differs from the approved one sends Stage 4 to review it again.
-    if coverage == CHANGED:
-        return _decide(context, start, annotation, seams)
-    context.log(f"Merged-head CI gate: head {head} is not the approved head {approved}; waiting for its CI.")
-    record = {**gate_merged_head_ci(context, context.target_worktree, head, seams), **annotation}
-    context.log(format_merged_head_ci(record))
-    return _decide(context, start, record, seams)
+    return _evaluate_merged_head(context, start, approved, head, seams)
 
 
 def approval_stands(context: FlowContext, result: StageResult) -> bool:

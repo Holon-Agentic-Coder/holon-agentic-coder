@@ -276,6 +276,19 @@ def test_dispatch_review_ensemble_passes_review_paths_flag(tmp_path: Path, monke
     assert captured and f"--review-paths={APP},tests/test_app.py" in captured[0]
 
 
+def _seed_stage5_approval(ctx: FlowContext, approved_sha: str, **extra_consensus: object) -> FlowContext:
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+    ctx.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW,
+        status=StageStatus.APPROVED,
+        payload={
+            "consensus": {"approved": True, "target_commit": approved_sha, "pr_number": 7, **extra_consensus},
+            "posting": {"dual_posted": True},
+        },
+    )
+    return ctx
+
+
 def test_stage5_entry_and_retry_sync_resolve_conflicts_and_block_cleanly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -285,16 +298,7 @@ def test_stage5_entry_and_retry_sync_resolve_conflicts_and_block_cleanly(
     _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
     approved_sha = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
     _inject_ledger_conflict(work, FLOW_BRANCH, 2)
-    ctx = _ctx(work)
-    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
-    ctx.stage_results["review"] = StageResult(
-        stage=FlowStage.REVIEW,
-        status=StageStatus.APPROVED,
-        payload={
-            "consensus": {"approved": True, "target_commit": approved_sha, "pr_number": 7},
-            "posting": {"dual_posted": True},
-        },
-    )
+    ctx = _seed_stage5_approval(_ctx(work), approved_sha)
     monkeypatch.setattr(
         "sandbox_executor.flow.review_restart.gate_merged_head_ci",
         lambda _c, _r, head, _s: gate_record(PASSED, head, [], [], "ok"),
@@ -426,16 +430,7 @@ def test_prepare_execution_branch_syncs_before_calibrated_and_retry_reanchors(
     _, work2 = build_flow_repos(r2, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
     approved_sha2 = _git(work2, "rev-parse", f"origin/{FLOW_BRANCH}")
     _inject_ledger_conflict(work2, FLOW_BRANCH, 2)
-    ctx_ok = _ctx(work2)
-    ctx_ok.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
-    ctx_ok.stage_results["review"] = StageResult(
-        stage=FlowStage.REVIEW,
-        status=StageStatus.APPROVED,
-        payload={
-            "consensus": {"approved": True, "target_commit": approved_sha2, "pr_number": 7},
-            "posting": {"dual_posted": True},
-        },
-    )
+    ctx_ok = _seed_stage5_approval(_ctx(work2), approved_sha2)
     monkeypatch.setattr(
         "sandbox_executor.flow.review_restart.gate_merged_head_ci",
         lambda _c, _r, head, _s: gate_record(PASSED, head, [], [], "ok"),
@@ -465,15 +460,10 @@ def test_prepare_execution_branch_syncs_before_calibrated_and_retry_reanchors(
     commit_on(work3, "main", {APP: "y = 2\n"}, "main code")
     commit_on(work3, FLOW_BRANCH, {APP: "x = 1\n"}, "flow code")
     approved_sha = _git(work3, "rev-parse", f"origin/{FLOW_BRANCH}")
-    ctx_r = _ctx(work3, dispatcher=FakeResolverDispatcher([(_resolve_app, "resolved")]))
-    ctx_r.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
-    ctx_r.stage_results["review"] = StageResult(
-        stage=FlowStage.REVIEW,
-        status=StageStatus.APPROVED,
-        payload={
-            "consensus": {"approved": True, "target_commit": approved_sha, "approval_fingerprint": "pf1:abc"},
-            "posting": {"dual_posted": True},
-        },
+    ctx_r = _seed_stage5_approval(
+        _ctx(work3, dispatcher=FakeResolverDispatcher([(_resolve_app, "resolved")])),
+        approved_sha,
+        approval_fingerprint="pf1:abc",
     )
     monkeypatch.setattr("sandbox_executor.flow.review_restart.withdraw_consensus", lambda *a, **k: {"withdrawn": True})
     stopped, sha3, created3 = cal_stage._prepare_execution_branch(ctx_r, "2026-11-24T00:00:00Z")

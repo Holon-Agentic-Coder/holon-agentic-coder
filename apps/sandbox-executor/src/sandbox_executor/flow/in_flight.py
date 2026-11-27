@@ -3,23 +3,27 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from sandbox_executor.flow.admission_state import BLOCKED_BY_LOCAL_FLOW, BLOCKED_BY_PULL_REQUEST, AdmissionRecord
 from sandbox_executor.flow.git_refs import _read_ledger_rows, _resolve_branch_ref
 from sandbox_executor.flow.github import merge
+from sandbox_executor.flow.in_flight_liveness import (
+    AdmissionUnavailable,
+    GitRunner,
+    ProcessCmdlines,
+    command_failure,
+    host_git,
+    origin_branch_ref,
+    pull_request_is_closed_or_merged,
+    worktree_has_live_runner,
+)
 from sandbox_executor.flow.pr_changed_files import _pull_request_changed_files
 from sandbox_executor.flow.worktree_checkpoints import WorktreeCheckpoint, worktree_checkpoints
-from sandbox_executor.git import run_git
 from sandbox_executor.plan_paths import is_row_of_plan
-from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.ref_names import INTENT_SUFFIX
 from sandbox_executor.touch_set import TouchSet
-
-GitRunner = Callable[[list[str], str], subprocess.CompletedProcess[str]]
 
 # why: more open flow pull requests than this make discovery fail closed rather than silently truncate
 MAX_OPEN_PULL_REQUESTS = 50
@@ -36,6 +40,9 @@ class InFlightFlow:
     number: int | None = None
     head: str | None = None
     worktree: str | None = None
+    ref_name: str | None = None
+    ref_source: str | None = None
+    pr_state: str | None = None
 
     @property
     def kind(self) -> str:
@@ -48,15 +55,6 @@ class BlockedWaiter:
     worktree: str
     declared: TouchSet | None
     record: AdmissionRecord
-
-
-@dataclass(frozen=True)
-class AdmissionUnavailable:
-    reason: str
-
-
-def host_git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
-    return run_git(args, cwd=cwd, check=False)
 
 
 def read_plan_touch_set(repo_dir: str, plan_branch: str) -> TouchSet | None:
@@ -74,11 +72,6 @@ def _plan_branch_of_head(head: str) -> str | None:
 
 def root_intent(branch: str) -> str:
     return branch.split("/", 1)[0].split("--", 1)[0]
-
-
-def command_failure(command: str, result: subprocess.CompletedProcess[str]) -> AdmissionUnavailable:
-    detail = redact_agent_secrets((result.stderr or "").strip())[:300]
-    return AdmissionUnavailable(f"'{command}' failed: {detail or 'no output'}")
 
 
 def _gh_json(run_gh: merge.GhRunner, args: list[str], repo_dir: str) -> list[dict[str, Any]] | AdmissionUnavailable:
@@ -99,12 +92,20 @@ def _pull_request_diff(run_gh: merge.GhRunner, number: int, repo_dir: str) -> tu
     return AdmissionUnavailable(changed) if isinstance(changed, str) else changed
 
 
+def _is_open_pull_request(pr: dict[str, Any]) -> bool:
+    state = pr.get("state")
+    return state is None or str(state).upper() == "OPEN"
+
+
 def open_flow_pull_requests(
-    repo_dir: str, own_root: str, run_gh: merge.GhRunner | None = None
+    repo_dir: str,
+    own_root: str,
+    run_gh: merge.GhRunner | None = None,
+    run_git: GitRunner | None = None,
 ) -> list[InFlightFlow] | AdmissionUnavailable:
     gh = merge.gh_runner(run_gh)
     limit = str(MAX_LISTED_PULL_REQUESTS + 1)
-    fields = ["--state", "open", "--limit", limit, "--json", "number,headRefName,baseRefName"]
+    fields = ["--state", "open", "--limit", limit, "--json", "number,headRefName,baseRefName,state"]
     listed = _gh_json(gh, ["pr", "list", *fields], repo_dir)
     if isinstance(listed, AdmissionUnavailable):
         return listed
@@ -113,20 +114,36 @@ def open_flow_pull_requests(
     others = [
         (pr, head, plan_branch)
         for pr in listed
-        if (plan_branch := _plan_branch_of_head(head := str(pr.get("headRefName") or ""))) is not None
+        if _is_open_pull_request(pr)
+        and (plan_branch := _plan_branch_of_head(head := str(pr.get("headRefName") or ""))) is not None
         and root_intent(head) != own_root
     ]
     if len(others) > MAX_OPEN_PULL_REQUESTS:
         return AdmissionUnavailable(f"more than {MAX_OPEN_PULL_REQUESTS} open flow pull requests; not all compared")
     flows: list[InFlightFlow] = []
     for pr, head, plan_branch in others:
-        changed = _pull_request_diff(gh, int(pr.get("number") or 0), repo_dir)
+        remote_ref = origin_branch_ref(repo_dir, head, run_git)
+        if remote_ref is None:
+            continue
+        number = int(pr.get("number") or 0)
+        changed = _pull_request_diff(gh, number, repo_dir)
         if isinstance(changed, AdmissionUnavailable):
             return changed
-        number = int(pr.get("number") or 0)
-        label = f"pull request #{number} (branch {head})"
+        label = f"pull request #{number} [OPEN] (remote ref {remote_ref})"
         # why: a pull request is compared by the files it changes, never by its planned touch set
-        flows.append(InFlightFlow(label, plan_branch, None, changed, number=number, head=head))
+        flows.append(
+            InFlightFlow(
+                label,
+                plan_branch,
+                None,
+                changed,
+                number=number,
+                head=head,
+                ref_name=remote_ref,
+                ref_source="remote",
+                pr_state="OPEN",
+            )
+        )
     return flows
 
 
@@ -164,17 +181,41 @@ def _is_not_blocked(checkpoint: WorktreeCheckpoint) -> bool:
     return checkpoint.record is None or not checkpoint.record.blocked
 
 
-def local_in_flight_flows(repo_dir: str, checkpoints: list[WorktreeCheckpoint]) -> list[InFlightFlow]:
-    return [
-        InFlightFlow(
-            f"local flow on branch {checkpoint.plan_branch} (worktree {checkpoint.worktree})",
-            checkpoint.plan_branch,
-            read_plan_touch_set(repo_dir, checkpoint.plan_branch),
-            worktree=checkpoint.worktree,
+def local_in_flight_flows(
+    repo_dir: str,
+    checkpoints: list[WorktreeCheckpoint],
+    run_git: GitRunner | None = None,
+    run_gh: merge.GhRunner | None = None,
+    cmdlines: ProcessCmdlines | None = None,
+) -> list[InFlightFlow] | AdmissionUnavailable:
+    flows: list[InFlightFlow] = []
+    for checkpoint in checkpoints:
+        if not _is_not_blocked(checkpoint):
+            continue
+        branch = checkpoint.execution_branch or checkpoint.plan_branch
+        remote_ref = origin_branch_ref(repo_dir, branch, run_git)
+        if remote_ref is None or not worktree_has_live_runner(checkpoint.worktree, cmdlines):
+            continue
+        if checkpoint.execution_branch:
+            closed = pull_request_is_closed_or_merged(repo_dir, checkpoint.execution_branch, run_gh)
+            if isinstance(closed, AdmissionUnavailable):
+                return closed
+            if closed:
+                continue
+        label = f"local flow on remote ref {remote_ref} (worktree {checkpoint.worktree})"
+        flows.append(
+            InFlightFlow(
+                label,
+                checkpoint.plan_branch,
+                read_plan_touch_set(repo_dir, checkpoint.plan_branch),
+                head=checkpoint.execution_branch,
+                worktree=checkpoint.worktree,
+                ref_name=remote_ref,
+                ref_source="remote",
+                pr_state=None,
+            )
         )
-        for checkpoint in checkpoints
-        if _is_not_blocked(checkpoint)
-    ]
+    return flows
 
 
 def local_blocked_waiters(repo_dir: str, checkpoints: list[WorktreeCheckpoint]) -> list[BlockedWaiter]:
@@ -190,17 +231,20 @@ def discover_in_flight_flows(
     own_branch: str,
     run_gh: merge.GhRunner | None = None,
     run_git: GitRunner | None = None,
-    checkpoints: list[WorktreeCheckpoint] | None = None,
+    cmdlines: ProcessCmdlines | None = None,
 ) -> list[InFlightFlow] | AdmissionUnavailable:
     own_root = root_intent(own_branch)
-    pull_requests = open_flow_pull_requests(repo_dir, own_root, run_gh)
+    pull_requests = open_flow_pull_requests(repo_dir, own_root, run_gh, run_git)
     if isinstance(pull_requests, AdmissionUnavailable):
         return pull_requests
-    checkpoints = other_checkpoints(repo_dir, own_root, run_git) if checkpoints is None else checkpoints
+    checkpoints = other_checkpoints(repo_dir, own_root, run_git)
     if isinstance(checkpoints, AdmissionUnavailable):
         return checkpoints
+    local_flows = local_in_flight_flows(repo_dir, checkpoints, run_git, run_gh, cmdlines)
+    if isinstance(local_flows, AdmissionUnavailable):
+        return local_flows
     flows = list(pull_requests)
-    for flow in local_in_flight_flows(repo_dir, checkpoints):
+    for flow in local_flows:
         if flow.plan_branch not in {known.plan_branch for known in flows}:
             flows.append(flow)
     return flows

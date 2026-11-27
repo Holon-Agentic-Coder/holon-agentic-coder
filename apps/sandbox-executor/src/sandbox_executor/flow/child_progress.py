@@ -1,12 +1,3 @@
-"""Per-child progress of a decomposed Stage 3: what each sub-intent has done, reconciled against origin on resume.
-
-The progress list lives in the parent's Stage 3 payload under ``children_progress`` and is checkpointed with it. Each
-entry holds only small scalar facts: ``index``, ``slug``, ``intent_branch``, ``execution_branch``, ``pr_number``,
-``pr_url``, ``status`` (``pending``, ``in_progress``, ``review_done``, ``merged`` or ``failed``) and
-``merge_commit``. :func:`next_child_action` decides each child's next step from those facts alone and never returns
-``dispatch`` once a child has an execution branch, a PR or anything else recorded, so a resume never re-runs work.
-"""
-
 from __future__ import annotations
 
 import json
@@ -29,7 +20,6 @@ FAILED = "failed"
 
 
 def _sub_intent_depth(intent_data: dict[str, Any]) -> int:
-    """Return the nesting depth recorded on an intent payload (0 for a root intent)."""
     try:
         return max(0, int(intent_data.get("sub_intent_depth") or 0))
     except (TypeError, ValueError):
@@ -37,16 +27,12 @@ def _sub_intent_depth(intent_data: dict[str, Any]) -> int:
 
 
 def _child_intent_branch(parent_branch: str, index: int, slug: str) -> FitResult:
-    """Return the fitted bare intent branch of the ``index``-th (1-based) child: ``{parent}--{n}-{slug}``.
-    The name comes from the parent's branch and position, never the clock; a sanitised slug never contains ``--``, so
-    it cannot collide with another intent, and the same list always derives the same name for the same child.
-    """
     slug = truncate_derived_slug(re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower()) or f"sub-intent-{index}"
+    # why: the name comes from the parent branch and position, never the clock, so a resume derives the same branch
     return fit_child_intent_branch(parent_branch, index, slug)
 
 
 def initial_progress(items: list[dict[str, Any]], plan_branch: str) -> list[dict[str, Any]]:
-    """Return one ``pending`` entry per sub-intent list item, each with its deterministic intent branch."""
     progress: list[dict[str, Any]] = []
     for index, item in enumerate(items, start=1):
         slug = str(item.get("slug") or f"sub-intent-{index}")
@@ -68,31 +54,18 @@ def initial_progress(items: list[dict[str, Any]], plan_branch: str) -> list[dict
 
 
 def has_recorded_decomposition(stage_result: StageResult | None, plan_branch: str | None = None) -> bool:
-    """True when a (checkpointed) Stage 3 result already decomposed and recorded per-child progress.
-
-    The pipeline then resumes the children instead of dispatching the parent executor again. With ``plan_branch``, the
-    recorded decomposition must belong to that plan, so a re-plan never resumes the children of an earlier plan.
-    """
     payload = stage_result.payload if stage_result is not None else None
     if not (isinstance(payload, dict) and payload.get("decomposed") and payload.get(PROGRESS_KEY)):
         return False
+    # why: a re-plan must never resume the children of an earlier plan
     return plan_branch is None or payload.get("plan_branch") == plan_branch
 
 
 def child_checkpoint_path(context: FlowContext, intent_branch: str) -> str:
-    """Return the child's own checkpoint file, keyed on its bare intent branch as ``save_checkpoint`` keys it."""
     return get_default_checkpoint_path(context.target_worktree, intent_branch.removesuffix("/_"))
 
 
 def next_child_action(entry: dict[str, Any], checkpoint_exists: bool = False) -> str:
-    """Decide a child's next step: ``skip``, ``merge``, ``resume`` or ``dispatch``.
-
-    - ``skip``: the child's PR is merged into the plan branch.
-    - ``merge``: its PR is open and its Stage 4 consensus and Stage 5 already completed.
-    - ``resume``: anything exists for it (an intent or execution branch on origin, a PR, a checkpoint, a failed origin
-      lookup or any status past ``pending``); it continues from its own checkpoint.
-    - ``dispatch``: nothing exists anywhere, so a fresh child pipeline runs.
-    """
     status = entry.get("status")
     if status == MERGED:
         return "skip"
@@ -105,7 +78,6 @@ def next_child_action(entry: dict[str, Any], checkpoint_exists: bool = False) ->
 
 
 def _execution_branches(repo_dir: str, intent_branch: str) -> list[str] | None:
-    """Return the child's execution branches on origin, oldest first, or None when origin could not be fetched."""
     intent_prefix = intent_branch.removesuffix("/_")
     if _fetch_branch_prefix_error(repo_dir, intent_prefix) is not None:
         return None
@@ -118,7 +90,6 @@ def _execution_branches(repo_dir: str, intent_branch: str) -> list[str] | None:
 
 
 def _child_pr(repo_dir: str, execution_branch: str, runner: GhRunner) -> tuple[dict[str, Any] | None, bool]:
-    """Return ``(pr, ok)``: the newest PR from ``execution_branch`` (None if there is none) and whether gh answered."""
     fields = "number,state,baseRefName,url,mergeCommit"
     proc = runner(["pr", "list", "--head", execution_branch, "--state", "all", "--json", fields], repo_dir)
     if proc.returncode != 0:
@@ -132,7 +103,6 @@ def _child_pr(repo_dir: str, execution_branch: str, runner: GhRunner) -> tuple[d
 
 
 def _apply_fact(entry: dict[str, Any], key: str, value: Any, notes: list[str]) -> None:
-    """Record an origin fact on the entry; origin wins over a different checkpointed value, which is noted."""
     if value in (None, "") or entry.get(key) == value:
         return
     if entry.get(key) not in (None, ""):
@@ -141,7 +111,6 @@ def _apply_fact(entry: dict[str, Any], key: str, value: Any, notes: list[str]) -
 
 
 def _reconcile_entry(repo_dir: str, entry: dict[str, Any], plan: str, runner: GhRunner, notes: list[str]) -> None:
-    """Fill one entry's facts from origin and GitHub, promoting it to ``merged`` when its PR merged into ``plan``."""
     intent_branch = str(entry.get("intent_branch") or "")
     branches = _execution_branches(repo_dir, intent_branch)
     if branches is None:
@@ -162,7 +131,8 @@ def _reconcile_entry(repo_dir: str, entry: dict[str, Any], plan: str, runner: Gh
     if str(pr.get("state") or "").upper() != "MERGED":
         return
     result = _merged_result(pr, plan, already_merged=True)
-    if not result.merged:  # merged into another base: only noted, so the guarded merge refuses it later
+    # why: a PR merged into another base is only noted, so the guarded merge refuses it later
+    if not result.merged:
         notes.append(f"sub-intent '{entry.get('slug')}': PR #{pr.get('number')} not promoted: {result.reason}")
         return
     _apply_fact(entry, "merge_commit", result.merge_commit, notes)
@@ -170,17 +140,6 @@ def _reconcile_entry(repo_dir: str, entry: dict[str, Any], plan: str, runner: Gh
 
 
 def reconcile_with_origin(repo_dir: str, progress: list[dict[str, Any]], plan: str, runner: GhRunner | None = None):
-    """Reconcile checkpointed progress with origin before a resume, in place.
-
-    For every child not yet merged, its execution branches are discovered under its intent branch on origin and its
-    PR is read with ``gh pr list --head <execution branch> --state all``. Missing facts are filled in, a PR merged into
-    ``plan`` makes the entry ``merged`` (one merged into another base is only noted), and where origin and the
-    checkpoint disagree origin wins. A failed fetch or ``gh`` lookup marks the entry ``origin_lookup_failed``, which
-    makes :func:`next_child_action` resume it, never dispatch it.
-
-    Returns:
-        list[str]: One note per disagreement between origin and the checkpoint, for the flow log.
-    """
     gh = gh_runner(runner)
     notes: list[str] = []
     for entry in progress:
@@ -191,5 +150,4 @@ def reconcile_with_origin(repo_dir: str, progress: list[dict[str, Any]], plan: s
 
 
 def checkpoint_exists(context: FlowContext, entry: dict[str, Any]) -> bool:
-    """True when the child of ``entry`` has its own checkpoint file."""
     return os.path.exists(child_checkpoint_path(context, str(entry.get("intent_branch") or "")))

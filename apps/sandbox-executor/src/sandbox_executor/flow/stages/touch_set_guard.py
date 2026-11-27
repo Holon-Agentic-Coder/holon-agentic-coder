@@ -144,7 +144,7 @@ def _range_commit_paths(repo_dir: str, base_sha: str, head_sha: str) -> list[tup
     return [(head_sha, list(dict.fromkeys(line for line in diff.stdout.splitlines() if line)))]
 
 
-def resolver_commit_touch_set_refusal(context: FlowContext, base_sha: str, head_sha: str) -> str | None:
+def _resolver_commit_touch_set_refusal(context: FlowContext, base_sha: str, head_sha: str) -> str | None:
     if not (_OBJECT_ID.match(head_sha) and _OBJECT_ID.match(base_sha)):
         return None
     repo_dir = context.target_worktree

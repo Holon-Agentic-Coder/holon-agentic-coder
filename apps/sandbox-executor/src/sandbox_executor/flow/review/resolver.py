@@ -24,7 +24,6 @@ from sandbox_executor.flow.review.adjudication import _lookup_introducing_action
 from sandbox_executor.flow.review.ensemble import _ENGINE_PASSES_PER_DISPATCH
 from sandbox_executor.flow.review.records import _bounded_error_context, record_review_action
 from sandbox_executor.flow.review.sync_points import finalize_resolver_turn
-from sandbox_executor.flow.stages.touch_set_guard import resolver_commit_touch_set_refusal
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.module_budget_guard import budget_push_refusal
 from sandbox_executor.redaction import redact_agent_secrets
@@ -70,6 +69,13 @@ class ResolverInput:
     rejected_findings: Sequence[FindingDisposition] = ()
 
 
+def _resolver_touch_set_refusal(context: FlowContext, base_sha: str, head_sha: str) -> str | None:
+    # why: lazy import keeps entrypoint.review_loop from loading flow.stages at import time.
+    from sandbox_executor.flow.stages.touch_set_guard import _resolver_commit_touch_set_refusal
+
+    return _resolver_commit_touch_set_refusal(context, base_sha, head_sha)
+
+
 def _push_resolver_head(
     context: FlowContext, target: ReviewTarget, head_sha: str, container_error: str | None
 ) -> tuple[bool, str | None]:
@@ -78,7 +84,7 @@ def _push_resolver_head(
     Not after a failed pass, under ``skip_push``, when the head did not move or on a budget refusal."""
     if container_error or not head_sha or head_sha == target.head_sha:
         return False, None
-    touch_refusal = resolver_commit_touch_set_refusal(context, target.head_sha, head_sha)
+    touch_refusal = _resolver_touch_set_refusal(context, target.head_sha, head_sha)
     if touch_refusal:
         return False, f"Resolver push failed: {touch_refusal}"
     if context.skip_push or not target.head_branch:
@@ -251,7 +257,7 @@ def _enforce_resolver_touch_set(
 ) -> ResolverOutcome:
     if outcome.error or not outcome.head_sha or outcome.head_sha == target.head_sha:
         return outcome
-    refusal = resolver_commit_touch_set_refusal(context, target.head_sha, outcome.head_sha)
+    refusal = _resolver_touch_set_refusal(context, target.head_sha, outcome.head_sha)
     if not refusal:
         return outcome
     return dataclasses.replace(outcome, pushed=False, dispositions=(), error=f"Resolver push failed: {refusal}")

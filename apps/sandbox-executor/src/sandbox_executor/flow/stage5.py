@@ -31,7 +31,7 @@ class Stage5Steps:
 
 
 @dataclass(frozen=True)
-class Stage5Readiness:
+class _Stage5Readiness:
     ready: bool
     out_of_scope_files: tuple[str, ...] = ()
     reason: str | None = None
@@ -53,8 +53,8 @@ class Stage5Readiness:
         return [header, *(f"  - {path}" for path in self.out_of_scope_files)]
 
 
-class Stage5TouchSetError(RuntimeError):
-    def __init__(self, readiness: Stage5Readiness) -> None:
+class _Stage5TouchSetError(RuntimeError):
+    def __init__(self, readiness: _Stage5Readiness) -> None:
         self.readiness = readiness
         self.out_of_scope_files = readiness.out_of_scope_files
         self.failure_reason = readiness.reason or TOUCH_SET_VIOLATION
@@ -67,7 +67,7 @@ class Stage5Outcome:
     report_only: bool = False
     reconciliation: dict[str, Any] = field(default_factory=dict)
     promoted_candidates: list[dict[str, Any]] = field(default_factory=list)
-    readiness: dict[str, Any] = field(default_factory=lambda: Stage5Readiness(ready=True).to_dict())
+    readiness: dict[str, Any] = field(default_factory=lambda: _Stage5Readiness(ready=True).to_dict())
 
     @property
     def newly_promoted_count(self) -> int:
@@ -78,7 +78,6 @@ class Stage5Outcome:
             "mode": "report_only" if self.report_only else "full",
             "reconciliation": dict(self.reconciliation),
             "newly_promoted_count": self.newly_promoted_count,
-            "readiness": dict(self.readiness),
         }
 
 
@@ -110,20 +109,20 @@ def _stage5_diff_files(context: FlowContext) -> tuple[list[str], str | None]:
     return changed_paths(repo_dir, base_ref, exec_ref), exec_ref
 
 
-def check_stage5_readiness(
+def _check_stage5_readiness(
     context: FlowContext,
     pr_diff_files: Sequence[str] | None = None,
     *,
     head_ref: str | None = None,
-) -> Stage5Readiness:
+) -> _Stage5Readiness:
     if pr_diff_files is None:
         diff_files, resolved_head = _stage5_diff_files(context)
     else:
         diff_files, resolved_head = list(pr_diff_files), None
     out_of_scope = touch_set_violation(context, diff_files, head_ref=head_ref or resolved_head)
     if out_of_scope:
-        return Stage5Readiness(ready=False, out_of_scope_files=tuple(out_of_scope), reason=TOUCH_SET_VIOLATION)
-    return Stage5Readiness(ready=True)
+        return _Stage5Readiness(ready=False, out_of_scope_files=tuple(out_of_scope), reason=TOUCH_SET_VIOLATION)
+    return _Stage5Readiness(ready=True)
 
 
 def _reconciliation(status: str, verdict: str | None, rows_appended: int = 0) -> dict[str, Any]:
@@ -191,11 +190,11 @@ def _promote_candidates(context: FlowContext, steps: Stage5Steps) -> list[dict[s
 def run_stage5(
     context: FlowContext, steps: Stage5Steps, verdict: str | None, report_only: bool = False
 ) -> Stage5Outcome:
-    readiness = check_stage5_readiness(context)
+    readiness = _check_stage5_readiness(context)
     if not readiness.ready:
         for line in readiness.format_lines():
             context.log(line)
-        raise Stage5TouchSetError(readiness)
+        raise _Stage5TouchSetError(readiness)
     outcome = Stage5Outcome(report_only=report_only, readiness=readiness.to_dict())
     # why: calibration exceptions propagate uncaught so the flow's calibrate stage fails closed and no report is faked
     report = steps.calibrate(

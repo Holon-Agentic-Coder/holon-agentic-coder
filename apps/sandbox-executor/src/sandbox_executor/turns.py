@@ -448,157 +448,187 @@ def _report_background_commands(child_lister: ChildLister | None, pid: int) -> t
     return tuple(leftovers[child] for child in sorted(leftovers))
 
 
-def run_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915
-    cmd: list[str],
-    *,
-    stdin_file: str | None = None,
-    turn_budgets: TurnBudgets | None = None,
-    stage_timer: StageTimer | None = None,
-    stage: str = "turn",
-    watch_path: str | None = None,
-    watch_tree: str | None = None,
-    cwd: str | None = None,
-    env: Mapping[str, str] | None = None,
-    clock: Clock = time.monotonic,
-    sleeper: Sleeper = time.sleep,
-    popen_factory: Callable[..., Any] = subprocess.Popen,
-    killpg: Callable[[int, int], None] = os.killpg,
-    getpgid: Callable[[int], int] = os.getpgid,
-    poll_interval: float = POLL_INTERVAL_SECONDS,
-    grace_seconds: float = TERMINATION_GRACE_SECONDS,
-    tool_sampler: ToolSampler | None = descendant_cpu_seconds,
-    child_lister: ChildLister | None = descendant_commands,
-) -> TurnResult:
-    budgets = turn_budgets or TurnBudgets()
-    start = clock()
-    effective_env = build_turn_env(env)
+@dataclass
+class _SupervisionState:
+    budgets: TurnBudgets
+    start: float
+    last_activity: float
+    last_progress: float
+    turn_observable: bool
+    streaming: bool = False
+    seen_counts: list[int] = field(default_factory=lambda: [0, 0])
+    seen_file: tuple[int, int] | None = None
+    seen_tree: int | None = None
+    last_tree_scan: float = 0.0
+    seen_tools: dict[int, float] | None = None
+    last_tool_scan: float | None = None
+    live_children: dict[int, str] = field(default_factory=dict)
+
+
+def _init_supervision_state(config: TurnConfig, start: float) -> _SupervisionState:
+    return _SupervisionState(
+        budgets=config.turn_budgets or TurnBudgets(),
+        start=start,
+        last_activity=start,
+        # why: streamed output does not close a response, so only artefact, tree or tool progress resets this.
+        last_progress=start,
+        turn_observable=bool(config.watch_path or config.watch_tree),
+        # why: the shorter stall window is a meaningful liveness check only once the runner streamed in this response.
+        streaming=False,
+        seen_file=_file_state(config.watch_path),
+        seen_tree=_tree_mtime(config.watch_tree),
+        last_tree_scan=start,
+    )
+
+
+def _spawn_turn_process(request: TurnRequest) -> Any:
+    cfg = request.config
     popen_kwargs: dict[str, Any] = {
-        "cwd": cwd,
-        "env": effective_env,
+        "cwd": cfg.cwd,
+        "env": build_turn_env(cfg.env),
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "start_new_session": True,
     }
-    try:
-        if stdin_file is not None and os.path.exists(stdin_file):
-            with open(stdin_file, "rb") as stdin_stream:
-                proc = popen_factory(cmd, stdin=stdin_stream, **popen_kwargs)
-        else:
-            proc = popen_factory(cmd, **popen_kwargs)
-    except OSError as exc:
-        return TurnResult(returncode=127, stderr=f"Failed to start agent: {exc}", elapsed_seconds=0.0)
+    if cfg.stdin_file is not None and os.path.exists(cfg.stdin_file):
+        with open(cfg.stdin_file, "rb") as stdin_stream:
+            return cfg.popen_factory(request.cmd, stdin=stdin_stream, **popen_kwargs)
+    return cfg.popen_factory(request.cmd, **popen_kwargs)
 
+
+def _start_stream_readers(proc: Any) -> list[_StreamReader]:
     readers = [_StreamReader(proc.stdout), _StreamReader(proc.stderr)]
     for reader in readers:
         reader.start()
+    return readers
 
-    last_activity = start
-    # why: streamed output does not close a response, so only artefact, tree or tool progress resets this.
-    last_progress = start
-    turn_observable = bool(watch_path or watch_tree)
-    # why: the shorter stall window is a meaningful liveness check only once the runner streamed in this response.
-    streaming = False
-    seen_counts = [0, 0]
-    seen_file = _file_state(watch_path)
-    seen_tree = _tree_mtime(watch_tree)
-    last_tree_scan = start
-    seen_tools: dict[int, float] | None = None
-    last_tool_scan: float | None = None
-    live_children: dict[int, str] = {}
+
+def _poll_tool_progress(state: _SupervisionState, config: TurnConfig, pid: int, now: float) -> None:
+    if config.tool_sampler is None and config.child_lister is None:
+        return
+    if state.last_tool_scan is not None and now - state.last_tool_scan < TOOL_SCAN_INTERVAL_SECONDS:
+        return
+    state.last_tool_scan = now
+    state.live_children = _live_children(config.child_lister, pid)
+    sample = config.tool_sampler(pid) if config.tool_sampler is not None else None
+    if sample is None:
+        return
+    # why: a tool call is a response boundary, so its CPU time is progress, not part of a response.
+    if state.seen_tools is not None and tool_cpu_used(state.seen_tools, sample) >= TOOL_CPU_PROGRESS_SECONDS:
+        state.last_activity = state.last_progress = now
+        state.streaming = False
+    state.seen_tools = sample
+
+
+def _poll_progress(
+    state: _SupervisionState, config: TurnConfig, readers: list[_StreamReader], pid: int, now: float
+) -> None:
+    counts = [reader.count for reader in readers]
+    if counts != state.seen_counts:
+        state.seen_counts = counts
+        state.last_activity = now
+        state.streaming = True
+    file_state = _file_state(config.watch_path)
+    if file_state is not None and file_state != state.seen_file:
+        state.seen_file = file_state
+        state.last_activity = state.last_progress = now
+        state.streaming = False
+    if config.watch_tree and now - state.last_tree_scan >= TREE_SCAN_INTERVAL_SECONDS:
+        state.last_tree_scan = now
+        tree_state = _tree_mtime(config.watch_tree)
+        if tree_state is not None and tree_state != state.seen_tree:
+            state.seen_tree = tree_state
+            state.last_activity = state.last_progress = now
+            state.streaming = False
+    _poll_tool_progress(state, config, pid, now)
+
+
+def _evaluate_breach(state: _SupervisionState, config: TurnConfig, now: float) -> BudgetBreach | None:
+    stall_window = _stall_window(state.budgets, state.streaming, bool(state.live_children))
+    breach = _turn_breach(state.budgets, state.turn_observable, now, state.last_progress, config.stage)
+    if breach is not None:
+        return breach
+    if state.budgets.stall_seconds > 0 and now - state.last_activity >= stall_window:
+        return BudgetBreach(config.stage, "stall", stall_window, now - state.last_activity)
+    if config.stage_timer is not None and config.stage_timer.breached():
+        return config.stage_timer.breach()
+    return None
+
+
+def _supervise_process(
+    proc: Any, readers: list[_StreamReader], config: TurnConfig, state: _SupervisionState
+) -> BudgetBreach | None:
     breach: BudgetBreach | None = None
-
-    def stop_group() -> None:
-        _terminate_group(
-            proc,
-            TurnConfig(
-                sleeper=sleeper,
-                clock=clock,
-                killpg=killpg,
-                getpgid=getpgid,
-                grace_seconds=grace_seconds,
-                poll_interval=poll_interval,
-            ),
-        )
-
     try:
         while proc.poll() is None:
-            now = clock()
-            counts = [reader.count for reader in readers]
-            if counts != seen_counts:
-                seen_counts = counts
-                last_activity = now
-                streaming = True
-            file_state = _file_state(watch_path)
-            if file_state is not None and file_state != seen_file:
-                seen_file = file_state
-                last_activity = last_progress = now
-                streaming = False
-            if watch_tree and now - last_tree_scan >= TREE_SCAN_INTERVAL_SECONDS:
-                last_tree_scan = now
-                tree_state = _tree_mtime(watch_tree)
-                if tree_state is not None and tree_state != seen_tree:
-                    seen_tree = tree_state
-                    last_activity = last_progress = now
-                    streaming = False
-            if (tool_sampler is not None or child_lister is not None) and (
-                last_tool_scan is None or now - last_tool_scan >= TOOL_SCAN_INTERVAL_SECONDS
-            ):
-                last_tool_scan = now
-                live_children = _live_children(child_lister, proc.pid)
-                sample = tool_sampler(proc.pid) if tool_sampler is not None else None
-                if sample is not None:
-                    # why: a tool call is a response boundary, so its CPU time is progress, not part of a response.
-                    if seen_tools is not None and tool_cpu_used(seen_tools, sample) >= TOOL_CPU_PROGRESS_SECONDS:
-                        last_activity = last_progress = now
-                        streaming = False
-                    seen_tools = sample
-
-            stall_window = _stall_window(budgets, streaming, bool(live_children))
-            breach = _turn_breach(budgets, turn_observable, now, last_progress, stage)
-            if breach is None and budgets.stall_seconds > 0 and now - last_activity >= stall_window:
-                breach = BudgetBreach(stage, "stall", stall_window, now - last_activity)
-            if breach is None and stage_timer is not None and stage_timer.breached():
-                breach = stage_timer.breach()
+            now = config.clock()
+            _poll_progress(state, config, readers, proc.pid, now)
+            breach = _evaluate_breach(state, config, now)
             if breach is not None:
                 logger.warning("Stopping agent turn: %s", breach.describe())
-                if live_children:
-                    logger.warning("Live command(s) at stop: %s", describe_commands(live_children))
-                stop_group()
+                if state.live_children:
+                    logger.warning("Live command(s) at stop: %s", describe_commands(state.live_children))
+                _terminate_group(proc, config)
                 break
-            sleeper(poll_interval)
+            config.sleeper(config.poll_interval)
     except BaseException:
         # why: never leave the agent's process group running when supervision itself fails or is interrupted.
         with contextlib.suppress(Exception):
             if proc.poll() is None:
-                stop_group()
+                _terminate_group(proc, config)
         raise
+    return breach
 
-    # why: observed before the pipe-holder path below may stop the leftovers.
-    background_commands = _report_background_commands(child_lister, proc.pid) if breach is None else ()
+
+def _join_readers(readers: list[_StreamReader]) -> bool:
     for reader in readers:
         reader.join(timeout=READER_JOIN_TIMEOUT_SECONDS)
-    if any(reader.is_alive() for reader in readers):
+    return any(reader.is_alive() for reader in readers)
+
+
+def _drain_readers(proc: Any, readers: list[_StreamReader], config: TurnConfig) -> tuple[str, str]:
+    if _join_readers(readers):
         logger.warning("Agent pipes still open after exit; terminating the remaining process group")
         # why: start_new_session=True makes the agent's pid its process group id, which outlives the reaped agent.
         with contextlib.suppress(OSError):
-            if proc.pid != getpgid(0):
+            if proc.pid != config.getpgid(0):
                 # why: SIGKILL only for a holder that ignores SIGTERM; the final wait lets the readers drain the pipes.
                 for sig in (signal.SIGTERM, signal.SIGKILL):
-                    killpg(proc.pid, sig)
-                    for reader in readers:
-                        reader.join(timeout=READER_JOIN_TIMEOUT_SECONDS)
-                    if not any(reader.is_alive() for reader in readers):
+                    config.killpg(proc.pid, sig)
+                    if not _join_readers(readers):
                         break
         if any(reader.is_alive() for reader in readers):
             logger.warning("Agent pipes still open after SIGKILL; returning the output read so far")
-    stdout, stderr = readers[0].text(), readers[1].text()
+    return readers[0].text(), readers[1].text()
+
+
+def run_turn(
+    cmd: list[str] | TurnRequest,
+    *,
+    config: TurnConfig | None = None,
+    **kwargs: Any,
+) -> TurnResult:
+    request = _resolve_turn_request(cmd, config, kwargs)
+    cfg = request.config
+    start = cfg.clock()
+    try:
+        proc = _spawn_turn_process(request)
+    except OSError as exc:
+        return TurnResult(returncode=127, stderr=f"Failed to start agent: {exc}", elapsed_seconds=0.0)
+
+    readers = _start_stream_readers(proc)
+    state = _init_supervision_state(cfg, start)
+    breach = _supervise_process(proc, readers, cfg, state)
+    # why: observed before the pipe-holder path below may stop the leftovers.
+    background_commands = _report_background_commands(cfg.child_lister, proc.pid) if breach is None else ()
+    stdout, stderr = _drain_readers(proc, readers, cfg)
     returncode = proc.returncode if proc.returncode is not None else -1
     return TurnResult(
         returncode=returncode,
         stdout=stdout,
         stderr=stderr,
         breach=breach,
-        elapsed_seconds=max(0.0, clock() - start),
+        elapsed_seconds=max(0.0, cfg.clock() - start),
         stop_reason=parse_stop_reason(stdout, stderr),
         background_commands=background_commands,
     )

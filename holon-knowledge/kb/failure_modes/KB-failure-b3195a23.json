@@ -1,0 +1,21 @@
+{
+  "kb_id": "KB-failure-b3195a23",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "1970-01-01T00:00:00+00:00",
+  "updated_ts": "1970-01-01T00:00:00+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {},
+  "tags": [
+    "general",
+    "veto"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Failure mode in I-1795752556-self-doc-tests-45/P-1795752580-CLA-CO5.5/_",
+    "description": "Reproduced failure across executions with identical context. Execution counts live in the action index and ledgers.",
+    "action": "Review Loop halted without consensus after 2 iteration(s): not approved: reviewer 1 final verdict FAILED, reviewer 2 final verdict FAILED, reviewer 3 final verdict FAILED; final verdicts: Reviewer 1 FAILED (0/0/0); Reviewer 2 FAILED (0/0/0); Reviewer 3 FAILED (0/0/0)",
+    "symptoms": []
+  }
+}

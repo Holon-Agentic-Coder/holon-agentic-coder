@@ -3,9 +3,7 @@ from __future__ import annotations
 import functools
 import json
 import os
-import subprocess
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Mapping
 from typing import Any
 
 from sandbox_executor.budgets import resolve_review_ci_wait_seconds
@@ -15,18 +13,30 @@ from sandbox_executor.flow.github.adapter import GitHubAdapter
 from sandbox_executor.flow.github.ci import (
     _extract_failed_ci_check_names,
     _wait_for_ci_registration,
-    probe_ci_checks,
     resolve_ci_registration_timeout,
 )
 from sandbox_executor.flow.github.ci_failure_detail import (
     MAX_STEP_LOOKUPS,
-    STEP_LOOKUP_TIMEOUT_SECONDS,
     DetailLookup,
     bare_detail,
     describe_failure,
     gh_detail_lookup,
-    parse_run_id,
 )
+from sandbox_executor.flow.github.ci_final_head_rerun import BOOKKEEPING_PATH_PREFIXES as BOOKKEEPING_PATH_PREFIXES
+from sandbox_executor.flow.github.ci_final_head_rerun import _bookkeeping_only as _bookkeeping_only
+from sandbox_executor.flow.github.ci_final_head_rerun import _code_unchanged as _code_unchanged
+from sandbox_executor.flow.github.ci_final_head_rerun import _eligible_run_ids, _rerun_timing_once
+from sandbox_executor.flow.github.ci_final_head_rerun import _failed_run_ids as _failed_run_ids
+from sandbox_executor.flow.github.ci_final_head_rerun import _git_changed_paths as _git_changed_paths
+from sandbox_executor.flow.github.ci_final_head_rerun import _timing_gate_only as _timing_gate_only
+from sandbox_executor.flow.github.ci_final_head_seams import (
+    FinalHeadSeams,
+    Probe,
+    _failed_checks_by_name,
+    _FinalHeadCheck,
+    _git_gh_head,
+)
+from sandbox_executor.flow.github.ci_final_head_seams import _resolve_final_head as _resolve_final_head
 from sandbox_executor.flow.github.ci_head_checks import (
     CANCELLED_CONCLUSIONS,
     CHECK_RUNS_JQ,
@@ -37,71 +47,16 @@ from sandbox_executor.flow.github.ci_head_checks import (
     parse_check_runs,
 )
 from sandbox_executor.flow.github.ci_policy import summarise_ci_checks
-from sandbox_executor.flow.github.ci_reverify import approved_head_of
-from sandbox_executor.flow.github.ci_timing_rerun import _dispatch_rerun, _retry_timing_noise, _wait_for_rerun_start
+from sandbox_executor.flow.github.ci_timing_rerun import _retry_timing_noise
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, wait_for_pending_ci
 from sandbox_executor.knowledge import CredentialRedactor
 
 MAX_REASON_CHARS = 300
 
-BOOKKEEPING_PATH_PREFIXES = ("plans/", "executions/", "holon-knowledge/")
-
 PR_HEAD_LAGGED_REASON = "pull request head lagged the pushed head"
 NO_CHECKS_REASON = "no checks registered for the pushed head"
 LOOKUP_FAILED_REASON = "check-runs lookup failed for the pushed head"
 _UNREGISTERED = {"source": "unregistered", "total": 0, "pending": 0, "checks": []}
-
-Probe = Callable[[], dict[str, Any]]
-
-
-@dataclass(frozen=True)
-class FinalHeadSeams:
-    proxy_env: Mapping[str, str] = field(default_factory=dict)
-    policy: CiWaitPolicy | None = None
-    probe: Callable[[], dict[str, Any]] | None = None
-    detail_lookup: DetailLookup | None = None
-    registration_timeout: float | None = None
-    pushed_head: Callable[[], str | None] | None = None
-    pr_head: Callable[[], str | None] | None = None
-    rerun_dispatcher: Callable[[str], bool] | None = None
-    changed_paths: Callable[[str, str], list[str] | None] | None = None
-    approved_head: Callable[[], str | None] | None = None
-    github: GitHubAdapter | None = None
-
-
-@dataclass(frozen=True)
-class _FinalHeadCheck:
-    context: FlowContext
-    repo_dir: str
-    branch: str
-    seams: FinalHeadSeams
-    github: GitHubAdapter
-
-    def default_probe(self) -> Callable[[], dict[str, Any]]:
-        proxy_env = dict(self.seams.proxy_env)
-        return functools.partial(probe_ci_checks, self.repo_dir, self.branch, proxy_env=proxy_env, github=self.github)
-
-
-def _git_gh_head(check: _FinalHeadCheck) -> tuple[Callable[[], str | None], ...]:
-    env = {**os.environ, **check.seams.proxy_env, "DOCKER_CLI_HINTS": "false"}
-    repo_dir = check.repo_dir
-
-    def _local_head() -> str | None:
-        try:
-            proc = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=STEP_LOOKUP_TIMEOUT_SECONDS,
-                env=env,
-            )
-        except Exception:
-            return None
-        return proc.stdout.strip() or None if proc.returncode == 0 else None
-
-    return _local_head, lambda: check.github.pr_head_sha(check.branch, STEP_LOOKUP_TIMEOUT_SECONDS)
 
 
 def _pr_bucket(head_check: HeadCheck) -> tuple[str, str]:
@@ -162,11 +117,6 @@ def _select_probe(check: _FinalHeadCheck) -> tuple[Probe, str | None]:
 
 def _registered(ci_status: dict[str, Any]) -> bool:
     return ci_status.get("source") == "github_cli"
-
-
-def _failed_checks_by_name(ci_status: dict[str, Any], names: list[str]) -> list[dict[str, Any]]:
-    checks = [c for c in ci_status.get("checks") or [] if isinstance(c, dict)]
-    return [next((c for c in checks if c.get("name") == n), {"name": n}) for n in names]
 
 
 def _record(state: str, reason: str = "", **extra: Any) -> dict[str, Any]:
@@ -256,88 +206,6 @@ def _classify_settled(check: _FinalHeadCheck) -> tuple[dict[str, Any], dict[str,
     return classify_final_head(ci_status, wait_record, lookup), ci_status
 
 
-def _git_changed_paths(repo_dir: str, proxy_env: Mapping[str, str]) -> Callable[[str, str], list[str] | None]:
-    env = {**os.environ, **proxy_env, "DOCKER_CLI_HINTS": "false"}
-
-    def changed(approved: str, head: str) -> list[str] | None:
-        try:
-            proc = subprocess.run(
-                ["git", "diff", "--name-only", f"{approved}..{head}", "--"],
-                cwd=repo_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=STEP_LOOKUP_TIMEOUT_SECONDS,
-                env=env,
-            )
-        except Exception:
-            return None
-        if proc.returncode != 0:
-            return None
-        return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-
-    return changed
-
-
-def _bookkeeping_only(paths: list[str] | None) -> bool:
-    return bool(paths) and all(path.startswith(BOOKKEEPING_PATH_PREFIXES) for path in paths)
-
-
-def _code_unchanged(paths: list[str] | None) -> bool:
-    return paths is not None and all(path.startswith(BOOKKEEPING_PATH_PREFIXES) for path in paths)
-
-
-def _timing_gate_only(details: list[dict[str, Any]]) -> bool:
-    return bool(details) and all(detail.get("timing_gate") for detail in details)
-
-
-def _failed_run_ids(ci_status: dict[str, Any], names: list[str]) -> list[str] | None:
-    run_ids: list[str] = []
-    for check in _failed_checks_by_name(ci_status, names):
-        run_id = parse_run_id(check.get("link"))
-        if run_id is None:
-            return None
-        if run_id not in run_ids:
-            run_ids.append(run_id)
-    return run_ids
-
-
-def _resolve_final_head(check: _FinalHeadCheck) -> str | None:
-    default_pushed, default_pr = _git_gh_head(check)
-    return (check.seams.pushed_head or default_pushed)() or (check.seams.pr_head or default_pr)()
-
-
-def _eligible_run_ids(check: _FinalHeadCheck, record: dict[str, Any], ci_status: dict[str, Any]) -> list[str] | None:
-    if ci_status.get("pending", 0) > 0 or not _timing_gate_only(record["failed_details"]):
-        return None
-    approved = (check.seams.approved_head or (lambda: approved_head_of(check.context)))()
-    if not approved:
-        return None
-    measured_head = _resolve_final_head(check)
-    if not measured_head:
-        return None
-    paths = (check.seams.changed_paths or _git_changed_paths(check.repo_dir, check.seams.proxy_env))(
-        approved, measured_head
-    )
-    if not _code_unchanged(paths):
-        return None
-    return _failed_run_ids(ci_status, record["failed_checks"])
-
-
-def _rerun_timing_once(
-    check: _FinalHeadCheck, record: dict[str, Any], run_ids: list[str]
-) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    seams = check.seams
-    rerun = seams.rerun_dispatcher or functools.partial(_dispatch_rerun, check.github)
-    if not all(rerun(run_id) for run_id in run_ids):
-        return None
-    probe = _select_probe(check)[0]
-    policy = seams.policy or CiWaitPolicy(resolve_review_ci_wait_seconds(os.environ))
-    registration_timeout = resolve_ci_registration_timeout(seams.registration_timeout)
-    _wait_for_rerun_start(probe, record["failed_checks"], policy, registration_timeout)
-    return _classify_settled(check)
-
-
 def check_final_head_ci(
     context: FlowContext, repo_dir: str, branch: str, seams: FinalHeadSeams | None = None
 ) -> dict[str, Any]:
@@ -351,7 +219,9 @@ def check_final_head_ci(
         if record["state"] != "failed":
             return record
         eligible = functools.partial(_eligible_run_ids, check)
-        rerun_once = functools.partial(_rerun_timing_once, check)
+        rerun_once = functools.partial(
+            _rerun_timing_once, check, select_probe=_select_probe, classify_settled=_classify_settled
+        )
         return _retry_timing_noise(context.log, record, ci_status, eligible, rerun_once)
     except Exception as exc:
         return _record("unknown", CredentialRedactor.redact_text(str(exc))[:MAX_REASON_CHARS])

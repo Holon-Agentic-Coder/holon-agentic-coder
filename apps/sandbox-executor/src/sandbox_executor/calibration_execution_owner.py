@@ -1,5 +1,3 @@
-"""Resolve a bare execution id to its plan branch for calibration, never across plans."""
-
 from __future__ import annotations
 
 import logging
@@ -11,12 +9,8 @@ from sandbox_executor.plan_paths import split_plan_branch
 logger = logging.getLogger(__name__)
 
 
+# why: new-generation execution ids carry no hex, so two plans may own the same bare id; ambiguity resolves to nothing.
 def unique_plan_branch_of_execution(execution_id: str, executions_jsonl: str) -> str:
-    """The plan branch of a bare execution id, only when exactly one plan in executions.jsonl has that execution.
-
-    Execution ids are keyed on their full path: a new-generation id carries no hex, so two plans may each own an
-    execution of the same name. An ambiguous bare id resolves to nothing rather than to an arbitrary plan.
-    """
     content = read_merged_text(executions_jsonl)
     if content is not None:
         records = parse_summary_records(content)

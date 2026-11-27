@@ -1,11 +1,3 @@
-"""Stage 4 findings carried across a halted review pass: kept open, resolved first on resume, and blocking approval.
-
-A finding leaves the review loop only through a disposition a resolver that ran supplied: ``applied``, or ``rejected``
-with a stated reason. A pass that halts (a failed resolver turn, a budget stop) returns its open findings; the engine
-keeps them in the checkpoint (``FlowContext.carried_review_findings``) and the next ``run_review_loop`` sends them to
-the resolver before any new reviewer iteration. Until each has a disposition, consensus approval is refused.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -35,12 +27,10 @@ _DECIDED = frozenset({"applied", REJECTED})
 
 
 def _signature(row: FindingRow | FindingDisposition) -> tuple[str, str, int | None, str]:
-    """The cross-iteration signature of a finding row or disposition."""
     return finding_signature(row.severity, row.path, row.line, row.summary)
 
 
 def serialize_open(findings: Iterable[FindingRow], action_ids: Mapping[str, str]) -> list[dict[str, Any]]:
-    """Serialise open findings for the checkpoint, each with the ACT-FIND row that introduced it when known."""
     return [
         serialize_finding_for_resolver(
             row, introduced_by_action_id=action_ids.get(row.id) or action_ids.get(str(_signature(row)))
@@ -50,7 +40,6 @@ def serialize_open(findings: Iterable[FindingRow], action_ids: Mapping[str, str]
 
 
 def _row_from(entry: Any) -> FindingRow | None:
-    """One carried finding row from its checkpoint entry, or None when the entry is malformed."""
     if not isinstance(entry, Mapping) or not str(entry.get("id") or "").strip() or not entry.get("summary"):
         return None
     line = entry.get("line")
@@ -67,7 +56,6 @@ def _row_from(entry: Any) -> FindingRow | None:
 
 
 def deserialize_carried(raw: Any) -> tuple[list[FindingRow], dict[str, str]]:
-    """Return the carried ``(rows, action_ids)``; a malformed entry is skipped and logged, never treated as approved."""
     rows: list[FindingRow] = []
     action_ids: dict[str, str] = {}
     for entry in raw if isinstance(raw, list) else []:
@@ -84,7 +72,6 @@ def deserialize_carried(raw: Any) -> tuple[list[FindingRow], dict[str, str]]:
 
 
 def merge_findings(fresh: Sequence[FindingRow], carried: Sequence[FindingRow]) -> list[FindingRow]:
-    """Carried findings first, then fresh ones, de-duplicated by signature so the resolver sees each finding once."""
     merged: dict[tuple[str, str, int | None, str], FindingRow] = {}
     for row in (*carried, *fresh):
         merged.setdefault(_signature(row), row)
@@ -92,13 +79,11 @@ def merge_findings(fresh: Sequence[FindingRow], carried: Sequence[FindingRow]) -
 
 
 def undisposed(carried: Sequence[FindingRow], dispositions: Iterable[FindingDisposition]) -> list[FindingRow]:
-    """The carried rows without an ``applied`` or ``rejected`` disposition among ``dispositions``."""
     decided = {_signature(d) for d in dispositions if d.disposition in _DECIDED}
     return [row for row in carried if _signature(row) not in decided]
 
 
 def carried_blocker(carried: Sequence[FindingRow]) -> str:
-    """The consensus blocker naming carried findings that still have no disposition; empty when none remain."""
     if not carried:
         return ""
     names = ", ".join(f"{row.id} ({row.path}{'' if row.line is None else f':{row.line}'})" for row in carried)
@@ -107,8 +92,6 @@ def carried_blocker(carried: Sequence[FindingRow]) -> str:
 
 @dataclass(frozen=True)
 class CarriedPass:
-    """What a resolver pass on carried findings runs against and records through."""
-
     context: FlowContext
     target: ReviewTarget
     iteration: int
@@ -119,12 +102,6 @@ class CarriedPass:
 def resolve_carried_first(
     carried: Sequence[FindingRow], action_ids: Mapping[str, str], run: CarriedPass
 ) -> tuple[ResolverOutcome, list[FindingRow], tuple[FindingDisposition, ...]]:
-    """Run one resolver pass on the carried findings before any reviewer; return ``(outcome, open_rows, pending)``.
-
-    A failed pass writes nothing and leaves every row open. Otherwise its rejections, and its applied fixes once the
-    head moved, are recorded as ACT-RES rows; every other row stays open. An applied fix without a push is also returned
-    as ``pending`` for the loop to record later, as it does for its own unpushed fixes; it does not block approval.
-    """
     run.context.log(
         f"[Review Loop] Resolving {len(carried)} carried finding(s) from an earlier iteration before reviewing."
     )
@@ -138,6 +115,7 @@ def resolve_carried_first(
     decided = [
         d for d in outcome.dispositions if d.disposition == REJECTED or (outcome.pushed and d.disposition in _DECIDED)
     ]
+    # why: the loop records an unpushed fix later, as it does for its own, so it does not block approval
     pending = () if outcome.pushed else tuple(d for d in outcome.dispositions if d.disposition == "applied")
     run.recorder.record(run.iteration, decided)
     return outcome, undisposed(carried, run.recorder.all_dispositions), pending

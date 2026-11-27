@@ -1,12 +1,3 @@
-"""Classify and resolve the conflicts ``detect_stage_conflicts`` found, before a stage pushes.
-
-Classification keeps the detection order; resolution walks that order, so the unresolved paths a stage reports stay in
-the order git reported them. Conflicted ledgers are resolved by inserting incoming rows at their ``created_at`` slot
-with the kept rows unmoved, and never staged. Every other unmerged path is classified by
-:mod:`sandbox_executor.flow.conflict_classes` (the one classifier of the codebase), so a container stage resolves the
-same mechanical classes as the host target sync without an agent.
-"""
-
 from __future__ import annotations
 
 from enum import Enum
@@ -20,12 +11,8 @@ if TYPE_CHECKING:
     from sandbox_executor.flow.stage_conflicts import ConflictDetection
 
 
+# why: kept for the stage callers; the mechanical members mirror ConflictClass by value
 class ConflictKind(Enum):
-    """How a conflicting path is handled: the ``ConflictClass`` values, plus a ledger deferred to merge time.
-
-    Kept for the stage callers; the mechanical members mirror :class:`ConflictClass` by value.
-    """
-
     CODE = ConflictClass.CODE.value
     LEDGER = ConflictClass.LEDGER.value
     KB_TIMESTAMP_ONLY = ConflictClass.KB_TIMESTAMP_ONLY.value
@@ -38,22 +25,17 @@ def _classify_conflict(path: str, detection: ConflictDetection, repo_dir: str) -
     normalised = path.replace("\\", "/")
     if not _is_ledger_path(normalised):
         if not repo_dir or path in detection.probed_files:
-            # A probed-only path is not unmerged in this checkout, so it has no index stages to classify.
+            # why: a probed-only path is not unmerged in this checkout, so it has no index stages to classify
             return path, ConflictKind.CODE
         return path, ConflictKind(classify_path(repo_dir, path).value)
     if detection.probe_branch != "HEAD" and path in detection.probed_files:
-        # The probed branch is not checked out, so the working-tree copy is not its ledger; append-only
-        # ledgers reconcile at merge time and must not be rewritten in the operator's checkout here.
+        # why: the probed branch is not checked out, so the working-tree copy is not its ledger; append-only
+        # why: ledgers reconcile at merge time and must not be rewritten in the operator's checkout here
         return path, ConflictKind.DEFERRED_LEDGER
     return normalised, ConflictKind.LEDGER
 
 
 def classify_conflicts(detection: ConflictDetection, repo_dir: str = "") -> list[tuple[str, ConflictKind]]:
-    """Label each conflicting path, in detection order.
-
-    A ledger to resolve gets its ``/``-normalised path; a ledger probed on a branch other than ``HEAD`` is deferred.
-    With ``repo_dir``, an unmerged non-ledger path gets its ``conflict_classes`` class; otherwise it is ``CODE``.
-    """
     return [_classify_conflict(path, detection, repo_dir) for path in detection.conflicting_files]
 
 
@@ -66,16 +48,12 @@ def _resolve_one(repo_dir: str, path: str, kind: ConflictKind) -> bool:
 def resolve_classified_conflicts(
     repo_dir: str, classified: list[tuple[str, ConflictKind]]
 ) -> tuple[list[str], list[str]]:
-    """Resolve every mechanical path and return ``(resolved_paths, unresolved_paths)``, both in order.
-
-    Code conflicts are unresolved; a mechanical path whose resolver fails also counts as unresolved, so the caller
-    fails closed on it; deferred ledgers are skipped.
-    """
     resolved: list[str] = []
     unresolved: list[str] = []
     for path, kind in classified:
         if kind is ConflictKind.CODE:
             unresolved.append(path)
         elif kind is not ConflictKind.DEFERRED_LEDGER:
+            # why: a mechanical path whose resolver fails counts as unresolved so the caller fails closed on it
             (resolved if _resolve_one(repo_dir, path, kind) else unresolved).append(path)
     return resolved, unresolved

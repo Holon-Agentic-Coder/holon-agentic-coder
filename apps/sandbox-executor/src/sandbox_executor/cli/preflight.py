@@ -3,9 +3,11 @@ import sys
 import time
 from collections.abc import Callable
 
-from sandbox_executor import preflight_outage
+from sandbox_executor import preflight_cooldown, preflight_outage
 from sandbox_executor.agent_defaults import (
+    AGENT_IMAGE_MAPPING,
     Resolution,
+    normalise_agent_id,
     resolve_agent_runner,
     resolve_model,
 )
@@ -36,6 +38,16 @@ def flow_dispatches_agent(from_stage: str | None) -> bool:
     return str(from_stage).strip().lower() in _AGENT_FLOW_STAGES
 
 
+def _print_preflight_failure(result: PreflightResult, *, gave_up: bool, outage_seconds: float) -> None:
+    print(result.format_report(), file=sys.stderr)
+    if gave_up:
+        print(preflight_outage.format_outage_duration(outage_seconds), file=sys.stderr)
+    print(
+        "Aborting before any branch, checkpoint or ledger write. Use --skip-preflight to bypass this check.",
+        file=sys.stderr,
+    )
+
+
 def preflight_gate(
     agent: str,
     model: str,
@@ -48,6 +60,11 @@ def preflight_gate(
     if skip or preflight_skipped_by_env():
         logger.info("Pre-flight probe skipped (--skip-preflight or HOLON_SKIP_PREFLIGHT).")
         return None
+    agent_id = normalise_agent_id(agent)
+    image = AGENT_IMAGE_MAPPING.get(agent_id, f"holon/agent-{agent_id}")
+    if short_circuit := preflight_cooldown.short_circuit_result(agent, model, image):
+        _print_preflight_failure(short_circuit, gave_up=False, outage_seconds=0.0)
+        return short_circuit
     started_at = clock()
     timeout = resolve_timeout()
 
@@ -56,12 +73,7 @@ def preflight_gate(
 
     outcome = preflight_outage.wait_out_outage(probe, probe(), started_at, sleep=sleep, clock=clock)
     result = outcome.result
+    preflight_cooldown.sync_probe_result(result)
     if not result.ok:
-        print(result.format_report(), file=sys.stderr)
-        if outcome.gave_up:
-            print(preflight_outage.format_outage_duration(outcome.outage_seconds), file=sys.stderr)
-        print(
-            "Aborting before any branch, checkpoint or ledger write. Use --skip-preflight to bypass this check.",
-            file=sys.stderr,
-        )
+        _print_preflight_failure(result, gave_up=outcome.gave_up, outage_seconds=outcome.outage_seconds)
     return result

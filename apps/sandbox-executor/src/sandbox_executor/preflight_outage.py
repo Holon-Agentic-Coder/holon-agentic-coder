@@ -4,6 +4,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
+from sandbox_executor import preflight_cooldown
 from sandbox_executor.preflight import PreflightResult, PreflightStatus, matching_statuses
 from sandbox_executor.preflight_model_error import is_model_error
 
@@ -53,7 +54,11 @@ class OutageOutcome:
 
 
 def _never_waits(result: PreflightResult) -> bool:
+    if result.status is PreflightStatus.QUOTA_EXHAUSTED:
+        return True
     if matching_statuses(f"{result.output_excerpt}\n{result.hint}"):
+        return True
+    if preflight_cooldown.is_spend_limit_error(result.output_excerpt):
         return True
     if is_model_error(result.output_excerpt):
         return True
@@ -116,6 +121,8 @@ def wait_out_outage(
         )
         sleep(delay)
         waited += delay
+        if short_circuit := preflight_cooldown.short_circuit_result(first.agent, first.model, first.image):
+            return OutageOutcome(short_circuit, waited, clock() - started_at, gave_up=False, attempts=attempts)
         result = probe()
         reason = connectivity_reason(result)
         if reason is None:

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.flow.review import delta_review
 from sandbox_executor.flow.review.resolver import (
     DispositionRecorder,
     ResolverInput,
@@ -24,6 +25,8 @@ from sandbox_executor.review_target import ReviewTarget
 logger = logging.getLogger(__name__)
 
 _DECIDED = frozenset({"applied", REJECTED})
+_BLOCKED_ON_KEY = "blocked_on"
+_CLEAN_TREE_REASON = "pre-iteration carried-finding resolver produced no code diff (nothing to commit)"
 
 
 def _signature(row: FindingRow | FindingDisposition) -> tuple[str, str, int | None, str]:
@@ -99,6 +102,100 @@ class CarriedPass:
     recorder: DispositionRecorder
 
 
+@dataclass(frozen=True)
+class CarriedPrePassDeps:
+    probe_ci: Callable[[], Mapping[str, Any]] | None = None
+    sync_target: Callable[[ReviewTarget], tuple[ReviewTarget | None, str | None]] | None = None
+    record_rejected: Callable[[int, ResolverOutcome], None] | None = None
+
+
+@dataclass(frozen=True)
+class CarriedPrePassResult:
+    outcome: ResolverOutcome | None
+    carried_rows: list[FindingRow]
+    pending_dispositions: tuple[FindingDisposition, ...]
+    head_sha: str
+    head_changed: bool
+    resolver_error: str | None
+    blocked_on: dict[str, Any] | None
+
+
+def is_clean_tree_resolver_error(error: str | None) -> bool:
+    return bool(error and "nothing to commit" in error.lower())
+
+
+def is_sole_ci_finding(carried: Sequence[FindingRow]) -> bool:
+    return len(carried) == 1 and carried[0].id.startswith("FIND-CI-")
+
+
+def _ci_status_is_green(status: Mapping[str, Any] | None) -> bool:
+    return (
+        isinstance(status, Mapping)
+        and status.get("all_passed") is True
+        and status.get("failed", 0) == 0
+        and status.get("pending", 0) == 0
+    )
+
+
+def _active_blocked_on(context: FlowContext, head_sha: str) -> dict[str, Any] | None:
+    record = context.review_state.get(_BLOCKED_ON_KEY)
+    if not isinstance(record, Mapping):
+        return None
+    if record.get("head_sha") == head_sha:
+        return dict(record)
+    context.review_state.pop(_BLOCKED_ON_KEY, None)
+    return None
+
+
+def _clear_blocked_on(context: FlowContext) -> None:
+    context.review_state.pop(_BLOCKED_ON_KEY, None)
+
+
+def _set_blocked_on(
+    context: FlowContext, head_sha: str, carried: Sequence[FindingRow], reason: str
+) -> dict[str, Any]:
+    record = {
+        "head_sha": head_sha,
+        "finding_ids": [row.id for row in carried],
+        "reason": reason,
+    }
+    context.review_state[_BLOCKED_ON_KEY] = record
+    return dict(record)
+
+
+def _clear_stale_ci_finding(
+    run: CarriedPass, carried: Sequence[FindingRow], deps: CarriedPrePassDeps
+) -> tuple[bool, str, bool]:
+    head_sha = run.target.head_sha
+    if deps.probe_ci is None or not is_sole_ci_finding(carried):
+        return False, head_sha, False
+    if _ci_status_is_green(deps.probe_ci()):
+        return True, head_sha, False
+    if deps.sync_target is None:
+        return False, head_sha, False
+    synced, sync_err = deps.sync_target(run.target)
+    if sync_err is not None or synced is None or not synced.head_sha or synced.head_sha == head_sha:
+        return False, head_sha, False
+    return _ci_status_is_green(deps.probe_ci()), synced.head_sha, True
+
+
+def _handle_clean_tree_outcome(
+    carried: Sequence[FindingRow], run: CarriedPass, outcome: ResolverOutcome, deps: CarriedPrePassDeps
+) -> CarriedPrePassResult:
+    cleared, updated_head_sha, head_changed = _clear_stale_ci_finding(run, carried, deps)
+    if cleared:
+        _clear_blocked_on(run.context)
+        run.context.log(
+            f"[Review Loop] Cleared stale CI carried finding {carried[0].id} after clean-tree resolver pass "
+            f"(CI is green on {updated_head_sha[:8] or 'current head'})."
+        )
+        return CarriedPrePassResult(outcome, [], (), updated_head_sha, head_changed, None, None)
+    record = _set_blocked_on(run.context, updated_head_sha, carried, _CLEAN_TREE_REASON)
+    ids = ", ".join(record["finding_ids"])
+    run.context.log(f"[Review Loop] Halting once on blocked_on ({ids}): {_CLEAN_TREE_REASON}.")
+    return CarriedPrePassResult(outcome, list(carried), (), updated_head_sha, head_changed, None, record)
+
+
 def resolve_carried_first(
     carried: Sequence[FindingRow], action_ids: Mapping[str, str], run: CarriedPass
 ) -> tuple[ResolverOutcome, list[FindingRow], tuple[FindingDisposition, ...]]:
@@ -108,9 +205,10 @@ def resolve_carried_first(
     resolver_input = ResolverInput(findings=list(carried), action_ids=dict(action_ids))
     outcome = _invoke_resolver_pass(run.context, run.target, run.iteration, resolver_input, run.run_resolver_fn)
     if outcome.error:
-        run.context.log(
-            f"[Review Loop] Carried-finding resolver pass failed, no review iteration starts: {outcome.error}"
-        )
+        if not is_clean_tree_resolver_error(outcome.error):
+            run.context.log(
+                f"[Review Loop] Carried-finding resolver pass failed, no review iteration starts: {outcome.error}"
+            )
         return outcome, list(carried), ()
     decided = [
         d for d in outcome.dispositions if d.disposition == REJECTED or (outcome.pushed and d.disposition in _DECIDED)
@@ -119,3 +217,29 @@ def resolve_carried_first(
     pending = () if outcome.pushed else tuple(d for d in outcome.dispositions if d.disposition == "applied")
     run.recorder.record(run.iteration, decided)
     return outcome, undisposed(carried, run.recorder.all_dispositions), pending
+
+
+def run_pre_iteration_carried_pass(
+    carried: Sequence[FindingRow],
+    action_ids: Mapping[str, str],
+    run: CarriedPass,
+    deps: CarriedPrePassDeps,
+) -> CarriedPrePassResult:
+    existing = _active_blocked_on(run.context, run.target.head_sha)
+    if existing is not None:
+        run.context.log(
+            f"[Review Loop] Already halted on blocked_on for head {run.target.head_sha[:8]}: {existing.get('reason')}."
+        )
+        return CarriedPrePassResult(None, list(carried), (), run.target.head_sha, False, None, existing)
+    delta_review.record_addressed_findings(run.context, carried)
+    outcome, remaining, pending = resolve_carried_first(carried, action_ids, run)
+    if outcome.error is None:
+        _clear_blocked_on(run.context)
+        head_changed = bool(outcome.pushed and outcome.head_sha)
+        updated_sha = outcome.head_sha if head_changed and outcome.head_sha else run.target.head_sha
+        return CarriedPrePassResult(outcome, remaining, pending, updated_sha, head_changed, None, None)
+    if is_clean_tree_resolver_error(outcome.error):
+        return _handle_clean_tree_outcome(carried, run, outcome, deps)
+    if deps.record_rejected is not None:
+        deps.record_rejected(run.iteration, outcome)
+    return CarriedPrePassResult(outcome, remaining, (), run.target.head_sha, False, outcome.error, None)

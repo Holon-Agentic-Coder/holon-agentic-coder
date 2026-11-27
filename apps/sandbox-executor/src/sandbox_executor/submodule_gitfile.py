@@ -87,6 +87,25 @@ def _is_worktree_valid(
     return os.path.realpath(resolved) == os.path.realpath(submodule_dir)
 
 
+def _inspect_gitdir_target(
+    submodule_dir: str,
+    gitdir_raw: str,
+    require_relative: bool,
+    runner: GitRunnerCallable,
+) -> str | None:
+    if require_relative and _is_absolute_git_path(gitdir_raw):
+        return "non-relative gitdir path"
+    resolved_gitdir = (
+        gitdir_raw if os.path.isabs(gitdir_raw) else os.path.normpath(os.path.join(submodule_dir, gitdir_raw))
+    )
+    if not os.path.isdir(resolved_gitdir):
+        return f"unresolvable gitdir '{gitdir_raw}'"
+    worktree = _read_module_worktree(resolved_gitdir, runner)
+    if not _is_worktree_valid(resolved_gitdir, submodule_dir, worktree, require_relative):
+        return "invalid core.worktree"
+    return None
+
+
 def _inspect_submodule(
     repo_dir: str,
     rel_path: str,
@@ -103,17 +122,7 @@ def _inspect_submodule(
         return f"unreadable gitfile: {redact_agent_secrets(str(exc))}"
     if gitdir_raw is None:
         return "malformed gitdir pointer"
-    if require_relative and _is_absolute_git_path(gitdir_raw):
-        return "non-relative gitdir path"
-    resolved_gitdir = (
-        gitdir_raw if os.path.isabs(gitdir_raw) else os.path.normpath(os.path.join(submodule_dir, gitdir_raw))
-    )
-    if not os.path.isdir(resolved_gitdir):
-        return f"unresolvable gitdir '{gitdir_raw}'"
-    worktree = _read_module_worktree(resolved_gitdir, runner)
-    if not _is_worktree_valid(resolved_gitdir, submodule_dir, worktree, require_relative):
-        return "invalid core.worktree"
-    return None
+    return _inspect_gitdir_target(submodule_dir, gitdir_raw, require_relative, runner)
 
 
 def _resolve_module_gitdir(repo_dir: str, name: str, runner: GitRunnerCallable) -> str | None:

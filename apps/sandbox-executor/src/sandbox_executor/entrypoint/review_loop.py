@@ -307,8 +307,7 @@ def _assert_safe_git_args(args: list[str]) -> None:
 def _verify_before_push(repo_dir: str, iteration: int | None = None) -> tuple[bool, bool, str | None]:
     """Run lint, the changed-Markdown Prettier gate and tests before committing or pushing resolver changes.
 
-    A missing ``uv`` is a structured failure naming it (lint and tests unmeasured), never an exception. A failing
-    test run is recorded and classified by the test failure loop, and its classification joins the error.
+    A missing ``uv`` is a structured failure naming it (lint and tests unmeasured), never an exception.
     """
     try:
         lock_problem = check_lockfile(repo_dir)

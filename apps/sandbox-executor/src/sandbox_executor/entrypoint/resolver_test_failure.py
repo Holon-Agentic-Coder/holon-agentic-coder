@@ -1,5 +1,3 @@
-"""Record and diagnose the Stage 4 resolver's failing pre-push test run through the test failure loop."""
-
 from __future__ import annotations
 
 import functools
@@ -47,7 +45,6 @@ resolver_failure_loop: Callable[[str], TestFailureLoop | None] = _default_resolv
 
 
 def diagnose_resolver_failure(repo_dir: str, result: subprocess.CompletedProcess[str]) -> str:
-    """Record the failing run as STAGE_4 rows and return a one-line classification note, or "" when none ran."""
     try:
         loop = resolver_failure_loop(repo_dir)
         if loop is None:

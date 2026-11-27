@@ -201,7 +201,6 @@ def fake_keychain(monkeypatch) -> fake_keychain_helper.FakeKeychain:
 
 @pytest.fixture(autouse=True)
 def no_resolver_failure_diagnosis(monkeypatch):
-    """Keep a scripted failing resolver test run from starting real diagnosis re-runs; a test reinstalls a loop."""
     monkeypatch.setattr(resolver_test_failure, "resolver_failure_loop", lambda _repo_dir: None)
 
 

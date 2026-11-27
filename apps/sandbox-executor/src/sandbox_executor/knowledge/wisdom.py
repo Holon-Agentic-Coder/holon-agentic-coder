@@ -25,6 +25,7 @@ DEFAULT_WB_DIR = "holon-knowledge/wisdom"
 TEST_FAILURE_ACTION = "test_failure"
 MIN_SIGNATURE_RUNS = 2
 EXECUTIONS_LEDGER_NAME = "executions.jsonl"
+UNMEASURED_CLASSIFICATIONS = frozenset({"undiagnosed"})
 
 
 _INDEX_FIELDS: dict[str, tuple[str, ...]] = {
@@ -245,7 +246,8 @@ def _distinct_runs(rows: list[dict[str, Any]]) -> set[str]:
 
 
 def _signature_classification(rows: list[dict[str, Any]]) -> str:
-    return next((str(row["classification"]) for row in reversed(rows) if row.get("classification")), "unclassified")
+    measured = (row.get("classification") for row in reversed(rows))
+    return next((str(c) for c in measured if c and c not in UNMEASURED_CLASSIFICATIONS), "unclassified")
 
 
 def _signature_failure_item(signature: str, rows: list[dict[str, Any]]) -> dict[str, Any]:

@@ -11,7 +11,9 @@ import pytest
 from sandbox_executor.entrypoint.test_failure_record import LEDGER_RELPATH, STAGE_5, failing_ids_from_output
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.github import ci_reverify
-from sandbox_executor.flow.github.ci_reverify import _check_log_text, _gh_failed_check_output, reverify_and_report
+from sandbox_executor.flow.github.ci_reverify import _gh_failed_check_output, reverify_and_report
+from sandbox_executor.flow.github.stage5_test_failure import UNDIAGNOSED_CLASSIFICATION
+from sandbox_executor.flow.github.stage5_test_failure import check_log_text as _check_log_text
 from sandbox_executor.ledger.merged import read_merged_rows
 
 APPROVED = "a" * 40
@@ -86,7 +88,8 @@ def test_failed_final_head_check_appends_one_stage_5_row_with_ids_excerpts_and_c
     assert set(row["test_excerpts"]) == {ALPHA, BETA}
     assert "E       AssertionError: assert 2 == 3" in row["test_excerpts"][ALPHA]
     assert "E       ValueError: invalid literal" in row["test_excerpts"][BETA]
-    assert row["classification"]
+    assert row["classification"] == UNDIAGNOSED_CLASSIFICATION
+    assert row["action_origin"] == "calibration"
     assert re.fullmatch(r"[0-9a-f]{16}", row["failure_signature"])
     assert row["head_sha"] == FINAL
     assert row["run_id"] == f"E-3-CLA-CO5.5:{FINAL}"
@@ -149,3 +152,39 @@ def test_log_prefix_is_stripped_before_parsing() -> None:
     assert cleaned.splitlines()[0] == PYTEST_LINES[0]
     assert failing_ids_from_output(cleaned) == (ALPHA, BETA)
     assert _check_log_text("\n".join(PYTEST_LINES)) == "\n".join(PYTEST_LINES)
+
+
+def test_log_content_tabs_survive_prefix_stripping() -> None:
+    assert _check_log_text("unit-tests\tRun tests\tE       assert 'a\tb' == 'ab'") == "E       assert 'a\tb' == 'ab'"
+
+
+def test_branch_without_execution_segment_uses_one_unknown_id(context: FlowContext, tmp_path: Path) -> None:
+    context.execution_branch = "I-1-demo/P-2-CLA-CO5.5/_"
+    reverify_and_report(context, str(tmp_path), RED_RECORD, True, failed_output=lambda r, h: CAPTURED_LOG)
+
+    [row] = _test_failure_rows(tmp_path)
+    assert row["execution_id"] == "E-unknown"
+    assert row["run_id"] == f"E-unknown:{FINAL}"
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+
+def test_stage5_row_is_committed_and_pushed_leaving_a_clean_tree(context: FlowContext, tmp_path: Path) -> None:
+    remote, repo = tmp_path / "remote.git", tmp_path / "repo"
+    _git(tmp_path, "init", "--bare", "-q", str(remote))
+    _git(tmp_path, "init", "-q", "-b", BRANCH, str(repo))
+    for key, value in (("user.name", "t"), ("user.email", "t@example.com"), ("commit.gpgsign", "false")):
+        _git(repo, "config", key, value)
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "init")
+    _git(repo, "push", "-q", "origin", BRANCH)
+    context.target_worktree = str(repo)
+
+    reverified = reverify_and_report(context, str(repo), RED_RECORD, True, failed_output=lambda r, h: CAPTURED_LOG)
+
+    assert reverified["test_failure_record"]["pushed"] is True
+    assert _git(repo, "status", "--porcelain") == ""
+    assert _git(repo, "rev-parse", "HEAD") == _git(remote, "rev-parse", BRANCH)
+    assert "test_failure" in _git(remote, "show", BRANCH)

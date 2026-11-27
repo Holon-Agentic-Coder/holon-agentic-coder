@@ -25,15 +25,17 @@ def _excerpts(ids: tuple[str, ...], line: int, temp_dir: str) -> dict[str, str]:
     }
 
 
-def _write_failure_row(ledger: Path, run_id: str, ids: tuple[str, ...], stage: str = STAGE_3, line: int = 12) -> str:
-    excerpts = _excerpts(ids, line, f"/tmp/pytest-{run_id}")
+def _write_failure_row(
+    ledger: Path, run_id: str, ids: tuple[str, ...], stage: str = STAGE_3, classification: str = "introduced"
+) -> str:
+    excerpts = _excerpts(ids, 12 + len(run_id), f"/tmp/pytest-{run_id}")
     evidence = TestFailureEvidence(
         run_id=run_id,
         stage=stage,
         head_sha="c" * 40,
         failing_ids=ids,
         excerpts=excerpts,
-        classification="introduced",
+        classification=classification,
     )
     record_test_failure(str(ledger), evidence, branch=BRANCH, execution_id="E-3-CLA-CO5.5")
     return failure_signature(ids, excerpts)
@@ -49,8 +51,8 @@ def _failure_mode_files(kb_dir: Path) -> list[Path]:
 
 def test_signature_from_two_runs_creates_one_failure_mode_entry(tmp_path: Path) -> None:
     ledger, kb_dir = _layout(tmp_path)
-    signature = _write_failure_row(ledger, "r1", REPEATED_IDS, line=12)
-    assert _write_failure_row(ledger, "r2", REPEATED_IDS, stage=STAGE_5, line=48) == signature
+    signature = _write_failure_row(ledger, "r1", REPEATED_IDS)
+    assert _write_failure_row(ledger, "run-2", REPEATED_IDS, stage=STAGE_5) == signature
     single_signature = _write_failure_row(ledger, "r3", SINGLE_IDS)
 
     promoted = promote_repeated_failure_signatures(str(ledger), str(kb_dir))
@@ -66,10 +68,20 @@ def test_signature_from_two_runs_creates_one_failure_mode_entry(tmp_path: Path) 
     assert not (kb_dir / "failure_modes" / f"KB-failure-{single_signature}.json").exists()
 
 
+def test_later_undiagnosed_stage5_row_keeps_the_earlier_real_diagnosis(tmp_path: Path) -> None:
+    ledger, kb_dir = _layout(tmp_path)
+    _write_failure_row(ledger, "r1", REPEATED_IDS, classification="pre-existing")
+    _write_failure_row(ledger, "r2", REPEATED_IDS, stage=STAGE_5, classification="undiagnosed")
+
+    [item] = promote_repeated_failure_signatures(str(ledger), str(kb_dir))
+
+    assert item["payload"]["classification"] == "pre-existing"
+
+
 def test_two_rows_of_one_run_do_not_promote(tmp_path: Path) -> None:
     ledger, kb_dir = _layout(tmp_path)
     _write_failure_row(ledger, "r1", REPEATED_IDS)
-    _write_failure_row(ledger, "r1", REPEATED_IDS, line=30)
+    _write_failure_row(ledger, "r1", REPEATED_IDS, classification="flaky")
 
     assert promote_repeated_failure_signatures(str(ledger), str(kb_dir)) == []
     assert _failure_mode_files(kb_dir) == []

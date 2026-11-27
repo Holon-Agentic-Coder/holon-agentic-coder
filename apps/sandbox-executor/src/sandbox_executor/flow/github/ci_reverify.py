@@ -1,21 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
-import re
 import subprocess
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from sandbox_executor.entrypoint.test_failure_classify import FailureClass
-from sandbox_executor.entrypoint.test_failure_record import (
-    LEDGER_RELPATH,
-    STAGE_5,
-    TestFailureEvidence,
-    excerpts_by_test,
-    failing_ids_from_output,
-    record_test_failure,
-)
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.github.approval_invalidation import invalidate_approval
 from sandbox_executor.flow.github.ci_failure_detail import (
@@ -24,6 +13,7 @@ from sandbox_executor.flow.github.ci_failure_detail import (
     describe_failure,
     short_sha,
 )
+from sandbox_executor.flow.github.stage5_test_failure import record_stage5_test_failure
 from sandbox_executor.git import run_git
 
 GREEN = "green"
@@ -33,8 +23,6 @@ SKIPPED = "skipped"
 _VERDICT_BY_STATE = {"success": GREEN, "failed": RED, "skipped": SKIPPED}
 _SYMBOLIC_HEAD = "HEAD"
 MAX_FAILED_RUNS = 3
-UNDIAGNOSED_FINAL_HEAD_CLASSIFICATION = FailureClass.INTRODUCED.value
-_LOG_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\S*Z ?")
 
 FailedCheckOutput = Callable[[str, str], str]
 
@@ -145,33 +133,6 @@ def _gh_failed_check_output(repo_dir: str, final_head: str, run: Callable[..., A
         return ""
 
 
-def _check_log_text(output: str) -> str:
-    return "\n".join(_LOG_TIMESTAMP.sub("", line.rsplit("\t", 1)[-1]) for line in output.splitlines())
-
-
-def _execution_id_of(branch: str) -> str:
-    return next((part for part in branch.split("/") if part.startswith("E-")), "")
-
-
-def _record_stage5_test_failure(context: FlowContext, final_head: str, output: str) -> dict[str, Any] | None:
-    text = _check_log_text(output)
-    ids = failing_ids_from_output(text)
-    if not ids:
-        return None
-    branch = context.execution_branch or context.intent_branch or ""
-    execution_id = _execution_id_of(branch)
-    evidence = TestFailureEvidence(
-        run_id=f"{execution_id}:{final_head}",
-        stage=STAGE_5,
-        head_sha=final_head,
-        failing_ids=ids,
-        excerpts=excerpts_by_test(text, ids),
-        classification=UNDIAGNOSED_FINAL_HEAD_CLASSIFICATION,
-    )
-    ledger_path = os.path.join(context.target_worktree, *LEDGER_RELPATH)
-    return record_test_failure(ledger_path, evidence, branch=branch, execution_id=execution_id)
-
-
 def reverify_and_report(
     context: FlowContext,
     repo_dir: str,
@@ -188,5 +149,5 @@ def reverify_and_report(
         reverified["invalidation"] = invalidate_approval(context, reverified)
         if final_head:
             output = failed_output(repo_dir, final_head)
-            reverified["test_failure_record"] = _record_stage5_test_failure(context, final_head, output)
+            reverified["test_failure_record"] = record_stage5_test_failure(context, final_head, output)
     return reverified

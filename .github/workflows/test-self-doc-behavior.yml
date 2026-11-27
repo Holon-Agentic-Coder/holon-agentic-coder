@@ -1,0 +1,34 @@
+# why: intentionally ungated by the bookkeeping gate because it runs a fast AST equivalence check on self-doc PRs
+name: Test - Self-Doc Behavior
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  self-doc-behavior:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          # why: full history is needed so git show can read both base and head blobs
+          fetch-depth: 0
+
+      - name: Check self-doc AST behavior preservation
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels) }}
+        run: python3 scripts/check_self_doc_behavior.py --base "${BASE_SHA}" --head "${HEAD_SHA}" --auto-trigger

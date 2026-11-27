@@ -1,5 +1,3 @@
-"""Branch-selection and temporary checkout helpers for host-side ``sync_with_target`` boundaries."""
-
 from __future__ import annotations
 
 import os
@@ -19,12 +17,10 @@ def _rev_sha(worktree: str, ref: str) -> str:
 
 
 def _can_sync_worktree(worktree: str, target_branch: str) -> bool:
-    """True when ``worktree`` is a git repository with a resolvable ``origin/<target_branch>`` ref."""
     return bool(worktree and os.path.isdir(worktree) and _rev_sha(worktree, f"origin/{target_branch}"))
 
 
 def _best_branch_ref(worktree: str, branch: str) -> str | None:
-    """Prefer ``origin/<branch>`` only when it fast-forwards ``refs/heads/<branch>``; never drop local commits."""
     local_ref, remote_ref = f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"
     res = run_git(
         ["for-each-ref", "--format=%(refname) %(objectname)", local_ref, remote_ref],
@@ -42,17 +38,18 @@ def _best_branch_ref(worktree: str, branch: str) -> str | None:
         return remote_ref if remote_sha else None
     if not remote_sha or local_sha == remote_sha:
         return local_ref
+    # why: origin/<branch> wins only when it fast-forwards the local branch, so unpushed local commits are never dropped
     ff = run_git(["merge-base", "--is-ancestor", local_sha, remote_sha], cwd=worktree, check=False)
     return remote_ref if ff.returncode == 0 else local_ref
 
 
 def _checkout_active_branch(context: FlowContext, branch: str, ref: str | None = None) -> tuple[str, bool, str | None]:
-    """Check out ``branch`` without discarding unpushed local commits; return ``(prev, detached, error)``."""
     worktree = context.target_worktree
     ref = ref or _best_branch_ref(worktree, branch)
     if ref is None:
         return "", False, None
     local_ref = f"refs/heads/{branch}"
+    # why: checking out a ref the local branch is not an ancestor of would discard unpushed local commits
     if (
         ref != local_ref
         and (local_sha := _rev_sha(worktree, local_ref))
@@ -73,7 +70,6 @@ def _checkout_active_branch(context: FlowContext, branch: str, ref: str | None =
 
 
 def _restore_checked_out_branch(worktree: str, prev: str, detached: bool, active_branch: str) -> None:
-    """Return ``worktree`` to ``prev`` if the sync checked out ``active_branch`` from another ref."""
     if prev and prev != active_branch:
         args = ["checkout", "-q", "--detach", prev] if detached else ["checkout", "-q", prev]
         run_git(args, cwd=worktree, check=False)

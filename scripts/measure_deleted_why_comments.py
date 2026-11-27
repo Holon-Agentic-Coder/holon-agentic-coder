@@ -99,7 +99,7 @@ def find_hash_comment_start(line: str) -> int | None:
             if char == quote:
                 quote = None
             continue
-        if char in ("'", '"'):
+        if char in ("'", '"', "`"):
             quote = char
             continue
         if char == "#":

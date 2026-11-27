@@ -113,6 +113,7 @@ def test_ordinary_removed_comments_are_ignored(comment):
         ("app/worker.py", 'msg = "# because this is inside double quotes"'),
         ("app/worker.py", "msg = '# never treat single quotes as comment'"),
         ("app/worker.py", 'msg = "escaped \\" # because still quoted"'),
+        ("app/worker.py", "    holding a raw `/` or `#` is never read as the host"),
         ("app/worker.py", "x = 1  # noqa: E501 because long line"),
         ("app/worker.py", "x = 1  # type: ignore[assignment] because stub"),
         ("app/worker.py", "if cond:  # pragma: no cover because fallback"),

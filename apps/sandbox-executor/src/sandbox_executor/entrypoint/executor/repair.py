@@ -1,11 +1,26 @@
 import contextlib
 import os
+import subprocess
 import sys
 
 import sandbox_executor.entrypoint.executor as executor_facade
 from sandbox_executor.entrypoint.executor.commands import _CLEAN_GIT_ENV_VARS, _FALLBACK_SAFE_DIRECTORIES, _get_repo
 from sandbox_executor.entrypoint.git_locks import _remove_abandoned_locks, _resolve_local_ref
+from sandbox_executor.git import GitRunnerCallable
 from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.submodule_gitfile import find_broken_submodule_gitfiles, repair_submodule_gitfiles
+
+
+def _repo_git_runner(repo_dir: str) -> GitRunnerCallable:
+    def _run(
+        args: list[str],
+        cwd: str | None = None,
+        check: bool = True,
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        return _get_repo(cwd or repo_dir).run(args, check=check)
+
+    return _run
 
 
 def _is_dubious_ownership_error(err: str) -> bool:
@@ -72,6 +87,14 @@ def _probe_git_repo(repo_dir: str) -> tuple[bool, str]:
         err = (res_head.stderr or res_head.stdout).strip()
         return False, f"dangling HEAD: {err}"
 
+    broken_submodules = find_broken_submodule_gitfiles(
+        repo_dir,
+        require_relative=True,
+        run=_repo_git_runner(repo_dir),
+    )
+    if broken_submodules:
+        return False, f"submodule gitfile drift detected: {', '.join(broken_submodules)}"
+
     return True, ""
 
 
@@ -91,6 +114,19 @@ def _repair_git_repo(
 
     if _needs_head_restore(repo_dir, probe_err):
         _restore_head(repo_dir, default_branch or "main", plan_branch)
+
+    runner = _repo_git_runner(repo_dir)
+    if "submodule gitfile" in probe_err or find_broken_submodule_gitfiles(
+        repo_dir,
+        require_relative=True,
+        run=runner,
+    ):
+        repair_result = repair_submodule_gitfiles(repo_dir, require_relative=True, run=runner)
+        if repair_result.error:
+            print(
+                f"Warning: submodule gitfile repair failed: {redact_agent_secrets(repair_result.error)}",
+                file=sys.stderr,
+            )
 
     healthy, _ = _probe_git_repo(repo_dir)
     return healthy

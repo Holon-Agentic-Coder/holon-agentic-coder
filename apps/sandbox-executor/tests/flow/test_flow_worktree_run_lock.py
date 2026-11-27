@@ -1,5 +1,3 @@
-"""``holon flow`` takes the intent's run lock before it writes anything: refusal, other slugs, takeover and release."""
-
 from __future__ import annotations
 
 import hashlib
@@ -22,9 +20,7 @@ from tests.flow.helpers import _git
 
 _RUNNER_ARGS = ["--agent", "antigravity-agent", "--model", "gemini-3.8-flash-medium", "--dry-run", "--json"]
 
-#: Runs ``holon flow argv[2:]`` with a pipeline stub: ``ok`` returns, ``fail`` records a failed stage (exit 1), and
-#: ``block`` prints ``ready`` and waits for a signal.
-_FLOW_CHILD = """
+_FLOW_CHILD_WITH_STUBBED_PIPELINE = """
 import sys, time
 from unittest.mock import patch
 from sandbox_executor.cli import main
@@ -46,7 +42,6 @@ with patch("sandbox_executor.cli.run_flow_pipeline", pipeline), patch("sys.argv"
 
 @pytest.fixture
 def flow_setup(flow_repos, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
-    """The host checkout on main, an intent file per slug and a fake ``docker`` on PATH that logs its argv."""
     host, origin = flow_repos
     for slug in ("alpha", "beta"):
         (tmp_path / f"{slug}.json").write_text(json.dumps({"slug": slug, "target_branch": "main"}), encoding="utf-8")
@@ -64,8 +59,7 @@ def _argv(setup: dict[str, Path], slug: str, *extra: str) -> list[str]:
     return [str(setup["root"] / f"{slug}.json"), "--target-worktree", str(setup["host"]), *_RUNNER_ARGS, *extra]
 
 
-def _flow(argv: list[str]) -> tuple[int | str | None, list[object]]:
-    """Run ``holon flow`` in-process with the pipeline recorded; return the exit code and the pipeline calls."""
+def _run_flow_in_process(argv: list[str]) -> tuple[int | str | None, list[object]]:
     calls: list[object] = []
 
     def pipeline(**kwargs: object) -> dict[str, str]:
@@ -82,7 +76,6 @@ def _flow(argv: list[str]) -> tuple[int | str | None, list[object]]:
 
 
 def _repository_state(setup: dict[str, Path]) -> dict[str, object]:
-    """Refs of the host and origin, the worktree list, every flow checkpoint and the host's ledger digests."""
     host, root = setup["host"], setup["root"]
     ledgers = sorted((host / "holon-knowledge" / "ledger").rglob("*.jsonl"))
     return {
@@ -102,7 +95,7 @@ def _lock_record(setup: dict[str, Path], slug: str) -> dict[str, object]:
 def _assert_refused(setup: dict[str, Path], argv: list[str], holder: subprocess.Popen[str], capsys) -> None:
     before = _repository_state(setup)
 
-    code, calls = _flow(argv)
+    code, calls = _run_flow_in_process(argv)
 
     assert code == 1
     assert calls == []
@@ -143,7 +136,7 @@ def test_a_second_run_from_the_holders_checkpoint_refuses_and_leaves_it_unchange
 def test_another_slug_runs_while_the_first_is_held(flow_setup, lock_holder) -> None:
     holder = lock_holder(flow_setup["host"], "alpha", mode="hold")
 
-    code, calls = _flow(_argv(flow_setup, "beta"))
+    code, calls = _run_flow_in_process(_argv(flow_setup, "beta"))
 
     assert code == 0
     assert len(calls) == 1
@@ -157,7 +150,7 @@ def test_the_lock_of_a_killed_holder_is_taken_over_and_its_containers_swept(flow
     holder.wait(timeout=10)
 
     with caplog.at_level(logging.WARNING, logger="sandbox_executor.flow.run_lock"):
-        code, calls = _flow(_argv(flow_setup, "alpha"))
+        code, calls = _run_flow_in_process(_argv(flow_setup, "alpha"))
 
     assert code == 0
     assert len(calls) == 1
@@ -179,7 +172,7 @@ def test_the_lock_of_a_killed_holder_is_taken_over_and_its_containers_swept(flow
 )
 def test_every_exit_releases_the_lock_for_the_next_run(flow_setup, mode, halt, codes, caplog) -> None:
     child = subprocess.Popen(
-        [sys.executable, "-c", _FLOW_CHILD, mode, *_argv(flow_setup, "alpha")],
+        [sys.executable, "-c", _FLOW_CHILD_WITH_STUBBED_PIPELINE, mode, *_argv(flow_setup, "alpha")],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,

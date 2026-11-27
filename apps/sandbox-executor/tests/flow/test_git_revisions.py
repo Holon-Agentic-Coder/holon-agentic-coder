@@ -1,5 +1,3 @@
-"""Branch-name-to-revision qualification on real git repositories: local bare origin only, no network."""
-
 from __future__ import annotations
 
 import subprocess
@@ -20,7 +18,6 @@ def git(cwd: Path, *args: str) -> str:
 
 @pytest.fixture
 def repo(tmp_path: Path) -> SimpleNamespace:
-    """A host clone with a local-only nested branch and a nested branch that exists only as a remote-tracking ref."""
     origin = tmp_path / "origin.git"
     git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     host = tmp_path / "host"

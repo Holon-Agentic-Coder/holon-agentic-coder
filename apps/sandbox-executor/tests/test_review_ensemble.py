@@ -1,9 +1,3 @@
-"""Tests for the reviewer ensemble: trailer parsing, reviewer turns, isolation and the unanimity consensus.
-
-Every reviewer turn runs through fakes: a fake runner factory and a fake turn runner that writes chosen report text,
-writes nothing, raises or reports a budget breach. No real runner, gh, git remote or Docker is touched.
-"""
-
 from __future__ import annotations
 
 import json
@@ -52,21 +46,14 @@ ONE_NIT = ParsedTrailer(
 
 
 def report(body: str, parsed: ParsedTrailer = CLEAN) -> str:
-    """A review report with ``body`` followed by the canonical trailer."""
     return f"# Review\n\n{body}\n\n{render_review_trailer(parsed)}\n"
 
 
 def trailer(payload: str) -> str:
-    """A report whose trailer block holds ``payload`` verbatim."""
     return f"# Review\n\nText.\n\n{TRAILER_OPEN}\n{payload}\n{TRAILER_CLOSE}\n"
 
 
-# --- Fakes ---------------------------------------------------------------------------------------------------------
-
-
 class FakeRunner:
-    """Stands in for an ``AgentRunner``: the argv carries the prompt, and credential cleanups are counted."""
-
     def __init__(self) -> None:
         self.cleanups = 0
         self.built: list[tuple[str, str, str]] = []
@@ -81,8 +68,6 @@ class FakeRunner:
 
 @dataclass
 class FakeRunnerFactory:
-    """Returns one :class:`FakeRunner` per call, or raises ``SystemExit`` like ``get_runner`` for an unknown agent."""
-
     unknown: bool = False
     runners: list[FakeRunner] = field(default_factory=list)
 
@@ -96,19 +81,12 @@ class FakeRunnerFactory:
 
 @dataclass
 class Call:
-    """What the fake turn runner saw on one call."""
-
     prompt: str
     watch_path: str
     existing_reports: list[str]
 
 
 class FakeTurnRunner:
-    """Plays one action per call: ``("write", text)``, ``("nothing",)``, ``("raise", exc)`` or ``("breach", text)``.
-
-    Calls beyond the scripted actions write nothing (follow-up turns after a breach).
-    """
-
     def __init__(self, repo_dir: Path, actions: Sequence[tuple[Any, ...]]) -> None:
         self.repo_dir = repo_dir
         self.actions = list(actions)
@@ -153,7 +131,6 @@ def make_request(repo_dir: Path, diff: str = "diff --git a/src/app.py b/src/app.
 
 
 def seams(turn_runner: FakeTurnRunner, factory: FakeRunnerFactory | None = None) -> dict[str, Any]:
-    """Fake seams with generous budgets built directly, never from the environment."""
     return {
         "template_text": TEMPLATE_PATH.read_text(encoding="utf-8"),
         "turn_runner": turn_runner,
@@ -168,9 +145,6 @@ def reviewer(tmp_path: Path, actions: Sequence[tuple[Any, ...]], **extra: Any) -
     factory = extra.pop("factory", FakeRunnerFactory())
     result = run_reviewer(make_request(tmp_path), 1, "claude-agent", "model-x", **seams(turn_runner, factory))
     return result, factory
-
-
-# --- Trailer -------------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("parsed", [CLEAN, ONE_NIT], ids=["clean", "one-nit"])
@@ -234,9 +208,6 @@ def test_malformed_missing_and_inconsistent_trailers_are_rejected(text: str) -> 
         parse_review_trailer(text)
 
 
-# --- Prompt --------------------------------------------------------------------------------------------------------
-
-
 def test_prompt_carries_diff_description_report_path_and_contract(tmp_path: Path) -> None:
     request = make_request(tmp_path, diff="+literal {diff} and {pr_description} stay as text\n")
     prompt = build_reviewer_prompt(TEMPLATE_PATH.read_text(encoding="utf-8"), request, "R/report.md")
@@ -247,7 +218,8 @@ def test_prompt_carries_diff_description_report_path_and_contract(tmp_path: Path
     assert TRAILER_OPEN in prompt and TRAILER_CLOSE in prompt
     assert "gh pr merge" in prompt
     assert all(rule in prompt for rule in REVIEWER_PROHIBITIONS)
-    assert "{reviewer_1_id}" in prompt  # unknown placeholders are left alone
+    unknown_placeholder_left_alone = "{reviewer_1_id}"
+    assert unknown_placeholder_left_alone in prompt
     assert "review only the change diff and change description above" in prompt
 
 
@@ -267,7 +239,7 @@ REVIEWER_PROHIBITIONS = (
 
 @pytest.mark.parametrize("rule", REVIEWER_PROHIBITIONS)
 def test_prompt_contract_forbids_writes_beyond_the_report(tmp_path: Path, rule: str) -> None:
-    # A bare template proves the module's own contract carries each rule, whatever the loop template says.
+    # why: a bare template proves the module's own contract carries each rule, whatever the loop template says
     prompt = build_reviewer_prompt("Review {target}.", make_request(tmp_path), "R/report.md")
     assert rule in prompt
 
@@ -278,9 +250,6 @@ def test_prompt_appends_diff_and_description_when_the_template_lacks_them(tmp_pa
     assert "Change description:\n\n```markdown\nPrints a greeting.\n```" in prompt
     assert "Change diff:\n\n```diff\n" in prompt and "print('hi')" in prompt
     assert "review only the change diff and change description above" in prompt
-
-
-# --- Reviewer turns ------------------------------------------------------------------------------------------------
 
 
 def test_valid_report_completes(tmp_path: Path) -> None:
@@ -316,7 +285,7 @@ def test_failures_give_failed_without_verdict(tmp_path: Path, actions: list[tupl
 
 
 def test_follow_up_breach_fails_the_reviewer_and_the_consensus(tmp_path: Path) -> None:
-    # The clean first turn leaves no trailer, so a re-prompt runs; it breaches yet writes a valid APPROVED report.
+    # why: the first turn leaves no trailer, so a re-prompt runs; it breaches yet writes a valid APPROVED report
     result, _ = reviewer(tmp_path, [("write", "# Review\n\nStill thinking.\n"), ("breach", report("Late."))])
     assert result.status is ReviewerStatus.FAILED
     assert result.verdict is None
@@ -378,9 +347,6 @@ def test_format_agent_cmd_for_display_in_review_ensemble() -> None:
     assert "y" * 100 + "..." in formatted
 
 
-# --- Ensemble isolation --------------------------------------------------------------------------------------------
-
-
 def test_no_reviewer_sees_another_reviewers_report(tmp_path: Path) -> None:
     marker = "DISTINCTIVE-REPORT-TEXT-{}"
     actions = [("write", report(marker.format(index))) for index in (1, 2, 3)]
@@ -435,7 +401,7 @@ def test_unremovable_earlier_report_fails_the_remaining_reviewers(
     turn_runner = FakeTurnRunner(tmp_path, [("write", report(f"Clean {index}.")) for index in (1, 2, 3)])
 
     def remove_scratch(repo_dir: str, rel: str) -> None:
-        # Reviewer 1 prepares its own directory first; only removing it after its turn fails.
+        # why: reviewer 1 prepares its own directory first; only removing it after its turn fails
         if rel == first_scratch and turn_runner.calls:
             raise OSError("permission denied")
         real_remove(repo_dir, rel)
@@ -454,8 +420,6 @@ def test_unremovable_earlier_report_fails_the_remaining_reviewers(
 
 
 class SymlinkingTurnRunner(FakeTurnRunner):
-    """After the last scripted turn, moves the iteration directory outside the scratch root and symlinks it back."""
-
     def __init__(self, repo_dir: Path, actions: Sequence[tuple[Any, ...]], outside: Path) -> None:
         super().__init__(repo_dir, actions)
         self.outside = outside
@@ -509,7 +473,6 @@ def test_uncleared_symlinked_iteration_fails_every_reviewer_without_dispatch(tmp
 
 
 def _snapshot(root: Path) -> dict[str, str]:
-    """Every file under ``root`` with its content, and every directory, keyed by relative path."""
     return {
         str(path.relative_to(root)): path.read_text(encoding="utf-8") if path.is_file() else "<dir>"
         for path in sorted(root.rglob("*"))
@@ -589,9 +552,6 @@ def test_ensemble_defaults_to_three_reviewers(tmp_path: Path) -> None:
     assert len(turn_runner.calls) == 3
     assert [result.index for result in results] == [1, 2, 3]
     assert [result.status for result in results] == [ReviewerStatus.COMPLETED] * 3
-
-
-# --- Consensus -----------------------------------------------------------------------------------------------------
 
 
 def completed(index: int, parsed: ParsedTrailer = CLEAN) -> ReviewerResult:
@@ -703,9 +663,6 @@ def test_reviewer_paths_reject_non_integer_indices(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         reviewer_report_rel(1, True)
     assert not os.path.exists(tmp_path / "tmp")
-
-
-# --- Result Transport Serialisation Tests --------------------------------------------------------------------------
 
 
 def test_serialize_and_deserialize_reviewer_result_roundtrip() -> None:

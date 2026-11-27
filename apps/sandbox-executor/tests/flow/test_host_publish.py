@@ -1,5 +1,3 @@
-"""The standalone-command host helpers, and the host push of a failed planner's or executor's branch."""
-
 from __future__ import annotations
 
 import os
@@ -118,8 +116,6 @@ def test_prepare_worktree_keeps_a_worktree_that_is_not_on_the_default_branch(flo
 
 
 class _FailingPlanner(FakeRoleAgents):
-    """A planner that commits its plan branch, then exits non-zero (as a budget-salvage failure does)."""
-
     def _plan(self, work, args, kwargs):
         super()._plan(work, args, kwargs)
         return 3

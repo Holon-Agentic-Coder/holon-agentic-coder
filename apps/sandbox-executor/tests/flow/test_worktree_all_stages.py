@@ -1,9 +1,3 @@
-"""Every stage works in the host worktree and no container touches the remote: the host fetches and pushes.
-
-Hermetic: real git repositories under ``tmp_path`` with a local bare origin, fake role dispatchers and a recorded
-``docker run`` argv. No Docker daemon, ``gh`` or network is used.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -27,14 +21,12 @@ from tests.flow.helpers import FakeRoleAgents, _dispatch_context, _git, stage4_h
 from tests.test_host_worktree_sandbox import _host_writable, _mount_pairs
 from tests.worktree_repo_templates import build_seeded_primary, copy_of
 
-#: The roles grouped by the launch path they take: production branches on the intent creator only (its intent file),
-#: so the other three run the same lines and arcs and share one case that checks each of them.
+# why: production branches on the intent creator only, so the other three roles share one case
 ROLE_GROUPS = [("intent-creator",), ("planner", "executor", "review-loop")]
 ROLE_GROUP_IDS = ["intent-creator", "planner+executor+review-loop"]
 SSH_ORIGIN = "git@example.com:org/repo.git"
 REMOTE_VERBS = {"clone", "fetch", "pull", "push", "ls-remote", "remote"}
-#: Methods of ``GitRepository`` that speak to a remote.
-REMOTE_METHODS = {"fetch", "push", "pull", "clone"}
+REMOTE_GIT_REPOSITORY_METHODS = {"fetch", "push", "pull", "clone"}
 ENTRYPOINT_DIR = Path(git_flow.__file__).parent / "entrypoint"
 APP_DIR = Path(__file__).resolve().parents[2]
 
@@ -43,7 +35,6 @@ APP_DIR = Path(__file__).resolve().parents[2]
 def sandbox_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
 ) -> tuple[Path, Path]:
-    """A primary checkout on main plus its flow worktree and a sibling worktree, as a mounted run has them."""
     monkeypatch.setattr(git_flow, "SANDBOX_CONTAINER_UID", os.getuid())
     monkeypatch.setattr(git_flow, "SANDBOX_CONTAINER_GID", os.getgid())
     main = copy_of(tmp_path_factory, tmp_path, "worktree-all-stages-repo", build_seeded_primary) / "repo"
@@ -54,7 +45,6 @@ def sandbox_repo(
 
 
 def _docker_run(role: str, worktree: Path, tmp_path: Path, env: dict[str, str] | None = None) -> tuple[list[str], dict]:
-    """Run ``run_docker_container`` for ``role`` with docker recorded; return the argv and the env-file variables."""
     argvs: list[list[str]] = []
     secrets: dict[str, str] = {}
     intent_file = tmp_path / "intent.json"
@@ -93,9 +83,6 @@ def _docker_run(role: str, worktree: Path, tmp_path: Path, env: dict[str, str] |
     return docker[0], secrets
 
 
-# --- the intent and plan containers are started in the mounted worktree -------------------------------------------
-
-
 @pytest.mark.parametrize("role", ["intent-creator", "planner"])
 def test_the_intent_and_plan_containers_mount_the_worktree_exactly_as_the_executor_does(role, sandbox_repo, tmp_path):
     _main, flow = sandbox_repo
@@ -106,7 +93,7 @@ def test_the_intent_and_plan_containers_mount_the_worktree_exactly_as_the_execut
     assert git_flow.sandbox_worktree_mounts(str(flow), SANDBOX_WORKSPACE_MOUNT, role) == executor_mounts
     for pair in _mount_pairs(executor_mounts):
         assert pair in argv
-    # The workspace pin travels in the env-file with every other HOLON_* item, never on the argv.
+    # why: the workspace pin travels in the env-file with every other HOLON_* item, never on the argv
     assert env_file["HOLON_TARGET_WORKTREE"] == SANDBOX_WORKSPACE_MOUNT
     assert not any(a.startswith("HOLON_") for a in argv)
     assert f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}" in argv
@@ -126,9 +113,6 @@ def test_no_container_gets_an_ssh_agent_a_credential_helper_or_a_repository_url(
         assert "REPO_URL" not in joined and "GH_REPO" not in joined, role
 
 
-# --- the sibling-worktree protections hold for the intent and plan mounts -----------------------------------------
-
-
 @pytest.mark.parametrize("role", ["intent-creator", "planner"])
 def test_the_sibling_worktree_protections_hold_for_the_intent_and_plan_mounts(role, sandbox_repo):
     main, flow = sandbox_repo
@@ -140,20 +124,15 @@ def test_the_sibling_worktree_protections_hold_for_the_intent_and_plan_mounts(ro
     assert not _host_writable(args, str(common / "worktrees" / "new-entry" / "HEAD"))
     assert not _host_writable(args, str(common / "config"))
     assert not _host_writable(args, str(common / "hooks" / "pre-commit"))
-    # The mounted worktree's own administrative directory stays writable, so its commits work.
+    # why: the mounted worktree's own administrative directory stays writable, so its commits work
     assert _host_writable(args, str(common / "worktrees" / "flow-demo" / "HEAD"))
     assert _host_writable(args, str(flow / "README.md"))
-    # No sibling worktree is reachable at all.
     sibling = str(main.parent / "sibling")
     assert not any(pair.split(":")[0] == sibling or pair.startswith(sibling + os.sep) for pair in _mount_pairs(args))
     assert not _host_writable(args, sibling + "/README.md")
 
 
-# --- no entrypoint issues a remote git operation ------------------------------------------------------------------
-
-
 def _git_verbs(tree: ast.AST) -> list[tuple[int, str]]:
-    """Every git verb an entrypoint names: ``["git", verb, ...]`` literals and ``repo.run([verb, ...])`` calls."""
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.List) and node.elts and all(isinstance(e, ast.Constant) for e in node.elts[:1]):
@@ -181,7 +160,9 @@ def test_no_entrypoint_names_a_remote_git_verb_or_method(path):
     remote_calls = [
         node.lineno
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in REMOTE_METHODS
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in REMOTE_GIT_REPOSITORY_METHODS
     ]
 
     assert remote_verbs == [], f"{path.name} issues remote git verbs: {remote_verbs}"
@@ -223,12 +204,8 @@ def test_the_intent_creator_issues_no_remote_git_command_when_it_runs(sandbox_re
     assert _git(flow, "rev-parse", "--abbrev-ref", "HEAD") == "I-1-demo/_"
 
 
-# --- an SSH origin: the host fetches and pushes through the worktree's remote, so every stage completes -----------
-
-
 @pytest.fixture
 def ssh_origin_host(flow_repos):
-    """The flow host repository whose ``origin`` is an SSH URL that git rewrites to the local bare repository."""
     host, origin = flow_repos
     _git(host, "remote", "set-url", "origin", SSH_ORIGIN)
     _git(host, "config", f"url.{origin}.insteadOf", SSH_ORIGIN)
@@ -247,10 +224,9 @@ def test_every_stage_completes_when_the_worktrees_origin_is_an_ssh_url(ssh_origi
     for stage in ("intent", "plan", "execute"):
         assert results[stage].status == StageStatus.SUCCESS, results[stage].error
     assert agents.roles() == ["intent-creator", "planner", "executor"]
-    # The host pushed what each container committed, through origin.
     for branch in (ctx.intent_branch, ctx.plan_branch, ctx.execution_branch):
         assert _git(origin, "rev-parse", f"refs/heads/{branch}") == _git(host, "rev-parse", f"refs/heads/{branch}")
-    # The fake containers contacted no remote: their calls carry no credentials and see the SSH URL untouched.
+    # why: the fake containers contacted no remote, so the SSH URL is untouched
     assert _git(host, "config", "--get", "remote.origin.url") == SSH_ORIGIN
 
 
@@ -262,7 +238,6 @@ def test_the_review_resolver_head_is_pushed_by_the_host_through_an_ssh_origin(ss
         assert PipelineEngine(ctx).run()["execute"].status == StageStatus.SUCCESS
     branch = ctx.execution_branch
     old_sha = _git(host, "rev-parse", f"refs/heads/{branch}")
-    # The resolver container commits a fix in the mounted worktree; the host pushes that commit.
     (host / "src" / "app.py").write_text("print('fixed')\n", encoding="utf-8")
     _git(host, "add", "-A")
     _git(host, "commit", "-qm", "fix(review): resolve findings")
@@ -290,7 +265,7 @@ def test_a_hostile_resolver_head_sha_is_refused_and_a_diverged_one_is_never_forc
         assert pushed is False
         assert error is not None and "refusing to push" in error
 
-    # A head that is not a descendant of the pushed tip is a non-fast-forward: refused, the remote is untouched.
+    # why: a head that does not descend from the pushed tip is a non-fast-forward and must be refused
     _git(host, "checkout", "-q", "--detach", "main")
     (host / "diverged.txt").write_text("x", encoding="utf-8")
     _git(host, "add", "-A")
@@ -299,9 +274,6 @@ def test_a_hostile_resolver_head_sha_is_refused_and_a_diverged_one_is_never_forc
     assert pushed is False
     assert error is not None and error.startswith("Resolver push failed")
     assert _git(origin, "rev-parse", f"refs/heads/{branch}") == old_sha
-
-
-# --- a stale HOLON_REPO_URL changes nothing -----------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("roles", ROLE_GROUPS, ids=ROLE_GROUP_IDS)
@@ -331,9 +303,6 @@ def test_a_stale_repository_url_leaves_the_intent_stage_outcome_unchanged(flow_r
 
     assert stale.status == StageStatus.SUCCESS, stale.error
     assert stale.payload["dispatched"] is True
-
-
-# --- a failed host fetch or push is named -------------------------------------------------------------------------
 
 
 def test_a_failed_host_push_fails_the_intent_stage_with_the_named_error(flow_repos, tmp_path):

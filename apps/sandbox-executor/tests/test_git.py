@@ -1,5 +1,3 @@
-"""Unit tests for centralised Git repository abstraction."""
-
 import ast
 import subprocess
 from pathlib import Path
@@ -21,14 +19,12 @@ from sandbox_executor.git import (
 
 
 def test_run_git_success() -> None:
-    """Verify run_git executes successfully and captures output."""
     res = run_git(["rev-parse", "--is-inside-work-tree"], check=True)
     assert res.returncode == 0
     assert res.stdout.strip() == "true"
 
 
 def test_run_git_failure_raises() -> None:
-    """Verify run_git raises RuntimeError with redacted output on failure when check=True."""
     with pytest.raises(RuntimeError) as exc_info:
         run_git(["rev-parse", "--verify", "refs/heads/nonexistent_test_branch_12345"], check=True)
     assert "Git command failed with exit code" in str(exc_info.value)
@@ -36,13 +32,11 @@ def test_run_git_failure_raises() -> None:
 
 
 def test_run_git_failure_no_check() -> None:
-    """Verify run_git returns CompletedProcess without raising when check=False."""
     res = run_git(["rev-parse", "--verify", "refs/heads/nonexistent_test_branch_12345"], check=False)
     assert res.returncode != 0
 
 
 def test_run_git_timeout() -> None:
-    """Verify run_git raises TimeoutError on subprocess timeout."""
     with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["git", "status"], timeout=0.1)):
         with pytest.raises(TimeoutError) as exc_info:
             run_git(["status"], timeout=1)
@@ -50,29 +44,23 @@ def test_run_git_timeout() -> None:
 
 
 def test_resolve_ref_and_get_head_commit() -> None:
-    """Verify resolve_ref resolves valid references and get_head_commit returns 40-char SHA."""
     head_sha = get_head_commit(".")
     assert head_sha is not None
     assert len(head_sha) == 40
     assert all(c in "0123456789abcdefABCDEF" for c in head_sha)
 
-    # Empty and invalid refs
     assert resolve_ref(".", "") is None
     assert resolve_ref(".", "invalid_ref_that_does_not_exist_98765") is None
 
 
 def test_branch_exists() -> None:
-    """Verify branch_exists correctly detects existing and non-existing branches."""
-    # Non-existing branch
     assert not branch_exists(".", "branch_never_created_987654321")
 
-    # Local HEAD branch or main
     has_main = branch_exists(".", "main") or branch_exists(".", "HEAD")
     assert has_main is True
 
 
 def test_get_diff_numstat_parsing() -> None:
-    """Verify get_diff_numstat parses textual and binary numstats correctly."""
     mock_stdout = "10\t5\tfile1.py\n-\t-\tbinary.png\n2\t0\tdocs/README.md\n"
     with patch("sandbox_executor.git.run_git") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout=mock_stdout)
@@ -85,7 +73,6 @@ def test_get_diff_numstat_parsing() -> None:
 
 
 def test_get_diff_numstat_error() -> None:
-    """Verify get_diff_numstat gracefully returns empty list on Git failure."""
     with patch("sandbox_executor.git.run_git") as mock_run:
         mock_run.return_value = MagicMock(returncode=1, stderr="fatal: bad revision")
         numstats = get_diff_numstat(".", "bad_base", "bad_head")
@@ -105,7 +92,6 @@ def _write(repo: Path, rel: str, content: str) -> None:
 
 @pytest.fixture
 def plan_repo(tmp_path: Path) -> Path:
-    """A repository whose 'plan' branch holds a ledger, a plan and one source file; HEAD is on 'exec'."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "plan")
@@ -126,7 +112,6 @@ def _commit_all(repo: Path, msg: str = "exec") -> None:
 
 
 def test_has_effective_diff_ledger_only_is_empty(plan_repo: Path) -> None:
-    """A commit touching only the execution ledger is an empty execution."""
     _write(plan_repo, "holon-knowledge/ledger/executions.jsonl", '{"status": "success"}\n')
     _commit_all(plan_repo)
     assert changed_paths(str(plan_repo), "plan", "exec") == []
@@ -134,7 +119,6 @@ def test_has_effective_diff_ledger_only_is_empty(plan_repo: Path) -> None:
 
 
 def test_has_effective_diff_plans_only_is_empty(plan_repo: Path) -> None:
-    """Edits confined to plans/ are bookkeeping, not implementation."""
     _write(plan_repo, "plans/P-1.md", "# Plan\n\nEdited.\n")
     _write(plan_repo, "plans/P-1_calibration.md", "# Calibration\n")
     _commit_all(plan_repo)
@@ -142,7 +126,6 @@ def test_has_effective_diff_plans_only_is_empty(plan_repo: Path) -> None:
 
 
 def test_has_effective_diff_execution_notes_only_is_empty(plan_repo: Path) -> None:
-    """An execution whose only output is its executions/E-*.md notes file is still empty."""
     _write(plan_repo, "executions/E-1-claude-agent-claude-opus-5-5.md", "# Execution notes\n")
     _write(plan_repo, "holon-knowledge/ledger/executions.jsonl", '{"status": "success"}\n')
     _commit_all(plan_repo)
@@ -154,14 +137,12 @@ def test_has_effective_diff_execution_notes_only_is_empty(plan_repo: Path) -> No
 
 
 def test_empty_diff_summary_names_every_exclusion() -> None:
-    """The ledger summary lists all excluded bookkeeping prefixes."""
     assert empty_diff_summary("I-1/P-1/_") == (
         "Execution produced no changes outside holon-knowledge/ledger/, plans/ and executions/ relative to I-1/P-1/_"
     )
 
 
 def test_has_effective_diff_mixed_changes(plan_repo: Path) -> None:
-    """A real source change counts even alongside ledger and plan edits."""
     _write(plan_repo, "holon-knowledge/ledger/executions.jsonl", '{"status": "success"}\n')
     _write(plan_repo, "src/app.py", "print('changed')\n")
     _commit_all(plan_repo)
@@ -170,14 +151,12 @@ def test_has_effective_diff_mixed_changes(plan_repo: Path) -> None:
 
 
 def test_has_effective_diff_rename_into_excluded_dir_counts(plan_repo: Path) -> None:
-    """Moving a source file into plans/ still removes the source path, so it is not empty."""
     _git(plan_repo, "mv", "src/app.py", "plans/app.py")
     _commit_all(plan_repo)
     assert changed_paths(str(plan_repo), "plan", "exec") == ["src/app.py"]
 
 
 def test_has_effective_diff_ignores_later_base_commits(plan_repo: Path) -> None:
-    """Commits added to the plan branch after the execution forked are not execution work."""
     _git(plan_repo, "checkout", "-q", "plan")
     _write(plan_repo, "src/later.py", "x = 1\n")
     _commit_all(plan_repo, "later plan commit")
@@ -185,7 +164,6 @@ def test_has_effective_diff_ignores_later_base_commits(plan_repo: Path) -> None:
 
 
 def test_has_effective_diff_working_tree_includes_untracked_and_commits(plan_repo: Path) -> None:
-    """Without a head revision, commits on top of base, edits and untracked files all count."""
     base = _git(plan_repo, "rev-parse", "HEAD")
     assert has_effective_diff(str(plan_repo), base) is False
 
@@ -200,13 +178,13 @@ def test_has_effective_diff_working_tree_includes_untracked_and_commits(plan_rep
 
 
 def test_has_effective_diff_fails_closed_on_bad_ref(plan_repo: Path) -> None:
-    """An unknown base must raise, so callers never mistake a failed diff for real work."""
+    # why: fail closed so callers never mistake a failed diff for real work
     with pytest.raises(RuntimeError, match="Git command failed"):
         has_effective_diff(str(plan_repo), "refs/heads/does-not-exist", "exec")
 
 
 def test_has_effective_diff_ignores_target_branch_sync_merge(plan_repo: Path) -> None:
-    """Content merged in from the target branch (executor pre-push sync) is not execution work."""
+    # why: the executor's pre-push sync merges the target branch in; that content is not execution work
     _git(plan_repo, "checkout", "-q", "-b", "main", "plan")
     _write(plan_repo, "src/upstream.py", "z = 3\n")
     _commit_all(plan_repo, "main advances")
@@ -222,7 +200,6 @@ def test_has_effective_diff_ignores_target_branch_sync_merge(plan_repo: Path) ->
 
 
 def test_has_effective_diff_reverted_change_is_empty(plan_repo: Path) -> None:
-    """A change that a later commit reverts leaves no net diff."""
     _write(plan_repo, "src/app.py", "print('temporary')\n")
     _commit_all(plan_repo, "change")
     _write(plan_repo, "src/app.py", "print('hi')\n")
@@ -231,7 +208,6 @@ def test_has_effective_diff_reverted_change_is_empty(plan_repo: Path) -> None:
 
 
 def test_net_changed_paths_counts_content_merged_in(plan_repo: Path) -> None:
-    """Work that reaches head only through a merge counts, unlike in changed_paths."""
     base = _git(plan_repo, "rev-parse", "plan")
     _git(plan_repo, "checkout", "-q", "-b", "child", "plan")
     _write(plan_repo, "src/feature.py", "f = 1\n")
@@ -245,7 +221,6 @@ def test_net_changed_paths_counts_content_merged_in(plan_repo: Path) -> None:
 
 
 def test_net_changed_paths_excludes_bookkeeping_and_reports_renamed_source(plan_repo: Path) -> None:
-    """Excluded prefixes are ignored and a move into executions/ reports the removed source path."""
     _write(plan_repo, "plans/P-2.md", "# Plan\n")
     _write(plan_repo, "executions/E-1.md", "# Notes\n")
     _commit_all(plan_repo, "bookkeeping")
@@ -257,11 +232,7 @@ def test_net_changed_paths_excludes_bookkeeping_and_reports_renamed_source(plan_
 
 
 def test_suite_git_config_is_the_hermetic_test_config(hermetic_git_config: str, tmp_path: Path) -> None:
-    """Every git process in the suite reads the test-only global config, never the developer's or the system's.
-
-    The queries run from ``tmp_path``, outside any repository, so a checkout's own ``.git/config`` (which takes
-    precedence over the global file) cannot answer them: only the system and global scopes apply.
-    """
+    # why: queries run outside any repository so a checkout's .git/config cannot answer them
     config_file = Path(hermetic_git_config)
     hooks = subprocess.run(
         ["git", "config", "--global", "--get", "core.hooksPath"],
@@ -288,7 +259,6 @@ def test_suite_git_config_is_the_hermetic_test_config(hermetic_git_config: str, 
 
 
 def test_git_repository_init_and_custom_runner(tmp_path: Path) -> None:
-    """Verify GitRepository initialisation with default runner and custom injected runner."""
     repo_default = GitRepository(tmp_path)
     assert repo_default.repo_dir == str(tmp_path)
 
@@ -310,7 +280,6 @@ def test_git_repository_init_and_custom_runner(tmp_path: Path) -> None:
 
 
 def test_git_repository_rev_parse(plan_repo: Path) -> None:
-    """Verify GitRepository.rev_parse with commit resolution and flag queries."""
     repo = GitRepository(plan_repo)
     head_res = repo.rev_parse("HEAD")
     assert head_res.returncode == 0
@@ -329,7 +298,6 @@ def test_git_repository_rev_parse(plan_repo: Path) -> None:
 
 
 def test_git_repository_current_branch(plan_repo: Path) -> None:
-    """Verify GitRepository.current_branch detects current branch and detached HEAD states."""
     repo = GitRepository(plan_repo)
     assert repo.current_branch() == "exec"
 
@@ -338,7 +306,6 @@ def test_git_repository_current_branch(plan_repo: Path) -> None:
 
 
 def test_git_repository_status_porcelain_and_is_clean(tmp_path: Path) -> None:
-    """Verify GitRepository.is_clean and status_porcelain across filesystem lifecycle."""
     repo_dir = tmp_path / "lifecycle_repo"
     repo_dir.mkdir()
     _git(repo_dir, "init", "-q")
@@ -363,7 +330,6 @@ def test_git_repository_status_porcelain_and_is_clean(tmp_path: Path) -> None:
 
 
 def test_git_repository_operations(tmp_path: Path) -> None:
-    """Verify GitRepository intention-revealing operations: config, add, commit, checkout, clean, reset."""
     repo_dir = tmp_path / "ops_repo"
     repo_dir.mkdir()
     _git(repo_dir, "init", "-q")
@@ -386,7 +352,6 @@ def test_git_repository_operations(tmp_path: Path) -> None:
 
 
 def test_git_repository_run_failure_raises(plan_repo: Path) -> None:
-    """Verify GitRepository.run raises RuntimeError with redacted output on failure when check=True."""
     repo = GitRepository(plan_repo)
     with pytest.raises(RuntimeError) as exc_info:
         repo.run(["checkout", "nonexistent_branch_that_fails_404"], check=True)
@@ -394,10 +359,6 @@ def test_git_repository_run_failure_raises(plan_repo: Path) -> None:
 
 
 def test_executor_contains_no_raw_git_literals() -> None:
-    """Assert that every module of the executor package (entrypoint/executor/) has no raw ['git', ...] literals.
-
-    Only the allowed helpers may build one.
-    """
     executor_dir = Path(__file__).resolve().parent.parent / "src" / "sandbox_executor" / "entrypoint" / "executor"
     py_files = sorted(executor_dir.glob("*.py"))
     assert py_files, f"No python files found in the executor package at {executor_dir}"

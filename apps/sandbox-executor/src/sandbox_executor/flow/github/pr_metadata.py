@@ -105,9 +105,19 @@ def _reference_lines(references: Any) -> list[str]:
     return ["## References", line, ""]
 
 
+_PLACEHOLDER_VALUES = frozenset({"n/a", "na", "none", "null", "unknown", "-"})
+
+
+def _is_real_value(candidate: Any) -> bool:
+    if candidate is None or isinstance(candidate, bool) or not isinstance(candidate, (str, int, float)):
+        return False
+    text = str(candidate).strip()
+    return bool(text) and text.lower() not in _PLACEHOLDER_VALUES
+
+
 def _first_present(*candidates: Any) -> str:
     for candidate in candidates:
-        if candidate is not None and str(candidate).strip():
+        if _is_real_value(candidate):
             return str(candidate).strip()
     return "N/A"
 

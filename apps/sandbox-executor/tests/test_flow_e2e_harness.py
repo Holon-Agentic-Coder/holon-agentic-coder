@@ -1,12 +1,3 @@
-"""Hermetic unit tests for the ``holon flow`` E2E harness and unconditional teardown utility.
-
-Covers strict intent-prefix validation, ``/`` boundary scoping, out-of-prefix refusal, worktree and
-local/remote branch deletion enumeration on real local git repositories with bare remotes, the zero-PR
-guard (and ``--skip-review`` prohibition) with stray-PR closure, pre-PR Stage 4 stopping via
-:class:`sandbox_executor.e2e_harness.E2EPipelineEngine`, and retry classification separating
-retryable model-output failures from immediate-fail machinery errors.
-"""
-
 from __future__ import annotations
 
 import json
@@ -45,7 +36,6 @@ from tests.repo_templates import copy_template, shared_template
 
 
 def _build_bare_origin_and_clone(root: Path) -> None:
-    """Build a local bare ``origin.git`` and a seeded working repository ``repo`` on ``main`` under ``root``."""
     origin = root / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
 
@@ -71,7 +61,6 @@ def _build_bare_origin_and_clone(root: Path) -> None:
 
 
 def _build_with_kept_branch(root: Path) -> None:
-    """The seeded repositories plus an unrelated ``I-999999-keep/_`` branch, local and on origin."""
     _build_bare_origin_and_clone(root)
     _git(root / "repo", "branch", "I-999999-keep/_", "main")
     _git(root / "repo", "push", "-q", "origin", "I-999999-keep/_")
@@ -83,11 +72,7 @@ _TEMPLATES = {"seeded": _build_bare_origin_and_clone, "with-kept-branch": _build
 def _create_bare_origin_and_clone(
     tmp_path: Path, factory: pytest.TempPathFactory, template: str = "seeded"
 ) -> tuple[Path, Path]:
-    """This test's own copy of a local bare ``origin.git`` and a seeded working repository ``repo`` on ``main``.
-
-    The repositories are built once per run (no production code runs in the build) and copied into ``tmp_path``; the
-    copy's remote names the copy's ``origin.git``.
-    """
+    # why: built once per run and copied per test so each test mutates only its own origin.git
     root, _ = shared_template(factory, f"e2e-harness-{template}", _TEMPLATES[template])
     copy_template(root, tmp_path)
     return tmp_path / "repo", tmp_path / "origin.git"
@@ -104,8 +89,6 @@ def _remote_branches(origin: Path) -> set[str]:
 
 
 class FakeE2EGhRunner:
-    """Fake ``gh`` runner that serves ``gh pr list`` and records ``gh pr close`` without spawning ``gh``."""
-
     def __init__(self, prs: list[dict[str, Any]], *, close_returncode: int = 0) -> None:
         self.prs = list(prs)
         self.close_returncode = close_returncode
@@ -125,8 +108,6 @@ class FakeE2EGhRunner:
 
 
 class TestPrefixScopingAndRefusal:
-    """Strict intent-prefix format validation, ``/`` hierarchy boundary checks, and out-of-prefix refusal."""
-
     def test_validate_e2e_intent_prefix_accepts_canonical_prefixes(self) -> None:
         assert validate_e2e_intent_prefix("I-1795496321-e2e-flow") == "I-1795496321-e2e-flow"
         assert validate_e2e_intent_prefix("  I-100-a1  ") == "I-100-a1"
@@ -166,7 +147,7 @@ class TestPrefixScopingAndRefusal:
         assert is_ref_within_intent_prefix("I-123456-e2e-run/P-10-PI-M/E-20-PI-M/calibrated", prefix) is True
         assert is_ref_within_intent_prefix("flow-e2e-run", prefix, worktree_branch="flow-e2e-run") is True
 
-        # Sibling prefixes that share a string prefix without a '/' boundary must never match.
+        # why: string-prefix siblings without a '/' boundary belong to other intents and must never match
         assert is_ref_within_intent_prefix("I-123456-e2e-run-other/_", prefix) is False
         assert is_ref_within_intent_prefix("I-123456-e2e-runner/_", prefix) is False
         assert is_ref_within_intent_prefix("I-999999-unrelated/_", prefix) is False
@@ -200,15 +181,12 @@ class TestPrefixScopingAndRefusal:
 
 
 class TestTeardownAndDeletionEnumeration:
-    """Real local git repository teardown, deletion enumeration, and preservation of sibling refs/worktrees."""
-
     def test_teardown_removes_scoped_worktree_and_local_remote_branches_only(
         self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
     ) -> None:
         repo, origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         prefix = "I-123456-e2e-run"
 
-        # Seed unrelated branches, including a string-prefix collision sibling I-123456-e2e-run-other/_.
         unrelated_branches = [
             "I-999999-unrelated/_",
             "I-999999-unrelated/P-1-PI-M/_",
@@ -218,17 +196,14 @@ class TestTeardownAndDeletionEnumeration:
             _git(repo, "branch", branch, "main")
         _git(repo, "push", "-q", "origin", *unrelated_branches)
 
-        # Provision an unrelated worktree that must remain untouched.
         unrelated_wt = tmp_path / "flow-unrelated"
         _git(repo, "worktree", "add", "-q", "-b", "flow-unrelated", str(unrelated_wt), "main")
 
-        # Provision the disposable E2E worktree and reviewer sibling worktree.
         disposable_wt = tmp_path / "flow-e2e-run"
         _git(repo, "worktree", "add", "-q", "-b", "flow-e2e-run", str(disposable_wt), "main")
         reviewer_wt = tmp_path / "flow-e2e-run-rev1"
         _git(repo, "worktree", "add", "-q", "--detach", str(reviewer_wt), "main")
 
-        # Create and push full flow branch hierarchy under I-123456-e2e-run.
         scoped_branches = [
             f"{prefix}/_",
             f"{prefix}/P-10-PI-M/_",
@@ -258,14 +233,12 @@ class TestTeardownAndDeletionEnumeration:
         assert set(report.deleted_remote_branches) == set(scoped_branches)
         assert prefix in report.summary_line()
 
-        # Verify zero scoped branches remain locally or on origin.
         remaining_local = _local_branches(repo)
         remaining_remote = _remote_branches(origin)
         for branch in expected_local:
             assert branch not in remaining_local
             assert branch not in remaining_remote
 
-        # Verify unrelated branches and worktrees were never touched.
         assert unrelated_wt.is_dir()
         assert "main" in remaining_local
         assert "main" in remaining_remote
@@ -291,7 +264,7 @@ class TestTeardownAndDeletionEnumeration:
                 candidate_refs=[f"{prefix}/_", "I-999999-other/_"],
             )
 
-        # Because validation failed before git mutation, even the scoped branch is still intact.
+        # why: prefix validation runs before any git mutation, so even the in-prefix branch survives
         assert f"{prefix}/_" in _local_branches(repo)
         assert f"{prefix}/_" in _remote_branches(origin)
         assert "I-999999-other/_" in _local_branches(repo)
@@ -309,7 +282,7 @@ class TestTeardownAndDeletionEnumeration:
     ) -> None:
         repo, _origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory)
         prefix = "I-123456-e2e-run"
-        # Directory basename ends with the intent slug ('e2e-run'), but its checked-out branch is unrelated.
+        # why: the dir name ends with the slug on purpose; scoping must judge the checked-out branch, not the path
         unrelated_wt = tmp_path / "flow-e2e-run"
         _git(repo, "worktree", "add", "-q", "-b", "feature-unrelated", str(unrelated_wt), "main")
 
@@ -329,7 +302,6 @@ class TestTeardownAndDeletionEnumeration:
 
         _git(repo, "branch", tracked_branch, "main")
         _git(repo, "push", "-q", "origin", tracked_branch)
-        # Create a second scoped branch directly on origin without any local tracking ref in repo.
         _git(origin, "branch", remote_only_branch, "main")
 
         report = teardown_e2e_intent(str(repo), prefix)
@@ -361,14 +333,12 @@ class TestTeardownAndDeletionEnumeration:
         assert len(report.errors) == 1
         assert "remote rejected delete" in report.errors[0]
         assert branch in _remote_branches(origin)
-        # Local tracking ref must remain intact when remote deletion failed.
+        # why: dropping the tracking ref after a failed remote delete would hide the surviving remote branch
         tracking_check = run_git(["rev-parse", "--verify", f"refs/remotes/origin/{branch}"], cwd=str(repo), check=False)
         assert tracking_check.returncode == 0
 
 
 class TestZeroPRGuardAndNoSkipReview:
-    """Zero-PR guard verification, stray-PR automatic closure, and ``--skip-review`` prohibition."""
-
     def test_assert_no_skip_review_flag_rejects_removed_flag_and_option(self) -> None:
         assert_no_skip_review_flag(["--agent", "pi", "--skip-calibrate"], {"skip_calibrate": True})
 
@@ -501,8 +471,6 @@ class TestZeroPRGuardAndNoSkipReview:
 
 
 class TestRetryClassificationAndUnconditionalTeardown:
-    """Retry classification and unconditional per-attempt teardown guarantees."""
-
     def test_classify_attempt_failure_separates_model_output_from_machinery(self) -> None:
         assert classify_attempt_failure(E2EModelOutputError("assertion failed")) == FailureCategory.MODEL_OUTPUT
         assert (
@@ -557,7 +525,6 @@ class TestRetryClassificationAndUnconditionalTeardown:
             == FailureCategory.MODEL_OUTPUT
         )
 
-        # Machinery errors never retry.
         assert classify_attempt_failure(E2EMachineryError("broken worktree")) == FailureCategory.MACHINERY
         assert classify_attempt_failure(ZeroPRGuardViolationError("stray PR")) == FailureCategory.MACHINERY
         assert classify_attempt_failure(PrefixScopingError("bad prefix")) == FailureCategory.MACHINERY
@@ -670,7 +637,6 @@ class TestRetryClassificationAndUnconditionalTeardown:
                 epoch_fn=lambda: 1900000,
             )
 
-        # Failed immediately on attempt 1 without retrying attempts 2 or 3, and still tore down attempt 1's branches.
         assert len(prefixes) == 1
         assert f"{prefixes[0]}/_" not in _local_branches(repo)
         assert f"{prefixes[0]}/_" not in _remote_branches(origin)
@@ -779,14 +745,11 @@ class TestRetryClassificationAndUnconditionalTeardown:
 
 
 class TestPrePRPipelineExecutionAndLocalLLMEnv:
-    """End-to-end execution of ``E2EPipelineEngine`` and ``run_e2e_flow_test`` against local bare remotes."""
-
     def test_e2e_pipeline_engine_runs_stages_1_to_3_and_stops_at_stage_4_pre_pr_boundary(
         self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
     ) -> None:
-        # An unrelated branch, local and on origin, to verify teardown leaves it untouched.
         repo, origin = _create_bare_origin_and_clone(tmp_path, tmp_path_factory, "with-kept-branch")
-        # The repositories are a copy of a shared template: the remote must be this test's own origin copy.
+        # why: repos are copied from a shared template; a stale remote URL would tear down another test's origin
         assert _git(repo, "remote", "get-url", "origin") == str(origin)
 
         agents = FakeRoleAgents(tmp_path, origin, recorded_test_pass_rate=1.0)
@@ -820,10 +783,10 @@ class TestPrePRPipelineExecutionAndLocalLLMEnv:
 
         report = outcome.teardown_reports[0]
         assert len(report.removed_worktrees) == 1
-        assert len(report.deleted_local_branches) >= 4  # flow-<slug> + intent + plan + execute
-        assert len(report.deleted_remote_branches) == 3  # intent + plan + execute
+        # why: flow-<slug> plus the intent, plan and execute branches locally; only the last three are pushed
+        assert len(report.deleted_local_branches) >= 4
+        assert len(report.deleted_remote_branches) == 3
 
-        # Verify all disposable refs were deleted while main and I-999999-keep/_ remain intact.
         assert _local_branches(repo) == {"main", "I-999999-keep/_"}
         assert _remote_branches(origin) == {"main", "I-999999-keep/_"}
 
@@ -890,7 +853,6 @@ class TestPrePRPipelineExecutionAndLocalLLMEnv:
         assert envelopes[0].reasoning == "off"
         assert "model=qwen2.5-coder:14b" in summary
 
-        # Scheme and path stripping in HOLON_HOST_LOCAL_HOSTS plus HOLON_AGENT_PROVIDER fallback.
         lan_env = {
             "HOLON_LOCAL_LLM": "1",
             "HOLON_LOCAL_BASE_URL": "http://192.168.1.50:11434/v1",
@@ -903,7 +865,6 @@ class TestPrePRPipelineExecutionAndLocalLLMEnv:
         assert ready_lan is True
         assert lan_envelopes[0].provider == "custom-lan"
 
-        # Missing base URL or models in explicit env raises LocalLLMConfigError without falling back to os.environ.
         with pytest.raises(LocalLLMConfigError, match="HOLON_LOCAL_BASE_URL"):
             validate_e2e_local_llm_env(env={"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_MODELS": "m1"})
         with pytest.raises(LocalLLMConfigError, match="HOLON_LOCAL_MODELS"):
@@ -914,7 +875,7 @@ class TestPrePRPipelineExecutionAndLocalLLMEnv:
     def test_validate_e2e_local_llm_env_rejects_non_allowlisted_url_without_os_environ_fallback(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Seed os.environ with a valid loopback configuration to verify explicit env never falls back to it.
+        # why: a valid os.environ config must be ignored when an explicit env is passed
         monkeypatch.setenv("HOLON_LOCAL_BASE_URL", "http://localhost:11434/v1")
         monkeypatch.setenv("HOLON_LOCAL_MODELS", "env-fallback-model")
         monkeypatch.setenv("HOLON_LOCAL_CONTEXT_WINDOW", "32768")

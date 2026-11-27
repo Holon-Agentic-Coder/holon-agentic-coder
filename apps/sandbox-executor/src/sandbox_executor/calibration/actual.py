@@ -1,9 +1,3 @@
-"""Actual execution metrics measured from the executions ledger and the execution patch.
-
-Each metric lands in its own small extractor; ``ACTUAL_METRIC_EXTRACTORS`` runs them in order, so a new metric is one
-new function and one new table row.
-"""
-
 from __future__ import annotations
 
 import dataclasses
@@ -25,8 +19,6 @@ from sandbox_executor.calibration_outcome import is_converged_record
 
 @dataclass
 class ActualMetrics:
-    """Actual outcome metrics measured post-execution."""
-
     p_success: float = 1.0
     entropy: float = 0.5
     impact: float = 50.0
@@ -36,7 +28,7 @@ class ActualMetrics:
     duration_seconds: float | None = None
     tokens: int | None = None
     exit_code: int = 0
-    # None = not measured; only a test pass rate recorded on the execution summary row is reported.
+    # why: None means not measured, so a pass rate absent from the summary row is never reported as 0.0
     test_pass_rate: float | None = None
     files_changed: int = 0
     insertions: int = 0
@@ -71,10 +63,6 @@ class ActualMetrics:
         execution_branch: str = "",
         target_worktree: str = ".",
     ) -> tuple[ActualMetrics, dict[str, Any]]:
-        """Measure one execution: gather its evidence, then run ``ACTUAL_METRIC_EXTRACTORS`` in order.
-
-        Returns ``(actual metrics, raw telemetry)``; raises ``RuntimeError`` if the git diff exits non-zero.
-        """
         evidence = gather_execution_evidence(execution_id, plan_branch, predicted, execution_branch, target_worktree)
         actual = cls()
         exec_meta: dict[str, Any] = {}
@@ -84,44 +72,38 @@ class ActualMetrics:
 
 
 def _extract_run_outcome(actual: ActualMetrics, meta: dict[str, Any], evidence: ExecutionEvidence) -> None:
-    """Copy the Stage 3 summary row into the telemetry; set ``exit_code`` and ``p_success`` from it."""
     record = evidence.best_record
     if record is None:
         return
     meta.update(record)
-    # An integrated decomposed parent (its children merged into the plan branch, then the plan branch into the
-    # execution branch) is a successful run: its superseding row carries no exit_code.
+    # why: an integrated decomposed parent succeeded, yet its superseding row carries no exit_code
     converged = is_converged_record(record)
     actual.exit_code = 0 if converged else int(record.get("exit_code", 1))
     actual.p_success = 1.0 if converged and actual.exit_code == 0 else 0.0
 
 
 def _extract_duration(actual: ActualMetrics, _meta: dict[str, Any], evidence: ExecutionEvidence) -> None:
-    """The run duration recorded on the summary row."""
     if evidence.best_record is not None and "duration" in evidence.best_record:
         actual.duration_seconds = float(evidence.best_record["duration"])
 
 
 def _extract_tokens(actual: ActualMetrics, _meta: dict[str, Any], evidence: ExecutionEvidence) -> None:
-    """The token count recorded on the summary row."""
     if evidence.best_record is not None and "tokens" in evidence.best_record:
         actual.tokens = int(evidence.best_record["tokens"])
 
 
 def _extract_test_pass_rate(actual: ActualMetrics, _meta: dict[str, Any], evidence: ExecutionEvidence) -> None:
-    """The measured test pass rate on the summary row: a number (not a bool) in ``0..1``, else not measured."""
     raw_rate = (evidence.best_record or {}).get("test_pass_rate")
     if isinstance(raw_rate, int | float) and not isinstance(raw_rate, bool) and 0.0 <= float(raw_rate) <= 1.0:
         actual.test_pass_rate = float(raw_rate)
 
 
 def _extract_patch_size(actual: ActualMetrics, meta: dict[str, Any], evidence: ExecutionEvidence) -> None:
-    """Files changed, insertions and deletions of the execution patch, and the changed (non-metadata) paths."""
     meta.update(evidence.patch_meta)
     actual.files_changed = 0
     actual.insertions = 0
     actual.deletions = 0
-    # Starts empty; becomes None below for shortstat output, which lists no paths, so the touch set is not scored
+    # why: shortstat lists no paths, so its touch set becomes None (unscored) rather than empty
     meta["changed_paths"] = []
     text = evidence.numstat_stdout.strip()
     if not text:
@@ -134,13 +116,11 @@ def _extract_patch_size(actual: ActualMetrics, meta: dict[str, Any], evidence: E
 
 
 def _extract_value(actual: ActualMetrics, _meta: dict[str, Any], evidence: ExecutionEvidence) -> None:
-    """Impact (the predicted impact of a successful run, else 0) and the predicted learning value."""
     actual.impact = evidence.predicted.impact if actual.p_success > 0.5 else 0.0
     actual.learning_value = evidence.predicted.learning_value
 
 
 def _extract_cost(actual: ActualMetrics, meta: dict[str, Any], evidence: ExecutionEvidence) -> None:
-    """The recorded ``cost``, else ``cost_actual``, else the predicted cost scaled by the outcome."""
     if "cost" in meta:
         actual.cost = float(meta["cost"])
     elif "cost_actual" in meta:
@@ -150,7 +130,6 @@ def _extract_cost(actual: ActualMetrics, meta: dict[str, Any], evidence: Executi
 
 
 def _extract_entropy(actual: ActualMetrics, meta: dict[str, Any], evidence: ExecutionEvidence) -> None:
-    """Observed entropy: the weighted factor sum, with the state surface area taken from the patch size."""
     if actual.files_changed == 0:
         ssa_obs = 0.0
     else:
@@ -174,7 +153,6 @@ def _extract_entropy(actual: ActualMetrics, meta: dict[str, Any], evidence: Exec
 
 
 def _extract_dual_ev(actual: ActualMetrics, _meta: dict[str, Any], evidence: ExecutionEvidence) -> None:
-    """The clean and with-bugs EV outcomes; the clean outcome becomes ``p_success``, ``impact`` and ``ev``."""
     lambda_p, mu_p = load_metrics_physics(evidence.target_worktree)
     cost_effort = round(actual.cost + (lambda_p * actual.entropy) - (mu_p * actual.learning_value), 2)
     dual_ev = evaluate_dual_ev_outcomes(
@@ -196,8 +174,7 @@ def _extract_dual_ev(actual: ActualMetrics, _meta: dict[str, Any], evidence: Exe
 
 MetricExtractor = Callable[[ActualMetrics, dict[str, Any], ExecutionEvidence], None]
 
-# Order matters: the run outcome copies the summary row into the telemetry before the patch metadata is merged over
-# it, and cost reads the telemetry after both; dual EV reads cost, entropy and learning value last.
+# why: patch metadata overrides the copied summary row, cost reads both, and dual EV reads cost and entropy last
 ACTUAL_METRIC_EXTRACTORS: tuple[tuple[str, MetricExtractor], ...] = (
     ("run_outcome", _extract_run_outcome),
     ("duration", _extract_duration),
@@ -218,19 +195,4 @@ def parse_actual_metrics(
     execution_branch: str = "",
     target_worktree: str = ".",
 ) -> tuple[ActualMetrics, dict[str, Any]]:
-    """Ingest actual execution telemetry and metrics from ledger and git.
-
-    Args:
-        execution_id: Execution identifier (e.g. E-...).
-        plan_branch: Plan branch reference (e.g. I-.../P-.../_).
-        predicted: Predicted metrics model.
-        execution_branch: Execution branch or commit reference.
-        target_worktree: Target git worktree directory.
-
-    Returns:
-        tuple[ActualMetrics, dict[str, Any]]: Actual metrics object and raw telemetry dict.
-
-    Raises:
-        RuntimeError: If git diff calculation encounters non-zero exit code.
-    """
     return ActualMetrics.from_execution(execution_id, plan_branch, predicted, execution_branch, target_worktree)

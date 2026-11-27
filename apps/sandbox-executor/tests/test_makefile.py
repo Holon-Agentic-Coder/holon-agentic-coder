@@ -1,11 +1,3 @@
-"""Hermetic unit tests for repository Makefile targets and prerequisite checks.
-
-This test module verifies Makefile behaviour including the help target, dry-run
-execution across all core targets, and prerequisite detection permutations for
-tools such as the GitHub CLI (gh) and OpenSSL (openssl). Each make invocation runs with an
-test-owned environment, so nothing here depends on the developer's shell.
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -21,7 +13,6 @@ from tests.make_dry_run import SharedMakeRuns
 
 
 def _get_repo_root() -> pathlib.Path:
-    """Return the absolute path to the repository root directory containing Makefile."""
     return pathlib.Path(__file__).resolve().parent.parent.parent.parent
 
 
@@ -31,16 +22,6 @@ def _run_make(
     env: dict[str, str] | None = None,
     check: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    """Execute make in the repository root directory.
-
-    Args:
-        args: List of arguments to pass to make (e.g. ["help"]).
-        env: Optional environment dictionary override.
-        check: Whether to raise CalledProcessError on non-zero exit code.
-
-    Returns:
-        CompletedProcess instance containing returncode, stdout, and stderr.
-    """
     repo_root = _get_repo_root()
     return subprocess.run(
         ["make", *args],
@@ -52,13 +33,9 @@ def _run_make(
     )
 
 
+# why: the environment is built on first use inside a test, so it is the one the autouse guards leave.
 @pytest.fixture(scope="module")
 def default_make(tmp_path_factory: pytest.TempPathFactory) -> SharedMakeRuns:
-    """``make`` in the default mock environment (``_setup_mock_env(..., mock_docker=False)``), run once per argv.
-
-    The environment is built on first use, inside a test, so it is the one the autouse guards leave, as it was when
-    each test built its own; its tools live in a directory of this module.
-    """
     env_dir = tmp_path_factory.mktemp("default-make-env")
     env: dict[str, str] = {}
 
@@ -72,14 +49,10 @@ def default_make(tmp_path_factory: pytest.TempPathFactory) -> SharedMakeRuns:
 
 OS_LINUX = "DETECTED_OS=Linux"
 OS_DARWIN = "DETECTED_OS=Darwin"
+MAKE_RECIPE_FAILURE_EXIT = 2
 
-# The prerequisite list exactly as `make help` and README state it, asserted as one string.
-# Asserting bare substrings instead is vacuous: a reviewer removed `gh` and `openssl` from
-# the prerequisite description, planted those two words in an unrelated target's
-# description, and every test stayed green while the documented list no longer named either
-# tool. The shared constant is asserted against both `make help` and README by
-# test_prerequisite_list_is_identical_in_make_help_and_readme, so the two cannot drift apart
-# silently.
+# why: asserted as one string; bare substrings let a reviewer move gh and openssl into another target's
+# why: description while every test stayed green.
 PREREQUISITE_HELP_LIST = (
     "(fatal: uv, gh, openssl which must be OpenSSL not LibreSSL; advisory: GNU Make, npx, "
     "gh auth, Docker CLI/Buildx/daemon)"
@@ -87,10 +60,7 @@ PREREQUISITE_HELP_LIST = (
 
 
 def test_makefile_help_lists_core_targets(default_make: SharedMakeRuns) -> None:
-    """Verify that make help documents all core targets and the fatal/advisory split."""
-    # Run with the test-owned environment: `make help` inherits PATH, CI, MAKEFLAGS and
-    # MAKELEVEL from the caller otherwise, which made the module's hermeticity claim false
-    # for this one test even though its output does not depend on them today.
+    # why: otherwise make help inherits PATH, CI, MAKEFLAGS and MAKELEVEL from the caller.
     result = default_make(["help"])
     assert result.returncode == 0, result.stderr
     stdout = result.stdout
@@ -119,16 +89,9 @@ def test_makefile_help_lists_core_targets(default_make: SharedMakeRuns) -> None:
     )
 
 
+# why: every other test overrides DETECTED_OS, so replacing the uname call with a constant stayed green
+# why: and macOS users would have been given apt install advice.
 def test_makefile_detects_the_host_platform_without_an_os_override(default_make: SharedMakeRuns) -> None:
-    """Pin `DETECTED_OS := $(shell uname -s)`, which every other test overrides away.
-
-    Each prerequisite test passes OS_LINUX or OS_DARWIN on the command line, so nothing
-    exercised autodetection: replacing the shell call with the constant `Linux` left all
-    seven tests green, and no CI job runs check-prerequisites at all. That matters because
-    the user-visible half of the target is per-OS install advice, and Darwin gating decides
-    whether install-docker/install-homebrew fire - a developer on macOS would have been told
-    to run `sudo apt install gh` with nothing reported red.
-    """
     result = default_make(["-n", "check-prerequisites"])
     assert result.returncode == 0, result.stderr
     host_os = os.uname().sysname
@@ -139,20 +102,10 @@ def test_makefile_detects_the_host_platform_without_an_os_override(default_make:
     )
 
 
+# why: PATH lacks docker/gh/openssl, so exit 0 proves the in-shell guard fired; make -n still runs
+# why: $(MAKE) lines. Only check-prerequisites, check-docker, install-docker and prerequisites carry the
+# why: guard; the other targets are inert under -n anyway.
 def test_makefile_dry_run_core_targets(default_make: SharedMakeRuns) -> None:
-    """Verify that dry-run mode (make -n) exits 0 without running recipes across core targets.
-
-    The PATH contains no docker/gh/openssl, so a recipe that actually executed its checks would
-    exit non-zero; exit 0 therefore proves the in-shell guard fired and short-circuited before
-    the checks ran. Note that ``make -n`` still executes recipe lines containing ``$(MAKE)``,
-    which is why ``check-prerequisites`` guards itself in-shell rather than relying on dry-run
-    alone.
-
-    Only the four guard-bearing targets are real regression cases here: ``check-prerequisites``,
-    ``check-docker``, ``install-docker`` and ``prerequisites``. The remaining three
-    (``help``, ``build-images``, ``install-homebrew``) are inert under ``-n`` regardless of the
-    guard, since their recipes echo or delegate without running prerequisite probes.
-    """
     guard_regression_targets = [
         "check-prerequisites",
         "check-docker",
@@ -174,7 +127,6 @@ def test_makefile_dry_run_core_targets(default_make: SharedMakeRuns) -> None:
 
 
 def test_makefile_build_image_alias(default_make: SharedMakeRuns) -> None:
-    """Verify that build-image is an alias for build-images and delegates identically under dry-run."""
     res_images = default_make(["-n", "build-images", OS_LINUX])
     res_image = default_make(["-n", "build-image", OS_LINUX])
     assert res_images.returncode == 0
@@ -184,18 +136,15 @@ def test_makefile_build_image_alias(default_make: SharedMakeRuns) -> None:
 
 
 def _write_exe(path: pathlib.Path, script: str) -> None:
-    """Write an executable shell script at path."""
     path.write_text(script, encoding="utf-8")
     path.chmod(0o755)
 
 
 def _create_openssl(bin_dir: pathlib.Path) -> None:
-    """Create a mock openssl executable."""
     _write_exe(bin_dir / "openssl", "#!/bin/sh\necho 'OpenSSL 3.0.0'\n")
 
 
 def _gh_script(auth_exit: int, auth_output: str = "") -> str:
-    """Return a mock gh script whose `auth status` exits with auth_exit."""
     auth_echo = f'echo "{auth_output}"; ' if auth_output else ""
     return (
         "#!/bin/sh\n"
@@ -206,22 +155,18 @@ def _gh_script(auth_exit: int, auth_output: str = "") -> str:
 
 
 def _create_auth_gh(bin_dir: pathlib.Path) -> None:
-    """Create a mock authenticated gh executable."""
     _write_exe(bin_dir / "gh", _gh_script(0, "Logged in to github.com"))
 
 
 def _create_unauth_gh(bin_dir: pathlib.Path) -> None:
-    """Create a mock unauthenticated gh executable."""
     _write_exe(bin_dir / "gh", _gh_script(1))
 
 
 def _create_uv(bin_dir: pathlib.Path) -> None:
-    """Create a mock uv executable that answers --version, as a healthy install would."""
     _write_exe(bin_dir / "uv", "#!/bin/sh\necho 'uv 0.12.0'\n")
 
 
 def _create_silent_docker(bin_dir: pathlib.Path) -> None:
-    """Create a mock docker binary that exits 0 with empty stdout for --version."""
     docker_script = (
         "#!/bin/sh\n"
         'if [ "$1" = "--version" ]; then exit 0; fi\n'
@@ -233,7 +178,6 @@ def _create_silent_docker(bin_dir: pathlib.Path) -> None:
 
 
 def _create_silent_buildx(bin_dir: pathlib.Path) -> None:
-    """Create a mock docker binary that responds to --version and info but produces empty output for buildx version."""
     docker_script = (
         "#!/bin/sh\n"
         'if [ "$1" = "--version" ]; then echo "Docker version 27.0.0"; exit 0; fi\n'
@@ -245,7 +189,6 @@ def _create_silent_buildx(bin_dir: pathlib.Path) -> None:
 
 
 def _create_mock_toolbelt(bin_dir: pathlib.Path) -> None:
-    """Create stubs for git, jq, and shellcheck."""
     _write_exe(bin_dir / "git", "#!/bin/sh\necho 'git version 2.43.0'\n")
     _write_exe(
         bin_dir / "jq",
@@ -273,6 +216,7 @@ def _create_mock_toolbelt(bin_dir: pathlib.Path) -> None:
     )
 
 
+# why: DETECTED_OS is assigned with := in the Makefile, so tests pass it on the make command line.
 def _setup_mock_env(  # noqa: PLR0913
     tmp_path: pathlib.Path,
     *,
@@ -284,25 +228,6 @@ def _setup_mock_env(  # noqa: PLR0913
     npx_present: bool = True,
     mock_toolbelt: bool = False,
 ) -> dict[str, str]:
-    """Create an isolated PATH environment with fake binaries and essential tools.
-
-    The host OS is not controlled here: ``DETECTED_OS`` is assigned with ``:=`` in the
-    Makefile, so tests must pass it as a make command-line variable (see ``OS_LINUX``).
-
-    Args:
-        tmp_path: Pytest temporary directory.
-        mock_gh: Optional callable to configure mock gh executable.
-        mock_openssl: Optional callable to configure mock openssl executable.
-        mock_docker: Whether to provide a mock docker binary satisfying check-docker,
-            or callable to create custom binary.
-        mock_uv: Callable replacing the default healthy uv stub (see _create_uv).
-        uv_present: Set False to omit uv entirely, exercising the fatal missing-uv path.
-        npx_present: Set False to omit npx, exercising the advisory missing-npx path.
-        mock_toolbelt: Whether to install mock stubs for the OS toolbelt.
-
-    Returns:
-        Environment dictionary with isolated PATH.
-    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
 
@@ -358,29 +283,23 @@ def _setup_mock_env(  # noqa: PLR0913
 
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{clean_bin}"
-    # A pytest suite launched from inside a make recipe would otherwise inherit the parent's
-    # MAKEFLAGS (including -n) and MAKELEVEL, silently turning every child make into a dry run.
+    # why: a suite launched from a make recipe inherits MAKEFLAGS (including -n) and MAKELEVEL, turning
+    # why: every child make into a dry run.
     env["MAKEFLAGS"] = ""
     env["MAKELEVEL"] = ""
     return env
 
 
 def test_check_prerequisites_fails_when_gh_missing(tmp_path: pathlib.Path) -> None:
-    """Verify that check-prerequisites fails with exit code 2 when gh is missing.
-
-    make reports a failed recipe as exit 2, not 1; the docstring said 1 while the assertion
-    below has always measured 2.
-    """
     env = _setup_mock_env(tmp_path, mock_gh=None, mock_openssl=_create_openssl)
 
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
-    assert result.returncode == 2  # make exits 2 when a recipe fails
+    assert result.returncode == MAKE_RECIPE_FAILURE_EXIT
     assert "GitHub CLI (gh) not found" in result.stdout
     assert "sudo apt install gh" in result.stdout
 
 
 def test_check_prerequisites_warns_when_gh_unauthenticated(tmp_path: pathlib.Path) -> None:
-    """Verify advisory warning when gh is present but unauthenticated."""
     env = _setup_mock_env(tmp_path, mock_gh=_create_unauth_gh, mock_openssl=_create_openssl)
 
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
@@ -392,7 +311,6 @@ def test_check_prerequisites_warns_when_gh_unauthenticated(tmp_path: pathlib.Pat
 
 
 def test_check_prerequisites_passes_when_gh_authenticated(tmp_path: pathlib.Path) -> None:
-    """Verify that check-prerequisites passes with no warnings when gh is authenticated."""
     env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl)
 
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
@@ -403,34 +321,26 @@ def test_check_prerequisites_passes_when_gh_authenticated(tmp_path: pathlib.Path
 
 
 def test_check_prerequisites_fails_when_openssl_missing(tmp_path: pathlib.Path) -> None:
-    """Verify that check-prerequisites fails with exit code 2 when openssl is missing."""
     env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=None)
 
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
-    assert result.returncode == 2  # make exits 2 when a recipe fails
+    assert result.returncode == MAKE_RECIPE_FAILURE_EXIT
     assert "openssl not found" in result.stdout
     assert "launcher/root_ca.py" in result.stdout
     assert "sudo apt install openssl" in result.stdout
 
 
 def test_check_prerequisites_darwin_install_instructions(tmp_path: pathlib.Path) -> None:
-    """Verify that check-prerequisites prints brew install instructions on Darwin."""
     env = _setup_mock_env(tmp_path, mock_gh=None, mock_openssl=None)
 
     result = _run_make(["check-prerequisites", OS_DARWIN], env=env)
-    assert result.returncode == 2  # make exits 2 when a recipe fails
+    assert result.returncode == MAKE_RECIPE_FAILURE_EXIT
     assert "brew install gh" in result.stdout
     assert "brew install openssl" in result.stdout
 
 
+# why: README restates the prerequisite list by hand, so either copy could drift and stay green.
 def test_prerequisite_list_is_identical_in_make_help_and_readme(default_make: SharedMakeRuns) -> None:
-    """Assert the sync claim instead of merely asserting it in a comment.
-
-    The constant's comment says it keeps `make help` and README from drifting apart. Until
-    this test existed that was true of `make help` only: README restates the same list by
-    hand at the Quick Start block and nothing compared the two, so either could change and
-    stay green.
-    """
     help_result = default_make(["help"])
     assert help_result.returncode == 0, help_result.stderr
     help_stdout = help_result.stdout
@@ -439,17 +349,9 @@ def test_prerequisite_list_is_identical_in_make_help_and_readme(default_make: Sh
     assert PREREQUISITE_HELP_LIST in readme_text, "README's prerequisite list drifted from the list `make help` prints"
 
 
+# why: only the fatal half was tested; turning Docker probes fatal stayed green and would fail CI on
+# why: machines without a daemon.
 def test_check_prerequisites_treats_docker_as_advisory_not_fatal(tmp_path: pathlib.Path) -> None:
-    """Pin the advisory half of the documented split, which had no coverage.
-
-    The list names uv, gh and openssl as fatal and GNU Make, npx and all of Docker as
-    advisory, but only the fatal half was tested: turning the Docker probes into hard
-    failures kept the suite green, so a change meant as a warning could start failing CI on
-    any machine without a running daemon. Docker is absent here via mock_docker=False.
-
-    Coverage stated honestly: the advisory missing-npx path is covered by its own test
-    (npx_present=False), and the unusable-npx path by a stub whose --version returns nothing.
-    """
     env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl, mock_docker=False)
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
 
@@ -459,23 +361,16 @@ def test_check_prerequisites_treats_docker_as_advisory_not_fatal(tmp_path: pathl
 
 
 def _create_silent_gh(bin_dir: pathlib.Path) -> None:
-    """Create a gh that exists on PATH but reports no version (a broken or shadowed binary)."""
     _write_exe(bin_dir / "gh", "#!/bin/sh\nexit 0\n")
 
 
 def _create_silent_openssl(bin_dir: pathlib.Path) -> None:
-    """Create an openssl that exists on PATH but reports no version."""
     _write_exe(bin_dir / "openssl", "#!/bin/sh\nexit 0\n")
 
 
+# why: command -v succeeds for a broken or shadowed gh, and the probe used to print a green tick with an
+# why: empty version and exit 0.
 def test_check_prerequisites_fails_when_gh_is_present_but_unusable(tmp_path: pathlib.Path) -> None:
-    """A gh that cannot answer `--version` must not be reported as satisfied.
-
-    `command -v gh` succeeds for a broken binary, a crashed wrapper or a PATH entry that
-    shadows the real install, and the probe used to print a green tick with an empty version
-    and exit 0 - so the gate this whole PR exists to create would green-light a machine
-    where the flow cannot resolve a single Pull Request ref.
-    """
     env = _setup_mock_env(tmp_path, mock_gh=_create_silent_gh, mock_openssl=_create_openssl)
 
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
@@ -485,10 +380,10 @@ def test_check_prerequisites_fails_when_gh_is_present_but_unusable(tmp_path: pat
     assert "All prerequisites are satisfied!" not in result.stdout
 
 
+# why: openssl's consumer mints the proxy root CA.
 def test_check_prerequisites_fails_when_openssl_is_present_but_unusable(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Same failure mode for openssl, whose consumer mints the proxy root CA."""
     env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_silent_openssl)
 
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
@@ -499,20 +394,14 @@ def test_check_prerequisites_fails_when_openssl_is_present_but_unusable(
 
 
 def _create_libressl(bin_dir: pathlib.Path) -> None:
-    """Create an openssl that is really LibreSSL, as macOS's /usr/bin/openssl reports itself."""
     _write_exe(bin_dir / "openssl", "#!/bin/sh\necho 'LibreSSL 3.3.6'\n")
 
 
+# why: launcher/root_ca_openssl.py passes -addext, which LibreSSL lacks; the intent asked only for a
+# why: presence-and-version report, so the remedy is advisory but must not stay silent.
 def test_check_prerequisites_warns_when_the_gate_is_satisfied_by_libressl(
     tmp_path: pathlib.Path,
 ) -> None:
-    """LibreSSL satisfies `command -v openssl` but cannot build this repository's Root CA.
-
-    launcher/root_ca_openssl.py passes -addext three times and LibreSSL does not support it, so a green
-    tick here can still precede a failing CA step. The remedy is deliberately advisory - the
-    intent asked for a presence-and-version report, so failing the run for a non-OpenSSL
-    build would exceed it - but it must not stay silent, which is what this test pins.
-    """
     env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_libressl)
 
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
@@ -524,18 +413,11 @@ def test_check_prerequisites_warns_when_the_gate_is_satisfied_by_libressl(
 
 
 def _create_silent_uv(bin_dir: pathlib.Path) -> None:
-    """Create a uv that exists on PATH but reports no version."""
     _write_exe(bin_dir / "uv", "#!/bin/sh\nexit 0\n")
 
 
+# why: make help names uv as fatal, and deleting the whole uv block used to leave every test green.
 def test_check_prerequisites_fails_when_uv_is_present_but_unusable(tmp_path: pathlib.Path) -> None:
-    """`make help` names uv as fatal, so the unusable-tool rule must cover it too.
-
-    gh and openssl gained an empty-version guard; uv had the same `command -v` plus unchecked
-    version capture, so a shadowed or half-installed uv printed a green tick while `uv run
-    task …` could not work. Before these two uv tests existed the whole uv block had no
-    coverage at all: deleting it left every test green.
-    """
     env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl, mock_uv=_create_silent_uv)
 
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
@@ -546,7 +428,6 @@ def test_check_prerequisites_fails_when_uv_is_present_but_unusable(tmp_path: pat
 
 
 def test_check_prerequisites_fails_when_uv_is_missing(tmp_path: pathlib.Path) -> None:
-    """The fatal path for uv, previously unasserted despite being listed first in help."""
     env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl, uv_present=False)
 
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
@@ -556,14 +437,10 @@ def test_check_prerequisites_fails_when_uv_is_missing(tmp_path: pathlib.Path) ->
     assert "Install uv via" in result.stdout
 
 
+# why: npx used to be written unconditionally, so turning its advisory branch fatal stayed green.
 def test_check_prerequisites_warns_without_failing_when_npx_is_missing(
     tmp_path: pathlib.Path,
 ) -> None:
-    """npx is documented advisory, so its absence must warn and exit 0.
-
-    This is the path the fixture previously could not express: npx was written
-    unconditionally, so the yellow branch had no test and turning it fatal stayed green.
-    """
     env = _setup_mock_env(
         tmp_path,
         mock_gh=_create_auth_gh,
@@ -581,7 +458,6 @@ def test_check_prerequisites_warns_without_failing_when_npx_is_missing(
 def test_check_prerequisites_reports_unusable_npx_without_calling_it_found(
     tmp_path: pathlib.Path,
 ) -> None:
-    """A broken npx must be reported as unusable, not as `✅ Found: npx v` with nothing after it."""
     env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl)
     _write_exe(tmp_path / "bin" / "npx", "#!/bin/sh\nexit 0\n")
 
@@ -592,18 +468,12 @@ def test_check_prerequisites_reports_unusable_npx_without_calling_it_found(
     assert "Found: npx v" not in result.stdout
 
 
+# why: [ -z ] alone calls a whitespace-only version non-empty.
 def _create_whitespace_gh(bin_dir: pathlib.Path) -> None:
-    """Create a gh whose --version emits only whitespace, which `[ -z ]` alone calls non-empty."""
     _write_exe(bin_dir / "gh", "#!/bin/sh\nprintf '   '\n")
 
 
 def test_check_prerequisites_treats_a_whitespace_version_as_unusable(tmp_path: pathlib.Path) -> None:
-    """`[ -z ]` is false for a blank-but-spaced string, so the guard must trim first.
-
-    A tool printing "   " from --version is not reporting a version; without trimming the run
-    prints a green tick with invisible content, which is the same false confidence the
-    empty-string case was fixed for.
-    """
     env = _setup_mock_env(
         tmp_path,
         mock_gh=_create_whitespace_gh,
@@ -616,12 +486,8 @@ def test_check_prerequisites_treats_a_whitespace_version_as_unusable(tmp_path: p
     assert "Unusable: gh is on PATH" in result.stdout
 
 
+# why: hardcoding DETECTED_OS := Darwin passes the host-matching test on a macOS runner.
 def test_detected_os_is_derived_from_uname_not_written_as_a_constant() -> None:
-    """The runtime header check cannot tell `$(shell uname -s)` from a constant that equals it.
-
-    Hardcoding `DETECTED_OS := Darwin` passes the host-matching test on a macOS runner and
-    misdirects every Linux user, so the derivation itself is pinned here as well.
-    """
     makefile_lines = (_get_repo_root() / "Makefile").read_text(encoding="utf-8").splitlines()
     detected = [line for line in makefile_lines if line.startswith("DETECTED_OS")]
     assert detected == ["DETECTED_OS := $(shell uname -s)"], (
@@ -630,12 +496,10 @@ def test_detected_os_is_derived_from_uname_not_written_as_a_constant() -> None:
 
 
 def _probe_lines(stdout: str) -> list[str]:
-    """Lines the target prints only when it actually runs its probes."""
     return [line for line in stdout.splitlines() if line.startswith("Checking ")]
 
 
 def test_check_prerequisites_stays_inert_under_every_dry_run_spelling(tmp_path: pathlib.Path) -> None:
-    """`-n`, `-s -n`, `-Bn` and `--dry-run` must all probe nothing."""
     env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl)
     for flags in (["-n"], ["-n", "-s"], ["-Bn"], ["--dry-run"]):
         result = _run_make([*flags, "check-prerequisites"], env=env)
@@ -643,14 +507,9 @@ def test_check_prerequisites_stays_inert_under_every_dry_run_spelling(tmp_path: 
         assert _probe_lines(result.stdout) == [], f"{flags} executed the checks: {result.stdout}"
 
 
+# why: GNU make keeps -n only in the first MAKEFLAGS word; scanning every word matched the n in an -I
+# why: argument and silently skipped every probe, a hole the sibling repository shares.
 def test_check_prerequisites_runs_when_an_option_argument_spells_n(tmp_path: pathlib.Path) -> None:
-    """`make -I incdir_n ...` must probe for real: GNU make keeps -n only in the first word.
-
-    The guard used to scan every MAKEFLAGS word that is not a VAR=value or --long token, so
-    the -I argument itself was scanned, "incdir_n" matched the n, and the target printed its
-    banner, probed nothing and exited 0. Measured on this branch before the fix: 0 probe
-    lines and exit 0. The sibling repository carries the same guard and had the same hole.
-    """
     include_dir = tmp_path / "incdir_n"
     include_dir.mkdir()
     env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl)
@@ -661,10 +520,10 @@ def test_check_prerequisites_runs_when_an_option_argument_spells_n(tmp_path: pat
     assert any(line.startswith("Checking GitHub CLI") for line in probes)
 
 
+# why: the older first-word-only form failed here because 'Linux' contains an n.
 def test_check_prerequisites_runs_when_a_command_line_assignment_spells_n(
     tmp_path: pathlib.Path,
 ) -> None:
-    """The older first-word-only form failed here: 'Linux' contains an n."""
     env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl)
     result = _run_make(["DETECTED_OS=Linux", "check-prerequisites"], env=env)
 
@@ -673,19 +532,14 @@ def test_check_prerequisites_runs_when_a_command_line_assignment_spells_n(
     assert any(line.startswith("Checking uv") for line in probes)
 
 
+# why: both wrong detector shapes are measurable, so the compacted-option-cluster form is pinned.
 def test_dry_run_guard_does_not_scan_every_makeflags_word() -> None:
-    """Static pin: the word-scan form must not come back.
-
-    Both wrong answers are measurable (see the two tests above), so the shape of the
-    detector is pinned too: consult the compacted option cluster only.
-    """
     makefile = (_get_repo_root() / "Makefile").read_text(encoding="utf-8")
     assert "findstring n,$(foreach" not in makefile, "MAKEFLAGS word scan is back"
     assert "DRY_RUN := $(if $(findstring n,$(MF_OPTION_CLUSTER)),1,)" in makefile
 
 
 def _create_noisy_gh(bin_dir: pathlib.Path) -> None:
-    """Create a gh that emits a loader warning before its version line."""
     _write_exe(
         bin_dir / "gh",
         "#!/bin/sh\nprintf 'dyld: warning, malformed path\\n'\nprintf 'gh version 2.50.0 (2026-05-01)\\n'\n",
@@ -693,21 +547,15 @@ def _create_noisy_gh(bin_dir: pathlib.Path) -> None:
 
 
 def _create_noisy_openssl(bin_dir: pathlib.Path) -> None:
-    """Create an openssl that emits a loader warning before its version line."""
     _write_exe(
         bin_dir / "openssl",
         "#!/bin/sh\nprintf 'dyld: warning, malformed path\\n'\nprintf 'OpenSSL 3.0.0  1 Jan 2026\\n'\n",
     )
 
 
+# why: taking the first line showed a dyld warning as the version and warned Not OpenSSL about a
+# why: working OpenSSL.
 def test_version_probes_pick_the_version_line_not_the_first_line(tmp_path: pathlib.Path) -> None:
-    """A warning printed before the version must not become the reported version.
-
-    Taking the first line did two wrong things at once: it displayed `dyld: warning,
-    malformed path` as the tool's version, and, because the OpenSSL classification keyed off
-    that same first line, it warned "Not OpenSSL" about a perfectly working OpenSSL. The
-    probes now look for the version line and classify on the whole output.
-    """
     env = _setup_mock_env(tmp_path, mock_gh=_create_noisy_gh, mock_openssl=_create_noisy_openssl)
 
     result = _run_make(["check-prerequisites", OS_LINUX], env=env)
@@ -720,28 +568,19 @@ def test_version_probes_pick_the_version_line_not_the_first_line(tmp_path: pathl
 
 
 def _create_failing_gh(bin_dir: pathlib.Path) -> None:
-    """Create a gh that prints a version and then exits non-zero, as a broken config dir does."""
     _write_exe(bin_dir / "gh", "#!/bin/sh\nprintf 'gh version 2.50.0 (2026-05-01)\\n'\nexit 3\n")
 
 
 def _create_failing_openssl(bin_dir: pathlib.Path) -> None:
-    """Create an openssl that prints a version and then exits non-zero."""
     _write_exe(bin_dir / "openssl", "#!/bin/sh\nprintf 'OpenSSL 3.0.0  1 Jan 2026\\n'\nexit 2\n")
 
 
 def _create_compatible_not_openssl(bin_dir: pathlib.Path) -> None:
-    """Create a build that claims OpenSSL compatibility in prose without being OpenSSL."""
     _write_exe(bin_dir / "openssl", "#!/bin/sh\nprintf 'FooSSL 1.0 (OpenSSL compatible)\\n'\n")
 
 
+# why: `|| true` discarded the status, so a gh that printed its version and exited 3 passed.
 def test_check_prerequisites_fails_when_a_fatal_probe_exits_nonzero(tmp_path: pathlib.Path) -> None:
-    """Exit status used to be discarded, so a failing probe with output still passed.
-
-    `cmd 2>/dev/null || true` throws away the status, and only empty stdout counted as
-    unusable: a gh that prints its version and exits 3 (a broken config directory does this)
-    printed a green tick and left ERRORS untouched. A probe that fails is a failed probe
-    whatever it printed.
-    """
     env = _setup_mock_env(
         tmp_path,
         mock_gh=_create_failing_gh,
@@ -759,7 +598,6 @@ def test_check_prerequisites_fails_when_a_fatal_probe_exits_nonzero(tmp_path: pa
 def test_check_prerequisites_warns_when_the_advisory_npx_probe_exits_nonzero(
     tmp_path: pathlib.Path,
 ) -> None:
-    """The same rule for npx, but advisory: report it, do not fail the run."""
     env = _setup_mock_env(tmp_path, mock_gh=_create_auth_gh, mock_openssl=_create_openssl)
     _write_exe(tmp_path / "bin" / "npx", "#!/bin/sh\nprintf '11.0.0\\n'\nexit 4\n")
 
@@ -769,15 +607,11 @@ def test_check_prerequisites_warns_when_the_advisory_npx_probe_exits_nonzero(
     assert "Unusable: npx is on PATH but 'npx --version' failed (exit 4)" in result.stdout
 
 
+# why: the Root CA step needs -addext, so classification reads the version line's first token rather
+# why: than any mention of OpenSSL.
 def test_check_prerequisites_warns_for_a_build_that_only_claims_openssl_compatibility(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Classifying anywhere in the capture let "FooSSL 1.0 (OpenSSL compatible)" pass.
-
-    The Root CA step needs the -addext flag, so what matters is what the tool is, not whether
-    the word OpenSSL appears in its self-description. Classification now reads the version
-    line's first token.
-    """
     env = _setup_mock_env(
         tmp_path,
         mock_gh=_create_auth_gh,
@@ -792,7 +626,6 @@ def test_check_prerequisites_warns_for_a_build_that_only_claims_openssl_compatib
 
 
 def test_check_docker_fails_when_docker_is_present_but_unusable(tmp_path: pathlib.Path) -> None:
-    """Verify that a present-but-silent docker binary is flagged as unusable."""
     env = _setup_mock_env(
         tmp_path,
         mock_docker=_create_silent_docker,
@@ -806,7 +639,6 @@ def test_check_docker_fails_when_docker_is_present_but_unusable(tmp_path: pathli
 
 
 def test_check_docker_fails_when_buildx_is_present_but_unusable(tmp_path: pathlib.Path) -> None:
-    """Verify that a present-but-silent docker buildx plugin is flagged as unusable."""
     env = _setup_mock_env(
         tmp_path,
         mock_docker=_create_silent_buildx,
@@ -820,7 +652,6 @@ def test_check_docker_fails_when_buildx_is_present_but_unusable(tmp_path: pathli
 
 
 def test_tools_target_reports_paths_and_versions(tmp_path: pathlib.Path) -> None:
-    """Verify that make tools reports paths and versions for all required toolbelt tools."""
     env = _setup_mock_env(
         tmp_path,
         mock_gh=_create_auth_gh,
@@ -837,7 +668,6 @@ def test_tools_target_reports_paths_and_versions(tmp_path: pathlib.Path) -> None
 
 
 def test_lint_json_fails_on_malformed_fixture(tmp_path: pathlib.Path) -> None:
-    """Verify that make lint-json fails when encountering a malformed JSON file."""
     fixture_dir = tmp_path / "fixture"
     fixture_dir.mkdir()
     (fixture_dir / "malformed.json").write_text("{ unclosed: json\n", encoding="utf-8")
@@ -849,13 +679,11 @@ def test_lint_json_fails_on_malformed_fixture(tmp_path: pathlib.Path) -> None:
 
 
 def test_lint_yaml_fails_on_malformed_fixture(tmp_path: pathlib.Path) -> None:
-    """Verify that make lint-yaml fails when encountering a malformed YAML file."""
     fixture_dir = tmp_path / "fixture"
     fixture_dir.mkdir()
     (fixture_dir / "malformed.yaml").write_text("invalid: : yaml\n", encoding="utf-8")
 
     env = _setup_mock_env(tmp_path, mock_docker=False, mock_toolbelt=True)
-    # Mock npx to fail when checking this fixture
     bin_dir = tmp_path / "bin"
     _write_exe(bin_dir / "npx", "#!/bin/sh\nexit 1\n")
 
@@ -865,7 +693,6 @@ def test_lint_yaml_fails_on_malformed_fixture(tmp_path: pathlib.Path) -> None:
 
 
 def test_lint_shell_fails_on_malformed_fixture(tmp_path: pathlib.Path) -> None:
-    """Verify that make lint-shell fails when encountering a malformed shell script."""
     fixture_dir = tmp_path / "fixture"
     fixture_dir.mkdir()
     (fixture_dir / "malformed.sh").write_text("#!/bin/sh\nsyntax_error unquoted\n", encoding="utf-8")
@@ -877,13 +704,11 @@ def test_lint_shell_fails_on_malformed_fixture(tmp_path: pathlib.Path) -> None:
 
 
 def test_lint_md_fails_on_unformatted_fixture(tmp_path: pathlib.Path) -> None:
-    """Verify that make lint-md fails when encountering an unformatted markdown file."""
     fixture_dir = tmp_path / "fixture"
     fixture_dir.mkdir()
     (fixture_dir / "unformatted.md").write_text("# Title\n\n\n\nExtra blank lines\n", encoding="utf-8")
 
     env = _setup_mock_env(tmp_path, mock_docker=False, mock_toolbelt=True)
-    # Mock npx to fail when checking this fixture
     bin_dir = tmp_path / "bin"
     _write_exe(bin_dir / "npx", "#!/bin/sh\nexit 1\n")
 

@@ -25,9 +25,10 @@ import base64
 import json
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from scripts.ci_bookkeeping_context import GateContext, _text, context_from, load_event
 from scripts.ci_timing_gate import API_ROOT, build_request, default_opener
 
 COMPARE_FILE_CAP = 300  # the compare API lists at most 300 changed files, whatever the size of the diff
@@ -316,68 +317,29 @@ def blob_bytes(client: GateClient, sha: str) -> bytes:
     return base64.b64decode(content.replace("\n", ""), validate=True)
 
 
-@dataclass(frozen=True)
-class GateContext:
-    """What the event and the environment say about this run; a missing value is empty text or 0."""
-
-    event_name: str
-    action: str
-    label: str
-    before: str
-    head_sha: str
-    branch: str
-    run_number: int
-    run_attempt: int
-    workflow_file: str
-    job_name: str
-    os_name: str
-    sha: str = ""
-    ref: str = ""
-    base_ref: str = ""
-
-
-def _text(value: object) -> str:
-    return value if isinstance(value, str) else ""
-
-
-def _number(value: object) -> int:
-    text = _text(value)
-    return int(text) if text.isascii() and text.isdigit() else 0
-
-
-def _child(mapping: Mapping[str, object], key: str) -> Mapping[str, object]:
-    value = mapping.get(key)
-    return value if isinstance(value, dict) else {}
-
-
-def load_event(path: str) -> dict[str, object]:
-    """Read the event payload; a missing or broken file is an empty payload."""
-    try:
-        with open(path, encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, ValueError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def context_from(environ: Mapping[str, str], payload: Mapping[str, object], job_name: str, os_name: str) -> GateContext:
-    """Fill the context from the ``GITHUB_*`` environment, the event payload and the job's own names."""
-    workflow_file = _text(environ.get("GITHUB_WORKFLOW_REF")).partition("@")[0].rpartition("/")[2]
-    pull_request = _child(payload, "pull_request")
-    head = _child(pull_request, "head")
-    return GateContext(
-        event_name=_text(environ.get("GITHUB_EVENT_NAME")),
-        action=_text(payload.get("action")),
-        label=_text(_child(payload, "label").get("name")),
-        before=_text(payload.get("before")),
-        head_sha=_text(head.get("sha")),
-        branch=_text(head.get("ref")),
-        run_number=_number(environ.get("GITHUB_RUN_NUMBER")),
-        run_attempt=_number(environ.get("GITHUB_RUN_ATTEMPT")),
-        workflow_file=workflow_file if workflow_file.endswith((".yml", ".yaml")) else "",
-        job_name=job_name,
-        os_name=os_name,
-        sha=_text(environ.get("GITHUB_SHA")),
-        ref=_text(environ.get("GITHUB_REF")),
-        base_ref=_text(_child(pull_request, "base").get("ref")),
-    )
+__all__ = [
+    "COMPARE_FILE_CAP",
+    "PAGE_SIZE",
+    "CommitRef",
+    "Comparison",
+    "GateClient",
+    "GateContext",
+    "MergeBase",
+    "Opener",
+    "PullRef",
+    "RunRef",
+    "Tree",
+    "blob_bytes",
+    "commit_ref",
+    "commit_tree",
+    "compare",
+    "context_from",
+    "list_earlier_runs",
+    "list_head_runs",
+    "list_jobs",
+    "list_push_runs",
+    "load_event",
+    "merge_base",
+    "pulls_for_commit",
+    "tree_entries",
+]

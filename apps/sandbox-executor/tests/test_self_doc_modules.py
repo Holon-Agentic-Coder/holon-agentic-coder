@@ -50,6 +50,7 @@ GOVERNED_MODULES_BY_PACKAGE: dict[str, tuple[str, ...]] = {
         "preflight.py",
         "ref_names.py",
         "review_failure.py",
+        "review_finding_outcomes.py",
         "review_paths.py",
         "review_report.py",
         "review_target.py",

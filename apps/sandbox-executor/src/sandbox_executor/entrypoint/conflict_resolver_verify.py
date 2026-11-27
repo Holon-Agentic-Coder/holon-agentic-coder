@@ -1,10 +1,3 @@
-"""The conflict resolver's own verdict: lint and the full test suite, run in the foreground after the agent turn.
-
-The verdict never depends on what the agent says it ran: a ``CANNOT_DECIDE`` decision is honoured without running
-anything, otherwise lint runs first (a broken resolution never pays for the suite), then the tests. Nothing here
-stages, commits or pushes; the host guard decides from the verdict.
-"""
-
 from __future__ import annotations
 
 import subprocess
@@ -30,8 +23,6 @@ MAX_FAILING_TESTS = 20
 
 @dataclass(frozen=True)
 class Verdict:
-    """The result the container writes for the host: the verdict, why, the exit codes and the failing tests."""
-
     verdict: str
     reason: str = ""
     lint_exit: int | None = None
@@ -40,12 +31,10 @@ class Verdict:
     output_tail: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        """The JSON object written to the result file."""
         return asdict(self)
 
 
 def run_cmd(args: list[str], cwd: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    """Run a command in the foreground, echoing it redacted; a tool that cannot start is exit code 127."""
     print(f"Running: {redact_command(args)}", file=sys.stderr)
     try:
         return subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, check=False)
@@ -54,7 +43,6 @@ def run_cmd(args: list[str], cwd: str, env: dict[str, str] | None = None) -> sub
 
 
 def read_decision(decision_file: str) -> str | None:
-    """The agent's ``CANNOT_DECIDE`` reason from ``decision_file``, or ``None`` when it decided."""
     try:
         text = Path(decision_file).read_text(encoding="utf-8").strip()
     except OSError:
@@ -68,8 +56,8 @@ def _output(result: subprocess.CompletedProcess[str]) -> str:
     return "\n".join(part for part in (result.stderr, result.stdout) if part)
 
 
+# why: never trust what the agent says it ran; lint runs first so a broken resolution never pays for the suite
 def verify_resolution(repo_dir: str, decision_file: str) -> Verdict:
-    """Map the agent's decision, then ``uv run task lint`` and ``uv run task test``, to one verdict."""
     reason = read_decision(decision_file)
     if reason is not None:
         return Verdict(CANNOT_DECIDE, reason=bounded_output_tail(reason))

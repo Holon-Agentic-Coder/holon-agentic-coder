@@ -1,0 +1,59 @@
+{
+  "kb_id": "KB-pattern-worktree-git-hardening",
+  "kb_type": "pattern",
+  "version": "1.0",
+  "created_ts": "2026-11-27T00:00:00+00:00",
+  "updated_ts": "2026-11-27T00:00:00+00:00",
+  "created_by": "architecture-audit-2026-11",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "I-1795768764-hac-architecture-audit-kb"
+    ],
+    "success_count": 3,
+    "failure_count": 0
+  },
+  "tags": [
+    "architecture-audit-2026-11",
+    "git",
+    "worktree",
+    "hardening"
+  ],
+  "human_approved": true,
+  "payload": {
+    "name": "Isolated Git Worktree Lifecycle Hardening",
+    "description": "Isolate flow stages and ledger mutations in dedicated git worktrees with explicit ref and HEAD verification, non-destructive branch creation, checkpoint preservation, and deterministic teardown.",
+    "applicability": {
+      "intent_types": [
+        "flow_orchestration",
+        "git_automation",
+        "ledger_mutation"
+      ],
+      "complexity_range": [
+        0.3,
+        0.8
+      ],
+      "entropy_range": [
+        2,
+        20
+      ]
+    },
+    "structure": {
+      "steps": [
+        "Create each stage or ledger worktree from an explicitly verified ref rather than relying on the ambient working tree HEAD (sandbox_executor/git.py, sandbox_executor/flow/ledger_worktree.py).",
+        "Verify resolved branch refs and worktree cleanliness before committing or promoting artifacts so detached or stale HEAD states fail closed.",
+        "Record resumable stage checkpoints without destructive resets or force-pushes (sandbox_executor/flow/worktree_checkpoints.py).",
+        "Tear down temporary worktrees and prune stale administrative metadata in finally blocks even when a stage exits with an error."
+      ]
+    },
+    "known_pitfalls": [
+      "Assuming the host checkout branch matches the target execution branch causes cross-branch file leakage.",
+      "Leaving orphaned worktree entries in .git/worktrees blocks subsequent branch checkouts on the same ref.",
+      "Running destructive git reset or clean commands outside the isolated worktree can discard operator changes."
+    ],
+    "related_patterns": [
+      "KB-pattern-three-ledger-fragment-routing",
+      "KB-pattern-hermetic-pytest-conftest"
+    ]
+  }
+}

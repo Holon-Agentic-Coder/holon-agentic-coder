@@ -15,6 +15,35 @@ BLOCKED_ADVICE = (
 )
 
 
+def parked_record_from_ci_status(ci_status: Mapping[str, Any]) -> dict[str, Any] | None:
+    evidence = ci_status.get("test_failure")
+    if not isinstance(evidence, Mapping):
+        return None
+    record = evidence.get("parked_record")
+    if not isinstance(record, Mapping):
+        return None
+    return {
+        "parked": bool(record.get("parked", True)),
+        "status": record.get("status") or evidence.get("status"),
+        "blocked_on": str(record.get("blocked_on") or evidence.get("blocked_on") or "none"),
+        "classification": record.get("classification") or evidence.get("classification"),
+        "failing_ids": [str(test_id) for test_id in record.get("failing_ids") or ()],
+        "signature": str(record.get("signature") or evidence.get("signature") or ""),
+        "evidence": str(record.get("evidence") or evidence.get("blocked_evidence") or ""),
+        "excerpts": dict(record.get("excerpts") or {}),
+        "ledger_rows": list(record.get("ledger_rows") or ()),
+        "final_tier": record.get("final_tier"),
+        "checkpoint_path": record.get("checkpoint_path"),
+    }
+
+
+def _blocked_on_of(evidence: Mapping[str, Any]) -> str | None:
+    raw = evidence.get("blocked_on")
+    if not raw and isinstance(record := evidence.get("parked_record"), Mapping):
+        raw = record.get("blocked_on")
+    return str(raw) if raw else None
+
+
 def local_test_failure_finding(
     iteration: int, ci_status: Mapping[str, Any], failed_names: Sequence[str] = ()
 ) -> FindingRow | None:
@@ -30,7 +59,11 @@ def local_test_failure_finding(
     checks = [name for name in failed_names if name != "local_tests"]
     also = f" Failed CI checks: {', '.join(checks)}." if checks else ""
     blocked = evidence.get("blocked_evidence")
-    blocked_note = f" Blocked, not fixable in code: {str(blocked)[:MAX_EXCERPT_CHARS]}." if blocked else ""
+    blocked_on = _blocked_on_of(evidence)
+    blocked_on_suffix = f" (blocked_on: {blocked_on})" if blocked_on else ""
+    blocked_note = (
+        f" Blocked, not fixable in code: {str(blocked)[:MAX_EXCERPT_CHARS]}{blocked_on_suffix}." if blocked else ""
+    )
     return FindingRow(
         id=f"FIND-CI-{iteration:03d}",
         severity="important",

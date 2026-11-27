@@ -1,15 +1,3 @@
-"""Stage 3 admission: refuse to dispatch an executor whose plan's touch set overlaps a flow in flight.
-
-Before any execution branch, container or token is spent, :mod:`flow.admission_decision` compares the active plan's
-touch set with every flow in flight (a plan without a touch set, or a discovery that could not run, is refused too: fail
-closed). Outside a dry run the check holds the repository's admission lock (:mod:`flow.admission_lock`) from discovery
-until the admission state (:mod:`flow.admission_state`) is written to this flow's checkpoint, so two overlapping flows
-on one host are never admitted together: an overlap refusal records ``blocked``, an admission ``admitted``.
-``--allow-overlap`` (``FlowContext.allow_overlap``) admits a refused run anyway (never one whose lock or state write
-failed: discovery could not see it) and appends one ``admission_override`` row to the plan branch's ``executions.jsonl``
-once per plan (``flow.admission_record``); refusal never closes, merges or edits another flow.
-"""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -28,11 +16,6 @@ from sandbox_executor.flow.in_flight import GitRunner
 
 
 def record_admission(context: FlowContext, decision: AdmissionDecision) -> AdmissionDecision:
-    """Write the decision's admission state into this flow's checkpoint (the path other worktrees' discovery reads).
-
-    An admission records ``admitted`` (with the override and its conflicts under ``--allow-overlap``), an overlap
-    refusal ``blocked``; any other refusal records nothing. A write failure refuses, even under ``--allow-overlap``.
-    """
     previous = AdmissionRecord.from_dict(context.admission)
     if decision.admitted:
         overridden = [conflict.to_dict() for conflict in decision.conflicts] if decision.overridden else None
@@ -43,26 +26,24 @@ def record_admission(context: FlowContext, decision: AdmissionDecision) -> Admis
         return decision
     if (error := save_admission(context, record.to_dict())) is None:
         return decision
-    return AdmissionDecision(False, reason=f"the admission state could not be recorded: {error}")  # unrecorded: hidden
+    # why: an admission other worktrees' discovery cannot read would let an overlapping flow through
+    return AdmissionDecision(False, reason=f"the admission state could not be recorded: {error}")
 
 
 def check_admission(
     context: FlowContext, run_gh: GhRunner | None = None, run_git: GitRunner | None = None
 ) -> AdmissionDecision:
-    """Compare the active plan's touch set with every flow in flight and decide whether Stage 3 may dispatch.
-
-    Outside a dry run it is made and recorded under the repository's admission lock; a dry run takes and writes nothing.
-    """
     if context.dry_run:
         return decide_admission(context, run_gh, run_git)
     try:
         with admission_lock(context.target_worktree, run_git):
             return record_admission(context, decide_admission(context, run_gh, run_git))
-    except AdmissionLockError as exc:  # even under --allow-overlap: an admission must be recorded under the lock
+    # why: even under --allow-overlap an admission must be recorded under the lock, or discovery could miss it
+    except AdmissionLockError as exc:
         return AdmissionDecision(False, reason=f"the admission lock could not be taken: {exc}")
 
 
-#: Overlapping files named per conflict in the refusal message; the payload and ``blocked_by`` keep the full list.
+# why: only the refusal message truncates; the payload and blocked_by keep every overlapping file
 MAX_REFUSAL_FILES = 20
 
 
@@ -72,7 +53,6 @@ def _file_list(files: tuple[str, ...]) -> str:
 
 
 def format_refusal(decision: AdmissionDecision) -> str:
-    """One message naming every overlapping flow (pull request and branch, or local branch) and its concrete files."""
     if decision.conflicts:
         overlaps = "; ".join(f"{conflict.label} on {_file_list(conflict.files)}" for conflict in decision.conflicts)
         return (
@@ -83,7 +63,6 @@ def format_refusal(decision: AdmissionDecision) -> str:
 
 
 def _record_admission_override(context: FlowContext, decision: AdmissionDecision) -> str | None:
-    """Append one ``admission_override`` row to the plan branch's executions.jsonl; the error text on failure."""
     plan_branch = str(context.plan_branch)
     plan_id = plan_branch.removesuffix("/_").rsplit("/", 1)[-1]
     row = {
@@ -102,11 +81,6 @@ def _record_admission_override(context: FlowContext, decision: AdmissionDecision
 
 
 def admission_stage_failure(context: FlowContext, start_time: str) -> StageResult | None:
-    """Run admission for Stage 3: ``None`` to dispatch, or the failed result that refuses it before any dispatch.
-
-    A dry run only logs the decision. An override is recorded before dispatch, once per plan; if that row cannot be
-    written the run is refused and the previous state put back (none for a never-admitted flow: in flight, see docs).
-    """
     previous = context.admission
     decision = check_admission(context)
     if decision.admitted and not decision.overridden:
@@ -133,7 +107,8 @@ def admission_stage_failure(context: FlowContext, start_time: str) -> StageResul
         return None
     write_error = _record_admission_override(context, decision)
     if write_error is not None:
-        if save_admission(context, previous) is not None:  # undo the admitted record: the run is refused
+        # why: check_admission already recorded this refused run as admitted
+        if save_admission(context, previous) is not None:
             context.log("Stage 3 admission: could not restore the checkpoint's previous admission state.")
         error = f"Stage 3 refused: the --allow-overlap override could not be recorded: {write_error}"
         return _stage_failure(context, FlowStage.EXECUTE, start_time, error, dispatched=False, **decision.to_payload())

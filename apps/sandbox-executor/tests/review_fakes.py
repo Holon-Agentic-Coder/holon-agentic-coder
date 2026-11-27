@@ -31,6 +31,10 @@ def clean_reviewer(index: int, agent: str = "fake-agent", model: str = "fake-mod
     return ReviewerResult.completed(index, agent, model, reviewer_report_rel(1, index), "clean report", parsed)
 
 
+def with_clean_peers(results: Sequence[ReviewerResult], size: int = 3) -> list[ReviewerResult]:
+    return [*results, *(clean_reviewer(i) for i in range(len(results) + 1, size + 1))]
+
+
 def objecting_reviewer(
     index: int, severity: str = "important", verdict: ReviewerVerdict = ReviewerVerdict.CHANGES_REQUESTED
 ) -> ReviewerResult:

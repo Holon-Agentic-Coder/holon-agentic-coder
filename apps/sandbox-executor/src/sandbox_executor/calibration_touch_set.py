@@ -1,8 +1,3 @@
-"""Stage 5 touch-set accuracy: score the plan's ``## Touch Set`` against the execution diff and render it.
-
-``calibration.py`` calls these two functions; the parsing and matching live in ``touch_set.py``.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -21,15 +16,7 @@ _NO_TOUCH_SET: dict[str, Any] = {"precision": None, "recall": None, "unpredicted
 def touch_set_metrics(
     plan_meta: dict[str, Any], changed_paths: list[str] | None, target_worktree: str
 ) -> dict[str, Any]:
-    """Score the plan's touch set against the execution's changed paths; ``None`` values when there is none.
-
-    ``changed_paths`` is ``None`` when the diff was not measured path by path; that scores ``None`` values too, not a
-    precision of zero.
-
-    The touch set comes from the ``plans.jsonl`` row, or from the plan file's ``## Touch Set`` section when the row was
-    not found and ``parse_predicted_metrics`` fell back to the markdown (its record then has no ``plan_id``). Advisory:
-    a malformed row or unreadable plan file never fails calibration.
-    """
+    # why: an unmeasured diff scores None, not a precision of zero; a malformed touch set never fails calibration.
     if changed_paths is None:
         return dict(_NO_TOUCH_SET)
     try:
@@ -54,7 +41,6 @@ def _capped_code_bullets(items: list[str]) -> list[str]:
 
 
 def touch_set_report_lines(report_data: dict[str, Any]) -> list[str]:
-    """Render the touch-set accuracy section: precision and recall (or ``n/a``), unpredicted paths, unused entries."""
     score = report_data.get("touch_set") or _NO_TOUCH_SET
 
     def percent(value: float | None) -> str:

@@ -5,7 +5,9 @@ inputs:
     description: "The job's base name as the jobs API shows it, without the matrix part (for example 'unit')"
     required: true
   os:
-    description: "The runner label of a matrix job (for example 'ubuntu-latest'); empty for a job without a matrix"
+    description:
+      "The value telling a matrix leg apart among its job name's values: the runner label (for example 'ubuntu-latest')
+      or 'shard N of M' for a shard; empty for a job without a matrix"
     required: false
     default: ""
 outputs:

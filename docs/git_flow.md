@@ -565,8 +565,9 @@ Consensus is withdrawn only when the last attempt still fails.
 
 The rule applies to every check whose failed steps are all timing-gate steps: a step whose name starts with
 `CI Timing Gate` or a step named exactly `Timing gate`. That covers the `unit` jobs on `ubuntu-latest` and
-`macos-latest` (`CI Timing Gate (compare with main)`), the `Workspace survival` and build-images jobs (`Timing gate`),
-and the hygiene, integration, make, docker-build, CI durations and promote-ledger jobs (`CI Timing Gate (Check ...)`).
+`macos-latest`, including both macOS unit shards (`CI Timing Gate (compare with main)`), the `Workspace survival` and
+build-images jobs (`Timing gate`), and the hygiene, integration, make, docker-build, CI durations and promote-ledger
+jobs (`CI Timing Gate (Check ...)`).
 
 Stage 5 then re-verifies the head it published and records `ci_verdict` in the stage result, with the approved head, the
 final head and whether the head moved:

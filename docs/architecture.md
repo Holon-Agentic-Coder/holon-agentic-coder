@@ -585,7 +585,7 @@ that tests patch submodule-local symbols on their owning `sandbox_executor.cli.<
 
 The settings live in `holon-config/hygiene/module_budgets.json`, with exactly three keys:
 
-- `default_max_lines` (400): the limit of every module without an override, so a new module, a new package or a split
+- `default_max_lines` (350): the limit of every module without an override, so a new module, a new package or a split
   needs no entry. The maintainer's schedule lowers it by 50 per pull request (350, 300, 250); each step splits the
   modules over the new limit and drops the overrides it makes redundant, until 250 is reached;
 - `exclude`: a short list of `{"path", "reason"}` objects for generated or vendored code only (empty today). A path

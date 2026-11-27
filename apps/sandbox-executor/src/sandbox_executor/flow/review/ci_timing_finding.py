@@ -1,10 +1,3 @@
-"""The resolver finding for a CI failure whose only failed step is a timing gate.
-
-A timing gate fails because a job took too long. It is rerun once as noise (:mod:`.ci_failure_routing`); when it
-fails again, the fix is in the slowest tests of that job and this finding names them.
-Any other failure keeps the generic CI finding (:func:`sandbox_executor.review_report.ci_failure_finding`).
-"""
-
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -30,7 +23,6 @@ def _check_of(ci_status: Mapping[str, Any], name: str) -> dict[str, Any]:
 def timing_gate_details(
     ci_status: Mapping[str, Any], failed_names: Sequence[str], lookup: DetailLookup
 ) -> list[dict[str, Any]] | None:
-    """The detail records of the failed checks when every one failed only in its timing gate, else None."""
     if not failed_names or len(failed_names) > MAX_JOBS_DESCRIBED or ci_status.get("pending"):
         return None
     details = [lookup(_check_of(ci_status, n)) or bare_detail(n) for n in failed_names]
@@ -44,7 +36,6 @@ def _slowest_text(slowest: Sequence[tuple[str, float]]) -> str:
 
 
 def gh_timing_seams(repo_dir: str, proxy_env: Mapping[str, str]) -> tuple[DetailLookup, SlowestLookup]:
-    """The host-side ``gh`` lookups of failure detail and slowest tests."""
     return gh_detail_lookup(repo_dir, proxy_env), gh_slowest_lookup(repo_dir, proxy_env)
 
 
@@ -54,7 +45,7 @@ def timing_gate_finding(
     failed_names: Sequence[str],
     seams: tuple[DetailLookup, SlowestLookup],
 ) -> FindingRow | None:
-    """The ``FIND-CI`` finding for a timing-gate-only failure naming the slowest tests, else None."""
+    # why: a timing gate is already rerun once as noise, so a repeat failure is fixed in the slowest tests.
     detail_lookup, slowest_lookup = seams
     details = timing_gate_details(ci_status, failed_names, detail_lookup)
     if details is None:

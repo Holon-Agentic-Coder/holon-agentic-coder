@@ -129,8 +129,15 @@ def _is_sole_ci_finding(carried: Sequence[FindingRow]) -> bool:
 
 
 def _ci_status_is_green(status: Mapping[str, Any] | None) -> bool:
+    if not isinstance(status, Mapping):
+        return False
+    total = status.get("total", 0)
     return (
-        isinstance(status, Mapping)
+        status.get("source") == "github_cli"
+        and status.get("measured") is not False
+        and isinstance(total, int)
+        and not isinstance(total, bool)
+        and total > 0
         and status.get("all_passed") is True
         and status.get("failed", 0) == 0
         and status.get("pending", 0) == 0

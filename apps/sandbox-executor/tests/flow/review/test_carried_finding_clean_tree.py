@@ -13,10 +13,11 @@ from sandbox_executor.flow import (
     StageResult,
     StageStatus,
     load_checkpoint,
+    local_tests_ci_status,
     save_checkpoint,
     serialize_open,
 )
-from sandbox_executor.flow.review import ledger_commit
+from sandbox_executor.flow.review import carried_findings, ledger_commit
 from sandbox_executor.flow.review.loop import _run_engine_review_loop, run_review_loop
 from sandbox_executor.review_ensemble import (
     ConsensusVerdict,
@@ -207,6 +208,40 @@ def test_non_green_ci_finding_halts_once_with_blocked_on_and_resumes_without_loo
     assert res3["blocked_on"] is None
     assert res3["consensus"]["approved"] is True
     assert resumed.carried_review_findings == []
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        local_tests_ci_status(),
+        {**GREEN_CI, "measured": False},
+        {**GREEN_CI, "total": 0},
+        {**GREEN_CI, "total": None},
+    ],
+)
+def test_non_github_or_unmeasured_or_empty_ci_is_not_green(status: dict):
+    assert carried_findings._ci_status_is_green(status) is False
+
+
+def test_local_tests_fallback_halts_with_blocked_on_instead_of_clearing_ci_finding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("HOLON_IN_SANDBOX", raising=False)
+    monkeypatch.delenv("HOLON_ROLE", raising=False)
+    log: list[str] = []
+    ctx = _make_context(tmp_path, dispatcher=_dispatcher(log, CLEAN_TREE_ERROR), intent_data={"slug": "ci-fallback"})
+    ctx.carried_review_findings = serialize_open([CI_FINDING], {})
+
+    res = _run_with_seams(ctx, head_sha=HEAD_A, ci_statuses=[local_tests_ci_status()])
+
+    assert log == ["resolver:FIND-CI-001"]
+    assert res["resolver_error"] is None
+    assert res["blocked_on"] is not None
+    assert res["blocked_on"]["head_sha"] == HEAD_A
+    assert res["blocked_on"]["finding_ids"] == ["FIND-CI-001"]
+    assert res["consensus"]["approved"] is False
+    assert res["consensus"]["passes"] == 0
+    assert [f["id"] for f in ctx.carried_review_findings] == ["FIND-CI-001"]
 
 
 def test_non_ci_carried_finding_clean_tree_halts_once_with_blocked_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

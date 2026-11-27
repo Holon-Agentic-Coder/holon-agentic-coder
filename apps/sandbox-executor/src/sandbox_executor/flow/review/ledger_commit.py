@@ -23,17 +23,17 @@ LEDGER_RELS: tuple[str, ...] = ENGINE_OWNED_LEDGER_PATHS
 _SUPPRESS_COMMIT_ATTR = "_suppress_ledger_commit"
 
 
-def set_ledger_commit_suppressed(context: FlowContext, suppressed: bool) -> None:
+def _set_ledger_commit_suppressed(context: FlowContext, suppressed: bool) -> None:
     setattr(context, _SUPPRESS_COMMIT_ATTR, bool(suppressed))
 
 
-def is_ledger_commit_suppressed(context: FlowContext) -> bool:
+def _is_ledger_commit_suppressed(context: FlowContext) -> bool:
     return bool(getattr(context, _SUPPRESS_COMMIT_ATTR, False))
 
 
-def suppress_if_empty_pre_iter(context: FlowContext, passes: int, head_changed: bool, halted: bool) -> None:
+def _suppress_if_empty_pre_iter(context: FlowContext, passes: int, head_changed: bool, halted: bool) -> None:
     if passes == 0 and not head_changed and halted:
-        set_ledger_commit_suppressed(context, True)
+        _set_ledger_commit_suppressed(context, True)
 
 
 @dataclass(frozen=True)
@@ -123,7 +123,7 @@ def _commit_pending_ledger_rows(context: FlowContext, iteration: int, reason: st
     branch = context.execution_branch
     # why: inside a role container the host commits the mounted worktree.
     if (
-        is_ledger_commit_suppressed(context)
+        _is_ledger_commit_suppressed(context)
         or context.dry_run
         or workspace_mounted()
         or not branch
@@ -159,4 +159,4 @@ def _close_review_stage(context: FlowContext, on_branch: list[str], restore: Cal
             restore(context.target_worktree, on_branch[0], "Stage 4 review loop", context.log, run_git)
             _commit_pending_ledger_rows(context, context.review_iterations_done, "stage 4 exit")
     finally:
-        set_ledger_commit_suppressed(context, False)
+        _set_ledger_commit_suppressed(context, False)

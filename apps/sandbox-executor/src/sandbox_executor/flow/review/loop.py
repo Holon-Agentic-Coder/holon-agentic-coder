@@ -179,7 +179,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     Returns:
         dict[str, Any]: Review loop outcome dictionary.
     """
-    ledger_commit.set_ledger_commit_suppressed(context, False)
+    ledger_commit._set_ledger_commit_suppressed(context, False)
     clock = clock or time.monotonic
     ensemble_fn = run_ensemble_fn or run_ensemble
     sleep = sleep or time.sleep
@@ -320,12 +320,12 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     carried_block, blocked_on, carried_head_changed, carried_failed = "", None, False, False
     if carried_rows and resolver_enabled and resolved_target is not None and not effective_dry_run:
         carried_pass = CarriedPass(context, resolved_target, max(1, first_label - 1), run_resolver_fn, recorder)
-        deps = carried_findings.CarriedPrePassDeps(
+        deps = carried_findings._CarriedPrePassDeps(
             probe_ci=probe_ci,
             sync_target=lambda tgt: sync_after_resolver_turn(context, tgt, target_branch, carried_pass.iteration),
             record_rejected=lambda it, out: _record_rejected_attempt(context, exec_file, review_target, it, out),
         )
-        pre = carried_findings.run_pre_iteration_carried_pass(carried_rows, finding_action_ids, carried_pass, deps)
+        pre = carried_findings._run_pre_iteration_carried_pass(carried_rows, finding_action_ids, carried_pass, deps)
         carried_rows, pending_dispositions, blocked_on = pre.carried_rows, pre.pending_dispositions, pre.blocked_on
         carried_head_changed, carried_failed = pre.head_changed, bool(pre.resolver_error)
         resolver_error = _bounded_error_context(pre.resolver_error) if pre.resolver_error else None
@@ -845,7 +845,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             raise
         except Exception as e:
             _warn_ledger_failure(context, "Stage 4 review action event", exec_file, e)
-    ledger_commit.suppress_if_empty_pre_iter(context, passes, carried_head_changed, bool(carried_failed or blocked_on))
+    ledger_commit._suppress_if_empty_pre_iter(context, passes, carried_head_changed, bool(carried_failed or blocked_on))
     if not effective_dry_run:
         _commit_pending_ledger_rows(context, iteration)
 

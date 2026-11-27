@@ -7,7 +7,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from sandbox_executor.flow import FlowContext, load_checkpoint, save_checkpoint, serialize_open
+from sandbox_executor.flow import (
+    FlowContext,
+    FlowStage,
+    StageResult,
+    StageStatus,
+    load_checkpoint,
+    save_checkpoint,
+    serialize_open,
+)
 from sandbox_executor.flow.review import ledger_commit
 from sandbox_executor.flow.review.loop import _run_engine_review_loop, run_review_loop
 from sandbox_executor.review_ensemble import (
@@ -64,6 +72,7 @@ def _dispatcher(log: list[str], error: str | None) -> Callable[..., int]:
 
 
 GREEN_CI = {
+    "available": True,
     "all_passed": True,
     "failed": 0,
     "pending": 0,
@@ -73,6 +82,7 @@ GREEN_CI = {
     "measured": True,
 }
 RED_CI = {
+    "available": True,
     "all_passed": False,
     "failed": 1,
     "pending": 0,
@@ -301,6 +311,11 @@ def test_normal_iteration_ledger_commit_still_works_after_cleared_suppression(
     assert ledger_commits(work) == []
 
     ctx.carried_review_findings = []
+    ctx.stage_results["execute"] = StageResult(
+        stage=FlowStage.EXECUTE,
+        status=StageStatus.SUCCESS,
+        payload={"head_sha": "stage3-head", "test_pass_rate": 1.0, "exit_code": 0},
+    )
     with (
         patch("sandbox_executor.flow.review.loop._resolve_reviewed_target", return_value=(target_obj, None)),
         patch("sandbox_executor.flow.review.loop.probe_ci_checks", return_value=GREEN_CI),

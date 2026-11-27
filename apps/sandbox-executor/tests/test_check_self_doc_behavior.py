@@ -199,7 +199,11 @@ def test_cli_passes_on_docstring_and_comment_removal_with_pass_substitution(tmp_
     base = _commit_files(
         repo,
         {
-            "pkg/mod.py": '"""Module doc."""\n\n\nclass Empty:\n    """Empty doc."""\n\n\ndef add(a: int, b: int) -> int:\n    """Add."""\n    # sum values\n    return a + b\n'
+            "pkg/mod.py": (
+                '"""Module doc."""\n\n\n'
+                'class Empty:\n    """Empty doc."""\n\n\n'
+                'def add(a: int, b: int) -> int:\n    """Add."""\n    # sum values\n    return a + b\n'
+            )
         },
         "base",
     )

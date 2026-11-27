@@ -15,7 +15,7 @@ from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.github.ci_failure_detail import parse_run_id
 from sandbox_executor.flow.review.approval_coverage import approval_covers
 from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of, fingerprints_match
-from sandbox_executor.flow.review.verdict import decide_returned_consensus
+from sandbox_executor.flow.review.verdict import decide_returned_consensus, verdict_count_blocker
 from sandbox_executor.review_ensemble import ConsensusVerdict, ReviewerResult
 
 GREEN, RED, PENDING, UNKNOWN = "green", "red", "pending", "unknown"
@@ -185,7 +185,11 @@ def record_iteration_gates(context: FlowContext, facts: IterationGates, verdict:
     it judges the reviewers, the blockers and mergeability alone.
     """
     diff_verdict = decide_returned_consensus(
-        facts.reviewers, facts.ensemble_size, facts.mergeable, True, facts.blockers
+        facts.reviewers,
+        facts.ensemble_size,
+        facts.mergeable,
+        True,
+        (*facts.blockers, *verdict_count_blocker(facts.reviewers)),
     )
     diff_ok = diff_verdict is ConsensusVerdict.APPROVED
     fingerprint = facts.fingerprint_of(facts.head) if diff_ok and facts.fingerprint_of else None

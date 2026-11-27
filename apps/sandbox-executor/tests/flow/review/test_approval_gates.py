@@ -166,6 +166,34 @@ def _facts(reviewers, ci_green, ci_status=None, blockers=()):
     )
 
 
+def _three_clean():
+    return [clean_reviewer(1), clean_reviewer(2), clean_reviewer(3)]
+
+
+def test_a_clean_two_reviewer_ensemble_never_approves_the_diff(tmp_path):
+    ctx = _ctx(tmp_path)
+    record_iteration_gates(ctx, _facts([clean_reviewer(1), clean_reviewer(2)], True), ConsensusVerdict.APPROVED)
+
+    assert diff_gate_of(ctx).approved is False and diff_gate_of(ctx).fingerprint is None
+    assert approved(ctx, REPO, HEAD) is False
+
+
+def test_an_undisposed_finding_blocker_never_approves_the_diff(tmp_path):
+    ctx = _ctx(tmp_path)
+    blocker = "1 finding(s) without a resolver outcome (applied with a commit or rejected with a reason): R1-F1"
+    record_iteration_gates(ctx, _facts(_three_clean(), True, blockers=[blocker]), ConsensusVerdict.CHANGES_REQUESTED)
+
+    assert diff_gate_of(ctx).approved is False and diff_gate_of(ctx).fingerprint is None
+    assert approved(ctx, REPO, HEAD) is False
+
+
+def test_three_clean_reviewers_without_blockers_approve_the_diff(tmp_path):
+    ctx = _ctx(tmp_path)
+    record_iteration_gates(ctx, _facts(_three_clean(), True), ConsensusVerdict.APPROVED)
+
+    assert diff_gate_of(ctx).approved is True and diff_gate_of(ctx).fingerprint == "pf2:f"
+
+
 @pytest.mark.parametrize("verdict", [ReviewerVerdict.CHANGES_REQUESTED, ReviewerVerdict.APPROVED])
 def test_an_open_critical_finding_never_approves_the_diff(tmp_path, verdict):
     ctx = _ctx(tmp_path)
@@ -187,16 +215,16 @@ def test_clean_reviewers_with_red_ci_approve_the_diff_only(tmp_path):
     ctx = _ctx(tmp_path)
     link = "https://github.com/o/r/actions/runs/77/job/1"
     ci_status = {"checks": [{"bucket": "fail", "link": link}, {"bucket": "pass", "link": "x"}]}
-    record_iteration_gates(ctx, _facts([clean_reviewer(1)], False, ci_status), ConsensusVerdict.CHANGES_REQUESTED)
+    record_iteration_gates(ctx, _facts(_three_clean(), False, ci_status), ConsensusVerdict.CHANGES_REQUESTED)
 
-    assert diff_gate_of(ctx) == DiffGate(True, HEAD, "pf2:f", "main", 2, "full", ("APPROVED",))
+    assert diff_gate_of(ctx) == DiffGate(True, HEAD, "pf2:f", "main", 2, "full", ("APPROVED",) * 3)
     assert pipeline_gate_of(ctx) == PipelineGate(HEAD, RED, ("77",))
     assert approved(ctx, REPO, HEAD) is False
 
 
 def test_drift_between_the_gates_and_the_verdict_is_logged(tmp_path):
     ctx = _ctx(tmp_path)
-    record_iteration_gates(ctx, _facts([clean_reviewer(1)], True), ConsensusVerdict.CHANGES_REQUESTED)
+    record_iteration_gates(ctx, _facts(_three_clean(), True), ConsensusVerdict.CHANGES_REQUESTED)
     assert any("Gate drift at iteration 2" in line for line in ctx.logs)
 
 

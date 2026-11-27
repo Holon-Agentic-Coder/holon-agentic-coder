@@ -19,6 +19,7 @@ from sandbox_executor.flow import FlowContext, FlowStage
 from sandbox_executor.flow.stages.review import run_review_stage
 from sandbox_executor.flow.stages.sync_conflict import sync_conflict_result
 from sandbox_executor.ledger import read_merged_rows, read_merged_text
+from sandbox_executor.ledger.order import parse_created_at, utc_now_z
 
 from tests.repo_templates import copy_template, shared_template
 
@@ -191,3 +192,16 @@ def test_stage_ignores_other_statuses(tmp_path: Path) -> None:
     context = stage_context(tmp_path)
     for row in (None, {"status": "success"}, {"status": "failure"}):
         assert sync_conflict_result(context, "t", row, {"execution_branch": EXEC_BRANCH}) is None
+
+
+def test_superseding_failure_row_stamps_a_z_created_at_not_earlier_than_the_base_row() -> None:
+    base_row = {"execution_id": "E-3", "status": "success", "ledger_revision": 1, "created_at": utc_now_z()}
+
+    row = superseding_failure_row(base_row, "summary")
+
+    assert row["created_at"].endswith("Z")
+    assert "+00:00" not in row["created_at"]
+    assert parse_created_at(row["created_at"]) >= parse_created_at(base_row["created_at"])
+    assert row["ledger_revision"] == 2
+    unchanged_keys = set(base_row) - {"status", "summary", "created_at", "ledger_revision"}
+    assert {key: row[key] for key in unchanged_keys} == {key: base_row[key] for key in unchanged_keys}

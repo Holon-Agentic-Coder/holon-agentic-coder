@@ -19,8 +19,8 @@ except ImportError:
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 MISSING_MERGE_BASE_ERROR = (
-    "self-explaining check failed: no merge base with origin/main, even after fetching origin main and unshallowing; "
-    "fetch origin main with full history and rerun"
+    "self-explaining check failed: no merge base with origin/main, and none could be fetched from origin; "
+    "make sure an origin remote exists, fetch origin main with full history and rerun"
 )
 MISSING_MERGE_BASE_EXIT = 2
 VIOLATION_RULE = "code is self-explaining; only '# why:' reasons and machine directives are allowed"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import subprocess
@@ -53,11 +54,11 @@ def is_shallow_repository(root: Path) -> bool:
     return completed is not None and completed.stdout.strip() == "true"
 
 
-def fetch_from_origin(root: Path, *args: str) -> bool:
+def fetch_from_origin(root: Path, *args: str) -> None:
     # why: a credential prompt would hang CI and the containers
     environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    try:
-        completed = subprocess.run(
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run(
             ["git", "fetch", "--quiet", "origin", *args],
             cwd=root,
             capture_output=True,
@@ -66,9 +67,6 @@ def fetch_from_origin(root: Path, *args: str) -> bool:
             timeout=FETCH_TIMEOUT_SECONDS,
             env=environment,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return completed.returncode == 0
 
 
 def deepen_towards_origin_main(root: Path) -> None:

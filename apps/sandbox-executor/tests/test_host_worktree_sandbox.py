@@ -836,7 +836,7 @@ def test_worktree_roles_add_only_the_worktree_mounts_and_pin_the_workspace(role,
     reduced = _remove_argv_pair(reduced, ["-e", f"UV_PROJECT_ENVIRONMENT={SANDBOX_UV_PROJECT_ENVIRONMENT}"])
     reduced = _remove_argv_pair(reduced, ["-e", "UV_FROZEN=1"])
     if role == "intent-creator":
-        reduced = _remove_argv_pair(reduced, ["-v", f"{intent_file}:/tmp/intent.json"])
+        reduced = _remove_argv_pair(reduced, ["-v", f"{intent_file}:/tmp/intent.json:ro"])
     assert reduced == baseline
     assert not any(a.startswith("HOLON_") for a in review)
     # The env-files differ only in the pinned workspace and the role.

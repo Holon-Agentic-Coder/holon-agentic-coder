@@ -1,13 +1,3 @@
-"""An in-memory GitHub for the guarded child merge: PRs over a real bare origin, driven through the ``gh`` runner seam.
-
-``FakeGitHub`` is passed as (or patched in for) ``sandbox_executor.flow.github.merge.run_gh``. It answers the ``gh``
-commands the merge and the child progress reconciliation run, with the JSON field names ``gh`` uses. It answers
-``gh api repos/{owner}/{repo}`` with the ``allow_*`` merge settings and, like GitHub, rejects a merge method the
-repository does not allow: ``gh pr merge --merge`` is a real ``git merge --no-ff`` of the PR head into its base on
-origin and ``gh pr merge --squash`` a real single-parent squash commit; ``--rebase`` is always refused. Every call is
-recorded, so tests can assert which verbs and flags were (never) used. It never reaches the network.
-"""
-
 from __future__ import annotations
 
 import json
@@ -19,27 +9,22 @@ from tests.flow.helpers import _git
 
 
 class FakeGitHub:
-    """Pull requests over a bare origin repository, answering ``gh`` through ``__call__(args, cwd)``."""
-
     def __init__(self, origin: Path, scratch: Path, default_branch: str | None = "main"):
         self.origin = origin
         self.scratch = scratch
         self.default_branch = default_branch
         self.prs: dict[int, dict[str, Any]] = {}
         self.calls: list[list[str]] = []
-        # Bucket every check reports ("pass", "fail", "pending"), or None for a PR with no checks at all.
         self.checks_bucket: str | None = "pass"
         self.mergeable = "MERGEABLE"
-        # How many ``gh pr checks`` calls report no checks before they register (CI not yet started on a new head).
+        # why: CI has not started on a new head yet, so this many gh pr checks calls report no checks.
         self.unregistered_checks_calls = 0
-        # The repository merge settings ``gh api repos/{owner}/{repo}`` reports; ``repo_settings_fail`` makes it fail.
         self.allow_merge_commit: object = True
         self.allow_squash_merge: object = True
         self.allow_rebase_merge: object = False
         self.repo_settings_fail = False
 
     def open_pr(self, head: str, base: str) -> int:
-        """Record an open PR from ``head`` into ``base`` and return its number (101, 102, ...)."""
         number = 101 + len(self.prs)
         url = f"https://github.com/example/app/pull/{number}"
         self.prs[number] = {"number": number, "head": head, "base": base, "state": "OPEN", "oid": None, "url": url}
@@ -122,8 +107,7 @@ class FakeGitHub:
         }
         return self._done(args, 0, settings)
 
-    def _method_error(self, args: list[str]) -> str | None:
-        """Why GitHub would reject the merge method in ``args``, or None when exactly one allowed method is given."""
+    def _merge_method_rejection(self, args: list[str]) -> str | None:
         methods = [flag for flag in ("--merge", "--squash", "--rebase") if flag in args]
         allowed = {"--merge": self.allow_merge_commit is True, "--squash": self.allow_squash_merge is True}
         if len(methods) != 1 or not allowed.get(methods[0], False):
@@ -135,9 +119,9 @@ class FakeGitHub:
         expected = args[args.index("--match-head-commit") + 1] if "--match-head-commit" in args else None
         if pr is None or pr["state"] != "OPEN" or expected != self.sha(pr["head"]):
             return self._done(args, 1, err="merge refused by the fake")
-        method_error = self._method_error(args)
-        if method_error:
-            return self._done(args, 1, err=method_error)
+        merge_method_rejection = self._merge_method_rejection(args)
+        if merge_method_rejection:
+            return self._done(args, 1, err=merge_method_rejection)
         work = self.scratch / f"merge-{pr['number']}"
         subprocess.run(["git", "clone", "-q", str(self.origin), str(work)], check=True, capture_output=True)
         _git(work, "checkout", "-q", "-B", pr["base"], f"origin/{pr['base']}")

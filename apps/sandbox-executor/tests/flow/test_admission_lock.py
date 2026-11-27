@@ -1,5 +1,3 @@
-"""The per-repository Stage 3 admission lock (flow/admission_lock.py): exclusion, timeout and the admission race."""
-
 from __future__ import annotations
 
 import os
@@ -65,13 +63,8 @@ def test_a_second_holder_times_out_then_acquires_after_release(flow_repos, tmp_p
         assert path.endswith(ADMISSION_LOCK_NAME)
 
 
+# why: gh pr list waits (bounded) for a second concurrent discovery; without the lock both would see nothing.
 class OverlappingDiscovery(FakeGh):
-    """No open pull requests, but ``gh pr list`` waits (bounded) for a second concurrent discovery to start.
-
-    Without the lock both checks would discover at once and both see nothing in flight; with it, each wait times out
-    alone and the second check starts only after the first recorded its admission state.
-    """
-
     def __init__(self) -> None:
         super().__init__([], {})
         self.inside, self.most_inside = 0, 0
@@ -124,7 +117,8 @@ def test_racing_admission_checks_admit_exactly_one_overlapping_flow(flow_repos, 
     for thread in threads:
         thread.join(timeout=30)
     assert not any(thread.is_alive() for thread in threads), "an admission check hung"
-    assert gh.most_inside == 1  # the lock serialised discovery
+    # why: a peak of one concurrent discovery proves the lock serialised them.
+    assert gh.most_inside == 1
     admitted = [plan for plan, decision in decisions.items() if decision.admitted]
     assert len(admitted) == 1
     (refused,) = set(contexts) - set(admitted)

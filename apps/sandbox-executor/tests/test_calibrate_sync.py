@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,64 +11,83 @@ from unittest.mock import patch
 import pytest
 from sandbox_executor.flow import FlowContext, StageStatus
 from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
-from sandbox_executor.ref_names import calibration_branch
 
-EXEC = "I-1-x/P-2-y/E-3-z/_"
-CALIBRATED = calibration_branch(EXEC)
-GIT_ENV = {
-    "GIT_AUTHOR_NAME": "t",
-    "GIT_AUTHOR_EMAIL": "t@example.com",
-    "GIT_COMMITTER_NAME": "t",
-    "GIT_COMMITTER_EMAIL": "t@example.com",
-    "GIT_CONFIG_GLOBAL": "/dev/null",
-    "GIT_CONFIG_SYSTEM": "/dev/null",
-}
+from tests.calibrate_scenarios import (
+    SYNC_CALIBRATED,
+    SYNC_EXEC,
+    SYNC_GIT_ENV,
+    build_sync_repos,
+    build_sync_repos_ahead,
+    clone_flow_pair,
+    commit_sync_file,
+    own_copy,
+    push_sync_ahead,
+    run_guarded_template,
+    run_sync_git,
+)
+from tests.repo_templates import shared_template
+
+EXEC = SYNC_EXEC
+CALIBRATED = SYNC_CALIBRATED
+GIT_ENV = SYNC_GIT_ENV
+git = run_sync_git
+commit_file = commit_sync_file
+make_repos = build_sync_repos
+push_ahead = push_sync_ahead
 
 
-def git(cwd: Path, *args: str) -> str:
-    res = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True, env={**os.environ, **GIT_ENV}
-    )
-    return res.stdout.strip()
+@pytest.fixture(scope="session")
+def sync_repos_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> SimpleNamespace:
+    root, built = shared_template(tmp_path_factory, "calibrate-sync-repos", build_sync_repos)
+    return SimpleNamespace(root=root, repos=built)
 
 
-def commit_file(repo: Path, name: str, text: str = "x") -> str:
-    (repo / name).write_text(text)
-    git(repo, "add", name)
-    git(repo, "commit", "-qm", f"add {name}")
-    return git(repo, "rev-parse", "HEAD")
+@pytest.fixture(scope="session")
+def sync_repos_ahead_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> SimpleNamespace:
+    root, built = shared_template(tmp_path_factory, "calibrate-sync-repos-ahead", build_sync_repos_ahead)
+    return SimpleNamespace(root=root, repos=built.repos, origin_head=built.origin_head)
 
 
 @pytest.fixture
-def repos(tmp_path: Path) -> SimpleNamespace:
-    return make_repos(tmp_path)
+def repos(sync_repos_template: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
+    return own_copy(sync_repos_template, tmp_path)
 
 
-def make_repos(tmp_path: Path) -> SimpleNamespace:
-    """A bare origin, the host worktree (on its own branch) and a second clone that pushes ahead of it."""
-    origin = tmp_path / "origin.git"
-    git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
-    host = tmp_path / "host"
-    git(tmp_path, "clone", "-q", str(origin), str(host))
-    git(host, "checkout", "-qb", "main")
-    commit_file(host, "base.txt")
-    git(host, "push", "-q", "origin", "main")
-    git(host, "checkout", "-qb", EXEC)
-    commit_file(host, "exec.txt")
-    git(host, "push", "-q", "origin", EXEC)
-    git(host, "checkout", "-qb", "operator-work", "main")
-    other = tmp_path / "other"
-    git(tmp_path, "clone", "-q", str(origin), str(other))
-    git(other, "checkout", "-q", EXEC)
-    return SimpleNamespace(origin=origin, host=host, other=other)
+@pytest.fixture
+def repos_ahead(sync_repos_ahead_template: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
+    own = own_copy(sync_repos_ahead_template, tmp_path)
+    own.origin_head = sync_repos_ahead_template.origin_head
+    return own
 
 
-def push_ahead(repos: SimpleNamespace) -> str:
-    """Commit a merge-from-main style file and a ledger-interleave file on origin only."""
-    commit_file(repos.other, "from-main.txt")
-    sha = commit_file(repos.other, "ledger-interleave.txt")
-    git(repos.other, "push", "-q", "origin", EXEC)
-    return sha
+@pytest.fixture
+def sync_stage5_ran_template(
+    sync_repos_ahead_template: SimpleNamespace,
+    tmp_path_factory: pytest.TempPathFactory,
+    gh_write_guard: list[str],
+    network_guard_fixture: list[str],
+) -> SimpleNamespace:
+    def build(root: Path) -> SimpleNamespace:
+        own = own_copy(sync_repos_ahead_template, root)
+        ctx, result = run_stage(own)
+        return SimpleNamespace(
+            repos=own,
+            origin_head=sync_repos_ahead_template.origin_head,
+            stage_run=(ctx, result),
+        )
+
+    root, ran = run_guarded_template(
+        tmp_path_factory, "calibrate-sync-stage5-ran", build, (gh_write_guard, network_guard_fixture)
+    )
+    return SimpleNamespace(root=root, repos=ran.repos, origin_head=ran.origin_head, stage_run=ran.stage_run)
+
+
+@pytest.fixture
+def sync_stage5_ran(sync_stage5_ran_template: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
+    own = own_copy(sync_stage5_ran_template, tmp_path)
+    own.origin_head = sync_stage5_ran_template.origin_head
+    own.ctx, own.result = clone_flow_pair(sync_stage5_ran_template.root, sync_stage5_ran_template.stage_run, own.host)
+    return own
 
 
 def fake_calibrate(**kwargs: object) -> SimpleNamespace:
@@ -96,23 +114,20 @@ def run_stage(repos: SimpleNamespace, **kwargs: bool):
         return ctx, run_calibrate_stage(ctx)
 
 
-def test_calibrated_branch_descends_from_origin_head_and_fast_forwards(repos: SimpleNamespace) -> None:
-    origin_head = push_ahead(repos)
-    _, result = run_stage(repos)
+def test_calibrated_branch_descends_from_origin_head_and_fast_forwards(sync_stage5_ran: SimpleNamespace) -> None:
+    origin_head, result = sync_stage5_ran.origin_head, sync_stage5_ran.result
     assert result.status == StageStatus.SUCCESS
-    host = repos.host
+    host = sync_stage5_ran.host
     git(host, "merge-base", "--is-ancestor", origin_head, CALIBRATED)
     assert git(host, "rev-parse", EXEC) == git(host, "rev-parse", CALIBRATED)
     assert git(host, "rev-list", "--merges", "--count", f"{origin_head}..{EXEC}") == "0"
     assert git(host, "rev-parse", f"origin/{EXEC}") == git(host, "rev-parse", EXEC)
 
 
-def test_calibrated_report_tree_contains_origin_only_files(repos: SimpleNamespace) -> None:
-    push_ahead(repos)
-    _, result = run_stage(repos)
+def test_calibrated_report_tree_contains_origin_only_files(sync_stage5_ran: SimpleNamespace) -> None:
+    result = sync_stage5_ran.result
     tree = result.payload["calibration_report"]["tree"]
     assert {"from-main.txt", "ledger-interleave.txt", "exec.txt"} <= set(tree)
-    # No executions ledger in these repos: the shared Stage 5 core reports it skipped the reconciliation.
     assert result.payload["stage5_reconciliation"] == {
         "status": "skipped_no_ledger",
         "verdict": "failure",
@@ -120,29 +135,29 @@ def test_calibrated_report_tree_contains_origin_only_files(repos: SimpleNamespac
     }
 
 
-def test_divergent_local_ref_fails_loudly_and_changes_nothing(repos: SimpleNamespace) -> None:
-    origin_head = push_ahead(repos)
-    git(repos.host, "checkout", "-q", EXEC)
-    local_sha = commit_file(repos.host, "local-only.txt")
-    git(repos.host, "checkout", "-q", "operator-work")
-    _, result = run_stage(repos)
+def test_divergent_local_ref_fails_loudly_and_changes_nothing(repos_ahead: SimpleNamespace) -> None:
+    origin_head = repos_ahead.origin_head
+    git(repos_ahead.host, "checkout", "-q", EXEC)
+    local_sha = commit_file(repos_ahead.host, "local-only.txt")
+    git(repos_ahead.host, "checkout", "-q", "operator-work")
+    _, result = run_stage(repos_ahead)
     assert result.status == StageStatus.FAILED
     assert EXEC in result.error
     assert local_sha[:12] in result.error and origin_head[:12] in result.error
     assert "git push origin" in result.error
-    assert git(repos.host, "rev-parse", EXEC) == local_sha
-    assert git(repos.host, "branch", "--list", CALIBRATED) == ""
-    assert git(repos.host, "symbolic-ref", "--short", "HEAD") == "operator-work"
+    assert git(repos_ahead.host, "rev-parse", EXEC) == local_sha
+    assert git(repos_ahead.host, "branch", "--list", CALIBRATED) == ""
+    assert git(repos_ahead.host, "symbolic-ref", "--short", "HEAD") == "operator-work"
 
 
-def test_strict_ancestor_calibrated_branch_is_rebuilt_from_the_origin_head(repos: SimpleNamespace) -> None:
-    git(repos.host, "branch", CALIBRATED, "main")
-    origin_head = push_ahead(repos)
-    _, result = run_stage(repos)
+def test_strict_ancestor_calibrated_branch_is_rebuilt_from_the_origin_head(repos_ahead: SimpleNamespace) -> None:
+    git(repos_ahead.host, "branch", CALIBRATED, "main")
+    origin_head = repos_ahead.origin_head
+    _, result = run_stage(repos_ahead)
     assert result.status == StageStatus.SUCCESS
-    git(repos.host, "merge-base", "--is-ancestor", origin_head, CALIBRATED)
-    assert git(repos.host, "rev-parse", EXEC) == git(repos.host, "rev-parse", CALIBRATED)
-    assert git(repos.host, "symbolic-ref", "--short", "HEAD") == "operator-work"
+    git(repos_ahead.host, "merge-base", "--is-ancestor", origin_head, CALIBRATED)
+    assert git(repos_ahead.host, "rev-parse", EXEC) == git(repos_ahead.host, "rev-parse", CALIBRATED)
+    assert git(repos_ahead.host, "symbolic-ref", "--short", "HEAD") == "operator-work"
 
 
 def test_flow_ending_at_a_failed_review_restores_the_starting_branch(repos: SimpleNamespace) -> None:
@@ -170,11 +185,9 @@ def test_flow_ending_at_a_failed_review_restores_the_starting_branch(repos: Simp
     assert git(repos.host, "symbolic-ref", "--short", "HEAD") == "operator-work"
 
 
-def test_starting_branch_is_restored_with_a_clean_worktree(repos: SimpleNamespace) -> None:
-    push_ahead(repos)
-    run_stage(repos)
-    assert git(repos.host, "symbolic-ref", "--short", "HEAD") == "operator-work"
-    assert git(repos.host, "status", "--porcelain") == ""
+def test_starting_branch_is_restored_with_a_clean_worktree(sync_stage5_ran: SimpleNamespace) -> None:
+    assert git(sync_stage5_ran.host, "symbolic-ref", "--short", "HEAD") == "operator-work"
+    assert git(sync_stage5_ran.host, "status", "--porcelain") == ""
 
 
 def test_detached_head_is_restored(repos: SimpleNamespace) -> None:
@@ -193,13 +206,12 @@ def test_missing_origin_branch_proceeds_from_local_ref(repos: SimpleNamespace) -
     assert git(repos.host, "rev-parse", EXEC) == git(repos.host, "rev-parse", CALIBRATED)
 
 
-def test_dry_run_touches_no_ref(repos: SimpleNamespace) -> None:
-    push_ahead(repos)
-    before = git(repos.host, "for-each-ref")
+def test_dry_run_touches_no_ref(repos_ahead: SimpleNamespace) -> None:
+    before = git(repos_ahead.host, "for-each-ref")
     with patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None):
-        run_stage(repos, dry_run=True)
-    assert git(repos.host, "for-each-ref") == before
-    assert git(repos.host, "symbolic-ref", "--short", "HEAD") == "operator-work"
+        run_stage(repos_ahead, dry_run=True)
+    assert git(repos_ahead.host, "for-each-ref") == before
+    assert git(repos_ahead.host, "symbolic-ref", "--short", "HEAD") == "operator-work"
 
 
 def test_recording_the_starting_branch_uses_the_callers_git_runner(tmp_path: Path) -> None:

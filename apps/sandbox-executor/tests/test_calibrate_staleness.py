@@ -15,6 +15,15 @@ from sandbox_executor.flow.calibrate_rerun import (
 )
 from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of
 
+from tests.calibrate_scenarios import (
+    build_clean_merge_repos,
+    build_predicate_repo,
+    build_sync_repos,
+    own_copy,
+    own_path_copy,
+    run_guarded_template,
+)
+from tests.repo_templates import shared_template
 from tests.test_calibrate_rerun import (
     advance_main,
     commit_calibration,
@@ -22,21 +31,75 @@ from tests.test_calibrate_rerun import (
     merge_main,
     pr258_history,
 )
-from tests.test_calibrate_sync import EXEC, commit_file, git, make_repos
+from tests.test_calibrate_sync import EXEC, commit_file, git
+
+
+@pytest.fixture(scope="session")
+def predicate_repo_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> Path:
+    root, _ = shared_template(tmp_path_factory, "calibrate-predicate-repo", build_predicate_repo)
+    return root
+
+
+@pytest.fixture(scope="session")
+def sync_repos_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> SimpleNamespace:
+    root, built = shared_template(tmp_path_factory, "calibrate-sync-repos", build_sync_repos)
+    return SimpleNamespace(root=root, repos=built)
 
 
 @pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    r = tmp_path / "predicate"
-    r.mkdir()
-    git(r, "init", "-q", "-b", "main")
-    commit_file(r, "base.txt")
-    return r
+def repo(predicate_repo_template: Path, tmp_path: Path) -> Path:
+    return own_path_copy(predicate_repo_template, tmp_path, "predicate")
 
 
 @pytest.fixture
-def repos(tmp_path: Path) -> SimpleNamespace:
-    return make_repos(tmp_path)
+def repos(sync_repos_template: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
+    return own_copy(sync_repos_template, tmp_path)
+
+
+@pytest.fixture
+def pr258_repos_template(
+    sync_repos_template: SimpleNamespace,
+    tmp_path_factory: pytest.TempPathFactory,
+    gh_write_guard: list[str],
+    network_guard_fixture: list[str],
+) -> SimpleNamespace:
+    def build(root: Path) -> SimpleNamespace:
+        own = own_copy(sync_repos_template, root)
+        return SimpleNamespace(repos=own, history=pr258_history(own))
+
+    root, built = run_guarded_template(
+        tmp_path_factory, "pr258-repos-template", build, (gh_write_guard, network_guard_fixture)
+    )
+    return SimpleNamespace(root=root, repos=built.repos, history=built.history)
+
+
+@pytest.fixture
+def pr258_repos(pr258_repos_template: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
+    own = own_copy(pr258_repos_template, tmp_path)
+    own.history = pr258_repos_template.history
+    return own
+
+
+@pytest.fixture
+def clean_merge_repos_template(
+    tmp_path_factory: pytest.TempPathFactory,
+    gh_write_guard: list[str],
+    network_guard_fixture: list[str],
+) -> SimpleNamespace:
+    root, built = run_guarded_template(
+        tmp_path_factory,
+        "calibrate-clean-merge-repos",
+        build_clean_merge_repos,
+        (gh_write_guard, network_guard_fixture),
+    )
+    return SimpleNamespace(root=root, repos=built.repos, evaluated=built.evaluated)
+
+
+@pytest.fixture
+def clean_merge_repos(clean_merge_repos_template: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
+    own = own_copy(clean_merge_repos_template, tmp_path)
+    own.evaluated = clean_merge_repos_template.evaluated
+    return own
 
 
 def test_equal_heads_are_unmoved(repo: Path) -> None:
@@ -106,15 +169,14 @@ def test_an_unknown_sha_is_unmoved_with_the_gap_named(repo: Path) -> None:
     assert (check.moved, "unknown" in check.reason) == (False, True)
 
 
-def test_the_pr_own_fingerprint_is_unchanged_across_a_pr258_shaped_history(repos: SimpleNamespace) -> None:
-    """The hypothesis of the staleness rule: the approval fingerprint of E equals that of the merged head."""
-    history = pr258_history(repos)
-    other = str(repos.other)
-    assert len(git(repos.other, "rev-list", "--parents", "-n", "1", history.merge).split()) == 3  # a real merge
+def test_the_pr_own_fingerprint_is_unchanged_across_a_pr258_shaped_history(pr258_repos: SimpleNamespace) -> None:
+    history = pr258_repos.history
+    other = str(pr258_repos.other)
+    assert len(git(pr258_repos.other, "rev-list", "--parents", "-n", "1", history.merge).split()) == 3
     before = approval_fingerprint_of(other, history.evaluated, "main")
     assert before is not None
     assert approval_fingerprint_of(other, history.head, "main") == before
-    advance_main(repos, "main-later.txt")  # the target ref moves past the merged commit
+    advance_main(pr258_repos, "main-later.txt")
     assert approval_fingerprint_of(other, history.evaluated, "main") == before
     assert approval_fingerprint_of(other, history.head, "main") == before
 
@@ -124,11 +186,8 @@ def predicate(repos: SimpleNamespace, evaluated: str, target: str | None = "main
     return head_move_since_calibration(str(repos.other), evaluated, git(repos.other, "rev-parse", "HEAD"), target)
 
 
-def test_a_clean_merge_of_a_target_that_touched_other_files_is_unmoved(repos: SimpleNamespace) -> None:
-    evaluated = commit_file(repos.other, "feature.py", "x = 1\n")
-    advance_main(repos, "main-only.txt")
-    merge_main(repos)
-    check = predicate(repos, evaluated)
+def test_a_clean_merge_of_a_target_that_touched_other_files_is_unmoved(clean_merge_repos: SimpleNamespace) -> None:
+    check = predicate(clean_merge_repos, clean_merge_repos.evaluated)
     assert check.moved is False
     assert (
         check.reason == "the pull request's own change is unchanged (1 commit(s) after the evaluated commit discounted)"
@@ -136,13 +195,12 @@ def test_a_clean_merge_of_a_target_that_touched_other_files_is_unmoved(repos: Si
 
 
 def test_a_merge_with_ledger_only_conflicts_is_unmoved_and_never_counts_the_targets_commits(
-    repos: SimpleNamespace,
+    pr258_repos: SimpleNamespace,
 ) -> None:
-    history = pr258_history(repos)
-    in_range = git(repos.other, "rev-list", "--count", f"{history.evaluated}..{history.head}")
-    check = predicate(repos, history.evaluated)
+    history = pr258_repos.history
+    in_range = git(pr258_repos.other, "rev-list", "--count", f"{history.evaluated}..{history.head}")
+    check = predicate(pr258_repos, history.evaluated)
     assert check.moved is False
-    # First-parent only: the report commit, the PR's ledger row, the merge, the review row and the knowledge commit.
     assert (in_range, check.reason) == (
         "7",
         "the pull request's own change is unchanged (5 commit(s) after the evaluated commit discounted)",
@@ -189,19 +247,16 @@ def test_a_code_push_is_a_move_and_the_reason_counts_exactly_one_commit(repos: S
     assert check.reason == "1 commit(s) after the evaluated commit changed the pull request's own change"
 
 
-def test_a_merge_with_no_target_branch_given_is_a_move(repos: SimpleNamespace) -> None:
-    evaluated = commit_file(repos.other, "feature.py", "x = 1\n")
-    advance_main(repos, "main-only.txt")
-    merge_main(repos)
-    check = predicate(repos, evaluated, target=None)
+def test_a_merge_with_no_target_branch_given_is_a_move(clean_merge_repos: SimpleNamespace) -> None:
+    check = predicate(clean_merge_repos, clean_merge_repos.evaluated, target=None)
     assert check.moved is True
     assert "could not be compared" in check.reason
 
 
-def test_report_staleness_reads_a_pr258_shaped_history_as_unmoved(repos: SimpleNamespace) -> None:
-    history = pr258_history(repos)
-    ctx = FlowContext(target_worktree=str(repos.host), execution_branch=EXEC, agent="a", model="m")
+def test_report_staleness_reads_a_pr258_shaped_history_as_unmoved(pr258_repos: SimpleNamespace) -> None:
+    history = pr258_repos.history
+    ctx = FlowContext(target_worktree=str(pr258_repos.host), execution_branch=EXEC, agent="a", model="m")
     ctx.intent_data = {"target_branch": "main"}
-    check = report_staleness(ctx)  # fetches the execution branch and the target into the host worktree
+    check = report_staleness(ctx)
     assert (check.moved, check.evaluated_sha, check.current_head) == (False, history.evaluated, history.head)
     assert "own change is unchanged" in check.reason

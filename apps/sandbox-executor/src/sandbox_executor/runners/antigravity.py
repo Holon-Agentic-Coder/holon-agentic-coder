@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sys
 
-from sandbox_executor.runners.spec import ModelCapability, RunnerSpec, VALID_EFFORT_LEVELS, has_api_key
+from sandbox_executor.runners.spec import VALID_EFFORT_LEVELS, ModelCapability, RunnerSpec, has_api_key
 
 _SESSION_PATHS = ("/home/holon/.gemini/antigravity-cli", "/home/holon/.gemini", "/home/holon/.config/gcloud")
 _HOME_SESSION_PATHS = ("~/.gemini/antigravity-cli", "~/.gemini", "~/.config/gcloud", "~/.holon/sessions/antigravity")

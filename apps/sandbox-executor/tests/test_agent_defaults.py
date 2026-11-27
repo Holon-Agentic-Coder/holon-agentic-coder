@@ -273,3 +273,39 @@ def test_agent_tables_pinned_and_derived_from_runner_specs():
     assert {agent_id: spec.image for agent_id, spec in RUNNER_SPECS.items()} == AGENT_IMAGE_MAPPING
     assert {agent_id: spec.default_model for agent_id, spec in RUNNER_SPECS.items()} == DEFAULT_MODELS
     assert {agent_id: spec.ticker for agent_id, spec in RUNNER_SPECS.items() if spec.ticker} == AGENT_TICKERS
+
+
+def test_capabilities_and_harness_tables_derive_from_runner_specs():
+    from sandbox_executor.runners import RUNNER_SPECS
+
+    expected_caps = tuple(cap for spec in RUNNER_SPECS.values() for cap in spec.discover_models())
+    non_local_caps = tuple(cap for cap in agent_defaults.RUNNER_CAPABILITIES if cap.runner != "local-model")
+    assert non_local_caps == expected_caps
+
+    expected_markers = tuple(
+        (spec.agent_id, marker, kind)
+        for spec in sorted(RUNNER_SPECS.values(), key=lambda s: s.harness_marker_priority)
+        for marker, kind in spec.harness_markers
+    )
+    assert expected_markers == agent_defaults.HARNESS_MARKERS
+
+    expected_non_markers = frozenset(var for spec in RUNNER_SPECS.values() for var in spec.non_marker_env_vars)
+    assert expected_non_markers == agent_defaults.NON_MARKER_VARS
+
+
+def test_agent_defaults_delegates_to_runner_spec_methods(tmp_path, monkeypatch):
+    from sandbox_executor.runners import RUNNER_SPECS
+
+    for agent_id, spec in RUNNER_SPECS.items():
+        assert agent_defaults.get_model_capabilities(agent_id) == list(spec.discover_models())
+        assert agent_defaults.is_valid_model_for_runner(agent_id, spec.default_model) is True
+
+    assert agent_defaults.is_valid_model_for_runner("antigravity", "gemini-3.8-flash-high") is True
+    assert agent_defaults.normalise_model_and_effort("antigravity", "flash", "high") == (
+        "gemini-3.8-flash-high",
+        "high",
+    )
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert agent_defaults.detect_runner_auth_status("pi", {"HOLON_LOCAL_LLM": "1"}) == "Detected (local gateway)"
+    assert agent_defaults.detect_runner_auth_status("codex", {"OPENAI_API_KEY": "sk-test"}) == "Detected (API key)"

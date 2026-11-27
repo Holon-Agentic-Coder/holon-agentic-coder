@@ -34,9 +34,10 @@ _LOCAL_MODEL_CAPABILITY = ModelCapability(
     fallback_tier="Local Fallback",
 )
 
-RUNNER_CAPABILITIES: tuple[ModelCapability, ...] = tuple(
-    cap for spec in RUNNER_SPECS.values() for cap in spec.discover_models()
-) + (_LOCAL_MODEL_CAPABILITY,)
+RUNNER_CAPABILITIES: tuple[ModelCapability, ...] = (
+    *(cap for spec in RUNNER_SPECS.values() for cap in spec.discover_models()),
+    _LOCAL_MODEL_CAPABILITY,
+)
 
 
 def get_model_capabilities(agent: str | None = None) -> list[ModelCapability]:
@@ -132,9 +133,7 @@ HARNESS_MARKERS: tuple[tuple[str, str, str], ...] = tuple(
     for marker, kind in spec.harness_markers
 )
 
-NON_MARKER_VARS: frozenset[str] = frozenset(
-    var for spec in RUNNER_SPECS.values() for var in spec.non_marker_env_vars
-)
+NON_MARKER_VARS: frozenset[str] = frozenset(var for spec in RUNNER_SPECS.values() for var in spec.non_marker_env_vars)
 _CREDENTIAL_SUFFIXES: tuple[str, ...] = ("_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
 _FALSY_VALUES = frozenset({"", "0", "false", "no", "off"})
 

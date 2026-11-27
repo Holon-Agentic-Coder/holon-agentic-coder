@@ -67,9 +67,7 @@ class RunnerSpec:
         default=None, repr=False, compare=False
     )
     supports_effort_suffix: bool = False
-    session_mounts_builder: Callable[[str], list[str]] = field(
-        default=_empty_session_mounts, repr=False, compare=False
-    )
+    session_mounts_builder: Callable[[str], list[str]] = field(default=_empty_session_mounts, repr=False, compare=False)
     auth_api_key_env_vars: tuple[str, ...] = ()
     accepts_generic_api_key: bool = True
     api_key_detector: Callable[[Mapping[str, str]], bool] | None = field(default=None, repr=False, compare=False)
@@ -91,9 +89,7 @@ class RunnerSpec:
         return self.session_mounts_builder(home)
 
     def detect_api_key(self, env: Mapping[str, str], secret_bundle_path: str) -> bool:
-        if self.accepts_generic_api_key and (
-            os.path.isfile(secret_bundle_path) or _is_set(env.get("HOLON_AGENT_KEY"))
-        ):
+        if self.accepts_generic_api_key and (os.path.isfile(secret_bundle_path) or _is_set(env.get("HOLON_AGENT_KEY"))):
             return True
         if self.api_key_detector is not None:
             return self.api_key_detector(env)

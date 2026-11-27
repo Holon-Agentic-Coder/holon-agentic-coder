@@ -99,7 +99,14 @@ def test_every_spec_has_a_role_dispatcher_case() -> None:
 def test_importing_runners_does_not_import_defaults_or_runner() -> None:
     code = (
         "import sys, sandbox_executor.runners\n"
-        "forbidden = ('sandbox_executor.agent_defaults', 'sandbox_executor.agent_runner')\n"
+        "forbidden = (\n"
+        "    'sandbox_executor.agent_defaults',\n"
+        "    'sandbox_executor.agent_runner',\n"
+        "    'sandbox_executor.launcher',\n"
+        "    'sandbox_executor.launcher.mounts',\n"
+        "    'sandbox_executor.launcher.antigravity_mounts',\n"
+        "    'sandbox_executor.launcher.pi_mounts',\n"
+        ")\n"
         "leaked = [m for m in forbidden if m in sys.modules]\n"
         "assert not leaked, leaked\n"
     )
@@ -187,3 +194,65 @@ def test_pi_accepts_models_json_in_pi_coding_agent_dir(
     assert RUNNER_SPECS["pi"].check_credentials() == EXPECTED_MESSAGES["pi"]
     existing_paths.add(str(agent_dir / "models.json"))
     assert RUNNER_SPECS["pi"].check_credentials() is None
+
+
+def test_every_spec_discovers_models_including_default_model() -> None:
+    from sandbox_executor.runners import ModelCapability
+
+    for spec in RUNNER_SPECS.values():
+        discovered = spec.discover_models()
+        assert discovered
+        assert all(isinstance(cap, ModelCapability) for cap in discovered)
+        assert spec.default_model in {cap.canonical_model for cap in discovered}
+
+
+def test_model_discovery_hook_overrides_static_capabilities() -> None:
+    from sandbox_executor.runners import ModelCapability, RunnerSpec
+
+    dynamic_cap = ModelCapability(
+        runner="custom-agent",
+        canonical_model="custom-dynamic-1",
+        aliases=["dyn"],
+        effort_levels=[],
+        fallback_tier="Custom",
+    )
+    spec = RunnerSpec(
+        agent_id="custom",
+        image="holon/agent-custom",
+        default_model="custom-static",
+        ticker=None,
+        api_key_env_vars=(),
+        credential_check=lambda _spec: None,
+        model_discovery_hook=lambda _spec: (dynamic_cap,),
+    )
+    assert spec.discover_models() == (dynamic_cap,)
+    assert spec.is_valid_model("dyn") is True
+    assert spec.is_valid_model("unknown") is False
+    assert spec.normalise_model_and_effort("dyn") == ("custom-dynamic-1", None)
+
+
+def test_spec_session_mounts_match_launcher_and_reexports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from sandbox_executor.launcher import antigravity_mounts, mounts, pi_mounts
+    from sandbox_executor.runners import antigravity as antigravity_runner
+    from sandbox_executor.runners import pi as pi_runner
+
+    assert antigravity_mounts.ANTIGRAVITY_WRITABLE_TMPFS is antigravity_runner.ANTIGRAVITY_WRITABLE_TMPFS
+    assert antigravity_mounts.antigravity_session_mounts is antigravity_runner.antigravity_session_mounts
+    assert pi_mounts.CONTAINER_HOME == pi_runner.CONTAINER_HOME
+    assert pi_mounts.OWNED_TMPFS_OPTIONS == pi_runner.OWNED_TMPFS_OPTIONS
+    assert pi_mounts.get_pi_mounts is pi_runner.get_pi_mounts
+
+    (tmp_path / ".holon" / "sessions" / "antigravity").mkdir(parents=True)
+    (tmp_path / ".config" / "claude").mkdir(parents=True)
+    (tmp_path / ".codex").mkdir(parents=True)
+    pi_agent_dir = tmp_path / ".pi" / "agent"
+    pi_agent_dir.mkdir(parents=True)
+    (pi_agent_dir / "models.json").write_text("{}")
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HOLON_LOCAL_LLM", raising=False)
+    monkeypatch.delenv("HOLON_ANTIGRAVITY_SESSION_DIR", raising=False)
+
+    for agent_id, spec in RUNNER_SPECS.items():
+        assert mounts.get_agent_session_mounts(agent_id) == spec.build_session_mounts(str(tmp_path))
+    assert RUNNER_SPECS["opencode"].build_session_mounts(str(tmp_path)) == []

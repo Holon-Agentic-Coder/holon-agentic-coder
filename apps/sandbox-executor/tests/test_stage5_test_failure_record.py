@@ -9,10 +9,11 @@ from typing import Any
 
 import pytest
 from sandbox_executor.entrypoint.test_failure_record import LEDGER_RELPATH, STAGE_5, failing_ids_from_output
+from sandbox_executor.failure_classification import UNDIAGNOSED_CLASSIFICATION
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.github import ci_reverify
+from sandbox_executor.flow.github.ci_failure_detail import short_sha
 from sandbox_executor.flow.github.ci_reverify import _gh_failed_check_output, reverify_and_report
-from sandbox_executor.flow.github.stage5_test_failure import UNDIAGNOSED_CLASSIFICATION
 from sandbox_executor.flow.github.stage5_test_failure import check_log_text as _check_log_text
 from sandbox_executor.ledger.merged import read_merged_rows
 
@@ -189,5 +190,5 @@ def test_stage5_row_is_committed_and_pushed_leaving_a_clean_tree(context: FlowCo
     assert _git(repo, "rev-parse", "HEAD") == _git(remote, "rev-parse", BRANCH)
     head_after_push = _git(repo, "rev-parse", "HEAD").strip()
     assert reverified["test_failure_record"]["head_after_push"] == head_after_push
-    assert f"ledger-only commit {head_after_push}" in reverified["report"]
+    assert f"ledger-only commit {short_sha(head_after_push)}" in reverified["report"]
     assert "test_failure" in _git(remote, "show", BRANCH)

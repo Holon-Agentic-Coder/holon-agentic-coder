@@ -152,7 +152,6 @@ def reverify_and_report(
             failure_record = record_stage5_test_failure(context, final_head, output)
             reverified["test_failure_record"] = failure_record
             if failure_record and failure_record.get("head_after_push"):
-                reverified["report"] += (
-                    f" A ledger-only commit {failure_record['head_after_push']} followed the verified final head."
-                )
+                ledger_head = short_sha(failure_record["head_after_push"])
+                reverified["report"] += f" A ledger-only commit {ledger_head} followed the verified final head."
     return reverified

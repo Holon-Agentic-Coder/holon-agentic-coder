@@ -52,10 +52,11 @@ def _commit_and_push_ledger(context: FlowContext, branch: str) -> str | None:
         return None
     if context.skip_push:
         return None
+    ledger_head = run_git(["rev-parse", "HEAD"], cwd=repo_dir).stdout.strip()
     pushed = run_git(["push", DEFAULT_REMOTE, branch], cwd=repo_dir, check=False)
     if pushed.returncode != 0:
         return None
-    return run_git(["rev-parse", "HEAD"], cwd=repo_dir).stdout.strip()
+    return ledger_head
 
 
 def record_stage5_test_failure(context: FlowContext, final_head: str, output: str) -> dict[str, Any] | None:

@@ -1,5 +1,3 @@
-"""The review mode of one Stage 4 pass (``full`` or ``scoped``), and its JSON-safe record."""
-
 from __future__ import annotations
 
 import re
@@ -14,8 +12,6 @@ _COMMIT_ID = re.compile(r"[0-9a-f]{7,64}")
 
 @dataclass(frozen=True)
 class ReviewMode:
-    """The mode of one pass and why; a scoped pass reviews ``base..head`` over ``paths``."""
-
     mode: str
     reason: str
     head: str = ""
@@ -33,7 +29,6 @@ class ReviewMode:
 
 
 def decision_from_dict(data: Any) -> ReviewMode:
-    """The decision ``data`` records; anything malformed (or a scoped one without a commit-id range) gives ``full``."""
     try:
         paths = data.get("paths") or []
         if not isinstance(paths, list):

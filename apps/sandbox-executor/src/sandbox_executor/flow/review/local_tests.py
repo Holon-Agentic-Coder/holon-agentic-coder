@@ -6,10 +6,27 @@ to a per-head local test run (``review_local``) when Stage 3 failed, was unmeasu
 
 from __future__ import annotations
 
+import functools
+import logging
+import os
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
-from sandbox_executor.entrypoint.test_measurement import TestMeasurement, run_test_task
+from sandbox_executor.entrypoint.test_failure_classify import BaseSnapshot, run_failing_ids
+from sandbox_executor.entrypoint.test_failure_loop import (
+    LoopOutcome,
+    LoopPorts,
+    TestFailureLoop,
+    measure_selection,
+)
+from sandbox_executor.entrypoint.test_failure_record import (
+    BLOCKED_CLASSIFICATIONS,
+    LEDGER_RELPATH,
+    STAGE_4,
+    record_test_failure,
+)
+from sandbox_executor.entrypoint.test_measurement import TestMeasurement
 from sandbox_executor.flow.context import FlowContext
 from sandbox_executor.flow.dispatch import _test_evidence
 from sandbox_executor.flow.github.pr_head import pr_head_sha
@@ -34,17 +51,72 @@ from sandbox_executor.flow.review.head_test_evidence import (
 )
 from sandbox_executor.git import run_git
 
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _MeasurementWithOutput(TestMeasurement):
+    full_output: str = ""
+
+
+def _measure_with_short_summary(repo_dir: str) -> TestMeasurement:
+    measurement, output = measure_selection(repo_dir)
+    return _MeasurementWithOutput(**vars(measurement), full_output=output)
+
+
 # The test run; replaced in tests so no real ``uv run task test`` starts.
-run_measurement: Callable[[str], TestMeasurement] = run_test_task
+run_measurement: Callable[[str], TestMeasurement] = _measure_with_short_summary
+
+FailureLoopFactory = Callable[[], "TestFailureLoop | None"]
+
+
+def _output_of(measurement: TestMeasurement) -> str:
+    return getattr(measurement, "full_output", "") or measurement.output_excerpt
+
+
+def _measured_with_output(repo_dir: str) -> tuple[TestMeasurement, str]:
+    measurement = run_measurement(repo_dir)
+    return measurement, _output_of(measurement)
+
+
+def _git_head(repo_dir: str) -> str:
+    res = run_git(["rev-parse", "HEAD"], cwd=repo_dir, check=False)
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def _default_review_failure_loop(repo_dir: str, context: FlowContext) -> TestFailureLoop:
+    branch = context.execution_branch or context.intent_branch or ""
+    ports = LoopPorts(
+        run_selection=functools.partial(_measured_with_output, repo_dir),
+        rerun_ids=functools.partial(run_failing_ids, cwd=repo_dir),
+        base_rerun=BaseSnapshot(repo_dir, str(context.intent_data.get("target_branch") or "main")),
+        record=functools.partial(
+            record_test_failure,
+            os.path.join(context.target_worktree, *LEDGER_RELPATH),
+            branch=branch,
+            execution_id=next((part for part in branch.split("/") if part.startswith("E-")), ""),
+        ),
+        stage=STAGE_4,
+        head_sha=functools.partial(_git_head, repo_dir),
+        # why: the Stage 4 resolver is the fix turn; the gate only feeds it the evidence.
+        fix_turn=None,
+    )
+    return TestFailureLoop(ports)
+
+
+# why: a seam tests replace, so a scripted failing head starts no diagnosis re-run.
+_review_failure_loop: Callable[[str, FlowContext], TestFailureLoop | None] = _default_review_failure_loop
 
 
 class _ReviewLocalTests:
     """Measures the project's tests in the review workspace, once per head commit."""
 
-    def __init__(self, repo_dir: str, head_sha: str = "") -> None:
+    def __init__(self, repo_dir: str, head_sha: str = "", *, failure_loop: FailureLoopFactory | None = None) -> None:
         self._repo_dir = repo_dir
         self._head_sha = head_sha
         self._cache: dict[str, _LocalTestOutcome] = {}
+        self._failure_loop = failure_loop
+        self.loop_outcomes: dict[str, LoopOutcome] = {}
 
     def _head(self) -> str:
         res = run_git(["rev-parse", "HEAD"], cwd=self._repo_dir, check=False)
@@ -55,8 +127,34 @@ class _ReviewLocalTests:
         head = self._head() or "unknown"
         if head not in self._cache:
             measurement = run_measurement(self._repo_dir)
+            if self._failure_loop is not None and _failed(measurement) and (loop := self._failure_loop()) is not None:
+                measurement = self._diagnosed(head, loop, measurement)
             self._cache[head] = _LocalTestOutcome(measurement.rate, _failed(measurement), measurement)
         return self._cache[head]
+
+    def _diagnosed(self, head: str, loop: TestFailureLoop, measurement: TestMeasurement) -> TestMeasurement:
+        try:
+            self.loop_outcomes[head] = loop.run(measurement, _output_of(measurement))
+        except Exception:
+            # why: a broken diagnosis must not end the review; the failed measurement still feeds the CI finding.
+            logger.exception("Stage 4 test failure loop failed for %s", head[:7])
+            return measurement
+        return self.loop_outcomes[head].measurement
+
+
+def _attach_test_failure(ci_status: dict[str, Any], outcome: LoopOutcome | None) -> None:
+    if outcome is None:
+        return
+    ci_status["test_failure"] = {
+        "classification": outcome.classification,
+        "status": outcome.status,
+        "failing_ids": list(outcome.failing_ids),
+        "excerpts": dict(outcome.excerpts),
+        "signature": outcome.signature,
+        "rows": [row.get("action_id") for row in outcome.rows],
+    }
+    if outcome.status == "blocked" and outcome.classification in BLOCKED_CLASSIFICATIONS:
+        ci_status["test_failure"]["blocked_evidence"] = outcome.evidence_text
 
 
 def _default_pr_head(repo_dir: str, target: str, proxy_env: Mapping[str, str] | None = None) -> str | None:
@@ -87,7 +185,7 @@ class _ReviewTestGate:
         # The commit Stage 3 tested; without one its evidence applies to no head and the gate measures locally.
         self.stage_3_head = str(self._stage_3.get("head_sha") or "").strip()
 
-        self._tester = _ReviewLocalTests(repo_dir)
+        self._tester = _ReviewLocalTests(repo_dir, failure_loop=lambda: _review_failure_loop(repo_dir, context))
         self._resolver_heads: set[str] = set()
         self._logged_evidence: set[tuple[str, str]] = set()
         self._pr_heads: dict[str, str | None] = {}
@@ -165,6 +263,7 @@ class _ReviewTestGate:
             rate, failed = outcome.rate, outcome.failed
             detail = outcome.measurement.run_error or f"rate {rate}, failed={failed}"
             _attach_local_counts(ci_status, outcome)
+            _attach_test_failure(ci_status, self._tester.loop_outcomes.get(current_head))
 
         ci_status["test_source"] = source
         ci_status["test_head_sha"] = current_head

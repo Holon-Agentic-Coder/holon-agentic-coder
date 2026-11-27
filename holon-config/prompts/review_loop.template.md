@@ -191,6 +191,10 @@ the loop instructions above:
     shellcheck directives. Do not remove existing docstrings or comments as part of unrelated work.
     `scripts/check_self_explaining.py` (run by `uv run task lint`) enforces this on added lines, so editing or moving a
     docstring counts as adding one. Report any added docstring or explanatory comment as an Important finding.
+13. **Environment overlays list their children**: a diff that sets, overlays or removes environment variables, cwd or
+    git config for a process that spawns children must list the child processes affected and carry a test that runs one
+    of them under the new environment. Report a missing list or a missing test as an Important finding, which blocks
+    approval.
 
 ### Reviewer data block
 

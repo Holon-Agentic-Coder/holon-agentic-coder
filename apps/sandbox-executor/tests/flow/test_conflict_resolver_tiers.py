@@ -36,3 +36,12 @@ def test_ladder_is_deterministic_and_has_no_duplicates():
     first = tier_ladder("claude-agent", "sonnet")
     assert first == tier_ladder("claude-agent", "sonnet")
     assert len(first) == len(set(first))
+
+
+def test_start_tier_normalises_an_alias_onto_the_ladder():
+    from sandbox_executor.model_tiers import start_tier
+
+    ladder = tier_ladder("claude-agent", "claude-opus-5-5")
+    assert start_tier("claude", "opus", ladder) == ladder[-1]
+    assert start_tier("claude", "no-such-model", ladder) == ladder[0]
+    assert start_tier("claude", "opus", ()) is None

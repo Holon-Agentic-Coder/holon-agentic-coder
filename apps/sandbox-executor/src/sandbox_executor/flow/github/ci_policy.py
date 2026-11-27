@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 # why: this verdict stays I/O-free (no subprocess, no environment); ci.py owns the gh call
+
 _FAILED_STATES = ("FAILURE", "TIMED_OUT", "ACTION_REQUIRED")
 _PENDING_STATES = ("IN_PROGRESS", "QUEUED", "PENDING")
 

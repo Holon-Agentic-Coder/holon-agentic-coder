@@ -311,6 +311,7 @@ def approved_review(target_commit: str = APPROVED) -> StageResult:
 
 def _approved_ctx(tmp_path: Path, **kwargs: Any) -> FlowContext:
     ctx = _ctx(tmp_path, **kwargs)
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
     ctx.stage_results["review"] = approved_review()
     return ctx
 
@@ -328,10 +329,13 @@ def test_dry_run_and_skip_push_keep_todays_path(tmp_path: Path, flags: dict[str,
     assert fakes.probed == []
 
 
-def test_no_recorded_approval_keeps_todays_path(tmp_path: Path) -> None:
+def test_no_recorded_approval_fails_stage5_closed(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path)
     fakes = Fakes([check("unit", "failure")])
-    stopped, record = stage5_merged_head_gate(_ctx(tmp_path), _seams(fakes))
-    assert stopped is None and record["reason"] == "no Stage 4 approval recorded"
+    stopped, record = stage5_merged_head_gate(ctx, _seams(fakes))
+    assert stopped is not None and stopped.status == StageStatus.FAILED
+    assert record["state"] == "refused"
+    assert all("Merged-head CI gate skipped: no Stage 4 approval recorded" not in line for line in ctx.logs)
     assert fakes.probed == []
 
 

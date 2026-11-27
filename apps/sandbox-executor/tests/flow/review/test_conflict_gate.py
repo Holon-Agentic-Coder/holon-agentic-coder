@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from sandbox_executor.agent_runner import CONFLICT_RESOLVER_ROLE
-from sandbox_executor.flow import FlowContext, StageResult, StageStatus, run_review_loop
+from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, run_review_loop
 from sandbox_executor.flow.review import conflict_gate, sync_points
 from sandbox_executor.flow.review.posting import PostRequest, post_review_consensus
 from sandbox_executor.flow.stages import calibrate
@@ -125,7 +125,17 @@ def test_a_clean_head_posts_the_approval_unchanged(tmp_path, monkeypatch):
 
 
 def _stage5_context(tmp_path: Path, **kwargs) -> FlowContext:
-    return FlowContext(repo_dir=str(tmp_path), execution_branch=EXEC_TARGET, token_reduce=False, **kwargs)
+    ctx = FlowContext(repo_dir=str(tmp_path), execution_branch=EXEC_TARGET, token_reduce=False, **kwargs)
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+    ctx.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW,
+        status=StageStatus.APPROVED,
+        payload={
+            "consensus": {"approved": True, "target_commit": "a" * 40, "pr_number": 7},
+            "posting": {"dual_posted": True},
+        },
+    )
+    return ctx
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -152,6 +162,7 @@ def test_stage5_proceeds_on_a_clean_or_freshly_merged_head(tmp_path, monkeypatch
     expected = StageResult(stage=calibrate.FlowStage.CALIBRATE, status=StageStatus.SUCCESS)
     monkeypatch.setattr(sync_points, "sync_review_head", _RecordingSync(outcome))
     monkeypatch.setattr(conflict_gate.stage_conflicts, "check_pr_mergeability", lambda *a, **k: dict(probe))
+    monkeypatch.setattr(calibrate, "stage5_merged_head_gate", lambda _ctx: (None, {"state": "stage4"}))
     monkeypatch.setattr(calibrate, "_calibrate_execution_branch", MagicMock(return_value=expected))
 
     assert calibrate.run_calibrate_stage(_stage5_context(tmp_path)) is expected

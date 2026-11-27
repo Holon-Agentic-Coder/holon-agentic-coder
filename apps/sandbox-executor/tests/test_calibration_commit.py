@@ -311,6 +311,9 @@ def test_record_calibration_action_redacts_error_context(tmp_path, guard_real_le
 def _stage5_context(repo: Path, *, dry_run: bool):
     from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
 
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", _EXEC_BRANCH], check=True, capture_output=True, text=True
+    ).stdout.strip()
     ctx = FlowContext(
         target_worktree=str(repo),
         execution_branch=_EXEC_BRANCH,
@@ -319,6 +322,14 @@ def _stage5_context(repo: Path, *, dry_run: bool):
         skip_push=True,
     )
     ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+    ctx.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW,
+        status=StageStatus.APPROVED,
+        payload={
+            "consensus": {"approved": True, "target_commit": head, "pr_number": 7},
+            "posting": {"dual_posted": True},
+        },
+    )
     return ctx
 
 
@@ -353,6 +364,7 @@ def test_stage5_rejected_report_commit_fails_closed_without_push_or_reconciliati
 
     with (
         patch("sandbox_executor.calibration.run.format_calibration_report"),
+        patch("sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate", return_value=(None, {"state": "stage4"})),
         patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.review.run_git", side_effect=recording_run_git),
     ):

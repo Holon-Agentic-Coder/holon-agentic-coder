@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from sandbox_executor.flow import FlowContext, StageStatus
+from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
 from sandbox_executor.ref_names import calibration_branch
 
@@ -88,7 +88,17 @@ def fake_calibrate(**kwargs: object) -> SimpleNamespace:
 
 def run_stage(repos: SimpleNamespace, **kwargs: bool):
     ctx = FlowContext(target_worktree=str(repos.host), execution_branch=EXEC, agent="a", model="m", **kwargs)
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+    ctx.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW,
+        status=StageStatus.APPROVED,
+        payload={
+            "consensus": {"approved": True, "target_commit": "a" * 40, "pr_number": 7},
+            "posting": {"dual_posted": True},
+        },
+    )
     with (
+        patch("sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate", return_value=(None, {"state": "stage4"})),
         patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=fake_calibrate),
         patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", return_value={"state": "success"}),
@@ -115,7 +125,7 @@ def test_calibrated_report_tree_contains_origin_only_files(repos: SimpleNamespac
     # No executions ledger in these repos: the shared Stage 5 core reports it skipped the reconciliation.
     assert result.payload["stage5_reconciliation"] == {
         "status": "skipped_no_ledger",
-        "verdict": "failure",
+        "verdict": "success",
         "rows_appended": 0,
     }
 

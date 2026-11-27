@@ -220,10 +220,14 @@ def test_agent_resolved_merge_never_carries_approval_and_preserves_scope_across_
     assert restored.review_scope_paths == [APP, "tests/test_app.py"]
 
     # Stage 5 merged-head gate forces a Stage 4 restart when review_scope_paths is set.
+    restored.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
     restored.stage_results["review"] = StageResult(
         stage=FlowStage.REVIEW,
         status=StageStatus.APPROVED,
-        payload={"consensus": {"approved": True, "target_commit": "a" * 40, "approval_fingerprint": "pf2:" + "e" * 40}},
+        payload={
+            "consensus": {"approved": True, "target_commit": "a" * 40, "approval_fingerprint": "pf2:" + "e" * 40},
+            "posting": {"dual_posted": True},
+        },
     )
     monkeypatch.setattr("sandbox_executor.flow.review_restart._execution_head", lambda *a, **k: "b" * 40)
     monkeypatch.setattr("sandbox_executor.flow.review_restart._git_bookkeeping_move", lambda *a, **k: lambda *_: False)
@@ -272,10 +276,29 @@ def test_dispatch_review_ensemble_passes_review_paths_flag(tmp_path: Path, monke
     assert captured and f"--review-paths={APP},tests/test_app.py" in captured[0]
 
 
-def test_stage5_entry_and_retry_sync_resolve_conflicts_and_block_cleanly(tmp_path: Path) -> None:
+def test_stage5_entry_and_retry_sync_resolve_conflicts_and_block_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sandbox_executor.flow.github.ci_head_checks import PASSED
+    from sandbox_executor.flow.review.merged_head_gate import gate_record
+
     _, work = build_flow_repos(tmp_path, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
+    approved_sha = _git(work, "rev-parse", f"origin/{FLOW_BRANCH}")
     _inject_ledger_conflict(work, FLOW_BRANCH, 2)
     ctx = _ctx(work)
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+    ctx.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW,
+        status=StageStatus.APPROVED,
+        payload={
+            "consensus": {"approved": True, "target_commit": approved_sha, "pr_number": 7},
+            "posting": {"dual_posted": True},
+        },
+    )
+    monkeypatch.setattr(
+        "sandbox_executor.flow.review_restart.gate_merged_head_ci",
+        lambda _c, _r, head, _s: gate_record(PASSED, head, [], [], "ok"),
+    )
 
     # Stage 5 entry sync resolves mechanical ledger conflict.
     assert sync_before_calibration(ctx, "2026-11-24T00:00:00Z") is None
@@ -395,11 +418,28 @@ def test_prepare_execution_branch_syncs_before_calibrated_and_retry_reanchors(
     assert _git(work, "branch", "--list", calibrated) == ""
 
     # Mechanical sync_before_calibration runs before prepare_calibrated_branch so /calibrated starts at merged SHA.
+    from sandbox_executor.flow.github.ci_head_checks import PASSED
+    from sandbox_executor.flow.review.merged_head_gate import gate_record
+
     r2 = tmp_path / "r2"
     r2.mkdir()
     _, work2 = build_flow_repos(r2, {LEDGER: BASE_ROW, APP: "x = 0\n", ".gitignore": "tmp/\n"})
+    approved_sha2 = _git(work2, "rev-parse", f"origin/{FLOW_BRANCH}")
     _inject_ledger_conflict(work2, FLOW_BRANCH, 2)
     ctx_ok = _ctx(work2)
+    ctx_ok.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+    ctx_ok.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW,
+        status=StageStatus.APPROVED,
+        payload={
+            "consensus": {"approved": True, "target_commit": approved_sha2, "pr_number": 7},
+            "posting": {"dual_posted": True},
+        },
+    )
+    monkeypatch.setattr(
+        "sandbox_executor.flow.review_restart.gate_merged_head_ci",
+        lambda _c, _r, head, _s: gate_record(PASSED, head, [], [], "ok"),
+    )
     failure2, start_sha, created2 = cal_stage._prepare_execution_branch(ctx_ok, "2026-11-24T00:00:00Z")
     assert failure2 is None and created2 is True and start_sha is not None
     assert _git(work2, "rev-parse", f"refs/heads/{calibrated}") == start_sha
@@ -426,10 +466,14 @@ def test_prepare_execution_branch_syncs_before_calibrated_and_retry_reanchors(
     commit_on(work3, FLOW_BRANCH, {APP: "x = 1\n"}, "flow code")
     approved_sha = _git(work3, "rev-parse", f"origin/{FLOW_BRANCH}")
     ctx_r = _ctx(work3, dispatcher=FakeResolverDispatcher([(_resolve_app, "resolved")]))
+    ctx_r.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
     ctx_r.stage_results["review"] = StageResult(
         stage=FlowStage.REVIEW,
         status=StageStatus.APPROVED,
-        payload={"consensus": {"approved": True, "target_commit": approved_sha, "approval_fingerprint": "pf1:abc"}},
+        payload={
+            "consensus": {"approved": True, "target_commit": approved_sha, "approval_fingerprint": "pf1:abc"},
+            "posting": {"dual_posted": True},
+        },
     )
     monkeypatch.setattr("sandbox_executor.flow.review_restart.withdraw_consensus", lambda *a, **k: {"withdrawn": True})
     stopped, sha3, created3 = cal_stage._prepare_execution_branch(ctx_r, "2026-11-24T00:00:00Z")
@@ -531,6 +575,7 @@ def _approved_stage5_ctx(work: Path) -> tuple[FlowContext, str]:
     fp = approval_fingerprint_of(str(work), approved_sha, "main")
     assert fp is not None
     ctx = _ctx(work)
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
     ctx.stage_results["review"] = StageResult(
         stage=FlowStage.REVIEW,
         status=StageStatus.APPROVED,
@@ -540,7 +585,8 @@ def _approved_stage5_ctx(work: Path) -> tuple[FlowContext, str]:
                 "base_branch": "main",
                 "target_commit": approved_sha,
                 "approval_fingerprint": fp,
-            }
+            },
+            "posting": {"dual_posted": True},
         },
     )
     return ctx, approved_sha

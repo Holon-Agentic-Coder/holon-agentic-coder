@@ -105,6 +105,15 @@ def repo(tmp_path: Path) -> SimpleNamespace:
 def run_flow(repo: SimpleNamespace) -> StageResult:
     ctx = FlowContext(target_worktree=str(repo.host), execution_branch=EXEC, agent="a", model="m", skip_push=True)
     ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS, start_time="t")
+    ctx.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW,
+        status=StageStatus.APPROVED,
+        start_time="t",
+        payload={
+            "consensus": {"approved": True, "target_commit": repo.exec_sha, "pr_number": 7},
+            "posting": {"dual_posted": True},
+        },
+    )
     with (
         patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", return_value={"state": "success"}),

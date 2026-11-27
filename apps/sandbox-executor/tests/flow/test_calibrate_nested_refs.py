@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from sandbox_executor.calibration import PredictedMetrics, generate_calibration, parse_actual_metrics
-from sandbox_executor.flow import FlowContext, StageStatus, run_calibrate_stage
+from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, run_calibrate_stage
 from sandbox_executor.ref_names import calibration_branch
 
 ROOT_INTENT = "I-1794000000-root/_"
@@ -162,6 +162,15 @@ def test_stage_5_commits_the_report_on_a_nested_layout(layout: SimpleNamespace, 
     drop_plan_ref(layout, case)
     git(layout.host, "checkout", "-qb", "operator-work", "main")
     ctx = FlowContext(target_worktree=str(layout.host), execution_branch=EXEC, agent="a", model="m", skip_push=True)
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+    ctx.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW,
+        status=StageStatus.APPROVED,
+        payload={
+            "consensus": {"approved": True, "target_commit": git(layout.host, "rev-parse", EXEC), "pr_number": 7},
+            "posting": {"dual_posted": True},
+        },
+    )
     with (
         patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.check_final_head_ci", return_value={"state": "success"}),

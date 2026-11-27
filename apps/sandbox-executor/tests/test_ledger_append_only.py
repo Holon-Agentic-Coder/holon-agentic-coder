@@ -594,12 +594,22 @@ def _raise_rewrite(*_args: Any, **_kwargs: Any) -> Any:
 
 
 def _flow_context(tmp_path: Path, **kwargs: Any) -> flow.FlowContext:
-    return flow.FlowContext(
+    ctx = flow.FlowContext(
         repo_dir=str(tmp_path),
         execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
         plan_branch="I-100-intent/P-200-plan/_",
         **kwargs,
     )
+    ctx.stage_results["execute"] = flow.StageResult(stage=flow.FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+    ctx.stage_results["review"] = flow.StageResult(
+        stage=flow.FlowStage.REVIEW,
+        status=StageStatus.APPROVED,
+        payload={
+            "consensus": {"approved": True, "target_commit": "a" * 40, "pr_number": 7},
+            "posting": {"dual_posted": True},
+        },
+    )
+    return ctx
 
 
 def test_superseding_row_rewrite_propagates_before_push(
@@ -615,6 +625,9 @@ def test_calibration_rewrite_propagates_instead_of_writing_a_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fallback_calls: list[Any] = []
+    monkeypatch.setattr(
+        "sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate", lambda _ctx: (None, {"state": "stage4"})
+    )
     monkeypatch.setattr("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", lambda _ctx: None)
     monkeypatch.setattr("sandbox_executor.flow.stages.calibrate.run_calibrate", _raise_rewrite)
     monkeypatch.setattr(
@@ -631,6 +644,9 @@ def test_stage5_reconciliation_rewrite_propagates_before_push(
 ) -> None:
     _seed_ledgers(tmp_path)
     report = SimpleNamespace(calibrated_branch="I-100-intent/P-200-plan/E-300-exec/calibrated", to_dict=dict)
+    monkeypatch.setattr(
+        "sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate", lambda _ctx: (None, {"state": "stage4"})
+    )
     monkeypatch.setattr("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", lambda _ctx: None)
     monkeypatch.setattr("sandbox_executor.flow.stages.calibrate.run_calibrate", lambda **_k: report)
     monkeypatch.setattr("sandbox_executor.flow.stages.calibrate.reconcile_records", _raise_rewrite)

@@ -5,11 +5,24 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from sandbox_executor.flow import FlowContext, StageStatus, run_calibrate_stage
+from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, run_calibrate_stage
 from sandbox_executor.ledger import read_merged_text
 
 from tests.flow.helpers import _append_jsonl, _configure_identity
 from tests.flow.sleep_patch import scoped_sleep_patch
+
+
+def _seed_stage5_prereqs(ctx: FlowContext, target_commit: str = "a" * 40) -> FlowContext:
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+    ctx.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW,
+        status=StageStatus.APPROVED,
+        payload={
+            "consensus": {"approved": True, "target_commit": target_commit, "pr_number": 7},
+            "posting": {"dual_posted": True},
+        },
+    )
+    return ctx
 
 
 class TestStage5PromotedArtifactsCommit:
@@ -68,12 +81,14 @@ class TestStage5PromotedArtifactsCommit:
                 f.write('{"title": "test wisdom"}\n')
             return [{"id": "KB-test", "type": "kb"}, {"id": "WB-test", "type": "wisdom"}]
 
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            execution_branch=execution_branch,
-            plan_branch="I-100-intent/P-200-plan/_",
-            dry_run=False,
-            skip_push=True,
+        ctx = _seed_stage5_prereqs(
+            FlowContext(
+                repo_dir=str(tmp_path),
+                execution_branch=execution_branch,
+                plan_branch="I-100-intent/P-200-plan/_",
+                dry_run=False,
+                skip_push=True,
+            )
         )
         with (
             patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=fake_run_calibrate),
@@ -117,12 +132,14 @@ class TestStage5PromotedArtifactsCommit:
         def fake_reconcile(**kwargs):
             _append_jsonl(Path(kwargs["ledger_path"]), {"entry_type": "action", "action_id": "ACT-RECON-1"})
 
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            execution_branch=execution_branch,
-            plan_branch="I-100-intent/P-200-plan/_",
-            dry_run=False,
-            skip_push=True,
+        ctx = _seed_stage5_prereqs(
+            FlowContext(
+                repo_dir=str(tmp_path),
+                execution_branch=execution_branch,
+                plan_branch="I-100-intent/P-200-plan/_",
+                dry_run=False,
+                skip_push=True,
+            )
         )
         with (
             patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=fake_run_calibrate),
@@ -155,12 +172,14 @@ class TestStage5PromotedArtifactsCommit:
         fake_reconcile = MagicMock()
         fake_promote = MagicMock(return_value=[{"id": "KB-fail", "type": "kb"}])
 
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            execution_branch=execution_branch,
-            plan_branch="I-100-intent/P-200-plan/_",
-            dry_run=False,
-            skip_push=True,
+        ctx = _seed_stage5_prereqs(
+            FlowContext(
+                repo_dir=str(tmp_path),
+                execution_branch=execution_branch,
+                plan_branch="I-100-intent/P-200-plan/_",
+                dry_run=False,
+                skip_push=True,
+            )
         )
         with (
             scoped_sleep_patch("sandbox_executor.flow.calibrate_retry") as sleep,
@@ -194,12 +213,15 @@ class TestStage5PromotedArtifactsCommit:
 
         mock_promote = MagicMock(return_value=[{"id": "KB-dry"}])
 
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            execution_branch=execution_branch,
-            plan_branch="I-100-intent/P-200-plan/_",
-            dry_run=True,
-            skip_push=True,
+        ctx = _seed_stage5_prereqs(
+            FlowContext(
+                repo_dir=str(tmp_path),
+                execution_branch=execution_branch,
+                plan_branch="I-100-intent/P-200-plan/_",
+                dry_run=True,
+                skip_push=True,
+            ),
+            target_commit=git("rev-parse", execution_branch).strip(),
         )
         with patch("sandbox_executor.flow.stages.calibrate.promote_pending_candidates", mock_promote):
             res = run_calibrate_stage(ctx)
@@ -249,12 +271,14 @@ class TestStage5PromotedArtifactsCommit:
                 {"wb_id": "WB-existing", "persisted_path": str(wb_file)},
             ]
 
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            execution_branch=execution_branch,
-            plan_branch="I-100-intent/P-200-plan/_",
-            dry_run=False,
-            skip_push=True,
+        ctx = _seed_stage5_prereqs(
+            FlowContext(
+                repo_dir=str(tmp_path),
+                execution_branch=execution_branch,
+                plan_branch="I-100-intent/P-200-plan/_",
+                dry_run=False,
+                skip_push=True,
+            )
         )
         with (
             patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=fake_run_calibrate),
@@ -291,9 +315,13 @@ class TestStage5PromotedArtifactsCommit:
             skip_push=False,
         )
         # The review approved the initial commit; the execution head adds code after it, so they disagree.
-        review_payload = {"consensus": {"approved": True, "target_commit": approved}}
+        ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+        review_payload = {
+            "consensus": {"approved": True, "target_commit": approved, "pr_number": 7},
+            "posting": {"dual_posted": True},
+        }
         ctx.stage_results["review"] = StageResult(
-            stage=FlowStage.REVIEW, status=StageStatus.SUCCESS, payload=review_payload
+            stage=FlowStage.REVIEW, status=StageStatus.APPROVED, payload=review_payload
         )
         # The merged-head CI gate passed for the moved head; the self-check must still reject the report.
         gate_passed = (None, {"state": "passed", "head": git("rev-parse", execution_branch).strip()})
@@ -330,10 +358,11 @@ def test_stage5_forwards_the_context_review_accounting_to_the_calibrate_step(tmp
         return MagicMock(calibrated_branch=None, to_dict=MagicMock(return_value={}))
 
     steps = Stage5Steps(calibrate, MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock())
-    counted = FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-a/E-3-a/_")
+    counted = _seed_stage5_prereqs(FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-a/E-3-a/_"))
     count_accounting(counted, "scoped_reviews")
     run_stage5(counted, steps, None, report_only=True)
-    run_stage5(FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-a/E-3-a/_"), steps, None, True)
+    plain = _seed_stage5_prereqs(FlowContext(repo_dir=str(tmp_path), execution_branch="I-1-x/P-2-a/E-3-a/_"))
+    run_stage5(plain, steps, None, True)
 
     assert seen[0]["review_accounting"]["scoped_reviews"] == 1
     assert "seen_events" not in seen[0]["review_accounting"]

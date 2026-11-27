@@ -183,11 +183,26 @@ class TestFlowStages:
         assert res.status == StageStatus.FAILED
         assert res.payload["consensus"]["approved"] is False
 
+    @staticmethod
+    def _seed_stage5_prereqs(ctx: FlowContext) -> FlowContext:
+        ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+        ctx.stage_results["review"] = StageResult(
+            stage=FlowStage.REVIEW,
+            status=StageStatus.APPROVED,
+            payload={
+                "consensus": {"approved": True, "target_commit": "a" * 40, "pr_number": 7},
+                "posting": {"dual_posted": True},
+            },
+        )
+        return ctx
+
     def test_stage5_calibrate_without_repository_fails_closed(self, tmp_path):
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
-            dry_run=True,
+        ctx = self._seed_stage5_prereqs(
+            FlowContext(
+                repo_dir=str(tmp_path),
+                execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+                dry_run=True,
+            )
         )
 
         res = run_calibrate_stage(ctx)
@@ -198,16 +213,22 @@ class TestFlowStages:
         assert not list(tmp_path.rglob("*_calibration.md"))
 
     def test_stage5_calibrate_mocked(self, tmp_path):
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
-            dry_run=False,
+        ctx = self._seed_stage5_prereqs(
+            FlowContext(
+                repo_dir=str(tmp_path),
+                execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+                dry_run=False,
+            )
         )
         mock_report = MagicMock()
         mock_report.calibrated_branch = "I-100-intent/P-200-plan/E-300-exec/calibrated"
         mock_report.to_dict.return_value = {"calibrated_branch": mock_report.calibrated_branch, "accuracy_score": 0.95}
 
         with (
+            patch(
+                "sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate",
+                return_value=(None, {"state": "stage4"}),
+            ),
             patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
             patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=mock_report) as mock_run,
         ):
@@ -219,13 +240,19 @@ class TestFlowStages:
         assert ctx.calibrated_branch == "I-100-intent/P-200-plan/E-300-exec/calibrated"
 
     def test_stage5_calibrate_failure_writes_no_report(self, tmp_path):
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
-            dry_run=False,
+        ctx = self._seed_stage5_prereqs(
+            FlowContext(
+                repo_dir=str(tmp_path),
+                execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+                dry_run=False,
+            )
         )
 
         with (
+            patch(
+                "sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate",
+                return_value=(None, {"state": "stage4"}),
+            ),
             patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
             patch(
                 "sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=RuntimeError("calibration failed")
@@ -255,12 +282,14 @@ class TestFlowStages:
         # why: Stage 5 checks the execution branch out itself before calibrating
         git("branch", "I-100-intent/P-200-plan/E-300-exec/_")
 
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
-            plan_branch="I-100-intent/P-200-plan/_",
-            dry_run=False,
-            skip_push=True,
+        ctx = self._seed_stage5_prereqs(
+            FlowContext(
+                repo_dir=str(tmp_path),
+                execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+                plan_branch="I-100-intent/P-200-plan/_",
+                dry_run=False,
+                skip_push=True,
+            )
         )
         with patch(
             "sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=RuntimeError("calibration failed")
@@ -314,12 +343,14 @@ class TestFlowStages:
                 raise OSError("report write failed")
             raise RuntimeError("generate_calibration failed")
 
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            execution_branch=execution_branch,
-            plan_branch="I-100-intent/P-200-plan/_",
-            dry_run=False,
-            skip_push=True,
+        ctx = self._seed_stage5_prereqs(
+            FlowContext(
+                repo_dir=str(tmp_path),
+                execution_branch=execution_branch,
+                plan_branch="I-100-intent/P-200-plan/_",
+                dry_run=False,
+                skip_push=True,
+            )
         )
         with patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=failing_run_calibrate):
             res = run_calibrate_stage(ctx)
@@ -348,12 +379,14 @@ class TestFlowStages:
         ledger.write_text("", encoding="utf-8")
         sample_value = "ghp_" + "M" * 36
 
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
-            plan_branch="I-100-intent/P-200-plan/_",
-            dry_run=False,
-            skip_push=True,
+        ctx = self._seed_stage5_prereqs(
+            FlowContext(
+                repo_dir=str(tmp_path),
+                execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+                plan_branch="I-100-intent/P-200-plan/_",
+                dry_run=False,
+                skip_push=True,
+            )
         )
         with (
             patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
@@ -384,12 +417,14 @@ class TestFlowStages:
         padding = "x" * (POSTING_ERROR_CONTEXT_MAX_CHARS - prefix_len - 21)
         hook_output = f"{padding} {sample_value} trailing hook output"
 
-        ctx = FlowContext(
-            repo_dir=str(tmp_path),
-            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
-            plan_branch="I-100-intent/P-200-plan/_",
-            dry_run=False,
-            skip_push=True,
+        ctx = self._seed_stage5_prereqs(
+            FlowContext(
+                repo_dir=str(tmp_path),
+                execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+                plan_branch="I-100-intent/P-200-plan/_",
+                dry_run=False,
+                skip_push=True,
+            )
         )
         with (
             patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
@@ -405,14 +440,16 @@ class TestFlowStages:
         assert "ghp_" not in error_context
         assert "ghp_" not in (read_merged_text(str(ledger)) or "")
 
-    @staticmethod
-    def _stage5_push_context(tmp_path):
-        return FlowContext(
-            repo_dir=str(tmp_path),
-            execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
-            plan_branch="I-100-intent/P-200-plan/_",
-            dry_run=False,
-            skip_push=False,
+    @classmethod
+    def _stage5_push_context(cls, tmp_path):
+        return cls._seed_stage5_prereqs(
+            FlowContext(
+                repo_dir=str(tmp_path),
+                execution_branch="I-100-intent/P-200-plan/E-300-exec/_",
+                plan_branch="I-100-intent/P-200-plan/_",
+                dry_run=False,
+                skip_push=False,
+            )
         )
 
     def test_stage5_prettier_check_failure_fails_stage_and_never_pushes(self, tmp_path):
@@ -424,6 +461,10 @@ class TestFlowStages:
             "(check exited 1); reproduce with: npx prettier --check plans/I-100-intent/P-200-plan_calibration.md"
         )
         with (
+            patch(
+                "sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate",
+                return_value=(None, {"state": "stage4"}),
+            ),
             patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
             patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
             patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=error),
@@ -455,6 +496,10 @@ class TestFlowStages:
         mock_report.calibrated_branch = "I-100-intent/P-200-plan/E-300-exec/calibrated"
         mock_report.to_dict.return_value = {"calibrated_branch": mock_report.calibrated_branch}
         with (
+            patch(
+                "sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate",
+                return_value=(None, {"state": "stage4"}),
+            ),
             patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
             patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
             patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=mock_report),
@@ -795,6 +840,15 @@ class TestSkipPushRejectedOnEveryNonDryRun:
             execution_branch="I-1-x/P-2-a-b/E-3-a-b/_",
             dry_run=True,
             skip_push=True,
+        )
+        ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+        ctx.stage_results["review"] = StageResult(
+            stage=FlowStage.REVIEW,
+            status=StageStatus.APPROVED,
+            payload={
+                "consensus": {"approved": True, "target_commit": "a" * 40, "pr_number": 7},
+                "posting": {"dual_posted": True},
+            },
         )
         report = MagicMock(calibrated_branch=None)
         report.to_dict.return_value = {}

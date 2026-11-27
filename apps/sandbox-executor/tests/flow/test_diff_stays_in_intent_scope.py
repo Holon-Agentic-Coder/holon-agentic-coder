@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from sandbox_executor.flow import FlowContext
+from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.review import resolver
 from sandbox_executor.flow.stage5 import (
     Stage5Steps,
@@ -172,9 +172,22 @@ def test_resolver_pass_injected_seam_refuses_out_of_scope_commit(tmp_path: Path)
     assert outcome.error is not None and TOUCH_SET_VIOLATION in outcome.error and "src/forbidden.py" in outcome.error
 
 
+def _seed_stage5_prereqs(ctx: FlowContext) -> FlowContext:
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+    ctx.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW,
+        status=StageStatus.APPROVED,
+        payload={
+            "consensus": {"approved": True, "target_commit": "a" * 40, "pr_number": 7},
+            "posting": {"dual_posted": True},
+        },
+    )
+    return ctx
+
+
 def test_recorded_replan_widening_touch_set_allows_resolver_and_stage5(tmp_path: Path, pushes: list):
     repo, base_sha = _init_flow_repo(tmp_path, ("src/allowed.py",))
-    ctx = FlowContext(repo_dir=str(repo), plan_branch=PLAN_BRANCH, execution_branch=EXEC_BRANCH)
+    ctx = _seed_stage5_prereqs(FlowContext(repo_dir=str(repo), plan_branch=PLAN_BRANCH, execution_branch=EXEC_BRANCH))
 
     _commit_files(repo, {"src/widened.py": "w = 1\n"}, "resolver edits new file")
     replan_row = {
@@ -232,11 +245,13 @@ def test_pr_360_sixteen_out_of_scope_files_refused_by_resolver_and_stage5(tmp_pa
     out_of_scope_edits = {path: f"# why: fixture\nEXTRA = {idx}\n" for idx, path in enumerate(PR_360_OUT_OF_SCOPE)}
     head_sha = _commit_files(repo, {**in_scope_edits, **out_of_scope_edits}, "reproduce PR 360 diff")
 
-    ctx = FlowContext(
-        repo_dir=str(repo),
-        plan_branch=PLAN_BRANCH,
-        execution_branch=EXEC_BRANCH,
-        intent_data={"scope": list(PR_360_INTENT_SCOPE)},
+    ctx = _seed_stage5_prereqs(
+        FlowContext(
+            repo_dir=str(repo),
+            plan_branch=PLAN_BRANCH,
+            execution_branch=EXEC_BRANCH,
+            intent_data={"scope": list(PR_360_INTENT_SCOPE)},
+        )
     )
     target = ReviewTarget(raw=EXEC_BRANCH, head_branch=EXEC_BRANCH, head_sha=base_sha)
 
@@ -351,11 +366,13 @@ def test_stage5_readiness_fails_closed_when_base_ref_unresolvable_with_declared_
     _git(tmp_path, "init", "-q", "-b", "orphan-exec")
     _configure_identity(tmp_path)
     _commit_files(tmp_path, {"src/allowed.py": "x = 1\n"}, "initial commit on non-main branch")
-    ctx = FlowContext(
-        repo_dir=str(tmp_path),
-        plan_branch="I-1-x/P-1-missing/_",
-        execution_branch="orphan-exec",
-        intent_data={"scope": ["src/allowed.py"], "target_branch": "nonexistent-base"},
+    ctx = _seed_stage5_prereqs(
+        FlowContext(
+            repo_dir=str(tmp_path),
+            plan_branch="I-1-x/P-1-missing/_",
+            execution_branch="orphan-exec",
+            intent_data={"scope": ["src/allowed.py"], "target_branch": "nonexistent-base"},
+        )
     )
 
     readiness = _check_stage5_readiness(ctx)

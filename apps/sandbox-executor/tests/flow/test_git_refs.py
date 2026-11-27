@@ -10,7 +10,9 @@ import pytest
 from sandbox_executor.flow import (
     ConflictResolutionError,
     FlowContext,
+    FlowStage,
     PipelineEngine,
+    StageResult,
     StageStatus,
     check_and_resolve_stage_conflicts,
     run_calibrate_stage,
@@ -151,6 +153,14 @@ class TestStageTargetsIgnoreOperatorHead:
     def test_calibrate_stage_alone_checks_out_execution_branch_from_main(self, stage_start):
         host, _origin, ctx = self._after_stages_1_to_3(stage_start)
         ctx.skip_push = True
+        ctx.stage_results["review"] = StageResult(
+            stage=FlowStage.REVIEW,
+            status=StageStatus.APPROVED,
+            payload={
+                "consensus": {"approved": True, "target_commit": "a" * 40, "pr_number": 7},
+                "posting": {"dual_posted": True},
+            },
+        )
         main_tip = _git(host, "rev-parse", "main")
 
         # why: a resume entering at Stage 5 finds the operator still on 'main'; a throwing calibration must still
@@ -173,6 +183,15 @@ class TestStageTargetsIgnoreOperatorHead:
 
     def test_calibrate_stage_fails_cleanly_when_execution_branch_cannot_be_checked_out(self, stage_start):
         host, _origin, ctx = self._after_stages_1_to_3(stage_start)
+        ctx.skip_push = True
+        ctx.stage_results["review"] = StageResult(
+            stage=FlowStage.REVIEW,
+            status=StageStatus.APPROVED,
+            payload={
+                "consensus": {"approved": True, "target_commit": "a" * 40, "pr_number": 7},
+                "posting": {"dual_posted": True},
+            },
+        )
         ctx.execution_branch = ctx.execution_branch.replace("/E-", "/E-missing-")
         status_before = _git(host, "status", "--porcelain")
 

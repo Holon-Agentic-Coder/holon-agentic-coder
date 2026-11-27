@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from sandbox_executor.flow import FlowContext, StageStatus, run_calibrate_stage
+from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus, run_calibrate_stage
 from sandbox_executor.knowledge import ActionIndexDatabase
 
 from tests.flow.helpers import _append_jsonl, _configure_identity
@@ -83,6 +83,15 @@ def _run_stage(repo: Path, run_number: int = 1) -> tuple[FlowContext, object]:
         plan_branch="I-100-intent/P-200-plan/_",
         dry_run=False,
         skip_push=True,
+    )
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+    ctx.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW,
+        status=StageStatus.APPROVED,
+        payload={
+            "consensus": {"approved": True, "target_commit": "a" * 40, "pr_number": 7},
+            "posting": {"dual_posted": True},
+        },
     )
     with (
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=fake_run_calibrate),

@@ -76,6 +76,15 @@ def repos(rerun_repos_template: SimpleNamespace, tmp_path: Path) -> SimpleNamesp
 def calibrate_a_copy(template: SimpleNamespace, root: Path, blocked: Sequence[list[str]]) -> SimpleNamespace:
     built = own_copy(template, root)
     ctx = FlowContext(target_worktree=str(built.host), execution_branch=EXEC, agent="a", model="m")
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+    ctx.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW,
+        status=StageStatus.APPROVED,
+        payload={
+            "consensus": {"approved": True, "target_commit": "a" * 40},
+            "posting": {"dual_posted": True},
+        },
+    )
     result = stage_runner([])(ctx)
     assert result.status == StageStatus.SUCCESS
     assert not any(blocked), f"the Stage 5 run of the calibrated template made calls a guard blocked: {blocked}"
@@ -184,6 +193,10 @@ def stage_runner(calls: list[str], thread: FakeThread | None = None) -> object:
         calls.append("stage")
         with (
             patch("sandbox_executor.flow.stages.calibrate._stage5_conflict_gate", return_value=None),
+            patch(
+                "sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate",
+                return_value=(None, {"state": "stage4"}),
+            ),
             patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
             patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=realistic_calibrate),
             patch("sandbox_executor.flow.stages.calibrate.resolve_stale", side_effect=resolver),
@@ -212,10 +225,14 @@ def move_head(repos: SimpleNamespace, name: str = "resolver-fix.txt") -> str:
 
 
 def approve_pr(ctx: FlowContext, number: str = "7") -> None:
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
     ctx.stage_results["review"] = StageResult(
         stage=FlowStage.REVIEW,
-        status=StageStatus.HALTED_FOR_HUMAN,
-        payload={"consensus": {"approved": True, "pr_number": number}, "posting": {"dual_posted": True}},
+        status=StageStatus.APPROVED,
+        payload={
+            "consensus": {"approved": True, "target_commit": "a" * 40, "pr_number": number},
+            "posting": {"dual_posted": True},
+        },
     )
 
 
@@ -404,6 +421,10 @@ def test_stage5_supersedes_the_warning_right_after_the_push_and_before_the_final
 
     with (
         patch("sandbox_executor.flow.stages.calibrate._stage5_conflict_gate", return_value=None),
+        patch(
+            "sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate",
+            return_value=(None, {"state": "stage4"}),
+        ),
         patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=realistic_calibrate),
         patch("sandbox_executor.flow.stages.calibrate.resolve_stale", side_effect=stage5_resolve_stale(thread)),
@@ -425,6 +446,10 @@ def test_a_failed_publish_leaves_the_warning_open_and_records_no_supersession(ca
     post_stale_signal(ctx, report_staleness(ctx), thread.seams(), pr_number="7")
     with (
         patch("sandbox_executor.flow.stages.calibrate._stage5_conflict_gate", return_value=None),
+        patch(
+            "sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate",
+            return_value=(None, {"state": "stage4"}),
+        ),
         patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", side_effect=realistic_calibrate),
         patch("sandbox_executor.flow.stages.calibrate.publish_calibration", return_value=False),

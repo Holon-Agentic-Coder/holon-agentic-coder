@@ -65,13 +65,23 @@ def sleep() -> Iterator[MagicMock]:
 
 
 def _context(repo: Path, *, dry_run: bool = False) -> FlowContext:
-    return FlowContext(
+    ctx = FlowContext(
         repo_dir=str(repo),
         execution_branch=EXECUTION_BRANCH,
         plan_branch="I-100-intent/P-200-plan/_",
         dry_run=dry_run,
         skip_push=True,
     )
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+    ctx.stage_results["review"] = StageResult(
+        stage=FlowStage.REVIEW,
+        status=StageStatus.APPROVED,
+        payload={
+            "consensus": {"approved": True, "target_commit": "a" * 40, "pr_number": 7},
+            "posting": {"dual_posted": True},
+        },
+    )
+    return ctx
 
 
 def _successful_calibration(repo: Path) -> Any:
@@ -245,7 +255,7 @@ def test_dry_run_failure_appends_nothing(repo, sleep):
 
 def test_checkpoint_stays_at_calibrate(repo, sleep, tmp_path_factory):
     ctx = _context(repo)
-    for stage in (FlowStage.INTENT, FlowStage.PLAN, FlowStage.EXECUTE, FlowStage.REVIEW):
+    for stage in (FlowStage.INTENT, FlowStage.PLAN, FlowStage.EXECUTE):
         ctx.stage_results[stage.value] = StageResult(stage=stage, status=StageStatus.SUCCESS)
     res, *_ = _run(ctx, _raising(RuntimeError(PR_249_ERROR)))
     assert ctx.stage_results[FlowStage.CALIBRATE.value] is res

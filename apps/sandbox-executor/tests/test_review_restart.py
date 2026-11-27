@@ -57,7 +57,9 @@ class ScriptedStageEngine:
 
 def _ctx(tmp_path: Path, **kwargs: Any) -> FlowContext:
     (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True, exist_ok=True)
-    return FlowContext(repo_dir=str(tmp_path), execution_branch=BRANCH, agent="a", model="m", **kwargs)
+    ctx = FlowContext(repo_dir=str(tmp_path), execution_branch=BRANCH, agent="a", model="m", **kwargs)
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
+    return ctx
 
 
 def test_a_green_stage5_needs_no_restart(tmp_path: Path) -> None:

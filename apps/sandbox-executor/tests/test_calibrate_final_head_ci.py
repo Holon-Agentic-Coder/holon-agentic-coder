@@ -177,12 +177,12 @@ def test_parse_run_id_and_gh_step_lookup() -> None:
 
 
 def _run_stage(tmp_path: Path, record: dict) -> object:
-    ctx = _ctx(tmp_path)
-    ctx.target_worktree = str(tmp_path)
+    ctx = _approved_ctx(tmp_path)
     report = MagicMock(calibrated_branch=BRANCH + "calibrated")
     report.to_dict.return_value = {}
     ok = SimpleNamespace(returncode=0, stdout="", stderr="")
     with (
+        patch("sandbox_executor.flow.stages.calibrate.stage5_merged_head_gate", return_value=(None, {"state": "stage4"})),
         patch("sandbox_executor.flow.stages.calibrate._checkout_execution_branch", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.sync_before_calibration", return_value=None),
         patch("sandbox_executor.flow.stages.calibrate.run_calibrate", return_value=report),
@@ -281,6 +281,7 @@ def _approved_ctx(tmp_path: Path) -> FlowContext:
     (tmp_path / "holon-knowledge" / "ledger").mkdir(parents=True, exist_ok=True)
     ctx = _ctx(tmp_path)
     ctx.target_worktree = str(tmp_path)
+    ctx.stage_results["execute"] = StageResult(stage=FlowStage.EXECUTE, status=StageStatus.SUCCESS)
     consensus = {"approved": True, "target_commit": APPROVED, "pr_number": 7}
     checks = {"checks": [{"name": "unit", "bucket": "pass", "link": "https://x/actions/runs/5/job/1"}]}
     ctx.stage_results["review"] = StageResult(

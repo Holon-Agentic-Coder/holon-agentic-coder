@@ -1,15 +1,3 @@
-"""The containerised conflict resolver: one agent turn on the conflicted files of the host's in-progress merge.
-
-The host mounts its worktree (with ``MERGE_HEAD`` and the unmerged index) and one transport file. This entrypoint reads
-the role input from that file (conflict paths, merge base, our and their SHAs, the intent, the plan path, the tier),
-renders ``holon-config/prompts/conflict_resolver.template.md``, runs one agent turn under the ``HOLON_TURN_*_SECONDS``
-budgets, then verifies the result itself with lint and the full test suite (``conflict_resolver_verify``). It writes
-one verdict to ``--result-file`` and exits 0 whenever it wrote one, so the host decides from the verdict. It never
-stages, commits, pushes or runs any other git write; the host guard checks the attempt and stages it.
-
-Usage: ``python -m sandbox_executor.entrypoint.conflict_resolver <input.json> <runner> <model> --result-file <path>``
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -42,8 +30,6 @@ _FALLBACK_TEMPLATE = (
 
 @dataclass(frozen=True)
 class ResolverInput:
-    """The role input the host writes: what conflicted, the three commits, the intent, the plan and the tier."""
-
     paths: tuple[str, ...]
     merge_base: str
     ours_sha: str
@@ -55,7 +41,6 @@ class ResolverInput:
 
     @classmethod
     def from_file(cls, path: str) -> ResolverInput:
-        """Read the input JSON; raise ``ValueError`` when it is unreadable or names no conflict path."""
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -80,8 +65,8 @@ def _bounded(text: str, limit: int = TEXT_MAX_CHARS) -> str:
     return text if len(text) <= limit else text[:limit] + "\n[... truncated ...]"
 
 
+# why: -c safe.directory trusts the mount without writing any git config
 def _git_text(repo_dir: str, *args: str) -> str:
-    """Read-only git output; ``-c safe.directory`` trusts the mount without writing any git config."""
     result = run_cmd(["git", "-c", f"safe.directory={repo_dir}", *args], cwd=repo_dir)
     return result.stdout if result.returncode == 0 and isinstance(result.stdout, str) else ""
 
@@ -113,7 +98,6 @@ def _plan_content(repo_dir: str, request: ResolverInput) -> str:
 
 
 def build_prompt(repo_dir: str, request: ResolverInput, decision_file: str) -> str:
-    """Render the conflict resolver template (or a built-in fallback) for ``request``."""
     try:
         template = (Path(repo_dir) / TEMPLATE_PATH).read_text(encoding="utf-8")
     except OSError:
@@ -137,7 +121,6 @@ def build_prompt(repo_dir: str, request: ResolverInput, decision_file: str) -> s
 
 
 def run_agent_turn(repo_dir: str, runner_name: str, model: str, prompt: str) -> Verdict | None:
-    """Run the agent turn; return an ``agent_failed`` verdict when it timed out or exited non-zero, else ``None``."""
     runner = get_runner(runner_name)
     if callable(getattr(runner, "build_command", None)):
         cmd = runner.build_command(prompt, model)
@@ -158,7 +141,6 @@ def run_agent_turn(repo_dir: str, runner_name: str, model: str, prompt: str) -> 
 
 
 def resolve(repo_dir: str, request: ResolverInput, runner_name: str, model: str) -> Verdict:
-    """One attempt: clear the decision file, run the turn, then verify independently of the agent's claims."""
     decision_file = os.path.join(repo_dir, DECISION_PATH)
     os.makedirs(os.path.dirname(decision_file), exist_ok=True)
     if os.path.exists(decision_file):
@@ -168,7 +150,6 @@ def resolve(repo_dir: str, request: ResolverInput, runner_name: str, model: str)
 
 
 def write_result(result_file: str, verdict: Verdict) -> bool:
-    """Write the verdict JSON; return False (and report it) when the file cannot be written."""
     try:
         Path(result_file).write_text(json.dumps(verdict.to_dict(), indent=2), encoding="utf-8")
     except OSError as exc:
@@ -178,7 +159,6 @@ def write_result(result_file: str, verdict: Verdict) -> bool:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse ``<input.json> <runner> <model> --result-file <path> [--workspace <dir>]``."""
     parser = argparse.ArgumentParser(description="Resolve the code conflicts of an in-progress merge.")
     parser.add_argument("input_file", help="Role input JSON written by the host (may be the result file itself).")
     parser.add_argument("runner", help="Agent runner, for example claude-agent.")
@@ -188,8 +168,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+# why: exit 0 whenever a verdict was written so the host decides from the verdict
 def main(argv: list[str] | None = None) -> int:
-    """Run one resolution attempt and write its verdict; exit 0 whenever a verdict was written."""
     args = parse_args(argv)
     repo_dir = args.workspace or get_workspace_dir()
     try:

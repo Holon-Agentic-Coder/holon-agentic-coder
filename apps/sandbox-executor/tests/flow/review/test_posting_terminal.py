@@ -39,7 +39,7 @@ def _not_posted(tmp_path: Path, stubs: _LoopStubs, ctx, reason: str) -> None:
 
 
 def test_clean_approval_posts_exactly_once(tmp_path):
-    res, stubs, _ = _run(tmp_path, FakeEnsemble([clean_reviewer(1)]))
+    res, stubs, _ = _run(tmp_path, FakeEnsemble(), ensemble_size=3)
 
     assert res["consensus"]["approved"] is True
     assert len(stubs.posts()) == 1
@@ -90,7 +90,7 @@ def test_a_post_that_raises_writes_one_failure_row_and_fails_closed(tmp_path):
     # gh cannot be run for the review nor the last-resort comment, so the post raises inside the posting ladder.
     stubs.github.review_results = [spawn_failure("gh exploded")]
     stubs.github.comment_result = spawn_failure("gh exploded")
-    res, stubs, _ = _run(tmp_path, FakeEnsemble([clean_reviewer(1)]), stubs=stubs)
+    res, stubs, _ = _run(tmp_path, FakeEnsemble(), ensemble_size=3, stubs=stubs)
 
     assert len(stubs.posts()) == 1
     rows = _rows(tmp_path, "ACT-POST")

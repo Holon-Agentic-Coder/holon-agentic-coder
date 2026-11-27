@@ -80,3 +80,15 @@ Declared entries the diff did not touch:
 
 - **Review churn:** not recorded
 
+---
+
+## 7. Self-Explaining Code Counts
+
+Against the merge base with origin/main: added 0 docstring(s), added 0 comment(s), removed 0 docstring(s) and removed 0 comment(s) across 7 changed file(s).
+
+- Changed files checked: 7
+- Added docstrings: 0
+- Added comments (not '# why:'): 0
+- Removed docstrings: 0
+- Removed comments (not '# why:'): 0
+

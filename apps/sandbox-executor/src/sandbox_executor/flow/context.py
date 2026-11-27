@@ -1,8 +1,3 @@
-"""Holon Flow data model: the lifecycle stages, stage statuses, stage results and the flow context.
-
-``FlowContext`` carries the run configuration and every stage result between stages; a checkpoint serialises it.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -31,7 +26,7 @@ from sandbox_executor.review_ensemble import DEFAULT_ENSEMBLE_SIZE
 
 logger = logging.getLogger(__name__)
 
-# Kept for backward compatibility with tests/callers that read or patch _SUMMARY_STATUS_WORDS.
+# why: kept for backward compatibility with tests and callers that read or patch _SUMMARY_STATUS_WORDS.
 _SUMMARY_STATUS_WORDS = SUMMARY_STATUS_WORDS
 
 __all__ = [
@@ -47,8 +42,6 @@ __all__ = [
 
 
 class FlowStage(StrEnum):
-    """Enumeration of lifecycle stages in the Holon Flow pipeline."""
-
     INTENT = "intent"
     PLAN = "plan"
     EXECUTE = "execute"
@@ -58,7 +51,6 @@ class FlowStage(StrEnum):
 
     @classmethod
     def from_str(cls, val: str | FlowStage) -> FlowStage:
-        """Parse string or enum instance to FlowStage case-insensitively."""
         if isinstance(val, FlowStage):
             return val
         clean = str(val).strip().lower()
@@ -70,20 +62,16 @@ class FlowStage(StrEnum):
 
 @dataclass
 class StageResult:
-    """Records the outcome, telemetry, and payload of a pipeline stage."""
-
     stage: FlowStage
     status: StageStatus = StageStatus.PENDING
     start_time: str | None = None
     end_time: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
-    # Wall-clock time the stage took and the ceiling it ran against; None for stages not yet timed.
     elapsed_seconds: float | None = None
     budget_seconds: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert StageResult to a JSON-serialisable dictionary."""
         return {
             "stage": self.stage.value,
             "status": self.status.value,
@@ -96,7 +84,6 @@ class StageResult:
         }
 
     def summary_line(self) -> str:
-        """``stage: status (elapsed min / budget min or unlimited)``, or a bare ``stage: status`` when not timed."""
         word = _SUMMARY_STATUS_WORDS.get(self.status, self.status.value)
         if self.elapsed_seconds is None:
             return f"{self.stage.value}: {word}"
@@ -104,7 +91,6 @@ class StageResult:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> StageResult:
-        """Construct StageResult from a dictionary."""
         return cls(
             stage=FlowStage.from_str(data["stage"]),
             status=StageStatus.from_str(data.get("status", "pending")),
@@ -132,54 +118,52 @@ def _support_legacy_repo_dir(cls: type) -> type:
 @_support_legacy_repo_dir
 @dataclass
 class FlowContext:
-    """Carries complete state and configuration across all pipeline stages."""
-
     target_worktree: str = "."
     intent_data: dict[str, Any] = field(default_factory=dict)
     intent_branch: str | None = None
     plan_branch: str | None = None
     execution_branch: str | None = None
     calibrated_branch: str | None = None
-    starting_branch: str | None = None  # Branch (or detached SHA) HEAD was on before Stage 4 or 5 moved it.
+    # why: Stage 4 or 5 moves HEAD, so the branch or detached SHA it was on is recorded to return to.
+    starting_branch: str | None = None
     starting_detached: bool = False
-    # The CLI always passes resolved values (see agent_defaults); these only apply to direct construction.
+    # why: the CLI always passes resolved values (see agent_defaults); these only apply to direct construction.
     agent: str = FALLBACK_AGENT
     model: str = DEFAULT_MODELS[normalise_agent_id(FALLBACK_AGENT)]
     dry_run: bool = False
     auto_calibrate: bool = True
-    token_reduce: bool | None = None  # Spawn this run's sidecar; only an explicit flag sets it.
-    proxy_attach: bool = False  # Attach role containers to a running user-owned proxy; never spawns one.
+    # why: only an explicit flag spawns this run's sidecar.
+    token_reduce: bool | None = None
+    # why: attaching to a running user-owned proxy never spawns one.
+    proxy_attach: bool = False
     skip_push: bool = False
     skip_calibrate: bool = False
     max_review_iterations: int = 25
-    review_ensemble_size: int = DEFAULT_ENSEMBLE_SIZE  # Independent reviewer agent turns per Stage 4 iteration.
+    review_ensemble_size: int = DEFAULT_ENSEMBLE_SIZE
     mitm_web: bool = False
-    # --allow-overlap: Stage 3 admission admits a plan that overlaps a flow in flight and records the override.
     allow_overlap: bool = False
-    # Stage 3 admission object (admission_state.AdmissionRecord.to_dict()); None until Stage 3 admission runs.
     admission: dict[str, Any] | None = None
     stage_results: dict[str, StageResult] = field(default_factory=dict)
     logs: list[str] = field(default_factory=list)
     schema_version: int = CURRENT_CONTEXT_SCHEMA_VERSION
-    # Automatic returns to Stage 2 after an over-budget plan (bounded by budgets.MAX_REPLAN_ATTEMPTS).
+    # why: bounded by budgets.MAX_REPLAN_ATTEMPTS so an over-budget plan cannot replan forever.
     replan_attempts: int = 0
-    # Engine-owned Stage 4 count: the label of the last review pass run, checkpointed so a resume continues it.
+    # why: checkpointed so a resume continues the engine-owned Stage 4 pass count.
     review_iterations_done: int = 0
-    # Stage 4 findings a halted pass left without a disposition; a resume sends them to the resolver first.
+    # why: a halted pass's undisposed findings go to the resolver first on resume.
     carried_review_findings: list[dict[str, Any]] = field(default_factory=list)
-    # Scoped paths for Stage 4 re-review after an agent-resolved target merge; empty means full PR diff.
+    # why: an agent-resolved target merge is re-reviewed only on these paths; empty means the full PR diff.
     review_scope_paths: list[str] = field(default_factory=list)
-    # Stage 4 gate records and review counters; checkpointed (see flow/review/approval_gates.py).
     review_state: dict[str, Any] = field(default_factory=dict)
-    # Whether a merged-head CI failure may still restart Stage 4 (False at the restart cap). Never checkpointed.
+    # why: never checkpointed; False once merged-head CI restarts of Stage 4 hit their cap.
     merged_head_restart_allowed: bool = field(default=True, repr=False, compare=False)
-    # Role-agent dispatcher for Stages 1-3; None means launcher.role_dispatch.dispatch_role_agent. Never checkpointed.
+    # why: never checkpointed; None means launcher.role_dispatch.dispatch_role_agent.
     dispatcher: Callable[..., int] | None = field(default=None, repr=False, compare=False)
-    checkpoint_path: str | None = field(default=None, repr=False)  # The engine's --checkpoint path; never checkpointed.
+    # why: never checkpointed.
+    checkpoint_path: str | None = field(default=None, repr=False)
 
     @property
     def repo_dir(self) -> str:
-        """Alias for target_worktree."""
         return self.target_worktree
 
     @repo_dir.setter
@@ -187,14 +171,12 @@ class FlowContext:
         self.target_worktree = value
 
     def __post_init__(self) -> None:
-        """Resolve dynamic defaults: proxy auto-detection may only attach to a running proxy, never spawn one."""
         if self.token_reduce is None:
             from sandbox_executor.launcher import coherence
 
             self.token_reduce, self.proxy_attach = coherence.resolve_flow_proxy_choice()
 
     def log(self, message: str) -> None:
-        """Append a timestamped, secret-redacted message to context logs."""
         timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         sanitized = redact_agent_secrets(str(message))
         formatted = f"[{timestamp}] {sanitized}"
@@ -202,7 +184,6 @@ class FlowContext:
         logger.info(formatted)
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert FlowContext to a JSON-serialisable dictionary."""
         return {
             "schema_version": self.schema_version,
             "target_worktree": self.target_worktree,
@@ -235,7 +216,6 @@ class FlowContext:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> FlowContext:
-        """Construct FlowContext from a dictionary."""
         raw_results = data.get("stage_results", {})
         parsed_results = {k: StageResult.from_dict(v) if isinstance(v, dict) else v for k, v in raw_results.items()}
         raw_version = data.get("schema_version")

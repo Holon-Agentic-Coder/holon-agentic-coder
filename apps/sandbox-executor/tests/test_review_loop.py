@@ -1690,7 +1690,7 @@ def test_standalone_review_command_forwards_its_own_limit_and_no_label():
 def test_review_with_findings_dispatches_injected_resolver(tmp_path):
     from sandbox_executor.flow import run_review_loop
 
-    from tests.review_fakes import FakeEnsemble, clean_reviewer, objecting_reviewer
+    from tests.review_fakes import FakeEnsemble, objecting_reviewer, with_clean_peers
 
     resolver_invocations: list[dict] = []
 
@@ -1725,8 +1725,8 @@ def test_review_with_findings_dispatches_injected_resolver(tmp_path):
         nonlocal calls
         calls += 1
         if calls == 1:
-            return [objecting_reviewer(1)]
-        return [clean_reviewer(1)]
+            return with_clean_peers([objecting_reviewer(1)])
+        return with_clean_peers([])
 
     ctx = _ensemble_ctx(tmp_path)
     with _LoopStubs():
@@ -1734,7 +1734,7 @@ def test_review_with_findings_dispatches_injected_resolver(tmp_path):
             ctx,
             target=EXEC_TARGET,
             max_iterations=2,
-            ensemble_size=1,
+            ensemble_size=3,
             run_ensemble_fn=FakeEnsemble(dynamic_ensemble),
             run_resolver_fn=fake_resolver,
         )
@@ -1794,7 +1794,7 @@ def test_finding_dispositions_recorded_to_executions_ledger(tmp_path):
         ReviewFinding,
     )
 
-    from tests.review_fakes import FakeEnsemble, clean_reviewer
+    from tests.review_fakes import FakeEnsemble, with_clean_peers
 
     f1 = ReviewFinding("important", "src/fixable.py", 10, "problem to fix")
     f2 = ReviewFinding("nit", "src/bydesign.py", 20, "nit by design")
@@ -1807,8 +1807,8 @@ def test_finding_dispositions_recorded_to_executions_ledger(tmp_path):
         nonlocal calls
         calls += 1
         if calls == 1:
-            return [reviewer1]
-        return [clean_reviewer(1)]
+            return with_clean_peers([reviewer1])
+        return with_clean_peers([])
 
     def fake_resolver(target, iteration, findings, action_ids, rejected_findings):
         f1_item = next(f for f in findings if f.path == "src/fixable.py")
@@ -1843,7 +1843,7 @@ def test_finding_dispositions_recorded_to_executions_ledger(tmp_path):
             ctx,
             target=EXEC_TARGET,
             max_iterations=2,
-            ensemble_size=1,
+            ensemble_size=3,
             run_ensemble_fn=FakeEnsemble(dynamic_ensemble),
             run_resolver_fn=fake_resolver,
         )
@@ -1921,7 +1921,7 @@ def test_three_iteration_identical_finding_guard_terminates_no_convergence(tmp_p
 def test_post_pr_review_consensus_called_only_once_at_loop_exit(tmp_path):
     from sandbox_executor.flow import run_review_loop
 
-    from tests.review_fakes import FakeEnsemble, clean_reviewer, objecting_reviewer
+    from tests.review_fakes import FakeEnsemble, objecting_reviewer, with_clean_peers
 
     calls = 0
 
@@ -1929,8 +1929,8 @@ def test_post_pr_review_consensus_called_only_once_at_loop_exit(tmp_path):
         nonlocal calls
         calls += 1
         if calls < 3:
-            return [objecting_reviewer(1)]
-        return [clean_reviewer(1)]
+            return with_clean_peers([objecting_reviewer(1)])
+        return with_clean_peers([])
 
     def fake_resolver(target, iteration, findings, action_ids, rejected_findings):
         return {
@@ -1958,7 +1958,7 @@ def test_post_pr_review_consensus_called_only_once_at_loop_exit(tmp_path):
             ctx,
             target=EXEC_TARGET,
             max_iterations=5,
-            ensemble_size=1,
+            ensemble_size=3,
             run_ensemble_fn=FakeEnsemble(dynamic_ensemble),
             run_resolver_fn=fake_resolver,
         )
@@ -2047,7 +2047,7 @@ def test_review_findings_with_failed_ci_includes_find_ci(tmp_path):
 def test_clean_review_with_pending_ci_waits_for_settlement_and_approves_when_green(tmp_path):
     from sandbox_executor.flow import run_review_loop
 
-    from tests.review_fakes import FakeEnsemble, clean_reviewer
+    from tests.review_fakes import FakeEnsemble
 
     mock_sleep = MagicMock()
     ci_sequence = [
@@ -2062,8 +2062,8 @@ def test_clean_review_with_pending_ci_waits_for_settlement_and_approves_when_gre
             ctx,
             target=EXEC_TARGET,
             max_iterations=1,
-            ensemble_size=1,
-            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            ensemble_size=3,
+            run_ensemble_fn=FakeEnsemble(),
             sleep=mock_sleep,
         )
 
@@ -2156,7 +2156,7 @@ def test_review_resolver_adjudicates_ci_failure_and_converges_to_approval(tmp_pa
     from sandbox_executor.review_ensemble import ConsensusVerdict
     from sandbox_executor.review_report import FindingDisposition
 
-    from tests.review_fakes import FakeEnsemble, clean_reviewer
+    from tests.review_fakes import FakeEnsemble
 
     resolver_calls = []
 
@@ -2207,8 +2207,8 @@ def test_review_resolver_adjudicates_ci_failure_and_converges_to_approval(tmp_pa
             ctx,
             target=EXEC_TARGET,
             max_iterations=3,
-            ensemble_size=1,
-            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            ensemble_size=3,
+            run_ensemble_fn=FakeEnsemble(),
             run_resolver_fn=fake_resolver,
         )
 

@@ -24,7 +24,7 @@ from sandbox_executor.review_report import _mergeability_word
 from tests.flow.github.fake_github import view_for
 from tests.flow.helpers import _git
 from tests.ledger_conflict_repos import BRANCH, LEDGER, build_conflicting_repos, refuse_test_runs
-from tests.review_fakes import FakeEnsemble, clean_reviewer
+from tests.review_fakes import FakeEnsemble
 from tests.review_loop_stubs import _CLEAN_MERGE, EXEC_TARGET, _ensemble_ctx, _LoopStubs, _rows
 
 CONFLICTING = {"mergeable": "CONFLICTING", "merge_state_status": "DIRTY", "is_dirty": True}
@@ -92,8 +92,8 @@ def test_loop_never_posts_an_approval_when_the_head_turns_conflicting_before_the
             ctx,
             target=EXEC_TARGET,
             max_iterations=2,
-            ensemble_size=1,
-            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            ensemble_size=3,
+            run_ensemble_fn=FakeEnsemble(),
         )
 
     assert stubs.posts() == []
@@ -114,8 +114,8 @@ def test_a_clean_head_posts_the_approval_unchanged(tmp_path, monkeypatch):
             ctx,
             target=EXEC_TARGET,
             max_iterations=2,
-            ensemble_size=1,
-            run_ensemble_fn=FakeEnsemble([clean_reviewer(1)]),
+            ensemble_size=3,
+            run_ensemble_fn=FakeEnsemble(),
         )
 
     assert res["consensus"]["approved"] is True
@@ -538,13 +538,13 @@ def test_a_carried_approval_ends_the_loop_approved_without_another_reviewer_disp
     same_change = MagicMock(return_value="pf2:" + "c" * 40)
     monkeypatch.setattr("sandbox_executor.flow.review.loop.approval_fingerprint_of", same_change)
     monkeypatch.setattr("sandbox_executor.flow.review.approval_carry_over.approval_fingerprint_of", same_change)
-    ensemble = FakeEnsemble([clean_reviewer(1)])
+    ensemble = FakeEnsemble()
     stubs = _LoopStubs()
     stubs.github.views = [view_for(_CLEAN_MERGE)]
     stubs.github.standing_view = view_for(CONFLICTING)
     ctx = _ensemble_ctx(tmp_path)
     with stubs:
-        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=3, ensemble_size=1, run_ensemble_fn=ensemble)
+        res = run_review_loop(ctx, target=EXEC_TARGET, max_iterations=3, ensemble_size=3, run_ensemble_fn=ensemble)
 
     assert len(ensemble.calls) == 1  # The single approving pass; no reviewer is dispatched again.
     assert len(stubs.posts()) == 1

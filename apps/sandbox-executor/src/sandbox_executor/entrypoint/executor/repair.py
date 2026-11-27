@@ -6,6 +6,11 @@ import sandbox_executor.entrypoint.executor as executor_facade
 from sandbox_executor.entrypoint.executor.commands import _CLEAN_GIT_ENV_VARS, _FALLBACK_SAFE_DIRECTORIES, _get_repo
 from sandbox_executor.entrypoint.git_locks import _remove_abandoned_locks, _resolve_local_ref
 from sandbox_executor.redaction import redact_agent_secrets
+from sandbox_executor.submodule_gitfile import (
+    find_submodule_gitfile_issues,
+    format_submodule_gitfile_error,
+    repair_submodule_gitfiles,
+)
 
 
 def _is_dubious_ownership_error(err: str) -> bool:
@@ -72,6 +77,10 @@ def _probe_git_repo(repo_dir: str) -> tuple[bool, str]:
         err = (res_head.stderr or res_head.stdout).strip()
         return False, f"dangling HEAD: {err}"
 
+    issues = find_submodule_gitfile_issues(repo_dir)
+    if issues:
+        return False, format_submodule_gitfile_error(issues)
+
     return True, ""
 
 
@@ -92,8 +101,24 @@ def _repair_git_repo(
     if _needs_head_restore(repo_dir, probe_err):
         _restore_head(repo_dir, default_branch or "main", plan_branch)
 
+    if find_submodule_gitfile_issues(repo_dir):
+        _repair_submodules(repo_dir)
+
     healthy, _ = _probe_git_repo(repo_dir)
     return healthy
+
+
+def _repair_submodules(repo_dir: str) -> None:
+    repaired, remaining = repair_submodule_gitfiles(
+        repo_dir,
+        run=lambda args, cwd=None, check=False: _get_repo(cwd or repo_dir).run(args, check=check),
+    )
+    if repaired:
+        repaired_list = redact_agent_secrets(", ".join(repaired))
+        print(f"Info: repaired submodule gitfile(s) to host-valid relative paths: {repaired_list}", file=sys.stderr)
+    if remaining:
+        err_msg = redact_agent_secrets(format_submodule_gitfile_error(remaining))
+        print(f"Warning: could not repair submodule gitfile(s): {err_msg}", file=sys.stderr)
 
 
 def _persist_safe_directory(repo_dir: str) -> None:

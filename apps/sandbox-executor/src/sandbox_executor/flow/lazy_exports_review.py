@@ -54,6 +54,7 @@ REVIEW_LAZY_EXPORTS: dict[str, str] = {
     ),
     "sandbox_executor.flow.review.git_identity": "REVIEW_GIT_ENV",
     "sandbox_executor.flow.review.ids": "build_review_id",
+    "sandbox_executor.flow.review.local_test_finding": "parked_record_from_ci_status",
     "sandbox_executor.flow.review.loop": (
         "_loop_status _review_window _reviewers_objected _run_engine_review_loop run_review_loop"
     ),

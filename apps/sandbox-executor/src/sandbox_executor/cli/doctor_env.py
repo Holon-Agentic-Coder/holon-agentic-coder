@@ -1,5 +1,3 @@
-"""Environment, budget, model envelope, and local gateway reporting for ``holon doctor``."""
-
 import os
 import sys
 from collections.abc import Mapping
@@ -20,30 +18,18 @@ class _GatewayReportContext:
 
 
 def _doctor_section_failed(section: str, exc: BaseException) -> str:
-    """The warning line for a doctor section that raised unexpectedly: section and exception class only, no values."""
+    # why: never print exception values; they can carry secrets.
     return f"WARNING: doctor {section} check failed unexpectedly ({type(exc).__name__}); details withheld"
 
 
 def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: TextIO | None = None) -> int:
-    """``holon doctor`` environment section: print the effective budgets and the local-LLM model envelope, and probe
-    the local gateway.
-
-    Prints ``model=<id> context=<n> max_tokens=<n> source=host|synthesised`` and
-    ``reasoning=<mode> source=env|host|default`` per model, then ``prefill_cache=off|cold|warm`` with memory figures
-    once per distinct host-local server, warning when a model's emitted ``maxTokens`` or ``contextWindow`` exceeds
-    the ``effective_defaults.max_output_tokens`` or ``max_prompt_tokens`` of the server that serves it. Nothing is
-    written; only loopback or allow-listed endpoints are probed.
-
-    Each part (budgets, GitHub token, envelope, base-URL check, gateway probe) is isolated: an invalid configuration
-    prints an ``Error:`` line, and any unexpected exception becomes a value-free ``WARNING: doctor <part> check
-    failed unexpectedly (<ExceptionClass>)`` line; either makes the result 1, and the doctor never raises from here.
-    """
     env = os.environ
     out = out or sys.stdout
     code = 0
     try:
         _report_budgets(env, out)
-    except Exception as exc:  # The doctor reports; it never crashes.
+    # why: the doctor reports every section failure; it never crashes.
+    except Exception as exc:
         print(_doctor_section_failed("budgets", exc), file=out)
         code = 1
     try:
@@ -60,11 +46,10 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
 
     try:
         allow_list = local_llm.host_local_allow_list()
-        # One validated loader (local_llm.load_models_json): a malformed file is a LocalLLMConfigError naming it.
         host_config = local_llm.host_models_json()
         config, envelopes = local_llm.build_envelope_config(host_config, allow_list, env)
     except local_llm.LocalLLMConfigError as exc:
-        # The same top-level redaction as the run path (#96); these lines are also the `--json` environment section.
+        # why: same redaction as the run path (#96); these lines are also the `--json` environment section.
         print(f"Error: {redact_cli_error(exc)}", file=out)
         return 1
     except Exception as exc:
@@ -77,7 +62,7 @@ def report_budgets_and_envelope(fetch: local_llm.Fetcher | None = None, out: Tex
 
     try:
         for source in local_llm.unparseable_base_url_sources(host_config, env):
-            # Named by its source only (#96 message rule); like any non-probeable endpoint it is skipped, not fatal.
+            # why: a non-probeable endpoint is named by source only (#96) and skipped, not fatal.
             print(f"WARNING: {source} is not a parseable URL, so its server is not probed (value withheld)", file=out)
     except Exception as exc:
         print(_doctor_section_failed("base URL", exc), file=out)
@@ -105,7 +90,7 @@ def _report_gateways(
     out: TextIO,
 ) -> None:
     probed = False
-    # One probe and one line per distinct server; limits are compared only with the models that server serves.
+    # why: one probe per distinct server; limits compare only with models that server serves.
     for base_url, providers in local_llm.host_gateways(ctx.host_config, ctx.config, ctx.env, ctx.allow_list):
         health = local_llm.probe_gateway_health(base_url, fetch=fetch, allow_list=ctx.allow_list)
         if health is None:

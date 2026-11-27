@@ -1,5 +1,3 @@
-"""Unit tests for dual Actual EV calibration with and without pipeline/engine bugs."""
-
 from __future__ import annotations
 
 import json
@@ -22,10 +20,7 @@ from sandbox_executor.calibration_rows import is_infrastructure_failure, row_sta
 
 
 class TestCalibrationDualEV(unittest.TestCase):
-    """Test suite for Dual Actual EV computation, bug drag, and report rendering."""
-
-    def test_clean_run_success(self) -> None:
-        """Clean run with single success summary row produces zero drag and equal EVs."""
+    def test_clean_run_single_success_row_has_zero_drag_and_equal_evs(self) -> None:
         records = [
             {
                 "entry_type": "summary",
@@ -51,8 +46,7 @@ class TestCalibrationDualEV(unittest.TestCase):
         self.assertEqual(metrics.ev_with_bugs, 46.0)
         self.assertEqual(metrics.bug_ev_drag, 0.0)
 
-    def test_clean_run_halted_for_human(self) -> None:
-        """Clean run ending in human-merge halt with exit code 0 is treated as converged success."""
+    def test_clean_run_halted_for_human_merge_with_exit_zero_is_converged_success(self) -> None:
         records = [
             {
                 "entry_type": "summary",
@@ -76,8 +70,7 @@ class TestCalibrationDualEV(unittest.TestCase):
         self.assertEqual(metrics.ev_with_bugs, 31.5)
         self.assertEqual(metrics.bug_ev_drag, 0.0)
 
-    def test_clean_run_approved(self) -> None:
-        """Clean run ending with Stage 4 ``approved`` status (no explicit exit_code) converges with zero drag."""
+    def test_clean_run_ending_approved_without_exit_code_converges_with_zero_drag(self) -> None:
         records = [
             {
                 "entry_type": "summary",
@@ -101,7 +94,6 @@ class TestCalibrationDualEV(unittest.TestCase):
         self.assertEqual(metrics.bug_ev_drag, 0.0)
 
     def test_integrated_decomposed_parent_is_scored_as_success(self) -> None:
-        """The superseding integration row (status decomposed, integrated, no exit_code) is a converged success."""
         predicted = PredictedMetrics(p_success=0.95, entropy=1.0, impact=50.0, cost=4.0, learning_value=2.0, ev=46.0)
         jsonl = (
             '{"entry_type": "summary", "execution_id": "E-dec-1", "plan_branch": "I-t/P-t/_", '
@@ -127,7 +119,6 @@ class TestCalibrationDualEV(unittest.TestCase):
         self.assertEqual(actual.bug_ev_drag, 0.0)
 
     def test_non_integrated_final_decomposed_row_is_not_a_converged_success(self) -> None:
-        """A final decomposed row without ``integrated: true`` (absent or false) is not scored as success."""
         predicted = PredictedMetrics(p_success=0.95, entropy=1.0, impact=50.0, cost=4.0, learning_value=2.0, ev=46.0)
         for marker in ("", '"integrated": false, '):
             jsonl = (
@@ -149,7 +140,6 @@ class TestCalibrationDualEV(unittest.TestCase):
             self.assertEqual(actual.p_success_clean, 0.0, marker)
 
     def test_recovered_review_failure_adds_no_drag(self) -> None:
-        """A failed Stage 4 (``REV-``) row between Stage 3 success and a later success is not a delivery failure."""
         records = [
             {
                 "entry_type": "summary",
@@ -196,8 +186,7 @@ class TestCalibrationDualEV(unittest.TestCase):
         self.assertEqual(metrics.ev_with_bugs, metrics.ev_clean)
         self.assertEqual(metrics.bug_ev_drag, 0.0)
 
-    def test_converged_failure_run(self) -> None:
-        """Run that fails without subsequent recovery sets clean and observed EV to drag penalty."""
+    def test_unrecovered_failure_sets_clean_and_observed_ev_to_drag_penalty(self) -> None:
         records = [
             {
                 "entry_type": "summary",
@@ -222,7 +211,6 @@ class TestCalibrationDualEV(unittest.TestCase):
         self.assertEqual(metrics.bug_ev_drag, 0.0)
 
     def test_format_markdown_report_renders_dual_ev_and_bug_drag(self) -> None:
-        """Markdown report must render both Clean EV, Observed EV, and Bug EV Drag."""
         pred = PredictedMetrics(p_success=0.95, entropy=1.0, impact=40.0, cost=4.0, learning_value=3.0, ev=37.2)
         act = ActualMetrics(
             p_success=1.0,
@@ -265,8 +253,7 @@ class TestCalibrationDualEV(unittest.TestCase):
         self.assertIn("EV_{\\text{with\\_bugs}}", report)
         self.assertIn("\\text{Bug EV Drag}", report)
 
-    def test_parse_actual_metrics_dual_ev_integration(self) -> None:
-        """parse_actual_metrics ignores an intermediate Stage 4 failure: no drag, Stage 3 row sets the outcome."""
+    def test_parse_actual_metrics_ignores_intermediate_stage4_failure(self) -> None:
         predicted = PredictedMetrics(p_success=0.95, entropy=1.0, impact=50.0, cost=4.0, learning_value=2.0, ev=46.0)
         jsonl = (
             '{"entry_type": "summary", "execution_id": "E-int-1", "plan_branch": "I-t/P-t/_", '
@@ -296,13 +283,11 @@ class TestCalibrationDualEV(unittest.TestCase):
             self.assertGreater(actual.ev_clean, 0.0)
             self.assertEqual(actual.ev_with_bugs, actual.ev_clean)
             self.assertEqual(actual.bug_ev_drag, 0.0)
-            # Backward compatibility invariants
             self.assertEqual(actual.p_success, actual.p_success_clean)
             self.assertEqual(actual.ev, actual.ev_clean)
             self.assertEqual(actual.impact, actual.impact_clean)
 
     def test_parse_actual_metrics_dual_ev_with_approved_recovery(self) -> None:
-        """A Stage 4 ``failed`` then ``approved`` pair after a Stage 3 success adds no drag."""
         predicted = PredictedMetrics(p_success=0.95, entropy=1.0, impact=50.0, cost=4.0, learning_value=2.0, ev=46.0)
         jsonl = (
             '{"entry_type": "summary", "execution_id": "E-int-2", "plan_branch": "I-t/P-t/_", '
@@ -328,8 +313,7 @@ class TestCalibrationDualEV(unittest.TestCase):
         self.assertEqual(actual.p_success_with_bugs, 1.0)
         self.assertEqual(actual.bug_ev_drag, 0.0)
 
-    def test_code_gate_compliance(self) -> None:
-        """Assert module size budgets and complexity limits are strictly respected."""
+    def test_calibration_modules_respect_size_budgets_and_complexity_limits(self) -> None:
         repo_root = Path(__file__).resolve().parents[3]
         helper_file = repo_root / "apps/sandbox-executor/src/sandbox_executor/calibration_ev.py"
         calibration_package = repo_root / "apps/sandbox-executor/src/sandbox_executor/calibration"
@@ -339,8 +323,7 @@ class TestCalibrationDualEV(unittest.TestCase):
         budgets = json.loads((repo_root / "holon-config/hygiene/module_budgets.json").read_text(encoding="utf-8"))
 
         self.assertLess(helper_lines, 200, f"calibration_ev.py has {helper_lines} lines (budget < 200)")
-        # The former single calibration.py had a 1684-line net-delta ceiling; split into a package, each module is held
-        # to the repository default module budget and may carry no complexity exemption.
+        # why: split from a 1684-line calibration.py, each module keeps the default budget and no complexity exemption.
         self.assertGreater(len(calibration_modules), 1)
         for path in calibration_modules:
             text = path.read_text(encoding="utf-8")
@@ -348,19 +331,17 @@ class TestCalibrationDualEV(unittest.TestCase):
             self.assertLessEqual(lines, budgets["default_max_lines"], f"{path.name} has {lines} lines")
             self.assertNotRegex(text, r"#\s*noqa:[^\n]*(C901|PLR09)", f"{path.name} carries a complexity exemption")
 
-        # Assert no new noqa annotations added in calibration_ev.py
         helper_content = helper_file.read_text(encoding="utf-8")
         self.assertNotIn("# no" + "qa", helper_content, "calibration_ev.py must not contain any '# noqa' annotations")
 
 
 MATRIX_PLAN = "I-m/P-m/_"
 ID_PREFIX = {"execution": "E-", "review": "REV-", "calibrate": "CAL-"}
-# The slots of each order: "x" is a row with the case's status, "s" a success row.
+# why: each order spells its slots, "x" a row with the case's status and "s" a success row.
 ORDERS = {"failure_then_success": "xs", "success_then_failure": "sx", "failure_last": "xsx"}
 
 
 def _matrix_rows(kind: str, status: str, order: str) -> list[dict[str, Any]]:
-    """A Stage 3 success row first (review/calibrate kinds only), then one row per slot with its own id and instant."""
     rows: list[dict[str, Any]] = []
     if kind != "execution":
         rows.append(_ledger_row("E-0", "success", 0))
@@ -389,8 +370,7 @@ def _matrix_drag(rows: list[dict[str, Any]]) -> float:
 @pytest.mark.parametrize("order", sorted(ORDERS))
 @pytest.mark.parametrize("status", ["failed", "sync_conflict", "success"])
 @pytest.mark.parametrize("kind", ["execution", "review", "calibrate"])
-def test_dual_ev_matrix(kind: str, status: str, order: str) -> None:
-    """Only an unresolved Stage 3 failure adds drag; review and calibrate rows never do, whatever their order."""
+def test_dual_ev_matrix_adds_drag_only_for_unresolved_stage3_failure(kind: str, status: str, order: str) -> None:
     drag = _matrix_drag(_matrix_rows(kind, status, order))
     if kind == "execution" and status != "success" and order != "failure_then_success":
         assert drag == 50.0
@@ -429,7 +409,7 @@ def test_failure_reason_and_error_fields_are_read() -> None:
 
 
 def test_pr_249_rows_add_no_drag() -> None:
-    """The PR #249 summary rows verbatim: Stage 3 success, a failed reviewer dispatch, then the approval."""
+    # why: the PR #249 summary rows verbatim: Stage 3 success, a failed reviewer dispatch, then the approval.
     plan = "I-1795409225-remove-token-reduction-copy/P-1795409242-CLA-CO5.5/_"
     rows = [
         {
@@ -487,7 +467,7 @@ def test_row_stage_accepts_the_plan_execution_id_as_execution() -> None:
     assert row_stage({"execution_id": "legacy-1"}, "legacy-1") == "execution"
 
 
-# Targeted cases for mutants that survived the scoped mutation pass on changed lines.
+# why: targeted cases for mutants that survived the scoped mutation pass on changed lines.
 
 
 def test_failed_status_with_a_zero_exit_code_is_a_failure() -> None:
@@ -501,7 +481,6 @@ def test_final_sync_conflict_with_a_zero_exit_code_is_unresolved() -> None:
 
 
 def test_a_later_row_of_the_same_execution_moves_to_its_own_place_in_flow_order() -> None:
-    """E-1 fails, E-2 fails, then E-1's superseding success: the success comes last and resolves both."""
     rows = [_ledger_row("E-1", "failed", 1), _ledger_row("E-2", "failed", 2), _ledger_row("E-1", "success", 3)]
     assert _matrix_drag(rows) == 0.0
 
@@ -526,7 +505,6 @@ def test_another_plans_rows_are_never_used_when_the_plan_has_rows() -> None:
 
 
 def test_legacy_fallback_uses_every_execution_summary_row() -> None:
-    """No row of the plan: every execution summary row (``entry_type`` defaulting to summary) is evaluated."""
     rows = [
         {"execution_id": "E-x", "status": "success", "exit_code": 0, "created_at": "2026-11-20T01:01:00Z"},
         {"execution_id": "E-y", "status": "failed", "exit_code": 1, "created_at": "2026-11-20T01:02:00Z"},
@@ -574,7 +552,6 @@ def test_outcome_helpers_without_plan_rows() -> None:
 
 @pytest.mark.parametrize(("approval_minute", "unresolved"), [(3, False), (2, True)])
 def test_plan_rows_that_are_copies_resolve_by_a_strictly_later_instant(approval_minute: int, unresolved: bool) -> None:
-    """A conflict row that is not itself among the plan rows is resolved only by a strictly later delivered row."""
     from sandbox_executor.calibration_outcome import has_unresolved_failure
 
     conflict = {**_ledger_row("E-1", "sync_conflict", 2), "exit_code": 0}

@@ -1,8 +1,3 @@
-"""Flow checkpoints: schema migration, the on-disk checkpoint record and its save and load helpers.
-
-A checkpoint lets ``holon flow --resume`` continue from the last completed stage.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -28,7 +23,6 @@ CHECKPOINT_MIGRATION_REGISTRY: dict[tuple[int, int], MigrationTransform] = {}
 
 
 def _migrate_v0_to_v1(data: dict[str, Any]) -> dict[str, Any]:
-    """Migrate legacy v0 checkpoint dictionary to v1 schema."""
     migrated = dict(data)
     migrated["schema_version"] = 1
     migrated["intent_slug"] = str(migrated.get("intent_slug") or "unknown")
@@ -45,7 +39,7 @@ def _migrate_v0_to_v1(data: dict[str, Any]) -> dict[str, Any]:
     context.setdefault("plan_branch", None)
     context.setdefault("execution_branch", None)
     context.setdefault("calibrated_branch", None)
-    # A checkpoint without attribution was produced under the legacy default and must resume with it.
+    # why: a checkpoint without attribution was produced under the legacy default and must resume with it
     context.setdefault("agent", LEGACY_DEFAULT_AGENT)
     context.setdefault("model", LEGACY_DEFAULT_MODEL)
     context.setdefault("dry_run", False)
@@ -68,19 +62,6 @@ def migrate_checkpoint_data(
     data: dict[str, Any],
     target_version: int = CURRENT_CHECKPOINT_SCHEMA_VERSION,
 ) -> dict[str, Any]:
-    """Migrate checkpoint data dictionary to target schema version using registered transforms.
-
-    Args:
-        data: Raw checkpoint dictionary.
-        target_version: Desired target schema version (default: CURRENT_CHECKPOINT_SCHEMA_VERSION).
-
-    Returns:
-        Migrated checkpoint dictionary matching target schema version.
-
-    Raises:
-        ValueError: If current schema version exceeds target version, or if an intermediate migration
-            pathway is missing in CHECKPOINT_MIGRATION_REGISTRY.
-    """
     current_version = int(data.get("schema_version") or 0)
     if current_version > target_version:
         raise ValueError(
@@ -105,8 +86,6 @@ def migrate_checkpoint_data(
 
 @dataclass
 class FlowCheckpoint:
-    """Represents a persisted snapshot of the pipeline state for resumption."""
-
     intent_slug: str
     current_stage: FlowStage
     completed_stages: list[str] = field(default_factory=list)
@@ -115,7 +94,6 @@ class FlowCheckpoint:
     schema_version: int = CURRENT_CHECKPOINT_SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert FlowCheckpoint to dictionary; the Stage 3 ``admission`` object is also copied to the top level."""
         data = {
             "schema_version": self.schema_version,
             "intent_slug": self.intent_slug,
@@ -130,7 +108,6 @@ class FlowCheckpoint:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> FlowCheckpoint:
-        """Construct FlowCheckpoint from dictionary."""
         raw_version = data.get("schema_version")
         schema_version = int(raw_version or 0)
         if schema_version > CURRENT_CHECKPOINT_SCHEMA_VERSION:
@@ -143,7 +120,8 @@ class FlowCheckpoint:
 
         context = FlowContext.from_dict(data.get("context", {}))
         if context.admission is None:
-            context.admission = data.get("admission")  # optional and additive: older checkpoints have neither
+            # why: admission is optional and additive, because older checkpoints have neither
+            context.admission = data.get("admission")
         return cls(
             schema_version=data.get("schema_version", CURRENT_CHECKPOINT_SCHEMA_VERSION),
             intent_slug=data.get("intent_slug", "unknown"),
@@ -154,7 +132,6 @@ class FlowCheckpoint:
         )
 
     def save(self, path: Path | str | None = None, store: CheckpointStore | None = None) -> Path:
-        """Persist this checkpoint using the provided or default FileCheckpointStore."""
         s = store if store is not None else FileCheckpointStore()
         if path is None:
             _, key = _checkpoint_names(self.context.intent_data)
@@ -167,26 +144,21 @@ class FlowCheckpoint:
 
     @classmethod
     def load(cls, path: Path | str, store: CheckpointStore | None = None) -> FlowCheckpoint:
-        """Load and reconstruct FlowCheckpoint from path using the store and schema migration."""
         s = store if store is not None else FileCheckpointStore()
         data = s.load(path)
         return cls.from_dict(data)
 
     @classmethod
     def default_path(cls, repo_dir: Path | str, key: str, store: CheckpointStore | None = None) -> Path:
-        """Derive the canonical checkpoint path via the store; ``key`` is the ``_checkpoint_names`` key (the branch for
-        a sub-intent, else the slug), not necessarily the bare intent slug."""
         s = store if store is not None else FileCheckpointStore()
         return s.default_path(repo_dir, key)
 
     @staticmethod
     def migrate(data: dict[str, Any], target_version: int = CURRENT_CHECKPOINT_SCHEMA_VERSION) -> dict[str, Any]:
-        """Migrate checkpoint data dictionary to target schema version using registered transforms."""
         return migrate_checkpoint_data(data, target_version)
 
 
 def save_checkpoint(context: FlowContext, filepath: str | None = None) -> str:
-    """Atomically save flow context checkpoint to disk using FlowCheckpoint.save."""
     slug, _ = _checkpoint_names(context.intent_data)
     completed = [
         stage_name
@@ -210,8 +182,7 @@ def save_checkpoint(context: FlowContext, filepath: str | None = None) -> str:
 
 
 def save_admission(context: FlowContext, admission: dict[str, Any] | None) -> str | None:
-    """Set the Stage 3 ``admission`` object and save the checkpoint at the engine's path (``context.checkpoint_path``,
-    else the default one other worktrees' discovery reads); the error text on failure, keeping the previous object."""
+    # why: a failed save keeps the previous admission, so the in-memory context never claims what disk lacks
     previous, context.admission = context.admission, admission
     try:
         save_checkpoint(context, context.checkpoint_path)
@@ -222,5 +193,4 @@ def save_admission(context: FlowContext, admission: dict[str, Any] | None) -> st
 
 
 def load_checkpoint(filepath: str) -> FlowCheckpoint:
-    """Load a flow checkpoint from disk."""
     return FlowCheckpoint.load(filepath)

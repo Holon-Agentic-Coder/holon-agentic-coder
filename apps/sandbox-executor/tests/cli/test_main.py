@@ -1,5 +1,3 @@
-"""Unit tests for ``sandbox_executor.cli.main``, container launch, role dispatch, and git-root lookup."""
-
 from __future__ import annotations
 
 import importlib.metadata
@@ -62,7 +60,6 @@ class TestHolonCLI(unittest.TestCase):
         self.assertIn("/home/holon/.codex/cache:uid=1000,gid=1000", mounts)
 
     def test_all_agent_session_mounts_are_read_only(self):
-        """Iterate across all supported agents and verify any -v directory mounts contain :ro."""
         agents = ["antigravity", "antigravity-agent", "claude", "codex", "pi"]
         with patch("os.path.exists", return_value=True):
             for agent in agents:
@@ -143,12 +140,11 @@ class TestHolonCLI(unittest.TestCase):
             mock_run.assert_called_once()
             args = mock_run.call_args[0][0]
             self.assertIn("docker", args)
-            # The token travels in the 0600 env-file, never on the docker command line.
+            # why: the token travels in the 0600 env-file, never on the docker command line
             self.assertFalse(any("secret_token" in arg for arg in args))
             (forwarded,) = docker.env_files
             self.assertEqual(forwarded["GITHUB_TOKEN"], "secret_token")
-            # The worktree is bind-mounted and pinned; no repository URL or SSH agent reaches the container.
-            # Every HOLON_* item travels in the env-file, never on the docker command line.
+            # why: no repository URL, SSH agent or HOLON_* item reaches the container through its command line
             self.assertIn(f"/work/flow-x:{SANDBOX_WORKSPACE_MOUNT}", args)
             self.assertEqual(forwarded["HOLON_TARGET_WORKTREE"], SANDBOX_WORKSPACE_MOUNT)
             self.assertFalse(any(a.startswith("HOLON_") for a in args))
@@ -180,18 +176,15 @@ class TestHolonCLI(unittest.TestCase):
             mock_run.assert_called_once()
             args = mock_run.call_args[0][0]
             self.assertIn("docker", args)
-            # Credentials are forwarded through the env-file, not the docker command line.
             (forwarded,) = docker.env_files
             self.assertEqual(forwarded["GITHUB_TOKEN"], "my-github-token")
             self.assertEqual(forwarded["HOLON_AGENT_KEY"], "my-agent-key")
             self.assertFalse(any("my-github-token" in arg or "my-agent-key" in arg for arg in args))
-            # Every HOLON_* item travels in the env-file too, never on the docker command line.
             self.assertEqual(forwarded["HOLON_AGENT_EFFORT"], "high")
             self.assertEqual(forwarded["HOLON_AGENT_PROVIDER"], "anthropic")
             self.assertFalse(any(a.startswith("HOLON_") for a in args))
-            # Ensure programmatic role takes strict precedence over host environment
-            self.assertEqual(forwarded["HOLON_ROLE"], "planner")
-            # Ensure non-prefixed variable is NOT forwarded
+            programmatic_role_overrides_host = "planner"
+            self.assertEqual(forwarded["HOLON_ROLE"], programmatic_role_overrides_host)
             self.assertFalse(any("SOME_OTHER_VAR" in arg for arg in args))
             self.assertNotIn("SOME_OTHER_VAR", forwarded)
 
@@ -202,7 +195,6 @@ class TestHolonCLI(unittest.TestCase):
     def test_run_docker_container_hands_down_the_active_stage_remainder(
         self, mock_which, mock_run, mock_mounts, mock_worktree_mounts
     ):
-        # Inside a timed host stage the container gets the remaining time; outside one nothing is added.
         from sandbox_executor.budgets import StageTimer, active_stage_timer
 
         docker = mock_run.side_effect = DockerEnvFileRecorder()
@@ -415,8 +407,6 @@ class TestHolonCLI(unittest.TestCase):
 
 
 class TestRunDockerContainerWorktree(unittest.TestCase):
-    """Every role works in the host worktree; no container is handed a repository URL or git credentials."""
-
     @patch("sandbox_executor.cli.git_flow.sandbox_worktree_mounts", return_value=list(_WORKTREE_MOUNTS))
     @patch("sandbox_executor.launcher.mounts.get_agent_session_mounts", return_value=[])
     @patch("subprocess.run")
@@ -430,7 +420,7 @@ class TestRunDockerContainerWorktree(unittest.TestCase):
             with patch.dict(os.environ, env, clear=True), patch("sys.stdout", new_callable=io.StringIO):
                 code = run_docker_container("planner", "img", ["branch"], agent_id="antigravity")
             self.assertEqual(code, 0)
-            # The recorder replaces the env-file path, a fresh temporary name each run.
+            # why: the recorder replaces the env-file path, a fresh temporary name each run
             return docker.argvs[-1], docker.env_files[-1]
 
         baseline = run_with(base_env)
@@ -476,8 +466,6 @@ class TestRunDockerContainerWorktree(unittest.TestCase):
 
 
 class TestSharedRoleDispatch(unittest.TestCase):
-    """'holon intent|plan|execute' and 'holon flow' share one dispatch path (dispatch_role_agent)."""
-
     def setUp(self):
         self.host = _stub_host_publish(self)
 
@@ -490,7 +478,7 @@ class TestSharedRoleDispatch(unittest.TestCase):
         self.assertEqual(resolve_role_image("planner", "claude"), "holon/agent-claude")
         self.assertEqual(resolve_role_image("executor", "claude-agent"), "holon/agent-claude")
         self.assertEqual(resolve_role_image("intent-creator", "claude"), "holon/orchestrator")
-        # Image selection follows agent_defaults (#93): an unmapped runner fails loudly instead of guessing an image.
+        # why: image selection follows agent_defaults (#93), so an unmapped runner fails instead of guessing an image
         with self.assertRaises(UnmappedAgentRunnerError):
             resolve_role_image("executor", "newrunner")
         self.assertEqual(resolve_role_image("intent-creator", "newrunner"), "holon/orchestrator")
@@ -515,7 +503,6 @@ class TestSharedRoleDispatch(unittest.TestCase):
             self.assertEqual(cm.exception.code, 0)
             mock_dispatch.assert_called_once()
             self.assertEqual(mock_dispatch.call_args.args, expected)
-            # Each standalone command hands its prepared host worktree to the container.
             self.assertEqual(mock_dispatch.call_args.kwargs["target_worktree"], "/work/flow-x")
 
     @patch("sandbox_executor.cli.dispatch_role_agent")
@@ -533,7 +520,7 @@ class TestSharedRoleDispatch(unittest.TestCase):
             stderr = io.StringIO()
             with patch("sys.argv", argv), patch("sys.stderr", stderr), self.assertRaises(SystemExit) as cm:
                 main()
-            # The container's exit status passes through, so 'holon execute ... && holon review ...' stops here.
+            # why: the exit status passes through, so 'holon execute ... && holon review ...' stops here
             self.assertEqual(cm.exception.code, code)
             if code == OVER_BUDGET_EXIT_CODE:
                 self.assertIn(message, stderr.getvalue().splitlines())
@@ -566,7 +553,6 @@ class TestSharedRoleDispatch(unittest.TestCase):
 
 
 def test_redact_cli_error_keeps_messages_without_url_credentials(monkeypatch):
-    """A message with nothing from a URL credential in it is printed unchanged."""
     monkeypatch.setenv("HOLON_PROXY_URL", "http://127.0.0.1:3128")
     message = "Checkpoint file is not valid JSON: Expecting value: line 1 column 1"
 
@@ -574,7 +560,6 @@ def test_redact_cli_error_keeps_messages_without_url_credentials(monkeypatch):
 
 
 def _confine_git_lookups(monkeypatch, root):
-    """Make `_find_git_root` see only `.git` entries under `root`, whatever the real ancestors hold."""
     real_exists = os.path.exists
     root_str = str(root)
 
@@ -588,7 +573,6 @@ def _confine_git_lookups(monkeypatch, root):
 
 
 def _find_git_root_within_deadline(start_dir, deadline_seconds=5.0):
-    """Run `_find_git_root` on a daemon thread, returning `(finished, result)` after the deadline."""
     import threading
 
     result: dict[str, str] = {}
@@ -599,7 +583,6 @@ def _find_git_root_within_deadline(start_dir, deadline_seconds=5.0):
 
 
 def test_find_git_root_terminates_without_a_git_ancestor(tmp_path, monkeypatch):
-    """With no `.git` anywhere above the start directory, the search ends and falls back to it."""
     nested = tmp_path / "a" / "b" / "c"
     nested.mkdir(parents=True)
     _confine_git_lookups(monkeypatch, tmp_path)
@@ -613,7 +596,6 @@ def test_find_git_root_terminates_without_a_git_ancestor(tmp_path, monkeypatch):
 
 
 def test_find_git_root_returns_the_nearest_git_ancestor(tmp_path, monkeypatch):
-    """A `.git` two levels above the start directory is found by walking upwards."""
     repo = tmp_path / "repo"
     nested = repo / "x" / "y"
     nested.mkdir(parents=True)

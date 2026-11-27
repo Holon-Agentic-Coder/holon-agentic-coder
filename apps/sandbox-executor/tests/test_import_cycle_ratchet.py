@@ -222,17 +222,8 @@ def _format_violation_report(
 
 def test_sandbox_executor_package_import_cycle_ratchet() -> None:
     nodes = discover_top_level_nodes(PACKAGE_DIR)
-    expected = {
-        "entrypoint",
-        "flow",
-        "knowledge",
-        "ledger",
-        "calibration",
-        "calibration_self_check",
-        "review_target",
-        "flow_guard",
-    }
-    assert expected <= nodes
+    assert {"entrypoint", "flow", "knowledge", "ledger", "calibration"} <= nodes
+    assert {"calibration_self_check", "review_target", "flow_guard"} <= nodes
     sites = collect_node_import_sites(PACKAGE_DIR)
     counts = {edge: len(edge_sites) for edge, edge_sites in sites.items()}
     actual = cycle_edge_counts(counts)
@@ -330,3 +321,29 @@ def test_synthetic_package_tree_detects_imports_and_ratchet_transitions(tmp_path
     broken = _cycle_counts(pkg_dir)
     assert broken == {}
     assert ratchet_violations(broken, baseline) == []
+
+
+def test_synthetic_root_subpackage_and_root_root_cycle_ratchet(tmp_path: Path) -> None:
+    pkg_dir = tmp_path / "src" / "demo_pkg"
+    _write_file(pkg_dir / "__init__.py", "")
+    _write_file(pkg_dir / "sub" / "mod.py", "import demo_pkg.root_a\n")
+    _write_file(pkg_dir / "root_a.py", "import demo_pkg.root_b\n")
+    _write_file(pkg_dir / "root_b.py", "VALUE = 1\n")
+    assert discover_top_level_nodes(pkg_dir) == frozenset({"sub", "root_a", "root_b"})
+    assert _cycle_counts(pkg_dir) == {}
+    assert ratchet_violations({}, {}) == []
+
+    _write_file(pkg_dir / "root_a.py", "import demo_pkg.root_b\nimport demo_pkg.sub.mod\nfrom .sub import mod\n")
+    root_sub = _cycle_counts(pkg_dir)
+    assert root_sub == {("root_a", "sub"): 2, ("sub", "root_a"): 1}
+    assert len(ratchet_violations(root_sub, {})) == 2
+
+    _write_file(pkg_dir / "root_b.py", "from . import root_a\n")
+    combined = _cycle_counts(pkg_dir)
+    assert combined == {("root_a", "root_b"): 1, ("root_a", "sub"): 2, ("root_b", "root_a"): 1, ("sub", "root_a"): 1}
+    assert len(ratchet_violations(combined, root_sub)) == 2
+
+    _write_file(pkg_dir / "root_a.py", "import demo_pkg.root_b\nfrom .sub import mod\n")
+    shrunk = _cycle_counts(pkg_dir)
+    assert shrunk[("root_a", "sub")] == 1
+    assert ratchet_violations(shrunk, combined) == []

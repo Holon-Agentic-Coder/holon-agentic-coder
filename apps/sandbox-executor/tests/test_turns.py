@@ -8,13 +8,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import FrozenInstanceError
 from unittest.mock import MagicMock, patch
 
 from sandbox_executor import turns
 from sandbox_executor.budgets import DEFAULT_TURN_SECONDS, BudgetBreach, StageTimer, TurnBudgets
 from sandbox_executor.cli import _run_docker, run_docker_container
 from sandbox_executor.flow import probe_ci_checks
-from sandbox_executor.turns import build_turn_env, run_turn, silence_window
+from sandbox_executor.turns import TurnConfig, TurnRequest, build_turn_env, run_turn, silence_window
 
 from tests import test_turn_supervisor
 from tests.test_turn_supervisor import CHILD_PID, MINUTE, Harness, TickStream
@@ -257,6 +258,84 @@ class TestBackgroundCommandOnThisHost(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("sleep 30", result.background_commands)
         self.assertTrue(any("background" in line and "sleep 30" in line for line in logs.output), logs.output)
+
+
+class TestTurnConfigAndRequest(unittest.TestCase):
+    def _mock_factory(self) -> MagicMock:
+        mock_proc = MagicMock()
+        mock_proc.stdout = io.BytesIO(b"ok\n")
+        mock_proc.stderr = io.BytesIO(b"")
+        mock_proc.returncode = 0
+        mock_proc.poll.return_value = 0
+        mock_proc.wait.return_value = 0
+        mock_proc.pid = 9999
+        return MagicMock(return_value=mock_proc)
+
+    def test_turn_config_defaults_and_immutability(self) -> None:
+        cfg = TurnConfig()
+        self.assertIsNone(cfg.stdin_file)
+        self.assertIsNone(cfg.turn_budgets)
+        self.assertIsNone(cfg.stage_timer)
+        self.assertEqual(cfg.stage, "turn")
+        self.assertIsNone(cfg.watch_path)
+        self.assertIsNone(cfg.watch_tree)
+        self.assertIsNone(cfg.cwd)
+        self.assertIsNone(cfg.env)
+        self.assertEqual(cfg.poll_interval, turns.POLL_INTERVAL_SECONDS)
+        self.assertEqual(cfg.grace_seconds, turns.TERMINATION_GRACE_SECONDS)
+        self.assertIs(cfg.tool_sampler, turns.descendant_cpu_seconds)
+        self.assertIs(cfg.child_lister, turns.descendant_commands)
+        with self.assertRaises(FrozenInstanceError):
+            cfg.stage = "plan"  # type: ignore[misc]
+
+    def test_run_turn_with_turn_config_passes_env_cwd_and_hooks(self) -> None:
+        mock_factory = self._mock_factory()
+        ticks = iter([10.0, 12.5])
+        slept: list[float] = []
+        cfg = TurnConfig(
+            cwd="/tmp/work",
+            env={"CUSTOM_KEY": "abc"},
+            clock=lambda: next(ticks),
+            sleeper=slept.append,
+            popen_factory=mock_factory,
+            tool_sampler=None,
+            child_lister=None,
+        )
+        result = run_turn(["echo", "hi"], config=cfg)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "ok\n")
+        self.assertEqual(result.elapsed_seconds, 2.5)
+        mock_factory.assert_called_once()
+        call_kwargs = mock_factory.call_args.kwargs
+        self.assertEqual(call_kwargs["cwd"], "/tmp/work")
+        self.assertEqual(call_kwargs["env"]["CUSTOM_KEY"], "abc")
+        self.assertEqual(call_kwargs["env"]["DOCKER_CLI_HINTS"], "false")
+
+    def test_run_turn_with_turn_request_and_keyword_overrides(self) -> None:
+        mock_factory = self._mock_factory()
+        base = TurnConfig(
+            cwd="/tmp/base",
+            env={"BASE": "1"},
+            clock=lambda: 0.0,
+            sleeper=lambda _: None,
+            popen_factory=mock_factory,
+            tool_sampler=None,
+            child_lister=None,
+        )
+        request = TurnRequest(cmd=["echo", "req"], config=base)
+        result = run_turn(request, cwd="/tmp/override")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(mock_factory.call_args.args[0], ["echo", "req"])
+        self.assertEqual(mock_factory.call_args.kwargs["cwd"], "/tmp/override")
+        self.assertEqual(mock_factory.call_args.kwargs["env"]["DOCKER_CLI_HINTS"], "false")
+
+        with self.assertRaises(TypeError):
+            run_turn(["echo", "bad"], config=base, unknown_option=True)
+
+    def test_run_turn_rejects_turn_request_combined_with_config(self) -> None:
+        request = TurnRequest(cmd=["echo", "hi"], config=TurnConfig())
+        with self.assertRaises(TypeError):
+            run_turn(request, config=TurnConfig())
 
 
 if __name__ == "__main__":

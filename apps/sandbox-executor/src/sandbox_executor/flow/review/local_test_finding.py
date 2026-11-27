@@ -3,12 +3,13 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sandbox_executor.entrypoint.test_failure_loop import PARKED_STATUSES, UNATTRIBUTED_BLOCKER
 from sandbox_executor.review_report import FindingRow
 
 MAX_IDS_NAMED = 5
 MAX_EXCERPTS_QUOTED = 3
 MAX_EXCERPT_CHARS = 600
+UNATTRIBUTED_BLOCKER = "none"
+PARKED_STATUSES = frozenset({"blocked", "exhausted"})
 FIX_ADVICE = "Fix the code so the failing tests pass; do not weaken, skip or delete them."
 BLOCKED_ADVICE = (
     "Report this failure as blocked with the evidence above; do not mask it in code by weakening, skipping or "
@@ -16,9 +17,7 @@ BLOCKED_ADVICE = (
 )
 
 
-def parked_record_from_ci_status(
-    ci_status: Mapping[str, Any], *, checkpoint_path: str = ""
-) -> dict[str, Any] | None:
+def parked_record_from_ci_status(ci_status: Mapping[str, Any], *, checkpoint_path: str = "") -> dict[str, Any] | None:
     evidence = ci_status.get("test_failure")
     if not isinstance(evidence, Mapping):
         return None

@@ -168,7 +168,7 @@ def _extract_blocker_ref(texts: Iterable[str]) -> str | None:
 
 def _resolve_blocked_on(case: _Case, reason: str | None, blocker_map: Mapping[str, str]) -> str:
     for key in _blocker_lookup_keys(case):
-        if (mapped := str(blocker_map.get(key) or "").strip()):
+        if mapped := str(blocker_map.get(key) or "").strip():
             return mapped
     diag_outputs = (case.diagnosis.base.output, case.diagnosis.same_env.output) if case.diagnosis else ()
     texts = (reason or "", *case.excerpts.values(), *diag_outputs)

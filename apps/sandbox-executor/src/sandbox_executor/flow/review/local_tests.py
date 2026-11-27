@@ -139,9 +139,7 @@ class _ReviewLocalTests:
         return self.loop_outcomes[head].measurement
 
 
-def _attach_test_failure(
-    ci_status: dict[str, Any], outcome: LoopOutcome | None, checkpoint_path: str = ""
-) -> None:
+def _attach_test_failure(ci_status: dict[str, Any], outcome: LoopOutcome | None, checkpoint_path: str = "") -> None:
     if outcome is None:
         return
     payload: dict[str, Any] = {

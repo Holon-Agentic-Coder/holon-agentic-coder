@@ -1,5 +1,3 @@
-"""Hermetic tests for the test-measurement module: a fake runner stands in for ``uv run task test``."""
-
 import subprocess
 
 import pytest

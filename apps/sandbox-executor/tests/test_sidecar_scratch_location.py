@@ -1,5 +1,3 @@
-"""Hermetic tests verifying sidecar wire-log and cache locations default outside any repository worktree."""
-
 from __future__ import annotations
 
 import os
@@ -24,7 +22,6 @@ def _clean_sidecar_state():
 def test_default_sidecar_paths_live_in_user_state_dir_and_touch_nothing_in_worktree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With WIRE_LOG_DIR and CACHE_DIR unset and cwd inside a git worktree, nothing is created in the worktree."""
     monkeypatch.delenv("WIRE_LOG_DIR", raising=False)
     monkeypatch.delenv("CACHE_DIR", raising=False)
     isolate_host_paths(tmp_path, monkeypatch)
@@ -66,7 +63,6 @@ def test_default_sidecar_paths_live_in_user_state_dir_and_touch_nothing_in_workt
 def test_wire_log_dir_and_cache_dir_overrides_support_absolute_and_relative_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """WIRE_LOG_DIR and CACHE_DIR override the defaults for both absolute and relative paths."""
     isolate_host_paths(tmp_path, monkeypatch)
     monkeypatch.setattr(proxy_readiness, "wait_for_proxy", lambda *args, **kwargs: True)
 
@@ -105,7 +101,6 @@ def test_wire_log_dir_and_cache_dir_overrides_support_absolute_and_relative_path
 
 
 def test_no_launcher_source_file_names_forbidden_local_notes_directory() -> None:
-    """No source file under sandbox_executor/launcher/ names the forbidden local-notes directory."""
     launcher_dir = Path(__file__).resolve().parent.parent / "src" / "sandbox_executor" / "launcher"
     py_files = sorted(launcher_dir.rglob("*.py"))
     assert py_files

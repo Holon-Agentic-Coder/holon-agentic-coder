@@ -1,5 +1,3 @@
-"""Parsing, normalising, matching and scoring of the planner's touch set (touch_set.py)."""
-
 from __future__ import annotations
 
 import pytest
@@ -145,13 +143,12 @@ def test_entry_matches(pattern, path, expected):
     assert entry_matches(TouchSetEntry(pattern), path) is expected
 
 
-def test_score_touch_set_hand_computed():
+def test_score_touch_set_matches_two_of_four_entries_and_covers_three_of_four_changed_files():
     touch_set = TouchSet(
         (TouchSetEntry("src/a.py"), TouchSetEntry("docs/"), TouchSetEntry("src/unused.py"), TouchSetEntry("tests/*.py"))
     )
     changed = ["src/a.py", "docs/x.md", "docs/y.md", "src/extra.py", "executions/E-1.md", "plans/P-1.md"]
     score = score_touch_set(touch_set, changed)
-    # 2 of 4 entries matched; 3 of 4 non-metadata changed files covered.
     assert score.precision == 0.5
     assert score.recall == 0.75
     assert score.unpredicted_paths == ("src/extra.py",)

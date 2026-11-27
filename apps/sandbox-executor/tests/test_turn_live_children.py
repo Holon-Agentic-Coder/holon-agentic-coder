@@ -1,5 +1,3 @@
-"""Live-child guard and background-command tests for the turn supervisor. Every process, clock and signal is faked."""
-
 import os
 import signal
 import tempfile
@@ -10,15 +8,20 @@ from sandbox_executor.budgets import DEFAULT_TURN_SECONDS
 
 from tests.test_turn_supervisor import CHILD_PID, Harness, TickStream
 
+INIT_PID = 1
+RUNNER_PID = 100
+WRAPPED_AGENT_PID = 101
+FOREGROUND_TEST_PID = 102
+REPARENTED_BACKGROUND_PID = 103
+EXITED_BEFORE_CMDLINE_READ_PID = 104
+UNRELATED_PID = 200
+
 
 class TestLiveChildGuard(unittest.TestCase):
-    """A quiet foreground tool (a live child burning no CPU) is not a stall; the turn timeout still bounds it."""
-
     TEST_PID = CHILD_PID + 1
 
-    def streamed_once(self, children):
-        # A resolver-style runner: it streams once (so the short stall window would apply), then waits on a quiet
-        # foreground test that burns no CPU and never exits.
+    def runner_streaming_once_then_waiting_on_quiet_children(self, children):
+        # why: one early token arms the short stall window, which a quiet live child must not trip
         stream = TickStream()
         h = Harness(exit_at=None, stdout=stream)
         h.children = children
@@ -26,7 +29,7 @@ class TestLiveChildGuard(unittest.TestCase):
         return h
 
     def test_quiet_foreground_test_is_not_a_stall_but_is_bounded_by_the_turn_timeout(self):
-        h = self.streamed_once({self.TEST_PID: "uv run task test"})
+        h = self.runner_streaming_once_then_waiting_on_quiet_children({self.TEST_PID: "uv run task test"})
         result = h.run(turn=300, stall=90)
         self.assertEqual(result.breach.budget_name, "stall")
         self.assertEqual(result.breach.budget_seconds, 300)
@@ -35,7 +38,7 @@ class TestLiveChildGuard(unittest.TestCase):
         self.assertEqual(h.signals, [(CHILD_PID, signal.SIGTERM)])
 
     def test_watched_turn_with_a_quiet_foreground_test_breaches_the_turn_budget(self):
-        h = self.streamed_once({self.TEST_PID: "uv run task test"})
+        h = self.runner_streaming_once_then_waiting_on_quiet_children({self.TEST_PID: "uv run task test"})
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         result = h.run(turn=300, stall=90, watch_path=os.path.join(tmp.name, "notes.md"))
@@ -44,21 +47,21 @@ class TestLiveChildGuard(unittest.TestCase):
         self.assertLess(h.clock.now, 330)
 
     def test_without_a_live_child_the_stall_still_fires_at_the_stall_window(self):
-        h = self.streamed_once({})
+        h = self.runner_streaming_once_then_waiting_on_quiet_children({})
         result = h.run(turn=300, stall=90)
         self.assertEqual(result.breach.budget_name, "stall")
         self.assertEqual(result.breach.budget_seconds, 90)
         self.assertLess(h.clock.now, 1 + 120)
 
     def test_unlimited_turn_with_a_live_child_is_bounded_by_the_default_turn(self):
-        h = self.streamed_once({self.TEST_PID: "uv run task test"})
+        h = self.runner_streaming_once_then_waiting_on_quiet_children({self.TEST_PID: "uv run task test"})
         result = h.run(turn=None, stall=90)
         self.assertEqual(result.breach.budget_name, "stall")
         self.assertEqual(result.breach.budget_seconds, DEFAULT_TURN_SECONDS)
         self.assertLess(h.clock.now, DEFAULT_TURN_SECONDS + 30)
 
     def test_breach_warning_names_the_live_command(self):
-        h = self.streamed_once({self.TEST_PID: "uv run task test"})
+        h = self.runner_streaming_once_then_waiting_on_quiet_children({self.TEST_PID: "uv run task test"})
         with self.assertLogs("sandbox_executor.turns", "WARNING") as logs:
             h.run(turn=300, stall=90)
         self.assertTrue(any("uv run task test" in line for line in logs.output), logs.output)
@@ -111,20 +114,26 @@ class TestDescendantCommands(unittest.TestCase):
 
     def test_descendant_commands_exclude_the_agent_and_unreadable_processes(self):
         table = {
-            100: (1, 100, 1.0, 0.0),  # the runner (a wrapper)
-            101: (100, 100, 1.0, 0.0),  # the wrapped agent binary
-            102: (101, 100, 0.0, 0.0),  # a foreground test
-            103: (1, 100, 0.0, 0.0),  # a backgrounded command, re-parented but still in the group
-            104: (101, 100, 0.0, 0.0),  # exited before its command line was read
-            200: (1, 200, 0.0, 0.0),  # unrelated
+            RUNNER_PID: (INIT_PID, RUNNER_PID, 1.0, 0.0),
+            WRAPPED_AGENT_PID: (RUNNER_PID, RUNNER_PID, 1.0, 0.0),
+            FOREGROUND_TEST_PID: (WRAPPED_AGENT_PID, RUNNER_PID, 0.0, 0.0),
+            REPARENTED_BACKGROUND_PID: (INIT_PID, RUNNER_PID, 0.0, 0.0),
+            EXITED_BEFORE_CMDLINE_READ_PID: (WRAPPED_AGENT_PID, RUNNER_PID, 0.0, 0.0),
+            UNRELATED_PID: (INIT_PID, UNRELATED_PID, 0.0, 0.0),
         }
-        names = {100: "MainThread", 101: "codex"}
-        commands = {100: "node codex", 101: "codex", 102: "uv run task test", 103: "sleep 30", 200: "other"}
+        names = {RUNNER_PID: "MainThread", WRAPPED_AGENT_PID: "codex"}
+        commands = {
+            RUNNER_PID: "node codex",
+            WRAPPED_AGENT_PID: "codex",
+            FOREGROUND_TEST_PID: "uv run task test",
+            REPARENTED_BACKGROUND_PID: "sleep 30",
+            UNRELATED_PID: "other",
+        }
         self.assertEqual(
-            turns.descendant_commands(100, lambda: table, name_of=names.get, command_of=commands.get),
-            {102: "uv run task test", 103: "sleep 30"},
+            turns.descendant_commands(RUNNER_PID, lambda: table, name_of=names.get, command_of=commands.get),
+            {FOREGROUND_TEST_PID: "uv run task test", REPARENTED_BACKGROUND_PID: "sleep 30"},
         )
-        self.assertIsNone(turns.descendant_commands(100, lambda: None))
+        self.assertIsNone(turns.descendant_commands(RUNNER_PID, lambda: None))
 
     def test_describe_commands_is_sorted_by_pid(self):
         described = turns.describe_commands({9: "sleep 30", 3: "uv run task test"})

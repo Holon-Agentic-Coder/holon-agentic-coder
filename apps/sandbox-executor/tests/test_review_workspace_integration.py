@@ -1,12 +1,3 @@
-"""Integration test for the review-loop container working in place on a bind-mounted host worktree.
-
-Proves, against the real image (hermetic_testing.md Rule 2: ``--network none``, no external network, no host
-``~/.ssh``), that a linked host worktree mounted with :func:`git_flow.sandbox_worktree_mounts` is usable by git inside
-the container without any clone or fetch, that what the container writes lands on the host immediately and survives
-an abrupt exit, and that the repository's hooks cannot be written from inside the container. Only the preparation
-phase is driven, so no model or credential is needed. Skips gracefully wherever a Docker daemon is unavailable.
-"""
-
 import os
 import shutil
 import subprocess
@@ -23,9 +14,7 @@ from sandbox_executor.git_flow import sandbox_worktree_mounts
 
 from tests.hermetic_fixtures import DEFAULT_FIXTURE_IMAGE, IMAGE_UID
 
-#: Drives the entrypoint's preparation phase on the mounted worktree, writes an untracked file, tries to plant a
-#: hook, then dies abruptly with the OOM-kill exit code before any cleanup could run.
-_PREPARE_THEN_CRASH_SNIPPET = (
+_PREPARE_WRITE_NOTE_PLANT_HOOK_THEN_OOM_KILL_SNIPPET = (
     "import os, subprocess\n"
     "from sandbox_executor.entrypoint.review_loop import _prepare_workspace\n"
     "ws = os.environ['HOLON_TARGET_WORKTREE']\n"
@@ -57,13 +46,13 @@ def _is_docker_available() -> bool:
 
 
 def _git(cwd: Path, *args: str) -> str:
-    # The checkout may belong to the image's uid for the duration of the test (see _chown).
+    # why: the checkout may belong to the image's uid for the duration of the test
     res = subprocess.run(["git", "-c", "safe.directory=*", *args], cwd=cwd, capture_output=True, text=True, check=True)
     return res.stdout.strip()
 
 
-def _chown(root: Path, owner: str, *names: str) -> None:
-    """Recursively hand root/<name> to owner through a root helper container (the host user cannot chown)."""
+def _chown_through_root_container(root: Path, owner: str, *names: str) -> None:
+    # why: the host user cannot chown, so a root helper container does it
     subprocess.run(
         [
             "docker",
@@ -90,13 +79,11 @@ def _chown(root: Path, owner: str, *names: str) -> None:
 
 @pytest.mark.integration_test
 class TestHostWorktreeBindMountIntegration(unittest.TestCase):
-    """One real container pass over a bind-mounted linked worktree: no clone, host-visible, crash-safe."""
-
     def test_container_works_in_place_and_its_edits_survive_a_crash(self):
         if not _is_docker_available():
             self.skipTest("Docker daemon is not available in test environment.")
 
-        # Under the system temp root, which Docker can bind-mount on every platform.
+        # why: Docker can bind-mount the system temp root on every platform
         root = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="holon-it-worktree-")))
         main = root / "repo"
         main.mkdir()
@@ -111,19 +98,14 @@ class TestHostWorktreeBindMountIntegration(unittest.TestCase):
         head = _git(worktree, "rev-parse", "HEAD")
 
         hand_over = sys.platform.startswith("linux") and f"{os.getuid()}:{os.getgid()}" != IMAGE_UID
-        # The checkout is handed to the image's uid only after the host builds the mounts, so let the write preflight
-        # judge it as the host user until then.
+        # why: the image's uid gets the checkout only after the mounts are built, so preflight judges the host user
         with (
             patch.object(git_flow, "SANDBOX_CONTAINER_UID", os.getuid()),
             patch.object(git_flow, "SANDBOX_CONTAINER_GID", os.getgid()),
         ):
             mounts = sandbox_worktree_mounts(str(worktree), SANDBOX_WORKSPACE_MOUNT)
         if hand_over:
-            # A Linux bind mount keeps host ownership, and the image runs as uid 1000 (it cannot run as another uid:
-            # /home/holon is private), so the review-loop container needs a worktree owned by uid 1000 -- as on a
-            # host whose user is uid 1000. Hand it back before the temporary directory is removed.
-            _chown(root, IMAGE_UID, "repo", "flow-demo")
-            self.addCleanup(_chown, root, f"{os.getuid()}:{os.getgid()}", "repo", "flow-demo")
+            self.hand_checkout_to_image_uid_until_cleanup(root)
         result = subprocess.run(
             [
                 "docker",
@@ -138,7 +120,7 @@ class TestHostWorktreeBindMountIntegration(unittest.TestCase):
                 "python3",
                 DEFAULT_FIXTURE_IMAGE,
                 "-c",
-                _PREPARE_THEN_CRASH_SNIPPET,
+                _PREPARE_WRITE_NOTE_PLANT_HOOK_THEN_OOM_KILL_SNIPPET,
             ],
             capture_output=True,
             text=True,
@@ -151,12 +133,22 @@ class TestHostWorktreeBindMountIntegration(unittest.TestCase):
         self.assertIn(f"HEAD {head}", result.stdout, output)
         self.assertIn("STATUS 0", result.stdout, output)
         self.assertIn("HOOK refused", result.stdout, output)
-        # Visible on the host at once, and still there after the abrupt exit.
+        self.assert_container_note_visible_on_host_after_crash(main, worktree, head)
+        self.assert_mounts_are_host_paths_not_named_volumes(mounts)
+
+    def hand_checkout_to_image_uid_until_cleanup(self, root: Path) -> None:
+        # why: a Linux bind mount keeps host ownership and the image must run as uid 1000 (/home/holon is private)
+        # why: the host user cannot remove the temporary directory while uid 1000 owns the checkout
+        _chown_through_root_container(root, IMAGE_UID, "repo", "flow-demo")
+        self.addCleanup(_chown_through_root_container, root, f"{os.getuid()}:{os.getgid()}", "repo", "flow-demo")
+
+    def assert_container_note_visible_on_host_after_crash(self, main: Path, worktree: Path, head: str) -> None:
         self.assertEqual((worktree / "crash-note.txt").read_text(encoding="utf-8"), "written in the container")
         self.assertIn("?? crash-note.txt", _git(worktree, "status", "--porcelain"))
         self.assertEqual(_git(worktree, "rev-parse", "HEAD"), head)
         self.assertFalse((main / ".git" / "hooks" / "post-checkout").exists())
-        # No named volume was involved: the only mounts are host paths.
+
+    def assert_mounts_are_host_paths_not_named_volumes(self, mounts: list[str]) -> None:
         sources = [mounts[i + 1].split(":", 1)[0] for i in range(0, len(mounts), 2)]
         self.assertTrue(all(os.path.isabs(source) for source in sources), mounts)
 

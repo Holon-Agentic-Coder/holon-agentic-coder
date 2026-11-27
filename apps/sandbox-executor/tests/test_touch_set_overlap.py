@@ -1,5 +1,3 @@
-"""The concrete-file overlap rule of Stage 3 admission (touch_set_overlap.py)."""
-
 from __future__ import annotations
 
 import time
@@ -36,16 +34,18 @@ def _set(*paths: str) -> TouchSet:
 @pytest.mark.parametrize(
     ("entry", "expected"),
     [
-        ("src/new.py", {"src/new.py"}),  # a literal names itself, existing or not
+        pytest.param("src/new.py", {"src/new.py"}, id="a-literal-names-itself-existing-or-not"),
         ("src/app.py", {"src/app.py"}),
         ("src/", {"src/app.py", "src/pkg/core.py", "src/a.py"}),
         ("tests/test_*.py", {"tests/test_old.py"}),
         ("tests/flow/**/test_*.py", {"tests/flow/a/test_old.py"}),
-        ("lib/", set()),  # a folder with nothing on the base names nothing
+        pytest.param("lib/", set(), id="a-folder-with-nothing-on-the-base-names-nothing"),
         ("app/[id]/page.tsx", {"app/[id]/page.tsx"}),
-        ("app/[new]/page.tsx", {"app/[new]/page.tsx"}),  # a new bracketed literal path still names itself
+        pytest.param(
+            "app/[new]/page.tsx", {"app/[new]/page.tsx"}, id="a-new-bracketed-literal-path-still-names-itself"
+        ),
         ("src/[ab].py", {"src/[ab].py", "src/a.py"}),
-        ("plans/P-1.md", set()),  # metadata never overlaps
+        pytest.param("plans/P-1.md", set(), id="metadata-never-overlaps"),
         ("holon-knowledge/", set()),
     ],
 )
@@ -60,13 +60,15 @@ def test_expand_touch_set_is_the_union():
 @pytest.mark.parametrize(
     ("own", "other", "expected"),
     [
-        (("src/new.py",), ("src/new.py",), ["src/new.py"]),  # an identical new literal still overlaps
-        (("src/app.py",), ("src/",), ["src/app.py"]),  # an existing file under a folder overlaps
+        pytest.param(("src/new.py",), ("src/new.py",), ["src/new.py"], id="an-identical-new-literal-still-overlaps"),
+        pytest.param(("src/app.py",), ("src/",), ["src/app.py"], id="an-existing-file-under-a-folder-overlaps"),
         (("tests/test_*.py", "tests/flow/**/test_*.py"), ("tests/test_new.py", "tests/flow/b/test_new.py"), []),
-        (("apps/x/tests/",), ("apps/x/tests/test_new.py",), []),  # a new file never overlaps a folder
+        pytest.param(("apps/x/tests/",), ("apps/x/tests/test_new.py",), [], id="a-new-file-never-overlaps-a-folder"),
         (("apps/x/tests/",), ("apps/x/tests/test_old.py",), ["apps/x/tests/test_old.py"]),
-        (("src/",), ("src/pkg/",), ["src/pkg/core.py"]),  # folder against folder: their existing files only
-        (("lib/",), ("lib/",), []),  # identical folders with no file on the base
+        pytest.param(
+            ("src/",), ("src/pkg/",), ["src/pkg/core.py"], id="folder-against-folder-their-existing-files-only"
+        ),
+        pytest.param(("lib/",), ("lib/",), [], id="identical-folders-with-no-file-on-the-base"),
         (("plans/",), ("plans/",), []),
     ],
 )
@@ -86,7 +88,7 @@ def test_touch_set_on_base_overlaps_like_declared_overlap():
         (("tests/test_*.py", "tests/flow/**/test_*.py"), ["tests/test_new.py", "tests/flow/a/test_new.py"], []),
         (("apps/x/tests/",), ["apps/x/tests/test_new.py"], []),
         (("apps/x/tests/",), ["apps/x/tests/test_old.py", "src/app.py"], ["apps/x/tests/test_old.py"]),
-        (("src/new.py",), ["src/new.py"], ["src/new.py"]),  # an added file overlaps an identical literal
+        pytest.param(("src/new.py",), ["src/new.py"], ["src/new.py"], id="an-added-file-overlaps-an-identical-literal"),
         (("app/[new]/page.tsx",), ["app/[new]/page.tsx"], ["app/[new]/page.tsx"]),
         (("src/",), ["./src/app.py", "src/app.py", "src/{a => pkg}/core.py"], ["src/app.py", "src/pkg/core.py"]),
         (("plans/",), ["plans/P-1.md"], []),

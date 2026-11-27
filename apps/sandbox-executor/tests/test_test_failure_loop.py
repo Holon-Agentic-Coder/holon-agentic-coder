@@ -1,4 +1,5 @@
 import dataclasses
+import functools
 import os
 import subprocess
 from collections.abc import Mapping
@@ -14,6 +15,7 @@ from sandbox_executor.entrypoint.test_failure_classify import (
     run_failing_ids,
 )
 from sandbox_executor.entrypoint.test_failure_loop import (
+    BLOCKED_ON_NONE,
     MAX_FIX_TURNS,
     FixRequest,
     LoopPorts,
@@ -22,8 +24,9 @@ from sandbox_executor.entrypoint.test_failure_loop import (
     measure_selection,
     next_tier,
 )
-from sandbox_executor.entrypoint.test_failure_record import STAGE_3, TestFailureEvidence
+from sandbox_executor.entrypoint.test_failure_record import STAGE_3, TestFailureEvidence, record_test_failure
 from sandbox_executor.entrypoint.test_measurement import TestMeasurement
+from sandbox_executor.knowledge.wisdom import promote_repeated_failure_signatures
 
 ALPHA = "tests/test_a.py::test_alpha"
 BETA = "tests/test_a.py::test_beta"
@@ -364,3 +367,134 @@ def test_a_fix_turn_that_raises_is_blocked_with_the_reason() -> None:
 
     assert outcome.status == "blocked"
     assert outcome.blocked_reason == "fix turn failed: fix turn moved HEAD branch"
+
+
+def test_environment_failure_parks_with_blocked_on_from_evidence_and_map() -> None:
+    def identity_sensitive(ids: tuple[str, ...], env: Mapping[str, str]) -> RerunResult:
+        return FAIL if "GIT_AUTHOR_NAME" in env else PASS
+
+    evidence_loop = TestFailureLoop(
+        LoopPorts(
+            run_selection=FakeSuite(),
+            rerun_ids=identity_sensitive,
+            base_rerun=lambda ids: PASS,
+            record=MemoryLedger(),
+            stage=STAGE_3,
+            fix_turn=FakeFix(),
+            environment=lambda: {"GIT_AUTHOR_NAME": "Reviewer"},
+            checkpoint_path="/tmp/checkpoints/flow-env.json",
+        )
+    )
+    evidence_outcome = evidence_loop.run(*_failing(message="AssertionError: waiting on BEAN-123"))
+
+    assert evidence_outcome.status == "blocked"
+    assert evidence_outcome.parked is True
+    assert evidence_outcome.blocked_on == "BEAN-123"
+    assert evidence_outcome.parked_record is not None
+    assert evidence_outcome.parked_record["blocked_on"] == "BEAN-123"
+    assert evidence_outcome.parked_record["classification"] == "environment"
+    assert evidence_outcome.parked_record["failing_ids"] == [ALPHA]
+    assert evidence_outcome.parked_record["signature"] == evidence_outcome.signature
+    assert evidence_outcome.parked_record["evidence"] == evidence_outcome.evidence_text
+    assert evidence_outcome.parked_record["rows"] == evidence_outcome.rows
+    assert evidence_outcome.parked_record["checkpoint_path"] == "/tmp/checkpoints/flow-env.json"
+
+    mapped_loop = TestFailureLoop(
+        LoopPorts(
+            run_selection=FakeSuite(),
+            rerun_ids=identity_sensitive,
+            base_rerun=lambda ids: PASS,
+            record=MemoryLedger(),
+            stage=STAGE_3,
+            fix_turn=FakeFix(),
+            environment=lambda: {"GIT_AUTHOR_NAME": "Reviewer"},
+            blocker_map={"GIT_AUTHOR_NAME": "PR#456"},
+            checkpoint_path="/tmp/checkpoints/flow-map.json",
+        )
+    )
+    mapped_outcome = mapped_loop.run(*_failing())
+
+    assert mapped_outcome.parked is True
+    assert mapped_outcome.blocked_on == "PR#456"
+    assert mapped_outcome.parked_record is not None
+    assert mapped_outcome.parked_record["blocked_on"] == "PR#456"
+    assert mapped_outcome.parked_record["classification"] == "environment"
+    assert mapped_outcome.parked_record["checkpoint_path"] == "/tmp/checkpoints/flow-map.json"
+
+
+def test_pre_existing_failure_parks_with_blocked_on_and_checkpoint() -> None:
+    outcome = _loop(
+        FakeSuite(),
+        FakeRerun(FAIL, FAIL),
+        base=FAIL,
+        fix_turn=FakeFix(),
+        checkpoint_path="/tmp/checkpoints/flow-pre.json",
+    ).run(*_failing(message="known regression tracked in PR #789"))
+
+    assert outcome.status == "blocked"
+    assert outcome.classification == "pre-existing"
+    assert outcome.parked is True
+    assert outcome.blocked_on == "PR#789"
+    assert outcome.parked_record is not None
+    assert outcome.parked_record["blocked_on"] == "PR#789"
+    assert outcome.parked_record["classification"] == "pre-existing"
+    assert outcome.parked_record["checkpoint_path"] == "/tmp/checkpoints/flow-pre.json"
+    assert len(outcome.parked_record["rows"]) == 1
+
+
+def test_exhausted_unresolved_failure_without_blocker_parks_with_none_and_evidence() -> None:
+    fix, ledger = FakeFix(), MemoryLedger()
+    suite = FakeSuite(_failing(), _failing(), _failing())
+
+    outcome = _loop(
+        suite,
+        FakeRerun(FAIL, FAIL),
+        fix_turn=fix,
+        record=ledger,
+        checkpoint_path="/tmp/checkpoints/flow-exh.json",
+    ).run(*_failing())
+
+    assert outcome.status == "exhausted"
+    assert outcome.parked is True
+    assert outcome.blocked_on == BLOCKED_ON_NONE
+    assert outcome.parked_record is not None
+    assert outcome.parked_record["blocked_on"] == "none"
+    assert ALPHA in outcome.parked_record["evidence"]
+    assert "ACT-3" in outcome.parked_record["evidence"]
+    assert len(outcome.parked_record["rows"]) == 4
+    assert [row["action_id"] for row in outcome.parked_record["rows"]] == ["ACT-0", "ACT-1", "ACT-2", "ACT-3"]
+    assert outcome.parked_record["signature"] == outcome.signature
+    assert outcome.parked_record["checkpoint_path"] == "/tmp/checkpoints/flow-exh.json"
+
+
+def test_fixed_introduced_failure_does_not_park() -> None:
+    first_tier = _loop(FakeSuite(_passing()), FakeRerun(FAIL, FAIL), fix_turn=FakeFix()).run(*_failing())
+    escalated = _loop(FakeSuite(_failing(), _passing()), FakeRerun(FAIL, FAIL), fix_turn=FakeFix()).run(*_failing())
+
+    for outcome in (first_tier, escalated):
+        assert outcome.status == "passed"
+        assert outcome.parked is False
+        assert outcome.blocked_on is None
+        assert outcome.parked_record is None
+
+
+def test_single_run_exhausted_signature_creates_no_kb_failure_mode_entry(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "holon-knowledge" / "ledger" / "executions.jsonl"
+    kb_dir = tmp_path / "holon-knowledge" / "kb"
+    recorder = functools.partial(record_test_failure, str(ledger_path), branch="I-1/P-1/E-1/_", execution_id="E-1")
+    suite = FakeSuite(_failing(), _failing(), _failing())
+
+    outcome = _loop(
+        suite,
+        FakeRerun(FAIL, FAIL),
+        fix_turn=FakeFix(),
+        record=recorder,
+        checkpoint_path=str(tmp_path / "checkpoint.json"),
+    ).run(*_failing())
+
+    assert outcome.status == "exhausted"
+    assert outcome.parked is True
+    assert outcome.parked_record is not None
+    assert len(outcome.parked_record["rows"]) == 4
+    assert promote_repeated_failure_signatures(str(ledger_path), str(kb_dir)) == []
+    assert list((kb_dir / "failure_modes").glob("KB-failure-*.json")) == []

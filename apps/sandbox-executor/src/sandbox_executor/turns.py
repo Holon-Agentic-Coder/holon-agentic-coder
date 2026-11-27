@@ -364,7 +364,7 @@ def _terminate_group(  # noqa: PLR0913
         logger.warning("Agent process %s did not exit after SIGKILL", getattr(proc, "pid", "?"))
 
 
-# why: docker CLI hints are suppressed in every spawned child process.
+# why: docker's promotional and diagnostic hints would otherwise pollute captured agent output.
 def build_turn_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
     effective_env = dict(os.environ) if env is None else dict(env)
     effective_env["DOCKER_CLI_HINTS"] = "false"

@@ -182,8 +182,8 @@ def test_override_that_cannot_be_recorded_is_refused(own_plan, monkeypatch):
     assert result is not None and result.status == StageStatus.FAILED
     assert result.payload["dispatched"] is False
     assert "could not be recorded" in str(result.error) and "push rejected" in str(result.error)
-    # why: the admitted record is undone when the override cannot be recorded.
-    assert context.admission is None and _default_checkpoint_admission(own_plan) is None
+    admitted_record_rolled_back = context.admission is None and _default_checkpoint_admission(own_plan) is None
+    assert admitted_record_rolled_back
 
 
 def test_touch_set_violation_reports_an_unrecorded_superseding_row(own_plan, monkeypatch):
@@ -324,11 +324,14 @@ def test_the_lock_uses_the_injected_git_runner(own_plan):
     assert ["rev-parse", "--git-common-dir"] in calls
 
 
+def _bind_engine_checkpoint_path(context, checkpoint_path):
+    PipelineEngine(context, checkpoint_path=str(checkpoint_path))
+
+
 def test_admission_state_is_saved_at_the_engines_checkpoint_path(own_plan, tmp_path):
     custom = tmp_path / "custom-checkpoint.json"
     context = own_context(own_plan)
-    # why: constructing the engine hands its --checkpoint path to the context.
-    PipelineEngine(context, checkpoint_path=str(custom))
+    _bind_engine_checkpoint_path(context, custom)
     assert check_admission(context, other_pr(["src/app.py"]), no_worktrees).blocked_by
     assert json.loads(custom.read_text(encoding="utf-8"))["context"]["admission"]["state"] == "blocked"
     assert _default_checkpoint_admission(own_plan) is None

@@ -1,12 +1,12 @@
 import json
 import os
 import sys
-from datetime import UTC, datetime
 from typing import Any
 
 from sandbox_executor.git import GitRepository
 from sandbox_executor.ledger import atomic_ledger_append
 from sandbox_executor.ledger.fragments import ledger_commit_paths
+from sandbox_executor.ledger.order import utc_now_z
 
 SYNC_CONFLICT_STATUS = "sync_conflict"
 
@@ -31,7 +31,7 @@ def superseding_failure_row(base_row: dict[str, Any], summary: str) -> dict[str,
         **base_row,
         "status": "failure",
         "summary": summary,
-        "created_at": datetime.now(UTC).isoformat(),
+        "created_at": utc_now_z(),
         "ledger_revision": int(base_row.get("ledger_revision", 1)) + 1,
     }
 

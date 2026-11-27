@@ -167,7 +167,6 @@ def run_plan_stage(context: FlowContext) -> StageResult:
         return failure
     consulted_ids = consult_knowledge(context, context.intent_data, match="any", purpose="plan", log=logger)
     if context.dry_run:
-        # why: a dry run only names the branch the planner would create, never dispatching or writing anything.
         plan_id = build_plan_id(int(time.time()), intent_prefix, context.agent, context.model)
         return dry_run_plan_result(context, start_time, f"{intent_prefix}/{plan_id}/_", consulted_ids)
     failure = stage.produce()

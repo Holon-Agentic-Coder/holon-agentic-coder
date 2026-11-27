@@ -143,7 +143,6 @@ class ExecuteStage:
         exec_branch = f"{self.state.plan_prefix}/{exec_id}/_"
         context.execution_branch = exec_branch
         context.log(f"Stage 3 (dry run): executor dispatch skipped; execution branch would be '{exec_branch}'.")
-        # why: a dry run only logs the admission decision and the plan refresh a waited flow would get
         admission_stage_failure(context, start_time)
         plan_refresh_stage_failure(context, start_time)
         result = StageResult(

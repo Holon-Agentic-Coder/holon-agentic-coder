@@ -11,7 +11,7 @@ from typing import Any
 
 import sandbox_executor.entrypoint.executor as executor_facade
 from sandbox_executor.artefacts import EXECUTION_SPEC, ArtefactReport, execution_write_protocol
-from sandbox_executor.budgets import BudgetBreach, StageTimer, load_budgets
+from sandbox_executor.budgets import BudgetBreach, StageTimer, load_budgets, read_replan_feedback
 from sandbox_executor.decomposition_rule import DECISION_OVER_BUDGET, DecompositionDecision
 from sandbox_executor.entrypoint.execution_args import ExecutionArgs, _read_intent_row, _read_plan_row
 from sandbox_executor.entrypoint.execution_workspace import (
@@ -234,7 +234,8 @@ class ExecutionRun(SubIntentSteps, AgentOutputSteps, CheckWorkSteps, OutcomeStep
         )
         if self.args.partial_branch and self.partial_head:
             base_prompt = f"{base_prompt}\n\n{continuation_note(self.args.partial_branch, self.partial_head)}"
-        merged_notice = os.environ.pop("HOLON_REPLAN_FEEDBACK", "").strip()
+        # why: consume=True strips feedback vars before spawning the executor agent subprocess.
+        merged_notice = read_replan_feedback(os.environ, consume=True)
         if merged_notice and "## Target branch merged" in merged_notice:
             base_prompt = f"{base_prompt}\n\n{merged_notice}"
         full_prompt = f"{base_prompt}\n\n{execution_write_protocol(self.notes_rel)}"

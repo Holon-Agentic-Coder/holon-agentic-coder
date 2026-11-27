@@ -803,3 +803,22 @@ def test_main_never_prints_the_token_or_the_error_text(tmp_path: Path, capsys: p
     assert TOKEN not in step_output(environ)
     assert all(TOKEN not in url for url in fake.urls)
     assert fake.auth == [f"Bearer {TOKEN}"]
+
+
+def test_synchronize_bookkeeping_push_onto_cancelled_non_merge_commit_runs() -> None:
+    fake = pushed(PLAN_FILE).add_run(48, SHA_A, real_success_job()).add_run(49, SHA_B, job(conclusion="cancelled"))
+    fake.commits[SHA_C] = ("1" * 40, [SHA_B])
+    fake.commits[SHA_B] = ("2" * 40, [SHA_A])
+    fake.commits[SHA_A] = ("3" * 40, [])
+    fake.compares[(SHA_A, SHA_B)] = comparison(PLAN_FILE)
+
+    assert gate(fake) == Decision(False, "previous-run-not-successful", "cancelled in run 49")
+
+
+def test_labeled_event_after_cancelled_run_never_enters_merge_push_route() -> None:
+    fake = FakeGitHub().add_run(49, SHA_C, job(conclusion="cancelled"))
+
+    decision = gate(fake, label_context("documentation"))
+
+    assert decision == Decision(False, "previous-run-not-successful", "cancelled in run 49")
+    assert fake.calls("git/") == []

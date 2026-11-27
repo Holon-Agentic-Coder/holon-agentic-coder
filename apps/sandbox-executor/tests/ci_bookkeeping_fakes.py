@@ -112,6 +112,10 @@ def legacy_success_job(name: str = UNIT_JOB) -> dict[str, object]:
     return job(name)
 
 
+def cancelled_job(name: str = UNIT_JOB) -> dict[str, object]:
+    return job(name, conclusion="cancelled")
+
+
 def comparison(*files: str | tuple[str, str], status: str = "ahead") -> dict[str, object]:
     entries: list[dict[str, str]] = []
     for item in files:

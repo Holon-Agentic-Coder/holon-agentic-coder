@@ -51,6 +51,7 @@ from tests.ci_bookkeeping_fakes import (
     WORKFLOW,
     FakeGitHub,
     blob_id,
+    cancelled_job,
     comparison,
     gate_skipped_job,
     job,
@@ -577,7 +578,14 @@ def test_main_prints_one_line_writes_skip_true_and_keeps_the_token_out_of_urls(
 
 
 @pytest.mark.parametrize(
-    "module", ["ci_merge_push_gate", "ci_merge_push_imports", "ci_bookkeeping_api", "ci_bookkeeping_gate"]
+    "module",
+    [
+        "ci_merge_push_gate",
+        "ci_merge_push_imports",
+        "ci_bookkeeping_api",
+        "ci_bookkeeping_chain",
+        "ci_bookkeeping_gate",
+    ],
 )
 def test_gate_module_is_python_3_9_syntax_and_standard_library_only(module: str) -> None:
     syntax = ast.parse((ROOT / "scripts" / f"{module}.py").read_text(encoding="utf-8"), feature_version=(3, 9))
@@ -688,3 +696,182 @@ def test_is_test_pair_matches_test_prefix_in_either_order() -> None:
     assert is_test_pair("a/tests/test_engine.py", "b/src/engine.py")
     assert is_test_pair("b/src/engine.py", "a/tests/test_engine.py")
     assert not is_test_pair("a/tests/test_engines.py", "b/src/engine.py")
+
+
+POST_SHA_1 = "5" * 40
+POST_SHA_2 = "6" * 40
+
+
+def stacked_merge_scene(
+    pr: Mapping[str, str | None] | None = None,
+    base: Mapping[str, str | None] | None = None,
+    merged: Mapping[str, str | None] | None = None,
+    pre_files: tuple[str, ...] = ("plans/pre.md",),
+    post_files: tuple[str, ...] = ("executions/post.md",),
+) -> FakeGitHub:
+    fake = scene(pr=pr, base=base, merged=merged)
+    fake.runs = [r for r in fake.runs if r["event"] == "push"]
+    fake.add_run(47, OLDER_SHA, real_success_job())
+    fake.add_run(48, PREVIOUS_HEAD_SHA, cancelled_job())
+    fake.add_run(49, NEW_HEAD_SHA, cancelled_job())
+    fake.commits[PREVIOUS_HEAD_SHA] = (TREE_IDS["previous"], [OLDER_SHA])
+    fake.commits[POST_SHA_1] = ("7" * 40, [NEW_HEAD_SHA])
+    fake.compares[(OLDER_SHA, PREVIOUS_HEAD_SHA)] = comparison(*pre_files)
+    fake.compares[(NEW_HEAD_SHA, POST_SHA_1)] = comparison(*post_files)
+    return fake
+
+
+def test_cancelled_pre_merge_and_merge_with_post_merge_bookkeeping_skips() -> None:
+    fake = stacked_merge_scene()
+
+    decision = gate(fake, context(before=NEW_HEAD_SHA, head_sha=POST_SHA_1))
+
+    expected_detail = (
+        f"4 base-side paths merged from {BASE_HEAD_SHA[:12]}; "
+        f"real successes on {OLDER_SHA[:12]} and {BASE_HEAD_SHA[:12]}"
+    )
+    assert decision == Decision(True, "merge-push-clean-main-merge", expected_detail)
+    assert all(TOKEN not in url for url in fake.urls)
+
+
+def test_multiple_post_merge_bookkeeping_commits_with_cancelled_runs_skip() -> None:
+    fake = stacked_merge_scene()
+    fake.runs = [r for r in fake.runs if r["event"] == "push"]
+    fake.add_run(46, OLDER_SHA, real_success_job())
+    fake.add_run(47, PREVIOUS_HEAD_SHA, cancelled_job())
+    fake.add_run(48, NEW_HEAD_SHA, cancelled_job())
+    fake.add_run(49, POST_SHA_1, cancelled_job())
+    fake.commits[POST_SHA_2] = ("8" * 40, [POST_SHA_1])
+    fake.compares[(POST_SHA_1, POST_SHA_2)] = comparison("executions/post-2.md")
+
+    decision = gate(fake, context(before=POST_SHA_1, head_sha=POST_SHA_2))
+
+    assert decision.skip is True
+    assert decision.rule == "merge-push-clean-main-merge"
+
+
+def test_combined_single_push_with_merge_and_post_merge_bookkeeping_skips() -> None:
+    fake = scene()
+    fake.commits[POST_SHA_1] = ("7" * 40, [NEW_HEAD_SHA])
+    fake.compares[(PREVIOUS_HEAD_SHA, POST_SHA_1)] = comparison(CODE_FILE, "executions/post.md")
+    fake.compares[(NEW_HEAD_SHA, POST_SHA_1)] = comparison("executions/post.md")
+
+    decision = gate(fake, context(before=PREVIOUS_HEAD_SHA, head_sha=POST_SHA_1))
+
+    assert decision == Decision(True, "merge-push-clean-main-merge", skip_detail())
+
+
+def test_post_merge_bookkeeping_on_gate_skipped_merge_skips() -> None:
+    fake = scene()
+    fake.runs = [r for r in fake.runs if r["event"] == "push"]
+    fake.add_run(48, PREVIOUS_HEAD_SHA, real_success_job())
+    fake.add_run(49, NEW_HEAD_SHA, gate_skipped_job())
+    fake.commits[POST_SHA_1] = ("7" * 40, [NEW_HEAD_SHA])
+    fake.compares[(NEW_HEAD_SHA, POST_SHA_1)] = comparison("executions/post.md")
+    fake.compares[(PREVIOUS_HEAD_SHA, POST_SHA_1)] = comparison(CODE_FILE, "executions/post.md")
+
+    decision = gate(fake, context(before=NEW_HEAD_SHA, head_sha=POST_SHA_1))
+
+    assert decision == Decision(True, "merge-push-clean-main-merge", skip_detail())
+
+
+def test_non_bookkeeping_change_directly_after_merge_forces_full_ci() -> None:
+    fake = stacked_merge_scene(post_files=(CODE_FILE,))
+
+    decision = gate(fake, context(before=NEW_HEAD_SHA, head_sha=POST_SHA_1))
+
+    assert decision == Decision(False, "non-bookkeeping-change", CODE_FILE)
+
+
+def test_non_bookkeeping_change_between_merge_and_head_bookkeeping_forces_full_ci() -> None:
+    fake = stacked_merge_scene(post_files=(CODE_FILE,))
+    fake.add_run(50, POST_SHA_1, cancelled_job())
+    fake.commits[POST_SHA_2] = ("8" * 40, [POST_SHA_1])
+    fake.compares[(POST_SHA_1, POST_SHA_2)] = comparison("executions/post-2.md")
+
+    decision = gate(fake, context(before=POST_SHA_1, head_sha=POST_SHA_2, run_number=51))
+
+    assert decision == Decision(False, "previous-run-not-successful", "cancelled in run 50")
+
+
+def test_non_bookkeeping_change_in_cancelled_pre_merge_commit_forces_full_ci() -> None:
+    fake = stacked_merge_scene(pre_files=("plans/pre.md", CODE_FILE))
+
+    decision = gate(fake, context(before=NEW_HEAD_SHA, head_sha=POST_SHA_1))
+
+    assert decision == Decision(False, "non-bookkeeping-change", CODE_FILE)
+
+
+def test_non_linear_pre_merge_history_between_real_success_and_merge_forces_full_ci() -> None:
+    fake = stacked_merge_scene()
+    fake.commits[PREVIOUS_HEAD_SHA] = (TREE_IDS["previous"], [OLDER_SHA, OTHER_SHA])
+
+    decision = gate(fake, context(before=NEW_HEAD_SHA, head_sha=POST_SHA_1))
+
+    assert decision.skip is False
+    assert decision.rule == "merge-push-first-parent-not-previous-head"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_rule"),
+    [
+        pytest.param({"merged": {ENGINE: "import sys\n"}}, "merge-push-conflict-resolution", id="conflict"),
+        pytest.param(
+            {"base": {**BASE_CHANGES, CODE_FILE: "VALUE = 2\n"}},
+            "merge-push-overlapping-change",
+            id="overlap",
+        ),
+        pytest.param({"base": {**BASE_CHANGES, "uv.lock": "v = 2\n"}}, "merge-push-config-change", id="config"),
+        pytest.param(
+            {"pr": {**PR_CHANGES, ROWS: "from sandbox_executor.pipeline import engine\n"}},
+            "merge-push-related-change",
+            id="related",
+        ),
+    ],
+)
+def test_clean_merge_violation_under_post_merge_bookkeeping_still_forces_full_ci(
+    overrides: dict[str, object], expected_rule: str
+) -> None:
+    fake = stacked_merge_scene(**overrides)
+
+    decision = gate(fake, context(before=NEW_HEAD_SHA, head_sha=POST_SHA_1))
+
+    assert (decision.skip, decision.rule) == (False, expected_rule)
+
+
+def test_unverified_base_run_under_post_merge_bookkeeping_forces_full_ci() -> None:
+    fake = stacked_merge_scene()
+    fake.jobs[PUSH_RUN_ID] = [legacy_success_job()]
+
+    decision = gate(fake, context(before=NEW_HEAD_SHA, head_sha=POST_SHA_1))
+
+    assert (decision.skip, decision.rule) == (False, "merge-push-base-run-unverified")
+
+
+def test_cancelled_merge_chain_ending_in_failure_forces_full_ci() -> None:
+    fake = stacked_merge_scene()
+    fake.jobs[1047] = [job(conclusion="failure")]
+
+    decision = gate(fake, context(before=NEW_HEAD_SHA, head_sha=POST_SHA_1))
+
+    assert decision == Decision(False, "previous-run-not-successful", "failure in run 47")
+
+
+@pytest.mark.parametrize(
+    "overrides", [{"job_name": "hygiene"}, {"workflow_file": "test-hygiene.yml"}], ids=["job", "workflow"]
+)
+def test_hygiene_on_cancelled_merge_bookkeeping_chain_is_never_skipped(overrides: dict[str, str]) -> None:
+    fake = stacked_merge_scene()
+    workflow = overrides.get("workflow_file", WORKFLOW)
+    name = overrides.get("job_name", "unit")
+    for entry in fake.runs:
+        entry["path"] = f".github/workflows/{workflow}"
+    fake.jobs[1047] = [real_success_job(name)]
+    fake.jobs[1048] = [cancelled_job(name)]
+    fake.jobs[1049] = [cancelled_job(name)]
+    fake.jobs[PUSH_RUN_ID] = [real_success_job(name)]
+
+    decision = gate(fake, context(before=NEW_HEAD_SHA, head_sha=POST_SHA_1, os_name="", **overrides))
+
+    assert (decision.skip, decision.rule) == (False, "merge-push-hygiene-never-skipped")
+    assert fake.calls("git/") == []

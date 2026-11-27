@@ -566,3 +566,72 @@ def test_the_failure_loop_reads_the_full_output_not_the_excerpt_tail(monkeypatch
 
     assert loop.outputs == [full]
     assert loop.runs[0].rate == 0.9
+
+
+def test_attach_test_failure_records_parked_record_and_omits_for_flaky_passed():
+    failing = _measurement(0.5, exit_code=1)
+    blocked = LoopOutcome(
+        "blocked",
+        failing,
+        "environment",
+        [{"action_id": "ACT-0", "model_tier": "haiku-x"}],
+        "environment failure",
+        "haiku-x",
+        ("tests/test_a.py::test_alpha",),
+        {"tests/test_a.py::test_alpha": "E env"},
+        "sig-env",
+        "BEAN-42",
+        None,
+    )
+    ci_blocked: dict[str, Any] = {}
+    local_tests._attach_test_failure(ci_blocked, blocked, checkpoint_path="/tmp/cp-blocked.json")
+
+    assert ci_blocked["test_failure"]["rows"] == ["ACT-0"]
+    assert ci_blocked["test_failure"]["blocked_on"] == "BEAN-42"
+    parked = ci_blocked["test_failure"]["parked_record"]
+    assert parked["blocked_on"] == "BEAN-42"
+    assert parked["checkpoint_path"] == "/tmp/cp-blocked.json"
+    assert parked["rows"] == [{"action_id": "ACT-0", "model_tier": "haiku-x"}]
+
+    exhausted = LoopOutcome(
+        "exhausted",
+        failing,
+        "introduced",
+        [{"action_id": "ACT-0"}, {"action_id": "ACT-1"}],
+        "ladder exhausted",
+        "opus-x",
+        ("tests/test_a.py::test_alpha",),
+        {"tests/test_a.py::test_alpha": "E assert 1 == 2"},
+        "sig-exh",
+        "none",
+        "/tmp/cp-exh.json",
+    )
+    ci_exhausted: dict[str, Any] = {}
+    local_tests._attach_test_failure(ci_exhausted, exhausted)
+    assert ci_exhausted["test_failure"]["blocked_on"] == "none"
+    assert ci_exhausted["test_failure"]["parked_record"]["checkpoint_path"] == "/tmp/cp-exh.json"
+    assert len(ci_exhausted["test_failure"]["parked_record"]["rows"]) == 2
+
+    flaky_passed = LoopOutcome("flaky_passed", _measurement(1.0), "flaky", [{"action_id": "ACT-0"}])
+    ci_flaky: dict[str, Any] = {}
+    local_tests._attach_test_failure(ci_flaky, flaky_passed, checkpoint_path="/tmp/cp-flaky.json")
+    assert "parked_record" not in ci_flaky["test_failure"]
+    assert "blocked_on" not in ci_flaky["test_failure"]
+
+
+def test_review_test_gate_evidence_attaches_checkpoint_path_and_parked_record(tmp_path, monkeypatch):
+    failing = _measurement(0.5, exit_code=1)
+    monkeypatch.setattr(local_tests, "run_measurement", MagicMock(return_value=failing))
+    loop = _ScriptedLoop("exhausted", "introduced", failing)
+    monkeypatch.setattr(local_tests, "_review_failure_loop", lambda *_: loop)
+    ctx = HARNESS._ctx(tmp_path, {"test_pass_rate": 0.5, "tests_failed": 1, "head_sha": "stage3sha"})
+    ctx.checkpoint_path = str(tmp_path / "checkpoint.json")
+    with patch("sandbox_executor.flow.review.local_tests.run_git") as mock_git:
+        mock_git.return_value = MagicMock(returncode=0, stdout="currentsha123\n")
+        gate = local_tests._ReviewTestGate(ctx, str(tmp_path))
+        probe: dict[str, Any] = {"source": "local_tests"}
+        gate.evidence(probe)
+
+    assert probe["test_failure"]["blocked_on"] == "none"
+    assert probe["test_failure"]["parked_record"]["checkpoint_path"] == ctx.checkpoint_path
+    assert probe["test_failure"]["parked_record"]["rows"] == [{"action_id": "ACT-1"}]

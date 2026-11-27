@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from sandbox_executor.flow import parked_record_from_ci_status
 from sandbox_executor.flow.review.local_test_finding import MAX_IDS_NAMED, local_test_failure_finding
 
 
@@ -51,3 +52,81 @@ def test_blocked_evidence_marks_the_finding_as_not_fixable_in_code():
     assert "Blocked, not fixable in code: test failure environment (blocked)" in finding.summary
     assert "Report this failure as blocked" in finding.recommendation
     assert "Fix the code" not in finding.recommendation
+
+
+def test_blocked_finding_surfaces_blocked_on_when_present():
+    status = {
+        "test_failure": {
+            "classification": "environment",
+            "failing_ids": ["tests/test_a.py::test_alpha"],
+            "blocked_evidence": "test failure environment (blocked): env broken",
+            "blocked_on": "BEAN-42",
+        }
+    }
+
+    finding = local_test_failure_finding(1, status)
+
+    assert finding is not None
+    assert "Blocked, not fixable in code: test failure environment (blocked): env broken (blocked_on: BEAN-42)." in finding.summary
+    assert "Report this failure as blocked" in finding.recommendation
+
+
+def test_parked_record_from_ci_status_normalizes_watcher_fields():
+    ci_status = {
+        "test_failure": {
+            "status": "exhausted",
+            "classification": "introduced",
+            "blocked_on": "PR#99",
+            "parked_record": {
+                "blocked_on": "PR#99",
+                "status": "exhausted",
+                "classification": "introduced",
+                "failing_ids": ["tests/test_a.py::test_alpha"],
+                "signature": "sig-123",
+                "evidence": "test failure introduced (exhausted): ladder exhausted",
+                "rows": [{"action_id": "ACT-0", "model_tier": "haiku-x"}],
+                "checkpoint_path": "/tmp/cp-orig.json",
+                "blocked_reason": "ladder exhausted",
+                "final_tier": "opus-x",
+            },
+        }
+    }
+
+    record = parked_record_from_ci_status(ci_status)
+    assert record == {
+        "blocked_on": "PR#99",
+        "status": "exhausted",
+        "classification": "introduced",
+        "failing_ids": ["tests/test_a.py::test_alpha"],
+        "signature": "sig-123",
+        "evidence": "test failure introduced (exhausted): ladder exhausted",
+        "rows": [{"action_id": "ACT-0", "model_tier": "haiku-x"}],
+        "checkpoint_path": "/tmp/cp-orig.json",
+        "blocked_reason": "ladder exhausted",
+        "final_tier": "opus-x",
+    }
+
+    overridden = parked_record_from_ci_status(ci_status, checkpoint_path="/tmp/cp-override.json")
+    assert overridden is not None
+    assert overridden["checkpoint_path"] == "/tmp/cp-override.json"
+
+
+def test_parked_record_from_ci_status_defaults_unattributed_blocker_and_ignores_unparked():
+    unattributed = {
+        "test_failure": {
+            "status": "exhausted",
+            "classification": "introduced",
+            "failing_ids": ["tests/test_a.py::test_alpha"],
+            "signature": "sig-0",
+            "rows": [{"action_id": "ACT-0"}],
+        }
+    }
+    record = parked_record_from_ci_status(unattributed, checkpoint_path="/tmp/cp.json")
+    assert record is not None
+    assert record["blocked_on"] == "none"
+    assert record["checkpoint_path"] == "/tmp/cp.json"
+    assert record["rows"] == [{"action_id": "ACT-0"}]
+
+    assert parked_record_from_ci_status({}) is None
+    assert parked_record_from_ci_status({"test_failure": {"status": "passed", "failing_ids": []}}) is None
+    assert parked_record_from_ci_status({"test_failure": {"status": "flaky_passed", "failing_ids": []}}) is None

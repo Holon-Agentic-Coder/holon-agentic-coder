@@ -1,12 +1,3 @@
-"""The single owner of the stale-calibration warning on a pull request: stale, superseded and refreshed states.
-
-Invariant: at most one stale-calibration comment per pull request. It is posted once, edited in place while the report
-stays stale, edited to superseded (naming the fresh report's evaluated SHA) once a report covers the head, and reopened
-in place if the report goes stale again; it is never re-posted. Superseded comments keep the hidden stale marker, and
-legacy per-pair markers (``<!-- holon-calibration-stale:<evaluated>:<head> -->``) are adopted into the same family.
-This module only posts and edits comments; it never approves, merges, deletes or minimises.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -42,8 +33,6 @@ UNLISTED = {"posted": False, "edited": 0, "reason": "comments could not be liste
 
 @dataclass(frozen=True)
 class StaleRange:
-    """The commit a stale report evaluated, the pull-request head it no longer covers, and why."""
-
     evaluated: str
     head: str
     reason: str
@@ -51,8 +40,6 @@ class StaleRange:
 
 @dataclass(frozen=True)
 class WarningSeams:
-    """Optional comment collaborators; tests inject fakes, the flow the ``gh`` defaults for the target worktree."""
-
     comments: CommentRecordLister | None = None
     poster: CommentPoster | None = None
     editor: CommentEditor | None = None
@@ -61,10 +48,10 @@ class WarningSeams:
     def from_lister(
         cls, lister: CommentLister, poster: CommentPoster | None = None, editor: CommentEditor | None = None
     ) -> WarningSeams:
-        """Adapt a body-only lister: its records carry an empty id, so they deduplicate but are never edited."""
 
         def comments(pr_number: str) -> list[CommentRecord] | None:
             bodies = lister(pr_number)
+            # why: an empty id lets body-only records deduplicate the warning without ever being edited
             return None if bodies is None else [CommentRecord("", body) for body in bodies]
 
         return cls(comments=comments, poster=poster, editor=editor)
@@ -80,7 +67,6 @@ class WarningSeams:
 
 
 def stale_body(stale: StaleRange) -> str:
-    """The current warning: the report covers ``evaluated`` but the head is ``head``; the flow reruns Stage 5."""
     return (
         "## ⚠️ Calibration report is stale\n\n"
         f"The calibration report covers `{short_sha(stale.evaluated)}` but the pull request head is "
@@ -90,7 +76,6 @@ def stale_body(stale: StaleRange) -> str:
 
 
 def superseded_body(evaluated: str, cause: str = FRESH_REPORT) -> str:
-    """A resolved warning: superseded by ``cause`` naming ``evaluated``; it keeps the stale marker."""
     return (
         "## Stale calibration warning superseded\n\n"
         f"This stale-calibration warning is superseded by {cause.format(sha=short_sha(evaluated))}."
@@ -99,20 +84,18 @@ def superseded_body(evaluated: str, cause: str = FRESH_REPORT) -> str:
 
 
 def _refreshed_marker(head: str) -> str:
-    """The hidden marker that deduplicates the refreshed note for ``head``."""
     return f"{REFRESHED_MARKER_PREFIX}{head} -->"
 
 
 def refreshed_body(head: str) -> str:
-    """The once-per-head note that a rerun refreshed the report to cover ``head``."""
     return f"Calibration refreshed: the report now covers head `{short_sha(head)}`.\n\n{_refreshed_marker(head)}"
 
 
 def _thread(
     context: FlowContext, pr_number: str | None, seams: WarningSeams
 ) -> tuple[str, list[CommentRecord]] | dict[str, Any]:
-    """The PR (the approval's when none is given) and its comments, or the early-return record when there are none."""
-    pr_number = pr_number or approval_pr_number(context)  # may raise on a malformed review payload
+    # why: approval_pr_number may raise on a malformed review payload
+    pr_number = pr_number or approval_pr_number(context)
     if context.dry_run or context.skip_push or not pr_number:
         return dict(NO_PULL_REQUEST)
     records = seams.lister_for(context)(pr_number)
@@ -124,13 +107,11 @@ def _stale_records(records: Iterable[CommentRecord]) -> list[CommentRecord]:
 
 
 def _supersede_open(records: Iterable[CommentRecord], body: str, editor: CommentEditor) -> int:
-    """Edit every open (not yet superseded) record with an id to ``body``; the number of successful edits."""
     open_records = (r for r in records if SUPERSEDED_MARKER_PREFIX not in r.body and r.id)
     return sum(1 for record in open_records if editor(record.id, body))
 
 
 def _refresh_newest(newest: CommentRecord, body: str, editor: CommentEditor) -> tuple[int, str]:
-    """Bring the newest warning to ``body`` in place (reopening a superseded one); (edits, reason)."""
     if newest.body == body:
         return 0, "already current"
     if not newest.id:
@@ -143,7 +124,6 @@ def _refresh_newest(newest: CommentRecord, body: str, editor: CommentEditor) -> 
 def warn_stale(
     context: FlowContext, pr_number: str | None, stale: StaleRange, seams: WarningSeams | None = None
 ) -> dict[str, Any]:
-    """Keep exactly one open stale warning naming ``stale``: post it once, else edit it in place; never raises."""
     seams = seams or WarningSeams()
     try:
         thread = _thread(context, pr_number, seams)
@@ -167,7 +147,6 @@ def warn_stale(
 def resolve_stale(
     context: FlowContext, pr_number: str | None, fresh_evaluated: str, seams: WarningSeams | None = None
 ) -> dict[str, Any]:
-    """Mark every open stale warning superseded by the report that evaluated ``fresh_evaluated``; never posts."""
     seams = seams or WarningSeams()
     try:
         thread = _thread(context, pr_number, seams)
@@ -184,7 +163,6 @@ def resolve_stale(
 def post_refreshed(
     context: FlowContext, pr_number: str | None, head: str, seams: WarningSeams | None = None
 ) -> dict[str, Any]:
-    """Post the once-per-head refreshed note after a successful rerun; never raises."""
     seams = seams or WarningSeams()
     try:
         thread = _thread(context, pr_number, seams)

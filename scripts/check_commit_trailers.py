@@ -19,6 +19,8 @@ ROBOT_EMOJI = "\N{ROBOT FACE}"
 RULE = "attribution trailers are not allowed in commit messages"
 RECORD_SEPARATOR = "\x1e"
 FIELD_SEPARATOR = "\x1f"
+# why: git commit -v appends the diff below this line and strips it, so diff context there is not message text.
+SCISSORS_LINE = "# ------------------------ >8 ------------------------"
 
 
 def is_comment_line(line: str) -> bool:
@@ -47,8 +49,17 @@ def commit_messages(revision_range: str) -> list[tuple[str, str]]:
     return [tuple(record.split(FIELD_SEPARATOR, 1)) for record in records if record]
 
 
+def message_above_scissors(message: str) -> str:
+    lines = message.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if line.rstrip("\r\n") == SCISSORS_LINE:
+            return "".join(lines[:index])
+    return message
+
+
 def offences_in_file(path: Path) -> list[tuple[str, str]]:
-    return [(str(path), line) for line in find_attribution_lines(path.read_text(encoding="utf-8"))]
+    message = message_above_scissors(path.read_text(encoding="utf-8"))
+    return [(str(path), line) for line in find_attribution_lines(message)]
 
 
 def offences_in_range(revision_range: str) -> list[tuple[str, str]]:

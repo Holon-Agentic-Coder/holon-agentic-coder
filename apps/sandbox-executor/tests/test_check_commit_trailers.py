@@ -74,6 +74,23 @@ def test_message_file_with_flow_trailers_only_passes(tmp_path: Path) -> None:
     assert result.stderr == ""
 
 
+def test_message_file_ignores_verbose_diff_below_scissors_line(tmp_path: Path) -> None:
+    message_file = tmp_path / "COMMIT_EDITMSG"
+    message_file.write_text(
+        "feat: x\n\n"
+        "# ------------------------ >8 ------------------------\n"
+        "# Do not modify or remove the line above.\n"
+        "diff --git a/notes.md b/notes.md\n"
+        f" {CO_AUTHOR}\n",
+        encoding="utf-8",
+    )
+
+    result = run_script("--message-file", str(message_file), cwd=tmp_path)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+
 @pytest.mark.parametrize(
     "line",
     [

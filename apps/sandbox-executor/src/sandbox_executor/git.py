@@ -288,20 +288,10 @@ def _parse_numstat_counts(raw_insertions: str, raw_deletions: str) -> tuple[int,
         return _BINARY_DIFF_COUNT, _BINARY_DIFF_COUNT
 
 
-def get_diff_numstat(
-    repo_dir: str,
-    base_ref: str,
-    head_ref: str,
-) -> list[tuple[int, int, str]]:
-    repo = GitRepository(repo_dir)
-    res = repo.diff("--numstat", base_ref, head_ref, check=False)
-    if res.returncode != 0:
-        logger.debug(f"get_diff_numstat failed between {base_ref} and {head_ref}: {res.stderr}")
-        return []
-
+def parse_numstat(text: str) -> list[tuple[int, int, str]]:
     entries: list[tuple[int, int, str]] = []
-    for line in res.stdout.splitlines():
-        line = line.strip()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
         if not line:
             continue
         parts = line.split("\t", 2)
@@ -310,8 +300,15 @@ def get_diff_numstat(
         raw_ins, raw_del, file_path = parts
         ins, dels = _parse_numstat_counts(raw_ins, raw_del)
         entries.append((ins, dels, file_path.strip()))
-
     return entries
+
+
+def get_diff_numstat(repo_dir: str, base_ref: str, head_ref: str) -> list[tuple[int, int, str]]:
+    res = GitRepository(repo_dir).diff("--numstat", base_ref, head_ref, check=False)
+    if res.returncode != 0:
+        logger.debug(f"get_diff_numstat failed between {base_ref} and {head_ref}: {res.stderr}")
+        return []
+    return parse_numstat(res.stdout)
 
 
 def resolve_ref(repo_dir: str, ref: str) -> str | None:

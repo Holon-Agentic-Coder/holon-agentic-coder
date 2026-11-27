@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sandbox_executor.flow.review.approval_fingerprint import FINGERPRINT_EXCLUDED_PATHSPECS, reviewable_pathspecs
-from sandbox_executor.git import run_git
+from sandbox_executor.git import parse_numstat, run_git
 
 _GIT_TIMEOUT_SECONDS = 60
 
@@ -48,11 +48,11 @@ class DeltaRepo:
 
     def changed_line_count(self, base: str, head: str, paths: Sequence[str]) -> int | None:
         total = 0
-        for line in _lines(self._git(["diff", "--numstat", "--no-renames", base, head, *_pathspecs(paths)])):
-            added, deleted, _path = line.split("\t", 2)
-            if not (added.isdigit() and deleted.isdigit()):
+        raw = self._git(["diff", "--numstat", "--no-renames", base, head, *_pathspecs(paths)])
+        for added, deleted, _path in parse_numstat(raw):
+            if added < 0 or deleted < 0:
                 return None
-            total += int(added) + int(deleted)
+            total += added + deleted
         return total
 
     def diff(self, base: str, head: str, paths: Sequence[str]) -> str:

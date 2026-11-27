@@ -284,8 +284,10 @@ def active_cooldown_result(
 
 
 def sync_cooldown_for_result(result: PreflightResult, *, now: float | None = None) -> None:
-    from sandbox_executor.preflight import PreflightStatus
+    from sandbox_executor.preflight import PreflightResult, PreflightStatus
 
+    if not isinstance(result, PreflightResult):
+        return
     if result.status is PreflightStatus.QUOTA_EXHAUSTED:
         if result.hint.startswith(COOLDOWN_HINT_PREFIX):
             return

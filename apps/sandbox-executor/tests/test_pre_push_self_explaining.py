@@ -161,6 +161,32 @@ def test_repair_turn_that_commits_its_own_fix_lets_the_branch_be_recorded(
     assert git(gated_repository, "log", "-1", "--format=%s") == "agent repair"
 
 
+def test_attribution_check_scans_the_commit_made_by_the_repair_turn(
+    gated_repository: Path, sync_calls: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_lines(gated_repository, "pkg/module.py", DOCSTRING_MODULE_LINES)
+    commit_all(gated_repository, "add module")
+    scanned_heads: list[str] = []
+
+    def committing_turn(repo_dir: str, runner: str, model: str, prompt: str) -> None:
+        write_lines(gated_repository, "pkg/module.py", WHY_COMMENT_MODULE_LINES)
+        commit_all(gated_repository, "agent repair")
+
+    def recording_attribution(plan_tip: str, runner: object) -> bool:
+        scanned_heads.append(git(gated_repository, "log", "-1", "--format=%s"))
+        return False
+
+    monkeypatch.setattr(pre_push, "run_agent_turn", committing_turn)
+    monkeypatch.setattr(pre_push, "attribution_allows_publish", recording_attribution)
+    run = GatedRun(gated_repository)
+
+    run.record_branch()
+
+    assert scanned_heads == ["agent repair"]
+    assert run.branch_recorded is False
+    assert sync_calls == []
+
+
 def test_failed_repair_turn_leaves_the_branch_refused(
     gated_repository: Path, sync_calls: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

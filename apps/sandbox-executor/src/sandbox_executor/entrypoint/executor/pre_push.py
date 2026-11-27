@@ -237,9 +237,10 @@ class PrePushSteps:
 
     def record_branch(self) -> None:
         can_record = self.repo.rev_parse("HEAD^", verify=True).returncode == 0
-        can_record = attribution_allows_publish(self.plan_tip, _entrypoint_git_runner(self.repo_dir)) and can_record
         if can_record:
             can_record = self.self_explaining_gate()
+        if can_record:
+            can_record = attribution_allows_publish(self.plan_tip, _entrypoint_git_runner(self.repo_dir))
         if can_record:
             can_record = self.pre_push_sync()
 

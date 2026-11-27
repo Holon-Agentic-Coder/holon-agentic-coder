@@ -1,5 +1,3 @@
-"""Stage 4 review stage outcome construction for consensus approval and dry-run halts."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,8 +9,6 @@ from sandbox_executor.flow.review.verdict import render_final_verdicts
 
 @dataclass(frozen=True)
 class ReviewOutcomeContext:
-    """Inputs required to construct the Stage 4 review outcome."""
-
     start_time: str
     end_time: str
     review_package: dict[str, Any]
@@ -27,7 +23,6 @@ def build_review_stage_outcome(
     context: FlowContext,
     outcome: ReviewOutcomeContext,
 ) -> StageResult:
-    """Build the final StageResult for Stage 4 when not failed (approval or dry-run halt)."""
     human_instruction = f"holon review approve {context.intent_branch or 'intent'}"
     if outcome.dry_run_simulation:
         halt_reason = "Dry-run review loop finished; consensus not measured and not approved."

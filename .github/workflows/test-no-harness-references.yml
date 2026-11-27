@@ -1,7 +1,7 @@
 name: Test - No Harness References
 
-# why: the flow scalar keeps this gate out of the bookkeeping wiring table, which covers block-form pull request
-# workflows; this scan must run on bookkeeping-only pull requests too.
+# why: this scan must run on bookkeeping-only pull requests too.
+# why: the flow scalar keeps it out of the bookkeeping wiring table, which covers block-form pull request workflows.
 on: pull_request
 
 permissions:

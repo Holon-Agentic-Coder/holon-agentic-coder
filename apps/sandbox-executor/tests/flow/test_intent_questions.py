@@ -13,6 +13,7 @@ from sandbox_executor.flow.intent_questions import (
     validate_intent_questions,
 )
 from sandbox_executor.harness_reference_patterns import find_references, sample_reference
+from sandbox_executor.intent_payload_rules import check_intent_payload
 
 
 @pytest.mark.parametrize(
@@ -189,4 +190,6 @@ def test_hub_file_warnings_do_not_make_an_intent_unresolved():
 
 def test_stage_one_leaves_a_bare_existing_directory_to_intent_check(tmp_path):
     (tmp_path / "src" / "pkg").mkdir(parents=True)
+    intent = {**_clean_intent(), "scope": ["src/pkg"]}
+    assert check_intent_payload(intent, str(tmp_path)).violations
     assert validate_intent_questions({**_clean_intent(), "scope": ["src/pkg"]}) == (True, [])

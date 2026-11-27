@@ -195,8 +195,6 @@ def render_text(report: IntentScopeReport) -> str:
 
 
 def to_json(report: IntentScopeReport) -> dict[str, Any]:
-    """Return the report as a dict with the keys ``missing``, ``proposed`` and ``warnings``, plus ``violations`` when
-    the intent breaks a payload rule."""
     data: dict[str, Any] = {
         "missing": list(report.missing),
         "proposed": [{"path": item.path, "reason": item.reason, "source": item.source} for item in report.proposed],

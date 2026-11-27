@@ -175,20 +175,7 @@ class IntentQuestions:
 
 
 def validate_intent_questions(intent_data: dict[str, Any]) -> tuple[bool, list[str]]:
-    """Validate that an intent payload has no unresolved open questions and breaks no intent rule.
-
-    Checks `questions`, `open_questions`, and `clarifications` fields in `intent_data`.
-    If any open question exists without a matching answer in `answers` or `resolved_questions`,
-    or if a question item is explicitly marked as open/unresolved, this returns False
-    along with a list of descriptions of the unresolved questions.
-
-    Args:
-        intent_data: Dictionary containing intent metadata and questions.
-
-    Returns:
-        tuple[bool, list[str]]: (is_valid, list_of_unresolved_question_descriptions)
-    """
-    # why: Stage 1 runs before the target worktree exists, so a bare existing-directory entry is left to intent-check.
+    # why: this check receives no worktree to probe, so a bare existing-directory entry is left to intent-check.
     rule_violations = check_intent_payload(intent_data).violations
     unresolved = [
         *IntentQuestions.from_intent(intent_data).unresolved(),

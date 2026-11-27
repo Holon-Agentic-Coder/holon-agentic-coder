@@ -16,10 +16,10 @@ Python 3.9 syntax.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from scripts.ci_bookkeeping_api import GateClient, RunRef, list_earlier_runs, list_jobs
+from scripts.ci_bookkeeping_api import CommitRef, GateClient, RunRef, commit_ref, list_earlier_runs, list_jobs
 
 FULL_RUN_STEP = "Full run completed"
 MAX_CHAIN_HOPS = 20
@@ -81,10 +81,20 @@ class ChainResult:
     real_sha: str | None
     rule: str
     detail: str = ""
+    crossed_cancelled: bool = False
 
     def run_decision(self) -> Decision:
         """Return the "run" decision for a walk that found no real success."""
         return Decision(False, self.rule, self.detail)
+
+
+DiffRule = Callable[[GateClient, str, str], tuple[Decision | None, int]]
+
+
+@dataclass(frozen=True)
+class MergeChain:
+    merge_commit: CommitRef
+    post_merge_shas: tuple[str, ...]
 
 
 def _is_match(name: str, job_name: str, os_name: str) -> bool:
@@ -156,7 +166,11 @@ def _visit(client: GateClient, run: RunRef, query: JobQuery) -> ChainResult | No
     return None
 
 
-def find_real_success(client: GateClient, query: JobQuery) -> ChainResult:
+def _is_cancelled(result: ChainResult) -> bool:
+    return result.rule == RULE_PREVIOUS_RUN_NOT_SUCCESSFUL and result.detail.startswith("cancelled ")
+
+
+def find_real_success(client: GateClient, query: JobQuery, allow_cancelled: bool = False) -> ChainResult:
     """Walk from the newest earlier run back through gate-skipped jobs to the real success of the queried job.
 
     The newest earlier run must be on ``query.target_sha``. At most ``MAX_CHAIN_HOPS`` runs are visited. The result
@@ -168,10 +182,53 @@ def find_real_success(client: GateClient, query: JobQuery) -> ChainResult:
         return ChainResult(None, RULE_PREVIOUS_RUN_MISSING, "no earlier run of this workflow on the branch")
     if runs[0].head_sha != query.target_sha:
         return ChainResult(None, RULE_PREVIOUS_RUN_MISSING, f"run {runs[0].run_number} is on another commit")
+    first_cancelled: ChainResult | None = None
     for run in runs[:MAX_CHAIN_HOPS]:
         result = _visit(client, run, query)
-        if result is not None:
-            return result
+        if result is None:
+            continue
+        if allow_cancelled and _is_cancelled(result):
+            first_cancelled = first_cancelled or result
+            continue
+        if result.real_sha is not None:
+            return ChainResult(result.real_sha, result.rule, result.detail, first_cancelled is not None)
+        return result
     if len(runs) > MAX_CHAIN_HOPS:
         return ChainResult(None, RULE_CHAIN_TOO_LONG, f"the newest {MAX_CHAIN_HOPS} runs were all skipped")
-    return ChainResult(None, RULE_PREVIOUS_RUN_MISSING, "only gate-skipped runs on the branch")
+    return first_cancelled or ChainResult(None, RULE_PREVIOUS_RUN_MISSING, "only gate-skipped runs on the branch")
+
+
+def find_merge_ancestor(
+    client: GateClient, head_sha: str, diff_rule: DiffRule, max_steps: int = MAX_CHAIN_HOPS
+) -> MergeChain | None:
+    current = commit_ref(client, head_sha)
+    post_merge_shas: list[str] = []
+    while len(current.parents) == 1 and len(post_merge_shas) < max_steps:
+        parent = current.parents[0]
+        if diff_rule(client, parent, current.sha)[0] is not None:
+            return None
+        post_merge_shas.append(current.sha)
+        current = commit_ref(client, parent)
+    if len(current.parents) >= 2:
+        return MergeChain(current, tuple(post_merge_shas))
+    return None
+
+
+def verify_single_parent_chain(
+    client: GateClient, start_sha: str, target_sha: str, diff_rule: DiffRule, non_linear_rule: str
+) -> Decision | None:
+    current = start_sha
+    for _ in range(MAX_CHAIN_HOPS):
+        if current == target_sha:
+            return None
+        commit = commit_ref(client, current)
+        if len(commit.parents) != 1:
+            return Decision(False, non_linear_rule, f"{len(commit.parents)} parents on {current[:12]}")
+        parent = commit.parents[0]
+        blocked = diff_rule(client, parent, current)[0]
+        if blocked is not None:
+            return blocked
+        current = parent
+    if current == target_sha:
+        return None
+    return Decision(False, RULE_CHAIN_TOO_LONG, f"more than {MAX_CHAIN_HOPS} commits before {start_sha[:12]}")

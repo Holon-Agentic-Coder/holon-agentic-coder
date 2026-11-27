@@ -23,10 +23,13 @@ from scripts.ci_bookkeeping_chain import (
     RULE_PREVIOUS_RUN_UNVERIFIED,
     RULE_SHARED_HEAD_BRANCH,
     UNVERIFIED,
+    Decision,
     JobQuery,
     classify_job,
+    find_merge_ancestor,
     find_real_success,
     match_job,
+    verify_single_parent_chain,
 )
 from tests.ci_bookkeeping_fakes import (
     BRANCH,
@@ -413,3 +416,127 @@ def test_the_token_is_sent_as_a_header_and_never_in_a_url_or_the_repr() -> None:
     assert all(TOKEN not in url for url in fake.urls)
     assert fake.auth == [f"Bearer {TOKEN}"] * 3
     assert TOKEN not in repr(client)
+
+
+def bookkeeping_only_diff(client: GateClient, base: str, head: str) -> tuple[Decision | None, int]:
+    result = compare(client, base, head)
+    for path in result.paths:
+        if not path.startswith("plans/"):
+            return Decision(False, "non-bookkeeping-change", path), 0
+    return None, len(result.paths)
+
+
+def test_allow_cancelled_walks_through_cancelled_runs_to_real_success() -> None:
+    fake = FakeGitHub()
+    fake.add_run(47, SHA_A, real_success_job())
+    fake.add_run(48, SHA_C, job(conclusion="cancelled"))
+    fake.add_run(49, SHA_B, job(conclusion="cancelled"))
+
+    result = find_real_success(client_for(fake), query(SHA_B), allow_cancelled=True)
+
+    assert (result.real_sha, result.rule, result.crossed_cancelled) == (SHA_A, RULE_PREVIOUS_RUN_SUCCEEDED, True)
+
+
+def test_allow_cancelled_returns_first_cancelled_when_no_real_success_exists() -> None:
+    fake = FakeGitHub()
+    fake.add_run(48, SHA_A, gate_skipped_job())
+    fake.add_run(49, SHA_B, job(conclusion="cancelled"))
+
+    result = find_real_success(client_for(fake), query(SHA_B), allow_cancelled=True)
+
+    assert (result.real_sha, result.rule) == (None, RULE_PREVIOUS_RUN_NOT_SUCCESSFUL)
+    assert result.detail == "cancelled in run 49"
+
+
+def test_allow_cancelled_stops_at_failure_behind_cancelled_run() -> None:
+    fake = FakeGitHub()
+    fake.add_run(48, SHA_A, job(conclusion="failure"))
+    fake.add_run(49, SHA_B, job(conclusion="cancelled"))
+
+    result = find_real_success(client_for(fake), query(SHA_B), allow_cancelled=True)
+
+    assert (result.real_sha, result.rule) == (None, RULE_PREVIOUS_RUN_NOT_SUCCESSFUL)
+    assert result.detail == "failure in run 48"
+
+
+@pytest.mark.parametrize("post_count", [0, 1, 2])
+def test_find_merge_ancestor_walks_post_merge_bookkeeping_commits(post_count: int) -> None:
+    merge_sha = "1" * 40
+    post_shas = [f"{index + 2}" * 40 for index in range(post_count)]
+    fake = FakeGitHub()
+    fake.commits[merge_sha] = ("t" * 40, [SHA_A, SHA_B])
+    parent = merge_sha
+    for sha in post_shas:
+        fake.commits[sha] = ("t" * 40, [parent])
+        fake.compares[(parent, sha)] = comparison("plans/p.md")
+        parent = sha
+
+    found = find_merge_ancestor(client_for(fake), parent, bookkeeping_only_diff)
+
+    assert found is not None
+    assert found.merge_commit.sha == merge_sha
+    assert found.post_merge_shas == tuple(reversed(post_shas))
+
+
+def test_find_merge_ancestor_stops_on_non_bookkeeping_commit() -> None:
+    merge_sha = "1" * 40
+    fake = FakeGitHub({(merge_sha, SHA_C): comparison("scripts/app.py")})
+    fake.commits[SHA_C] = ("t" * 40, [merge_sha])
+
+    assert find_merge_ancestor(client_for(fake), SHA_C, bookkeeping_only_diff) is None
+    assert fake.calls(f"git/commits/{merge_sha}") == []
+
+
+def test_find_merge_ancestor_respects_max_steps() -> None:
+    merge_sha = "1" * 40
+    post_1 = "2" * 40
+    post_2 = "3" * 40
+    fake = FakeGitHub({(merge_sha, post_1): comparison("plans/a.md"), (post_1, post_2): comparison("plans/b.md")})
+    fake.commits[merge_sha] = ("t" * 40, [SHA_A, SHA_B])
+    fake.commits[post_1] = ("t" * 40, [merge_sha])
+    fake.commits[post_2] = ("t" * 40, [post_1])
+
+    assert find_merge_ancestor(client_for(fake), post_2, bookkeeping_only_diff, max_steps=1) is None
+    assert find_merge_ancestor(client_for(fake), post_2, bookkeeping_only_diff, max_steps=2) is not None
+
+
+def test_verify_single_parent_chain_accepts_bookkeeping_only_linear_chain() -> None:
+    fake = FakeGitHub({(SHA_A, SHA_B): comparison("plans/a.md"), (SHA_B, SHA_C): comparison("plans/b.md")})
+    fake.commits[SHA_B] = ("t" * 40, [SHA_A])
+    fake.commits[SHA_C] = ("t" * 40, [SHA_B])
+
+    assert verify_single_parent_chain(client_for(fake), SHA_C, SHA_A, bookkeeping_only_diff, "non-linear") is None
+
+
+def test_verify_single_parent_chain_rejects_non_bookkeeping_step() -> None:
+    fake = FakeGitHub({(SHA_A, SHA_B): comparison("scripts/x.py"), (SHA_B, SHA_C): comparison("plans/b.md")})
+    fake.commits[SHA_B] = ("t" * 40, [SHA_A])
+    fake.commits[SHA_C] = ("t" * 40, [SHA_B])
+
+    decision = verify_single_parent_chain(client_for(fake), SHA_C, SHA_A, bookkeeping_only_diff, "non-linear")
+
+    assert decision == Decision(False, "non-bookkeeping-change", "scripts/x.py")
+
+
+def test_verify_single_parent_chain_rejects_non_linear_commit() -> None:
+    fake = FakeGitHub({(SHA_B, SHA_C): comparison("plans/b.md")})
+    fake.commits[SHA_B] = ("t" * 40, [SHA_A, "9" * 40])
+    fake.commits[SHA_C] = ("t" * 40, [SHA_B])
+
+    decision = verify_single_parent_chain(client_for(fake), SHA_C, SHA_A, bookkeeping_only_diff, "non-linear")
+
+    assert decision == Decision(False, "non-linear", f"2 parents on {SHA_B[:12]}")
+
+
+def test_verify_single_parent_chain_enforces_hop_limit() -> None:
+    fake = FakeGitHub()
+    parent = SHA_A
+    for index in range(MAX_CHAIN_HOPS + 1):
+        sha = f"{index:040x}"
+        fake.commits[sha] = ("t" * 40, [parent])
+        fake.compares[(parent, sha)] = comparison("plans/p.md")
+        parent = sha
+
+    decision = verify_single_parent_chain(client_for(fake), parent, SHA_A, bookkeeping_only_diff, "non-linear")
+
+    assert decision is not None and decision.rule == RULE_CHAIN_TOO_LONG

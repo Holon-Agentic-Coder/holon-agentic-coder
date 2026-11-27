@@ -286,6 +286,22 @@ def _sync_prompt_file(prompt_file: str, full_prompt: str) -> None:
         logger.warning("Failed to sync prompt file '%s': %s", prompt_file, err)
 
 
+def _discover_local_provider_from_models_json(models_path: str) -> str:
+    if not models_path or not os.path.isfile(models_path):
+        return ""
+    try:
+        with open(models_path, encoding="utf-8") as f:
+            m_data = json.load(f)
+        provs = m_data.get("providers", {})
+        if len(provs) == 1:
+            return next(iter(provs.keys()))
+        if "local" in provs:
+            return "local"
+    except (OSError, json.JSONDecodeError, ValueError, TypeError, AttributeError) as err:
+        logger.warning("Failed to discover local provider from %s: %s", models_path, redact_agent_secrets(str(err)))
+    return ""
+
+
 class StandardAgentRunner(AgentRunner):
     uses_stdin: bool = True
 
@@ -403,17 +419,7 @@ class StandardAgentRunner(AgentRunner):
             if not local_prov:
                 agent_dir = os.getenv(local_llm.ENV_PI_AGENT_DIR, "")
                 models_path = os.path.join(agent_dir, "models.json") if agent_dir else ""
-                if models_path and os.path.isfile(models_path):
-                    try:
-                        with open(models_path, encoding="utf-8") as f:
-                            m_data = json.load(f)
-                        provs = m_data.get("providers", {})
-                        if len(provs) == 1:
-                            local_prov = next(iter(provs.keys()))
-                        elif "local" in provs:
-                            local_prov = "local"
-                    except Exception:
-                        pass
+                local_prov = _discover_local_provider_from_models_json(models_path)
             if local_prov:
                 os.environ["HOLON_AGENT_PROVIDER"] = local_prov
 

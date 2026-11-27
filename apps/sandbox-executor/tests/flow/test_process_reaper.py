@@ -1,5 +1,3 @@
-"""Reaping a flow run's children (flow/process_reaper.py, launcher/run_tracking.py) with a fake docker on PATH."""
-
 from __future__ import annotations
 
 import json
@@ -27,15 +25,13 @@ esac
 exit 0
 """
 
-#: Takes the run lock of ``alpha`` in ``argv[1]``, launches a tracked fake ``docker run`` (in a non-daemon thread for
-#: the signal cases, so interpreter shutdown would wait for it) and an untracked ``sleep``, reports their pids, then
-#: waits for one stdin line and, in ``exit`` mode, halts with exit 1.
-_VICTIM = """
+_RUN_LOCK_HOLDER_WITH_TRACKED_AND_UNTRACKED_CHILDREN = """
 import json, subprocess, sys, threading, time
 from sandbox_executor.flow import run_lock
 from sandbox_executor.launcher import run_tracking
 run_lock.hold_flow_run_lock(sys.argv[1], "alpha")
 cmd = ["docker", "run", *run_tracking.container_identity_args("executor"), "img"]
+# why: the docker thread is non-daemon in the signal cases, so interpreter shutdown would wait for it
 threading.Thread(target=run_tracking.run_tracked, args=(cmd,), daemon=sys.argv[2] == "exit").start()
 sleeper = subprocess.Popen(["sleep", "300"])
 deadline = time.monotonic() + 10
@@ -48,8 +44,8 @@ sys.exit(1)
 """
 
 
-def _gone(pid: int) -> bool:
-    """True once ``pid`` no longer exists or is a zombie (an orphan whose reaper has not collected it yet)."""
+def _pid_is_gone_or_zombie(pid: int) -> bool:
+    # why: a zombie counts as gone; it is an orphan whose reaper has not collected it yet
     try:
         with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
             return handle.read().rsplit(")", 1)[1].split()[0] == "Z"
@@ -68,14 +64,13 @@ def _wait_gone(pids: list[int], timeout: float = 15.0) -> list[int]:
     deadline = time.monotonic() + timeout
     alive = list(pids)
     while alive and time.monotonic() < deadline:
-        alive = [pid for pid in alive if not _gone(pid)]
+        alive = [pid for pid in alive if not _pid_is_gone_or_zombie(pid)]
         time.sleep(0.05)
     return alive
 
 
 @pytest.fixture
-def fake_docker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A fake ``docker`` first on PATH that logs its argv; returns the log."""
+def fake_docker_logging_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     docker = bin_dir / "docker"
@@ -97,7 +92,7 @@ def repo(tmp_path: Path) -> Path:
 
 def _run_victim(repo: Path, mode: str, halt) -> tuple[int, dict[str, object]]:
     victim = subprocess.Popen(
-        [sys.executable, "-c", _VICTIM, str(repo), mode],
+        [sys.executable, "-c", _RUN_LOCK_HOLDER_WITH_TRACKED_AND_UNTRACKED_CHILDREN, str(repo), mode],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         text=True,
@@ -110,7 +105,7 @@ def _run_victim(repo: Path, mode: str, halt) -> tuple[int, dict[str, object]]:
         return victim.wait(timeout=30), pids
     finally:
         for pid in (victim.pid, pids.get("client"), pids.get("sleep")):
-            if isinstance(pid, int) and not _gone(pid):
+            if isinstance(pid, int) and not _pid_is_gone_or_zombie(pid):
                 os.kill(pid, signal.SIGKILL)
         victim.wait(timeout=10)
 
@@ -134,12 +129,14 @@ def _finish(victim: subprocess.Popen[str]) -> None:
     ],
     ids=["sigterm", "sigint", "halt"],
 )
-def test_a_halted_run_leaves_no_child_and_stops_its_container(repo, fake_docker, mode, halt, codes) -> None:
+def test_a_halted_run_leaves_no_child_and_stops_its_container(
+    repo, fake_docker_logging_argv, mode, halt, codes
+) -> None:
     code, pids = _run_victim(repo, mode, halt)
 
     assert code in codes
     assert _wait_gone([int(pids["client"]), int(pids["sleep"])]) == []
-    log = fake_docker.read_text(encoding="utf-8").splitlines()
+    log = fake_docker_logging_argv.read_text(encoding="utf-8").splitlines()
     name = f"holon-alpha-executor-{pids['run_id']}-1"
     assert f"run --name {name} --label holon.flow.run={pids['run_id']} img" in log
     assert f"stop --time 10 {name}" in log

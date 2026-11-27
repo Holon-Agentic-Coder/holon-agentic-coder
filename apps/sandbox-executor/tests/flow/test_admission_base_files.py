@@ -1,5 +1,3 @@
-"""The base-branch file listing Stage 3 admission expands touch sets against (flow/base_files.py)."""
-
 from __future__ import annotations
 
 import subprocess
@@ -14,7 +12,8 @@ from tests.flow.helpers import _git, no_worktrees, seed_base_files
 def test_lists_the_origin_tracking_tree_without_metadata(flow_repos):
     host, _origin = flow_repos
     seed_base_files(host, ["docs/guide.md", "plans/P-1.md", "dir with space/a b.py"])
-    _git(host, "reset", "-q", "--hard", "HEAD~1")  # the local main lags: origin/main is listed first
+    # why: the local main lags, so only a listing of origin/main sees every seeded file.
+    _git(host, "reset", "-q", "--hard", "HEAD~1")
     files = list_base_files(str(host), "main", no_worktrees)
     assert isinstance(files, frozenset)
     assert {"src/app.py", "docs/guide.md", "dir with space/a b.py", ".gitignore"} <= files

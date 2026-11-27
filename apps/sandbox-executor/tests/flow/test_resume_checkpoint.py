@@ -1,9 +1,3 @@
-"""A ``--from-stage`` resume keeps the intent's checkpoint intact: it is loaded, never clobbered, and stays complete.
-
-Its per-run switches come only from the flags of the resume, and ``--agent`` / ``--model`` override the checkpoint's
-runner and model for every remaining role.
-"""
-
 import argparse
 import json
 import logging
@@ -56,8 +50,7 @@ def worktree(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def checkpoint(worktree: Path) -> Path:
-    """A completed checkpoint at the intent's default path in the worktree."""
+def completed_checkpoint_at_default_path(worktree: Path) -> Path:
     path = Path(save_checkpoint(_completed_context(worktree)))
     assert path == worktree / ".holon" / "flow" / f"checkpoint-{SLUG}.json"
     return path
@@ -85,11 +78,13 @@ def _result(stage: FlowStage, status: StageStatus):
     return lambda context: StageResult(stage=stage, status=status)
 
 
-def test_from_stage_without_checkpoint_loads_the_intent_checkpoint(checkpoint, intent_file, worktree):
+def test_from_stage_without_checkpoint_loads_the_intent_checkpoint(
+    completed_checkpoint_at_default_path, intent_file, worktree
+):
     args = _resume_args(intent_file, worktree)
     context, intent_data, _agent, _model = _resolve_checkpoint_and_intent(args)
 
-    assert args.checkpoint == str(checkpoint)
+    assert args.checkpoint == str(completed_checkpoint_at_default_path)
     assert args.from_stage == "review"
     assert intent_data == {}
     assert context.execution_branch == EXECUTION_BRANCH
@@ -116,9 +111,9 @@ def test_from_stage_without_checkpoint_loads_the_intent_checkpoint(checkpoint, i
 @pytest.mark.parametrize("from_stage", ["review", "calibrate"])
 @pytest.mark.parametrize("explicit_path", [False, True])
 def test_a_resume_that_cannot_start_leaves_the_checkpoint_byte_for_byte(
-    checkpoint, worktree, from_stage, explicit_path
+    completed_checkpoint_at_default_path, worktree, from_stage, explicit_path
 ):
-    before = checkpoint.read_bytes()
+    before = completed_checkpoint_at_default_path.read_bytes()
     fresh = FlowContext(target_worktree=str(worktree), intent_data=_intent_data(), dry_run=True)
 
     with (
@@ -126,7 +121,9 @@ def test_a_resume_that_cannot_start_leaves_the_checkpoint_byte_for_byte(
         patch("sandbox_executor.flow.pipeline.run_calibrate_stage") as calibrate,
     ):
         results = PipelineEngine(
-            fresh, from_stage=from_stage, checkpoint_path=str(checkpoint) if explicit_path else None
+            fresh,
+            from_stage=from_stage,
+            checkpoint_path=str(completed_checkpoint_at_default_path) if explicit_path else None,
         ).run()
 
     review.assert_not_called()
@@ -134,7 +131,7 @@ def test_a_resume_that_cannot_start_leaves_the_checkpoint_byte_for_byte(
     assert results[from_stage].status == StageStatus.FAILED
     assert "no execution_branch" in results[from_stage].error
     assert "The checkpoint was left unchanged." in results[from_stage].error
-    assert checkpoint.read_bytes() == before
+    assert completed_checkpoint_at_default_path.read_bytes() == before
 
 
 @pytest.mark.parametrize(
@@ -146,7 +143,9 @@ def test_a_resume_that_cannot_start_leaves_the_checkpoint_byte_for_byte(
         (StageStatus.SUCCESS, StageStatus.FAILED, "calibrate", STAGES[:4]),
     ],
 )
-def test_a_resume_from_review_keeps_earlier_stages_and_the_current_stage(checkpoint, intent_file, worktree, case):
+def test_a_resume_from_review_keeps_earlier_stages_and_the_current_stage(
+    completed_checkpoint_at_default_path, intent_file, worktree, case
+):
     review_status, calibrate_status, current_stage, completed = case
     args = _resume_args(intent_file, worktree)
     context, *_ = _resolve_checkpoint_and_intent(args)
@@ -160,7 +159,7 @@ def test_a_resume_from_review_keeps_earlier_stages_and_the_current_stage(checkpo
     ):
         PipelineEngine(context, from_stage=args.from_stage, checkpoint_path=args.checkpoint).run()
 
-    saved = load_checkpoint(str(checkpoint))
+    saved = load_checkpoint(str(completed_checkpoint_at_default_path))
     assert saved.current_stage == FlowStage.from_str(current_stage)
     assert sorted(saved.completed_stages) == sorted(completed)
     assert saved.context.intent_branch == INTENT_BRANCH
@@ -180,12 +179,14 @@ def test_without_a_checkpoint_the_resume_starts_from_a_fresh_context(intent_file
     assert intent_data["slug"] == SLUG
 
 
-def test_discovery_needs_from_stage_and_respects_an_explicit_checkpoint(checkpoint, intent_file, worktree):
+def test_discovery_needs_from_stage_and_respects_an_explicit_checkpoint(
+    completed_checkpoint_at_default_path, intent_file, worktree
+):
     assert discover_resume_checkpoint(_resume_args(intent_file, worktree, from_stage=None)) is None
     explicit = _resume_args(intent_file, worktree)
     explicit.checkpoint = str(worktree / "other.json")
     assert discover_resume_checkpoint(explicit) is None
-    assert discover_resume_checkpoint(_resume_args(intent_file, worktree)) == str(checkpoint)
+    assert discover_resume_checkpoint(_resume_args(intent_file, worktree)) == str(completed_checkpoint_at_default_path)
 
 
 def test_a_sub_intent_checkpoint_is_found_under_its_branch_key(tmp_path, worktree):
@@ -210,8 +211,7 @@ def test_the_dedicated_flow_worktree_is_probed_after_the_target(tmp_path, intent
     assert discover_resume_checkpoint(_resume_args(intent_file, target)) == saved
 
 
-def _run_args(intent_file: Path, worktree: Path, **flags: Any) -> argparse.Namespace:
-    """Every ``holon flow`` flag of a dry, non-pushing resume from review, with ``flags`` overriding."""
+def _dry_review_resume_args(intent_file: Path, worktree: Path, **flags: Any) -> argparse.Namespace:
     args = _resume_args(intent_file, worktree)
     defaults = {
         "dry_run": True,
@@ -228,8 +228,7 @@ def _run_args(intent_file: Path, worktree: Path, **flags: Any) -> argparse.Names
     return args
 
 
-def _resume(args: argparse.Namespace) -> tuple[FlowContext, list[tuple[str, str, str]]]:
-    """Resume as ``holon flow`` does, with fake Stage 4 and Stage 5 that record the runner and model they see."""
+def _resume_with_recording_stages(args: argparse.Namespace) -> tuple[FlowContext, list[tuple[str, str, str]]]:
     context, intent_data, agent, model = _resolve_checkpoint_and_intent(args)
     with patch("sandbox_executor.launcher.coherence.resolve_flow_proxy_choice", return_value=_NO_PROXY):
         context = _build_flow_context(args, context, intent_data, agent, model)
@@ -259,10 +258,10 @@ def _save_runner_checkpoint(worktree: Path, **attributes: Any) -> Path:
 
 def test_a_stored_skip_calibrate_is_dropped_and_logged_when_the_resume_does_not_pass_it(worktree, intent_file, caplog):
     _save_runner_checkpoint(worktree, skip_calibrate=True, auto_calibrate=False)
-    args = _run_args(intent_file, worktree)
+    args = _dry_review_resume_args(intent_file, worktree)
 
     with caplog.at_level(logging.WARNING, logger="sandbox_executor.cli.commands._flow_resume"):
-        context, seen = _resume(args)
+        context, seen = _resume_with_recording_stages(args)
 
     assert [role for role, _agent, _model in seen] == ["review", "calibrate"]
     dropped = "Resume dropped the stored skip_calibrate from the checkpoint"
@@ -279,7 +278,7 @@ def test_a_legacy_checkpoint_skip_review_never_skips_review_on_resume(worktree, 
     data["context"]["skip_review"] = True
     path.write_text(json.dumps(data), encoding="utf-8")
 
-    context, seen = _resume(_run_args(intent_file, worktree))
+    context, seen = _resume_with_recording_stages(_dry_review_resume_args(intent_file, worktree))
 
     assert [role for role, _agent, _model in seen] == ["review", "calibrate"]
     assert not hasattr(context, "skip_review")
@@ -288,9 +287,9 @@ def test_a_legacy_checkpoint_skip_review_never_skips_review_on_resume(worktree, 
 
 def test_only_the_switches_passed_to_this_run_take_effect(worktree, intent_file):
     _save_runner_checkpoint(worktree, skip_calibrate=True, auto_calibrate=False)
-    args = _run_args(intent_file, worktree, skip_calibrate=True)
+    args = _dry_review_resume_args(intent_file, worktree, skip_calibrate=True)
 
-    context, seen = _resume(args)
+    context, seen = _resume_with_recording_stages(args)
 
     assert [role for role, _agent, _model in seen] == ["review"]
     assert {name: getattr(context, name) for name in RUN_SWITCHES} == {
@@ -306,7 +305,7 @@ def test_agent_on_resume_overrides_the_checkpoint_runner_in_the_resumed_context_
 ):
     _save_runner_checkpoint(worktree, agent="antigravity-agent", model=default_model_for("antigravity-agent"))
     claude_model = default_model_for("claude-agent")
-    args = _run_args(intent_file, worktree)
+    args = _dry_review_resume_args(intent_file, worktree)
     args.agent = "claude-agent"
     if model_from == "flag":
         args.model = claude_model
@@ -314,7 +313,7 @@ def test_agent_on_resume_overrides_the_checkpoint_runner_in_the_resumed_context_
         monkeypatch.setenv("HOLON_MODEL", claude_model)
 
     with caplog.at_level(logging.INFO, logger="sandbox_executor.cli.commands._flow_resume"):
-        _context, seen = _resume(args)
+        _context, seen = _resume_with_recording_stages(args)
 
     assert seen == [("review", "claude-agent", claude_model), ("calibrate", "claude-agent", claude_model)]
     assert "Agent runner claude-agent from --agent overrides antigravity-agent" in caplog.text
@@ -329,10 +328,13 @@ def test_a_resume_without_agent_or_model_keeps_the_checkpoint_runner(worktree, i
     monkeypatch.setenv("HOLON_MODEL", default_model_for("claude-agent"))
     stored_model = default_model_for("antigravity-agent")
     _save_runner_checkpoint(worktree, agent="antigravity-agent", model=stored_model)
-    args = _run_args(intent_file, worktree)
+    args = _dry_review_resume_args(intent_file, worktree)
 
-    assert _resolve_checkpoint_and_intent(_run_args(intent_file, worktree))[2:] == ("antigravity-agent", stored_model)
-    _context, seen = _resume(args)
+    assert _resolve_checkpoint_and_intent(_dry_review_resume_args(intent_file, worktree))[2:] == (
+        "antigravity-agent",
+        stored_model,
+    )
+    _context, seen = _resume_with_recording_stages(args)
 
     assert seen == [("review", "antigravity-agent", stored_model), ("calibrate", "antigravity-agent", stored_model)]
     saved = load_checkpoint(args.checkpoint).context
@@ -354,7 +356,7 @@ def test_a_checkpoint_without_switches_or_attribution_still_loads_and_resumes(wo
     assert not any(getattr(loaded, name) for name in RUN_SWITCHES)
     assert (loaded.agent, loaded.model) == (LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL)
 
-    _context, seen = _resume(_run_args(intent_file, worktree))
+    _context, seen = _resume_with_recording_stages(_dry_review_resume_args(intent_file, worktree))
 
     assert seen == [
         ("review", LEGACY_DEFAULT_AGENT, LEGACY_DEFAULT_MODEL),

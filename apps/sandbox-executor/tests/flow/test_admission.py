@@ -1,5 +1,3 @@
-"""Stage 3 touch-set admission (flow/admission.py): overlap decisions, refusal text and the recorded override."""
-
 from __future__ import annotations
 
 import functools
@@ -48,11 +46,6 @@ def other_pr(diff: list[str] | str) -> FakeGh:
 
 @pytest.fixture
 def own_plan_with(flow_repos, tmp_path, tmp_path_factory, _flow_repos_template) -> Callable[..., Path]:
-    """Makes the host whose own plan branch declares ``touch_set`` and is pushed, so an override row can be appended.
-
-    ``before`` and ``after`` are files committed and pushed on main before and after the plan branch is cut. The
-    whole state is a template derived once per run from ``flow_repos``'s; the test's copy replaces ``flow_repos``'s.
-    """
     names = ("origin.git", "host")
 
     def make(touch_set: list[dict], before: tuple[str, ...] = (), after: tuple[str, ...] = ()) -> Path:
@@ -61,6 +54,7 @@ def own_plan_with(flow_repos, tmp_path, tmp_path_factory, _flow_repos_template) 
             if before:
                 seed_base_files(host, list(before))
             make_plan_branch(host, OWN_PLAN, touch_set)
+            # why: the plan branch is pushed so an override row can be appended.
             _git(host, "push", "-q", "origin", OWN_PLAN)
             if after:
                 seed_base_files(host, list(after))
@@ -76,15 +70,11 @@ def own_plan_with(flow_repos, tmp_path, tmp_path_factory, _flow_repos_template) 
 
 @pytest.fixture
 def own_plan(own_plan_with):
-    """The run's own plan branch (declaring src/app.py and docs/), pushed so an override row can be appended.
-
-    The base branch holds src/app.py and docs/guide.md, so both entries name an existing file.
-    """
+    # why: the base holds docs/guide.md, so both touch-set entries name an existing file.
     return own_plan_with([{"path": "src/app.py"}, {"path": "docs/"}], before=("docs/guide.md",))
 
 
 def test_a_pull_request_is_compared_by_its_diff_not_its_planned_touch_set(own_plan):
-    """AC2: the pull request's plan declares src/ and docs/, but its diff (lib/x.py) touches none of our files."""
     make_plan_branch(own_plan, OTHER_PLAN, [{"path": "src/"}, {"path": "docs/"}])
     decision = check_admission(own_context(own_plan), other_pr(["lib/x.py"]), no_worktrees)
     assert decision == AdmissionDecision(admitted=True)
@@ -121,7 +111,8 @@ def test_a_plan_without_a_touch_set_is_refused_unless_overridden(flow_repos):
     refused = check_admission(own_context(host), gh, no_worktrees)
     assert not refused.admitted and "records no touch set" in str(refused.reason)
     assert "re-plan" in format_refusal(refused)
-    assert gh.calls == []  # nothing to compare, so discovery never runs
+    # why: without a touch set there is nothing to compare, so discovery never runs.
+    assert gh.calls == []
     overridden = check_admission(own_context(host, allow_overlap=True), gh, no_worktrees)
     assert overridden.admitted and overridden.overridden
 
@@ -159,7 +150,7 @@ def test_override_appends_exactly_one_row(own_plan, monkeypatch):
 
 
 def test_override_is_recorded_once_per_plan(own_plan, monkeypatch):
-    """A resume under the same override adds no plan-branch commit, so the plan tip partial work forked from stays."""
+    # why: partial work forks from the plan tip, so a resume under the same override must not move it.
     _use_real_check(monkeypatch, other_pr(["src/app.py"]))
     assert admission.admission_stage_failure(own_context(own_plan, allow_overlap=True), "2026-11-14T00:00:00Z") is None
     tip = _git(own_plan, "rev-parse", f"refs/remotes/origin/{OWN_PLAN}")
@@ -191,7 +182,8 @@ def test_override_that_cannot_be_recorded_is_refused(own_plan, monkeypatch):
     assert result is not None and result.status == StageStatus.FAILED
     assert result.payload["dispatched"] is False
     assert "could not be recorded" in str(result.error) and "push rejected" in str(result.error)
-    assert context.admission is None and _admission(own_plan) is None  # the admitted record was undone
+    admitted_record_rolled_back = context.admission is None and _default_checkpoint_admission(own_plan) is None
+    assert admitted_record_rolled_back
 
 
 def test_touch_set_violation_reports_an_unrecorded_superseding_row(own_plan, monkeypatch):
@@ -227,14 +219,13 @@ def test_ledger_readers_never_count_the_override_row(tmp_path):
     assert _latest_execution_summary([summary, override], "E-1-x") == summary
 
 
-def _admission(host: Path) -> dict | None:
-    """The top-level admission object of the run's own checkpoint (own_context has no slug: ``default``)."""
+def _default_checkpoint_admission(host: Path) -> dict | None:
+    # why: own_context has no slug, so its checkpoint is the "default" one.
     path = Path(get_default_checkpoint_path(str(host), "default"))
     return json.loads(path.read_text(encoding="utf-8")).get("admission") if path.exists() else None
 
 
-def _local_flow(host: Path, tmp_path: Path, touch_set: list[dict] | None = None) -> Path:
-    """A flow at execute in a second worktree whose plan declares ``touch_set`` (by default docs/, as the own plan)."""
+def _second_worktree_flow_at_execute(host: Path, tmp_path: Path, touch_set: list[dict] | None = None) -> Path:
     make_plan_branch(host, THIRD_PLAN, touch_set or [{"path": "docs/"}])
     second = tmp_path / "second"
     _git(host, "worktree", "add", "-q", "--detach", str(second), "main")
@@ -251,11 +242,11 @@ def _clock(monkeypatch: pytest.MonkeyPatch, *times: str) -> None:
 
 
 def test_refusal_records_blocked_with_each_pull_request_and_local_flow(own_plan, tmp_path, monkeypatch):
-    second = _local_flow(own_plan, tmp_path)
+    second = _second_worktree_flow_at_execute(own_plan, tmp_path)
     _clock(monkeypatch, "2026-11-20T01:00:00.000Z", "2026-11-20T01:00:00.000Z")
     decision = check_admission(own_context(own_plan), other_pr(["src/app.py"]))
     assert not decision.admitted
-    recorded = _admission(own_plan)
+    recorded = _default_checkpoint_admission(own_plan)
     assert recorded is not None and recorded["state"] == "blocked"
     assert recorded["blocked_since"] == "2026-11-20T01:00:00.000Z"
     pull_request, local = recorded["blocked_by"]
@@ -266,13 +257,13 @@ def test_refusal_records_blocked_with_each_pull_request_and_local_flow(own_plan,
 
 def test_admission_records_admitted(own_plan):
     assert check_admission(own_context(own_plan), other_pr(["lib/other.py"]), no_worktrees).admitted
-    assert _admission(own_plan) == {"state": "admitted"}
+    assert _default_checkpoint_admission(own_plan) == {"state": "admitted"}
 
 
 def test_override_records_admitted_with_the_override(own_plan):
     decision = check_admission(own_context(own_plan, allow_overlap=True), other_pr(["src/app.py"]), no_worktrees)
     assert decision.admitted and decision.overridden
-    assert _admission(own_plan) == {
+    assert _default_checkpoint_admission(own_plan) == {
         "state": "admitted",
         "override": True,
         "override_conflicts": [{"flow": f"pull request #7 (branch {OTHER_HEAD})", "files": ["src/app.py"]}],
@@ -283,10 +274,10 @@ def test_blocked_since_is_kept_and_blocked_by_replaced_across_refusals(own_plan,
     _clock(monkeypatch, *(f"2026-11-20T0{hour}:00:00.000Z" for hour in range(1, 5)))
     context = own_context(own_plan)
     check_admission(context, other_pr(["src/app.py"]), no_worktrees)
-    first = _admission(own_plan)
+    first = _default_checkpoint_admission(own_plan)
     later_pr = FakeGh([{"number": 8, "headRefName": OTHER_HEAD, "baseRefName": "main"}], {8: ["docs/guide.md"]})
     check_admission(context, later_pr, no_worktrees)
-    second = _admission(own_plan)
+    second = _default_checkpoint_admission(own_plan)
     assert first is not None and second is not None
     assert first["blocked_since"] == second["blocked_since"] == "2026-11-20T01:00:00.000Z"
     assert [entry["number"] for entry in first["blocked_by"]] == [7]
@@ -295,7 +286,7 @@ def test_blocked_since_is_kept_and_blocked_by_replaced_across_refusals(own_plan,
 
 def test_non_overlap_refusals_record_nothing(own_plan):
     decision = check_admission(own_context(own_plan), FakeGh([], {}, fail=True), no_worktrees)
-    assert not decision.admitted and _admission(own_plan) is None
+    assert not decision.admitted and _default_checkpoint_admission(own_plan) is None
 
 
 def test_a_lock_that_cannot_be_taken_fails_closed(tmp_path):
@@ -311,7 +302,7 @@ def test_a_lock_failure_refuses_even_under_allow_overlap(tmp_path):
 
 
 def test_an_unsaved_admission_state_refuses_even_under_allow_overlap(own_plan, monkeypatch):
-    """A blocked checkpoint that cannot be replaced would hide the overriding run from discovery: refuse it."""
+    # why: a blocked checkpoint that cannot be replaced would hide the overriding run from discovery.
     monkeypatch.setattr(admission, "save_admission", lambda context, record: "disk full")
     context = own_context(own_plan, allow_overlap=True)
     decision = check_admission(context, other_pr(["src/app.py"]), no_worktrees)
@@ -333,33 +324,36 @@ def test_the_lock_uses_the_injected_git_runner(own_plan):
     assert ["rev-parse", "--git-common-dir"] in calls
 
 
+def _bind_engine_checkpoint_path(context, checkpoint_path):
+    PipelineEngine(context, checkpoint_path=str(checkpoint_path))
+
+
 def test_admission_state_is_saved_at_the_engines_checkpoint_path(own_plan, tmp_path):
     custom = tmp_path / "custom-checkpoint.json"
     context = own_context(own_plan)
-    PipelineEngine(context, checkpoint_path=str(custom))  # the engine hands its --checkpoint path to the context
+    _bind_engine_checkpoint_path(context, custom)
     assert check_admission(context, other_pr(["src/app.py"]), no_worktrees).blocked_by
     assert json.loads(custom.read_text(encoding="utf-8"))["context"]["admission"]["state"] == "blocked"
-    assert _admission(own_plan) is None  # no frozen copy at the default path
+    assert _default_checkpoint_admission(own_plan) is None
 
 
 def test_dry_run_writes_no_admission_state(own_plan, monkeypatch):
     _use_real_check(monkeypatch, other_pr(["src/app.py"]))
     context = own_context(own_plan, dry_run=True)
     assert admission.admission_stage_failure(context, "2026-11-14T00:00:00Z") is None
-    assert context.admission is None and _admission(own_plan) is None
+    assert context.admission is None and _default_checkpoint_admission(own_plan) is None
 
 
-# Acceptance tests of the concrete-file overlap rule: new files, pull request diffs, existing files, refusal text.
 WILDCARDS = [{"path": "tests/test_*.py"}, {"path": "tests/flow/**/test_*.py"}, {"path": "apps/x/tests/"}]
 NEW_TESTS = ["tests/test_new.py", "tests/flow/a/test_new.py", "apps/x/tests/test_new.py"]
 BASE_TESTS = ["tests/test_old.py", "tests/flow/a/test_old.py", "apps/x/tests/test_old.py"]
 
 
 def test_new_files_never_overlap_folder_or_wildcard_entries(own_plan_with, tmp_path):
-    """AC1: a pull request, or a local flow, adding new files under our wildcard and folder entries is admitted."""
-    host = own_plan_with(WILDCARDS, after=tuple(BASE_TESTS))  # the wildcards match existing files too, not new ones
+    # why: base files under the wildcards prove the entries match existing files, never the new ones.
+    host = own_plan_with(WILDCARDS, after=tuple(BASE_TESTS))
     assert check_admission(own_context(host), other_pr(NEW_TESTS), no_worktrees).admitted
-    _local_flow(host, tmp_path, [{"path": path} for path in NEW_TESTS])
+    _second_worktree_flow_at_execute(host, tmp_path, [{"path": path} for path in NEW_TESTS])
     decision = check_admission(own_context(host), other_pr([]))
     assert decision == AdmissionDecision(admitted=True)
 
@@ -369,18 +363,18 @@ def test_an_identical_new_literal_path_still_overlaps(own_plan_with, tmp_path):
     assert check_admission(own_context(host), other_pr(["src/new.py"]), no_worktrees).conflicts[0].files == (
         "src/new.py",
     )
-    _local_flow(host, tmp_path, [{"path": "src/new.py"}])
+    _second_worktree_flow_at_execute(host, tmp_path, [{"path": "src/new.py"}])
     decision = check_admission(own_context(host), other_pr([]))
     assert not decision.admitted and [c.files for c in decision.conflicts] == [("src/new.py",)]
 
 
-def test_an_existing_file_under_a_folder_entry_still_overlaps(own_plan_with, tmp_path):
-    """AC3 and AC4: a pull request or a local flow touching an existing file below our folder entry is refused, and
-    the refusal names the concrete file, never the bare folder pattern."""
+def test_an_existing_file_under_a_folder_entry_still_overlaps_and_is_named_concretely(own_plan_with, tmp_path):
     host = own_plan_with([{"path": "apps/x/tests/"}], after=tuple(BASE_TESTS))
     by_pr = check_admission(own_context(host), other_pr(["apps/x/tests/test_old.py"]), no_worktrees)
     assert not by_pr.admitted and by_pr.conflicts[0].files == ("apps/x/tests/test_old.py",)
-    _local_flow(host, tmp_path, [{"path": "apps/x/tests/test_old.py"}, {"path": "apps/x/tests/test_new.py"}])
+    _second_worktree_flow_at_execute(
+        host, tmp_path, [{"path": "apps/x/tests/test_old.py"}, {"path": "apps/x/tests/test_new.py"}]
+    )
     by_local = check_admission(own_context(host), other_pr([]))
     assert not by_local.admitted
     assert [c.files for c in by_local.conflicts] == [("apps/x/tests/test_old.py",)]
@@ -391,10 +385,9 @@ def test_an_existing_file_under_a_folder_entry_still_overlaps(own_plan_with, tmp
 
 
 def test_a_folder_against_folder_refusal_lists_twenty_files_and_counts_the_rest(own_plan_with, tmp_path):
-    """AC4: the message names at most 20 concrete files per flow; the payload and blocked_by keep all of them."""
     seeded = [f"lib/m{n:02d}.py" for n in range(25)]
     host = own_plan_with([{"path": "lib/"}], after=tuple(seeded))
-    _local_flow(host, tmp_path, [{"path": "lib/"}, {"path": "lib/brand_new.py"}])
+    _second_worktree_flow_at_execute(host, tmp_path, [{"path": "lib/"}, {"path": "lib/brand_new.py"}])
     decision = check_admission(own_context(host), other_pr([]))
     assert decision.conflicts[0].files == tuple(seeded) and decision.blocked_by[0].files == tuple(seeded)
     assert decision.to_payload()["conflicts"][0]["files"] == seeded
@@ -409,7 +402,7 @@ def test_a_base_listing_failure_fails_closed(own_plan):
         return no_worktrees(args, cwd)
 
     decision = check_admission(own_context(own_plan), other_pr(["lib/x.py"]), no_ls_tree)
-    assert not decision.admitted and not decision.blocked_by and _admission(own_plan) is None
+    assert not decision.admitted and not decision.blocked_by and _default_checkpoint_admission(own_plan) is None
     assert decision.reason is not None and decision.reason.startswith(
         "the files of the base branch could not be listed"
     )
@@ -423,12 +416,13 @@ def test_an_unresolved_target_branch_fails_closed(own_plan):
 
 
 def test_with_nothing_in_flight_the_base_is_never_listed(own_plan):
-    context = own_context(own_plan, intent_data={"target_branch": "release-9"})  # an unresolvable base is never read
+    # why: an unresolvable base proves the base is never read.
+    context = own_context(own_plan, intent_data={"target_branch": "release-9"})
     assert check_admission(context, FakeGh([], {}), no_worktrees) == AdmissionDecision(admitted=True)
 
 
 def test_a_pull_request_renaming_a_file_out_of_a_folder_entry_overlaps(own_plan_with):
-    """The rename's source is on the base, so it overlaps our folder entry although its destination is new."""
+    # why: the rename's source exists on the base, so it overlaps although its destination is new.
     host = own_plan_with([{"path": "apps/x/tests/"}], after=tuple(BASE_TESTS))
     rename = (
         "diff --git a/apps/x/tests/test_old.py b/lib/test_old.py\nsimilarity index 100%\n"
@@ -480,8 +474,10 @@ def test_a_re_planned_branch_owes_its_own_refresh():
     refreshed = admission_state.admitted_record(None, _blocked()).with_refresh("abc123", PLAN)
     replanned = "I-1-x/P-3-claude-agent-claude-opus-5-5/_"
     assert refreshed.refresh_due(replanned) and refreshed.refreshed_on(replanned) is None
-    legacy = admission_state.AdmissionRecord.from_dict({**refreshed.to_dict(), "refreshed_branch": None})
-    assert legacy is not None and legacy.refresh_due(PLAN)  # a checkpoint without the branch refreshes again
+    checkpoint_without_branch = admission_state.AdmissionRecord.from_dict(
+        {**refreshed.to_dict(), "refreshed_branch": None}
+    )
+    assert checkpoint_without_branch is not None and checkpoint_without_branch.refresh_due(PLAN)
 
 
 def test_malformed_wait_and_refresh_values_are_ignored():

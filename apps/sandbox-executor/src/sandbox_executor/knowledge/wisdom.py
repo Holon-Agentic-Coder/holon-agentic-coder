@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from datetime import UTC, datetime
 from typing import Any
@@ -10,21 +11,17 @@ from sandbox_executor.knowledge.promotion import evaluate_action_promotion
 from sandbox_executor.knowledge.promotion_rules import is_review_chatter_context
 from sandbox_executor.knowledge.stable_envelope import stable_advisory_text
 from sandbox_executor.knowledge.wisdom_store import (
-    DEFAULT_KB_DIR as DEFAULT_KB_DIR,
-)
-from sandbox_executor.knowledge.wisdom_store import (
-    DEFAULT_WB_DIR as DEFAULT_WB_DIR,
+    DEFAULT_KB_DIR,
+    DEFAULT_WB_DIR,
+    persist_kb_fact,
+    persist_wb_rule,
 )
 from sandbox_executor.knowledge.wisdom_store import (
     load_index as load_index,
 )
-from sandbox_executor.knowledge.wisdom_store import (
-    persist_kb_fact as persist_kb_fact,
-)
-from sandbox_executor.knowledge.wisdom_store import (
-    persist_wb_rule as persist_wb_rule,
-)
 from sandbox_executor.ledger.merged import read_merged_rows
+
+logger = logging.getLogger(__name__)
 
 TEST_FAILURE_ACTION = "test_failure"
 MIN_SIGNATURE_RUNS = 2

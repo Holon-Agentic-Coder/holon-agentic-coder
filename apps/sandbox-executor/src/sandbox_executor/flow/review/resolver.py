@@ -24,6 +24,7 @@ from sandbox_executor.flow.review.adjudication import _lookup_introducing_action
 from sandbox_executor.flow.review.ensemble import _ENGINE_PASSES_PER_DISPATCH
 from sandbox_executor.flow.review.records import _bounded_error_context, record_review_action
 from sandbox_executor.flow.review.sync_points import finalize_resolver_turn
+from sandbox_executor.flow.stages.touch_set_guard import resolver_commit_touch_set_refusal
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.module_budget_guard import budget_push_refusal
 from sandbox_executor.redaction import redact_agent_secrets
@@ -75,7 +76,12 @@ def _push_resolver_head(
     """Fast-forward push the resolver's moved head from the host; return ``(pushed, error)``.
 
     Not after a failed pass, under ``skip_push``, when the head did not move or on a budget refusal."""
-    if container_error or context.skip_push or not head_sha or head_sha == target.head_sha or not target.head_branch:
+    if container_error or not head_sha or head_sha == target.head_sha:
+        return False, None
+    touch_refusal = resolver_commit_touch_set_refusal(context, target.head_sha, head_sha)
+    if touch_refusal:
+        return False, f"Resolver push failed: {touch_refusal}"
+    if context.skip_push or not target.head_branch:
         return False, None
     refusal = budget_push_refusal(context.target_worktree, target.head_sha, head_sha, context.intent_data)
     error = refusal or remote_error(push_commit, context.target_worktree, head_sha, target.head_branch)
@@ -240,6 +246,17 @@ class DispositionRecorder:
         return suppressed
 
 
+def _enforce_resolver_touch_set(
+    context: FlowContext, target: ReviewTarget, outcome: ResolverOutcome
+) -> ResolverOutcome:
+    if outcome.error or not outcome.head_sha or outcome.head_sha == target.head_sha:
+        return outcome
+    refusal = resolver_commit_touch_set_refusal(context, target.head_sha, outcome.head_sha)
+    if not refusal:
+        return outcome
+    return dataclasses.replace(outcome, pushed=False, dispositions=(), error=f"Resolver push failed: {refusal}")
+
+
 def _run_resolver_pass(
     context: FlowContext,
     target: ReviewTarget,
@@ -282,7 +299,8 @@ def _run_resolver_pass(
         dispositions = deserialize_finding_dispositions(
             [serialize_finding_disposition(d) for d in decided], findings, lookup
         )
-        return dataclasses.replace(raw, dispositions=dispositions, head_sha=raw.head_sha or target.head_sha)
+        outcome = dataclasses.replace(raw, dispositions=dispositions, head_sha=raw.head_sha or target.head_sha)
+        return _enforce_resolver_touch_set(context, target, outcome)
     if isinstance(raw, Mapping):
         raw_disps = raw.get("dispositions")
         if isinstance(raw_disps, Sequence):
@@ -292,7 +310,7 @@ def _run_resolver_pass(
         head_sha = str(raw.get("head_sha") or target.head_sha or "").strip()
         pushed = bool(raw.get("pushed", head_sha != target.head_sha))
         err = resolver_error_text(raw.get("error"), raw.get("exit_code"), raw.get("output_tail"))
-        return ResolverOutcome(
+        outcome = ResolverOutcome(
             dispositions=() if err else deserialize_finding_dispositions(raw_disps, findings, lookup),
             head_sha=head_sha,
             pushed=pushed,
@@ -301,12 +319,15 @@ def _run_resolver_pass(
             error=err,
             **rejected_attempt_fields(raw),
         )
+        return _enforce_resolver_touch_set(context, target, outcome)
     if isinstance(raw, Sequence):
         raw_list = [serialize_finding_disposition(d) if isinstance(d, FindingDisposition) else d for d in raw]
         dispositions = deserialize_finding_dispositions(raw_list, findings, lookup)
         pushed = any(d.disposition == "applied" for d in dispositions)
         new_sha = f"{target.head_sha or '0' * 32}-r{iteration}" if pushed else target.head_sha
-        return ResolverOutcome(dispositions=dispositions, head_sha=new_sha, pushed=pushed)
+        return _enforce_resolver_touch_set(
+            context, target, ResolverOutcome(dispositions=dispositions, head_sha=new_sha, pushed=pushed)
+        )
     dispositions = deserialize_finding_dispositions([], findings, lookup)
     return ResolverOutcome(dispositions=dispositions, head_sha=target.head_sha, pushed=False)
 

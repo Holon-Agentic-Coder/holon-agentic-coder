@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""Containerised entrypoint for the Holon Review Loop Agent.
-
-Coordinates the multi-pass review loop within an isolated container:
-- Proactive conflict detection and resolution.
-- Git identity 'Holon Review Loop Agent' applied only to the resolver commit, through a per-call environment copy
-  of REVIEW_GIT_ENV; never in the process environment, never in git config.
-- Independent reviewer agent turns on the real diff (the container is the sandbox they must run in), plus CI
-  status probing and mergeability inspection; the exit code is 0 only for an APPROVED ensemble verdict.
-- Automated PR creation or update via GitHub API / gh CLI.
-- RFC 2822 commit trailer formatting and discrete ledger recording.
-- Enforces the human-only PR merge rule by completing with approved consensus without merging to main.
-
-Preparation fails closed. The target is resolved before any git operation (a PR number or URL becomes its
-head branch and head SHA through gh). The workspace is the host worktree, bind-mounted by the host and used
-in place: it is never cloned, fetched, reset or cleaned here, so a crash loses no edit. It must have the head
-branch checked out and HEAD must equal the resolved head SHA. On any resolution or validation failure, one
-ACT-REV failure row is appended to
-holon-knowledge/ledger/executions.jsonl when that directory exists (otherwise the reason goes to stderr only),
-a FAILED summary is printed and the process exits 1: no consensus is computed or posted.
-"""
-
 import argparse
 import contextlib
 import dataclasses
@@ -89,19 +68,13 @@ from sandbox_executor.worktree_head import ReattachStatus, head_guard, reattach_
 logger = logging.getLogger("holon.entrypoint.review_loop")
 
 
+# why: git's own error messages can carry the GitHub token when a remote URL embeds it
 def run_cmd(
     args: list[str],
     cwd: str | None = None,
     env: dict[str, str] | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    """Execute a system command and return CompletedProcess, exiting on non-zero if check=True.
-
-    The echo and the failure diagnostics are routed through the shared redactors, because git's own error
-    messages can carry the GitHub token when a remote URL embeds it. The returned stdout and stderr are
-    raw and unredacted. An executable that cannot be started (missing from PATH, not executable) is reported as
-    exit code 127 with a stderr naming it, never raised.
-    """
     print(f"Running: {redact_command(args)}", file=sys.stderr)
     try:
         result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, check=False)
@@ -120,7 +93,6 @@ def run_cmd(
 def _run_git_cmd(
     args: list[str], cwd: str | None = None, check: bool = False, **_: Any
 ) -> subprocess.CompletedProcess[str]:
-    """Adapt ``run_cmd`` to ``run_git``'s convention (no leading ``git``) for the worktree_head helpers."""
     return run_cmd(["git", *args], cwd=cwd, check=check)
 
 
@@ -129,22 +101,17 @@ def _log_stderr(message: str) -> None:
 
 
 def _load_delta_request(context: FlowContext, repo_dir: str, rel_path: str | None) -> None:
-    """Load the host's scoped decision for this pass; an invalid one is ignored, so the pass is full."""
     if rel_path and not load_forwarded_decision(context, repo_dir, rel_path):
         _log_stderr(f"Ignoring --delta-request={rel_path}: not a valid scoped decision; reviewing in full.")
 
 
 class ReviewPreparationError(RuntimeError):
-    """A preparation step failed; ``stage`` names it and the message is already redacted."""
-
     def __init__(self, stage: str, detail: str) -> None:
-        """Store the failing stage and the redacted detail."""
         super().__init__(redact_agent_secrets(detail))
         self.stage = stage
 
 
 def _resolve_target(repo_dir: str, raw: str, run_gh: RunGh | None = None) -> ReviewTarget:
-    """Resolve the raw target before any git operation; a branch's head SHA is read from the mounted HEAD."""
     clean = raw.strip()
     if not clean or clean == "HEAD":
         raise ReviewPreparationError("resolve", "the container review needs a branch, PR number or PR URL target")
@@ -157,7 +124,6 @@ def _resolve_target(repo_dir: str, raw: str, run_gh: RunGh | None = None) -> Rev
 
 
 def _checked(args: list[str], repo_dir: str, stage: str) -> subprocess.CompletedProcess[str]:
-    """Run a git command and raise ``ReviewPreparationError`` with its redacted stderr when it fails."""
     result = run_cmd(args, cwd=repo_dir, check=False)
     if result.returncode != 0:
         stderr = (result.stderr or "").strip() or f"exit code {result.returncode}"
@@ -165,16 +131,8 @@ def _checked(args: list[str], repo_dir: str, stage: str) -> subprocess.Completed
     return result
 
 
+# why: the host worktree is used in place, never cloned, fetched, reset or cleaned, so a crash loses no edit
 def _validate_mounted_workspace(repo_dir: str, target: ReviewTarget) -> ReviewTarget:
-    """Validate that ``repo_dir`` is the host worktree checked out at the review head.
-
-    HEAD must be a readable commit, on ``target.head_branch`` when a branch is checked out, and equal to
-    ``target.head_sha`` when the target resolved one (a PR head): a stale worktree is never reviewed under the PR
-    head's label. A branch target's head SHA is the mounted HEAD. A branch target whose HEAD is detached exactly at the
-    branch tip is re-attached (``git symbolic-ref``, the one documented change to ``HEAD``; the index and the tree,
-    uncommitted ledger rows included, are untouched); a HEAD detached anywhere else is refused. No clone, fetch,
-    reset, wipe or tree change.
-    """
     if not os.path.exists(repo_dir) or not os.path.isdir(repo_dir):
         raise ReviewPreparationError("validate", f"workspace directory '{repo_dir}' does not exist")
 
@@ -215,8 +173,6 @@ def _validate_mounted_workspace(repo_dir: str, target: ReviewTarget) -> ReviewTa
 def _record_preparation_failure(
     repo_dir: str, raw: str, stage: str, detail: str, ledger_file: str | None = None
 ) -> bool:
-    """Append one ACT-REV failure row to ``ledger_file`` or, when unset, to the workspace ledger if its directory
-    exists; True when it was written."""
     ledger_dir = os.path.join(repo_dir, "holon-knowledge", "ledger")
     if ledger_file is None and not os.path.isdir(ledger_dir):
         return False
@@ -249,7 +205,6 @@ def _fail_preparation(
     json_output: bool,
     result_file: str | None = None,
 ) -> None:
-    """Record the failure, print a FAILED summary and exit 1 without computing or posting a consensus."""
     detail = _bounded_error_context(str(error))
     ledger_file = _SCRATCH_LEDGER if result_file else None
     if not _record_preparation_failure(repo_dir, raw, error.stage, detail, ledger_file):
@@ -281,23 +236,20 @@ def _fail_preparation(
 
 
 def _prepare_workspace(repo_dir: str, raw: str) -> ReviewTarget:
-    """Resolve the target, then validate the mounted workspace in place; raises ``ReviewPreparationError``."""
     target = _resolve_target(repo_dir, raw)
     return _validate_mounted_workspace(repo_dir, target)
 
 
 _FORBIDDEN_GIT_FLAGS = frozenset({"--force", "-f", "--force-with-lease", "--amend", "rebase"})
 _SEVERITY_ORDER = {"clean": 0, "nit": 1, "important": 2, "critical": 3}
-#: The resolver stages only its own changes: the host loop's uncommitted ledger rows in the shared worktree stay out.
+# why: the host loop's uncommitted ledger rows in the shared worktree stay out of the resolver commit
 _RESOLVER_PATHSPEC = ["--", ".", ":(exclude)holon-knowledge/ledger/executions.jsonl", PENDING_EXCLUDE_PATHSPEC]
-#: Where a host-dispatched pass (one given --result-file) appends its ledger rows. The host loop owns the canonical
-#: ledger of the bind-mounted worktree and records every pass from the result file, so writing there would duplicate.
+# why: the host owns the canonical ledger and records a --result-file pass from that file, so writing it would duplicate
 _SCRATCH_LEDGER = "/tmp/holon-review-executions.jsonl"
 _PLANS_LEDGER_REL = "holon-knowledge/ledger/plans.jsonl"
 
 
 def _assert_safe_git_args(args: list[str]) -> None:
-    """Refuse any git command that force-pushes or rewrites history."""
     for token in args:
         clean = token.strip()
         if clean in _FORBIDDEN_GIT_FLAGS or clean.startswith("--force"):
@@ -305,10 +257,6 @@ def _assert_safe_git_args(args: list[str]) -> None:
 
 
 def _verify_before_push(repo_dir: str, iteration: int | None = None) -> tuple[bool, bool, str | None]:
-    """Run lint, the changed-Markdown Prettier gate and tests before committing or pushing resolver changes.
-
-    A missing ``uv`` is a structured failure naming it (lint and tests unmeasured), never an exception.
-    """
     try:
         lock_problem = check_lockfile(repo_dir)
     except LockfileMismatchError as exc:
@@ -335,7 +283,6 @@ def _verify_before_push(repo_dir: str, iteration: int | None = None) -> tuple[bo
 
 
 def _load_resolver_findings(findings_file: str | None) -> tuple[list[FindingRow], dict[str, str]]:
-    """Read input findings and their introducing action IDs from ``findings_file``."""
     if not findings_file or not os.path.exists(findings_file):
         return [], {}
     try:
@@ -380,7 +327,6 @@ def _build_resolver_prompt(
     findings: list[FindingRow],
     dispositions_path: str,
 ) -> str:
-    """Build the resolver turn prompt instructing the agent to adjudicate every finding."""
     serialized = [
         {
             "id": row.id,
@@ -432,8 +378,6 @@ _USAGE_LIMIT = re.compile(r"session limit|usage limit|rate limit", re.IGNORECASE
 
 
 class ResolverTurnError(RuntimeError):
-    """The resolver agent turn exited non-zero; carries the bounded, redacted tail of its output."""
-
     def __init__(self, message: str, output_tail: str = "") -> None:
         super().__init__(message)
         self.output_tail = output_tail
@@ -446,7 +390,6 @@ def _run_resolver_agent(
     prompt: str,
     dispositions_path: str,
 ) -> list[dict[str, Any]]:
-    """Run the resolver agent turn and parse its dispositions JSON file."""
     os.makedirs(os.path.dirname(dispositions_path), exist_ok=True)
     runner = get_runner(agent_name)
     if hasattr(runner, "build_command") and callable(runner.build_command):
@@ -457,13 +400,13 @@ def _run_resolver_agent(
         raise AttributeError(
             f"Runner for agent '{agent_name}' satisfies neither 'build_command' nor 'compose_cmd' contract"
         )
-    # Same turn and stall budgets as the executor and planner: HOLON_TURN_*_SECONDS apply to the resolver too.
+    # why: the HOLON_TURN_*_SECONDS budgets of the executor and planner apply to the resolver too
     outcome = run_turn(cmd, cwd=repo_dir, turn_budgets=load_budgets(os.environ).turn)
-    # A failed turn decides nothing: its exit code is checked before any dispositions file it may have left behind.
+    # why: a failed turn decides nothing, so its exit code is checked before any dispositions file it left behind
     code = getattr(outcome, "returncode", getattr(outcome, "exit_code", 0))
     output = f"{getattr(outcome, 'stdout', '') or ''}\n{getattr(outcome, 'stderr', '') or ''}"
     breach = getattr(outcome, "breach", None)
-    if breach is not None:  # A timed-out turn decides nothing, even when the runner exits 0 on SIGTERM.
+    if breach is not None:  # why: a timed-out turn decides nothing, even when the runner exits 0 on SIGTERM
         raise ResolverTurnError(f"Resolver agent timed out: {breach}", bounded_output_tail(output))
     if code != 0:
         raise ResolverTurnError(f"Resolver agent {_turn_failure_label(code, output)}", bounded_output_tail(output))
@@ -477,15 +420,13 @@ def _run_resolver_agent(
 
 
 def _turn_failure_label(code: int, output: str) -> str:
-    """Name why a resolver turn failed: a usage limit the agent reported, else its exit code."""
     label = f"exited with code {code}"
     return f"{label}: usage limit reached" if _USAGE_LIMIT.search(output) else label
 
 
+# why: the host pushes the committed head after the container returns
 @dataclasses.dataclass(frozen=True)
 class CommitOptions:
-    """Options governing the resolution commit; the host pushes the committed head after the container returns."""
-
     dry_run: bool = False
     pre_resolver_head: str | None = None
     intent_data: dict[str, Any] = dataclasses.field(default_factory=dict)
@@ -499,7 +440,6 @@ def _commit_resolution(
     options: CommitOptions | None = None,
     **kwargs: Any,
 ) -> tuple[tuple[FindingDisposition, ...], str, bool, bool, str | None]:
-    """Verify via lint and test, and commit applied fixes with finding IDs; the host pushes the new head."""
     opts = options or CommitOptions()
     pre_resolver_head: str | None = kwargs.get("pre_resolver_head", opts.pre_resolver_head)
     current_head = (_checked(["git", "rev-parse", "HEAD"], repo_dir, "resolve").stdout or "").strip()
@@ -520,7 +460,7 @@ def _commit_resolution(
         return dispositions, initial_head, False, False, None
 
     lint_ok, tests_ok, verify_err = _verify_before_push(repo_dir, iteration)
-    # A verification failure, a missing verification tool included, never stages, commits or pushes anything.
+    # why: a verification failure, a missing verification tool included, never stages, commits or pushes anything
     if not lint_ok or not tests_ok:
         return dispositions, initial_head, lint_ok, tests_ok, verify_err
 
@@ -552,7 +492,6 @@ def _commit_resolution(
 
 
 def _intent_row(repo_dir: str, head_branch: str) -> dict[str, Any]:
-    """Return the last ``intents.jsonl`` row whose branch is ``head_branch`` or a ``/``-bounded prefix of it, or {}."""
     intent_data: dict[str, Any] = {}
     try:
         for d in read_merged_rows(os.path.join(repo_dir, "holon-knowledge/ledger/intents.jsonl")):
@@ -565,11 +504,6 @@ def _intent_row(repo_dir: str, head_branch: str) -> dict[str, Any]:
 
 
 def _restore_budget_config(repo_dir: str, intent_data: dict[str, Any]) -> str | None:
-    """Undo an unauthorised change to the frozen module budget configuration; return the refusal, or ``None``.
-
-    Only the one configuration path is restored from ``HEAD`` (removed when ``HEAD`` has none); every other change of
-    the resolver stays in the working tree.
-    """
     if module_budget_change_authorised(intent_data):
         return None
     status = run_cmd(["git", "status", "--porcelain", "--", MODULE_BUDGET_CONFIG], cwd=repo_dir, check=False)
@@ -597,7 +531,6 @@ def _run_resolver_mode(
     agent_name: str,
     model_name: str,
 ) -> None:
-    """Execute the containerised resolver pass for ``--resolve`` and exit."""
     findings_source = args.findings_file or args.result_file
     findings, action_ids = _load_resolver_findings(findings_source)
     dispositions_path = os.path.join(repo_dir, ".holon", "review", f"iter-{args.iteration}", "dispositions.json")
@@ -621,7 +554,7 @@ def _run_resolver_mode(
             if os.path.exists(dispositions_path):
                 with contextlib.suppress(OSError):
                     os.remove(dispositions_path)
-        if error is None and guard.refused and guard.outcome:  # a commit off the branch would never be pushed
+        if error is None and guard.refused and guard.outcome:  # why: a commit off the branch would never be pushed
             error = f"Resolver turn moved HEAD off '{head_branch}': {guard.outcome.message}"
 
     dispositions = deserialize_finding_dispositions(raw_dispositions, findings, action_ids)
@@ -643,7 +576,7 @@ def _run_resolver_mode(
                 pre_resolver_head=pre_resolver_head,
             )
     except Exception as exc:
-        # Whatever escapes verification or commit, the host still gets a result with the error preserved.
+        # why: whatever escapes verification or commit, the host still gets a result with the error preserved
         error = f"Resolver verification or commit failed: {_bounded_error_context(str(exc))}"
     exit_code = 0 if error is None else 1
     rejected = load_rejected_attempt(repo_dir, args.iteration) if findings and not tests_ok and lint_ok else None
@@ -676,35 +609,33 @@ def _run_resolver_mode(
     sys.exit(exit_code)
 
 
+# why: the review git identity reaches only the resolver commit, never the process environment
 def main() -> None:
-    """Run the review loop; its git identity reaches only the resolver commit, never the process environment."""
     _run_main()
 
 
 def _run_main() -> None:  # noqa: C901, PLR0915
-    """Parse CLI arguments and execute containerised review loop."""
     parser = build_parser()
     args = parser.parse_args()
     if args.iteration < 1:
         parser.error(f"--iteration must be at least 1, got {args.iteration}.")
 
-    # The host CLI always passes resolved values; no harness detection inside the container.
+    # why: the host CLI always passes resolved values, so there is no harness detection inside the container
     agent_name = args.agent or args.pos_agent or FALLBACK_AGENT
     model_name = args.model or args.pos_model or default_model_for(agent_name)
     repo_dir = args.target_worktree or get_workspace_dir()
     os.makedirs(repo_dir, exist_ok=True)
 
-    # Git workspace preparation: fail closed before any consensus is computed.
+    # why: fail closed before any consensus is computed
     try:
         review = _prepare_workspace(repo_dir, args.target)
     except ReviewPreparationError as exc:
         _fail_preparation(repo_dir, args.target, exc, args.json, result_file=args.result_file)
         return
-    # A PR stays the loop target so mergeability, CI and posting address the PR; ledger lookups use its head branch.
+    # why: a PR stays the loop target so mergeability, CI and posting address the PR; ledger lookups use its head branch
     loop_target = review.raw if review.is_pr else review.head_branch
     head_branch = review.head_branch
 
-    # Proactive conflict detection and resolution against target upstream branch
     target_branch = "main"
     check_and_resolve_stage_conflicts(repo_dir=repo_dir, target_branch=target_branch, stage_name="review")
 
@@ -712,13 +643,12 @@ def _run_main() -> None:  # noqa: C901, PLR0915
         _run_resolver_mode(args, repo_dir, head_branch, agent_name, model_name)
         return
 
-    # Read intent and plan metadata from ledger if available
     intent_data = _intent_row(repo_dir, head_branch)
     with_module_budget_flag(os.environ, intent_data)
     plan_branch: str | None = None
 
     try:
-        # Keyed on the intent and plan id together, never the plan id alone.
+        # why: keyed on the intent and plan id together, never the plan id alone
         if any(is_row_of_plan(d, head_branch) for d in read_merged_rows(os.path.join(repo_dir, _PLANS_LEDGER_REL))):
             plan_branch = plan_branch_of(head_branch) + INTENT_SUFFIX
     except Exception as exc:
@@ -741,7 +671,7 @@ def _run_main() -> None:  # noqa: C901, PLR0915
     )
     _load_delta_request(context, repo_dir, args.delta_request)
 
-    # A reviewer turn runs in the mounted worktree; the guard names and repairs one that leaves HEAD off the branch.
+    # why: a reviewer turn runs in the mounted worktree and may leave HEAD off the branch
     with head_guard(
         repo_dir, head_branch, f"reviewer ensemble (iteration {args.iteration})", _log_stderr, _run_git_cmd
     ):
@@ -765,7 +695,7 @@ def _run_main() -> None:  # noqa: C901, PLR0915
             print(f"Warning: could not write result file '{args.result_file}': {exc}", file=sys.stderr)
 
     consensus = loop_res.get("consensus", {})
-    # Exit 0 only for an APPROVED ensemble verdict whose consensus was approved and posted.
+    # why: exit 0 only for an APPROVED ensemble verdict whose consensus was approved and posted
     approved = review_loop_approved(loop_res)
 
     if args.json:

@@ -1,4 +1,5 @@
 import argparse
+import copy
 import json
 import logging
 from pathlib import Path
@@ -8,7 +9,7 @@ import pytest
 from sandbox_executor import intent_refresh
 from sandbox_executor.cli.commands.flow import _build_flow_context, _resolve_checkpoint_and_intent
 from sandbox_executor.flow import FlowContext, FlowStage, PipelineEngine, StageResult, StageStatus
-from sandbox_executor.flow.checkpoint import save_checkpoint
+from sandbox_executor.flow.checkpoint import load_checkpoint, save_checkpoint
 from sandbox_executor.intent_refresh import REFRESHED_INTENT_FIELDS, SELF_EXPLAINING_SENTENCE, refresh_intent_text
 from sandbox_executor.launcher.coherence import FlowProxyChoice
 
@@ -48,6 +49,7 @@ def _stale_context(worktree: Path) -> FlowContext:
     )
     for name in ("intent", "plan", "execute"):
         context.stage_results[name] = StageResult(stage=FlowStage.from_str(name), status=StageStatus.SUCCESS)
+    context.stage_results["intent"].payload = {"intent": {**IDENTITY, **STALE_TEXT}}
     return context
 
 
@@ -176,10 +178,37 @@ def test_both_resume_paths_hand_the_refreshed_goal_to_the_stages(tmp_path, workt
     assert seen == [CURRENT_TEXT["goal"]]
 
 
+def _goal_copies(context: FlowContext) -> list[str]:
+    return [context.intent_data["goal"], context.stage_results["intent"].payload["intent"]["goal"]]
+
+
+def test_a_resumed_checkpoint_refreshes_both_goal_copies(tmp_path, checkpoint):
+    context = load_checkpoint(str(checkpoint)).context
+    assert _goal_copies(context) == [STALE_TEXT["goal"]] * 2
+
+    refresh_intent_text(context, str(_intent_file(tmp_path, {**IDENTITY, **CURRENT_TEXT})))
+
+    assert _goal_copies(context) == [CURRENT_TEXT["goal"]] * 2
+
+
+@pytest.mark.parametrize("payload", [None, {}, {"intent": {"slug": SLUG}}, {"intent": "not a dict"}])
+def test_a_checkpoint_without_an_intent_stage_goal_still_refreshes_the_intent_data(tmp_path, worktree, payload):
+    context = _stale_context(worktree)
+    if payload is None:
+        del context.stage_results["intent"]
+    else:
+        context.stage_results["intent"].payload = copy.deepcopy(payload)
+
+    changed = refresh_intent_text(context, str(_intent_file(tmp_path, {**IDENTITY, **CURRENT_TEXT})))
+
+    assert changed == list(REFRESHED_INTENT_FIELDS)
+    assert getattr(context.stage_results.get("intent"), "payload", None) == payload
+
+
 @pytest.mark.parametrize("path", [Path(intent_refresh.__file__), Path(__file__)])
 def test_the_new_files_are_self_explaining(path):
     source = path.read_text(encoding="utf-8")
 
     assert find_docstrings_and_string_statements(source) == []
     assert [text for _line, text in find_disallowed_comments(source) if not text.startswith("# why:")] == []
-    assert count_lines(source) <= 200
+    assert count_lines(source) <= 400

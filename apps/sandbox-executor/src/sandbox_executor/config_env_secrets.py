@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping
 
 from sandbox_executor import claude_credential, claude_token_migration
 
+# why: env names stay literals (not claude_credential constants) as .env.example renders this table; scans flag them
 SECRET_FILE_MAPPINGS: tuple[tuple[str, str, str], ...] = (
     ("HOLON_AGENT_OAUTH_TOKEN_FILE", "HOLON_AGENT_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
 )

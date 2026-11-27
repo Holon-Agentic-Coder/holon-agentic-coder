@@ -7,6 +7,7 @@ from sandbox_executor.cli.commands.execute import target_branch
 from sandbox_executor.flow.git_refs import _has_origin_remote
 from sandbox_executor.ref_names import INTENT_SUFFIX
 
+# why: match only flow branch '<intent>/P-<plan>/E-<execution>/_', never an arbitrary head merely containing '/E-'
 _EXECUTION_BRANCH_RE = re.compile(r"^(I-[^/]+/P-[^/]+)/E-[^/]+/_$")
 _FALLBACK_BASE_BRANCH = "main"
 

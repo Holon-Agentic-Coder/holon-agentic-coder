@@ -61,6 +61,7 @@ def _push_branch_preserving_failure_exit(worktree: str, dispatch_exit_code: int)
     try:
         push_checked_out_branch(worktree)
     except RuntimeError as exc:
+        # why: after a failed dispatch there may be no branch to push; a push error must not bury the run's exit code
         if dispatch_exit_code == 0:
             print(f"Error: {cli.redact_cli_error(exc)}", file=sys.stderr)
             return 1

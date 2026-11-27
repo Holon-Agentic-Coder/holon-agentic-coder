@@ -105,15 +105,27 @@ def _reference_lines(references: Any) -> list[str]:
     return ["## References", line, ""]
 
 
-def _plan_metadata_lines(plan_metadata: dict[str, Any] | None, intent_data: dict[str, Any]) -> list[str]:
+def _first_present(*candidates: Any) -> str:
+    for candidate in candidates:
+        if candidate is not None and str(candidate).strip():
+            return str(candidate).strip()
+    return "N/A"
+
+
+def _plan_metadata_lines(
+    plan_metadata: dict[str, Any] | None,
+    intent_data: dict[str, Any],
+    runner: dict[str, Any] | None,
+) -> list[str]:
     plan_meta = plan_metadata or {}
+    supplied = runner or {}
     plan_id = plan_meta.get("plan_id") or "N/A"
     ev = plan_meta.get("ev")
     if ev is None and isinstance(plan_meta.get("metrics"), dict):
         ev = plan_meta["metrics"].get("ev")
     ev_str = f"{ev:.2f}" if isinstance(ev, (int, float)) else str(ev or "N/A")
-    agent = plan_meta.get("agent") or intent_data.get("agent", "N/A")
-    model = plan_meta.get("model") or intent_data.get("model", "N/A")
+    agent = _first_present(plan_meta.get("agent"), supplied.get("agent"), intent_data.get("agent"))
+    model = _first_present(plan_meta.get("model"), supplied.get("model"), intent_data.get("model"))
     return [
         "## Plan & Validation Metadata",
         f"- **Plan ID:** `{plan_id}`",
@@ -127,6 +139,8 @@ def _plan_metadata_lines(plan_metadata: dict[str, Any] | None, intent_data: dict
 def generate_semantic_pr_metadata(
     intent_data: dict[str, Any],
     plan_metadata: dict[str, Any] | None = None,
+    *,
+    runner: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     raw_title = _raw_title(intent_data)
     title = _title(_conventional_prefix(intent_data), _scope(intent_data), raw_title)
@@ -135,6 +149,6 @@ def generate_semantic_pr_metadata(
         *_summary_lines(intent_data.get("description"), goal),
         *_key_change_lines(goal, raw_title),
         *_reference_lines(intent_data.get("references")),
-        *_plan_metadata_lines(plan_metadata, intent_data),
+        *_plan_metadata_lines(plan_metadata, intent_data, runner),
     ]
     return title, "\n".join(body_lines)

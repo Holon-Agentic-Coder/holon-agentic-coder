@@ -37,7 +37,11 @@ def _semantic_pr_text(context: FlowContext) -> tuple[str, str]:
     plan_res = context.stage_results.get("plan")
     plan_meta = plan_res.payload if plan_res and isinstance(plan_res.payload, dict) else None
     try:
-        return generate_semantic_pr_metadata(context.intent_data, plan_metadata=plan_meta)
+        return generate_semantic_pr_metadata(
+            context.intent_data,
+            plan_metadata=plan_meta,
+            runner={"agent": context.agent, "model": context.model},
+        )
     except Exception as exc:
         logger.debug("Non-fatal PR metadata generation in review loop: %s", exc)
         return "", ""

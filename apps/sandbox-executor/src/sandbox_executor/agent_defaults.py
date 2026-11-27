@@ -5,8 +5,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from sandbox_executor.claude_credential import resolve_claude_credential
-from sandbox_executor.runners import RUNNER_SPECS
+from sandbox_executor.runners import RUNNER_SPECS, VALID_EFFORT_LEVELS, ModelCapability, runner_spec_for
 
 logger = logging.getLogger(__name__)
 
@@ -23,111 +22,20 @@ AGENT_TICKERS: dict[str, str] = {
 
 DEFAULT_MODELS: dict[str, str] = {agent_id: spec.default_model for agent_id, spec in RUNNER_SPECS.items()}
 
-_VALID_EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high")
 _DEFAULT_SECRET_BUNDLE_PATH = "/run/secrets/holon_auth.json"
-_RUNNER_API_KEY_ENV_VARS: dict[str, tuple[str, ...]] = {
-    "antigravity": ("AGY_USER_TOKEN", "GOOGLE_API_KEY", "GEMINI_API_KEY"),
-    "pi": ("PI_API_KEY",),
-    "codex": ("OPENAI_API_KEY", "CODEX_API_KEY"),
-    "opencode": ("OPENCODE_API_KEY",),
-}
 _LOCAL_LLM_TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
 
-
-@dataclass(frozen=True)
-class ModelCapability:
-    runner: str
-    canonical_model: str
-    aliases: list[str]
-    effort_levels: list[str]
-    fallback_tier: str
-
+_LOCAL_MODEL_CAPABILITY = ModelCapability(
+    runner="local-model",
+    canonical_model="local-model",
+    aliases=["local"],
+    effort_levels=[],
+    fallback_tier="Local Fallback",
+)
 
 RUNNER_CAPABILITIES: tuple[ModelCapability, ...] = (
-    ModelCapability(
-        runner="antigravity-agent",
-        canonical_model="gemini-3.8-flash",
-        aliases=["flash"],
-        effort_levels=list(_VALID_EFFORT_LEVELS),
-        fallback_tier="Primary (Cloud/CLI)",
-    ),
-    ModelCapability(
-        runner="antigravity-agent",
-        canonical_model="gemini-3.8-flash-medium",
-        aliases=["flash-medium"],
-        effort_levels=list(_VALID_EFFORT_LEVELS),
-        fallback_tier="Primary (Cloud/CLI)",
-    ),
-    ModelCapability(
-        runner="antigravity-agent",
-        canonical_model="gemini-3.8-flash-high",
-        aliases=["flash-high"],
-        effort_levels=list(_VALID_EFFORT_LEVELS),
-        fallback_tier="Primary (Cloud/CLI)",
-    ),
-    ModelCapability(
-        runner="claude-agent",
-        canonical_model="claude-fable-5-2",
-        aliases=["fable", "claude-fable"],
-        effort_levels=[],
-        fallback_tier="Primary (Cloud/CLI)",
-    ),
-    ModelCapability(
-        runner="claude-agent",
-        canonical_model="claude-opus-5-5",
-        aliases=["opus", "claude-opus"],
-        effort_levels=[],
-        fallback_tier="Primary (Cloud/CLI)",
-    ),
-    ModelCapability(
-        runner="claude-agent",
-        canonical_model="claude-sonnet-4-6",
-        aliases=["sonnet", "claude-sonnet"],
-        effort_levels=[],
-        fallback_tier="Primary (Cloud/CLI)",
-    ),
-    ModelCapability(
-        runner="claude-agent",
-        canonical_model="claude-haiku-4-5",
-        aliases=["haiku", "claude-haiku"],
-        effort_levels=[],
-        fallback_tier="Primary (Cloud/CLI)",
-    ),
-    ModelCapability(
-        runner="pi-agent",
-        canonical_model="claude-opus-5-5",
-        aliases=["pi-default"],
-        effort_levels=[],
-        fallback_tier="Secondary (Cloud/CLI)",
-    ),
-    ModelCapability(
-        runner="pi-agent",
-        canonical_model="gpt-5-codex",
-        aliases=["codex"],
-        effort_levels=[],
-        fallback_tier="Secondary (Cloud/CLI)",
-    ),
-    ModelCapability(
-        runner="codex-agent",
-        canonical_model="gpt-5-codex",
-        aliases=["codex"],
-        effort_levels=[],
-        fallback_tier="Secondary (Cloud/CLI)",
-    ),
-    ModelCapability(
-        runner="opencode-agent",
-        canonical_model="anthropic/claude-opus-5-5",
-        aliases=["opencode"],
-        effort_levels=[],
-        fallback_tier="Secondary (Cloud/CLI)",
-    ),
-    ModelCapability(
-        runner="local-model",
-        canonical_model="local-model",
-        aliases=["local"],
-        effort_levels=[],
-        fallback_tier="Local Fallback",
-    ),
+    *(cap for spec in RUNNER_SPECS.values() for cap in spec.model_capabilities),
+    _LOCAL_MODEL_CAPABILITY,
 )
 
 
@@ -159,7 +67,7 @@ def get_available_models_for_runner(agent: str) -> list[str]:
 
 
 def is_valid_model_for_runner(agent: str, model: str) -> bool:
-    norm_runner = normalise_agent_id(agent)
+    spec = runner_spec_for(agent)
     matching_caps = get_model_capabilities(agent)
     if not matching_caps:
         return True
@@ -167,30 +75,13 @@ def is_valid_model_for_runner(agent: str, model: str) -> bool:
     for cap in matching_caps:
         if _capability_matches_model(cap, m_lower):
             return True
-        if norm_runner == "antigravity" and any(
-            m_lower == f"{cap.canonical_model.lower()}-{eff}" for eff in _VALID_EFFORT_LEVELS
+        if (
+            spec is not None
+            and spec.supports_effort_suffix
+            and any(m_lower == f"{cap.canonical_model.lower()}-{eff}" for eff in VALID_EFFORT_LEVELS)
         ):
             return True
     return False
-
-
-def _coordinate_gemini_effort(canonical: str, effort: str | None) -> tuple[str, str | None]:
-    eff = effort.strip().lower() if effort and effort.strip() else None
-
-    inferred_effort = None
-    base = canonical
-    for level in _VALID_EFFORT_LEVELS:
-        suffix = f"-{level}"
-        if canonical.endswith(suffix):
-            inferred_effort = level
-            base = canonical[: -len(suffix)]
-            break
-
-    if eff in _VALID_EFFORT_LEVELS:
-        return f"{base}-{eff}", eff
-    if inferred_effort:
-        return canonical, inferred_effort
-    return canonical, None
 
 
 def normalise_model_and_effort(agent: str, model: str | None, effort: str | None = None) -> tuple[str, str | None]:
@@ -202,50 +93,33 @@ def normalise_model_and_effort(agent: str, model: str | None, effort: str | None
             canonical = cap.canonical_model
             break
 
-    if normalise_agent_id(agent) == "antigravity":
-        return _coordinate_gemini_effort(canonical, effort)
+    spec = runner_spec_for(agent)
+    if spec is not None:
+        return spec.normalise_model(canonical, effort)
 
     return canonical, None
 
 
 def _detect_api_key_present(norm: str, env: Mapping[str, str]) -> bool:
+    spec = RUNNER_SPECS.get(norm)
+    if spec is not None and spec.api_key_detector is not None:
+        return spec.api_key_detector(env)
+
     bundle_path = env.get("HOLON_SECRET_BUNDLE_PATH") or _DEFAULT_SECRET_BUNDLE_PATH
-    if norm != "claude" and (os.path.isfile(bundle_path) or _is_set(env.get("HOLON_AGENT_KEY"))):
+    if (spec is None or spec.uses_holon_agent_key) and (
+        os.path.isfile(bundle_path) or _is_set(env.get("HOLON_AGENT_KEY"))
+    ):
         return True
 
-    if norm == "claude":
-        return resolve_claude_credential(env) is not None
+    if spec is not None:
+        return any(_is_set(env.get(k)) for k in spec.host_api_key_env_vars)
 
-    return any(_is_set(env.get(k)) for k in _RUNNER_API_KEY_ENV_VARS.get(norm, ()))
+    return False
 
 
 def _detect_session_dir_present(norm: str) -> bool:
-    home = os.path.expanduser("~")
-    runner_session_paths: dict[str, tuple[str, ...]] = {
-        "antigravity": (
-            os.path.join(home, ".gemini/antigravity-cli"),
-            os.path.join(home, ".gemini"),
-            os.path.join(home, ".holon/sessions/antigravity"),
-            "/home/holon/.gemini/antigravity-cli",
-            "/home/holon/.gemini",
-        ),
-        "claude": (
-            os.path.join(home, ".config/claude"),
-            os.path.join(home, ".claude"),
-            "/home/holon/.config/claude",
-        ),
-        "codex": (
-            os.path.join(home, ".codex"),
-            "/home/holon/.codex",
-        ),
-        "pi": (
-            os.path.join(home, ".config/pi/models.json"),
-            os.path.join(home, ".pi/agent/models.json"),
-            "/home/holon/.config/pi/models.json",
-            "/home/holon/.pi/agent/models.json",
-        ),
-    }
-    return any(os.path.exists(p) for p in runner_session_paths.get(norm, ()))
+    spec = RUNNER_SPECS.get(norm)
+    return spec.detect_session_dir() if spec is not None else False
 
 
 def _detect_harness_marker_present(norm: str, env: Mapping[str, str]) -> bool:
@@ -256,7 +130,12 @@ def _detect_harness_marker_present(norm: str, env: Mapping[str, str]) -> bool:
 def _detect_local_gateway_present(norm: str, env: Mapping[str, str]) -> bool:
     if norm in ("local", "local-model"):
         return True
-    return norm == "pi" and env.get("HOLON_LOCAL_LLM", "").strip().lower() in _LOCAL_LLM_TRUTHY_VALUES
+    spec = RUNNER_SPECS.get(norm)
+    return bool(
+        spec
+        and spec.supports_local_llm
+        and env.get("HOLON_LOCAL_LLM", "").strip().lower() in _LOCAL_LLM_TRUTHY_VALUES
+    )
 
 
 def detect_runner_auth_status(agent: str, environ: Mapping[str, str] | None = None) -> str:
@@ -277,28 +156,13 @@ def detect_runner_auth_status(agent: str, environ: Mapping[str, str] | None = No
 
 SANDBOX_GUARD_VARS: tuple[str, ...] = ("HOLON_ROLE", "HOLON_IN_SANDBOX")
 
-HARNESS_MARKERS: tuple[tuple[str, str, str], ...] = (
-    ("pi", "PI_CODING_AGENT", "exact"),
-    ("claude", "CLAUDECODE", "exact"),
-    ("claude", "CLAUDE_CODE_ENTRYPOINT", "exact"),
-    ("codex", "CODEX_", "prefix"),
-    ("opencode", "OPENCODE", "exact"),
-    ("opencode", "OPENCODE_", "prefix"),
-    ("antigravity", "AGY_", "prefix"),
-    ("antigravity", "ANTIGRAVITY_", "prefix"),
+HARNESS_MARKERS: tuple[tuple[str, str, str], ...] = tuple(
+    (spec.agent_id, marker, kind)
+    for spec in sorted(RUNNER_SPECS.values(), key=lambda spec: spec.harness_marker_priority)
+    for marker, kind in spec.harness_markers
 )
 
-NON_MARKER_VARS: frozenset[str] = frozenset(
-    {
-        "AGY_USER_TOKEN",
-        "GOOGLE_API_KEY",
-        "CODEX_API_KEY",
-        "CODEX_HOME",
-        "OPENCODE_API_KEY",
-        "OPENCODE_CONFIG",
-        "OPENCODE_CONFIG_DIR",
-    }
-)
+NON_MARKER_VARS: frozenset[str] = frozenset(var for spec in RUNNER_SPECS.values() for var in spec.non_marker_vars)
 _CREDENTIAL_SUFFIXES: tuple[str, ...] = ("_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
 _FALSY_VALUES = frozenset({"", "0", "false", "no", "off"})
 

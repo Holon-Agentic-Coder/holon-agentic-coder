@@ -127,6 +127,7 @@ KNOWN_UNEXPORTED = frozenset(
         "invalidate_approval",
         "invalidation_marker",
         "is_suppressible",
+        "local_test_failure_finding",
         "log_skipped_post",
         "lookup_default_branch",
         "merge_child_pr",

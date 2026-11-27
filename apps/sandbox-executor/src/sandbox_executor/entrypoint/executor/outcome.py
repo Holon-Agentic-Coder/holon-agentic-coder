@@ -11,6 +11,7 @@ from sandbox_executor.entrypoint.empty_diff_excerpt import report_empty_diff_out
 from sandbox_executor.entrypoint.execution_workspace import format_skipped_scratch_message, unstage_sidecar_scratch
 from sandbox_executor.entrypoint.executor.commands import _entrypoint_git_runner, _get_repo, is_action_logging_enabled
 from sandbox_executor.entrypoint.executor.repair import _configure_executor_identity, _probe_git_repo, _repair_git_repo
+from sandbox_executor.entrypoint.executor_test_run import FixRunner
 from sandbox_executor.ledger import (
     ActionRecord,
     LedgerRewriteError,
@@ -103,7 +104,10 @@ class CheckWorkSteps:
         self.notes_valid = finalise_execution_notes(self.notes_path, self.notes_report)
         self._require_healthy_repo()
         self._guard_empty_diff()
-        self.test_fields = executor_facade.measure_executor_tests(self.repo_dir, self.repo, self.exec_status)
+        fixer = FixRunner(self.args.agent_name, self.args.model_name, self._stage_timer)
+        self.test_fields = executor_facade.measure_executor_tests(
+            self.repo_dir, self.repo, self.exec_status, fixer=fixer
+        )
         self._converge_markdown()
 
     def _require_healthy_repo(self) -> None:

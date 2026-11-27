@@ -1,10 +1,3 @@
-"""Hermetic unit tests for turn subprocess execution environments and Docker CLI hint suppression.
-
-Verifies that ``build_turn_env`` and ``run_turn`` consistently inject ``DOCKER_CLI_HINTS='false'``,
-that CLI Docker helpers propagate hint suppression both to host subprocesses and container arguments,
-and that non-zero container exit error reporting remains clean and unpolluted by promotional hints.
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -28,10 +21,7 @@ from tests.test_turn_supervisor import CHILD_PID, MINUTE, Harness, TickStream
 
 
 class TestTurnExecutionEnvironment(unittest.TestCase):
-    """Test suite verifying subprocess environment mapping construction and hint suppression."""
-
     def test_build_turn_env_default_injects_docker_cli_hints(self) -> None:
-        """Verify that ``build_turn_env`` without arguments copies ``os.environ`` and sets hints false."""
         env = build_turn_env()
         self.assertIn("DOCKER_CLI_HINTS", env)
         self.assertEqual(env["DOCKER_CLI_HINTS"], "false")
@@ -39,7 +29,6 @@ class TestTurnExecutionEnvironment(unittest.TestCase):
             self.assertEqual(env["PATH"], os.environ["PATH"])
 
     def test_build_turn_env_preserves_and_merges_custom_env(self) -> None:
-        """Verify that custom environment mappings are preserved and augmented with ``DOCKER_CLI_HINTS='false'``."""
         caller_env = {"MY_CUSTOM_VAR": "custom_value_42", "ANOTHER_KEY": "sample"}
         effective_env = build_turn_env(caller_env)
         self.assertEqual(effective_env["MY_CUSTOM_VAR"], "custom_value_42")
@@ -48,7 +37,6 @@ class TestTurnExecutionEnvironment(unittest.TestCase):
         self.assertNotIn("DOCKER_CLI_HINTS", caller_env)
 
     def test_run_turn_injects_docker_cli_hints_default(self) -> None:
-        """Verify that ``run_turn`` invokes ``popen_factory`` with ``DOCKER_CLI_HINTS='false'`` when ``env=None``."""
         mock_proc = MagicMock()
         mock_proc.stdout = io.BytesIO(b"")
         mock_proc.stderr = io.BytesIO(b"")
@@ -76,7 +64,6 @@ class TestTurnExecutionEnvironment(unittest.TestCase):
         self.assertEqual(passed_env.get("DOCKER_CLI_HINTS"), "false")
 
     def test_run_turn_preserves_and_merges_custom_env(self) -> None:
-        """Verify that ``run_turn`` retains custom environment variables alongside ``DOCKER_CLI_HINTS='false'``."""
         mock_proc = MagicMock()
         mock_proc.stdout = io.BytesIO(b"")
         mock_proc.stderr = io.BytesIO(b"")
@@ -106,17 +93,14 @@ class TestTurnExecutionEnvironment(unittest.TestCase):
 
     @patch("subprocess.run")
     def test_cli_docker_helpers_propagate_cli_hints(self, mock_run: MagicMock) -> None:
-        """Verify that CLI Docker helpers pass ``DOCKER_CLI_HINTS='false'`` to host env and container args."""
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
-        # 1. Verify _run_docker
         _run_docker("ps")
         self.assertTrue(mock_run.called)
         docker_call_kwargs = mock_run.call_args.kwargs
         self.assertIn("env", docker_call_kwargs)
         self.assertEqual(docker_call_kwargs["env"].get("DOCKER_CLI_HINTS"), "false")
 
-        # 2. Verify run_docker_container
         mock_run.reset_mock()
         with (
             patch("shutil.which", return_value="/usr/bin/docker"),
@@ -135,15 +119,12 @@ class TestTurnExecutionEnvironment(unittest.TestCase):
             container_cmd = mock_run.call_args[0][0]
             container_env = mock_run.call_args.kwargs.get("env")
 
-            # Assert -e DOCKER_CLI_HINTS=false is included in container arguments
             self.assertIn("-e", container_cmd)
             self.assertIn("DOCKER_CLI_HINTS=false", container_cmd)
-            # Assert env kwarg passed to host subprocess contains DOCKER_CLI_HINTS='false'
             self.assertIsInstance(container_env, dict)
             self.assertEqual(container_env.get("DOCKER_CLI_HINTS"), "false")
 
     def test_non_zero_exit_error_logging_cleanliness(self) -> None:
-        """Verify that non-zero container exit error reporting does not contain Gordon promotional hints."""
         gordon_hint = "What's next: Debug this container error with Gordon -> docker ai ..."
         error_message = "container execution failed: process returned exit code 1"
 
@@ -166,7 +147,6 @@ class TestTurnExecutionEnvironment(unittest.TestCase):
         mock_which: MagicMock,
         mock_run: MagicMock,
     ) -> None:
-        """Verify that GitHub CLI and subprocess calls in flow.py guarantee ``DOCKER_CLI_HINTS='false'``."""
         mock_run.return_value = subprocess.CompletedProcess(
             args=["gh", "pr", "checks"],
             returncode=0,
@@ -181,8 +161,6 @@ class TestTurnExecutionEnvironment(unittest.TestCase):
 
 
 class TestUnlimitedTurnSupervision(unittest.TestCase):
-    """An unlimited turn timeout or stage never fires, while the stall window (and a finite turn limit) still does."""
-
     def _progressing(self, harness, every=MINUTE):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -239,10 +217,8 @@ class TestUnlimitedTurnSupervision(unittest.TestCase):
 
 
 class TestUnlimitedAuthoringTurn(unittest.TestCase):
-    """``supervise_authoring_turn`` still resumes after a breach when the stage has no ceiling."""
-
     def test_resume_runs_under_an_unlimited_stage_however_long_it_ran(self):
-        # Reuse the supervisor suite's scripted-turn harness; a module attribute keeps it out of this file's collection.
+        # why: accessing TestSuperviseAuthoringTurn via module attribute keeps pytest from re-collecting it
         harness = test_turn_supervisor.TestSuperviseAuthoringTurn("test_no_resume_when_stage_has_no_time_left")
         harness.setUp()
         self.addCleanup(harness.doCleanups)
@@ -255,8 +231,6 @@ class TestUnlimitedAuthoringTurn(unittest.TestCase):
 
 
 class TestBackgroundCommandOnThisHost(unittest.TestCase):
-    """A real runner that backgrounds a command and exits is reported with a warning naming the command."""
-
     def test_backgrounded_sleep_is_named_after_the_runner_exits(self) -> None:
         if turns.process_table() is None:
             self.skipTest("no /proc and no ps on this host")

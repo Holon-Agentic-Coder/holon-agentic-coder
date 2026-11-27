@@ -19,7 +19,6 @@ def _repo(tmp_path: Path, *branches: str) -> GitRepository:
 
 def test_taken_child_ids_sees_execution_branches_ending_in_the_underscore_leaf(tmp_path):
     repo = _repo(tmp_path, "I-1-a/P-1-X/_", "I-1-a/P-1-X/E-2-CLA-CO5.5/_", "I-1-a/P-2-X/E-9-CLA-CO5.5/_")
-    # An origin-tracking ref of a sibling execution counts as taken too.
     _git(tmp_path, "update-ref", "refs/remotes/origin/I-1-a/P-1-X/E-3-CLA-CO5.5/_", "HEAD")
 
     assert taken_child_ids(repo, "I-1-a/P-1-X", "E") == {"E-2-CLA-CO5.5", "E-3-CLA-CO5.5"}

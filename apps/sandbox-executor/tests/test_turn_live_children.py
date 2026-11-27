@@ -1,5 +1,3 @@
-"""Live-child guard and background-command tests for the turn supervisor. Every process, clock and signal is faked."""
-
 import os
 import signal
 import tempfile
@@ -12,13 +10,9 @@ from tests.test_turn_supervisor import CHILD_PID, Harness, TickStream
 
 
 class TestLiveChildGuard(unittest.TestCase):
-    """A quiet foreground tool (a live child burning no CPU) is not a stall; the turn timeout still bounds it."""
-
     TEST_PID = CHILD_PID + 1
 
     def streamed_once(self, children):
-        # A resolver-style runner: it streams once (so the short stall window would apply), then waits on a quiet
-        # foreground test that burns no CPU and never exits.
         stream = TickStream()
         h = Harness(exit_at=None, stdout=stream)
         h.children = children
@@ -110,21 +104,33 @@ class TestDescendantCommands(unittest.TestCase):
         self.assertEqual(len(turns.process_command(79, proc_root=tmp.name)), turns.COMMAND_DISPLAY_CHARS)
 
     def test_descendant_commands_exclude_the_agent_and_unreadable_processes(self):
+        wrapper_pid = 100
+        agent_pid = 101
+        foreground_test_pid = 102
+        reparented_bg_pid = 103
+        exited_pid = 104
+        unrelated_pid = 200
         table = {
-            100: (1, 100, 1.0, 0.0),  # the runner (a wrapper)
-            101: (100, 100, 1.0, 0.0),  # the wrapped agent binary
-            102: (101, 100, 0.0, 0.0),  # a foreground test
-            103: (1, 100, 0.0, 0.0),  # a backgrounded command, re-parented but still in the group
-            104: (101, 100, 0.0, 0.0),  # exited before its command line was read
-            200: (1, 200, 0.0, 0.0),  # unrelated
+            wrapper_pid: (1, wrapper_pid, 1.0, 0.0),
+            agent_pid: (wrapper_pid, wrapper_pid, 1.0, 0.0),
+            foreground_test_pid: (agent_pid, wrapper_pid, 0.0, 0.0),
+            reparented_bg_pid: (1, wrapper_pid, 0.0, 0.0),
+            exited_pid: (agent_pid, wrapper_pid, 0.0, 0.0),
+            unrelated_pid: (1, unrelated_pid, 0.0, 0.0),
         }
-        names = {100: "MainThread", 101: "codex"}
-        commands = {100: "node codex", 101: "codex", 102: "uv run task test", 103: "sleep 30", 200: "other"}
+        names = {wrapper_pid: "MainThread", agent_pid: "codex"}
+        commands = {
+            wrapper_pid: "node codex",
+            agent_pid: "codex",
+            foreground_test_pid: "uv run task test",
+            reparented_bg_pid: "sleep 30",
+            unrelated_pid: "other",
+        }
         self.assertEqual(
-            turns.descendant_commands(100, lambda: table, name_of=names.get, command_of=commands.get),
-            {102: "uv run task test", 103: "sleep 30"},
+            turns.descendant_commands(wrapper_pid, lambda: table, name_of=names.get, command_of=commands.get),
+            {foreground_test_pid: "uv run task test", reparented_bg_pid: "sleep 30"},
         )
-        self.assertIsNone(turns.descendant_commands(100, lambda: None))
+        self.assertIsNone(turns.descendant_commands(wrapper_pid, lambda: None))
 
     def test_describe_commands_is_sorted_by_pid(self):
         described = turns.describe_commands({9: "sleep 30", 3: "uv run task test"})

@@ -1,5 +1,3 @@
-"""Runner spec for the OpenCode agent; it accepts only ``HOLON_AGENT_KEY`` and has no session directory."""
-
 from __future__ import annotations
 
 from sandbox_executor.runners.spec import RunnerSpec, generic_missing_message, has_api_key

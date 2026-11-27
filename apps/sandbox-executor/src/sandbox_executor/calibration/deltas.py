@@ -1,9 +1,8 @@
-"""Pure calibration deltas: absolute errors, accuracy ratings and bias directions of predicted versus actual."""
-
 from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from sandbox_executor.calibration.actual import ActualMetrics
 from sandbox_executor.calibration.predicted import PredictedMetrics
@@ -11,8 +10,6 @@ from sandbox_executor.calibration.predicted import PredictedMetrics
 
 @dataclass
 class CalibrationDeltas:
-    """Absolute errors and value deltas between predicted and actual metrics."""
-
     p_success_error: float
     entropy_error: float
     impact_error: float
@@ -28,23 +25,26 @@ class CalibrationDeltas:
         return dataclasses.asdict(self)
 
 
-# Accuracy rating per metric: (rated metric, absolute error key, error limit for the "High" label, that label).
-# A zero error is "Exact", an error above the limit "Moderate"; learning value has no limit, so any non-zero error
-# is "High".
-_RATING_THRESHOLDS: tuple[tuple[str, str, float | None, str], ...] = (
-    ("p_success", "p_success", 0.05, "High (≤ 0.05)"),
-    ("entropy", "entropy", 1.0, "High (≤ 1.0)"),
-    ("impact", "impact", 5.0, "High"),
-    ("cost", "cost", 1.0, "High (≤ 1.0)"),
-    ("learning_value", "learning_value", None, "High"),
-    ("ev", "ev_clean", 5.0, "High"),
-    ("ev_clean", "ev_clean", 5.0, "High"),
-    ("ev_with_bugs", "ev_with_bugs", 5.0, "High"),
+class _RatingThreshold(NamedTuple):
+    metric: str
+    error_key: str
+    high_limit: float | None
+    high_label: str
+
+
+_RATING_THRESHOLDS: tuple[_RatingThreshold, ...] = (
+    _RatingThreshold("p_success", "p_success", 0.05, "High (≤ 0.05)"),
+    _RatingThreshold("entropy", "entropy", 1.0, "High (≤ 1.0)"),
+    _RatingThreshold("impact", "impact", 5.0, "High"),
+    _RatingThreshold("cost", "cost", 1.0, "High (≤ 1.0)"),
+    _RatingThreshold("learning_value", "learning_value", None, "High"),
+    _RatingThreshold("ev", "ev_clean", 5.0, "High"),
+    _RatingThreshold("ev_clean", "ev_clean", 5.0, "High"),
+    _RatingThreshold("ev_with_bugs", "ev_with_bugs", 5.0, "High"),
 )
 
 
 def _absolute_errors(predicted: PredictedMetrics, actual: ActualMetrics) -> dict[str, float]:
-    """Absolute predicted-versus-actual error per metric (4 decimals for ``p_success``, 2 for the rest)."""
     return {
         "p_success": round(abs(predicted.p_success - actual.p_success), 4),
         "entropy": round(abs(predicted.entropy - actual.entropy), 2),
@@ -57,21 +57,18 @@ def _absolute_errors(predicted: PredictedMetrics, actual: ActualMetrics) -> dict
 
 
 def _rate(error: float, high_limit: float | None, high_label: str) -> str:
-    """``Exact`` for no error, ``high_label`` within ``high_limit`` (or with no limit), else ``Moderate``."""
     if error == 0:
         return "Exact"
     return high_label if high_limit is None or error <= high_limit else "Moderate"
 
 
 def _accuracy_ratings(errors: dict[str, float]) -> dict[str, str]:
-    """The accuracy rating of each metric from ``_RATING_THRESHOLDS``."""
     return {metric: _rate(errors[key], limit, label) for metric, key, limit, label in _RATING_THRESHOLDS}
 
 
 def _bias_directions(
     predicted: PredictedMetrics, actual: ActualMetrics, errors: dict[str, float], deltas: CalibrationDeltas
 ) -> dict[str, str]:
-    """The direction of each metric's prediction error."""
     return {
         "p_success": (
             "Perfectly Calibrated"
@@ -100,7 +97,6 @@ def compute_calibration_deltas(
     predicted: PredictedMetrics,
     actual: ActualMetrics,
 ) -> tuple[CalibrationDeltas, dict[str, str], dict[str, str]]:
-    """Compute mathematical calibration deltas, accuracy ratings, and bias directions."""
     errors = _absolute_errors(predicted, actual)
     delta_ev_clean = round(actual.ev_clean - predicted.ev, 2)
     deltas = CalibrationDeltas(

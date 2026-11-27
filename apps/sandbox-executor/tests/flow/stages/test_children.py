@@ -1,12 +1,3 @@
-"""End-to-end tests of the decomposed child loop against a bare origin, with fake role agents and a fake ``gh``.
-
-They prove that children nest under the plan branch (goal 8 b), run strictly one after another from its latest tip
-(8 c), are merged into it with merge commits (squashes on a squash-only repository) and never into ``main`` (8 d), and
-that a resume continues from the recorded progress without re-dispatching the parent executor or any child (8 f).
-``TestChildLoopWithStubbedPipelines`` covers the same loop with each child pipeline, the merge and the integration
-stubbed.
-"""
-
 from __future__ import annotations
 
 import subprocess
@@ -39,7 +30,6 @@ def _is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
 
 
 def _plan_file(execution_branch: str) -> str:
-    """The per-plan source file the budget fake executor writes for the plan of ``execution_branch``."""
     plan_id = execution_branch.removesuffix("/_").split("/")[-2]
     return f"src/{plan_id.replace('-', '_')}.py"
 
@@ -47,21 +37,17 @@ def _plan_file(execution_branch: str) -> str:
 def _assert_children_nest_under_the_plan_branch_and_ran_one_after_another(
     origin: Path, plan: str, reviews: ChildReviews, execute: StageResult
 ) -> None:
-    """Goals 8 b to 8 d on ``origin`` after a decomposed run whose two children merged into ``plan``."""
     first, second = execute.payload["children_progress"]
     original_plan_tip = _git(origin, "rev-parse", f"refs/heads/{plan}^1^1")
-    # (b) Each child is cut from the plan branch tip of its time and its PR targets the plan branch.
     for entry in (first, second):
         assert entry["intent_branch"].startswith(plan.removesuffix("/_") + "--")
         assert reviews.gh.prs[entry["pr_number"]]["base"] == plan
         assert entry["status"] == "merged"
     assert _git(origin, "rev-parse", f"refs/heads/{first['intent_branch']}^") == original_plan_tip
-    # (c) The second child is cut from the first child's merge commit, so it carries the first child's work.
     assert _git(origin, "rev-parse", f"refs/heads/{second['intent_branch']}^") == first["merge_commit"]
     assert _is_ancestor(origin, first["merge_commit"], second["execution_branch"])
     first_file = _plan_file(first["execution_branch"])
     assert _git(origin, "show", f"refs/heads/{second['execution_branch']}:{first_file}").startswith("PLAN = ")
-    # (d) The plan branch gained exactly one two-parent merge commit per child, the child's head as second parent.
     merges = _git(origin, "rev-list", "--first-parent", "--merges", "--parents", f"refs/heads/{plan}").splitlines()
     assert [line.split()[0] for line in reversed(merges)] == [first["merge_commit"], second["merge_commit"]]
     assert all(len(line.split()) == 3 for line in merges)
@@ -87,7 +73,6 @@ def test_children_of_a_squash_only_repository_are_squashed_into_the_plan_branch(
     assert execute.status == StageStatus.SUCCESS
     first, second = execute.payload["children_progress"]
     assert (first["status"], second["status"]) == ("merged", "merged")
-    # Each squash is a single-parent commit on the plan branch, and the second child is cut from the first squash.
     assert _git(origin, "rev-parse", f"{second['merge_commit']}^") == first["merge_commit"]
     assert _git(origin, "rev-parse", f"refs/heads/{second['intent_branch']}^") == first["merge_commit"]
     for entry in (first, second):
@@ -113,12 +98,11 @@ def test_a_child_pr_whose_base_is_main_is_refused_and_stage_3_fails_naming_it(fl
         "(PR #101): "
     )
     assert "'main' is main, master or the repository default branch" in execute.error
-    # gh pr merge was never invoked, main and the plan branch are untouched, and the second child never started.
     assert reviews.gh.merge_calls() == []
     assert reviews.gh.prs[101]["state"] == "OPEN"
     assert _git(origin, "rev-parse", "refs/heads/main") == _git(host, "rev-parse", "origin/main")
     assert _git(origin, "rev-list", "--merges", f"refs/heads/{ctx.plan_branch}") == ""
-    # Refused only at the merge: the child stays review_done (merge_error recorded) so a resume retries the merge.
+    # why: refused only at the merge, so the child stays review_done and a resume retries the merge
     first, second = execute.payload["children_progress"]
     assert (first["status"], second["status"]) == ("review_done", "pending")
     assert "'main' is main, master or the repository default branch" in first["merge_error"]
@@ -147,10 +131,7 @@ def test_a_resume_continues_the_failed_child_without_dispatching_anything_again(
         resumed_ctx.dispatcher = agents
         resumed = PipelineEngine(resumed_ctx, from_stage=checkpoint.current_stage).run()
 
-    # (f) No container was dispatched again: not the parent executor, not a child's intent, plan or executor.
     assert agents.calls == dispatched_before
-    # The failed child resumed from its own checkpoint at Stage 4 and reused its PR: the only new PR is the parent's
-    # combined PR into main, raised by the parent's own Stage 4.
     (combined,) = [n for n in reviews.created if n not in created_before]
     assert reviews.gh.prs[combined]["base"] == "main"
     assert reviews.gh.prs[combined]["head"] == resumed_ctx.execution_branch
@@ -161,7 +142,6 @@ def test_a_resume_continues_the_failed_child_without_dispatching_anything_again(
     execute = resumed["execute"]
     assert execute.status == StageStatus.SUCCESS
     assert [e["status"] for e in execute.payload["children_progress"]] == ["merged", "merged"]
-    # The first child merged once only; the resume merged the second.
     assert [call[2] for call in reviews.gh.merge_calls()] == [str(e["pr_number"]) for e in progress]
     assert resumed["review"].status == StageStatus.HALTED_FOR_HUMAN
 
@@ -169,12 +149,10 @@ def test_a_resume_continues_the_failed_child_without_dispatching_anything_again(
 def _assert_the_parent_branch_carries_every_record_and_stage_4_halts(
     origin: Path, ctx: FlowContext, results: dict[str, StageResult], reviews: ChildReviews
 ) -> None:
-    """The integration of a finished decomposed run: records on the combined head, the combined PR into main."""
     execute = results["execute"]
     assert execute.status == StageStatus.SUCCESS and execute.payload["integrated"] is True
     exec_ref = f"refs/heads/{ctx.execution_branch}"
     files = set(_git(origin, "ls-tree", "-r", "--name-only", exec_ref).splitlines())
-    # The parent plan file (an ancestor) and both child plan files (merged into the plan branch) are on the head.
     parent_plan_file = f"plans/{ctx.plan_branch.removesuffix('/_').rsplit('/', 1)[-1]}.md"
     child_plan_files = {
         f"plans/{e['execution_branch'].removesuffix('/_').split('/')[-2]}.md"
@@ -183,17 +161,14 @@ def _assert_the_parent_branch_carries_every_record_and_stage_4_halts(
     assert {parent_plan_file, *child_plan_files} <= files
     rows = _ledger_rows(origin, exec_ref, "executions.jsonl")
     parent_rows = [r for r in rows if r.get("execution_id") == execute.payload["execution_id"]]
-    # The executor's decomposed row, then the superseding row listing the merged children.
     assert [r.get("integrated", False) for r in parent_rows] == [False, True]
     superseding = parent_rows[-1]
     assert superseding["status"] == "decomposed" and superseding["ledger_revision"] == 2
     assert superseding["plan_branch"] == ctx.plan_branch
     assert [c["slug"] for c in superseding["children"]] == ["add-the-parser", "add-the-cli-flag"]
     assert all(c["merge_commit"] and c["pr_number"] for c in superseding["children"])
-    # Both children's own execution rows reached the parent execution branch through the plan branch.
     child_ids = {e["execution_branch"].removesuffix("/_").rsplit("/", 1)[-1] for e in execute.payload["children"]}
     assert child_ids <= {r.get("execution_id") for r in rows}
-    # The plan branch is an ancestor of the combined head, and Stage 4 raised the combined PR into main and halted.
     assert _is_ancestor(origin, f"refs/heads/{ctx.plan_branch}", exec_ref)
     assert reviews.reviewed[-1] == {
         "slug": "budget-test",
@@ -205,7 +180,6 @@ def _assert_the_parent_branch_carries_every_record_and_stage_4_halts(
     assert any("Pipeline safely halted for human intervention at stage 'review'" in line for line in ctx.logs)
     assert reviews.gh.prs[reviews.reviewed[-1]["number"]]["state"] == "OPEN"
 
-    # Integration is idempotent on a resume: the head stays where it is and no second superseding row is written.
     head_before = _git(origin, "rev-parse", exec_ref)
     again = integrate_children(ctx, "2026-11-09T00:00:00Z", dict(execute.payload))
     assert again.status == StageStatus.SUCCESS
@@ -222,15 +196,12 @@ def _plan_rows_on_origin(origin: Path, plan_branch: str) -> list[dict[str, Any]]
 def _assert_stage_3_ran_the_children_the_plan_row_records(
     origin: Path, ctx: FlowContext, execute: StageResult, parent_execution: dict[str, Any]
 ) -> None:
-    """Goal 8 (a): the planner's plan row is the single record of the decision Stage 3 acted on."""
-    # The planner's row already recorded the decision, so the flow wrote no plan row (the children's rows carry their
-    # own plan ids).
+    # why: the planner's row already records the decision, so the flow writes no plan row of its own
     (plan_row,) = _plan_rows_on_origin(origin, str(ctx.plan_branch))
     assert plan_row["decomposition_decision"] == "decomposed"
     assert [c["slug"] for c in execute.payload["children"]] == [i["slug"] for i in plan_row["sub_intents"]]
     assert parent_execution["record"]["sub_intents"] == plan_row["sub_intents"]
     assert parent_execution["record"]["plan_branch"] == ctx.plan_branch
-    # Later superseding summary rows follow as the children merge; the first is the one the executor wrote.
     summaries = [
         row
         for row in _ledger_rows(origin, f"refs/heads/{parent_execution['branch']}", "executions.jsonl")
@@ -242,13 +213,18 @@ def _assert_stage_3_ran_the_children_the_plan_row_records(
     assert summaries[0]["plan_decision"]["sub_intent_count"] == len(plan_row["sub_intents"])
 
 
+def _checkpoint_crashed_before_the_second_merge(host: Path) -> FlowContext:
+    context = load_checkpoint(get_default_checkpoint_path(str(host), "budget-test")).context
+    execute = context.stage_results["execute"]
+    execute.status = StageStatus.RUNNING
+    execute.payload["children_progress"][1].update(status="review_done", merge_commit=None)
+    return context
+
+
 def test_children_nest_under_the_plan_branch_in_order_and_a_resume_after_a_crash_mid_child_reruns_none(
     flow_repos, tmp_path
 ):
-    """The single run of the default decomposed scenario, so it also carries the assertions of the tests that ran it:
-    test_integration.py's ``test_the_parent_execution_branch_carries_every_record_stage_4_halts_at_main_and_a_resume_
-    integrates_nothing`` and test_plan_decision.py's ``test_decomposed_plan_runs_the_children_the_plan_row_records``.
-    """
+    # why: one costly decomposed run also carries the former integration and plan-decision tests' assertions
     host, origin = flow_repos
     ctx, agents = _decomposed_context(host, origin, tmp_path)
     parent_execution: dict[str, Any] = {}
@@ -268,28 +244,20 @@ def test_children_nest_under_the_plan_branch_in_order_and_a_resume_after_a_crash
         )
         _assert_stage_3_ran_the_children_the_plan_row_records(origin, ctx, finished, parent_execution)
         _assert_the_parent_branch_carries_every_record_and_stage_4_halts(origin, ctx, results, reviews)
-        # Model a crash after the second child's review but before its merge was recorded.
-        checkpoint = load_checkpoint(get_default_checkpoint_path(str(host), "budget-test"))
-        context = checkpoint.context
-        execute = context.stage_results["execute"]
-        execute.status = StageStatus.RUNNING
-        second = execute.payload["children_progress"][1]
-        second.update(status="review_done", merge_commit=None)
+        context = _checkpoint_crashed_before_the_second_merge(host)
         dispatched_before = list(agents.calls)
         context.dispatcher = agents
 
         resumed = PipelineEngine(context, from_stage="execute").run()
 
     assert agents.calls == dispatched_before
-    # Origin already shows the PR merged, so reconciliation promotes the child and nothing is merged twice.
+    # why: origin already shows the PR merged, so reconciliation promotes the child without a second merge
     assert len(reviews.gh.merge_calls()) == 2
     assert resumed["execute"].status == StageStatus.SUCCESS
     assert resumed["execute"].payload["children_progress"][1]["status"] == "merged"
 
 
 class TestChildLoopWithStubbedPipelines:
-    """The child loop of ``_run_decomposed_plan`` with each child pipeline, the merge and the integration stubbed."""
-
     _READY: ClassVar[dict[str, StageResult]] = {
         "intent": StageResult(stage=FlowStage.INTENT, status=StageStatus.SUCCESS),
         "review": halted_review(7, "https://github.com/o/r/pull/7"),
@@ -307,7 +275,6 @@ class TestChildLoopWithStubbedPipelines:
         reconcile: Mock | None = None,
         **ctx_kw,
     ) -> tuple[StageResult, FlowContext, list[FlowContext]]:
-        """Run _run_decomposed_plan with each child pipeline, the merge, the integration and origin stubbed."""
         ctx = FlowContext(token_reduce=False, intent_data=intent_data, **ctx_kw)
         children: list[FlowContext] = []
         done = child_results or cls._READY
@@ -328,7 +295,7 @@ class TestChildLoopWithStubbedPipelines:
             patch("sandbox_executor.flow.stages.children.integrate_children", side_effect=integrated),
             patch("sandbox_executor.flow.stages.children.save_checkpoint"),
             patch("sandbox_executor.flow.stages.children._fetch_refspecs_error", return_value=None),
-            # Origin reconciliation fetches from the real origin, which is unreachable in the review-loop container.
+            # why: reconciliation fetches from the real origin, which is unreachable in the review-loop container
             patch("sandbox_executor.flow.stages.children.reconcile_with_origin", reconcile or Mock(return_value=[])),
         ):
             res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", row, base)
@@ -365,8 +332,6 @@ class TestChildLoopWithStubbedPipelines:
         assert "deeper than the limit" in (res.error or "")
         assert children == []
 
-    # --- Child intent payloads ----------------------------------------------------------------------------------
-
     def test_child_payload_fallbacks_and_copies(self):
         labels = ["flow"]
         row = {
@@ -378,7 +343,6 @@ class TestChildLoopWithStubbedPipelines:
             res, ctx, children = self._run_children({"slug": "parent", "labels": labels}, row)
 
         assert res.status == StageStatus.SUCCESS
-        # A context without plan_branch (a checkpoint) still nests the children under the recorded plan branch.
         plan = "I-1-parent/P-2-agent-model/_"
         assert res.payload["plan_branch"] == plan
         assert [c.intent_data["target_branch"] for c in children] == [plan] * 2
@@ -395,9 +359,8 @@ class TestChildLoopWithStubbedPipelines:
         )
         assert (second["slug"], second["goal"]) == ("sub-intent-2", "Add the flag\n- detail")
         assert second["description"] == "Add the flag\n- detail"
-        # A row without entropy_budget hands no budget down, so each child resolves its own.
         assert "entropy_budget" not in first
-        # Labels are copied, not shared, so a child cannot change its parent's labels.
+        # why: labels are copied, not shared, so a child cannot change its parent's labels
         assert first["labels"] == labels and first["labels"] is not labels
         assert res.payload["sub_intents"] == row["sub_intents"][:2]
         assert ctx.stage_results["execute"] is res
@@ -412,11 +375,9 @@ class TestChildLoopWithStubbedPipelines:
 
         assert res.payload["plan_branch"] == "I-9-parent/P-3-a-m/_"
         (child,) = (c.intent_data for c in children)
-        # Never the intent branch: the plan branch is both the parent and the merge target.
         assert child["target_branch"] == child["parent_intent_id"] == "I-9-parent/P-3-a-m/_"
         assert child["entropy_budget"] == 5.0
         assert (child["description"], child["goal"]) == ("Add the parser\n- with tests", "Add the parser")
-        # Labels that are not a list are not handed down.
         assert "labels" not in child
 
     def test_without_a_known_plan_branch_no_child_runs_and_the_intent_branch_is_never_the_fallback(self):
@@ -460,7 +421,7 @@ class TestChildLoopWithStubbedPipelines:
                 patch("sandbox_executor.flow.stages.children.reconcile_with_origin", return_value=[]),
             ):
                 res = flow_module._run_decomposed_plan(ctx, "2026-10-26T00:00:00Z", self._ROW, {"execution_id": "E-1"})
-        # No execution branch was recorded by the stubbed child, so the expected head is empty and fails closed.
+        # why: the stubbed child records no execution branch, so the expected head is empty and fails closed
         merge.assert_called_once_with(".", 7, "I-1-parent/P-2-agent-model/_", expected_head="")
         assert res.payload["children_progress"][0]["status"] == "review_done"
         assert res.status == StageStatus.FAILED
@@ -476,7 +437,6 @@ class TestChildLoopWithStubbedPipelines:
             "plan": StageResult(stage=FlowStage.PLAN, status=StageStatus.FAILED, error="Plan stage failed: no plan"),
         }
         if execute_failed_too:
-            # A child whose re-plan Stage 2 failed holds a failed plan and a failed execute: the first one is named.
             failed["execute"] = StageResult(
                 stage=FlowStage.EXECUTE, status=StageStatus.FAILED, error="Execute stage failed: over budget"
             )
@@ -501,7 +461,6 @@ class TestChildLoopWithStubbedPipelines:
         assert children == []
 
     def test_decomposed_summary_names_the_parent_intents_own_target_branch(self):
-        # The combined PR targets the parent intent's target_branch, not always main.
         res, _ctx, _children = self._run_children(
             {"slug": "parent", "goal": "Change the application", "target_branch": "release/1.x"},
             self._ROW,
@@ -534,8 +493,6 @@ class TestChildLoopWithStubbedPipelines:
             line.startswith("[sub-intent first] ") and line.endswith("child progress before the crash")
             for line in ctx.logs
         )
-        # An unexpected exception is a Stage 3 failure that still carries the recorded progress (so a resume continues
-        # the child instead of dispatching the parent executor and every child again), and the checkpoint was saved.
         assert res.status == StageStatus.FAILED
         assert "raised RuntimeError: child crashed" in (res.error or "")
         assert [e["status"] for e in res.payload["children_progress"]] == ["in_progress"]
@@ -577,7 +534,7 @@ class TestChildLoopWithStubbedPipelines:
     @pytest.mark.parametrize("flag", ["dry_run", "skip_push"])
     def test_dry_run_and_skip_push_fail_at_the_first_child_and_start_no_later_one(self, flag):
         row = {**self._ROW, "sub_intents": [{"slug": "first", "goal": "One"}, {"slug": "second", "goal": "Two"}]}
-        # Without a real push there is no PR and no consensus approval: Stage 4 records neither.
+        # why: without a real push there is no PR and no consensus approval, so Stage 4 records neither
         no_pr = {
             **self._READY,
             "review": StageResult(stage=FlowStage.REVIEW, status=StageStatus.SUCCESS, payload={}),

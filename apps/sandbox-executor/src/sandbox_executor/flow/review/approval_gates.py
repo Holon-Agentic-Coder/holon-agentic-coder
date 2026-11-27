@@ -1,10 +1,3 @@
-"""Stage 4 approval gates: consensus on the diff and a green pipeline on the exact head, recorded independently.
-
-"Approved" is only their conjunction (:func:`approved`). A red pipeline marks only the pipeline gate, so the diff
-approval survives it; the diff gate holds on a moved head only while the PR-own change fingerprint is unchanged.
-Both records live in ``context.review_state["gates"]`` and are checkpointed with the context.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
@@ -25,8 +18,6 @@ DIFF, PIPELINE = "diff", "pipeline"
 
 @dataclass(frozen=True)
 class DiffGate:
-    """Whether the reviewers approved the PR-own diff of ``reviewed_head``, independently of CI."""
-
     approved: bool
     reviewed_head: str
     fingerprint: str | None = None
@@ -53,8 +44,6 @@ class DiffGate:
 
 @dataclass(frozen=True)
 class PipelineGate:
-    """The pipeline state on exactly ``head_sha``: ``green``, ``red``, ``pending`` or ``unknown``."""
-
     head_sha: str
     state: str = UNKNOWN
     run_ids: tuple[str, ...] = ()
@@ -78,8 +67,6 @@ class PipelineGate:
 
 @dataclass(frozen=True)
 class IterationGates:
-    """What one Stage 4 iteration knows about its gates; ``fingerprint_of`` maps a head to its PR-own fingerprint."""
-
     head: str
     iteration: int
     reviewers: Sequence[ReviewerResult]
@@ -90,14 +77,13 @@ class IterationGates:
     ci_status: Mapping[str, Any] = field(default_factory=dict)
     base_branch: str | None = None
     fingerprint_of: Callable[[str], str | None] | None = None
-    mode: str = "full"  # ``scoped`` for a delta pass or a re-review of only ``context.review_scope_paths``.
+    mode: str = "full"
 
 
 def pipeline_state_of(ci_green: bool | None, ci_status: Mapping[str, Any]) -> str:
-    """``green``/``red`` from the CI verdict, else from ``ci_status`` alone (the fast probe leaves the verdict None
-    unless CI failed), so the pipeline gate never depends on the reviewers: ``pending``, ``green`` or ``unknown``."""
     if ci_green is not None:
         return GREEN if ci_green else RED
+    # why: the fast probe leaves ci_green None unless CI failed, so the pipeline gate never waits on the reviewers
     if ci_status.get("pending", 0):
         return PENDING
     return GREEN if ci_status.get("all_passed") is True else UNKNOWN
@@ -111,12 +97,10 @@ def _gates(context: FlowContext) -> dict[str, Any]:
 
 
 def record_diff_gate(context: FlowContext, gate: DiffGate) -> None:
-    """Record the diff gate; the pipeline gate is left as it is."""
     _gates(context)[DIFF] = gate.to_dict()
 
 
 def record_pipeline_gate(context: FlowContext, gate: PipelineGate) -> None:
-    """Record the pipeline gate; the diff gate is left as it is."""
     _gates(context)[PIPELINE] = gate.to_dict()
 
 
@@ -127,19 +111,16 @@ def _gate_record(context: FlowContext, name: str) -> Mapping[str, Any] | None:
 
 
 def diff_gate_of(context: FlowContext) -> DiffGate | None:
-    """The recorded diff gate, or None when absent or malformed."""
     record = _gate_record(context, DIFF)
     return DiffGate.from_dict(record) if record is not None and record.get("reviewed_head") else None
 
 
 def pipeline_gate_of(context: FlowContext) -> PipelineGate | None:
-    """The recorded pipeline gate, or None when absent or malformed."""
     record = _gate_record(context, PIPELINE)
     return PipelineGate.from_dict(record) if record is not None and record.get("head_sha") else None
 
 
 def diff_gate_holds(context: FlowContext, repo_dir: str, head: str | None) -> bool:
-    """The diff gate is approved for ``head``: the reviewed head itself, or the same PR-own change fingerprint."""
     gate = diff_gate_of(context)
     if gate is None or not gate.approved or not head:
         return False
@@ -150,24 +131,20 @@ def diff_gate_holds(context: FlowContext, repo_dir: str, head: str | None) -> bo
 
 
 def pipeline_gate_holds(context: FlowContext, head: str | None) -> bool:
-    """The pipeline is green on exactly ``head``: a full SHA comparison, never ancestry or a prefix."""
     gate = pipeline_gate_of(context)
     return gate is not None and bool(head) and gate.state == GREEN and gate.head_sha == head
 
 
 def approved(context: FlowContext, repo_dir: str, head: str | None) -> bool:
-    """The only definition of approval: the diff gate and the pipeline gate both hold on ``head``."""
     return diff_gate_holds(context, repo_dir, head) and pipeline_gate_holds(context, head)
 
 
 def mark_pipeline_red(context: FlowContext, head_sha: str, failed_runs: Sequence[Mapping[str, Any]]) -> None:
-    """Record a merged-head CI failure as a red pipeline gate on ``head_sha``; the diff gate survives it."""
     run_ids = tuple(str(run.get("run_id")) for run in failed_runs if run.get("run_id"))
     record_pipeline_gate(context, PipelineGate(head_sha, RED, run_ids, source="merged_head"))
 
 
 def gates_summary(context: FlowContext) -> dict[str, Any]:
-    """The JSON-safe gate records for the Stage 4 payload."""
     diff, pipeline = diff_gate_of(context), pipeline_gate_of(context)
     return {DIFF: diff.to_dict() if diff else None, PIPELINE: pipeline.to_dict() if pipeline else None}
 
@@ -179,11 +156,7 @@ def _run_ids(ci_status: Mapping[str, Any], state: str) -> tuple[str, ...]:
 
 
 def record_iteration_gates(context: FlowContext, facts: IterationGates, verdict: ConsensusVerdict | None) -> None:
-    """Record both gates for one iteration; ``verdict`` (their conjunction) is only checked for drift, never changed.
-
-    The diff verdict takes ``ci_green=True`` on purpose: ``decide_consensus`` treats anything else as not approved, so
-    it judges the reviewers, the blockers and mergeability alone.
-    """
+    # why: decide_consensus treats any ci_green but True as not approved, so True judges the reviewers alone
     diff_verdict = decide_returned_consensus(
         facts.reviewers, facts.ensemble_size, facts.mergeable, True, facts.blockers
     )

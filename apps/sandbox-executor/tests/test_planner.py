@@ -33,12 +33,11 @@ class TestPlanner(unittest.TestCase):
     def test_get_file_structure(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = pathlib.Path(tmp_dir)
-            # Create some mock files and directories
             (tmp_path / "dir1").mkdir()
             (tmp_path / "dir1" / "file1.py").write_text("print('hello')")
             (tmp_path / "dir2").mkdir()
-            (tmp_path / ".git").mkdir()  # should be ignored
-            (tmp_path / "dir1" / ".hidden").write_text("hidden")  # should be ignored
+            (tmp_path / ".git").mkdir()
+            (tmp_path / "dir1" / ".hidden").write_text("hidden")
 
             structure = planner.get_file_structure(str(tmp_path))
             self.assertIn("dir1/", structure)
@@ -129,12 +128,10 @@ Subsections of the overall section are still in scope.
 
     def test_load_metrics_config(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # Case 1: missing config file -> default values (lambda=0.3, mu=0.5)
             config = planner.load_metrics_config(tmp_dir)
             self.assertEqual(config["lambda"], 0.3)
             self.assertEqual(config["mu"], 0.5)
 
-            # Case 2: valid ev_config.json present
             metrics_dir = pathlib.Path(tmp_dir) / "holon-config" / "metrics"
             metrics_dir.mkdir(parents=True)
             ev_file = metrics_dir / "ev_config.json"
@@ -144,25 +141,21 @@ Subsections of the overall section are still in scope.
             self.assertEqual(config2["lambda"], 0.4)
             self.assertEqual(config2["mu"], 0.6)
 
-            # Case 3: malformed JSON -> defaults returned, no exception raised
             ev_file.write_text("not valid json")
             config3 = planner.load_metrics_config(tmp_dir)
             self.assertEqual(config3["lambda"], 0.3)
             self.assertEqual(config3["mu"], 0.5)
 
-            # Case 4: partial keys -> present key used, missing key falls back to default
             ev_file.write_text(json.dumps({"lambda": 0.2}))
             config4 = planner.load_metrics_config(tmp_dir)
             self.assertEqual(config4["lambda"], 0.2)
             self.assertEqual(config4["mu"], 0.5)
 
-            # Case 5: non-numeric value -> falls back to default for that key
             ev_file.write_text(json.dumps({"lambda": "abc", "mu": 0.5}))
             config5 = planner.load_metrics_config(tmp_dir)
             self.assertEqual(config5["lambda"], 0.3)
             self.assertEqual(config5["mu"], 0.5)
 
-            # Case 6: out-of-range bounds -> both fall back to defaults
             ev_file.write_text(json.dumps({"lambda": -1.0, "mu": 2.0}))
             config6 = planner.load_metrics_config(tmp_dir)
             self.assertEqual(config6["lambda"], 0.3)
@@ -221,11 +214,6 @@ INTENT = {
 
 
 class _PlannerHarness:
-    """Runs planner.main() against a real temporary workspace with git and the agent replaced by fakes.
-
-    ``agent_turns`` is a list of callables ``(cmd, watch_path) -> TurnResult``; each supervised turn pops the next one.
-    """
-
     def __init__(self, testcase, agent_turns, model="gemini", env=None, build_cmd=None, intent=None, template=None):  # noqa: PLR0913
         self.testcase = testcase
         self.intent = INTENT if intent is None else intent
@@ -250,7 +238,7 @@ class _PlannerHarness:
         return result
 
     def _fake_start_branch(self, repo, repo_dir, base_branch, new_branch):
-        # The host already fetched the base; the branch is created locally from it.
+        # why: the host already fetched the base, so the branch is created locally from it
         self.git_cmds.append(["git", "checkout", "-B", new_branch, base_branch])
         self.branch_args = (repo_dir, base_branch, new_branch)
 
@@ -417,7 +405,6 @@ class TestPlannerMain(unittest.TestCase):
         self.assertNotIn(feedback, json.dumps(h.ledger_lines("intents.jsonl")))
 
     def test_replan_feedback_reaches_the_temporary_intent_file(self):
-        # The agent's intent metadata (the temp intent file) carries the feedback too.
         feedback = "The previous plan has entropy 12.6, above the entropy budget 5."
         h = self.harness([write_file(VALID_PLAN)], env={"HOLON_REPLAN_FEEDBACK": feedback})
         self.assertEqual(h.exit_code, 0, h.stderr)
@@ -453,7 +440,7 @@ class TestPlannerMain(unittest.TestCase):
     def test_ephemeral_credentials_are_cleaned_up_after_the_turn(self):
         for turns in ([write_file(VALID_PLAN)], []):
             with self.subTest(turns=len(turns)):
-                # With no scripted turn the agent turn raises; the credentials are still removed.
+                # why: with no scripted turn the agent turn raises; the credentials must still be removed
                 h = self.harness(turns)
                 h.runner.cleanup_ephemeral_credentials.assert_called_once_with()
 
@@ -466,14 +453,12 @@ class TestPlannerMain(unittest.TestCase):
         self.assertEqual(h.exit_code, 0, h.stderr)
 
     def test_whitespace_only_replan_feedback_is_ignored(self):
-        # Blank feedback adds no Re-plan request and no replan_feedback key.
         h = self.harness([write_file(VALID_PLAN)], env={"HOLON_REPLAN_FEEDBACK": " \n\t "})
         self.assertEqual(h.exit_code, 0, h.stderr)
         self.assertNotIn("## Re-plan request", h.turn_prompts[0])
         self.assertNotIn("replan_feedback", h.turn_prompts[0])
 
     def test_plans_started_in_the_same_second_use_distinct_temp_files(self):
-        # The prompt and intent temp paths are unique per run, not keyed by the second, and are removed.
         paths = []
 
         def build_cmd(model, prompt_file, intent_file, prompt):
@@ -493,7 +478,7 @@ class TestPlannerMain(unittest.TestCase):
             self.assertFalse(os.path.exists(prompt_file) or os.path.exists(intent_file))
 
     def test_temp_files_are_removed_when_writing_the_prompt_raises(self):
-        # Both temp files exist before the prompt is written, so a failure while writing it leaks neither.
+        # why: both temp files exist before the prompt is written, so a failure while writing it leaks neither
         for target in ("get_file_structure", "build_replan_paragraph"):
             with self.subTest(target=target):
                 created = self._temp_files_left_when_raising(target)
@@ -501,8 +486,7 @@ class TestPlannerMain(unittest.TestCase):
                 self.assertFalse(any(os.path.exists(path) for path in created), created)
 
     def test_prompt_temp_file_is_removed_when_creating_the_intent_temp_file_raises(self):
-        # The intent temp file is created after the prompt temp file, so mkstemp failing on it (ENOSPC, inode
-        # exhaustion) must not leak the prompt temp file.
+        # why: mkstemp can fail on the later intent temp file (ENOSPC, inode exhaustion) after the prompt one exists
         original = planner._unique_temp_file
         created = []
 
@@ -581,7 +565,7 @@ class TestPlannerMain(unittest.TestCase):
         self.assertEqual(h.ledger_lines("plans.jsonl"), [])
 
     def test_step_table_before_overall_section_does_not_reach_the_ledger(self):
-        # The gate and the plans.jsonl row both read `## Overall Plan Metrics`.
+        # why: the gate and the plans.jsonl row both read `## Overall Plan Metrics`
         step_first = VALID_PLAN.replace(
             "## Overall Plan Metrics",
             "## Step 0: Survey\n\n| metric | value |\n| --- | --- |\n| p_success_pred | 0.1 |\n"
@@ -610,7 +594,7 @@ class TestPlannerMain(unittest.TestCase):
         self.assertEqual(h.ledger_lines("plans.jsonl"), [])
 
     def test_missing_ev_row_is_recomputed_not_failed(self):
-        # EV is recomputed from the five inputs, so a plan without an ev_pred row is valid.
+        # why: EV is recomputed from the five inputs, so the ev_pred row is optional
         without_ev = VALID_PLAN.replace("| ev_pred             | 6.0   |\n", "")
         self.assertNotEqual(without_ev, VALID_PLAN)
         h = self.harness([write_file(without_ev)])
@@ -692,7 +676,7 @@ class TestPlannerMain(unittest.TestCase):
         self.assertEqual(DecompositionDecision.from_plan_row(row), should_decompose(row, plan_content, INTENT))
 
     def test_plan_row_records_the_list_after_prettier_rewrites_the_plan(self):
-        """Prettier runs before the ledger append, so the recorded list is the one parsed from the committed file."""
+        # why: Prettier runs before the ledger append, so the recorded list is parsed from the committed file
         listed = VALID_PLAN + "\n## Sub-intent list\n\n- Add the validator module\n"
 
         def rewrap(files, repo_dir):
@@ -746,7 +730,7 @@ class TestPlannerMain(unittest.TestCase):
         self.assertEqual(record["budget_name"], "turn")
         self.assertEqual(record["budget_seconds"], 300)
         self.assertEqual(record["elapsed_seconds"], 300)
-        # The salvaged partial plan and the ledger record are committed together so neither is lost with the sandbox.
+        # why: the partial plan and ledger record are committed together so neither is lost with the sandbox
         add_cmds = [c for c in h.git_cmds if c[:2] == ["git", "add"]]
         self.assertTrue(any("holon-knowledge/ledger/pending/executions" in c for c in add_cmds))
         self.assertTrue(any(any(arg.startswith("plans/I-12345/P-") for arg in c) for c in add_cmds))
@@ -840,11 +824,6 @@ class TestPlannerMain(unittest.TestCase):
         self.assertEqual(h.exit_code, 0, h.stderr)
 
 
-# --------------------------------------------------------------------------------------
-# Credential leaks in the echoed clone command and its failure diagnostics
-# --------------------------------------------------------------------------------------
-
-
 @pytest.fixture
 def clone_leak_env(monkeypatch):
     sample = make_gh_probe()
@@ -873,13 +852,8 @@ def test_run_cmd_clone_echo_and_failure_carry_no_token_fragment(clone_leak_env, 
     assert "returned error: 403" in output
 
 
-# --------------------------------------------------------------------------------------
-# Credential leaks in the echoed agent command
-# --------------------------------------------------------------------------------------
-
-
 def _fake_provider_value() -> str:
-    # Assembled at runtime so no provider-shaped literal is committed.
+    # why: assembled at runtime so no provider-shaped literal is committed
     return "sk" + "-ant-" + "oat01-" + uuid.uuid4().hex + uuid.uuid4().hex
 
 
@@ -896,7 +870,7 @@ def test_agent_cmd_echo_masks_settings_json_before_truncation():
 
 def test_agent_cmd_echo_masks_bare_provider_value_in_long_arg():
     value = _fake_provider_value()
-    # The value straddles the 100-character clamp, the case a truncate-then-redact order leaks.
+    # why: the value straddles the 100-character clamp, the case a truncate-then-redact order leaks
     argv = ["pi", "-p", "a" * 90 + value]
     shown = planner.format_agent_cmd_for_display(argv)
     assert_no_fragment(shown, value)
@@ -907,7 +881,7 @@ def test_agent_cmd_echo_masks_bare_provider_value_in_long_arg():
 def test_planner_main_agent_echo_carries_no_settings_value(monkeypatch, agent_fails):
     value = _fake_provider_value()
     settings_blob = json.dumps({"env": {"CLAUDE_CODE_OAUTH_TOKEN": value}})
-    # A failing agent writes no plan file and no stdout, which routes main() to the stdout/stderr dump.
+    # why: a failing agent writes no plan file and no stdout, which routes main() to the stdout/stderr dump
     turn = (
         (lambda cmd, watch_path: TurnResult(returncode=1, stdout="", stderr=f"auth rejected for {value}"))
         if agent_fails

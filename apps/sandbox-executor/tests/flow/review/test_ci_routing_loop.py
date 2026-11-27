@@ -46,7 +46,7 @@ def _routed_loop(tmp_path, statuses, steps, container=False):
     """
     from sandbox_executor.flow import run_review_loop
 
-    from tests.review_fakes import FakeEnsemble, clean_reviewer
+    from tests.review_fakes import FakeEnsemble
 
     resolver_calls, now = [], [0.0]
 
@@ -57,7 +57,7 @@ def _routed_loop(tmp_path, statuses, steps, container=False):
     def sleep(seconds):
         now[0] += seconds
 
-    ensemble = FakeEnsemble([clean_reviewer(1)])
+    ensemble = FakeEnsemble()
     detail, slowest = _failed_steps(steps), lambda check: [("tests/test_slow.py::test_x", 90.0)]
     with (
         _LoopStubs() as stubs,
@@ -70,7 +70,7 @@ def _routed_loop(tmp_path, statuses, steps, container=False):
             _ensemble_ctx(tmp_path),
             target=EXEC_TARGET,
             max_iterations=1,
-            ensemble_size=1,
+            ensemble_size=3,
             run_ensemble_fn=None if container else ensemble,
             run_resolver_fn=fake_resolver,
             clock=lambda: now[0],

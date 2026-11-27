@@ -1,10 +1,3 @@
-"""Stage 4 review posting: decide whether the consensus review reaches the pull request, and post it.
-
-A review is posted only when the loop ends in a terminal state: a consensus approval, or the label budget
-exhausted with findings still open. Every other exit keeps the report local, including an iteration that halts on a
-failed verdict (a crashed, timed-out or stalled reviewer turn) even when it lands on the last label.
-"""
-
 from __future__ import annotations
 
 import functools
@@ -29,26 +22,25 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class PostFacts:
-    """What the loop knows about its exit when it decides whether to post."""
-
     dry_run: bool
     skip_post: bool
-    failed: bool  # A refused diff or host run, or an infrastructure error.
+    # why: infrastructure errors share this flag so they fail closed like a refused run and never post.
+    failed: bool
     reviewer_completed: bool
     consensus_reached: bool
-    halted_early: bool  # A resolver error, a budget stop, an unresolved ref, unmeasured tests or no convergence.
+    # why: every early stop shares one flag so a halted loop keeps its report local unless consensus was reached.
+    halted_early: bool
     iteration: int
     last_label: int
-    verdict_terminal: bool  # CHANGES_REQUESTED or APPROVED with every reviewer completed (see is_terminal_verdict).
+    verdict_terminal: bool
 
 
 @dataclass(frozen=True)
 class PostDecision:
-    """Whether to post, and why not when skipping."""
-
     post: bool
     reason: str = ""
-    count_suppressed: bool = False  # Dry run and --skip-post count a suppressed ledger record.
+    # why: a dry run or --skip-post still counts a suppressed ledger record.
+    count_suppressed: bool = False
 
 
 _HALTED = "the loop halted before a terminal state; the report is kept local"
@@ -59,13 +51,13 @@ _FAILED_VERDICT = (
 
 
 def is_terminal_verdict(verdict: ConsensusVerdict | None, reviewers: list[ReviewerResult]) -> bool:
-    """Whether the deciding iteration ended in a verdict worth posting: every reviewer completed and none failed."""
     terminal = verdict in (ConsensusVerdict.CHANGES_REQUESTED, ConsensusVerdict.APPROVED)
     return terminal and all(result.status is ReviewerStatus.COMPLETED for result in reviewers)
 
 
+# why: only a terminal state posts: a consensus approval, or the label budget exhausted with findings open.
+# why: an iteration halting on a failed verdict stays local even on the last label.
 def decide_post(facts: PostFacts) -> PostDecision:
-    """Decide whether the consensus review is posted to the pull request."""
     if facts.dry_run or facts.skip_post:
         return PostDecision(post=False, count_suppressed=True)
     if facts.failed or not facts.reviewer_completed:
@@ -81,8 +73,6 @@ def decide_post(facts: PostFacts) -> PostDecision:
 
 @dataclass(frozen=True)
 class PostRequest:
-    """The inputs of one post attempt."""
-
     repo_dir: str | Path
     review_target: str
     consensus_data: dict[str, Any]
@@ -90,11 +80,10 @@ class PostRequest:
     reviewers: Any
     title: str
     iteration: int
-    mergeability_probe: MergeabilityProbe | None = None  # The loop's probe; defaults to check_pr_mergeability.
+    mergeability_probe: MergeabilityProbe | None = None
 
 
 def _attempt_post(post_fn: Callable[..., dict[str, Any]], context: FlowContext, request: PostRequest) -> dict[str, Any]:
-    """Call the poster; a raised error is redacted and returned as ``{"error": ...}``."""
     try:
         return post_fn(
             repo_dir=request.repo_dir,
@@ -112,7 +101,6 @@ def _attempt_post(post_fn: Callable[..., dict[str, Any]], context: FlowContext, 
 
 
 def _posting_action_record(request: PostRequest, posting_res: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """Build the ACT-POST row and report whether the post succeeded."""
     target = request.review_target
     posted = bool(posting_res.get("dual_posted") or (posting_res.get("official_review") or {}).get("success"))
     record: dict[str, Any] = {
@@ -132,7 +120,7 @@ def _posting_action_record(request: PostRequest, posting_res: dict[str, Any]) ->
         "labels": ["review", "github", "dual-post"],
     }
     if not posted:
-        # Successful rows keep their historical shape; failures carry the posting error.
+        # why: successful rows keep their historical shape; only failures carry the posting error.
         record["error_context"] = _posting_failure_context(posting_res)
     record["created_at"] = datetime.now(UTC).isoformat()
     return record, posted
@@ -141,11 +129,7 @@ def _posting_action_record(request: PostRequest, posting_res: dict[str, Any]) ->
 def post_review_consensus(
     post_fn: Callable[..., dict[str, Any]], context: FlowContext, exec_file: str | Path, request: PostRequest
 ) -> tuple[str | None, dict[str, Any]]:
-    """Post the consensus review and record ACT-POST; return the fail-closed error (None on success) and the result.
-
-    An approved consensus first passes the conflict gate: a head the probe reports ``CONFLICTING`` or ``DIRTY`` is
-    never approved; the gate merges the target branch, and the approval has to be re-earned on the new head.
-    """
+    # why: a CONFLICTING or DIRTY head is never approved; the gate merges the target and the approval is re-earned.
     if request.consensus_data.get("approved"):
         probe = functools.partial(
             request.mergeability_probe or check_pr_mergeability,
@@ -162,13 +146,12 @@ def post_review_consensus(
     record_review_action(context, exec_file, record)
     if posted:
         return None, posting_res
-    # Fail closed: an approval nobody can see on the PR is not an approval.
+    # why: fail closed; an approval nobody can see on the PR is not an approval.
     post_error = f"Posting the review consensus for '{request.review_target}' failed: {record['error_context']}"
     context.log(f"[Review Loop] {post_error}")
     return post_error, posting_res
 
 
 def log_skipped_post(context: FlowContext, review_target: str, decision: PostDecision) -> None:
-    """Log that nothing was posted and why (silent for a dry run or --skip-post)."""
     if decision.reason:
         context.log(f"[Review Loop] Not posting a review consensus for '{review_target}': {decision.reason}.")

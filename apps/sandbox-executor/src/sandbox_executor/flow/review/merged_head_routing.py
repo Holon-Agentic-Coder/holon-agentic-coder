@@ -1,15 +1,3 @@
-"""Stage 5's routing of a red merged head by failure class, instead of withdrawing the consensus on any failure.
-
-The consensus is withdrawn (today's comment, marker and ledger row) only when the reviewable diff changed (the record
-carries ``withdrawal_reason``) or the diff gate does not hold on the merged head. Otherwise the failure is classified
-(:mod:`.ci_failure_routing`): noise under its rerun budget is rerun once and the head polled again, and only a fresh
-``passed`` lets Stage 5 calibrate. A defect, or noise still red, restarts Stage 4 scoped: the CI finding is carried to
-the resolver, the diff approval stands, and the delta-review anchor moves to the merged head so the fix delta (no merge
-commit) is reviewed scoped. A scoped restart whose Stage 4 does not approve withdraws the consensus then; at the
-review restart cap the consensus is withdrawn instead, saying the flow stopped. Anything unsettled still fails Stage 5
-closed. Resuming a restart asked for before a checkpoint is :mod:`.merged_head_resume`.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
@@ -67,7 +55,6 @@ def _skipped(start: str, payload: dict[str, Any]) -> StageResult:
 
 
 def refuse_calibration(context: FlowContext, start: str, record: dict[str, Any]) -> StageResult:
-    """Fail Stage 5 closed on an unsettled merged head: nothing is calibrated or pushed."""
     reason = (
         f"Calibrate stage refused: CI on merged head {record['head_sha']} is {record['state']} ({record['reason']}); "
         "nothing was calibrated or pushed."
@@ -83,12 +70,6 @@ def _withdraw(context: FlowContext, start: str, record: dict[str, Any], seams: M
 def _rerun(
     context: FlowContext, head: str, cls: str, runs: Sequence[FailedRun], seams: MergedHeadSeams
 ) -> tuple[dict[str, Any], list[str]]:
-    """Rerun each failed run once, record the routing as Stage 4 does and poll the head again.
-
-    The routing is recorded after the rerun is counted, so ``reruns`` means the same in both stages.
-    A failed dispatch keeps the head failed and returns the run ids it did dispatch, uncounted: its
-    scoped restart records the resolve routing first, as Stage 4 does, since those reruns were never inspected.
-    """
     repo_dir = context.target_worktree
     dispatch = seams.rerun_dispatcher or gh_run_rerunner(repo_dir, seams.proxy_env)
     dispatched: list[str] = []
@@ -97,6 +78,7 @@ def _rerun(
             reason = f"the rerun of run {run_id} could not be dispatched"
             return {"state": FAILED, "head_sha": head, "reason": reason}, dispatched
         dispatched.append(run_id)
+    # why: counted before the routing is recorded, so ``reruns`` means the same in Stage 4 and Stage 5.
     note_rerun(context, head, dispatched)
     record_routing(context, head, cls, RERUN, runs)
     _wait_for_rerun_start(context, head, {run.name for run in runs}, seams)
@@ -106,7 +88,6 @@ def _rerun(
 
 
 def _ci_finding(cls: str, runs: Sequence[FailedRun], seams: MergedHeadSeams, context: FlowContext) -> Any:
-    """The carried ``FIND-CI-000``: the slowest-tests finding for a repeated timing failure, else the generic one."""
     names = list(dict.fromkeys(run.name for run in runs))
     status = {"pending": 0, "checks": [{"name": r.name, "link": f"/actions/runs/{r.run_id}"} for r in runs]}
     if cls == NOISE_TIMING:
@@ -120,14 +101,14 @@ def _ci_finding(cls: str, runs: Sequence[FailedRun], seams: MergedHeadSeams, con
 
 
 def _scoped_restart(context: FlowContext, start: str, record: dict[str, Any], cls: str, seams: MergedHeadSeams) -> Any:
-    """Restart Stage 4 with the resolver on the CI finding; the diff approval stands and the fix is reviewed scoped."""
     head, runs, approved = str(record["head_sha"]), failed_runs_from_record(record), approved_head_of(context)
     mark_pipeline_red(context, head, failed_runs_of(record))
     routing = record_routing(context, head, cls, RESOLVE, runs)
     restart_review_passes(context)
     context.carried_review_findings = serialize_open([_ci_finding(cls, runs, seams, context)], {})
     defect = {"head_sha": head, "classification": cls, "action_id": routing.get("action_id"), "merged_head_ci": record}
-    defect["approved_head"] = approved  # The consensus stops naming it below; a rejected fix review withdraws it.
+    # why: the consensus stops naming the approved head below; a rejected fix review withdraws it from here.
+    defect["approved_head"] = approved
     review = context.stage_results.get(FlowStage.REVIEW.value)
     if review is not None:
         consensus = {**(review.payload.get("consensus") or {}), "approved": False, "pipeline_defect": defect}
@@ -142,19 +123,16 @@ def route_merged_head_failure(
     start: str,
     record: dict[str, Any],
     seams: MergedHeadSeams,
+    # why: the caller passes ``withdraw`` so its module-level binding stays patchable.
     withdraw: Callable[..., dict[str, Any]] = withdraw_consensus,
 ) -> Decision:
-    """The Stage 5 outcome of a failed merged head and the record it rests on: None (calibrate) or a stop.
-
-    ``withdraw`` is :func:`withdraw_consensus`, passed by the caller so its module-level binding stays patchable.
-    """
     head = str(record.get("head_sha") or "")
     if record.get("withdrawal_reason") or not diff_gate_holds(context, context.target_worktree, head):
         return _withdraw(context, start, record, seams, withdraw), record
     runs = failed_runs_from_record(record)
 
     def restart_or_withdraw(failed: dict[str, Any]) -> Any:
-        """At the review restart cap the consensus is withdrawn: Stage 5 must not stop on a standing approval."""
+        # why: at the restart cap Stage 5 must not stop on a standing approval, so the consensus is withdrawn.
         if not context.merged_head_restart_allowed:
             return _withdraw(context, start, failed, seams, withdraw)
         return _scoped_restart(context, start, failed, cls, seams)
@@ -172,6 +150,7 @@ def route_merged_head_failure(
         return None, retried
     if retried["state"] == FAILED:
         restart = restart_or_withdraw(retried)
-        note_rerun(context, head, partial)  # Counted after recording, as Stage 4 does.
+        # why: partial reruns were never inspected, so they are counted after the resolve routing, as Stage 4 does.
+        note_rerun(context, head, partial)
         return restart, retried
     return refuse_calibration(context, start, retried), retried

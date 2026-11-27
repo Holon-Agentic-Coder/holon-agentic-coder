@@ -99,7 +99,12 @@ def test_every_spec_has_a_role_dispatcher_case() -> None:
 def test_importing_runners_does_not_import_defaults_or_runner() -> None:
     code = (
         "import sys, sandbox_executor.runners\n"
-        "forbidden = ('sandbox_executor.agent_defaults', 'sandbox_executor.agent_runner')\n"
+        "forbidden = (\n"
+        "    'sandbox_executor.agent_defaults',\n"
+        "    'sandbox_executor.agent_runner',\n"
+        "    'sandbox_executor.launcher',\n"
+        "    'sandbox_executor.launcher.mounts',\n"
+        ")\n"
         "leaked = [m for m in forbidden if m in sys.modules]\n"
         "assert not leaked, leaked\n"
     )
@@ -187,3 +192,61 @@ def test_pi_accepts_models_json_in_pi_coding_agent_dir(
     assert RUNNER_SPECS["pi"].check_credentials() == EXPECTED_MESSAGES["pi"]
     existing_paths.add(str(agent_dir / "models.json"))
     assert RUNNER_SPECS["pi"].check_credentials() is None
+
+
+@pytest.mark.parametrize("agent_id", ["antigravity", "claude", "codex", "pi", "opencode"])
+def test_runner_spec_session_mounts_match_launcher_mounts(
+    agent_id: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sandbox_executor.launcher.mounts import get_agent_session_mounts
+
+    (tmp_path / ".holon" / "sessions" / "antigravity").mkdir(parents=True)
+    (tmp_path / ".config" / "claude").mkdir(parents=True)
+    (tmp_path / ".codex").mkdir(parents=True)
+    (tmp_path / ".pi" / "agent").mkdir(parents=True)
+    (tmp_path / ".pi" / "agent" / "models.json").write_text("{}")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HOLON_ANTIGRAVITY_SESSION_DIR", raising=False)
+    monkeypatch.delenv("HOLON_LOCAL_LLM", raising=False)
+
+    expected = RUNNER_SPECS[agent_id].build_session_mounts(str(tmp_path))
+    assert get_agent_session_mounts(agent_id) == expected
+    assert get_agent_session_mounts(f"{agent_id}-agent") == expected
+
+
+def test_unknown_runner_session_mounts_returns_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from sandbox_executor.launcher.mounts import get_agent_session_mounts
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert get_agent_session_mounts("unknown-agent") == []
+
+
+def test_every_spec_declares_capabilities_markers_and_effort_behaviour() -> None:
+    for agent_id, spec in RUNNER_SPECS.items():
+        assert spec.model_capabilities
+        assert spec.harness_markers
+        assert spec.supports_effort_suffix is (agent_id == "antigravity")
+
+    assert RUNNER_SPECS["antigravity"].normalise_model("gemini-3.8-flash", "high") == (
+        "gemini-3.8-flash-high",
+        "high",
+    )
+    assert RUNNER_SPECS["antigravity"].normalise_model("gemini-3.8-flash-medium", None) == (
+        "gemini-3.8-flash-medium",
+        "medium",
+    )
+    assert RUNNER_SPECS["claude"].normalise_model("claude-opus-5-5", "high") == ("claude-opus-5-5", None)
+    assert RUNNER_SPECS["codex"].normalise_model("gpt-5-codex", "low") == ("gpt-5-codex", None)
+
+
+def test_runner_spec_detect_session_dir_and_local_llm_support(existing_paths: set[str]) -> None:
+    assert {agent_id for agent_id, spec in RUNNER_SPECS.items() if spec.supports_local_llm} == {"pi"}
+    assert not any(spec.detect_session_dir() for spec in RUNNER_SPECS.values())
+
+    for agent_id in ("antigravity", "claude", "codex", "pi"):
+        existing_paths.clear()
+        existing_paths.add(os.path.expanduser(RUNNER_SPECS[agent_id].session_detect_paths[0]))
+        assert RUNNER_SPECS[agent_id].detect_session_dir() is True
+
+    assert RUNNER_SPECS["opencode"].session_detect_paths == ()
+    assert RUNNER_SPECS["opencode"].detect_session_dir() is False

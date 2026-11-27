@@ -273,3 +273,94 @@ def test_agent_tables_pinned_and_derived_from_runner_specs():
     assert {agent_id: spec.image for agent_id, spec in RUNNER_SPECS.items()} == AGENT_IMAGE_MAPPING
     assert {agent_id: spec.default_model for agent_id, spec in RUNNER_SPECS.items()} == DEFAULT_MODELS
     assert {agent_id: spec.ticker for agent_id, spec in RUNNER_SPECS.items() if spec.ticker} == AGENT_TICKERS
+
+
+def test_capabilities_markers_and_non_marker_vars_derived_from_runner_specs():
+    from sandbox_executor.agent_defaults import HARNESS_MARKERS, NON_MARKER_VARS, RUNNER_CAPABILITIES
+    from sandbox_executor.runners import RUNNER_SPECS
+
+    expected_caps = tuple(cap for spec in RUNNER_SPECS.values() for cap in spec.model_capabilities)
+    assert RUNNER_CAPABILITIES[:-1] == expected_caps
+    assert RUNNER_CAPABILITIES[-1].runner == "local-model"
+
+    expected_markers = tuple(
+        (spec.agent_id, marker, kind)
+        for spec in sorted(RUNNER_SPECS.values(), key=lambda s: s.harness_marker_priority)
+        for marker, kind in spec.harness_markers
+    )
+    assert HARNESS_MARKERS == expected_markers
+
+    expected_non_markers = frozenset(var for spec in RUNNER_SPECS.values() for var in spec.non_marker_vars)
+    assert NON_MARKER_VARS == expected_non_markers
+
+
+def test_model_validation_and_normalisation_honour_runner_specs():
+    from sandbox_executor.agent_defaults import is_valid_model_for_runner
+
+    assert is_valid_model_for_runner("antigravity", "gemini-3.8-flash-low") is True
+    assert is_valid_model_for_runner("claude", "claude-opus-5-5-low") is False
+    assert normalise_model_and_effort("antigravity", "flash", "high") == ("gemini-3.8-flash-high", "high")
+    assert normalise_model_and_effort("pi", "pi-default", "high") == ("claude-opus-5-5", None)
+    assert normalise_model_and_effort("codex", "codex", "medium") == ("gpt-5-codex", None)
+    assert normalise_model_and_effort("opencode", "opencode", "low") == ("anthropic/claude-opus-5-5", None)
+
+
+def test_detect_runner_auth_status_honours_runner_specs(tmp_path, monkeypatch, fake_keychain):
+    import os
+
+    from sandbox_executor.agent_defaults import detect_runner_auth_status
+    from sandbox_executor.runners import RUNNER_SPECS
+
+    present: set[str] = set()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(os.path, "exists", lambda p: p in present)
+    monkeypatch.setattr(os.path, "isfile", lambda _p: False)
+
+    for agent_id, spec in RUNNER_SPECS.items():
+        if spec.host_api_key_env_vars:
+            assert detect_runner_auth_status(agent_id, {spec.host_api_key_env_vars[0]: "k"}) == "Detected (API key)"
+
+    for agent_id in ("antigravity", "claude", "codex", "pi"):
+        present.clear()
+        present.add(os.path.expanduser(RUNNER_SPECS[agent_id].session_detect_paths[0]))
+        assert detect_runner_auth_status(agent_id, {}) == "Detected (session directory)"
+
+    present.clear()
+    assert detect_runner_auth_status("pi", {"HOLON_LOCAL_LLM": "1"}) == "Detected (local gateway)"
+    assert detect_runner_auth_status("codex", {"HOLON_LOCAL_LLM": "1"}) == "Missing / Not detected"
+    assert detect_runner_auth_status("local-model", {}) == "Detected (local gateway)"
+
+
+def test_agent_defaults_has_no_duplicated_per_runner_tables():
+    import ast
+    from pathlib import Path
+
+    source = Path(agent_defaults.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    assigned_names: set[str] = set()
+    function_names: set[str] = set()
+    runner_specs_refs: dict[str, bool] = {}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            function_names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    assigned_names.add(target.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            assigned_names.add(node.target.id)
+            if node.target.id in ("RUNNER_CAPABILITIES", "HARNESS_MARKERS", "NON_MARKER_VARS") and node.value:
+                runner_specs_refs[node.target.id] = any(
+                    isinstance(sub, ast.Name) and sub.id == "RUNNER_SPECS" for sub in ast.walk(node.value)
+                )
+
+    assert "_RUNNER_API_KEY_ENV_VARS" not in assigned_names
+    assert "runner_session_paths" not in assigned_names
+    assert "_coordinate_gemini_effort" not in function_names
+    assert runner_specs_refs == {
+        "RUNNER_CAPABILITIES": True,
+        "HARNESS_MARKERS": True,
+        "NON_MARKER_VARS": True,
+    }

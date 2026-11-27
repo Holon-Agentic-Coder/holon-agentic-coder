@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from sandbox_executor.flow.admission_lock import AdmissionLockError, live_runner_worktrees
+from sandbox_executor.flow.admission_lock import AdmissionLockError, _live_runner_worktrees
 from sandbox_executor.flow.admission_order import older_waiter_flows
 from sandbox_executor.flow.admission_state import BlockedBy
 from sandbox_executor.flow.base_files import base_branch_name, list_base_files
@@ -88,7 +88,7 @@ def _filter_live_flows_and_waiters(
     if not waiters and all(flow.number is not None for flow in flows):
         return flows, waiters
     try:
-        live_worktrees = live_runner_worktrees(repo_dir, run_git)
+        live_worktrees = _live_runner_worktrees(repo_dir, run_git)
     except AdmissionLockError as exc:
         return AdmissionUnavailable(str(exc))
     # why: open pull requests always block, while parked local flows release their planned touch set

@@ -1,0 +1,35 @@
+name: Test - Self-Doc Behavior
+
+# why: the flow mapping keeps this lightweight gate out of the block-form bookkeeping wiring table in test_ci_bookkeeping_wiring.py while still running on label and title edits and without a base branch filter so stacked sub-intent PRs are checked.
+on: { pull_request: { types: [opened, synchronize, reopened, labeled, unlabeled, edited] } }
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  self-doc-behavior:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Verify self-doc AST behaviour preservation
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          # why: pass the full labels JSON array so the bookkeeping wiring test's label-expression scan stays unchanged.
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels) }}
+        run: python scripts/check_self_doc_behavior.py --base "$BASE_SHA" --head "$HEAD_SHA" --pr-title-env PR_TITLE --pr-labels-env PR_LABELS --only-when-triggered

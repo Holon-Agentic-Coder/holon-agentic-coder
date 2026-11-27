@@ -1,7 +1,3 @@
-"""Stage 3 (Plan Execution): dispatch the executor, adopt its execution branch and resume failed partial
-executions.
-"""
-
 from __future__ import annotations
 
 import time
@@ -53,11 +49,7 @@ from sandbox_executor.redaction import redact_agent_secrets
 
 
 def _resumable_partial_branch(repo_dir: str, branches: set[str]) -> str | None:
-    """Newest failed execution branch whose latest summary row carries a ``partial_head`` to resume from.
-
-    ``branches`` is the pre-dispatch snapshot of execution branches under the plan; each is read at
-    ``refs/remotes/origin/<branch>``. The executor re-reads and verifies the partial head itself.
-    """
+    # why: only the branch is chosen here; the executor re-reads and verifies the partial head itself
     newest = _newest_partial_head(repo_dir, branches)
     return newest[0] if newest else None
 
@@ -68,8 +60,6 @@ def _utc_now() -> str:
 
 @dataclass(slots=True)
 class ExecuteState:
-    """What the Stage 3 steps share: each step reads the fields an earlier step set and fills its own."""
-
     start_time: str
     plan_prefix: str = ""
     repo_dir: str = ""
@@ -91,21 +81,12 @@ class ExecuteState:
 
 
 class ExecuteStage:
-    """Stage 3: dispatch the executor agent, adopt its execution branch and apply the empty-diff guard.
-
-    The executor container implements the plan, appends executions.jsonl and commits; the host pushes and guards
-    against an empty diff outside metadata paths. With ``resume_partial``, the newest failed execution branch under the
-    plan carrying a ``partial_head`` is passed to the executor to continue partial work. The stage never halts for a
-    human and executes only the plan row's decision (*execute*, *decomposed* or *over budget*).
-    """
-
     def __init__(self, context: FlowContext, resume_partial: bool = False) -> None:
         self.context = context
         self.resume_partial = resume_partial
         self.state = ExecuteState(start_time=_utc_now())
 
     def steps(self) -> tuple[Callable[[], StageResult | None], ...]:
-        """The guarding steps, in run order; :meth:`record_execution` follows the last."""
         return (
             self.preflight,
             self.check_token_scopes,
@@ -119,7 +100,6 @@ class ExecuteStage:
         )
 
     def run(self) -> StageResult:
-        """Run each step until one returns a result, else record the execution."""
         self.context.log("Starting Stage 3: Plan Execution")
         for step in self.steps():
             result = step()
@@ -131,13 +111,11 @@ class ExecuteStage:
         return _stage_failure(self.context, FlowStage.EXECUTE, self.state.start_time, error, **payload)
 
     def _bare_failure(self, error: str) -> StageResult:
-        """A failed result that, unlike :meth:`_fail`, is neither logged here nor stored in the context."""
         return StageResult(
             stage=FlowStage.EXECUTE, status=StageStatus.FAILED, start_time=self.state.start_time, error=error
         )
 
     def preflight(self) -> StageResult | None:
-        """Require a plan branch and a ticker, honour a failure veto, answer a dry run and refuse ``skip_push``."""
         context, state = self.context, self.state
         if not context.plan_branch:
             err = "Cannot run Execute stage without an active plan_branch in FlowContext."
@@ -146,7 +124,7 @@ class ExecuteStage:
         state.plan_prefix = context.plan_branch.removesuffix("/_").rstrip("/")
         state.repo_dir = context.target_worktree
         try:
-            # The new execution branch ends in the runner's ticker and model code; a ticker-less runner fails here.
+            # why: the new execution branch ends in the runner's ticker and model code, so a ticker-less runner fails
             state.preferred_suffix = f"-{ticker_for(context.agent)}-{model_code(context.model)}"
         except MissingTickerError as exc:
             return self._fail(f"Execute stage failed: {exc}")
@@ -160,14 +138,14 @@ class ExecuteStage:
         return None
 
     def _dry_run_result(self) -> StageResult:
-        """Validation only: name the branch the executor would create, without dispatching or writing anything."""
         context, start_time = self.context, self.state.start_time
         exec_id = build_execution_id(int(time.time()), self.state.plan_prefix, context.agent, context.model)
         exec_branch = f"{self.state.plan_prefix}/{exec_id}/_"
         context.execution_branch = exec_branch
         context.log(f"Stage 3 (dry run): executor dispatch skipped; execution branch would be '{exec_branch}'.")
-        admission_stage_failure(context, start_time)  # a dry run only logs the admission decision
-        plan_refresh_stage_failure(context, start_time)  # and the plan refresh a waited flow would get
+        # why: a dry run only logs the admission decision and the plan refresh a waited flow would get
+        admission_stage_failure(context, start_time)
+        plan_refresh_stage_failure(context, start_time)
         result = StageResult(
             stage=FlowStage.EXECUTE,
             status=StageStatus.SUCCESS,
@@ -184,11 +162,9 @@ class ExecuteStage:
         return result
 
     def check_token_scopes(self) -> StageResult | None:
-        """Refuse a plan touching ``.github/workflows/**`` whose GitHub token lacks the ``workflow`` scope."""
         return token_scope_failure(self.context, self.state.start_time)
 
     def admit_and_refresh_plan(self) -> StageResult | None:
-        """Sync with the target branch, refuse a plan the budget decision rejects, then run admission and refresh."""
         context, state = self.context, self.state
         state.target_branch = context.intent_data.get("target_branch", "main")
         if (failure := at_stage_boundary(context, FlowStage.EXECUTE, SyncBoundary.STAGE_START)) is not None:
@@ -202,19 +178,16 @@ class ExecuteStage:
                 context, state.start_time, precheck.entropy, precheck.entropy_budget, dispatched=False
             )
         if precheck is not None and precheck.decision == DECISION_DECOMPOSED:
-            # Refuse an over-deep sub-intent list before dispatch, so no executor container or execution branch is
-            # spent.
+            # why: refuse an over-deep sub-intent list before dispatch, so no executor container or branch is spent
             depth_error = _sub_intent_depth_error(context)
             if depth_error is not None:
                 return self._fail(depth_error, dispatched=False)
-        # A flow admitted after an overlap wait merges origin/<target> into its plan branch before anything is cut
-        # from it.
+        # why: a flow admitted after an overlap wait merges origin/<target> into its plan branch before any cut
         return admission_stage_failure(context, state.start_time) or plan_refresh_stage_failure(
             context, state.start_time
         )
 
     def resume_point(self) -> StageResult | None:
-        """Snapshot the plan's execution branches on origin, fetch the target branch and seed the executor arguments."""
         context, state = self.context, self.state
         existing_executions = _snapshot_child_branches(state.repo_dir, state.plan_prefix, "E")
         if existing_executions is None:
@@ -230,7 +203,6 @@ class ExecuteStage:
         return None
 
     def salvage_partial(self) -> StageResult | None:
-        """On a resume, salvage leftovers and pass the newest resumable partial branch to the executor."""
         if not self.resume_partial:
             return None
         context, state = self.context, self.state
@@ -248,16 +220,16 @@ class ExecuteStage:
         return None
 
     def dispatch_executor(self) -> StageResult | None:
-        """Run the executor container, then push each new execution branch that carries its ledger row."""
         context, state = self.context, self.state
         with replan_feedback_env("", consume_target_merge_notice(context)):
             state.exit_code = exit_code = _dispatch_role(context, "executor", state.executor_args)
-        # The container only commits; the host pushes each committed branch with its ledger row, failed ones included.
+        # why: the container only commits; the host pushes each committed branch with its ledger row, failed included
         left_alone = hold_unrecorded_executions(context, state.plan_prefix, state.existing_executions)
         state.push_error = remote_error(publish_new_child_branches, state.repo_dir, state.plan_prefix, "E", left_alone)
         held = left_alone - state.existing_executions
-        exit_failed = exit_code not in (0, OVER_BUDGET_EXIT_CODE)  # an over-budget exit's committed row decides
-        log = context.log if held or exit_failed else None  # a failure below returns before the recovery error
+        # why: an over-budget exit's committed row decides, and a failure below returns before the recovery error
+        exit_failed = exit_code not in (0, OVER_BUDGET_EXIT_CODE)
+        log = context.log if held or exit_failed else None
         recovery = rejected_push_recovery(state.repo_dir, state.plan_prefix, left_alone, state.push_error, log)
         if held_failure := held_execution_failure(context, state.start_time, held, exit_code):
             return held_failure
@@ -268,7 +240,6 @@ class ExecuteStage:
         return rejected_push_failure(context, state.start_time, recovery, exit_code)
 
     def adopt_execution_branch(self) -> StageResult | None:
-        """Find the executor's new execution branch on origin, track it locally and read its summary row."""
         context, state = self.context, self.state
         fetch_error = _fetch_branch_prefix_error(state.repo_dir, state.plan_prefix)
         if fetch_error is not None:
@@ -313,11 +284,10 @@ class ExecuteStage:
         return None
 
     def check_container_outcome(self) -> StageResult | None:
-        """Act on an over-budget, failed, decomposed or sync-conflicted container outcome."""
         state = self.state
         summary_row, container_status = state.summary_row, state.container_status
         if summary_row is not None and container_status == DECISION_OVER_BUDGET:
-            # Defence in depth: the pre-dispatch check normally catches this before the container starts.
+            # why: defence in depth; the pre-dispatch check normally catches this before the container starts.
             return _over_budget_failure(
                 self.context,
                 state.start_time,
@@ -337,7 +307,6 @@ class ExecuteStage:
         return conflict_outcome
 
     def _decomposed_outcome(self) -> StageResult:
-        """Run the plan row's sub-intent list, or fail when the plan row does not record 'decomposed'."""
         context, state = self.context, self.state
         precheck = state.precheck
         if precheck is None or precheck.decision != DECISION_DECOMPOSED:
@@ -348,7 +317,6 @@ class ExecuteStage:
         return _run_decomposed_plan(context, state.start_time, record, state.base_payload)
 
     def guard_empty_diff(self) -> StageResult | None:
-        """Empty-diff guard: shared definition with the executor entrypoint and the review loop."""
         context, state = self.context, self.state
         plan_ref = _resolve_branch_ref(state.repo_dir, context.plan_branch)
         try:
@@ -368,7 +336,6 @@ class ExecuteStage:
         return None
 
     def record_execution(self) -> StageResult:
-        """Require a successful summary row and a diff inside the touch set, then record the successful stage."""
         context, state = self.context, self.state
         summary_row = state.summary_row
         if summary_row is None:
@@ -388,7 +355,7 @@ class ExecuteStage:
         )
         if violation is not None:
             return violation
-        # The commit Stage 3 tested, captured before STAGE_END sync so Stage 4 applies test evidence only to it.
+        # why: capture the tested commit before STAGE_END sync so Stage 4 applies test evidence only to it.
         if not state.tested_head:
             tip = run_git(["rev-parse", "--verify", f"{state.exec_ref}^{{commit}}"], cwd=state.repo_dir, check=False)
             state.tested_head = tip.stdout.strip() if tip.returncode == 0 else ""
@@ -404,7 +371,7 @@ class ExecuteStage:
             status=StageStatus.SUCCESS,
             start_time=state.start_time,
             end_time=end_time,
-            # The executor container's own test measurement, when its summary row records one; None means not measured.
+            # why: the executor's own test measurement comes from its summary row; None means not measured.
             payload={
                 **state.base_payload,
                 "changed_files": len(state.changed),
@@ -417,5 +384,4 @@ class ExecuteStage:
 
 
 def run_execute_stage(context: FlowContext, resume_partial: bool = False) -> StageResult:
-    """Execute Stage 3 (see :class:`ExecuteStage`); the entry point the pipeline calls."""
     return ExecuteStage(context, resume_partial).run()

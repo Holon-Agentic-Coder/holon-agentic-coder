@@ -39,7 +39,6 @@ from scripts.ci_bookkeeping_api import (
     GateContext,
     PullRef,
     RunRef,
-    commit_ref,
     commit_tree,
     list_head_runs,
     list_jobs,
@@ -164,8 +163,6 @@ def _skip_check(context: GateContext, client: GateClient, pull: PullRef, run_num
     A merge-push skip leaves a gate-skipped job on a tree no job ran, so a merge head needs the walk to a real success
     and bookkeeping-only changes since; the head run itself is the first run of the walk.
     """
-    if len(commit_ref(client, pull.head_sha).parents) < 2:
-        return ""
     if not pull.head_ref:
         return f"#{pull.number} names no head branch"
     query = JobQuery(
@@ -193,7 +190,7 @@ def _head_job_check(context: GateContext, client: GateClient, pull: PullRef, rul
         return Decision(False, RULE_HEAD_JOB_NOT_SUCCESSFUL, f"{job.get('conclusion') or 'unknown'} in {where}")
     unproven = _skip_check(context, client, pull, run_number, rules) if kind == GATE_SKIPPED else ""
     if unproven:
-        return Decision(False, RULE_HEAD_SKIP_UNPROVEN, f"gate-skipped merge head in {where}: {unproven}")
+        return Decision(False, RULE_HEAD_SKIP_UNPROVEN, f"gate-skipped head in {where}: {unproven}")
     proof = "real success" if kind == REAL_SUCCESS else "gate-skipped"
     return Decision(True, RULE_TESTED_TREE, f"#{pull.number} head {pull.head_sha[:12]} {where} {proof}")
 

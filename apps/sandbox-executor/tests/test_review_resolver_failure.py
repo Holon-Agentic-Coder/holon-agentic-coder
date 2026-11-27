@@ -268,7 +268,6 @@ def test_incident_failed_resolver_never_turns_a_dissent_into_unanimous_approval(
 
 
 def _resolve_dispatcher(resolve_exit: int, resolver_result: dict | None, calls: list[list[str]]):
-
     def fake_dispatcher(_role, _runner, _model, positional_args, **kwargs):
         calls.append(list(positional_args))
         result_file = kwargs["result_file"]

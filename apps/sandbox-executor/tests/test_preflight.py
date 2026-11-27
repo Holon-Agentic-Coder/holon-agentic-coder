@@ -179,7 +179,6 @@ def test_probe_keeps_credentials_off_the_docker_argv(probe_env, monkeypatch, iso
 
 
 def test_probe_drops_a_stale_retired_repo_url(probe_env, monkeypatch, isolated_env_file_dir):
-
     def probe_once():
         seen = {}
         assert run_preflight_probe("claude-agent", "claude-opus-5-5", runner_fn=_record_probe(seen)).ok

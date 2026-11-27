@@ -259,9 +259,8 @@ def test_workflow_scope_refusal_is_not_retried(flow_repos):
     _install_hook(origin, f"echo '{WORKFLOW_REFUSAL}' >&2\nexit 1")
     logs: list[str] = []
 
-    with scoped_sleep_patch(HOST_REMOTE) as sleep_mock:
-        with pytest.raises(HostRemoteError):
-            push_commit(str(host), f"refs/heads/{EXEC_BRANCH}", EXEC_BRANCH, log=logs.append)
+    with scoped_sleep_patch(HOST_REMOTE) as sleep_mock, pytest.raises(HostRemoteError):
+        push_commit(str(host), f"refs/heads/{EXEC_BRANCH}", EXEC_BRANCH, log=logs.append)
 
     assert sleep_mock.call_args_list == []
     assert len(logs) == 1

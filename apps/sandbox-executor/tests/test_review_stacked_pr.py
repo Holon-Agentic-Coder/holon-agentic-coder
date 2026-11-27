@@ -20,7 +20,6 @@ _PASS = {"name": "Test - Unit", "bucket": "pass", "state": "SUCCESS", "event": "
 _PENDING = {**_PASS, "bucket": "pending", "state": "IN_PROGRESS"}
 
 
-# why: no real gh, network or clock is used, so the stacked flow stays hermetic and instant
 class FakeGh:
     def __init__(self, checks_replies: list[tuple[int, list[dict[str, Any]]]], real_run: Callable[..., Any]) -> None:
         self.calls: list[list[str]] = []

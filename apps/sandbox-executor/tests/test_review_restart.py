@@ -282,8 +282,8 @@ def test_a_carried_approval_with_green_ci_on_the_merged_head_runs_stage4_once(tm
 
     single_stage4_run_without_redispatching_reviewers = 1
     assert len(flow.iterations_at_entry) == single_stage4_run_without_redispatching_reviewers
-    # why: a carried approval publishes the merged head only after CI on that head passed
-    assert flow.published == [MERGED_GREEN]
+    published_only_after_merged_head_ci_passed = [MERGED_GREEN]
+    assert flow.published == published_only_after_merged_head_ci_passed
     assert flow.comments == [] and _withdrawn_rows(tmp_path) == []
     record = ctx.stage_results["calibrate"].payload["merged_head_ci"]
     assert record["state"] == "passed" and record["approval_carry_over"]["approved_head"] == APPROVED
@@ -382,8 +382,8 @@ def test_a_changed_pr_own_change_restarts_stage4_for_a_fresh_review(tmp_path: Pa
 
     first_review_then_fresh_review_of_the_changed_change = 2
     assert len(flow.iterations_at_entry) == first_review_then_fresh_review_of_the_changed_change
-    # why: the fresh approval covers the merged head itself, so it is published without a carry-over
-    assert flow.published == [MERGED_GREEN]
+    fresh_approval_publishes_merged_head_without_carry_over = [MERGED_GREEN]
+    assert flow.published == fresh_approval_publishes_merged_head_without_carry_over
     (row,) = _withdrawn_rows(tmp_path)
     assert "changed since approval" in row["error_context"] and row["merged_head"] == MERGED_GREEN
     assert len(flow.comments) == 1 and "changed since approval" in flow.comments[0]

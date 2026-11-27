@@ -40,7 +40,6 @@ def _bulk_files(directory: str, count: int) -> dict[str, str]:
     return {f"{directory}/file_{n:04d}.txt": f"bulk-content-{directory}-{n}\n" for n in range(count)}
 
 
-# why: every repository is a fresh one under tmp_path; nothing reads or writes this checkout
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     work = tmp_path / "work"

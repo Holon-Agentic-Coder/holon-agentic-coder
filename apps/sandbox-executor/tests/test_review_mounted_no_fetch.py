@@ -1,5 +1,3 @@
-"""A mounted role container has no ssh: the review path must compare host-fetched refs and never fetch."""
-
 from __future__ import annotations
 
 import subprocess
@@ -32,8 +30,7 @@ def _commit(repo: Path, name: str) -> None:
 
 
 @pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    """A clone whose origin is a local path, with the host-fetched tracking refs for main, plan and execution."""
+def repo_with_host_fetched_refs(tmp_path: Path) -> Path:
     origin = tmp_path / "origin"
     origin.mkdir()
     _git(origin, "init", "-q", "-b", "main")
@@ -47,9 +44,9 @@ def repo(tmp_path: Path) -> Path:
     return work
 
 
+# why: a mounted role container has no ssh, so any ssh use or network fetch would fail there and fails the test outright
 @pytest.fixture
 def fetch_attempts(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    """Record every git argv that would touch the network; ssh would fail the test outright."""
     attempts: list[list[str]] = []
     real_run = subprocess.run
 
@@ -75,8 +72,10 @@ def unmounted(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.usefixtures("mounted")
-def test_mounted_compares_prefetched_refs_without_fetching(repo: Path, fetch_attempts: list[list[str]]):
-    has_diff, detail = _execution_effective_diff(str(repo), EXEC)
+def test_mounted_compares_prefetched_refs_without_fetching(
+    repo_with_host_fetched_refs: Path, fetch_attempts: list[list[str]]
+):
+    has_diff, detail = _execution_effective_diff(str(repo_with_host_fetched_refs), EXEC)
     assert has_diff is True
     assert "on origin" in detail
     assert fetch_attempts == []
@@ -84,9 +83,11 @@ def test_mounted_compares_prefetched_refs_without_fetching(repo: Path, fetch_att
 
 @pytest.mark.usefixtures("mounted")
 @pytest.mark.parametrize("missing", [PLAN, EXEC])
-def test_mounted_missing_ref_names_branch_and_host(repo: Path, fetch_attempts: list[list[str]], missing: str):
-    _git(repo, "update-ref", "-d", f"refs/remotes/origin/{missing}")
-    has_diff, detail = _execution_effective_diff(str(repo), EXEC)
+def test_mounted_missing_ref_names_branch_and_host(
+    repo_with_host_fetched_refs: Path, fetch_attempts: list[list[str]], missing: str
+):
+    _git(repo_with_host_fetched_refs, "update-ref", "-d", f"refs/remotes/origin/{missing}")
+    has_diff, detail = _execution_effective_diff(str(repo_with_host_fetched_refs), EXEC)
     assert has_diff is None
     assert f"'{missing}'" in detail
     assert "is not fetched from origin" in detail
@@ -95,31 +96,33 @@ def test_mounted_missing_ref_names_branch_and_host(repo: Path, fetch_attempts: l
 
 
 @pytest.mark.usefixtures("mounted")
-def test_mounted_reports_plan_branch_first_when_both_missing(repo: Path, fetch_attempts: list[list[str]]):
-    _git(repo, "update-ref", "-d", f"refs/remotes/origin/{PLAN}")
-    _git(repo, "update-ref", "-d", f"refs/remotes/origin/{EXEC}")
-    _has_diff, detail = _execution_effective_diff(str(repo), EXEC)
+def test_mounted_reports_plan_branch_first_when_both_missing(
+    repo_with_host_fetched_refs: Path, fetch_attempts: list[list[str]]
+):
+    _git(repo_with_host_fetched_refs, "update-ref", "-d", f"refs/remotes/origin/{PLAN}")
+    _git(repo_with_host_fetched_refs, "update-ref", "-d", f"refs/remotes/origin/{EXEC}")
+    _has_diff, detail = _execution_effective_diff(str(repo_with_host_fetched_refs), EXEC)
     assert f"'{PLAN}'" in detail
     assert fetch_attempts == []
 
 
 @pytest.mark.usefixtures("mounted")
 def test_mounted_without_origin_keeps_local_fallback(tmp_path: Path):
-    repo = tmp_path / "solo"
-    repo.mkdir()
-    _git(repo, "init", "-q", "-b", "main")
-    _commit(repo, "base.txt")
-    _git(repo, "branch", PLAN)
-    _git(repo, "checkout", "-q", "-b", EXEC)
-    _commit(repo, "work.txt")
-    has_diff, detail = _execution_effective_diff(str(repo), EXEC)
+    solo_repo = tmp_path / "solo"
+    solo_repo.mkdir()
+    _git(solo_repo, "init", "-q", "-b", "main")
+    _commit(solo_repo, "base.txt")
+    _git(solo_repo, "branch", PLAN)
+    _git(solo_repo, "checkout", "-q", "-b", EXEC)
+    _commit(solo_repo, "work.txt")
+    has_diff, detail = _execution_effective_diff(str(solo_repo), EXEC)
     assert has_diff is True
     assert "no 'origin' remote" in detail
 
 
 @pytest.mark.usefixtures("unmounted")
-def test_host_still_fetches_plan_and_execution(repo: Path, fetch_attempts: list[list[str]]):
-    has_diff, _detail = _execution_effective_diff(str(repo), EXEC)
+def test_host_still_fetches_plan_and_execution(repo_with_host_fetched_refs: Path, fetch_attempts: list[list[str]]):
+    has_diff, _detail = _execution_effective_diff(str(repo_with_host_fetched_refs), EXEC)
     assert has_diff is True
     assert len(fetch_attempts) == 1
     assert f"+refs/heads/{PLAN}:refs/remotes/origin/{PLAN}" in fetch_attempts[0]
@@ -127,16 +130,18 @@ def test_host_still_fetches_plan_and_execution(repo: Path, fetch_attempts: list[
 
 
 @pytest.mark.usefixtures("unmounted")
-def test_host_failed_fetch_is_unverifiable(repo: Path):
-    _git(repo, "remote", "set-url", "origin", str(repo / "does-not-exist"))
-    has_diff, detail = _execution_effective_diff(str(repo), EXEC)
+def test_host_failed_fetch_is_unverifiable(repo_with_host_fetched_refs: Path):
+    _git(
+        repo_with_host_fetched_refs, "remote", "set-url", "origin", str(repo_with_host_fetched_refs / "does-not-exist")
+    )
+    has_diff, detail = _execution_effective_diff(str(repo_with_host_fetched_refs), EXEC)
     assert has_diff is None
     assert "from origin failed" in detail
 
 
 @pytest.mark.usefixtures("mounted")
 def test_review_entry_path_in_mounted_workspace_never_fetches(
-    repo: Path, fetch_attempts: list[list[str]], monkeypatch: pytest.MonkeyPatch
+    repo_with_host_fetched_refs: Path, fetch_attempts: list[list[str]], monkeypatch: pytest.MonkeyPatch
 ):
     reached: list[str] = []
     real = git_refs._origin_refs_error
@@ -146,15 +151,15 @@ def test_review_entry_path_in_mounted_workspace_never_fetches(
         return real(repo_dir, plan_branch, execution_branch)
 
     monkeypatch.setattr(git_refs, "_origin_refs_error", spy)
-    verdict, _detail = classify_review_diff(str(repo), EXEC, base_branch="main")
+    verdict, _detail = classify_review_diff(str(repo_with_host_fetched_refs), EXEC, base_branch="main")
     assert verdict is DiffVerdict.VERIFIED
     assert reached == [EXEC]
     assert fetch_attempts == []
 
 
+# why: negative control proving the fetch guard records fetches on the host path
 @pytest.mark.usefixtures("unmounted")
-def test_review_entry_path_on_host_does_fetch(repo: Path, fetch_attempts: list[list[str]]):
-    """Negative control: the same walk on the host fetches, so the guard does see fetches."""
-    verdict, _detail = classify_review_diff(str(repo), EXEC, base_branch="main")
+def test_review_entry_path_on_host_does_fetch(repo_with_host_fetched_refs: Path, fetch_attempts: list[list[str]]):
+    verdict, _detail = classify_review_diff(str(repo_with_host_fetched_refs), EXEC, base_branch="main")
     assert verdict is DiffVerdict.VERIFIED
     assert fetch_attempts

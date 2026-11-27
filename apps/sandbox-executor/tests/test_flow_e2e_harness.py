@@ -783,6 +783,7 @@ class TestPrePRPipelineExecutionAndLocalLLMEnv:
 
         report = outcome.teardown_reports[0]
         assert len(report.removed_worktrees) == 1
+        # why: flow-<slug> plus the intent, plan and execute branches locally; only the last three are pushed
         assert len(report.deleted_local_branches) >= 4
         assert len(report.deleted_remote_branches) == 3
 

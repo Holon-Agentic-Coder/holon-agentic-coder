@@ -201,6 +201,7 @@ class TestFlowRoleDispatch:
             res = run_plan_stage(ctx)
 
         assert res.status == StageStatus.SUCCESS
+        # why: the planner container owns formatting
         mock_format.assert_not_called()
         assert res.payload["plan_file"] == f"plans/{res.payload['plan_id']}.md"
         assert res.payload["plan_id"].endswith("-CLA-CO5.5")
@@ -469,6 +470,7 @@ class TestFlowRoleDispatch:
         assert latest["ledger_revision"] == 2
         assert latest["failure_reason"] == "empty_diff"
         assert "test_pass_rate" not in latest
+        # why: superseding rows repeat authoritative fields rather than merging them backwards
         assert latest["agent_output_bytes"] == 12
         assert exec_rows[0]["test_pass_rate"] == 1.0
         error = results["execute"].error or ""

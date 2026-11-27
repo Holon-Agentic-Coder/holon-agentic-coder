@@ -49,7 +49,6 @@ def stage4_halts_at_consensus() -> Iterator[MagicMock]:
 
 @contextmanager
 def _review_loop_gh_stubs() -> Iterator[FakeGitHub]:
-    # why: the fake has no CI checks, so CI falls back to local tests
     clean_merge = {"is_dirty": False, "merge_state_status": "CLEAN", "mergeable": "MERGEABLE", "source": "github_cli"}
     github = FakeGitHub(standing_view=merge_view())
     with (

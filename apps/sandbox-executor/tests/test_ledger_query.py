@@ -390,10 +390,8 @@ class TestLedgerQueryEngine(unittest.TestCase):
 
     def test_query_filter_outcome(self):
         res = query_ledger(self.ledger_file, outcome="failure")
-        # why: the outcome filter matches the failed action and the failed legacy summary row
-        self.assertEqual(len(res), 2)
-        exec_ids = [r["execution_id"] for r in res]
-        self.assertIn("E-10", exec_ids)
+        failed_rows = [(r.get("action_id"), r["execution_id"]) for r in res]
+        self.assertEqual(failed_rows, [("ACT-2", "E-10"), (None, "E-10")])
 
     def test_query_filter_origin(self):
         res = query_ledger(self.ledger_file, origin="pr_review")

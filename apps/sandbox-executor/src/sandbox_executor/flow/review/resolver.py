@@ -151,17 +151,16 @@ def _dispatch_review_resolver(
         # Fails closed: a non-zero exit, or a file still holding the input payload, is a failed pass.
         parsed = read_container_resolver_result(data, exit_code, target.head_sha)
         pushed, push_error = _push_resolver_head(context, target, parsed.head_sha, parsed.error)
+        err = parsed.error or push_error
         # A failed pass carries no dispositions at all: its findings stay open and no adjudication row is written.
-        dispositions = (
-            () if parsed.error else deserialize_finding_dispositions(parsed.raw_dispositions, findings, lookup)
-        )
+        dispositions = () if err else deserialize_finding_dispositions(parsed.raw_dispositions, findings, lookup)
         return ResolverOutcome(
             dispositions=dispositions,
             head_sha=parsed.head_sha,
             pushed=pushed,
             lint_passed=parsed.lint_passed,
             tests_passed=parsed.tests_passed,
-            error=parsed.error or push_error,
+            error=err,
             rejected_patch=parsed.rejected_patch,
             rejected_patch_text=parsed.rejected_patch_text,
             failed_tests=parsed.failed_tests,

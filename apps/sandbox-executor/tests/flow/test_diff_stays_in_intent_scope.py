@@ -15,6 +15,7 @@ from sandbox_executor.flow.stage5 import (
     standalone_context,
 )
 from sandbox_executor.flow.stages.touch_set_guard import TOUCH_SET_VIOLATION
+from sandbox_executor.review_report import FindingRow
 from sandbox_executor.review_target import ReviewTarget
 
 from tests.flow.helpers import _configure_identity, _git
@@ -264,3 +265,105 @@ def test_pr_360_sixteen_out_of_scope_files_refused_by_resolver_and_stage5(tmp_pa
     logged = "\n".join(ctx.logs)
     for path in PR_360_OUT_OF_SCOPE:
         assert path in logged
+
+
+def test_widening_replan_on_plan_branch_beats_inherited_rev1_on_execution_branch(tmp_path: Path, pushes: list):
+    repo, base_sha = _init_flow_repo(tmp_path, ("src/allowed.py",))
+    _git(repo, "checkout", "-q", PLAN_BRANCH)
+    replan_row = {
+        "plan_id": PLAN_ID,
+        "intent_branch": INTENT_BRANCH,
+        "touch_set": [{"path": "src/allowed.py"}, {"path": "src/widened_on_plan.py"}],
+        "ledger_revision": 2,
+    }
+    _append_plan_row(repo, replan_row, "append widening re-plan on plan branch")
+    _git(repo, "checkout", "-q", EXEC_BRANCH)
+    head_sha = _commit_files(repo, {"src/widened_on_plan.py": "w = 1\n"}, "edit widened file on exec branch")
+
+    ctx = FlowContext(repo_dir=str(repo), plan_branch=PLAN_BRANCH, execution_branch=EXEC_BRANCH)
+    target = ReviewTarget(raw=EXEC_BRANCH, head_branch=EXEC_BRANCH, head_sha=base_sha)
+    assert resolver._push_resolver_head(ctx, target, head_sha, None) == (True, None)
+    assert len(pushes) == 1
+    assert _check_stage5_readiness(ctx).ready is True
+
+
+def test_resolver_handles_clean_merge_without_false_positive_and_catches_evil_merge(tmp_path: Path, pushes: list):
+    repo, base_sha = _init_flow_repo(tmp_path, ("src/allowed.py",))
+    _git(repo, "checkout", "-q", "main")
+    _commit_files(repo, {"upstream/main_only.py": "m = 1\n"}, "upstream main commit")
+    _git(repo, "checkout", "-q", EXEC_BRANCH)
+    _git(repo, "merge", "-q", "--no-edit", "main")
+    clean_merge_sha = _git(repo, "rev-parse", "HEAD")
+
+    ctx = FlowContext(repo_dir=str(repo), plan_branch=PLAN_BRANCH, execution_branch=EXEC_BRANCH)
+    target = ReviewTarget(raw=EXEC_BRANCH, head_branch=EXEC_BRANCH, head_sha=base_sha)
+    assert resolver._push_resolver_head(ctx, target, clean_merge_sha, None) == (True, None)
+    assert len(pushes) == 1
+
+    _commit_files(repo, {"src/allowed.py": "x = 2\n"}, "in-scope commit before evil merge")
+    _git(repo, "checkout", "-q", "main")
+    _commit_files(repo, {"upstream/main_two.py": "m = 2\n"}, "second upstream main commit")
+    _git(repo, "checkout", "-q", EXEC_BRANCH)
+    _git(repo, "merge", "-q", "--no-commit", "main")
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    (repo / "src" / "evil_merge.py").write_text("evil = 1\n", encoding="utf-8")
+    _git(repo, "add", "src/evil_merge.py")
+    _git(repo, "commit", "-qm", "evil merge with out-of-scope edit")
+    evil_merge_sha = _git(repo, "rev-parse", "HEAD")
+
+    next_target = ReviewTarget(raw=EXEC_BRANCH, head_branch=EXEC_BRANCH, head_sha=clean_merge_sha)
+    pushed, error = resolver._push_resolver_head(ctx, next_target, evil_merge_sha, None)
+    assert pushed is False
+    assert error is not None and TOUCH_SET_VIOLATION in error and "src/evil_merge.py" in error
+    assert "upstream/main_two.py" not in error
+    assert len(pushes) == 1
+
+
+def test_dispatch_review_resolver_clears_dispositions_on_touch_set_violation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pushes: list
+):
+    repo, base_sha = _init_flow_repo(tmp_path, ("src/allowed.py",))
+    bad_sha = _commit_files(repo, {"src/forbidden.py": "y = 1\n"}, "resolver out-of-scope edit")
+    row = FindingRow("R1-F1", "important", "src/allowed.py", 1, (1,), "fix issue", "apply fix")
+
+    def fake_dispatch(_ctx, _role, _args, *, result_file):
+        payload = {
+            "resolver": True,
+            "head_sha": bad_sha,
+            "dispositions": [{"id": "R1-F1", "disposition": "applied", "rejection_reason": None, "evidence": None}],
+            "error": None,
+        }
+        Path(result_file).write_text(json.dumps(payload), encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(resolver, "_dispatch_role", fake_dispatch)
+    ctx = FlowContext(repo_dir=str(repo), plan_branch=PLAN_BRANCH, execution_branch=EXEC_BRANCH)
+    target = ReviewTarget(raw=EXEC_BRANCH, head_branch=EXEC_BRANCH, head_sha=base_sha)
+    outcome = resolver._dispatch_review_resolver(ctx, target, 1, resolver.ResolverInput(findings=(row,)))
+
+    assert outcome.pushed is False
+    assert outcome.dispositions == ()
+    assert outcome.error is not None and TOUCH_SET_VIOLATION in outcome.error
+    assert pushes == []
+
+
+def test_stage5_readiness_fails_closed_when_base_ref_unresolvable_with_declared_touch_set(tmp_path: Path):
+    _git(tmp_path, "init", "-q", "-b", "orphan-exec")
+    _configure_identity(tmp_path)
+    _commit_files(tmp_path, {"src/allowed.py": "x = 1\n"}, "initial commit on non-main branch")
+    ctx = FlowContext(
+        repo_dir=str(tmp_path),
+        plan_branch="I-1-x/P-1-missing/_",
+        execution_branch="orphan-exec",
+        intent_data={"scope": ["src/allowed.py"], "target_branch": "nonexistent-base"},
+    )
+
+    readiness = _check_stage5_readiness(ctx)
+    assert readiness.ready is False
+    assert readiness.reason == TOUCH_SET_VIOLATION
+    assert "base_ref" in "\n".join(readiness.format_lines())
+
+    calibrate_mock = MagicMock()
+    with pytest.raises(_Stage5TouchSetError):
+        run_stage5(ctx, _stage5_steps(calibrate_mock), verdict="success", report_only=True)
+    calibrate_mock.assert_not_called()

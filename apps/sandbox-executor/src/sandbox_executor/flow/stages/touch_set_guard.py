@@ -73,10 +73,9 @@ def _is_replan_row_for_plan(row: dict[str, Any], plan_branch: str) -> bool:
     return str(row.get("supersedes_plan_id") or "").strip() == plan_id
 
 
-def _latest_touch_set_at_ref(repo_dir: str, ref: str, plan_branch: str) -> TouchSet | None:
+def _ranked_touch_set_at_ref(repo_dir: str, ref: str, plan_branch: str) -> tuple[tuple[int, int], TouchSet] | None:
     rows = _read_ledger_rows(repo_dir, ref, "plans.jsonl")
-    best_rank: tuple[int, int] | None = None
-    chosen: TouchSet | None = None
+    best: tuple[tuple[int, int], TouchSet] | None = None
     for index, row in enumerate(rows):
         if not _is_replan_row_for_plan(row, plan_branch):
             continue
@@ -84,9 +83,9 @@ def _latest_touch_set_at_ref(repo_dir: str, ref: str, plan_branch: str) -> Touch
         if parsed is None:
             continue
         rank = (_parse_ledger_revision(row), index)
-        if best_rank is None or rank > best_rank:
-            best_rank, chosen = rank, parsed
-    return chosen
+        if best is None or rank > best[0]:
+            best = (rank, parsed)
+    return best
 
 
 def _resolve_effective_touch_set(context: FlowContext, *, head_ref: str | None = None) -> TouchSet | None:
@@ -96,13 +95,17 @@ def _resolve_effective_touch_set(context: FlowContext, *, head_ref: str | None =
         preferred_ref = head_ref or (
             _resolve_branch_ref(repo_dir, str(context.execution_branch)) if context.execution_branch else None
         )
-        if preferred_ref:
-            found = _latest_touch_set_at_ref(repo_dir, preferred_ref, plan_branch)
-            if found is not None:
-                return found
-        found = read_plan_touch_set(repo_dir, plan_branch)
-        if found is not None:
-            return found
+        plan_ref = _resolve_branch_ref(repo_dir, plan_branch)
+        best: tuple[tuple[int, int], TouchSet] | None = None
+        for ref in dict.fromkeys(r for r in (preferred_ref, plan_ref) if r):
+            found = _ranked_touch_set_at_ref(repo_dir, ref, plan_branch)
+            if found is not None and (best is None or found[0] > best[0]):
+                best = found
+        if best is not None:
+            return best[1]
+        found_fallback = read_plan_touch_set(repo_dir, plan_branch)
+        if found_fallback is not None:
+            return found_fallback
     scope = (context.intent_data or {}).get("scope")
     if isinstance(scope, list) and scope:
         return TouchSet.from_row(scope)
@@ -114,8 +117,9 @@ def touch_set_violation(context: FlowContext, changed: list[str], *, head_ref: s
     return out_of_set_files(declared, changed) if declared is not None else []
 
 
-def _commit_changed_paths(repo_dir: str, sha: str) -> list[str] | None:
-    res = run_git(["diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha, "--"], cwd=repo_dir, check=False)
+def _commit_changed_paths(repo_dir: str, sha: str, *, is_merge: bool = False) -> list[str] | None:
+    flag = "--cc" if is_merge else "--root"
+    res = run_git(["diff-tree", "--no-commit-id", "--name-only", "-r", flag, sha, "--"], cwd=repo_dir, check=False)
     if res.returncode != 0 or not isinstance(res.stdout, str):
         return None
     return list(dict.fromkeys(line for line in res.stdout.splitlines() if line))
@@ -123,25 +127,23 @@ def _commit_changed_paths(repo_dir: str, sha: str) -> list[str] | None:
 
 def _range_commit_paths(repo_dir: str, base_sha: str, head_sha: str) -> list[tuple[str, list[str]]] | None:
     listed = run_git(
-        ["rev-list", "--reverse", "--first-parent", "--no-merges", f"{base_sha}..{head_sha}"],
+        ["rev-list", "--reverse", "--first-parent", "--parents", f"{base_sha}..{head_sha}"],
         cwd=repo_dir,
         check=False,
     )
     if listed.returncode != 0 or not isinstance(listed.stdout, str):
         return None
-    commits = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
-    if commits:
-        result: list[tuple[str, list[str]]] = []
-        for sha in commits:
-            paths = _commit_changed_paths(repo_dir, sha)
-            if paths is None:
-                return None
-            result.append((sha, paths))
-        return result
-    diff = run_git(["diff", "--name-only", base_sha, head_sha, "--"], cwd=repo_dir, check=False)
-    if diff.returncode != 0 or not isinstance(diff.stdout, str):
-        return None
-    return [(head_sha, list(dict.fromkeys(line for line in diff.stdout.splitlines() if line)))]
+    result: list[tuple[str, list[str]]] = []
+    for line in listed.stdout.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        sha, parents = parts[0], parts[1:]
+        paths = _commit_changed_paths(repo_dir, sha, is_merge=len(parents) > 1)
+        if paths is None:
+            return None
+        result.append((sha, paths))
+    return result
 
 
 def _resolver_commit_touch_set_refusal(context: FlowContext, base_sha: str, head_sha: str) -> str | None:
@@ -154,10 +156,13 @@ def _resolver_commit_touch_set_refusal(context: FlowContext, base_sha: str, head
     commit_paths = _range_commit_paths(repo_dir, base_sha, head_sha)
     if commit_paths is None:
         return f"{TOUCH_SET_VIOLATION}: could not inspect resolver commits since {base_sha[:12]}"
+    declared = _resolve_effective_touch_set(context, head_ref=head_sha)
+    if declared is None:
+        return None
     offending_commits: list[str] = []
     violating_files: list[str] = []
     for sha, paths in commit_paths:
-        files = touch_set_violation(context, paths, head_ref=head_sha)
+        files = out_of_set_files(declared, paths)
         if files:
             offending_commits.append(sha[:12])
             violating_files.extend(files)

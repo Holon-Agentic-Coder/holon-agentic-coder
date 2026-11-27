@@ -10,8 +10,8 @@ def title_of(intent: dict) -> str:
     return generate_semantic_pr_metadata(intent)[0]
 
 
-def body_of(intent: dict, plan: dict | None = None) -> str:
-    return generate_semantic_pr_metadata(intent, plan)[1]
+def body_of(intent: dict, plan: dict | None = None, runner: dict | None = None) -> str:
+    return generate_semantic_pr_metadata(intent, plan, runner=runner)[1]
 
 
 @pytest.mark.parametrize(
@@ -124,3 +124,49 @@ def test_plan_metadata_prefers_plan_agent_and_model_over_intent():
     assert body.endswith(
         "- **Plan ID:** `P-1`\n- **Expected Value (EV):** `N/A`\n- **Agent:** `ia`\n- **Model:** `pm`\n"
     )
+
+
+def _agent_and_model_lines(body: str) -> tuple[str, str]:
+    lines = body.splitlines()
+    agent_line = next(line for line in lines if line.startswith("- **Agent:**"))
+    model_line = next(line for line in lines if line.startswith("- **Model:**"))
+    return agent_line, model_line
+
+
+def test_plan_metadata_names_the_supplied_runner():
+    body = body_of(
+        {},
+        {"plan_id": "P-1795696276-CLA-CO5.5", "ev": 76.51},
+        runner={"agent": "claude-agent", "model": "claude-opus-5-5"},
+    )
+    agent_line, model_line = _agent_and_model_lines(body)
+    assert agent_line == "- **Agent:** `claude-agent`"
+    assert model_line == "- **Model:** `claude-opus-5-5`"
+    assert "N/A" not in agent_line
+    assert "N/A" not in model_line
+    assert "- **Plan ID:** `P-1795696276-CLA-CO5.5`" in body
+    assert "- **Expected Value (EV):** `76.51`" in body
+
+
+def test_plan_payload_agent_and_model_win_over_the_supplied_runner():
+    body = body_of(
+        {"agent": "ia", "model": "im"},
+        {"plan_id": "P-1", "agent": "pa", "model": "pm"},
+        runner={"agent": "ra", "model": "rm"},
+    )
+    assert _agent_and_model_lines(body) == ("- **Agent:** `pa`", "- **Model:** `pm`")
+
+
+@pytest.mark.parametrize(
+    ("intent", "plan", "runner", "agent", "model"),
+    [
+        ({}, None, {"agent": "ra", "model": "rm"}, "ra", "rm"),
+        ({"agent": "ia", "model": "im"}, None, None, "ia", "im"),
+        ({"agent": "ia", "model": "im"}, {"agent": None, "model": ""}, {"agent": "ra", "model": "rm"}, "ra", "rm"),
+        ({}, {"agent": " ", "model": None}, {"agent": "", "model": None}, "N/A", "N/A"),
+        ({}, None, None, "N/A", "N/A"),
+    ],
+)
+def test_agent_and_model_fall_back_through_runner_then_intent_then_na(intent, plan, runner, agent, model):
+    body = body_of(intent, plan, runner=runner)
+    assert _agent_and_model_lines(body) == (f"- **Agent:** `{agent}`", f"- **Model:** `{model}`")

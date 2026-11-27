@@ -1,0 +1,59 @@
+{
+  "kb_id": "KB-failure-env-registry-runtime-drift",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "2026-11-27T00:00:00+00:00",
+  "updated_ts": "2026-11-27T00:00:00+00:00",
+  "created_by": "architecture-audit-2026-11",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "I-1795768764-hac-architecture-audit-kb"
+    ],
+    "success_count": 0,
+    "failure_count": 2
+  },
+  "tags": [
+    "architecture-audit-2026-11",
+    "environment",
+    "config",
+    "drift"
+  ],
+  "human_approved": true,
+  "payload": {
+    "name": "Environment Variable Registry and Runtime Drift",
+    "description": "Reading HOLON_* environment variables directly in runtime, entrypoint, or build code without updating the typed registry (sandbox_executor/env_registry.py, sandbox_executor/config_env_keys.py) and docs/environment_variables.md causes undocumented knobs, silent default mismatches, and broken container passthrough.",
+    "symptoms": [
+      "Two-way AST/text drift test failures in apps/sandbox-executor/tests/test_environment_reference.py",
+      "Environment variables accepted on the host but silently dropped when launching sandbox containers",
+      "Stale or missing HOLON_* entries in docs/environment_variables.md"
+    ],
+    "root_causes": [
+      "Ad-hoc os.environ.get('HOLON_...') lookups added outside sandbox_executor/env_registry.py and sandbox_executor/config_env_keys.py",
+      "Removing or renaming runtime variables without pruning the registry and documentation in the same change",
+      "Duplicating default values across host configuration and container entrypoint scripts"
+    ],
+    "mitigations": [
+      {
+        "strategy": "Single typed environment registry",
+        "description": "Declare every HOLON_* key once in sandbox_executor/env_registry.py and sandbox_executor/config_env_keys.py and document it in docs/environment_variables.md.",
+        "cost": "Low per-variable overhead",
+        "effectiveness": 0.95
+      },
+      {
+        "strategy": "Two-way AST and doc drift verification",
+        "description": "Run apps/sandbox-executor/tests/test_environment_reference.py to verify that every referenced HOLON_* key is registered and documented and that no orphaned entries remain.",
+        "cost": "Negligible CI runtime",
+        "effectiveness": 0.95
+      }
+    ],
+    "detection_heuristic": {
+      "condition": "unregistered_holon_env_vars > 0 OR undocumented_holon_env_vars > 0",
+      "confidence": 0.95
+    },
+    "related_failures": [
+      "KB-failure-container-resource-and-secret-perm-gaps",
+      "KB-failure-bidirectional-flow-entrypoint-cycle"
+    ]
+  }
+}

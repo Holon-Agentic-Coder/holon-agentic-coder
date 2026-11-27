@@ -25,7 +25,7 @@ from sandbox_executor.flow.github.pr import check_pr_mergeability, create_or_upd
 from sandbox_executor.flow.github.pr_head import PR_HEAD_TIMEOUT_SECONDS
 from sandbox_executor.flow.github.review_post import post_pr_review_consensus
 from sandbox_executor.flow.ledger_warning import _warn_ledger_failure
-from sandbox_executor.flow.review import delta_review
+from sandbox_executor.flow.review import carried_findings, delta_review, ledger_commit
 from sandbox_executor.flow.review.adjudication import (
     Adjudication,
     _augment_pr_text_with_rejected,
@@ -34,15 +34,7 @@ from sandbox_executor.flow.review.adjudication import (
 )
 from sandbox_executor.flow.review.approval_fingerprint import approval_fingerprint_of, approval_record
 from sandbox_executor.flow.review.approval_gates import IterationGates, gates_summary, record_iteration_gates
-from sandbox_executor.flow.review.carried_findings import (
-    CarriedPass,
-    carried_blocker,
-    deserialize_carried,
-    merge_findings,
-    resolve_carried_first,
-    serialize_open,
-    undisposed,
-)
+from sandbox_executor.flow.review.carried_findings import CarriedPass, merge_findings, undisposed
 from sandbox_executor.flow.review.ci_failure_routing import apply_last_classification
 from sandbox_executor.flow.review.ci_inspection import CiInspectionInputs, inspect_ci
 from sandbox_executor.flow.review.ci_noise_rerun import rerun_noise_once
@@ -83,7 +75,7 @@ from sandbox_executor.flow.review.resolver import (
     _invoke_resolver_pass,
     _lookup_introducing_action_id,
 )
-from sandbox_executor.flow.review.sync_points import sync_iteration_mergeability
+from sandbox_executor.flow.review.sync_points import sync_after_resolver_turn, sync_iteration_mergeability
 from sandbox_executor.flow.review.verdict import (
     _finding_outcome_blockers,
     _loop_status,
@@ -187,6 +179,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     Returns:
         dict[str, Any]: Review loop outcome dictionary.
     """
+    ledger_commit._set_ledger_commit_suppressed(context, False)
     clock = clock or time.monotonic
     ensemble_fn = run_ensemble_fn or run_ensemble
     sleep = sleep or time.sleep
@@ -322,26 +315,28 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         effective_dry_run=effective_dry_run,
     )
     # Findings a halted pass left open go to the resolver before any reviewer; a failed pass starts no iteration.
-    carried_rows, carried_ids = deserialize_carried(context.carried_review_findings)
+    carried_rows, carried_ids = carried_findings.deserialize_carried(context.carried_review_findings)
     finding_action_ids.update(carried_ids)
-    carried_block = ""  # Why approval was refused while a carried finding had no disposition.
+    carried_block, blocked_on, carried_head_changed, carried_failed = "", None, False, False
     if carried_rows and resolver_enabled and resolved_target is not None and not effective_dry_run:
         carried_pass = CarriedPass(context, resolved_target, max(1, first_label - 1), run_resolver_fn, recorder)
-        delta_review.record_addressed_findings(context, carried_rows)
-        carried_outcome, carried_rows, pending_dispositions = resolve_carried_first(
-            carried_rows, finding_action_ids, carried_pass
+        deps = carried_findings._CarriedPrePassDeps(
+            probe_ci=probe_ci,
+            sync_target=lambda tgt: sync_after_resolver_turn(context, tgt, target_branch, carried_pass.iteration),
+            record_rejected=lambda it, out: _record_rejected_attempt(context, exec_file, review_target, it, out),
         )
-        resolver_error = _bounded_error_context(carried_outcome.error) if carried_outcome.error else None
-        if carried_outcome.error:
-            _record_rejected_attempt(context, exec_file, review_target, carried_pass.iteration, carried_outcome)
-        if carried_outcome.pushed and carried_outcome.head_sha:
-            resolved_target = dataclasses.replace(resolved_target, head_sha=carried_outcome.head_sha)
+        pre = carried_findings._run_pre_iteration_carried_pass(carried_rows, finding_action_ids, carried_pass, deps)
+        carried_rows, pending_dispositions, blocked_on = pre.carried_rows, pre.pending_dispositions, pre.blocked_on
+        carried_head_changed, carried_failed = pre.head_changed, bool(pre.resolver_error)
+        resolver_error = _bounded_error_context(pre.resolver_error) if pre.resolver_error else None
+        if pre.head_changed and pre.head_sha:
+            resolved_target = dataclasses.replace(resolved_target, head_sha=pre.head_sha)
 
     if pr_refusal_error:
         # Fail closed: a PR the guard refused is never reviewed, so no evidence can turn the refusal into approval.
         context.log("[Review Loop] Halting review loop without consensus: the empty-diff guard refused the PR.")
 
-    while pr_refusal_error is None and infra_error is None and resolver_error is None and iteration < last_label:
+    while not (pr_refusal_error or infra_error or resolver_error or blocked_on) and iteration < last_label:
         # The previous iteration's rows; the first boundary precedes any numbered iteration.
         boundary = "" if iteration >= 1 else f"before iteration {iteration + 1}"
         last_commit = None if effective_dry_run else _commit_pending_ledger_rows(context, iteration, boundary)
@@ -512,7 +507,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         # 8. Termination and Resolver Pass
         # why: an unpushed carried fix has no commit, so the outcome gate above already blocks it.
         if ensemble_verdict is ConsensusVerdict.APPROVED and undisposed(carried_rows, pending_dispositions):
-            carried_block = carried_blocker(undisposed(carried_rows, pending_dispositions))
+            carried_block = carried_findings.carried_blocker(undisposed(carried_rows, pending_dispositions))
             blockers.append(carried_block)
             ensemble_verdict = ConsensusVerdict.CHANGES_REQUESTED
             context.log(f"[Review Loop] Consensus blocked at iteration {iteration}: {carried_block}.")
@@ -652,7 +647,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if finding_signature(row.severity, row.path, row.line, row.summary) not in recorded_disposition_keys
     ]
     # A failed resolver pass decided nothing: its findings stay open, unrecorded, and are returned to be carried.
-    if resolver_enabled and not effective_dry_run and resolver_error is None and remaining_findings:
+    if resolver_enabled and not effective_dry_run and not (resolver_error or blocked_on) and remaining_findings:
         fallback_dispositions = [
             open_dispositions.get(finding_signature(d.severity, d.path, d.line, d.summary), d)
             for d in deserialize_finding_dispositions([], remaining_findings, finding_action_ids)
@@ -668,7 +663,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     consensus_status = _loop_status(
         consensus_reached,
         ensemble_verdict,
-        bool(pr_refusal_error or infra_error or resolver_error),
+        bool(pr_refusal_error or infra_error or resolver_error or blocked_on),
         is_dirty,
         not_measured,
     )
@@ -726,7 +721,13 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             reviewer_completed=any(result.status is ReviewerStatus.COMPLETED for result in reviewers),
             consensus_reached=consensus_reached,
             halted_early=bool(
-                resolver_error or no_convergence or budget_breach or missing_ref or tests_not_measured or carried_block
+                resolver_error
+                or blocked_on
+                or no_convergence
+                or budget_breach
+                or missing_ref
+                or tests_not_measured
+                or carried_block
             ),
             iteration=iteration,
             last_label=last_label,
@@ -766,6 +767,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         halt_reasons.append(_bounded_error_context(str(pr_refusal_error or infra_error)))
     if resolver_error:
         halt_reasons.append(f"resolver failed: {resolver_error}")
+    if blocked_on:
+        halt_reasons.append(f"blocked on: {blocked_on['reason']}")
     if carried_block:
         halt_reasons.append(carried_block)
     if post_error:  # The conflict gate's post_error already reads "conflict gate: <reason>".
@@ -842,7 +845,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             raise
         except Exception as e:
             _warn_ledger_failure(context, "Stage 4 review action event", exec_file, e)
-    if not effective_dry_run:  # Every exit path, a failed or halted iteration included, commits its final rows.
+    ledger_commit._suppress_if_empty_pre_iter(context, passes, carried_head_changed, bool(carried_failed or blocked_on))
+    if not effective_dry_run:
         _commit_pending_ledger_rows(context, iteration)
 
     loop_result: dict[str, Any] = {
@@ -883,12 +887,14 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         "no_convergence": no_convergence,
         "consensus_blockers": list(blockers),
         "resolver_error": resolver_error,
+        "blocked_on": blocked_on,
         "calibration_freshness": calibration_freshness,
     }
     if not effective_dry_run:  # A dry run decides nothing, so the checkpointed carried findings stay as they were.
-        loop_result["open_findings"] = serialize_open(remaining_findings, finding_action_ids)
-    if pr_refusal_error or infra_error or post_error or resolver_error:
-        loop_result["error"] = pr_refusal_error or infra_error or post_error or f"resolver failed: {resolver_error}"
+        loop_result["open_findings"] = carried_findings.serialize_open(remaining_findings, finding_action_ids)
+    fallback_err = f"resolver failed: {resolver_error}" if resolver_error else (blocked_on or {}).get("reason")
+    if pr_refusal_error or infra_error or post_error or fallback_err:
+        loop_result["error"] = pr_refusal_error or infra_error or post_error or fallback_err
     return loop_result
 
 

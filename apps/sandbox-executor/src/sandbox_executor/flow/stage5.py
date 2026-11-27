@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from sandbox_executor.calibration import LEDGER_EXECUTIONS_REL
 from sandbox_executor.flow.context import FlowContext
+from sandbox_executor.flow.git_refs import _execution_parent_plan_branch, _resolve_branch_ref
 from sandbox_executor.flow.github.ci_reverify import approved_head_of
 from sandbox_executor.flow.stage5_ledger import recorded_verdicts
+from sandbox_executor.flow.stages.touch_set_guard import (
+    TOUCH_SET_VIOLATION,
+    _resolve_effective_touch_set,
+    touch_set_violation,
+)
+from sandbox_executor.git import changed_paths, run_git
 from sandbox_executor.knowledge import ActionIndexDatabase
 from sandbox_executor.ledger import LedgerRewriteError
 from sandbox_executor.ledger.fragments import iter_fragment_files
@@ -27,12 +34,47 @@ class Stage5Steps:
     warn_ledger_failure: Callable[[FlowContext, str, str, BaseException], None]
 
 
+@dataclass(frozen=True)
+class _Stage5Readiness:
+    ready: bool
+    out_of_scope_files: tuple[str, ...] = ()
+    reason: str | None = None
+    detail: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ready": self.ready,
+            "out_of_scope_files": list(self.out_of_scope_files),
+            "reason": self.reason,
+        }
+
+    def format_lines(self) -> list[str]:
+        if self.ready:
+            return ["Stage 5 readiness check passed: all PR diff files are within the plan touch set."]
+        if self.detail and not self.out_of_scope_files:
+            return [f"Stage 5 readiness check failed ({self.reason or TOUCH_SET_VIOLATION}): {self.detail}"]
+        header = (
+            f"Stage 5 readiness check failed ({self.reason or TOUCH_SET_VIOLATION}): "
+            f"{len(self.out_of_scope_files)} file(s) outside the plan touch set:"
+        )
+        return [header, *(f"  - {path}" for path in self.out_of_scope_files)]
+
+
+class _Stage5TouchSetError(RuntimeError):
+    def __init__(self, readiness: _Stage5Readiness) -> None:
+        self.readiness = readiness
+        self.out_of_scope_files = readiness.out_of_scope_files
+        self.failure_reason = readiness.reason or TOUCH_SET_VIOLATION
+        super().__init__("\n".join(readiness.format_lines()))
+
+
 @dataclass
 class Stage5Outcome:
     report_dict: dict[str, Any] = field(default_factory=dict)
     report_only: bool = False
     reconciliation: dict[str, Any] = field(default_factory=dict)
     promoted_candidates: list[dict[str, Any]] = field(default_factory=list)
+    readiness: dict[str, Any] = field(default_factory=lambda: _Stage5Readiness(ready=True).to_dict())
 
     @property
     def newly_promoted_count(self) -> int:
@@ -44,6 +86,57 @@ class Stage5Outcome:
             "reconciliation": dict(self.reconciliation),
             "newly_promoted_count": self.newly_promoted_count,
         }
+
+
+def _resolve_head_ref(repo_dir: str, execution_branch: str | None) -> str | None:
+    if execution_branch:
+        resolved = _resolve_branch_ref(repo_dir, execution_branch, prefer_remote=False)
+        if resolved:
+            return resolved
+    head = run_git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], cwd=repo_dir, check=False)
+    return "HEAD" if head.returncode == 0 else None
+
+
+def _stage5_diff_files(context: FlowContext) -> tuple[list[str], str | None, str | None]:
+    repo_dir = context.target_worktree
+    if not repo_dir or not os.path.exists(os.path.join(repo_dir, ".git")):
+        return [], None, None
+    exec_ref = _resolve_head_ref(repo_dir, context.execution_branch)
+    plan_branch = (
+        str(context.plan_branch)
+        if context.plan_branch
+        else _execution_parent_plan_branch(str(context.execution_branch or ""))
+    )
+    base_ref = _resolve_branch_ref(repo_dir, plan_branch, prefer_remote=False) if plan_branch else None
+    if not base_ref:
+        target_branch = str((context.intent_data or {}).get("target_branch") or "main")
+        base_ref = _resolve_branch_ref(repo_dir, target_branch, prefer_remote=False)
+    if not base_ref or not exec_ref:
+        missing = [name for name, ref in (("base_ref", base_ref), ("exec_ref", exec_ref)) if not ref]
+        return [], exec_ref, f"could not resolve {' and '.join(missing)} to inspect the PR diff"
+    return changed_paths(repo_dir, base_ref, exec_ref), exec_ref, None
+
+
+def _check_stage5_readiness(
+    context: FlowContext,
+    pr_diff_files: Sequence[str] | None = None,
+    *,
+    head_ref: str | None = None,
+) -> _Stage5Readiness:
+    diff_error: str | None = None
+    if pr_diff_files is None:
+        diff_files, resolved_head, diff_error = _stage5_diff_files(context)
+    else:
+        diff_files, resolved_head = list(pr_diff_files), None
+    effective_head = head_ref or resolved_head
+    if diff_error:
+        if _resolve_effective_touch_set(context, head_ref=effective_head) is not None:
+            return _Stage5Readiness(ready=False, reason=TOUCH_SET_VIOLATION, detail=diff_error)
+        return _Stage5Readiness(ready=True)
+    out_of_scope = touch_set_violation(context, diff_files, head_ref=effective_head)
+    if out_of_scope:
+        return _Stage5Readiness(ready=False, out_of_scope_files=tuple(out_of_scope), reason=TOUCH_SET_VIOLATION)
+    return _Stage5Readiness(ready=True)
 
 
 def _reconciliation(status: str, verdict: str | None, rows_appended: int = 0) -> dict[str, Any]:
@@ -111,7 +204,12 @@ def _promote_candidates(context: FlowContext, steps: Stage5Steps) -> list[dict[s
 def run_stage5(
     context: FlowContext, steps: Stage5Steps, verdict: str | None, report_only: bool = False
 ) -> Stage5Outcome:
-    outcome = Stage5Outcome(report_only=report_only)
+    readiness = _check_stage5_readiness(context)
+    if not readiness.ready:
+        for line in readiness.format_lines():
+            context.log(line)
+        raise _Stage5TouchSetError(readiness)
+    outcome = Stage5Outcome(report_only=report_only, readiness=readiness.to_dict())
     # why: calibration exceptions propagate uncaught so the flow's calibrate stage fails closed and no report is faked
     report = steps.calibrate(
         execution_branch=context.execution_branch,

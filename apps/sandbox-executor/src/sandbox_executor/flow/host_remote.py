@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Callable
 from typing import Any
 
 from sandbox_executor.git import run_git
 from sandbox_executor.redaction import redact_agent_secrets
-from sandbox_executor.ref_names import named_push_rejection
+from sandbox_executor.ref_names import is_over_limit_rejection, named_push_rejection
 
 DEFAULT_REMOTE = "origin"
+PUSH_ATTEMPTS = 3
+PUSH_BACKOFF_SECONDS = 1.0
+_STALE_TIP_MARKERS = ("non-fast-forward", "fetch first")
 
 _OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _BRANCH_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@+-]*\Z")
@@ -58,7 +62,7 @@ def _push_input_error(source: str, branch: str, remote: str) -> str | None:
     return _name_error("push", branch, remote)
 
 
-def push_commit(repo_dir: str, source: str, branch: str, remote: str = DEFAULT_REMOTE) -> None:
+def _push_commit_once(repo_dir: str, source: str, branch: str, remote: str = DEFAULT_REMOTE) -> None:
     unsafe = _push_input_error(source, branch, remote)
     if unsafe:
         raise HostRemoteError("push", branch, remote, unsafe)
@@ -69,8 +73,47 @@ def push_commit(repo_dir: str, source: str, branch: str, remote: str = DEFAULT_R
         raise HostRemoteError("push", branch, remote, named_push_rejection(branch, detail))
 
 
-def push_branch(repo_dir: str, branch: str, remote: str = DEFAULT_REMOTE) -> None:
-    push_commit(repo_dir, f"refs/heads/{branch}", branch, remote)
+def _is_permanent_refusal(detail: str) -> bool:
+    # why: retrying an input refusal, an over-long ref, a stale tip or a missing workflow scope cannot succeed
+    lowered = detail.lower()
+    return (
+        lowered.startswith("refusing to push:")
+        or is_over_limit_rejection(lowered)
+        or any(marker in lowered for marker in _STALE_TIP_MARKERS)
+        or ("workflow" in lowered and "scope" in lowered)
+    )
+
+
+def _backoff_seconds(attempt: int) -> float:
+    return PUSH_BACKOFF_SECONDS * 2 ** (attempt - 1)
+
+
+def push_commit(
+    repo_dir: str,
+    source: str,
+    branch: str,
+    remote: str = DEFAULT_REMOTE,
+    log: Callable[[str], None] | None = None,
+) -> None:
+    for attempt in range(1, PUSH_ATTEMPTS + 1):
+        try:
+            _push_commit_once(repo_dir, source, branch, remote)
+            return
+        except HostRemoteError as exc:
+            if log is not None:
+                log(
+                    f"host push of '{branch}' through '{remote}' failed on attempt {attempt} of {PUSH_ATTEMPTS}: "
+                    f"{exc.detail}"
+                )
+            if _is_permanent_refusal(exc.detail) or attempt == PUSH_ATTEMPTS:
+                raise
+            time.sleep(_backoff_seconds(attempt))
+
+
+def push_branch(
+    repo_dir: str, branch: str, remote: str = DEFAULT_REMOTE, log: Callable[[str], None] | None = None
+) -> None:
+    push_commit(repo_dir, f"refs/heads/{branch}", branch, remote, log)
 
 
 def remote_error(operation: Callable[..., Any], *args: Any) -> str | None:
@@ -90,8 +133,10 @@ def new_local_child_branches(repo_dir: str, parent_prefix: str, marker: str, bef
     return sorted(name for line in stdout.splitlines() if pattern.match(name := line.strip()) and name not in before)
 
 
-def publish_new_child_branches(repo_dir: str, parent_prefix: str, marker: str, before: set[str]) -> list[str]:
+def publish_new_child_branches(
+    repo_dir: str, parent_prefix: str, marker: str, before: set[str], log: Callable[[str], None] | None = None
+) -> list[str]:
     pushed = new_local_child_branches(repo_dir, parent_prefix, marker, before)
     for branch in pushed:
-        push_branch(repo_dir, branch)
+        push_branch(repo_dir, branch, DEFAULT_REMOTE, log)
     return pushed

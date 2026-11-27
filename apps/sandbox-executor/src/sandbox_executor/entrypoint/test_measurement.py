@@ -4,7 +4,7 @@ import os
 import re
 import signal
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from sandbox_executor.entrypoint.review_verification import MISSING_TOOL_EXIT_CODE, missing_tool_result
@@ -78,11 +78,13 @@ def configured_timeout() -> float:
     return value if value > 0 else DEFAULT_TEST_TIMEOUT_SECONDS
 
 
-def _run_in_process_group(argv: list[str], cwd: str, timeout: float) -> subprocess.CompletedProcess[str]:
+def run_in_process_group(
+    argv: list[str], cwd: str, timeout: float, env: Mapping[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     with subprocess.Popen(
         argv,
         cwd=cwd,
-        env=frozen_env(cwd=cwd),
+        env=dict(env) if env is not None else frozen_env(cwd=cwd),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -99,7 +101,7 @@ def _run_in_process_group(argv: list[str], cwd: str, timeout: float) -> subproce
 
 
 def run_test_task(workspace: str, runner: Runner | None = None, timeout: float | None = None) -> TestMeasurement:
-    run = runner or _run_in_process_group
+    run = runner or run_in_process_group
     limit = timeout if timeout is not None else configured_timeout()
     try:
         result = run(list(TEST_COMMAND), workspace, limit)

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from sandbox_executor.entrypoint import review_loop
 from sandbox_executor.entrypoint.review_markdown_gate import MarkdownGateOutcome
-from sandbox_executor.entrypoint.test_measurement import _run_in_process_group
+from sandbox_executor.entrypoint.test_measurement import run_in_process_group
 from sandbox_executor.entrypoint.uv_lock import LockfileMismatchError, check_lockfile, frozen_env
 
 PACKAGE_DIR = Path(__file__).resolve().parents[1]
@@ -64,7 +64,7 @@ def test_a_missing_uv_is_a_structured_failure_not_an_exception(tmp_path: Path) -
 def test_the_test_measurement_subprocess_is_frozen(tmp_path: Path) -> None:
     (tmp_path / "uv.lock").write_text("")
     code = "import os; print(os.environ.get('UV_FROZEN'))"
-    result = _run_in_process_group([sys.executable, "-c", code], str(tmp_path), 30)
+    result = run_in_process_group([sys.executable, "-c", code], str(tmp_path), 30)
     assert result.stdout.strip() == "1"
 
 

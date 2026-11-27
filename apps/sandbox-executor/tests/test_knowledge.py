@@ -646,9 +646,7 @@ def test_consult_records_handles_typed_telemetry_errors(
     assert res.total_matched == 0
 
 
-def test_consult_records_propagates_unexpected_telemetry_error(
-    temp_dir: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_consult_records_propagates_unexpected_telemetry_error(temp_dir: str, monkeypatch: pytest.MonkeyPatch) -> None:
     db = ActionIndexDatabase(db_path=os.path.join(temp_dir, "consult_telemetry_bug.db"))
     real_get_conn = db.get_connection
     monkeypatch.setattr(

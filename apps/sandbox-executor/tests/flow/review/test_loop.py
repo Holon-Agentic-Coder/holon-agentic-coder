@@ -674,7 +674,9 @@ class TestEveryFindingNeedsAResolverOutcome:
     def test_a_finding_left_open_two_iterations_back_still_blocks_approval(self, tmp_path):
         res, calls = self._run_three(tmp_path, [{"disposition": "open", "evidence": "could not reproduce"}])
 
-        assert calls == [["R1-F1"]] * 3
+        # why: the carried finding is unchanged on an unchanged head, so iteration 3 halts as no-convergence.
+        assert calls == [["R1-F1"]] * 2
+        assert res["no_convergence"] is True
         assert res["consensus"]["approved"] is False
         assert any(b.endswith("with a reason): R1-F1") for b in res["consensus_blockers"])
 

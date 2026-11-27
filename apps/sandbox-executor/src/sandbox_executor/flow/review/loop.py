@@ -557,7 +557,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
                 sig_key = str(finding_signature(ci_row.severity, ci_row.path, ci_row.line, ci_row.summary))
                 finding_action_ids.setdefault(sig_key, act_id)
 
-        if not resolver_enabled or not merge_findings(iter_findings, carried_rows) or is_dirty or not resolved_target:
+        to_resolve = merge_findings(iter_findings, carried_rows)
+        if not resolver_enabled or not to_resolve or is_dirty or not resolved_target:
             context.log(
                 f"[Review Loop] Halting review loop at iteration {iteration}: verdict "
                 f"{ensemble_verdict} (no resolver pass applicable"
@@ -566,7 +567,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             break
 
         # 3-iteration unchanged-finding no-convergence guard
-        current_sigs = frozenset(finding_signature(f.severity, f.path, f.line, f.summary) for f in iter_findings)
+        current_sigs = frozenset(finding_signature(f.severity, f.path, f.line, f.summary) for f in to_resolve)
         current_sha = (resolved_target.head_sha if resolved_target else "") or ""
         if current_sigs and current_sigs == prev_finding_sigs and current_sha == prev_head_sha:
             unchanged_streak += 1
@@ -578,7 +579,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         if unchanged_streak >= 3:
             no_convergence = True
             introduced_by = functools.partial(_lookup_introducing_action_id, action_ids=finding_action_ids)
-            nc_dispositions = rejected_as(iter_findings, "no-convergence", introduced_by)
+            nc_dispositions = rejected_as(to_resolve, "no-convergence", introduced_by)
             suppressed_ledger_records += recorder.record(iteration, nc_dispositions)
             pending_dispositions = ()
             context.log(
@@ -587,13 +588,13 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             )
             break
 
-        delta_review.record_addressed_findings(context, merge_findings(iter_findings, carried_rows))
+        delta_review.record_addressed_findings(context, to_resolve)
         resolver_outcome = _invoke_resolver_pass(
             context,
             resolved_target,
             iteration,
             ResolverInput(
-                findings=merge_findings(iter_findings, carried_rows),
+                findings=to_resolve,
                 action_ids=finding_action_ids,
                 rejected_findings=tuple(rejected_history.values()),  # Rejected nits only.
             ),
@@ -633,7 +634,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             else:
                 pending_dispositions = (*pending_dispositions, *applied_now)
         # why: the outcome gate checks every finding raised so far, so each goes back until it has an outcome.
-        carried_rows = undisposed_findings(merge_findings(iter_findings, carried_rows), all_dispositions)
+        carried_rows = undisposed_findings(to_resolve, all_dispositions)
 
         if head_changed and resolved_target is not None:
             new_sha = resolver_outcome.head_sha or f"{current_sha or '0' * 32}-iter{iteration}"

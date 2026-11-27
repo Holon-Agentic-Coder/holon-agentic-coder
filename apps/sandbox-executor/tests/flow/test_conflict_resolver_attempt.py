@@ -1,5 +1,3 @@
-"""The host-side attempt guard on real in-progress merges: the conflict-set check, tamper detection and the reset."""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -29,10 +27,7 @@ Merging = Callable[[dict[str, str | None], dict[str, str | None]], Path]
 
 @pytest.fixture
 def merging(tmp_path_factory: pytest.TempPathFactory, tmp_path: Path) -> Merging:
-    """Makes a flow worktree part-way through a ``--no-commit`` merge of ``origin/main`` that conflicts.
-
-    The merge state (``MERGE_HEAD``, the conflicted index) is built once per run as a template and copied here.
-    """
+    # why: the merge state (MERGE_HEAD, the conflicted index) is built once per run as a template and copied here
 
     def make(ours: dict[str, str | None], theirs: dict[str, str | None]) -> Path:
         commits = (FlowCommit("main", theirs, "target change"), FlowCommit(FLOW_BRANCH, ours, "flow change"))
@@ -82,7 +77,6 @@ def test_existing_test_edit_outside_the_set_is_allowed_staged_and_reverted_on_re
     assert (work / "tests/test_other.py").read_text(encoding="utf-8") == BASE["tests/test_other.py"]
     assert "<<<<<<< " in (work / "app.py").read_text(encoding="utf-8")
 
-    # On a passing attempt, both the conflict path and the edited test file are staged cleanly.
     _resolve(work)
     (work / "tests/test_other.py").write_text("x = 2\n", encoding="utf-8")
     check2 = check_attempt(str(work), ["app.py"], before)
@@ -104,8 +98,8 @@ def test_new_untracked_file_is_removed_and_older_ones_are_kept(work):
 
 
 def test_save_attempt_diff_sanitises_label_and_stays_inside_artefact_dir(work):
-    # One copy for every label: the labels are data the save does not branch on (identical lines and arcs per label).
-    # The plain label also carries test_saved_diff_artefacts_are_not_new_files: the saved diffs are no new files.
+    # why: one test covers every label because the save does not branch on labels (identical lines and arcs)
+    # why: the plain label also covers the former test_saved_diff_artefacts_are_not_new_files check
     before = snapshot_merge(str(work))
     _resolve(work)
     artefact_dir = (work / ARTEFACT_DIR).resolve()

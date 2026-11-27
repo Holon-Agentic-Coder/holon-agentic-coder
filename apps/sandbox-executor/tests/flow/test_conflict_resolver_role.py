@@ -1,5 +1,3 @@
-"""The conflict resolver end to end through ``sync_with_target``: a fake role dispatcher on real git merges."""
-
 from __future__ import annotations
 
 import json
@@ -38,8 +36,6 @@ def _edit_outside(work: Path) -> None:
 
 
 class FakeDispatcher:
-    """Scripted attempts: each edits the mounted worktree, then writes its verdict to the result file."""
-
     def __init__(self, script: list[tuple[Edit | None, str]]) -> None:
         self.script = list(script)
         self.calls: list[dict] = []
@@ -77,7 +73,7 @@ APP_CONFLICT = (FlowCommit("main", {APP: "y = 2\n"}, "target"), FlowCommit(FLOW_
 
 @pytest.fixture
 def work_with(tmp_path_factory: pytest.TempPathFactory, tmp_path: Path) -> Callable[..., Path]:
-    """Makes the flow clone with ``commits`` pushed after the app conflict: a copy of a template built once per run."""
+    # why: each flow clone is a copy of a template built once per run
 
     def make(*commits: FlowCommit, base: dict[str, str] = BASE_FILES) -> Path:
         return flow_history_copy(tmp_path_factory, tmp_path, base, (*APP_CONFLICT, *commits)).work
@@ -151,7 +147,8 @@ def test_lint_failure_then_success_escalates_once(work, pushes):
     dispatcher = FakeDispatcher([(None, "lint_failed"), (_resolve, "resolved")])
     result = _sync(work, dispatcher)
     assert result.status == "merged" and dispatcher.tiers() == [HAIKU, SONNET] and result.attempts == 2
-    assert [call["model"] for call in dispatcher.calls] == [HAIKU, SONNET]  # dispatch carries the attempt tier
+    models_dispatched_per_attempt_tier = [call["model"] for call in dispatcher.calls]
+    assert models_dispatched_per_attempt_tier == [HAIKU, SONNET]
 
 
 def test_each_failure_kind_escalates_in_ladder_order(work, pushes):
@@ -159,7 +156,8 @@ def test_each_failure_kind_escalates_in_ladder_order(work, pushes):
     dispatcher = FakeDispatcher(script)
     result = _sync(work, dispatcher)
     assert result.status == "merged" and dispatcher.tiers() == [HAIKU, SONNET, OPUS]
-    assert "<<<<<<< " in dispatcher.calls[1]["app"]  # the tests_failed edit was reset before tier 2
+    app_after_tests_failed_reset = dispatcher.calls[1]["app"]
+    assert "<<<<<<< " in app_after_tests_failed_reset
 
 
 def test_an_out_of_set_edit_is_reverted_and_the_next_tier_sees_markers(work, pushes):
@@ -171,7 +169,7 @@ def test_an_out_of_set_edit_is_reverted_and_the_next_tier_sees_markers(work, pus
 
 
 def test_tampering_stops_after_one_dispatch(work, pushes):
-    head = _git(work, "rev-parse", "HEAD")
+    head_before_agent_commit = _git(work, "rev-parse", "HEAD")
 
     def commit(work: Path) -> None:
         _resolve(work)
@@ -181,7 +179,7 @@ def test_tampering_stops_after_one_dispatch(work, pushes):
     result = _sync(work, dispatcher)
     assert result.status == "blocked" and dispatcher.tiers() == [HAIKU]
     assert result.test_result.startswith("tampered") and pushes == []
-    assert not _merging(work) and _git(work, "rev-parse", "HEAD~1") == head  # the agent commit is gone
+    assert not _merging(work) and _git(work, "rev-parse", "HEAD~1") == head_before_agent_commit
     assert _git(work, "diff", "--name-only", "HEAD~1", "HEAD") == FRAGMENT
     assert result.head_after == _git(work, "rev-parse", "HEAD")
 
@@ -231,9 +229,8 @@ def test_a_container_without_a_verdict_counts_as_agent_failure(work, pushes):
     assert result.test_result.startswith("agent_failed")
 
 
-class Raising(FakeDispatcher):
-    """Every dispatch records its tier and raises ``error``, as a launcher that aborts or crashes would."""
-
+# why: imitates a role launcher that aborts or crashes mid-dispatch
+class RaisingDispatcher(FakeDispatcher):
     def __init__(self, error: BaseException) -> None:
         super().__init__([])
         self.error = error
@@ -254,7 +251,7 @@ def test_a_launcher_abort_counts_as_agent_failure(work, pushes, monkeypatch, err
     verdicts: list[dict] = []
     describe = conflict_resolver_role._describe
     monkeypatch.setattr(conflict_resolver_role, "_describe", lambda v, r="": verdicts.append(v) or describe(v, r))
-    dispatcher = Raising(error)
+    dispatcher = RaisingDispatcher(error)
     result = _sync(work, dispatcher)
     assert result.status == "blocked" and dispatcher.tiers() == [HAIKU, SONNET, OPUS]
     assert result.test_result.startswith("agent_failed") and not _merging(work) and pushes == []
@@ -262,7 +259,7 @@ def test_a_launcher_abort_counts_as_agent_failure(work, pushes, monkeypatch, err
 
 
 def test_a_keyboard_interrupt_is_never_swallowed(work, pushes):
-    dispatcher = Raising(KeyboardInterrupt())
+    dispatcher = RaisingDispatcher(KeyboardInterrupt())
     with pytest.raises(KeyboardInterrupt):
         _sync(work, dispatcher)
     assert dispatcher.tiers() == [HAIKU] and pushes == []

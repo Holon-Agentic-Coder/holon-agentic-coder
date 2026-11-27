@@ -27,6 +27,11 @@ This directory contains the CI/CD workflows for the `holon-agentic-coder` projec
   [macos-docker.md](../macos-docker.md).
 - `docker-build.yml`: Runs on pushes to `main` and on pull requests into any base branch. It builds Docker images with
   multi-architecture Buildx caching, incorporating timing gate checks.
+- `test-ledger-invariants.yml`: Runs on pull requests into any base branch (`opened`, `synchronize` and `reopened`) on
+  `ubuntu-latest`, with `contents: read` only. It runs `scripts/check_ledger_stores.py` (exactly three ledgers) and
+  `scripts/check_ledger_rows_append_only.py` (no ledger row of the merge base changed, moved or disappeared on the
+  head). It uses neither the bookkeeping gate nor the timing gate, because ledger-only pull requests are the ones it
+  must check, so it is not one of the six gated pull-request workflows below.
 - `build-images.yml`: Manual dispatch workflow to build and verify Docker container images with multi-architecture
   Buildx caching.
 - `ci-durations.yml`: Runs daily at 04:23 UTC and on manual dispatch, with read-only permissions (`actions: read`,
@@ -39,20 +44,21 @@ This directory contains the CI/CD workflows for the `holon-agentic-coder` projec
 
 ### Pull requests into any branch
 
-None of the six pull-request workflows filters the `pull_request` trigger by base branch. A decomposed plan runs child
-intents whose pull requests are stacked on the plan branch that listed them, not `main`; with a `main`-only filter they
-received no checks, and the Stage 4 review loop halted with `test results not measured` even when every reviewer
-approved. The `push` trigger stays on `main`, so a commit on an intent branch is checked once, by its pull request, and
-a push to `main` once, by `push`. The timing gate on a stacked pull request still compares against the `main` baselines.
-`apps/sandbox-executor/tests/test_workflow_triggers.py` fails if a base-branch filter returns to any `pull_request`
-trigger or if `push` widens beyond `main`.
+None of the six gated pull-request workflows, nor `test-ledger-invariants.yml`, filters the `pull_request` trigger by
+base branch. A decomposed plan runs child intents whose pull requests are stacked on the plan branch that listed them,
+not `main`; with a `main`-only filter they received no checks, and the Stage 4 review loop halted with
+`test results not measured` even when every reviewer approved. The `push` trigger stays on `main`, so a commit on an
+intent branch is checked once, by its pull request, and a push to `main` once, by `push`. The timing gate on a stacked
+pull request still compares against the `main` baselines. `apps/sandbox-executor/tests/test_workflow_triggers.py` fails
+if a base-branch filter returns to any `pull_request` trigger or if `push` widens beyond `main`.
 
-Every job of every workflow ends with the CI timing regression gate described below. The six pull-request workflows also
-trigger on the `labeled` and `unlabeled` activity types, so every label event starts them. The bookkeeping-only push
-gate described below then decides what the jobs do: adding or removing a label that a workflow reads (the override label
-`timing-regression-accepted`, `module-budget-change` or `ci-macos`) runs every job in full, and any other label skips
-the expensive steps when the same job already passed on the same commit. All six grant their job `actions: read`: the
-timing gate reads the baseline artefacts with it, and the bookkeeping gate reads the earlier runs and their jobs.
+Every job of every workflow except `test-ledger-invariants.yml` ends with the CI timing regression gate described below.
+The six pull-request workflows also trigger on the `labeled` and `unlabeled` activity types, so every label event starts
+them. The bookkeeping-only push gate described below then decides what the jobs do: adding or removing a label that a
+workflow reads (the override label `timing-regression-accepted`, `module-budget-change` or `ci-macos`) runs every job in
+full, and any other label skips the expensive steps when the same job already passed on the same commit. All six grant
+their job `actions: read`: the timing gate reads the baseline artefacts with it, and the bookkeeping gate reads the
+earlier runs and their jobs.
 
 ## Bookkeeping-Only Push Gate
 

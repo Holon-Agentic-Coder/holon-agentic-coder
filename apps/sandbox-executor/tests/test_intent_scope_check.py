@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
+from sandbox_executor.harness_reference_patterns import find_references, sample_reference
 from sandbox_executor.intent_scope_check import (
     DraftIntent,
     IntentScopeReport,
@@ -195,3 +197,41 @@ def test_render_text_and_json_show_every_section(tmp_path: Path) -> None:
     assert text.endswith("1 proposal(s).")
     assert set(to_json(report)) == {"missing", "proposed", "warnings"}
     assert render_text(IntentScopeReport([], [], [])).count("none") == 3
+
+
+@pytest.mark.parametrize(
+    ("entry", "problem"), [("src/pkg/", "ends in a slash"), ("src/pkg", "is an existing directory")]
+)
+def test_directory_entry_is_a_violation(tmp_path: Path, entry: str, problem: str) -> None:
+    repo = _make_repo(tmp_path)
+    report = _check(repo, [entry], ["pkg is changed"])
+    assert len(report.violations) == 1
+    assert f"scope entry '{entry}' {problem}" in report.violations[0]
+    assert render_text(report).startswith("Violations:\n  - scope entry")
+    assert to_json(report)["violations"] == report.violations
+
+
+def test_hub_file_entry_adds_a_warning_only(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path, {"tests/conftest.py": ""})
+    report = _check(repo, ["tests/conftest.py"], ["conftest.py is changed"])
+    assert report.violations == []
+    assert report.warnings == [
+        "tests/conftest.py: hub file that shares fixtures with every test below it; "
+        "expect overlap with other flows at Stage 3 admission"
+    ]
+    assert not render_text(report).startswith("Violations:")
+    assert set(to_json(report)) == {"missing", "proposed", "warnings"}
+
+
+def test_loaded_payload_text_fields_are_checked(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    sample = sample_reference("task id")
+    intent_file = tmp_path / "intent.json"
+    intent_file.write_text(
+        json.dumps({"goal": f"Close {sample}.", "scope": ["src/pkg/core.py"], "acceptance_criteria": ["core.py"]}),
+        encoding="utf-8",
+    )
+    report = check_intent_scope(load_intent(str(intent_file)), str(repo))
+    assert len(report.violations) == 1
+    assert "intent field 'goal' names a control-plane task id" in report.violations[0]
+    assert find_references(render_text(report)) == []

@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sandbox_executor.entrypoint.test_failure_loop import LoopOutcome
 from sandbox_executor.entrypoint.test_measurement import TestMeasurement
 from sandbox_executor.flow import FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.dispatch import _test_evidence
@@ -18,6 +19,11 @@ from sandbox_executor.review_report import _ci_summary
 from tests.flow.github.test_ci import TestUnmeasuredTestsStopEarly as _Harness
 
 HARNESS = _Harness()
+
+
+@pytest.fixture(autouse=True)
+def no_failure_loop(monkeypatch):
+    monkeypatch.setattr(local_tests, "_review_failure_loop", lambda *_: None)
 
 
 def _measurement(rate: float | None, exit_code: int = 0, error: str | None = None) -> TestMeasurement:
@@ -469,3 +475,99 @@ def test_pr_head_retries_stale_or_missing_lookup_until_matched(tmp_path, monkeyp
         assert (rate3, failed3) == (1.0, False)
         assert probe3["test_source"] == "ci_head"
         assert pr_head.call_count == 2
+
+
+class _ScriptedLoop:
+    def __init__(self, status: str, classification: str, measurement: TestMeasurement | None = None) -> None:
+        self.status, self.classification, self.measurement = status, classification, measurement
+        self.runs: list[TestMeasurement] = []
+        self.outputs: list[str] = []
+
+    def run(self, measurement: TestMeasurement, output: str) -> LoopOutcome:
+        self.runs.append(measurement)
+        self.outputs.append(output)
+        return LoopOutcome(
+            self.status,
+            self.measurement or measurement,
+            self.classification,
+            [{"action_id": "ACT-1"}],
+            f"{self.classification} failure",
+            None,
+            ("tests/test_a.py::test_alpha",),
+            {"tests/test_a.py::test_alpha": "E assert 1 == 2"},
+            "sig",
+        )
+
+
+def test_an_environment_failure_ends_the_review_with_the_blocked_evidence(tmp_path, monkeypatch):
+    loop = _ScriptedLoop("blocked", "environment")
+    monkeypatch.setattr(local_tests, "_review_failure_loop", lambda *_: loop)
+
+    res, _calls = _run_without_ci(tmp_path, monkeypatch, _measurement(0.8, exit_code=1))
+
+    assert len(loop.runs) == 1
+    assert res["tests_failed"] is True
+    assert res["consensus"]["approved"] is False
+    assert "tests/test_a.py::test_alpha" in res["ci_checks"]["test_failure"]["blocked_evidence"]
+
+
+def test_a_crashing_failure_loop_keeps_the_failed_measurement(monkeypatch):
+    failing = _measurement(0.8, exit_code=1)
+    monkeypatch.setattr(local_tests, "run_measurement", MagicMock(return_value=failing))
+    loop = MagicMock(run=MagicMock(side_effect=RuntimeError("diagnosis broke")))
+
+    outcome = local_tests._ReviewLocalTests("/w", failure_loop=lambda: loop).measure()
+
+    assert outcome.failed is True
+    assert outcome.measurement is failing
+
+
+def test_a_flaky_failure_that_passes_on_rerun_is_green(tmp_path, monkeypatch):
+    loop = _ScriptedLoop("flaky_passed", "flaky", _measurement(1.0))
+    monkeypatch.setattr(local_tests, "_review_failure_loop", lambda *_: loop)
+
+    res, _calls = _run_without_ci(tmp_path, monkeypatch, _measurement(0.8, exit_code=1))
+
+    assert res["tests_failed"] is False
+    assert res["consensus"]["approved"] is True
+
+
+def test_an_introduced_failure_reaches_the_resolver_with_ids_and_excerpts(monkeypatch):
+    loop = _ScriptedLoop("blocked", "introduced")
+    monkeypatch.setattr(local_tests, "run_measurement", MagicMock(return_value=_measurement(0.8, exit_code=1)))
+    tester = local_tests._ReviewLocalTests("/w", failure_loop=lambda: loop)
+    ci_status: dict[str, Any] = {}
+
+    outcome = tester.measure()
+    local_tests._attach_test_failure(ci_status, tester.loop_outcomes["stage3-head"])
+
+    assert outcome.failed is True
+    assert ci_status["test_failure"]["classification"] == "introduced"
+    assert ci_status["test_failure"]["failing_ids"] == ["tests/test_a.py::test_alpha"]
+    assert ci_status["test_failure"]["excerpts"] == {"tests/test_a.py::test_alpha": "E assert 1 == 2"}
+    assert ci_status["test_failure"]["rows"] == ["ACT-1"]
+
+
+def test_an_unmeasured_head_run_starts_no_failure_loop(monkeypatch):
+    loop = _ScriptedLoop("blocked", "environment")
+    monkeypatch.setattr(local_tests, "run_measurement", MagicMock(return_value=_measurement(None, 127, "uv missing")))
+
+    local_tests._ReviewLocalTests("/w", failure_loop=lambda: loop).measure()
+
+    assert loop.runs == []
+
+
+def test_the_failure_loop_reads_the_full_output_not_the_excerpt_tail(monkeypatch):
+    full = "tests/test_a.py::test_alpha FAILED\n" + "x" * 5000 + "\n1 failed, 9 passed in 1s"
+
+    def measure(workspace, runner=None):
+        return _measurement(0.9, exit_code=1), full
+
+    monkeypatch.setattr(local_tests, "measure_selection", measure)
+    monkeypatch.setattr(local_tests, "run_measurement", local_tests._measure_with_short_summary)
+    loop = _ScriptedLoop("blocked", "introduced")
+
+    local_tests._ReviewLocalTests("/w", failure_loop=lambda: loop).measure()
+
+    assert loop.outputs == [full]
+    assert loop.runs[0].rate == 0.9

@@ -18,7 +18,7 @@ import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sandbox_executor.entrypoint.execution_workspace import (
@@ -49,6 +49,7 @@ from sandbox_executor.flow.unrecorded_branch_adoption import (
     _UnrecordedBranch,
 )
 from sandbox_executor.git import run_git
+from sandbox_executor.ledger.order import utc_now_z
 from sandbox_executor.redaction import redact_agent_secrets
 
 _EXECUTION_BRANCH = re.compile(r"/(E-\d+-[^/]+)/_$")
@@ -147,7 +148,7 @@ def _salvage_row(
             "status": "failure",
             "failure_reason": "interrupted",
             "summary": f"Interrupted run: {file_count} uncommitted file(s) committed as partial work on resume.",
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": utc_now_z(),
             "ledger_revision": max(1, revision),
             "partial_head": sha,
             "salvaged": True,

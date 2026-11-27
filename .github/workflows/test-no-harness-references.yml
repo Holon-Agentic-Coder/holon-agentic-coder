@@ -1,0 +1,29 @@
+name: Test - No Harness References
+
+# why: this scan must run on bookkeeping-only pull requests too.
+# why: the flow scalar keeps it out of the bookkeeping wiring table, which covers block-form pull request workflows.
+on: pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Scan added lines and the pull request body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python scripts/check_no_harness_references.py --base "$BASE_SHA" --head "$HEAD_SHA"

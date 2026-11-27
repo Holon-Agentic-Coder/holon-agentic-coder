@@ -89,7 +89,6 @@ def check_text_settings(env: Mapping[str, str] | None = None) -> None:
 
 
 def normalize_agent_id(agent_id: str) -> str:
-    # why: lazy import avoids a circular dependency via claude_credential and runners
     from sandbox_executor.agent_defaults import normalise_agent_id
 
     return normalise_agent_id(agent_id)

@@ -23,7 +23,6 @@ ENV_LOCAL_MODELS = "HOLON_LOCAL_MODELS"
 ENV_AGENT_PROVIDER = "HOLON_AGENT_PROVIDER"
 ENV_HOST_LOCAL_HOSTS = "HOLON_HOST_LOCAL_HOSTS"
 ENV_PI_AGENT_DIR = "PI_CODING_AGENT_DIR"
-
 ENV_REASONING_MODE = "HOLON_REASONING_MODE"
 ENV_CONTEXT_RESERVE_TOKENS = "HOLON_CONTEXT_RESERVE_TOKENS"
 ENV_LOCAL_CONTEXT_WINDOW = "HOLON_LOCAL_CONTEXT_WINDOW"
@@ -90,7 +89,10 @@ def check_text_settings(env: Mapping[str, str] | None = None) -> None:
 
 
 def normalize_agent_id(agent_id: str) -> str:
-    return agent_id.lower().replace("-agent", "").replace("agent-", "")
+    # why: lazy import avoids a circular dependency via claude_credential and runners
+    from sandbox_executor.agent_defaults import normalise_agent_id
+
+    return normalise_agent_id(agent_id)
 
 
 def local_llm_requested() -> bool:
@@ -491,9 +493,7 @@ class ModelEnvelope:
 
 
 def _strict_int(value: Any) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value
+    return None if isinstance(value, bool) or not isinstance(value, int) else value
 
 
 def _env_int(env: Mapping[str, str], name: str) -> int | None:

@@ -9,6 +9,7 @@ import pytest
 from sandbox_executor import cli
 from sandbox_executor.cli.commands import discover
 from sandbox_executor.harness_reference_patterns import sample_reference
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 
 _FILES = {
     "src/pkg/__init__.py": "",
@@ -39,7 +40,12 @@ def _intent_file(tmp_path: Path, scope: list[str], goal: str = "") -> str:
     intent_dir = tmp_path / "intents"
     intent_dir.mkdir(exist_ok=True)
     path = intent_dir / "intent.json"
-    payload = {"goal": goal, "scope": scope, "acceptance_criteria": ["core.py and lonely.py"]}
+    payload = {
+        **default_assumptions_fields(),
+        "goal": goal,
+        "scope": scope,
+        "acceptance_criteria": ["core.py and lonely.py"],
+    }
     path.write_text(json.dumps(payload), encoding="utf-8")
     return str(path)
 

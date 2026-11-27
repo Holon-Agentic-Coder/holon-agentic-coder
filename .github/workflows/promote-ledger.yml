@@ -1,11 +1,6 @@
-# Promote pending ledger fragments to the canonical ledgers on main with `holon ledger promote`, then commit and push
-# the ledger-only result with the maintainer-provided bot token. Without that secret the job is a green no-op that logs
-# why. See .github/workflows/README.md "Ledger Promotion".
 name: Promote Ledger
 
 on:
-  push:
-    branches: [main]
   schedule:
     - cron: "41 3 * * *"
   workflow_dispatch:
@@ -16,7 +11,7 @@ on:
         required: false
         default: false
 
-# The push uses the bot token from the checkout, never GITHUB_TOKEN, so the default token stays read-only.
+# why: the push uses the bot token from the checkout, never GITHUB_TOKEN, so the default token stays read-only.
 permissions:
   contents: read
 
@@ -26,20 +21,32 @@ concurrency:
 
 jobs:
   promote:
-    # The bot's own promotion commit carries the marker, so it never triggers another promotion.
-    if: github.event_name != 'push' || !contains(github.event.head_commit.message, '[ledger-promote]')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      # Secrets cannot appear in an `if:`; every step tests this variable instead and never prints it.
+      # why: secrets cannot appear in an if:; every step tests this variable instead and never prints it.
       HOLON_LEDGER_BOT_TOKEN: ${{ secrets.HOLON_LEDGER_BOT_TOKEN }}
 
     steps:
-      - name: Explain a missing bot token
+      - name: Read pending ledger directory
+        if: env.HOLON_LEDGER_BOT_TOKEN == ''
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 1
+          sparse-checkout: holon-knowledge/ledger/pending
+
+      - name: Warn on missing bot token and pending backlog
         if: env.HOLON_LEDGER_BOT_TOKEN == ''
         run: |
-          reason="Ledger promotion skipped: the repository secret HOLON_LEDGER_BOT_TOKEN is not configured, so the run stays green. See .github/workflows/README.md (Ledger Promotion)."
-          echo "::notice::${reason}"
+          set -euo pipefail
+          pending_dir="holon-knowledge/ledger/pending"
+          pending_count=0
+          if [ -d "${pending_dir}" ]; then
+            pending_count="$(find "${pending_dir}" -type f -name '*.jsonl' | wc -l | tr -d ' ')"
+          fi
+          reason="Ledger promotion skipped with ${pending_count} pending fragment(s) under ${pending_dir}: repository secret HOLON_LEDGER_BOT_TOKEN is not configured. Maintainer action required: configure HOLON_LEDGER_BOT_TOKEN per .github/workflows/README.md (Ledger Promotion)."
+          echo "::warning::${reason}"
           echo "${reason}" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Checkout repository
@@ -69,7 +76,7 @@ jobs:
       - name: Promote pending ledger fragments
         if: env.HOLON_LEDGER_BOT_TOKEN != ''
         env:
-          # The input reaches the shell through the environment only, never interpolated into the script.
+          # why: the input reaches the shell through the environment only, never interpolated into the script.
           FORCE: ${{ inputs.force || false }}
         run: |
           set -euo pipefail
@@ -84,7 +91,7 @@ jobs:
         if: env.HOLON_LEDGER_BOT_TOKEN != ''
         run: |
           set -euo pipefail
-          # Every changed, deleted and untracked path; a rename contributes both its old and its new path.
+          # why: git status renames emit "old -> new", so splitting ensures both paths are checked against the ledger prefix.
           paths="$(git status --porcelain=v1 -uall | cut -c4- | sed 's/ -> /\n/')"
           if [ -z "${paths}" ]; then
             echo "Nothing to promote (below the threshold or no pending fragments)."

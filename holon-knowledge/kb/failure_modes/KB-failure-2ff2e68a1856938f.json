@@ -1,0 +1,32 @@
+{
+  "kb_id": "KB-failure-2ff2e68a1856938f",
+  "kb_type": "failure_mode",
+  "version": "1.0",
+  "created_ts": "1970-01-01T00:00:00+00:00",
+  "updated_ts": "1970-01-01T00:00:00+00:00",
+  "created_by": "holon-promotion-engine",
+  "status": "active",
+  "evidence": {},
+  "tags": [
+    "test",
+    "failure_signature",
+    "pre-existing"
+  ],
+  "human_approved": false,
+  "payload": {
+    "name": "Repeated test failure 2ff2e68a1856938f",
+    "description": "Reproduced failure across executions with identical context. Execution counts live in the action index and ledgers.",
+    "action": "test_failure",
+    "failure_signature": "2ff2e68a1856938f",
+    "failing_test_ids": [
+      "apps/sandbox-executor/tests/flow/test_module_budgets.py::test_the_live_configuration_passes_against_the_real_tree"
+    ],
+    "classification": "pre-existing",
+    "stages": [
+      "stage_4"
+    ],
+    "symptoms": [
+      "FAILED apps/sandbox-executor/tests/flow/test_module_budgets.py::test_the_live_configuration_passes_against_the_real_tree\n___________ test_the_live_configuration_passes_against_the_real_tree ___________\n[gw3] darwin -- Python 3.13.18 /Users/thomashan/git/holon-agentic-coder-ref-metadata/apps/holon-agentic-coder/flow-self-doc-tests-51/.venv/bin/python\ncapsys = <_pytest.capture.CaptureFixture object at 0x1188e79d0>\n>   ???\nE   AssertionError: assert 1 == 0\nE    +  where 1 = main(['--base', 'none'])\n/home/holon/.holon-sandbox/workspace/apps/sandbox-executor/tests/flow/test_module_budgets.py:63: As"
+    ]
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "kb_id": "KB-pattern-hermetic-pytest-conftest",
+  "kb_type": "pattern",
+  "version": "1.0",
+  "created_ts": "2026-11-27T00:00:00+00:00",
+  "updated_ts": "2026-11-27T00:00:00+00:00",
+  "created_by": "architecture-audit-2026-11",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "I-1795768764-hac-architecture-audit-kb"
+    ],
+    "success_count": 3,
+    "failure_count": 0
+  },
+  "tags": [
+    "architecture-audit-2026-11",
+    "pytest",
+    "conftest",
+    "hermetic-testing"
+  ],
+  "human_approved": true,
+  "payload": {
+    "name": "Hermetic Pytest Conftest Guards",
+    "description": "Enforce hermetic unit-test execution via session and autouse fixtures wired from apps/sandbox-executor/tests/conftest.py that block outbound network sockets, GitHub write commands, host ~/.holon mutations, and ambient credential leakage.",
+    "applicability": {
+      "intent_types": [
+        "unit_testing",
+        "test_infrastructure",
+        "security_hardening"
+      ],
+      "complexity_range": [
+        0.2,
+        0.7
+      ],
+      "entropy_range": [
+        1,
+        15
+      ]
+    },
+    "structure": {
+      "steps": [
+        "Register modular guard modules from apps/sandbox-executor/tests/conftest.py rather than relying on individual tests to mock external boundaries.",
+        "Block unintended outbound network connections via apps/sandbox-executor/tests/network_guard.py while permitting explicit loopback or opted-in integration tests.",
+        "Intercept mutating GitHub CLI invocations via apps/sandbox-executor/tests/gh_write_guard.py and protect host state via apps/sandbox-executor/tests/holon_dir_guard.py.",
+        "Scrub ambient tokens and redirect temporary directories via apps/sandbox-executor/tests/credential_env.py and apps/sandbox-executor/tests/fast_tmp_dirs.py."
+      ]
+    },
+    "known_pitfalls": [
+      "Importing modules that capture os.environ or Path.home() at import time before autouse fixtures run can bypass environment isolation.",
+      "Disabling guards globally for one integration test weakens regression detection across the entire unit suite.",
+      "Writing test fixtures into the repository root or real ~/.holon directory causes cross-test flakes under pytest-xdist."
+    ],
+    "related_patterns": [
+      "KB-pattern-worktree-git-hardening",
+      "KB-pattern-three-ledger-fragment-routing"
+    ]
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "kb_id": "KB-pattern-three-ledger-fragment-routing",
+  "kb_type": "pattern",
+  "version": "1.0",
+  "created_ts": "2026-11-27T00:00:00+00:00",
+  "updated_ts": "2026-11-27T00:00:00+00:00",
+  "created_by": "architecture-audit-2026-11",
+  "status": "active",
+  "evidence": {
+    "ledger_refs": [
+      "I-1795768764-hac-architecture-audit-kb"
+    ],
+    "success_count": 3,
+    "failure_count": 0
+  },
+  "tags": [
+    "architecture-audit-2026-11",
+    "ledger",
+    "fragments",
+    "append-only"
+  ],
+  "human_approved": true,
+  "payload": {
+    "name": "Append-Only Three-Ledger Fragment Routing",
+    "description": "Preserve immutability and eliminate merge conflicts across concurrent flows by routing events to the three canonical JSONL stores (intents.jsonl, plans.jsonl, executions.jsonl) through per-flow pending fragments, merged readers, and deterministic promotion.",
+    "applicability": {
+      "intent_types": [
+        "ledger_architecture",
+        "concurrent_flows",
+        "audit_logging"
+      ],
+      "complexity_range": [
+        0.3,
+        0.8
+      ],
+      "entropy_range": [
+        2,
+        20
+      ]
+    },
+    "structure": {
+      "steps": [
+        "Route each ledger record to its canonical store (intents.jsonl, plans.jsonl, or executions.jsonl) through sandbox_executor/ledger/route.py.",
+        "Write in-flight flow updates into isolated per-flow fragment files via sandbox_executor/ledger/fragments.py so parallel branches never contend on shared JSONL tails.",
+        "Read canonical stores and pending fragments uniformly through sandbox_executor/ledger/merged.py to present a consistent view to planners, reviewers, and calibration.",
+        "Promote completed fragments into the canonical append-only stores with sandbox_executor/ledger/promote.py and validate store invariants with scripts/check_ledger_stores.py."
+      ]
+    },
+    "known_pitfalls": [
+      "Appending directly to shared canonical JSONL files from concurrent feature branches causes avoidable merge conflicts.",
+      "Reading canonical JSONL files directly without merged.py omits unpromoted in-flight fragment events.",
+      "Rewriting or deleting historical ledger lines violates the append-only immutability invariant."
+    ],
+    "related_patterns": [
+      "KB-pattern-worktree-git-hardening",
+      "KB-pattern-hermetic-pytest-conftest"
+    ]
+  }
+}

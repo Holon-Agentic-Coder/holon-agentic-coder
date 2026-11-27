@@ -1,5 +1,3 @@
-"""The conflict resolver's model tier ladder, cheapest first per runner."""
-
 from __future__ import annotations
 
 from sandbox_executor.flow.conflict_resolver_tiers import next_tier, tier_ladder

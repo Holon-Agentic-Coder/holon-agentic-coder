@@ -199,8 +199,8 @@ def _under_ceiling(source: str, ceiling: int) -> bool:
     return count_lines(source) < ceiling
 
 
-def test_registry_has_146_unique_modules() -> None:
-    assert len(GOVERNED_MODULES) == 146
+def test_registry_has_147_unique_modules() -> None:
+    assert len(GOVERNED_MODULES) == 147
     assert len(set(GOVERNED_MODULES)) == len(GOVERNED_MODULES)
     assert set(BASELINE_LINE_CEILINGS) <= set(GOVERNED_MODULES)
 

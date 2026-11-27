@@ -16,6 +16,7 @@ _SUB_INTENT_HEADING_LEVELS = (2, 3)
 _HEADING_RE = re.compile(r"^(#{1,6})(?:\s+(.*?)\s*#*\s*)?$")
 _HEADING_SEPARATOR_RE = re.compile(r"[\s\-_\u2010\u2011]+")
 _LIST_ITEM_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
+# why: planner template requires real items to start with an imperative verb, so leading placeholders never collide
 _PLACEHOLDER_RE = re.compile(r"^(?:none|n/a|na|nil|no|not)\b")
 _PLACEHOLDER_WRAPPERS = "()[]{}<>\"'`*_~\u2018\u2019\u201c\u201d"
 _TRAILING_PLACEHOLDER_PUNCTUATION = ".!?;:,"
@@ -231,8 +232,10 @@ class _SubIntentScan:
         self.skip_underline = setext
 
     def _collect(self, stripped: str, indent: int) -> None:
+        # why: thematic breaks like "* * *" or "- - -" also match _LIST_ITEM_RE and are separators, never items
         if _is_thematic_break(stripped, indent):
             return
+        # why: nested bullets and continuation lines belong to the parent item, never as separate child sub-intents
         if self.base_indent is not None and indent > self.base_indent:
             self.items[-1][1].append(stripped)
             return

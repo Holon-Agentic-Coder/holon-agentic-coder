@@ -1,5 +1,3 @@
-"""The swept Stage 4 and Stage 5 git calls pass fully qualified refs (or SHAs) and a ``--`` path separator."""
-
 from __future__ import annotations
 
 import subprocess
@@ -48,7 +46,7 @@ def test_publish_fast_forwards_from_the_qualified_calibrated_ref() -> None:
     ctx.calibrated_branch = CALIBRATED
     with patch("sandbox_executor.flow.calibrate_sync.run_git", run):
         publish_calibration(ctx)
-    # checkout keeps the short name so HEAD stays attached for the later push; only the merge source is qualified.
+    # why: checkout keeps the short name so HEAD stays attached for the later push; only the merge source is qualified
     assert calls == [["checkout", EXEC], ["merge", "--ff-only", f"refs/heads/{CALIBRATED}"]]
 
 
@@ -104,7 +102,7 @@ def test_review_numstat_is_skipped_for_an_unresolvable_branch(tmp_path: Path) ->
 
 
 def test_divergence_count_on_a_real_nested_branch_ignores_a_colliding_tag_and_path(tmp_path: Path) -> None:
-    """A tag of the same name (which git prefers to a branch) and a matching worktree path never skew the count."""
+    # why: git resolves a same-named tag before a branch, so an unqualified ref would count the tag's history
     origin = tmp_path / "origin.git"
     git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     host = tmp_path / "host"

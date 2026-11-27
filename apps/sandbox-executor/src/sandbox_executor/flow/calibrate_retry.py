@@ -1,21 +1,3 @@
-"""Bounded, classified retries of ``run_calibrate`` for Stage 5.
-
-Stage 5 used to write a stub "fallback" report whenever ``run_calibrate`` raised and still report success (seen on PR
-#249, where checking out the /calibrated branch failed with ``fatal: gitfile does not point to a valid repository``).
-Stage 5 now fails closed instead, after retrying only failures that a second attempt can fix:
-
-- transient: ``git``/subprocess timeouts, connection errors, a turn or stall budget breach, and provider API errors
-  (``API Error:``, HTTP 5xx, ``overloaded``) surfacing through the exception message; retried after a short backoff;
-- quota: a usage-limit or rate-limit message naming a reset within the wait ceiling
-  (``HOLON_REVIEW_QUOTA_WAIT_SECONDS``, see :mod:`sandbox_executor.review_failure`); waited out at most once;
-- permanent: everything else (a stage budget breach, ``git`` ``fatal:`` messages, ``CalibrationSyncError``,
-  ``ValueError`` ...); not retried.
-
-A retry happens only while ``retry_safe()`` holds (the caller checks that the failed attempt left no report change and
-no new /calibrated commit), so a retry never re-appends a ledger row or commits twice. Each failed attempt is logged
-with its number, classification and redacted cause.
-"""
-
 from __future__ import annotations
 
 import enum
@@ -43,13 +25,13 @@ from sandbox_executor.review_failure import (
 )
 
 CALIBRATE_MAX_ATTEMPTS = 3
-# Backoff before retry n (1-based) is entry n - 1; the last entry is reused.
+# why: retry n (1-based) waits entry n - 1 and reuses the last entry once attempts outnumber the entries
 CALIBRATE_RETRY_BACKOFF_SECONDS = (10.0, 30.0)
 
-# Fail-closed errors the stage handles itself; they are re-raised unchanged, never classified or retried.
+# why: the stage fails closed on these errors itself, so they are re-raised unchanged, never classified or retried
 _NEVER_RETRIED = (LedgerRewriteError, CalibrationFormatError, CalibrationSelfCheckError)
 _TRANSIENT_TYPES = (subprocess.TimeoutExpired, TimeoutError, ConnectionError)
-# A fired stage budget leaves no time for another attempt; only turn and stall breaches are retried.
+# why: a fired stage budget leaves no time for another attempt; only turn and stall breaches are retried
 _TRANSIENT_BUDGETS = frozenset({"turn", "stall"})
 _AUTH_STATUSES = {PreflightStatus.NOT_LOGGED_IN, PreflightStatus.EXPIRED_KEY}
 _OVERLOADED_RE = re.compile(
@@ -59,8 +41,6 @@ _OVERLOADED_RE = re.compile(
 
 
 class RetryKind(enum.StrEnum):
-    """How a failed calibration attempt is treated."""
-
     TRANSIENT = "transient"
     QUOTA = "quota"
     PERMANENT = "permanent"
@@ -68,16 +48,13 @@ class RetryKind(enum.StrEnum):
 
 @dataclass(frozen=True)
 class CalibrateFailure:
-    """A classified calibration failure; ``cause`` is redacted and bounded, ``wait_seconds`` is set for quota."""
-
     kind: RetryKind
     cause: str
     wait_seconds: float | None = None
 
 
+# why: Stage 5 fails closed rather than writing a stub fallback report that reports success (incident PR #249)
 class CalibrationRetriesExhausted(Exception):
-    """``run_calibrate`` failed on more than one attempt; ``causes`` are the redacted causes, oldest first."""
-
     def __init__(self, attempts: int, causes: list[str]) -> None:
         self.attempts = attempts
         self.causes = list(causes)
@@ -86,20 +63,17 @@ class CalibrationRetriesExhausted(Exception):
 
 
 def redacted_cause(exc: BaseException) -> str:
-    """``exc``'s message with credentials redacted, bounded to ``MESSAGE_MAX_CHARS``."""
     text = redact_agent_secrets(str(exc)) or type(exc).__name__
     return text[:MESSAGE_MAX_CHARS]
 
 
 def _kind_by_type(exc: Exception) -> RetryKind | None:
-    """The retry kind ``exc``'s type alone decides, or None when its message must be inspected."""
     if isinstance(exc, BudgetBreach):
         return RetryKind.TRANSIENT if exc.budget_name in _TRANSIENT_BUDGETS else RetryKind.PERMANENT
     return RetryKind.TRANSIENT if isinstance(exc, _TRANSIENT_TYPES) else None
 
 
 def classify_calibrate_error(exc: Exception, now: datetime, ceiling: float) -> CalibrateFailure:
-    """Classify a ``run_calibrate`` exception (never one of the fail-closed errors, which callers re-raise first)."""
     cause = redacted_cause(exc)
     kind = _kind_by_type(exc)
     if kind is not None:
@@ -122,8 +96,6 @@ def classify_calibrate_error(exc: Exception, now: datetime, ceiling: float) -> C
 
 @dataclass
 class _RetryState:
-    """The attempts of one wrapped call: the causes so far and whether a quota reset was already waited out."""
-
     log_fn: Callable[[str], None]
     retry_safe: Callable[[], bool]
     ceiling: float
@@ -131,12 +103,12 @@ class _RetryState:
     quota_waited: bool = False
 
     def delay_after(self, failure: CalibrateFailure) -> float | None:
-        """Seconds to wait before the next attempt, or None when the call must give up."""
         attempt = len(self.causes)
         if failure.kind is RetryKind.PERMANENT or attempt >= CALIBRATE_MAX_ATTEMPTS:
             return None
         if failure.kind is RetryKind.QUOTA and self.quota_waited:
             return None
+        # why: a retry after a report change or a new /calibrated commit would re-append a ledger row or commit twice
         if not self.retry_safe():
             self.log_fn("Calibration attempt left a report change or a new /calibrated commit; not safe to retry.")
             return None
@@ -146,7 +118,6 @@ class _RetryState:
         return CALIBRATE_RETRY_BACKOFF_SECONDS[min(attempt, len(CALIBRATE_RETRY_BACKOFF_SECONDS)) - 1]
 
     def record(self, exc: Exception) -> float:
-        """Log the failed attempt and return the wait before the next one; raise when giving up."""
         failure = classify_calibrate_error(exc, datetime.now(UTC), self.ceiling)
         self.causes.append(failure.cause)
         attempt = len(self.causes)
@@ -169,12 +140,6 @@ def call_with_retries(
     env: Mapping[str, str] | None = None,
     before_retry: Callable[[int], None] | None = None,
 ) -> Callable[..., Any]:
-    """Wrap ``calibrate`` (``run_calibrate``'s keyword signature) in the bounded retry policy of this module.
-
-    The wrapper re-raises ``LedgerRewriteError``, ``CalibrationFormatError`` and ``CalibrationSelfCheckError``
-    unchanged, re-raises any other exception unchanged when the first attempt gives up, and raises
-    ``CalibrationRetriesExhausted`` (chained to the last exception) when a later attempt gives up.
-    """
 
     def run(**kwargs: Any) -> Any:
         state = _RetryState(log_fn, retry_safe, wait_ceiling(os.environ if env is None else env))

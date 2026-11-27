@@ -40,6 +40,7 @@ from sandbox_executor.e2e_types import (
 from sandbox_executor.flow.context import FlowContext, FlowStage, StageResult, StageStatus
 from sandbox_executor.flow.pipeline import PipelineEngine
 from sandbox_executor.git import GitRunnerCallable, run_git
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 from sandbox_executor.ledger import LedgerRewriteError
 from sandbox_executor.local_llm import LocalLLMConfigError
 
@@ -122,13 +123,7 @@ _NON_RETRYABLE_MACHINERY_ERRORS = (
 )
 _REQUIRED_SUCCESS_STAGES = (FlowStage.INTENT.value, FlowStage.PLAN.value, FlowStage.EXECUTE.value)
 _RETRY_ALLOWED_OPTION_KEYS = frozenset(
-    {
-        "disposable_worktree",
-        "worktree_branch",
-        "worktree_resolver",
-        "gh_runner",
-        "git_runner",
-    }
+    {"disposable_worktree", "worktree_branch", "worktree_resolver", "gh_runner", "git_runner"}
 )
 _DEFAULT_E2E_AGENT = "pi-agent"
 _DEFAULT_E2E_MODEL = "local-model"
@@ -145,13 +140,7 @@ class E2EPipelineEngine(PipelineEngine):
     ) -> None:
         context.skip_calibrate = True
         context.auto_calibrate = False
-        super().__init__(
-            context,
-            from_stage=from_stage,
-            checkpoint_path=checkpoint_path,
-            budgets=budgets,
-            clock=clock,
-        )
+        super().__init__(context, from_stage=from_stage, checkpoint_path=checkpoint_path, budgets=budgets, clock=clock)
 
     def execute_stage(self, stage: FlowStage) -> StageResult:
         if stage == FlowStage.REVIEW:
@@ -463,6 +452,10 @@ def run_e2e_flow_test(
             "description": "Disposable E2E flow verification intent.",
             "goal": "Add a deterministic E2E verification helper and unit test.",
             "labels": ["e2e", "flow"],
+            **default_assumptions_fields(
+                "E2E harness executes against a disposable worktree.",
+                "Verified by Stage 1-4 E2E flow checks.",
+            ),
         }
         flow_context = FlowContext(
             target_worktree=disposable_worktree,

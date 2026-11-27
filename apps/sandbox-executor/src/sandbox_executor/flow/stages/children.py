@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 import re
 from datetime import UTC, datetime
@@ -28,6 +29,7 @@ from sandbox_executor.flow.target_sync_hooks import at_turn_boundary, consume_ta
 from sandbox_executor.redaction import redact_agent_secrets
 
 _PR_URL_RE = re.compile(r"https?://\S+/pull/\d+")
+_ASSUMPTION_FIELDS = ("assumptions", "assumption_validation", "assumption_risk")
 
 
 def _child_review_pr(results: dict[str, StageResult]) -> tuple[Any, Any]:
@@ -87,6 +89,10 @@ def _build_child_intent(context: FlowContext, payload: dict[str, Any], entry: di
         child_data["labels"] = list(labels)
     if entry.get("original_slug"):
         child_data["original_slug"] = entry["original_slug"]
+    for field_name in _ASSUMPTION_FIELDS:
+        source = item if field_name in item else context.intent_data
+        if field_name in source:
+            child_data[field_name] = copy.deepcopy(source[field_name])
     return child_data
 
 

@@ -389,10 +389,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         reviewer_findings = collect_review_data(reviewers).findings
         reviewer_objected = _any_reviewer_objects(reviewers) or bool(reviewer_findings) or bool(blockers)
         # why: added after reviewer_objected so the CI fast path and dry runs never see these blockers.
-        outcome_dispositions = (*all_dispositions, *pending_dispositions, *rejected_history.values())
-        blockers += _finding_outcome_blockers(
-            reviewers, merge_findings(iter_findings, carried_rows), outcome_dispositions
-        )
+        recorded = (*all_dispositions, *pending_dispositions, *rejected_history.values())
+        blockers += _finding_outcome_blockers(reviewers, merge_findings(iter_findings, carried_rows), recorded)
 
         # 3. CI status inspection: post-review gate or fast-path probe (see ci_inspection.py)
         ci_inputs = dataclasses.replace(

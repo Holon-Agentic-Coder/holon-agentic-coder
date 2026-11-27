@@ -1,10 +1,3 @@
-"""Validation of the clarifying questions an intent may carry before Stage 1 accepts it.
-
-The rules are a table: one ``QuestionKind`` record per payload field (its text keys, whether its id matches an answer,
-its default status and its labels), and a few named checks over one question item. ``IntentQuestions`` walks the
-table in order and describes every question that is still unresolved.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,8 +10,6 @@ _OPEN_STATUSES = ("open", "unresolved")
 
 @dataclass(frozen=True)
 class QuestionKind:
-    """The validation rules of one kind of intent question (open question, question or clarification)."""
-
     kind: str
     field: str
     text_keys: tuple[str, ...]
@@ -30,25 +21,20 @@ class QuestionKind:
 
     @property
     def string_label(self) -> str:
-        """Label of a plain-string question that has no answer."""
         return f"unanswered {self.kind}"
 
     def item_text(self, item: dict[str, Any], index: int) -> Any:
-        """The text a question item is named by: its first non-empty text key, else ``<kind>_<index>``."""
         for key in self.text_keys:
             if text := item.get(key):
                 return text
         return f"{self.kind}_{index}"
 
     def item_label(self, status: str) -> str:
-        """Label of an unanswered question item with the given (lower-cased) status."""
         if is_marked_open(status):
             return self.marked_label.format(status=status)
         return self.missing_label
 
 
-# Evaluation order: open questions, questions, clarifications. A clarification is named by its text, not its id, and
-# only that text (or its index) matches an answer.
 QUESTION_KINDS: tuple[QuestionKind, ...] = (
     QuestionKind(
         kind="open_question",
@@ -84,24 +70,20 @@ QUESTION_KINDS: tuple[QuestionKind, ...] = (
 
 
 def has_inline_answer(item: dict[str, Any]) -> bool:
-    """True when the question item carries its own non-empty ``answer``."""
     return item.get("answer") not in (None, "")
 
 
 def answered_by_text(text: Any, index: int, answers: dict[str, Any]) -> bool:
-    """True when ``answers`` has a non-empty answer keyed by ``text`` or by the question's index."""
     if text in answers and answers[text] not in (None, ""):
         return True
     return str(index) in answers and answers[str(index)] not in (None, "")
 
 
 def answered_by_id(item: dict[str, Any], index: int, answers: dict[str, Any]) -> bool:
-    """True when ``answers`` has a non-empty answer keyed by the item's ``id`` (empty string without one) or index."""
     return answered_by_text(item.get("id", ""), index, answers)
 
 
 def is_marked_open(status: str) -> bool:
-    """True when a question's status explicitly marks it open or unresolved."""
     return status in _OPEN_STATUSES
 
 
@@ -126,18 +108,14 @@ def _build_answers_map(intent_data: dict[str, Any]) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class IntentQuestions:
-    """The questions of one intent payload together with the answers it records."""
-
     intent_data: dict[str, Any]
     answers: dict[str, Any]
 
     @classmethod
     def from_intent(cls, intent_data: dict[str, Any]) -> IntentQuestions:
-        """Build from an intent payload, reading answers from ``answers`` or ``resolved_questions``."""
         return cls(intent_data, _build_answers_map(intent_data))
 
     def unresolved(self) -> list[str]:
-        """Describe each unresolved question as ``"<text> (<label>)"``, in ``QUESTION_KINDS`` order."""
         found: list[str] = []
         for kind in QUESTION_KINDS:
             found.extend(self._unresolved_in_group(kind, self.intent_data.get(kind.field)))

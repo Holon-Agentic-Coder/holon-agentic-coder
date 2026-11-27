@@ -43,6 +43,7 @@ def _set(*paths: str) -> TouchSet:
         ("app/[id]/page.tsx", {"app/[id]/page.tsx"}),
         ("app/[new]/page.tsx", {"app/[new]/page.tsx"}),
         ("src/[ab].py", {"src/[ab].py", "src/a.py"}),
+        # why: metadata paths never participate in overlap detection
         ("plans/P-1.md", set()),
         ("holon-knowledge/", set()),
     ],
@@ -61,6 +62,7 @@ def test_expand_touch_set_is_the_union():
         (("src/new.py",), ("src/new.py",), ["src/new.py"]),
         (("src/app.py",), ("src/",), ["src/app.py"]),
         (("tests/test_*.py", "tests/flow/**/test_*.py"), ("tests/test_new.py", "tests/flow/b/test_new.py"), []),
+        # why: folder entries expand only to base files, so a new file never overlaps a folder
         (("apps/x/tests/",), ("apps/x/tests/test_new.py",), []),
         (("apps/x/tests/",), ("apps/x/tests/test_old.py",), ["apps/x/tests/test_old.py"]),
         (("src/",), ("src/pkg/",), ["src/pkg/core.py"]),

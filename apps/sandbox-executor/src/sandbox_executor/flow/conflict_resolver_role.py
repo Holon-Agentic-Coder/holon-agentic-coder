@@ -1,15 +1,3 @@
-"""The code resolver of the target sync: the ``conflict-resolver`` role container, cheapest model tier first.
-
-``conflict_code_resolver(context)`` returns a ``CodeResolver`` for ``SyncRequest.code_resolver``. Each call walks the
-runner's tier ladder: dispatch one attempt, check it with the host guard (``conflict_resolver_attempt``), and stage it
-only when the container verdict is ``resolved`` and the guard finds nothing wrong. Failed lint, failed tests,
-cannot-decide, an agent failure, a launcher abort or a rejected edit saves the attempt's diff, resets the merge and
-moves up exactly one tier. Tampering (a git write by the agent; a moved ``HEAD`` is reset to the pre-attempt head), a
-failed reset or a failed staging stops at once. The top tier failing returns ``resolved=False``, so ``merge_target``
-aborts the merge, records the blocked ``target_sync`` row and pushes nothing. A conflict set holding the frozen module
-budget file is blocked before any dispatch unless the intent carries ``module_budget_change``.
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -38,9 +26,9 @@ from sandbox_executor.module_budget_guard import MODULE_BUDGET_CONFIG, module_bu
 from sandbox_executor.plan_paths import plan_file_for_branch
 from sandbox_executor.redaction import redact_agent_secrets
 
-# The ledger row carries the test result, so it is redacted and capped.
+# why: the ledger row carries the test result, so it is redacted and capped.
 TEST_RESULT_MAX_CHARS = 500
-# Where the launcher mounts the result file in the container; the host's input travels in the same file.
+# why: the launcher mounts the result file here, and the host's input travels in the same file.
 _CONTAINER_TRANSPORT = "/tmp/review_result.json"
 _VERDICTS = frozenset({"resolved", "cannot_decide", "lint_failed", "tests_failed", "agent_failed"})
 
@@ -51,12 +39,12 @@ def _bounded(text: str) -> str:
 
 
 def _transport_file(payload: dict[str, Any]) -> str:
-    """A host temp file outside the worktree (never swept into the merge) holding the role input, writable by the
-    container's unprivileged user."""
+    # why: outside the worktree so the transport file is never swept into the merge.
     tmp_dir = os.path.expanduser("~/.holon/tmp")
     os.makedirs(tmp_dir, exist_ok=True)
     fd, path = tempfile.mkstemp(prefix="holon-conflict-resolver-", suffix=".json", dir=tmp_dir)
     try:
+        # why: the container's unprivileged user writes its verdict into this file.
         os.fchmod(fd, 0o666)
         os.write(fd, json.dumps(payload, indent=2).encode("utf-8"))
     finally:
@@ -65,7 +53,6 @@ def _transport_file(payload: dict[str, Any]) -> str:
 
 
 def _read_verdict(path: str, exit_code: int) -> dict[str, Any]:
-    """The container's verdict; a non-zero exit or a file still holding the host input is ``agent_failed``."""
     data: Any = None
     with contextlib.suppress(OSError, ValueError), open(path, encoding="utf-8") as handle:
         data = json.load(handle)
@@ -82,8 +69,6 @@ def _describe(verdict: dict[str, Any], reason: str = "") -> str:
 
 @dataclass(frozen=True)
 class _Try:
-    """One attempt: the worktree and paths, the probe, the tier, its 1-based number and the pre-attempt snapshot."""
-
     worktree: str
     paths: list[str]
     probe: TargetProbe
@@ -94,12 +79,9 @@ class _Try:
 
 @dataclass(frozen=True)
 class _ConflictCodeResolver:
-    """The ``CodeResolver`` that dispatches the ``conflict-resolver`` role for the flow in ``context``."""
-
     context: FlowContext
 
     def __call__(self, worktree: str, code_paths: list[str], probe: TargetProbe) -> CodeResolution:
-        """Resolve ``code_paths`` tier by tier; stage and return ``resolved=True`` only for a verified attempt."""
         if MODULE_BUDGET_CONFIG in code_paths and not module_budget_change_authorised(self.context.intent_data):
             return CodeResolution(resolved=False, tier="none", test_result="module budget file in conflict set")
         ladder = tier_ladder(self.context.agent, self.context.model)
@@ -134,7 +116,8 @@ class _ConflictCodeResolver:
                 tier_context, CONFLICT_RESOLVER_ROLE, args, result_file=path, target_worktree=attempt.worktree
             )
             return _read_verdict(path, code)
-        except SystemExit as exc:  # A launcher abort is an environment failure, never the end of the flow.
+        except SystemExit as exc:
+            # why: a launcher abort is an environment failure, never the end of the flow.
             return {"verdict": "agent_failed", "reason": f"dispatch failed: launcher aborted with exit code {exc.code}"}
         except Exception as exc:
             return {"verdict": "agent_failed", "reason": f"dispatch failed: {exc}"}
@@ -143,7 +126,6 @@ class _ConflictCodeResolver:
                 os.remove(path)
 
     def _attempt(self, attempt: _Try) -> tuple[CodeResolution, bool]:
-        """Run one attempt; return its resolution and whether to escalate to the next tier."""
         verdict = self._dispatch(attempt)
         check = check_attempt(attempt.worktree, attempt.paths, attempt.before)
         if check.tampered:
@@ -166,5 +148,4 @@ class _ConflictCodeResolver:
 
 
 def conflict_code_resolver(context: FlowContext) -> CodeResolver:
-    """The ``CodeResolver`` for ``SyncRequest.code_resolver`` that resolves with the flow in ``context``."""
     return _ConflictCodeResolver(context)

@@ -65,8 +65,8 @@ WIRING = {
     "docker-build.yml": Wiring("build", "build", False),
 }
 EACH_WORKFLOW = pytest.mark.parametrize("workflow", sorted(WIRING))
-# why: ledger-only pull requests, which the gate skips, are the ones the ledger invariants check must check, and a
-# bookkeeping-only push is still made of commits whose messages the commit trailer check must read.
+# why: ledger-only pull requests, which the gate skips, are the ones the ledger invariants check must check.
+# why: a bookkeeping-only push is still made of commits whose messages the commit trailer check must read.
 UNGATED = {"test-ledger-invariants.yml", "test-commit-trailers.yml"}
 
 

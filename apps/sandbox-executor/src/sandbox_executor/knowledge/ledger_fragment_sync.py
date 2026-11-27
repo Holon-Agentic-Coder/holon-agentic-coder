@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 
 def sync_ledger_and_fragments(db_path: str, ledger: str) -> None:
-    """Index a canonical ledger and its pending fragments, best effort per file."""
     identity_of = ledger_row_identity(ledger)
     syncs = [(ledger, None, RowIdentity(ledger, identity_of))]
     fragment_identity = RowIdentity(ledger, identity_of, record=True)

@@ -1,11 +1,5 @@
-"""Every ``HOLON_*`` environment variable the executor, role containers, runners, entrypoint scripts and CI read.
-
-Data only: the typed reference behind ``docs/environment_variables.md``, kept in two-way agreement with the source tree
-and that document by ``tests/test_environment_reference.py``. Nothing in the product imports this module;
-``config_env_keys.py`` remains the source of the layered-configuration defaults, and whether a name is secret is decided
-by ``config_env.is_secret_key`` (the test asserts the ``secret`` flags here agree with it).
-"""
-
+# why: data only, kept in two-way agreement with docs/environment_variables.md by tests/test_environment_reference.py;
+# why: nothing in the product imports it, and config_env.is_secret_key stays the authority on secret names.
 from __future__ import annotations
 
 from sandbox_executor.env_registry_model import (
@@ -26,7 +20,6 @@ from sandbox_executor.env_registry_model import (
 )
 
 ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
-    # --- runner and agent -------------------------------------------------------------------------------------------
     EnvironmentVariable(
         name="HOLON_AGENT",
         area=Area.RUNNER_AND_AGENT,
@@ -394,7 +387,6 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         read_side="both",
         since="`holon doctor`",
     ),
-    # --- budgets ----------------------------------------------------------------------------------------------------
     EnvironmentVariable(
         name="HOLON_STAGE_BUDGET_CALIBRATION_MINUTES",
         area=Area.BUDGETS,
@@ -497,7 +489,6 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         read_side="both",
         since=BUDGETS_DOC,
     ),
-    # --- token reduction and proxy ----------------------------------------------------------------------------------
     EnvironmentVariable(
         name="HOLON_CA_BUNDLE_PATH",
         area=Area.TOKEN_REDUCTION_AND_PROXY,
@@ -641,7 +632,6 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         read_side="host",
         since=PROXY_DOC,
     ),
-    # --- git --------------------------------------------------------------------------------------------------------
     EnvironmentVariable(
         name="HOLON_ATTRIBUTION_STRICT",
         area=Area.GIT,
@@ -713,7 +703,6 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         since="`docs/git_flow.md`",
         internal=True,
     ),
-    # --- ledger and actions -----------------------------------------------------------------------------------------
     EnvironmentVariable(
         name="HOLON_ACTION_LOGGING",
         area=Area.LEDGER_AND_ACTIONS,
@@ -762,7 +751,6 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         read_side="container",
         since="`docs/ledger_schema.md`",
     ),
-    # --- review loop ------------------------------------------------------------------------------------------------
     EnvironmentVariable(
         name="HOLON_CI_REGISTRATION_TIMEOUT",
         area=Area.REVIEW_LOOP,
@@ -854,7 +842,6 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         read_side="host",
         since="`docs/review_consensus.md` (scoped delta review)",
     ),
-    # --- logging ----------------------------------------------------------------------------------------------------
     EnvironmentVariable(
         name="HOLON_AGENT_LOG_BYTES",
         area=Area.LOGGING,
@@ -866,7 +853,6 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
         read_side="container",
         since="`apps/sandbox-executor/README.md`",
     ),
-    # --- CI-only ----------------------------------------------------------------------------------------------------
     EnvironmentVariable(
         name="HOLON_ALLOW_MODULE_BUDGET_CHANGE",
         area=Area.CI_ONLY,
@@ -903,10 +889,8 @@ ENVIRONMENT_VARIABLES: tuple[EnvironmentVariable, ...] = (
 
 
 def registry_names() -> frozenset[str]:
-    """Every registered variable name."""
     return frozenset(variable.name for variable in ENVIRONMENT_VARIABLES)
 
 
 def by_area() -> dict[Area, tuple[EnvironmentVariable, ...]]:
-    """The registered variables grouped by area, in document order; an area without variables maps to ``()``."""
     return {area: tuple(v for v in ENVIRONMENT_VARIABLES if v.area is area) for area in Area}

@@ -1,23 +1,3 @@
-"""URL credential redaction: no message built from a URL-valued setting echoes a 4-character fragment of its credential.
-
-The rule under test: a warning, error, exception, log line or `--json` field may name the variable
-and a host that was validated after the userinfo was removed with the shared last-`@` rule
-(`redaction.trusted_url_authority`), and nothing else taken from the value. Every entry point that
-turns a configured URL into a message is driven through the full shape matrix below, and the
-captured output (logs, stdout, stderr, exception text, and the top-level `redact_cli_error`
-rendering) must not hold any 4-character fragment of the credential. The #94 sites are driven too:
-`holon doctor` (environment section, text and `--json`), the gateway probe (probe URL, cache line,
-fetch errors, `redact_url`) and the model envelope lines.
-
-The matrices are fixed shape matrices, not property tests: every credential and every temp name a case draws comes
-from a generator seeded by `seeded_secrets` (a fixed default seed; set `CREDENTIAL_TEST_SEED=<n>` to rerun a seed, or
-`CREDENTIAL_TEST_SEED=random` for a stress run). Credentials are built from letters that occur in no message built by
-the code (`FGJQVZ`) and digits, and compared case-insensitively, so a 4-character check cannot match ordinary output.
-The only incidental random text in the checked output, the exact `--env-file` path that `mkstemp` creates and the
-pi-agent session dir that `mkdtemp` creates, is masked before the fragment check, so a random temp path cannot cause a
-false leak. Failure messages name the case id and the seed, never the value.
-"""
-
 import contextlib
 import io
 import itertools
@@ -46,6 +26,7 @@ from tests.fast_home import fast_home
 from tests.url_redaction_matrix import HEALTH_TIGHT_BYTES, doctor_args, probe_stand_in
 
 FRAGMENT_LEN = 4
+# why: no message the code builds holds these letters, so a 4-character match is a real leak
 _LETTERS = "FGJQVZ"
 _DIGITS = "2347"
 
@@ -67,12 +48,11 @@ def _letters(rng: random.Random, n: int = 12) -> str:
 
 
 def _digit_head(rng: random.Random, n: int) -> str:
-    # The first digit keeps every head of 5 digits or fewer inside the valid port range.
+    # why: the first digit keeps every head of 5 digits or fewer inside the valid port range
     return rng.choice("234") + "".join(rng.choice(_DIGITS) for _ in range(n - 1))
 
 
 def _credential_shapes() -> dict[str, Callable[[random.Random], str]]:
-    """Map each credential shape id to a builder that draws one credential of that shape from a generator."""
     shapes: dict[str, Callable[[random.Random], str]] = {
         "plain": _letters,
         "double-slash": lambda rng: _letters(rng, 6) + "//" + _letters(rng, 6),
@@ -85,10 +65,6 @@ def _credential_shapes() -> dict[str, Callable[[random.Random], str]]:
 
 
 def matrix(rng: random.Random) -> Iterator[tuple[str, str, str]]:
-    """Yield `(case_id, value, credential)` for every prefix x userinfo x credential x host x suffix.
-
-    Every credential is drawn from `rng`, so one generator state gives one matrix.
-    """
     for p_id, prefix in PREFIXES.items():
         for u_id, userinfo in USERINFO.items():
             for c_id, make in _credential_shapes().items():
@@ -113,7 +89,6 @@ class _Capture(logging.Handler):
 
 @contextlib.contextmanager
 def _captured(env: dict[str, str]) -> Iterator[list[str]]:
-    """Run with exactly `env`, collecting every log line, stdout and stderr into the yielded list."""
     out: list[str] = []
     handler = _Capture()
     root = logging.getLogger("sandbox_executor")
@@ -128,7 +103,7 @@ def _captured(env: dict[str, str]) -> Iterator[list[str]]:
             contextlib.redirect_stderr(stderr),
         ):
             yield out
-            # The top-level CLI handlers render exceptions through redact_cli_error with this env set.
+            # why: the top-level CLI handlers render exceptions through redact_cli_error with this env set
             out[:] = [cli.redact_cli_error(text) for text in out] + out
     finally:
         root.removeHandler(handler)
@@ -185,11 +160,9 @@ def _host_config(value: str) -> dict:
 
 
 def _fetchers(seen: list[str]) -> tuple[Callable[[str, float], bytes], ...]:
-    """A responding and a failing fetcher; both record the probe URL they were handed, which is shown too."""
-
     def ok(url: str, timeout: float) -> bytes:
         seen.append(url)
-        # `HEALTH_TIGHT_BYTES` drives every #94 doctor line: the cache state, memory figures, both envelope warnings.
+        # why: `HEALTH_TIGHT_BYTES` drives every #94 doctor line: cache state, memory figures, envelope warnings
         return HEALTH_TIGHT_BYTES
 
     def fail(url: str, timeout: float) -> bytes:
@@ -200,15 +173,12 @@ def _fetchers(seen: list[str]) -> tuple[Callable[[str, float], bytes], ...]:
 
 
 def _doctor(value: str) -> list[str]:
-    """#94 `holon doctor`: the environment section, then the unified report as text and as `--json`."""
     env = {"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_BASE_URL": value, "HOLON_LOCAL_MODELS": "m1"}
     texts: list[str] = []
-    # The eight doctor runs of one case differ only in host configuration, fetcher and `--json`; the configuration
-    # section reads none of them (proved in test_doctor_replay.py), so it is computed once per case and replayed.
-    # The four blocks of a case share one environment, so one capture collects all of them.
+    # why: the configuration section ignores host config, fetcher and `--json` (test_doctor_replay.py), so it replays
     with (
         replayed_configuration_section(),
-        # Plain stand-ins, not MagicMocks: building a mock per call dominated this matrix's runtime.
+        # why: plain stand-ins, not MagicMocks: building a mock per call dominated this matrix's runtime
         patch.object(cli_doctor, "run_preflight_probe", probe_stand_in),
         _captured(env) as out,
     ):
@@ -216,9 +186,7 @@ def _doctor(value: str) -> list[str]:
             for fetch in _fetchers(texts):
                 with (
                     patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
-                    # The direct report and the two doctor runs of one block have the same host configuration and
-                    # fetcher: the environment report runs once and its text and code are replayed for all three
-                    # (proved in test_doctor_replay.py and test_doctor_replay_users.py).
+                    # why: one block shares host config and fetcher, so its environment report runs once and replays
                     replayed_environment_report(),
                     replayed_direct_report(),
                 ):
@@ -238,12 +206,10 @@ _REFUSING_OPENER = _RefusingOpener()
 
 
 def _refusing_opener(*_handlers) -> _RefusingOpener:
-    """`urllib.request.build_opener` stand-in: one opener that refuses every URL, whatever handlers are asked for."""
     return _REFUSING_OPENER
 
 
 def _gateway_probe(value: str) -> list[str]:
-    """#94 gateway probe: the probe URL, its cache line and error (injected and default fetchers), `redact_url`."""
     texts: list[str] = []
     with (
         patch.object(local_llm.urllib.request, "build_opener", _refusing_opener),
@@ -268,7 +234,6 @@ def _gateway_probe(value: str) -> list[str]:
 
 
 def _envelope(value: str) -> list[str]:
-    """#94 model envelope: the per-model envelope and reasoning lines and any config error, host and synthesised."""
     env = {"HOLON_LOCAL_LLM": "1", "HOLON_LOCAL_BASE_URL": value, "HOLON_LOCAL_MODELS": "m1"}
     texts: list[str] = []
     for host_config in (None, _host_config(value)):
@@ -303,14 +268,11 @@ def _leaks(texts: list[str], credential: str) -> bool:
 @pytest.mark.parametrize("prefix", sorted(PREFIXES))
 @pytest.mark.parametrize("entry_point", sorted(ENTRY_POINTS))
 def test_no_url_credential_fragment_in_any_message(entry_point, prefix, monkeypatch):
-    """Every matrix case leaves no credential fragment in logs, stdout, stderr or exception text.
-
-    Each test runs one URL prefix's slice of the matrix, so the parallel runner can spread the slices across workers.
-    """
+    # why: one prefix slice per test lets the parallel runner spread the matrix across workers
     monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(socket, "create_connection", _refuse)
     monkeypatch.setattr(root_ca, "generate_root_ca", lambda: pytest.fail("must not generate a CA"))
-    # `_captured` swaps in an exact environment per case; starting from an empty one keeps each swap cheap.
+    # why: `_captured` swaps in an exact environment per case; starting from an empty one keeps each swap cheap
     for name in list(os.environ):
         monkeypatch.delenv(name)
     run = ENTRY_POINTS[entry_point]
@@ -328,10 +290,8 @@ def _refuse(*_args, **_kwargs):
 
 
 def test_url_credential_matrix_covers_every_shape():
-    """The matrix is the full cross product and its ids are unique."""
     ids = [case_id for case_id, _, _ in matrix(seeded_secrets.generator("url-redaction:matrix"))]
     assert len(ids) == MATRIX_SIZE == len(set(ids))
-    # Every prefix, userinfo form, credential shape, host and suffix is reached, in that order of the id.
     reached = [set(parts) for parts in zip(*(case_id.split("/") for case_id in ids), strict=True)]
     assert reached == [set(PREFIXES), set(USERINFO), set(_credential_shapes()), set(HOSTS), set(SUFFIXES)]
 
@@ -347,7 +307,6 @@ def test_url_credential_matrix_covers_every_shape():
     ],
 )
 def test_unambiguous_host_is_still_shown(form, expected):
-    """A value whose userinfo boundary is unambiguous keeps its validated host in messages."""
     from sandbox_executor.redaction import trusted_url_authority
 
     rng = seeded_secrets.generator(f"url-redaction:unambiguous:{form}")
@@ -363,12 +322,11 @@ def test_unambiguous_host_is_still_shown(form, expected):
         "http://alice:{c}@localhost:99999",
         "http://alice:{c}@local%68ost:8081",
         "http://alice:{c}@:8081",
-        # urlsplit reads `alice` as the host here, so the two readings disagree.
+        # why: urlsplit reads `alice` as the host here, so the two readings disagree
         "http://alice:{c}//x@proxy.corp",
     ],
 )
 def test_ambiguous_or_invalid_host_is_withheld(form):
-    """An `@` left after the userinfo, a bad port or a non-host authority shows nothing."""
     from sandbox_executor.redaction import trusted_url_authority
 
     rng = seeded_secrets.generator(f"url-redaction:ambiguous:{form}")
@@ -377,11 +335,7 @@ def test_ambiguous_or_invalid_host_is_withheld(form):
     )
 
 
-# Every RFC 3986 gen-delim and sub-delim, plus `"` (not RFC-valid raw, but seen in real values). A
-# password holding any of them, raw, must still be recognised on the whole value: kept off the docker
-# argv of the main run and of the pre-flight probe, routed to the env-file, and masked in the echo.
-# A raw `@` stays an accepted residual only where it is ambiguous with a path `@` (see
-# `redaction.url_userinfo_end`); placed before the host, as here, it is unambiguous.
+# why: `"` is not RFC-valid raw but occurs in real values; a raw `@` placed before the host is unambiguous
 URL_DELIMITERS = "!$&'()*+,;=:/?#[]@\""
 DELIMITER_FORMS = {
     "schemeless": "alice:{c}@proxy.local:8080",
@@ -393,11 +347,10 @@ DELIMITER_FORMS = {
 
 
 def _delimiter_cases(rng: random.Random) -> Iterator[tuple[str, str, list[str]]]:
-    """Yield `(case_id, value, parts)`: each delimiter between two password parts drawn from `rng`."""
     for f_id, form in DELIMITER_FORMS.items():
         for delim in URL_DELIMITERS:
             if "alice:" not in form and delim in "/?#":
-                # A bare user with a raw `/`, `?` or `#` reads as host + path (`https://host/p@x`).
+                # why: a bare user with a raw `/`, `?` or `#` reads as host + path (`https://host/p@x`)
                 continue
             parts = [_letters(rng), _letters(rng)]
             yield f"{f_id}/{delim!r}", form.format(c=delim.join(parts)), parts
@@ -417,7 +370,6 @@ class _DockerRecorder:
 
 
 def _patch_docker_host(monkeypatch) -> None:
-    """Stand in a docker binary and empty mount helpers, so `run_docker_container` reaches the echo."""
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
     monkeypatch.setattr("sandbox_executor.launcher.mounts.get_agent_session_mounts", lambda agent_id: [])
     monkeypatch.setattr(cli.git_flow, "sandbox_worktree_mounts", lambda *args, **kwargs: [])
@@ -429,7 +381,6 @@ def _patch_docker_host(monkeypatch) -> None:
 def _delimiter_texts(
     case_id: str, value: str, argv: list[str], probe_argv: list[str], echo: list[str]
 ) -> dict[str, list[str]]:
-    """Return the checked texts of one delimiter case, keyed by site name."""
     from sandbox_executor.redaction import redact_command, redact_text
 
     return {
@@ -437,7 +388,7 @@ def _delimiter_texts(
         "probe-argv": [" ".join(probe_argv)],
         "echo": echo,
         "env-item-echo": [redact_command(["-e", f"HOLON_PROXY_URL={value}"])],
-        # Free text marks a schemeless value as a URL only by its `<NAME>_URL=` assignment.
+        # why: free text marks a schemeless value as a URL only by its `<NAME>_URL=` assignment
         "free-text": [redact_text(f"proxy {'HOLON_PROXY_URL=' if case_id.startswith('schemeless') else ''}{value} x")],
     }
 
@@ -445,18 +396,12 @@ def _delimiter_texts(
 ENV_FILE_PLACEHOLDER = "<env-file>"
 PI_AGENT_DIR_PLACEHOLDER = "<pi-agent-dir>"
 _PI_AGENT_MOUNT_SUFFIX = f":{local_llm.CONTAINER_AGENT_DIR}:rw"
-# `mkdtemp(prefix="holon-pi-agent-", dir="~/.holon/tmp")` names: the prefix and exactly 8 random `[a-z0-9_]` characters.
+# why: `mkdtemp` names the dir with this prefix plus exactly 8 random `[a-z0-9_]` characters
 _PI_AGENT_DIR_NAME = re.compile(r"holon-pi-agent-[a-z0-9_]{8}")
 
 
 def _fixture_paths(argv: list[str], home: str) -> dict[str, str]:
-    """Map each fixture-owned temp path `argv` names to its placeholder: the `--env-file` path and the pi-agent dir.
-
-    The env-file comes from `mkstemp` and the pi-agent session dir from `mkdtemp` under the isolated HOME's
-    `.holon/tmp`; their random characters can share a 4-letter run with a credential without any of it having leaked.
-    Only a mount host path of the exact `mkdtemp` shape directly under `home`'s `.holon/tmp` counts, so text glued
-    onto it is still checked.
-    """
+    # why: random temp-path characters can share a 4-letter run with a credential without any of it having leaked
     paths = {}
     if "--env-file" in argv:
         paths[argv[argv.index("--env-file") + 1]] = ENV_FILE_PLACEHOLDER
@@ -469,10 +414,6 @@ def _fixture_paths(argv: list[str], home: str) -> dict[str, str]:
 
 
 def _without_fixture_paths(texts: list[str], argv: list[str], home: str | None = None) -> list[str]:
-    """Replace each exact fixture-owned temp path of `argv` in `texts` with its placeholder, and nothing else.
-
-    `home` is the isolated HOME the run used; it defaults to the current one.
-    """
     paths = _fixture_paths(argv, home or os.path.expanduser("~"))
     masked = []
     for text in texts:
@@ -483,7 +424,6 @@ def _without_fixture_paths(texts: list[str], argv: list[str], home: str | None =
 
 
 def _leak_sites(texts: dict[str, list[str]], argv: list[str], parts: list[str]) -> list[str]:
-    """Name each checked text that holds a fragment of any password part once the fixture temp paths are masked."""
     return [
         where
         for where, text in texts.items()
@@ -492,7 +432,6 @@ def _leak_sites(texts: dict[str, list[str]], argv: list[str], parts: list[str]) 
 
 
 def _run_delimiter_case(value: str) -> tuple[int, _DockerRecorder, list[str], dict[str, str], list[str]]:
-    """Run the main container and the probe for one value; return `(rc, docker, probe_argv, probe_secret, echo)`."""
     docker = _DockerRecorder()
     env = {"HOLON_PROXY_URL": value}
     stdout = io.StringIO()
@@ -511,7 +450,6 @@ def _run_delimiter_case(value: str) -> tuple[int, _DockerRecorder, list[str], di
 
 
 def _delimiter_case_failures(case_id: str, value: str, parts: list[str]) -> list[str]:
-    """Run the main container and the probe for one case and name every failing site."""
     rc, docker, probe_argv, probe_secret, echo = _run_delimiter_case(value)
     failures = _leak_sites(_delimiter_texts(case_id, value, docker.argv, probe_argv, echo), docker.argv, parts)
     if rc != 0 or not echo:
@@ -522,7 +460,6 @@ def _delimiter_case_failures(case_id: str, value: str, parts: list[str]) -> list
 
 
 def test_every_delimiter_in_a_password_stays_off_argv_and_echo(monkeypatch):
-    """Main-run argv, probe argv and the `Executing:` echo hold no password part; the env-file does."""
     _patch_docker_host(monkeypatch)
     failures = [
         f"{case_id}:{where}"
@@ -533,13 +470,11 @@ def test_every_delimiter_in_a_password_stays_off_argv_and_echo(monkeypatch):
 
 
 def _colliding_parts() -> list[str]:
-    """Return two fixed password parts built from `_LETTERS`; the first repeats one 4-letter run."""
     run = "".join(_LETTERS[i] for i in (5, 3, 4, 2))
     return [run * 3, _LETTERS * 2]
 
 
 def test_env_file_path_sharing_a_part_run_is_not_a_leak(monkeypatch, tmp_path_factory):
-    """A random env-file path that happens to share a 4-letter run with a part is not reported as a leak."""
     _patch_docker_host(monkeypatch)
     parts = _colliding_parts()
     env_dir = tmp_path_factory.mktemp(f"env-{parts[0][:FRAGMENT_LEN].lower()}")
@@ -552,7 +487,6 @@ def test_env_file_path_sharing_a_part_run_is_not_a_leak(monkeypatch, tmp_path_fa
 
 
 def _assert_collision_forced(argv: list[str], echo: list[str], env_dir: str, part: str) -> None:
-    """Fail unless the real env-file path sits in `env_dir` and, unmasked, reads as a leak of `part`."""
     assert "--env-file" in argv, "the main run must route the value to an env-file"
     assert os.path.dirname(argv[argv.index("--env-file") + 1]) == env_dir, "the env-file must live in env_dir"
     assert _leaks([" ".join(argv)], part), "the unmasked main argv must share a run with the part"
@@ -570,7 +504,6 @@ def _assert_collision_forced(argv: list[str], echo: list[str], env_dir: str, par
     ids=["main-argv", "echo", "main-argv-beside-path", "echo-beside-path"],
 )
 def test_fragment_beside_env_file_path_is_still_a_leak(site, template, tmp_path_factory):
-    """A 4-character fragment of a part in the argv or the echo is reported, even right after the path."""
     parts = _colliding_parts()
     path = str(tmp_path_factory.mktemp(f"env-{parts[0][:FRAGMENT_LEN].lower()}") / "holon-env-x")
     argv = ["docker", "run", "--env-file", path, "img"]
@@ -589,15 +522,13 @@ def test_fragment_beside_env_file_path_is_still_a_leak(site, template, tmp_path_
     ids=["compact-json", "python-repr", "prose-apostrophe"],
 )
 def test_quoted_url_ends_at_its_closing_quote(text, kept):
-    """A quote no longer ends a URL token, except the one that closes a quote-opened URL."""
     from sandbox_executor.redaction import redact_text
 
     assert redact_text(text) == text
     assert kept in redact_text(text)
 
 
-# A credential-bearing value placed in a non-URL envelope or budget setting by mistake. The
-# invalid-value messages name the variable (or the model and field) and the expected type only.
+# why: a credential-bearing value may land in a non-URL envelope or budget setting by mistake
 INVALID_VALUE_ENV = (
     "HOLON_CONTEXT_RESERVE_TOKENS",
     "HOLON_LOCAL_CONTEXT_WINDOW",
@@ -615,7 +546,6 @@ _LOCAL_ENV = {
 
 
 def _invalid_value_cases(rng: random.Random) -> Iterator[tuple[str, dict[str, str], dict | None, str]]:
-    """Yield `(case_id, env, host_config, credential)`: every credential shape in every invalid-value slot."""
     for case_id, value, credential in matrix(rng):
         if not case_id.endswith("/ipv4/path"):
             continue
@@ -628,12 +558,10 @@ def _invalid_value_cases(rng: random.Random) -> Iterator[tuple[str, dict[str, st
 
 
 def _empty_health(url: str, timeout: float) -> bytes:
-    """The gateway fetcher of every invalid-value case: one object, so the three reports of a case share it."""
     return b"{}"
 
 
 def _isolate_invalid_value_process(monkeypatch) -> None:
-    """The process state every invalid-value case starts from: a docker stand-in, no mounts, an empty environment."""
     _patch_docker_host(monkeypatch)
     for name in list(os.environ):
         monkeypatch.delenv(name)
@@ -643,10 +571,8 @@ def _isolate_invalid_value_process(monkeypatch) -> None:
 def _invalid_value_case(
     case_id: str, env: dict[str, str], host_config: dict | None, credential: str, home: str
 ) -> Iterator[tuple[list[str], _DockerRecorder]]:
-    """Run one invalid-value case under the isolated `home`; yields the captured texts and the docker recorder."""
     docker = _DockerRecorder()
-    # Each temp name is first drawn sharing a run with the credential, so the masking under the isolated HOME is
-    # what keeps a forwarded run from reading as a leak, not the luck of a random name.
+    # why: each temp name first shares a run with the credential, so masking, not luck, keeps it from reading as a leak
     colliding = _colliding_temp_names(credential, seeded_secrets.generator(f"url-redaction:temp-names:{case_id}"))
     with (
         patch.object(tempfile, "_get_candidate_names", colliding),
@@ -659,9 +585,7 @@ def _invalid_value_case(
 
 
 def _invalid_value_doctor(out: list[str]) -> list[int]:
-    """The environment section on a stream of its own, then the unified report as text and as `--json`: the codes."""
-    # All three reports see one environment, host configuration and fetcher, and both configuration sections one
-    # agent and model, so each is computed once and replayed. Proved for this function in test_doctor_replay.py.
+    # why: all three reports share environment, host config and fetcher, so each replays (test_doctor_replay.py)
     with replayed_configuration_section(), replayed_environment_report():
         env_out = io.StringIO()
         codes = [cli_doctor.report_budgets_and_envelope(fetch=_empty_health, out=env_out)]
@@ -671,21 +595,14 @@ def _invalid_value_doctor(out: list[str]) -> list[int]:
 
 
 def test_credential_in_invalid_envelope_value_never_echoed(monkeypatch, tmp_path):
-    """Doctor (environment section, text and `--json`) and the run path withhold an invalid value.
-
-    The isolated `HOME` comes from `fast_home` (memory-backed when the host has it, else under `tmp_path`), and the
-    pi-agent session dir is created under it per case; the `HOME` path and the temp name can share a 4-character run
-    with the credential, so what keeps the `HOME` path from reading as a fragment is that the whole pi-agent mount path
-    is masked, not the choice of `HOME`.
-    """
+    # why: the HOME path and temp name may share a run with the credential, so the whole pi-agent mount path is masked
     _isolate_invalid_value_process(monkeypatch)
     failures: list[str] = []
     collided: list[str] = []
     cases = list(_invalid_value_cases(seeded_secrets.generator("url-redaction:invalid-envelope")))
     with fast_home(str(tmp_path)) as home:
         for case_id, env, host_config, credential in cases:
-            # A budget float falls back to its default, so the run goes on to forward the host `HOLON_*` variable to
-            # the container unchanged: through the env-file, so neither the argv nor the echo may hold a fragment of it.
+            # why: a budget float falls back to its default, so the run forwards the value through the env-file
             rejected = "TIMEOUT" not in case_id and "BUDGET" not in case_id
             with _invalid_value_case(case_id, env, host_config, credential, home) as (out, docker):
                 codes = _invalid_value_doctor(out)
@@ -709,16 +626,12 @@ def test_credential_in_invalid_envelope_value_never_echoed(monkeypatch, tmp_path
 
 
 def _colliding_temp_names(credential: str, rng: random.Random) -> Callable[[], Iterator[str]]:
-    """Return a `tempfile._get_candidate_names` stand-in whose first name shares a 4-character run with `credential`.
-
-    Later draws come from `rng`, so a name already taken on disk is retried as usual and still reproducibly.
-    """
+    # why: later draws come from `rng`, so a name already taken on disk is retried reproducibly
     name = re.search(r"[a-z0-9_]{4}", credential.lower()).group() * 2
     return lambda: itertools.chain([name], seeded_secrets.name_sequence(rng))
 
 
 def _forwarded_run_failures(env: dict[str, str], docker: _DockerRecorder, credential: str, home: str) -> list[str]:
-    """Name what is wrong with a run, under the isolated `home`, that forwarded every `HOLON_*` variable of `env`."""
     failures = []
     if not docker.argv:
         failures.append("no-run")
@@ -728,13 +641,12 @@ def _forwarded_run_failures(env: dict[str, str], docker: _DockerRecorder, creden
     return failures
 
 
-# A temp name sharing a 4-letter run with the credential below; mkstemp and mkdtemp both draw it.
+# why: mkstemp and mkdtemp both draw this name, which shares a 4-letter run with the credential below
 _COLLIDING_TEMP_NAME = "zq" + _LETTERS.lower()
 _COLLIDING_CREDENTIAL = "3/" + _LETTERS * 2
 
 
 def test_pi_agent_dir_sharing_a_credential_run_is_not_a_leak(monkeypatch, tmp_path):
-    """A forwarded budget value whose credential shares a run with the random pi-agent dir name is not a leak."""
     _patch_docker_host(monkeypatch)
     monkeypatch.setattr(tempfile, "_get_candidate_names", lambda: itertools.repeat(_COLLIDING_TEMP_NAME))
     env = {**_LOCAL_ENV, "HOLON_TURN_TIMEOUT_SECONDS": f"socks5://{_COLLIDING_CREDENTIAL}@127.0.0.1/v1"}
@@ -751,16 +663,12 @@ def test_pi_agent_dir_sharing_a_credential_run_is_not_a_leak(monkeypatch, tmp_pa
     assert _forwarded_run_failures(env, docker, _COLLIDING_CREDENTIAL, str(tmp_path)) == []
 
 
-# A temp name with no character of `_LETTERS`, so only the HOME path below can share a run with the credential.
+# why: no character of `_LETTERS`, so only the HOME path below can share a run with the credential
 _NEUTRAL_TEMP_NAME = "abcdehik"
 
 
 def test_home_path_sharing_a_credential_run_is_not_a_leak(monkeypatch, tmp_path):
-    """An isolated HOME whose path shares a run with the credential is not a leak through the masked pi-agent dir.
-
-    pytest's run directory (`pytest-<N>`, which grows when the suite is rerun) or a random macOS `/var/folders` prefix
-    sits in front of every pi-agent mount path; the whole fixture path is masked, so it cannot read as a fragment.
-    """
+    # why: pytest's run directory or a random macOS `/var/folders` prefix precedes every pi-agent mount path
     _patch_docker_host(monkeypatch)
     monkeypatch.setattr(tempfile, "_get_candidate_names", lambda: itertools.repeat(_NEUTRAL_TEMP_NAME))
     home = tmp_path / f"home-{_LETTERS[3:]}{_LETTERS[0]}".lower()
@@ -793,11 +701,7 @@ def test_home_path_sharing_a_credential_run_is_not_a_leak(monkeypatch, tmp_path)
     ids=["elsewhere", "beside-path", "before-path", "nested", "unmounted"],
 )
 def test_fragment_beside_pi_agent_dir_is_still_a_leak(template, monkeypatch, tmp_path):
-    """A credential fragment in the argv is reported even when glued onto the masked pi-agent dir.
-
-    The fragment is slash-free and lower-case, so glued onto the dir it stays in the dir's name; a pi-agent-shaped
-    dir nested deeper than `.holon/tmp` or not mounted at the container agent dir is not masked either.
-    """
+    # why: a slash-free lower-case fragment glued onto the dir stays in the dir's name
     monkeypatch.setenv("HOME", str(tmp_path))
     base = str(tmp_path / ".holon" / "tmp")
     name = f"holon-pi-agent-{_COLLIDING_TEMP_NAME}"
@@ -810,8 +714,6 @@ def test_fragment_beside_pi_agent_dir_is_still_a_leak(template, monkeypatch, tmp
     assert _leak_sites({"main-argv": [" ".join(argv)]}, argv, [_COLLIDING_CREDENTIAL]) == ["main-argv"]
 
 
-# Every forwarded `HOLON_*` name checked by the env-file routing matrix: the invalid-value names (including the
-# `TIMEOUT` and `BUDGET` ones), names whose value is not secret-shaped, and an arbitrary name.
 FORWARDED_HOLON_NAMES = (
     *INVALID_VALUE_ENV,
     "HOLON_AGENT_SETTINGS",
@@ -823,7 +725,6 @@ FORWARDED_HOLON_NAMES = (
 
 
 def _run_forwarded_value(name: str, value: str) -> tuple[int, _DockerRecorder, list[str], dict[str, str], list[str]]:
-    """Run the main container and the probe with only `name=value` set (plus the isolated `HOME`)."""
     docker = _DockerRecorder()
     stdout = io.StringIO()
     with (
@@ -839,7 +740,6 @@ def _run_forwarded_value(name: str, value: str) -> tuple[int, _DockerRecorder, l
 
 
 def _forwarded_value_failures(name: str, value: str) -> list[str]:
-    """Name every site where a forwarded `HOLON_*` value shows, or the env-file that lacks it."""
     rc, docker, probe_argv, probe_env, echo = _run_forwarded_value(name, value)
     texts = {"main-argv": [" ".join(docker.argv)], "probe-argv": [" ".join(probe_argv)], "echo": echo}
     failures = _leak_sites(texts, docker.argv, [value])
@@ -852,7 +752,6 @@ def _forwarded_value_failures(name: str, value: str) -> list[str]:
 
 @pytest.mark.parametrize("name", FORWARDED_HOLON_NAMES)
 def test_every_forwarded_holon_value_stays_off_argv_and_echo(name, monkeypatch):
-    """A bare credential under any forwarded `HOLON_*` name reaches only the env-file, in the main run and probe."""
     _patch_docker_host(monkeypatch)
     rng = seeded_secrets.generator(f"url-redaction:forwarded:{name}")
     failures = [
@@ -865,7 +764,6 @@ def test_every_forwarded_holon_value_stays_off_argv_and_echo(name, monkeypatch):
     )
 
 
-# Base URLs `urlsplit` (or its lazy port check) rejects, or that have no usable `scheme://host`.
 UNPARSEABLE_FORMS = {
     "bad-ipv6-bracket-port": "http://{u}127.0.0.1:9[/v1",
     "bad-ipv6-bracket-host": "http://{u}[::1/v1",
@@ -879,12 +777,7 @@ _GOOD_LOCAL_URL = "http://127.0.0.1:8001/v1"
 
 
 def _unparseable_cases(rng: random.Random) -> Iterator[tuple[str, str, str, bool]]:
-    """Yield `(case_id, value, credential, plain)`: every form with no userinfo and with each credential shape.
-
-    `plain` marks values whose userinfo boundary is unambiguous, so the parse failure is the only problem and the
-    doctor must name the source. With a delimiter inside the userinfo `urlsplit` may read part of the credential as
-    the host; such a value is withheld as ambiguous instead, which the leak check covers.
-    """
+    # why: a delimiter inside the userinfo may make `urlsplit` read credential text as the host, withheld as ambiguous
     for f_id, form in UNPARSEABLE_FORMS.items():
         yield f"{f_id}/no-userinfo", form.format(u=""), "", True
         for c_id, make in _credential_shapes().items():
@@ -894,12 +787,8 @@ def _unparseable_cases(rng: random.Random) -> Iterator[tuple[str, str, str, bool
 
 
 @pytest.mark.parametrize("slot", ["HOLON_LOCAL_BASE_URL", "host-baseUrl"])
-def test_doctor_survives_unparseable_base_url(slot, monkeypatch):  # noqa: C901, PLR0915
-    """An unparseable host-side base URL is skipped by the probe, never crashes `holon doctor`.
-
-    Text and `--json` both exit 0 (the run path handles the same config), `--json` stays valid JSON with the problem
-    under `environment.warnings`, the warning names only the source, and no part of the value is echoed.
-    """
+def test_doctor_survives_unparseable_base_url(slot, monkeypatch):  # noqa: C901
+    # why: the run path handles the same config, so the doctor must exit 0 and name only the source
     monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: None)
     source = "HOLON_LOCAL_BASE_URL" if slot == "HOLON_LOCAL_BASE_URL" else "host models.json provider 'vmlx' baseUrl"
     expected = f"WARNING: {source} is not a parseable URL, so its server is not probed (value withheld)"
@@ -917,7 +806,7 @@ def test_doctor_survives_unparseable_base_url(slot, monkeypatch):  # noqa: C901,
         probed: list[str] = []
         texts: list[str] = []
         with (
-            # Plain stand-ins, not MagicMocks, as in `_doctor`.
+            # why: plain stand-ins, not MagicMocks, as in `_doctor`
             patch.object(local_llm, "host_models_json", lambda *_a, host_config=host_config, **_k: host_config),
             patch.object(cli_doctor, "run_preflight_probe", probe_stand_in),
             _captured(env) as out,
@@ -936,7 +825,7 @@ def test_doctor_survives_unparseable_base_url(slot, monkeypatch):  # noqa: C901,
                         code = cli.run_doctor(doctor_args(as_json), fetch=fetch)
                     results[as_json] = (code, stdout.getvalue())
                     out.append(stdout.getvalue())
-            except Exception as exc:  # any escape is the doctor crash; report the case id only
+            except Exception as exc:  # why: any escape is the doctor crash; report the case id only
                 failures.append(f"{case_id}:crash:{type(exc).__name__}")
                 continue
         texts.extend(out)

@@ -65,6 +65,8 @@ WIRING = {
     "docker-build.yml": Wiring("build", "build", False),
 }
 EACH_WORKFLOW = pytest.mark.parametrize("workflow", sorted(WIRING))
+# why: ledger-only pull requests, which the gate skips, are the ones the ledger invariants check must check.
+UNGATED = {"test-ledger-invariants.yml"}
 
 
 @dataclass(frozen=True)
@@ -160,7 +162,9 @@ def test_split_steps_refuses_a_workflow_with_two_jobs() -> None:
 def test_every_workflow_that_runs_on_a_pull_request_is_wired() -> None:
     on_pull_request = {path.name for path in WORKFLOWS.glob("*.yml") if "\n  pull_request:" in path.read_text("utf-8")}
 
-    assert on_pull_request == set(WIRING)
+    assert on_pull_request - UNGATED == set(WIRING)
+    assert on_pull_request >= UNGATED
+    assert all("bookkeeping-gate" not in workflow_text(workflow) for workflow in UNGATED)
 
 
 @EACH_WORKFLOW

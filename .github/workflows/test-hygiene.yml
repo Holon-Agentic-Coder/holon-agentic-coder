@@ -24,6 +24,8 @@ jobs:
     permissions:
       contents: read
       actions: read
+      issues: read
+      pull-requests: read
     strategy:
       fail-fast: true
       matrix:
@@ -91,6 +93,19 @@ jobs:
         run: |
           if [ "$MODULE_BUDGET_CHANGE_LABEL" = "true" ]; then export HOLON_ALLOW_MODULE_BUDGET_CHANGE=1; fi
           uv run python scripts/check_module_budgets.py
+
+      - name: Check module budget label actor
+        if: steps.bookkeeping.outputs.skip != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # why: every hygiene step's if: must be exactly the bookkeeping guard, so the pull_request test lives in the shell.
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            uv run python scripts/check_module_budget_label_actor.py --pr "$PULL_REQUEST_NUMBER" --repo "$GITHUB_REPOSITORY" --base "$BASE_SHA" --head "$HEAD_SHA"
+          fi
 
       - name: Check self-explaining code
         if: steps.bookkeeping.outputs.skip != 'true'

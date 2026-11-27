@@ -1,10 +1,10 @@
+# why: this package must not import agent_defaults or agent_runner; they derive tables from these specs (cycle).
 from __future__ import annotations
 
 import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
-# why: agent_defaults and agent_runner derive their tables from these specs; importing them here is an import cycle.
 from sandbox_executor import local_llm
 
 

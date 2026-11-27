@@ -1,5 +1,6 @@
 import os
 import re
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -24,7 +25,8 @@ def find_attribution_trailers(base_ref: str, git_runner: Callable[[list[str]], s
     fmt = f"{_RECORD_SEP}%h{_FIELD_SEP}%B"
     try:
         out = git_runner(["log", "--no-merges", f"--format={fmt}", f"{base_ref}..HEAD"])
-    except Exception:
+    # why: subprocess runners raise SubprocessError/OSError while _entrypoint_git_runner raises RuntimeError
+    except (subprocess.SubprocessError, OSError, RuntimeError):
         return []
     findings: list[AttributionFinding] = []
     for record in out.split(_RECORD_SEP):

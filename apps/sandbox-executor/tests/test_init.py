@@ -120,6 +120,7 @@ class TestHolonInit(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.target_dir, "holon-knowledge/ledger/.gitkeep")))
         self.assertTrue(os.path.exists(os.path.join(self.target_dir, "intents/.gitkeep")))
 
+        # why: ledgers are append-only, so even --force must never overwrite or truncate existing rows
         ret2 = init_project(target_dir=self.target_dir, template="python", force=True)
         self.assertEqual(ret2, 0)
         with open(intents_path, encoding="utf-8") as f:

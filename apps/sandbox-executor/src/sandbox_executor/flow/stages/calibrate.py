@@ -44,6 +44,11 @@ from sandbox_executor.ledger.fragments import ledger_commit_paths
 from sandbox_executor.plan_paths import calibration_report_for_branch, legacy_calibration_report_rel, split_plan_branch
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.ref_names import calibration_branch
+from sandbox_executor.submodule_gitfile import (
+    find_submodule_gitfile_issues,
+    format_submodule_gitfile_error,
+    repair_submodule_gitfiles,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +151,22 @@ def _fail_calibration(context: FlowContext, start_time: str, calibrated_created:
     )
 
 
+def _ensure_submodule_gitfiles(context: FlowContext) -> str | None:
+    if not find_submodule_gitfile_issues(context.target_worktree):
+        return None
+    repaired, remaining = repair_submodule_gitfiles(context.target_worktree, run=run_git)
+    if repaired:
+        context.log(f"Stage 5 repaired submodule gitfile(s) before checkout: {', '.join(repaired)}")
+    if remaining:
+        return format_submodule_gitfile_error(remaining)
+    return None
+
+
 def _prepare_execution_branch(context: FlowContext, start_time: str) -> tuple[StageResult | None, str | None, bool]:
+    submodule_err = _ensure_submodule_gitfiles(context)
+    if submodule_err:
+        failure = f"Calibrate stage failed before checkout: {submodule_err}"
+        return _stage_failure(context, FlowStage.CALIBRATE, start_time, failure), None, False
     checkout_err = _checkout_execution_branch(context)
     if checkout_err:
         failure = (

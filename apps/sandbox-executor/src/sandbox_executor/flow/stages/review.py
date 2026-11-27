@@ -30,6 +30,11 @@ from sandbox_executor.knowledge import ConsultEngine
 from sandbox_executor.redaction import redact_agent_secrets
 from sandbox_executor.review_accounting import accounting_of, render_accounting_lines
 from sandbox_executor.review_ensemble import ConsensusVerdict
+from sandbox_executor.submodule_gitfile import (
+    find_submodule_gitfile_issues,
+    format_submodule_gitfile_error,
+    repair_submodule_gitfiles,
+)
 from sandbox_executor.worktree_head import ReattachStatus, reattach_branch, restore_branch
 
 logger = logging.getLogger(__name__)
@@ -57,6 +62,12 @@ def _checkout_execution_branch(context: FlowContext) -> str | None:
     repo_dir = context.target_worktree
     if reattach_branch(repo_dir, context.execution_branch, run_git).status is not ReattachStatus.REFUSED:
         return None
+    if find_submodule_gitfile_issues(repo_dir):
+        repaired, remaining = repair_submodule_gitfiles(repo_dir, run=run_git)
+        if repaired:
+            context.log(f"Repaired submodule gitfile(s) before checkout: {', '.join(repaired)}")
+        if remaining:
+            return format_submodule_gitfile_error(remaining)
     co_res = run_git(["checkout", context.execution_branch], cwd=repo_dir, check=False)
     if co_res.returncode == 0:
         return None

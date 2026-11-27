@@ -1,8 +1,3 @@
-"""Tests for ``bound_review_diff``: bulk deletions and generated files summarised, the inlined diff capped by size.
-
-Every repository is a fresh one under ``tmp_path``; nothing reads or writes this checkout.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -35,8 +30,7 @@ def _write(repo: Path, files: dict[str, str]) -> None:
         path.write_text(content, encoding="utf-8")
 
 
-def _commit(repo: Path, message: str = "change") -> str:
-    """Commit everything in the worktree in one git call and return the new head."""
+def _commit_all_and_return_head(repo: Path, message: str = "change") -> str:
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", message)
     return _git(repo, "rev-parse", "HEAD")
@@ -46,14 +40,14 @@ def _bulk_files(directory: str, count: int) -> dict[str, str]:
     return {f"{directory}/file_{n:04d}.txt": f"bulk-content-{directory}-{n}\n" for n in range(count)}
 
 
+# why: every repository is a fresh one under tmp_path; nothing reads or writes this checkout
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    """A repository on ``main`` with a ten-line ``src/app.py``."""
     work = tmp_path / "work"
     work.mkdir()
     _git(work, "init", "-q", "-b", "main")
     _write(work, {APP: "".join(f"line {n}\n" for n in range(10))})
-    _commit(work, "base")
+    _commit_all_and_return_head(work, "base")
     return work
 
 
@@ -78,10 +72,10 @@ def _raw_scoped_diff(repo: Path, base: str, head: str) -> str:
 def test_bulk_deletion_is_summarised_and_the_modified_file_inlined(repo):
     bulk = _bulk_files("vendor/bulk", 2000)
     _write(repo, bulk)
-    base = _commit(repo, "vendor")
+    base = _commit_all_and_return_head(repo, "vendor")
     _delete(repo, list(bulk))
     _modify_app(repo)
-    head = _commit(repo, "drop vendor")
+    head = _commit_all_and_return_head(repo, "drop vendor")
 
     diff_text, _scoped = build_scoped_diff(str(repo), base, head)
 
@@ -98,11 +92,11 @@ def test_bulk_deletion_is_summarised_and_the_modified_file_inlined(repo):
 def test_small_deletions_new_and_modified_files_are_inlined(repo):
     small = _bulk_files("lib/small", 24)
     _write(repo, small)
-    base = _commit(repo, "small")
+    base = _commit_all_and_return_head(repo, "small")
     _delete(repo, list(small))
     _modify_app(repo)
     _write(repo, {"src/new.py": "new-file-marker\n"})
-    head = _commit(repo, "drop small")
+    head = _commit_all_and_return_head(repo, "drop small")
 
     diff_text, _scoped = build_scoped_diff(str(repo), base, head)
 
@@ -117,7 +111,7 @@ def test_generated_files_are_summarised_even_when_small(repo):
     _write(repo, {path: f"generated-marker-{n}\n" for n, path in enumerate(generated)})
     _modify_app(repo)
     base = _git(repo, "rev-parse", "HEAD")
-    head = _commit(repo, "generated")
+    head = _commit_all_and_return_head(repo, "generated")
 
     diff_text, _scoped = build_scoped_diff(str(repo), base, head)
 
@@ -138,7 +132,7 @@ def test_byte_cap_leaves_whole_sections_out_and_lists_them_by_directory(repo):
     big = {f"src/big/f{n}.py": _big_file(f"big{n}", 120_000) for n in range(5)}
     _write(repo, {**big, "zz/small.py": "small-marker\n"})
     base = _git(repo, "rev-parse", "HEAD")
-    head = _commit(repo, "big")
+    head = _commit_all_and_return_head(repo, "big")
 
     diff_text, _scoped = build_scoped_diff(str(repo), base, head)
 
@@ -148,7 +142,8 @@ def test_byte_cap_leaves_whole_sections_out_and_lists_them_by_directory(repo):
     assert shown == [0, 1, 2]
     assert all(f"+big{n}-last" in inlined for n in shown)
     assert all(f"big{n}-" not in inlined for n in (3, 4))
-    assert "+small-marker" in inlined  # A later section that fits is still inlined.
+    later_section_that_fits = "+small-marker"
+    assert later_section_that_fits in inlined
     assert "src/big/: 2 files not shown" in diff_text
     assert "capped at 400000 bytes" in diff_text
 
@@ -172,7 +167,7 @@ def test_unbounded_diff_is_byte_identical(repo):
     base = _git(repo, "rev-parse", "HEAD")
     _modify_app(repo)
     _write(repo, {"docs/name with space.md": "spaced\n"})
-    head = _commit(repo, "small change")
+    head = _commit_all_and_return_head(repo, "small change")
 
     diff_text, _scoped = build_scoped_diff(str(repo), base, head)
     raw = _raw_scoped_diff(repo, base, head)
@@ -192,7 +187,7 @@ def _delta_request(repo: Path, base: str, head: str, paths: tuple[str, ...]):
 def test_delta_request_returns_a_small_diff_unchanged(repo):
     base = _git(repo, "rev-parse", "HEAD")
     _modify_app(repo)
-    head = _commit(repo, "fix")
+    head = _commit_all_and_return_head(repo, "fix")
 
     request = _delta_request(repo, base, head, (APP,))
 
@@ -203,10 +198,10 @@ def test_delta_request_returns_a_small_diff_unchanged(repo):
 def test_delta_request_summarises_a_bulk_deletion(repo):
     bulk = _bulk_files("vendor/bulk", 30)
     _write(repo, bulk)
-    base = _commit(repo, "vendor")
+    base = _commit_all_and_return_head(repo, "vendor")
     _delete(repo, list(bulk))
     _modify_app(repo)
-    head = _commit(repo, "drop vendor")
+    head = _commit_all_and_return_head(repo, "drop vendor")
 
     request = _delta_request(repo, base, head, (APP, "vendor/bulk"))
 

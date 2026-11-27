@@ -1,13 +1,9 @@
-"""Pipeline stage execution statuses and summary representations."""
-
 from __future__ import annotations
 
 from enum import StrEnum
 
 
 class StageStatus(StrEnum):
-    """Execution status of an individual pipeline stage."""
-
     PENDING = "pending"
     RUNNING = "running"
     SUCCESS = "success"
@@ -18,7 +14,6 @@ class StageStatus(StrEnum):
 
     @classmethod
     def from_str(cls, val: str | StageStatus) -> StageStatus:
-        """Parse string or enum instance to StageStatus case-insensitively."""
         if isinstance(val, StageStatus):
             return val
         clean = str(val).strip().lower()
@@ -37,9 +32,5 @@ SUMMARY_STATUS_WORDS: dict[StageStatus, str] = {
     StageStatus.PENDING: "pending",
     StageStatus.RUNNING: "running",
 }
+# why: HALTED_FOR_HUMAN is the legacy boundary value still found in older checkpoints and ledger rows
 REVIEW_BOUNDARY_STATUSES: frozenset[StageStatus] = frozenset({StageStatus.APPROVED, StageStatus.HALTED_FOR_HUMAN})
-"""Stage statuses that mark the consensus boundary where Stage 4 ended.
-
-StageStatus.HALTED_FOR_HUMAN is the legacy value kept for backward compatibility with older
-checkpoints and ledger rows; StageStatus.APPROVED is the active value.
-"""

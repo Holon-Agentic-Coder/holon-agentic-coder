@@ -1,9 +1,3 @@
-"""Token-level Python comparisons for the mechanical conflict classes.
-
-Whitespace between tokens is ignored, but whitespace inside string literals stays significant, and comments are
-compared too, so a real string or comment edit is never mistaken for a mechanical one.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -23,14 +17,11 @@ def _tokens(text: str) -> list[tokenize.TokenInfo] | None:
 
 
 def _text(token: tokenize.TokenInfo) -> str:
+    # why: comments are compared too, so a real comment edit is never mistaken for a mechanical one.
     return " ".join(token.string.split()) if token.type == tokenize.COMMENT else token.string
 
 
 def python_lines(text: str) -> list[str] | None:
-    """Non-blank physical lines rebuilt from their tokens joined by one space, each after its block indentation.
-
-    Returns ``None`` when ``text`` does not tokenize.
-    """
     tokens = _tokens(text)
     if tokens is None:
         return None
@@ -50,7 +41,6 @@ def python_lines(text: str) -> list[str] | None:
 
 
 def _position(lines: list[str], line: int, byte_col: int) -> _Position:
-    """The tokenize (line, character column) position of an ``ast`` (line, UTF-8 byte column) position."""
     return line, len(lines[line - 1].encode("utf-8")[:byte_col].decode("utf-8"))
 
 
@@ -60,12 +50,8 @@ def _span(lines: list[str], first: ast.expr, last: ast.expr) -> tuple[_Position,
 
 
 def unchanged_outside(base_text: str, ours_text: str, entries: list[tuple[ast.expr | None, ast.expr]]) -> bool:
-    """Whether ``ours_text`` minus the ``(first, last)`` node ranges of ``entries`` matches ``base_text`` by token.
-
-    Comments count; commas and layout do not (the ``ast`` comparison already pins the code itself). An entry with no
-    first node (a ``**`` splat) cannot be cut out cleanly, so it returns ``False``.
-    """
     base, ours = _tokens(base_text), _tokens(ours_text)
+    # why: a ``**`` splat entry has no first node, so it cannot be cut out cleanly.
     if base is None or ours is None or any(first is None for first, _ in entries):
         return False
     lines = ours_text.splitlines(keepends=True)

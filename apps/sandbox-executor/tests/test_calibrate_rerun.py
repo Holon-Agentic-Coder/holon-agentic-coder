@@ -1,6 +1,3 @@
-"""Stage 5 rerun on a moved head: predicate, bounded rerun, idempotence and the stale signal. Hermetic: real commits
-in temp repos, no network, no Docker, no model call."""
-
 from __future__ import annotations
 
 import copy
@@ -46,7 +43,6 @@ CAL_REPORT_REL = f"plans/I-1-x/{PLAN_ID}_calibration.md"
 def commit_calibration(
     repo: Path, rel: str = CAL_REPORT_REL, subject: str = CAL_SUBJECT, text: str = "report\n"
 ) -> str:
-    """A commit in Stage 5's own shape: a calibration subject touching only calibration paths."""
     path = repo / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
@@ -55,21 +51,17 @@ def commit_calibration(
     return git(repo, "rev-parse", "HEAD")
 
 
-# --- Bounded rerun and stale signal, on the flow-shaped harness (bare origin, host worktree, pushing clone). ---
-
 LEDGER_REL = "holon-knowledge/ledger/executions.jsonl"
 TARGET_REF = "refs/remotes/origin/main"
 
 
 @pytest.fixture(scope="session")
 def rerun_repos_template(tmp_path_factory: pytest.TempPathFactory, hermetic_git_config: str) -> SimpleNamespace:
-    """The repositories of ``make_repos``, built once and read-only; ``repos`` hands every test its own copy."""
     root, built = shared_template(tmp_path_factory, "calibrate-rerun-template", make_repos)
     return SimpleNamespace(root=root, repos=built)
 
 
 def own_copy(template: SimpleNamespace, target: Path) -> SimpleNamespace:
-    """A writable copy of a template's repositories in ``target``, under the names the template gives them."""
     copy_template(template.root, target)
     built = vars(template.repos)
     return SimpleNamespace(**{name: target / path.relative_to(template.root) for name, path in built.items()})
@@ -80,12 +72,8 @@ def repos(rerun_repos_template: SimpleNamespace, tmp_path: Path) -> SimpleNamesp
     return own_copy(rerun_repos_template, tmp_path)
 
 
+# why: a template built from a run a guard refused a call of would hide that call from every later test
 def calibrate_a_copy(template: SimpleNamespace, root: Path, blocked: Sequence[list[str]]) -> SimpleNamespace:
-    """One real Stage 5 run in a copy of ``template`` at ``root``, with the context and the result of that run.
-
-    ``blocked`` holds the lists of the gh write and network guards of the test the run happens in. The run fails when
-    one of them has an entry, so no template is built from a run a guard refused a call of.
-    """
     built = own_copy(template, root)
     ctx = FlowContext(target_worktree=str(built.host), execution_branch=EXEC, agent="a", model="m")
     result = stage_runner([])(ctx)
@@ -101,15 +89,8 @@ def calibrated_repos_template(
     gh_write_guard: list[str],
     network_guard_fixture: list[str],
 ) -> SimpleNamespace:
-    """``rerun_repos_template`` after one real Stage 5 run, read-only, with the context and the result of that run.
-
-    Every test of a head that moves after calibration starts from this state. ``shared_template`` still builds it
-    once per test run, but the fixture is function-scoped: the one real run then happens inside the first test that
-    asks, under that test's autouse guards (gh writes, network, credentials, layered configuration), and not before
-    them as a session fixture would run it. ``calibrated`` hands a test its own copy, so the test pays for what
-    happens after the first calibration only.
-    """
-
+    # why: function-scoped so the one real Stage 5 run happens under the first asking test's autouse guards
+    # why: (gh writes, network, credentials, configuration), not before them as a session fixture would run it
     def build(root: Path) -> SimpleNamespace:
         return calibrate_a_copy(rerun_repos_template, root, (gh_write_guard, network_guard_fixture))
 
@@ -119,10 +100,10 @@ def calibrated_repos_template(
 
 @pytest.fixture
 def calibrated(calibrated_repos_template: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
-    """A test's own copy of the calibrated repositories, with ``first_run``: its own context and Stage 5 result."""
     template = calibrated_repos_template
     own = own_copy(template, tmp_path)
-    ctx, result = copy.deepcopy(template.first_run)  # one copy, so the context still holds this very result
+    # why: one copy of both, so the context still holds this very result
+    ctx, result = copy.deepcopy(template.first_run)
     ctx.target_worktree = str(own.host)
     assert str(template.root) not in repr((ctx, result)), "the first run recorded a path of the shared template"
     own.first_run = (ctx, result)
@@ -130,7 +111,6 @@ def calibrated(calibrated_repos_template: SimpleNamespace, tmp_path: Path) -> Si
 
 
 def ledger_row(repo: Path, label: str, subject: str = "chore(review): record review rows") -> str:
-    """A ledger-only commit, as the review loop and the engine add: one appended row, no code."""
     path = repo / LEDGER_REL
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -141,7 +121,6 @@ def ledger_row(repo: Path, label: str, subject: str = "chore(review): record rev
 
 
 def advance_main(repos: SimpleNamespace, name: str, text: str = "y\n") -> None:
-    """Commit ``name`` and one ledger row on origin's main from the second clone, leaving it on the execution branch."""
     other = repos.other
     git(other, "checkout", "-q", "main")
     git(other, "pull", "-q", "--ff-only", "origin", "main")
@@ -153,19 +132,19 @@ def advance_main(repos: SimpleNamespace, name: str, text: str = "y\n") -> None:
 
 
 def merge_main(repos: SimpleNamespace, ledger_only: bool = False) -> str:
-    """Merge origin/main into the second clone's execution branch the way the conflict gate does."""
     outcome = _merge_target_ledger_only(str(repos.other), TARGET_REF, "Merge main into the execution branch")
     assert (outcome.merged, outcome.ledger_only) == (True, ledger_only), outcome
     return git(repos.other, "rev-parse", "HEAD")
 
 
+# why: reproduces the history of PR #258: a report on E, then a ledger-only merge of main and bookkeeping commits
 def pr258_history(repos: SimpleNamespace) -> SimpleNamespace:
-    """The history of PR #258 on origin: a report on E, then a ledger-only merge of main and bookkeeping commits."""
     other = repos.other
     evaluated = commit_file(other, "feature.py", "x = 1\n")
     commit_calibration(other, text=f"# Calibration Report for {PLAN_ID}\n\n- **Evaluated Commit SHA:** {evaluated}\n")
     advance_main(repos, "main-only.txt")
-    ledger_row(other, "E-pr")  # both sides now append to the ledger, so the merge conflicts there and nowhere else
+    # why: both sides append to the ledger, so the merge conflicts there and nowhere else
+    ledger_row(other, "E-pr")
     merge = merge_main(repos, ledger_only=True)
     ledger_row(other, "E-review")
     head = commit_calibration(other, rel="holon-knowledge/kb/k.json", subject="chore(calibration): record knowledge")
@@ -174,7 +153,6 @@ def pr258_history(repos: SimpleNamespace) -> SimpleNamespace:
 
 
 def realistic_calibrate(**kwargs: object) -> SimpleNamespace:
-    """Stand in for run_calibrate in Stage 5's own commit shape: report plus ACT-CAL row, calibration subject."""
     cwd = Path(str(kwargs["target_worktree"]))
     local = subprocess.run(["git", "rev-parse", "--verify", "-q", f"refs/heads/{CALIBRATED}"], cwd=cwd)
     git(cwd, "checkout", "-q", CALIBRATED) if local.returncode == 0 else git(cwd, "checkout", "-qb", CALIBRATED)
@@ -194,16 +172,12 @@ def realistic_calibrate(**kwargs: object) -> SimpleNamespace:
 
 
 def stage5_resolve_stale(thread: FakeThread) -> object:
-    """``resolve_stale`` as Stage 5 calls it after the push, routed to the fake thread instead of ``gh``."""
     seams = WarningSeams(comments=thread.comments, poster=thread.poster, editor=thread.editor)
     return lambda context, pr_number, evaluated: resolve_stale(context, pr_number, evaluated, seams)
 
 
 def stage_runner(calls: list[str], thread: FakeThread | None = None) -> object:
-    """A run_calibrate_stage wrapper with the network-facing seams faked, recording each invocation.
-
-    Stage 5's own supersede-after-push edits ``thread`` when one is given, else an empty thread nobody reads.
-    """
+    # why: Stage 5's own supersede-after-push edits the given thread, else an empty thread nobody reads
     resolver = stage5_resolve_stale(thread or FakeThread())
 
     def run(ctx: FlowContext) -> StageResult:
@@ -223,15 +197,13 @@ def stage_runner(calls: list[str], thread: FakeThread | None = None) -> object:
 def calibrated_flow(
     calibrated: SimpleNamespace, thread: FakeThread | None = None
 ) -> tuple[FlowContext, StageResult, list[str], object]:
-    """The context whose Stage 5 already ran once in ``calibrated``, with the stage-call recorder the rerun trigger
-    reuses. The recorder starts at that one run; the run itself did not reach ``thread``, as no review named a PR."""
     ctx, result = calibrated.first_run
+    # why: the recorder starts at the template's one run, which did not reach the thread as no review named a PR
     calls = ["stage"]
     return ctx, result, calls, stage_runner(calls, thread)
 
 
 def move_head(repos: SimpleNamespace, name: str = "resolver-fix.txt") -> str:
-    """A resolver-style push on origin after calibration: the pull request head moves past the report."""
     git(repos.other, "fetch", "-q", "origin")
     git(repos.other, "reset", "-q", "--hard", f"origin/{EXEC}")
     sha = commit_file(repos.other, name)
@@ -240,7 +212,6 @@ def move_head(repos: SimpleNamespace, name: str = "resolver-fix.txt") -> str:
 
 
 def approve_pr(ctx: FlowContext, number: str = "7") -> None:
-    """A Stage 4 result whose posted consensus approval names the PR, as approval_pr_number requires."""
     ctx.stage_results["review"] = StageResult(
         stage=FlowStage.REVIEW,
         status=StageStatus.HALTED_FOR_HUMAN,
@@ -249,8 +220,6 @@ def approve_pr(ctx: FlowContext, number: str = "7") -> None:
 
 
 class FakeThread:
-    """An in-memory PR comment thread behind the records lister, poster and editor seams; no network."""
-
     def __init__(self, *bodies: str) -> None:
         self.records = [CommentRecord(f"IC_{n}", body) for n, body in enumerate(bodies)]
         self.posted: list[str] = []
@@ -302,7 +271,6 @@ def refreshed_notes(bodies: list[str]) -> list[str]:
 
 
 def push_bookkeeping(repos: SimpleNamespace) -> str:
-    """A review ledger row and a calibration commit pushed to origin after calibration: no change of the PR's own."""
     git(repos.other, "fetch", "-q", "origin")
     git(repos.other, "reset", "-q", "--hard", f"origin/{EXEC}")
     ledger_row(repos.other, "E-review")
@@ -314,7 +282,6 @@ def push_bookkeeping(repos: SimpleNamespace) -> str:
 
 
 def standalone_context(repos: SimpleNamespace) -> FlowContext:
-    """A review-loop context with no Stage 5 result: the gate can only warn, never rerun."""
     ctx = FlowContext(target_worktree=str(repos.host), execution_branch=EXEC, agent="a", model="m")
     ctx.intent_data = {"target_branch": "main"}
     return ctx
@@ -335,9 +302,9 @@ def test_a_head_move_after_calibration_reruns_stage5_and_the_report_names_the_ne
     report = git(calibrated.host, "show", f"{EXEC}:{CAL_REPORT_REL}")
     assert parse_evaluated_commit_sha(report) == new_head
     ledger_after = exec_ledger(calibrated)
-    assert ledger_after.startswith(ledger_before)  # rows appended, never rewritten
+    assert ledger_after.startswith(ledger_before)
     act_cal = [line for line in ledger_after.splitlines() if '"ACT-CAL-' in line]
-    assert len(act_cal) == 2  # exactly one ACT-CAL row per run
+    assert len(act_cal) == 2
 
 
 def test_no_calibrated_template_is_built_from_a_run_a_guard_blocked(
@@ -352,7 +319,8 @@ def test_no_calibrated_template_is_built_from_a_run_a_guard_blocked(
         pytest.raises(AssertionError, match="made calls a guard blocked"),
     ):
         calibrate_a_copy(rerun_repos_template, tmp_path, (gh_write_guard, []))
-    gh_write_guard.clear()  # the block was this test's own
+    # why: the blocked call was this test's own
+    gh_write_guard.clear()
 
 
 def test_an_unmoved_head_is_a_no_op_with_no_new_ledger_rows(calibrated: SimpleNamespace) -> None:
@@ -387,7 +355,7 @@ def test_a_head_that_outruns_both_attempts_marks_the_payload_stale(calibrated: S
         return result
 
     stale = rerun_calibration(ctx, result, never_catching_up)
-    assert len(attempts) == 2  # MAX_RERUN_ATTEMPTS bounds the work
+    assert len(attempts) == 2
     assert stale.payload["calibration_stale"] is True
     assert new_head[:12] in stale.payload["stale_reason"]
     line = _calibrated_head_line(stale)
@@ -398,21 +366,21 @@ def test_a_head_that_outruns_both_attempts_marks_the_payload_stale(calibrated: S
 def test_the_stale_signal_is_superseded_by_the_rerun_and_no_second_comment_is_posted(
     calibrated: SimpleNamespace,
 ) -> None:
-    """Stage 5 here cannot reach the thread (its own edit goes nowhere), so the trigger's explicit number supersedes."""
+    # why: Stage 5 here cannot reach the thread (its own edit goes nowhere), so the trigger's explicit number supersedes
     ctx, result, _, run = calibrated_flow(calibrated)
     approve_pr(ctx)
-    thread = FakeThread(stale_body(StaleRange("a" * 40, "b" * 40, "an earlier flow")))  # a warning is already open
+    thread = FakeThread(stale_body(StaleRange("a" * 40, "b" * 40, "an earlier flow")))
     seams = thread.seams()
     move_head(calibrated)
     refreshed = rerun_calibration(ctx, result, run, seams=seams)
     assert refreshed.status == StageStatus.SUCCESS
     assert refreshed.payload["stale_warning"] == {"posted": False, "edited": 0, "reason": "no open stale warning"}
-    assert thread.posted == []  # no warning about the report being replaced, and no refreshed note beside the edit
+    assert thread.posted == []
     (warning,) = (record.body for record in thread.records)
     assert "superseded" in warning and "Calibration report is stale" not in warning
     assert f"{SUPERSEDED_MARKER_PREFIX}{refreshed.payload['calibrated_head']} -->" in warning
     assert rerun_calibration(ctx, refreshed, run, seams=seams) is refreshed
-    assert (len(thread.posted), len(thread.edits)) == (0, 1)  # nothing new on a repeated check
+    assert (len(thread.posted), len(thread.edits)) == (0, 1)
 
 
 def test_stage5_supersedes_the_warning_right_after_the_push_and_before_the_final_head_ci_check(
@@ -423,7 +391,7 @@ def test_stage5_supersedes_the_warning_right_after_the_push_and_before_the_final
     approve_pr(ctx)
     new_head = move_head(calibrated)
     post_stale_signal(ctx, report_staleness(ctx), thread.seams(), pr_number="7")
-    assert len(stale_warnings(thread.stale_bodies())) == 1  # the warning is open when Stage 5 starts
+    assert len(stale_warnings(thread.stale_bodies())) == 1
     seen_at_ci_check: list[str] = []
 
     def final_head_ci(context: FlowContext, repo_dir: str, branch: str) -> dict[str, str]:
@@ -445,7 +413,7 @@ def test_stage5_supersedes_the_warning_right_after_the_push_and_before_the_final
 
     assert (result.status, len(seen_at_ci_check)) == (StageStatus.SUCCESS, 1)
     assert result.payload["stale_warning"] == {"posted": False, "edited": 1, "reason": "superseded"}
-    assert (len(thread.records), len(thread.posted), len(thread.edits)) == (1, 1, 1)  # one comment, edited once
+    assert (len(thread.records), len(thread.posted), len(thread.edits)) == (1, 1, 1)
     assert thread.records[0].body == seen_at_ci_check[0]
 
 
@@ -478,18 +446,18 @@ def test_a_rerun_adds_the_refreshed_note_only_when_no_warning_was_superseded(cal
     approve_pr(ctx)
     first_head = move_head(calibrated, "first-fix.txt")
     first = rerun_calibration(ctx, result, run, seams=thread.seams())
-    assert first.payload["stale_warning"]["edited"] == 0  # no warning was open: the refreshed note is posted once
+    assert first.payload["stale_warning"]["edited"] == 0
     (note,) = thread.posted
     assert "Calibration refreshed" in note and first_head[:7] in note
 
     second_head = move_head(calibrated, "second-fix.txt")
-    post_stale_signal(ctx, report_staleness(ctx), thread.seams(), pr_number="7")  # as a standalone gate would
+    post_stale_signal(ctx, report_staleness(ctx), thread.seams(), pr_number="7")
     second = rerun_calibration(ctx, first, run, seams=thread.seams())
     assert (len(calls), second.payload["calibrated_head"]) == (3, second_head)
     assert second.payload["stale_warning"] == {"posted": False, "edited": 1, "reason": "superseded"}
     (warning,) = thread.stale_bodies()
     assert f"{SUPERSEDED_MARKER_PREFIX}{second_head} -->" in warning
-    assert refreshed_notes(thread.posted) == [note]  # the superseded warning names the fresh report: no second note
+    assert refreshed_notes(thread.posted) == [note]
     assert len(thread.records) == 2
 
 
@@ -497,7 +465,7 @@ def test_a_rerun_adds_the_refreshed_note_only_when_no_warning_was_superseded(cal
     ("review_payload", "pr_number"),
     [
         ({"consensus": {"approved": True, "pr_number": 7}, "pr": {"pr_number": 9}}, "7"),
-        ({"consensus": {"approved": False}, "pr": {"pr_number": 9}}, "9"),  # halted for a human: still the reviewed PR
+        ({"consensus": {"approved": False}, "pr": {"pr_number": 9}}, "9"),
         ({"consensus": "approved", "pr": ["9"]}, None),
         (None, None),
     ],
@@ -523,7 +491,7 @@ def test_a_successful_rerun_on_a_code_push_posts_no_stale_warning(calibrated: Si
     new_head = move_head(calibrated)
     refreshed = rerun_calibration(ctx, result, run, seams=seams)
     assert (len(calls), refreshed.status) == (2, StageStatus.SUCCESS)
-    assert thread.stale_bodies() == [] and thread.edits == []  # no warning at any point, not even a superseded one
+    assert thread.stale_bodies() == [] and thread.edits == []
     (note,) = thread.posted
     assert "Calibration refreshed" in note and new_head[:7] in note
 
@@ -540,11 +508,11 @@ def test_a_still_stale_head_never_duplicates_the_stale_comment(calibrated: Simpl
         return result
 
     rerun_calibration(ctx, result, never_catching_up, seams=seams)
-    assert posted_at_attempt == [0, 0]  # nothing is posted while an attempt may still replace the report
+    assert posted_at_attempt == [0, 0]
     (warning,) = thread.stale_bodies()
     assert "Calibration report is stale" in warning and new_head[:7] in warning
     rerun_calibration(ctx, result, never_catching_up, seams=seams)
-    assert (len(thread.posted), len(thread.edits)) == (1, 0)  # one warning, posted after the attempts, never again
+    assert (len(thread.posted), len(thread.edits)) == (1, 0)
 
 
 def test_a_failed_stage5_result_with_a_stale_old_report_posts_the_warning_once(calibrated: SimpleNamespace) -> None:
@@ -555,7 +523,7 @@ def test_a_failed_stage5_result_with_a_stale_old_report_posts_the_warning_once(c
     failed = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.FAILED, error="calibrate blew up")
     assert rerun_calibration(ctx, failed, run, seams=seams) is failed
     assert rerun_calibration(ctx, failed, run, seams=seams) is failed
-    assert len(calls) == 1  # a failed Stage 5 is not rerun here; the old report is only marked
+    assert len(calls) == 1
     (warning,) = thread.stale_bodies()
     assert "Calibration report is stale" in warning and new_head[:7] in warning
     assert (len(thread.posted), len(thread.edits)) == (1, 0)
@@ -566,7 +534,7 @@ def test_a_failed_stage5_result_with_a_current_report_or_a_dry_run_posts_nothing
     approve_pr(ctx)
     seams, thread = recording_thread()
     failed = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.FAILED, error="calibrate blew up")
-    assert rerun_calibration(ctx, failed, run, seams=seams) is failed  # the old report still covers the head
+    assert rerun_calibration(ctx, failed, run, seams=seams) is failed
     move_head(calibrated)
     ctx.dry_run = True
     assert rerun_calibration(ctx, failed, run, seams=seams) is failed
@@ -585,7 +553,7 @@ def test_a_review_restart_result_posts_nothing_and_is_not_checked(calibrated: Si
     )
     move_head(calibrated)
     restart = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SKIPPED, payload={"review_restart": True})
-    assert rerun_calibration(ctx, restart, run, seams=seams) is restart  # the restart reruns Stage 5 itself
+    assert rerun_calibration(ctx, restart, run, seams=seams) is restart
     assert (thread.posted, thread.edits, head_lookups, len(calls)) == ([], [], [], 1)
     assert rerun_calibration(ctx, result, lambda context: restart, seams=thread.seams()) is restart
     assert (thread.posted, thread.edits) == ([], [])
@@ -598,12 +566,12 @@ def test_a_rerun_that_fails_after_publishing_a_covering_report_posts_nothing(cal
     move_head(calibrated)
 
     def red_final_head_ci(context: FlowContext) -> StageResult:
-        run(context)  # the fresh report is published, then the final-head CI comes back red
+        run(context)
         return StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.FAILED, error="final-head CI is red")
 
     failed = rerun_calibration(ctx, result, red_final_head_ci, seams=seams)
     assert (failed.status, failed.error, len(calls)) == (StageStatus.FAILED, "final-head CI is red", 2)
-    assert report_staleness(ctx).moved is False  # the published report covers the head
+    assert report_staleness(ctx).moved is False
     assert (thread.posted, thread.edits) == ([], [])
 
 
@@ -630,7 +598,7 @@ def test_a_stale_warning_followed_by_a_fresh_calibration_is_superseded_naming_th
     assert "superseded by the fresh calibration report" in warning and f"`{fresh[:7]}`" in warning
     assert STALE_MARKER in warning and f"{SUPERSEDED_MARKER_PREFIX}{fresh} -->" in warning
     assert "do not merge" not in warning
-    assert resolve_stale(ctx, "7", fresh, seams)["edited"] == 0  # idempotent
+    assert resolve_stale(ctx, "7", fresh, seams)["edited"] == 0
     assert (len(thread.posted), len(thread.edits)) == (1, 1)
 
 
@@ -740,7 +708,7 @@ def test_the_review_gate_records_a_failed_rerun_outcome(calibrated: SimpleNamesp
     record = review_calibration_freshness(ctx, "7", run_stage=failing, seams=seams)
     assert (record["rerun"], record["rerun_status"]) == (True, "failed")
     assert record["rerun_error"] == "calibrate blew up"
-    assert posted_at_attempt == [0]  # the warning appears only after the rerun failed with the report still stale
+    assert posted_at_attempt == [0]
     assert (record["signal"]["posted"], len(thread.posted)) == (True, 1)
     (warning,) = thread.stale_bodies()
     assert "Calibration report is stale" in warning and new_head[:7] in warning
@@ -770,7 +738,7 @@ def test_the_review_gate_signals_only_without_a_prior_stage5_result(calibrated: 
     move_head(calibrated)
     record = review_calibration_freshness(standalone, "7", run_stage=stage_runner(calls), seams=seams)
     assert (record["moved"], record["rerun"]) == (True, False)
-    assert len(calls) == 1  # the standalone loop cannot run Stage 5; the signal still marks the PR
+    assert len(calls) == 1
     assert (record["signal"]["posted"], len(stale_warnings(posted))) == (True, 1)
 
 
@@ -794,7 +762,8 @@ def test_a_standalone_gate_on_a_code_push_warns_once_and_a_second_pass_does_not_
 def test_the_gate_with_skip_calibrate_and_an_unfinished_stage5_result_still_warns(calibrated: SimpleNamespace) -> None:
     calibrated_flow(calibrated)
     ctx = standalone_context(calibrated)
-    ctx.skip_calibrate = True  # no Stage 5 will replace the report in this run
+    # why: no Stage 5 may replace the report in this run
+    ctx.skip_calibrate = True
     ctx.stage_results["calibrate"] = StageResult(stage=FlowStage.CALIBRATE, status=StageStatus.SKIPPED)
     seams, thread = recording_thread()
     move_head(calibrated)
@@ -803,7 +772,7 @@ def test_the_gate_with_skip_calibrate_and_an_unfinished_stage5_result_still_warn
 
 
 def test_the_gate_on_a_pr258_shaped_head_posts_nothing(repos: SimpleNamespace) -> None:
-    pr258_history(repos)  # a ledger-only merge of main, a review ledger row and a calibration commit after the report
+    pr258_history(repos)
     seams, thread = recording_thread()
     assert review_calibration_freshness(standalone_context(repos), "7", seams=seams) is None
     assert (thread.posted, thread.edits) == ([], [])
@@ -832,11 +801,10 @@ def test_the_gate_defers_to_the_stage5_still_ahead_in_this_run_and_posts_nothing
     record = review_calibration_freshness(ctx, "7", run_stage=run, seams=seams)
     assert (record["moved"], record["rerun"]) == (True, False)
     assert record["signal"] == {"posted": False, "edited": 0, "reason": "deferred to Stage 5 of this run"}
-    assert (thread.posted, thread.edits, len(calls)) == ([], [], 1)  # the pipeline's Stage 5 replaces the report
+    assert (thread.posted, thread.edits, len(calls)) == ([], [], 1)
 
 
 def test_the_review_gate_posts_the_refreshed_comment_without_an_approved_consensus(calibrated: SimpleNamespace) -> None:
-    """The gate's explicit PR number reaches the refreshed comment even when no approval names the PR."""
     ctx, _, calls, run = calibrated_flow(calibrated)
     seams, posted = recording_seams()
     move_head(calibrated)
@@ -847,7 +815,6 @@ def test_the_review_gate_posts_the_refreshed_comment_without_an_approved_consens
 
 
 def test_posting_gate_reports_calibration_freshness(tmp_path: Path) -> None:
-    """The loop runs the calibration staleness gate after the posting decision and reports its record."""
     from sandbox_executor.flow import run_review_loop
 
     from tests.test_review_loop import _green_loop_patches, _loop_ctx
@@ -861,7 +828,7 @@ def test_posting_gate_reports_calibration_freshness(tmp_path: Path) -> None:
         res = run_review_loop(_loop_ctx(tmp_path, dry_run=True), target="feature/x", dry_run=True, max_iterations=1)
 
     gate.assert_called_once()
-    assert gate.call_args.args[1] is None  # no PR was created, so the gate gets no PR number
+    assert gate.call_args.args[1] is None
     assert res["calibration_freshness"] is sentinel
 
 
@@ -902,15 +869,12 @@ def test_the_pipeline_passes_the_stage5_result_through_the_rerun_trigger(tmp_pat
         engine.run()
     trigger.assert_called_once()
     assert trigger.call_args.args[1] is stage_result
-    assert ctx.stage_results["calibrate"] is refreshed  # the checkpoint sees the refreshed result
-
-
-# --- PR #203 nits: the comment poster never raises; the gate stores the refreshed Stage 5 result -------------------
+    assert ctx.stage_results["calibrate"] is refreshed
 
 
 def test_marked_comment_never_raises_on_a_malformed_review_payload(tmp_path: Path) -> None:
     ctx = FlowContext(target_worktree=str(tmp_path), execution_branch=EXEC, agent="a", model="m")
-    # A non-dict consensus makes approval_pr_number raise AttributeError ('str' has no attribute 'get').
+    # why: a non-dict consensus makes approval_pr_number raise AttributeError
     ctx.stage_results["review"] = StageResult(
         stage=FlowStage.REVIEW, status=StageStatus.HALTED_FOR_HUMAN, payload={"consensus": "approved"}
     )

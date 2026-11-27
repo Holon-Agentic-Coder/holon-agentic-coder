@@ -14,6 +14,7 @@ DEFAULT_TARGET_BRANCH = "main"
 
 # why: measuring from the target merge-base never counts files that arrived only through merging the target branch.
 DIFF_BASE_TARGET_MERGE_BASE = "target_merge_base"
+# why: a re-run after a merge-commit merge falls back here and recounts target files; calibrate before merge.
 DIFF_BASE_PLAN = "plan"
 DIFF_BASE_MERGE_BASE = "merge_base_fallback"
 DIFF_BASE_FIRST_PARENT = "first_parent_fallback"

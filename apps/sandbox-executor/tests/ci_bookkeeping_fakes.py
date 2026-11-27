@@ -108,6 +108,10 @@ def gate_skipped_job(name: str = UNIT_JOB) -> dict[str, object]:
     return job(name, marker="skipped")
 
 
+def cancelled_job(name: str = UNIT_JOB) -> dict[str, object]:
+    return job(name, conclusion="cancelled")
+
+
 def legacy_success_job(name: str = UNIT_JOB) -> dict[str, object]:
     return job(name)
 

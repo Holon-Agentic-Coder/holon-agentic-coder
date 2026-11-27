@@ -31,14 +31,18 @@ from scripts.ci_bookkeeping_gate import (
 from tests.ci_bookkeeping_fakes import (
     BRANCH,
     MACOS_JOB,
+    NEW_HEAD_SHA,
     REPO,
     TOKEN,
+    TREE_IDS,
     WORKFLOW,
     FakeGitHub,
+    cancelled_job,
     comparison,
     gate_skipped_job,
     job,
     legacy_success_job,
+    merge_scene,
     real_success_job,
 )
 
@@ -803,3 +807,29 @@ def test_main_never_prints_the_token_or_the_error_text(tmp_path: Path, capsys: p
     assert TOKEN not in step_output(environ)
     assert all(TOKEN not in url for url in fake.urls)
     assert fake.auth == [f"Bearer {TOKEN}"]
+
+
+def test_synchronize_bookkeeping_push_over_cancelled_clean_merge_skips() -> None:
+    post_sha = "7" * 40
+    base = {"scripts/a.py": "A = 1\n", "docs/b.md": "b\n"}
+    previous = {"scripts/a.py": "A = 2\n", "docs/b.md": "b\n"}
+    merged_in = {"scripts/a.py": "A = 1\n", "docs/b.md": "c\n"}
+    merged = {"scripts/a.py": "A = 2\n", "docs/b.md": "c\n"}
+    fake = merge_scene(base, previous, merged_in, merged)
+    fake.commits[post_sha] = (TREE_IDS["merged"], [NEW_HEAD_SHA])
+    fake.compares[(NEW_HEAD_SHA, post_sha)] = comparison(REPORT_FILE)
+    fake.add_run(50, NEW_HEAD_SHA, cancelled_job())
+
+    decision = gate(fake, context(before=NEW_HEAD_SHA, head_sha=post_sha, run_number=51, base_ref="main"))
+
+    assert (decision.skip, decision.rule) == (True, "merge-push-clean-main-merge")
+
+
+def test_non_merge_bookkeeping_push_after_cancelled_run_stays_not_successful() -> None:
+    fake = pushed(PLAN_FILE).add_run(48, SHA_A, real_success_job()).add_run(49, SHA_B, cancelled_job())
+    fake.commits[SHA_C] = (TREE_IDS["merged"], [SHA_B])
+    fake.commits[SHA_B] = (TREE_IDS["previous"], [SHA_A])
+    fake.commits[SHA_A] = (TREE_IDS["base"], [])
+    fake.compares[(SHA_A, SHA_B)] = comparison(REPORT_FILE)
+
+    assert gate(fake) == Decision(False, "previous-run-not-successful", "cancelled in run 49")

@@ -123,7 +123,8 @@ def resolve_carried_first(
 
     A failed pass writes nothing and leaves every row open. Otherwise its rejections, and its applied fixes once the
     head moved, are recorded as ACT-RES rows; every other row stays open. An applied fix without a push is also returned
-    as ``pending`` for the loop to record later, as it does for its own unpushed fixes; it does not block approval.
+    as ``pending`` for the loop to record later, as it does for its own unpushed fixes; with no commit it blocks
+    approval.
     """
     run.context.log(
         f"[Review Loop] Resolving {len(carried)} carried finding(s) from an earlier iteration before reviewing."

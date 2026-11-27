@@ -88,6 +88,7 @@ from sandbox_executor.flow.review.verdict import (
     _loop_status,
     consensus_blockers,
     decide_returned_consensus,
+    finding_outcome_blockers,
     not_approved_verdicts,
     render_final_verdicts,
 )
@@ -108,6 +109,7 @@ from sandbox_executor.review_ensemble import (
     _any_reviewer_objects,
     run_ensemble,
 )
+from sandbox_executor.review_finding_outcomes import with_commit
 from sandbox_executor.review_report import (
     FindingDisposition,
     FindingRow,
@@ -386,6 +388,11 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
             context.log(f"[Review Loop] Consensus blocked at iteration {iteration}: {blocker}.")
         reviewer_findings = collect_review_data(reviewers).findings
         reviewer_objected = _any_reviewer_objects(reviewers) or bool(reviewer_findings) or bool(blockers)
+        # why: added after reviewer_objected so the CI fast path and dry runs never see these blockers.
+        outcome_dispositions = (*all_dispositions, *pending_dispositions, *rejected_history.values())
+        blockers += finding_outcome_blockers(
+            reviewers, merge_findings(iter_findings, carried_rows), outcome_dispositions
+        )
 
         # 3. CI status inspection: post-review gate or fast-path probe (see ci_inspection.py)
         ci_inputs = dataclasses.replace(
@@ -630,7 +637,8 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
         head_changed = bool(resolver_outcome.pushed)
         if applied_now or (head_changed and pending_dispositions):
             if head_changed or iteration >= last_label:
-                to_record = (*pending_dispositions, *applied_now)
+                commit_sha = resolver_outcome.head_sha if head_changed else None
+                to_record = with_commit((*pending_dispositions, *applied_now), commit_sha)
                 if to_record:
                     suppressed_ledger_records += recorder.record(iteration, to_record)
                 pending_dispositions = ()

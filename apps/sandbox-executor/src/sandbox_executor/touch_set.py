@@ -191,6 +191,7 @@ def _glob_regex(pattern: str) -> re.Pattern[str]:
 
 def entry_matches(entry: TouchSetEntry, path: str) -> bool:
     normalised_path = normalise_touch_path(path)
+    # why: literal paths with brackets (e.g. app/[id]/page.tsx) must match themselves before glob expansion
     if normalised_path == entry.path:
         return True
     is_directory_entry = entry.path.endswith("/")

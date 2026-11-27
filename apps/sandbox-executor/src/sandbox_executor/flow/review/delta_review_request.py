@@ -1,10 +1,3 @@
-"""The ``ReviewRequest`` of a scoped delta review: the delta diff, the full modified files, the addressed findings.
-
-The delta diff is bounded by ``bound_review_diff``, as the full review's is. Everything agent-visible is redacted; each
-file is capped at the decision's ``context_bytes`` with a visible marker and the files together at
-``CONTEXT_FILES_FACTOR`` times that, later files listed by name only.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -21,7 +14,6 @@ CONTEXT_FILES_FACTOR = 4
 
 
 def _bounded_text(text: str, cap: int) -> str:
-    """``text`` cut to ``cap`` UTF-8 bytes, with a marker naming how much was left out."""
     data = text.encode("utf-8")
     if len(data) <= cap:
         return text
@@ -32,7 +24,6 @@ def _bounded_text(text: str, cap: int) -> str:
 def _context_files(
     git: DeltaRepo, head: str, paths: Sequence[str], cap: int
 ) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]]:
-    """``((path, redacted bounded text), ...)`` for the paths that exist as text at ``head``, and those left out."""
     shown: list[tuple[str, str]] = []
     omitted: list[str] = []
     total = 0
@@ -52,7 +43,6 @@ def _context_files(
 def build_delta_request(
     context: FlowContext, target: ReviewTarget, decision: ReviewMode, iteration: int, pr_text: tuple[str, str]
 ) -> ReviewRequest:
-    """The scoped request for ``target``'s head; raises ``RuntimeError`` when the decision is not for that head."""
     head, repo_dir = target.head_sha, context.target_worktree
     git = DeltaRepo(repo_dir)
     if not decision.scoped or not head or head != decision.head:
@@ -69,7 +59,6 @@ def build_delta_request(
 def scoped_review_request(
     context: FlowContext, target: ReviewTarget, iteration: int, pr_text: tuple[str, str]
 ) -> ReviewRequest | None:
-    """The scoped request when this pass is scoped, else None; a failed build falls back to a full pass."""
     decision = current_decision(context)
     if not decision.scoped:
         return None

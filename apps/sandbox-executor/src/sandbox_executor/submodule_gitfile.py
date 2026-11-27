@@ -132,13 +132,6 @@ def _resolve_module_gitdir(repo_dir: str, name: str, runner: GitRunnerCallable) 
         full = candidate if os.path.isabs(candidate) else os.path.join(repo_dir, candidate)
         if os.path.isdir(full):
             return os.path.realpath(full)
-    common = runner(["rev-parse", "--git-common-dir"], cwd=repo_dir, check=False)
-    if common.returncode == 0 and common.stdout.strip():
-        common_dir = common.stdout.strip()
-        common_full = common_dir if os.path.isabs(common_dir) else os.path.join(repo_dir, common_dir)
-        fallback = os.path.join(common_full, "modules", name)
-        if os.path.isdir(fallback):
-            return os.path.realpath(fallback)
     return None
 
 

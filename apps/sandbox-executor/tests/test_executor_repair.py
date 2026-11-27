@@ -464,3 +464,80 @@ class TestExecutor(GitRemoteHarness, unittest.TestCase):
             with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
                 self.assertFalse(executor._repair_git_repo(workspace_dir, err, "main"))
             self.assertIn("holon-coherence/.git", mock_stderr.getvalue())
+
+    def test_unrepairable_submodule_gitfile_in_linked_worktree_fails_closed(self):
+        plan_branch = "I-456/P-123/_"
+        with tempfile.TemporaryDirectory(prefix="sandbox_test_") as base_dir:
+            bare_dir, _ = self._create_bare_remote_with_plan(base_dir, plan_branch)
+            workspace_dir = self._clone_workspace(base_dir, bare_dir, plan_branch)
+            main_module_git_dir = self._add_local_submodule(base_dir, workspace_dir)
+            main_worktree_before = subprocess.run(
+                [
+                    "git",
+                    "config",
+                    "--file",
+                    os.path.join(main_module_git_dir, "config"),
+                    "--get",
+                    "core.worktree",
+                ],
+                cwd=workspace_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+
+            wt_dir = os.path.join(base_dir, "linked_wt")
+            subprocess.run(["git", "worktree", "add", "-q", "-b", "linked", wt_dir], cwd=workspace_dir, check=True)
+            subprocess.run(
+                ["git", "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"],
+                cwd=wt_dir,
+                check=True,
+            )
+            wt_mod_rel = subprocess.run(
+                ["git", "rev-parse", "--git-path", "modules/holon-coherence"],
+                cwd=wt_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            wt_module_git_dir = wt_mod_rel if os.path.isabs(wt_mod_rel) else os.path.join(wt_dir, wt_mod_rel)
+            shutil.rmtree(wt_module_git_dir)
+
+            broken_pointer = "gitdir: /nonexistent-container/workspace/.git/modules/holon-coherence\n"
+            wt_gitfile = Path(wt_dir, "holon-coherence", ".git")
+            wt_gitfile.write_text(broken_pointer, encoding="utf-8")
+
+            healthy, err = executor._probe_git_repo(wt_dir)
+            self.assertFalse(healthy)
+            self.assertIn("holon-coherence/.git", err)
+
+            with patch("sys.stderr", new_callable=io.StringIO) as mock_stderr:
+                self.assertFalse(executor._repair_git_repo(wt_dir, err, "main"))
+            self.assertIn("holon-coherence/.git", mock_stderr.getvalue())
+            self.assertEqual(wt_gitfile.read_text(encoding="utf-8"), broken_pointer)
+
+            main_worktree_after = subprocess.run(
+                [
+                    "git",
+                    "config",
+                    "--file",
+                    os.path.join(main_module_git_dir, "config"),
+                    "--get",
+                    "core.worktree",
+                ],
+                cwd=workspace_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            self.assertEqual(main_worktree_after, main_worktree_before)
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "rev-parse", "--is-inside-work-tree"],
+                    cwd=os.path.join(workspace_dir, "holon-coherence"),
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip(),
+                "true",
+            )

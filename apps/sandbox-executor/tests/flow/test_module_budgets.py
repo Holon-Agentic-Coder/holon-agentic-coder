@@ -68,7 +68,7 @@ def test_the_live_configuration_holds_only_the_three_keys_and_sorted_overrides_o
     config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
     assert list(config) == ["default_max_lines", "exclude", "overrides"]
     # The maintainer's staged schedule lowers the default by 50 per pull request (400, 350, 300, 250).
-    assert config["default_max_lines"] == 400
+    assert config["default_max_lines"] == 350
     assert all(isinstance(entry["reason"], str) and entry["reason"].strip() for entry in config["exclude"])
     assert list(config["overrides"]) == sorted(config["overrides"])
     assert all(type(limit) is int and limit > config["default_max_lines"] for limit in config["overrides"].values())

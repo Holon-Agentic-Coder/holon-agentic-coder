@@ -9,10 +9,8 @@ PACKAGE_DIR = Path(__file__).resolve().parents[1] / "src" / "sandbox_executor"
 
 MODULE_BROAD_EXCEPT_BASELINES: dict[str, int] = {
     "agent_runner.py": 6,
-    "attribution_check.py": 1,
     "calibration/branches.py": 2,
     "calibration/generate.py": 3,
-    "calibration/physics.py": 1,
     "calibration/refs.py": 11,
     "calibration/run.py": 1,
     "calibration_predicted.py": 1,
@@ -76,12 +74,9 @@ MODULE_BROAD_EXCEPT_BASELINES: dict[str, int] = {
     "flow/stages/stage_support.py": 1,
     "flow/target_sync_merge.py": 2,
     "formatting.py": 1,
-    "knowledge/consult.py": 1,
     "knowledge/ledger_fragment_sync.py": 1,
     "knowledge/ledger_sync.py": 1,
-    "knowledge/promotion_rules.py": 1,
     "knowledge/records.py": 2,
-    "knowledge/stats.py": 1,
     "launcher/coherence.py": 1,
     "launcher/containers.py": 1,
     "ledger/lock.py": 1,
@@ -93,8 +88,8 @@ MODULE_BROAD_EXCEPT_BASELINES: dict[str, int] = {
 }
 
 PACKAGE_BROAD_EXCEPT_BASELINES: dict[str, int] = {
-    "": 14,
-    "calibration": 18,
+    "": 13,
+    "calibration": 17,
     "cli": 6,
     "cli/commands": 3,
     "entrypoint": 12,
@@ -103,7 +98,7 @@ PACKAGE_BROAD_EXCEPT_BASELINES: dict[str, int] = {
     "flow/github": 22,
     "flow/review": 18,
     "flow/stages": 7,
-    "knowledge": 7,
+    "knowledge": 4,
     "launcher": 2,
     "ledger": 6,
 }

@@ -9,6 +9,8 @@ of one fingerprint, so promotion really writes one ``KB-failure`` entry.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import subprocess
 from pathlib import Path
@@ -24,6 +26,8 @@ from sandbox_executor.flow.stages.calibrate import run_calibrate_stage
 from sandbox_executor.knowledge.index import ActionIndexDatabase
 from sandbox_executor.ledger import read_merged_rows_at_ref, read_merged_text
 from sandbox_executor.ref_names import calibration_branch
+
+from tests.calibrate_scenarios import own_copy, run_guarded_template
 
 EXEC = "I-1-x/P-2-y/E-3-z/_"
 CALIBRATED = calibration_branch(EXEC)
@@ -63,9 +67,8 @@ def _seed_rows() -> list[dict]:
 
 
 def make_repo(root: Path) -> SimpleNamespace:
-    """A bare origin and a host checkout (on ``operator-work``) whose execution branch holds a plan and the ledger."""
     origin, host = root / "origin.git", root / "host"
-    root.mkdir(parents=True)
+    root.mkdir(parents=True, exist_ok=True)
     git(root, "init", "-q", "--bare", "-b", "main", str(origin))
     git(root, "clone", "-q", str(origin), str(host))
     git(host, "checkout", "-qb", "main")
@@ -84,11 +87,17 @@ def make_repo(root: Path) -> SimpleNamespace:
     git(host, "commit", "-qm", "execution")
     git(host, "push", "-q", "origin", EXEC)
     git(host, "checkout", "-qb", "operator-work", "main")
-    git(host, "checkout", "-q", EXEC, "--", LEDGER_REL)  # the action index is built from the execution's ledger
+    git(host, "checkout", "-q", EXEC, "--", LEDGER_REL)
     ActionIndexDatabase(db_path=str(host / DB_REL)).sync_ledger(str(ledger))
     git(host, "rm", "-q", "--cached", LEDGER_REL)
     ledger.unlink()
-    return SimpleNamespace(host=host, exec_sha=git(host, "rev-parse", EXEC))
+    return SimpleNamespace(origin=origin, host=host, exec_sha=git(host, "rev-parse", EXEC))
+
+
+def _own_repo(template: SimpleNamespace, target: Path) -> SimpleNamespace:
+    own = own_copy(template, target)
+    own.exec_sha = template.exec_sha
+    return own
 
 
 @pytest.fixture(autouse=True)
@@ -98,8 +107,53 @@ def no_prettier():
 
 
 @pytest.fixture
-def repo(tmp_path: Path) -> SimpleNamespace:
-    return make_repo(tmp_path / "cli")
+def full_stage5_repo_template(
+    tmp_path_factory: pytest.TempPathFactory,
+    gh_write_guard: list[str],
+    network_guard_fixture: list[str],
+) -> SimpleNamespace:
+    def build(root: Path) -> SimpleNamespace:
+        built = make_repo(root)
+        return SimpleNamespace(repos=SimpleNamespace(origin=built.origin, host=built.host), exec_sha=built.exec_sha)
+
+    root, built = run_guarded_template(
+        tmp_path_factory, "calibrate-full-stage5-repo", build, (gh_write_guard, network_guard_fixture)
+    )
+    return SimpleNamespace(root=root, repos=built.repos, exec_sha=built.exec_sha)
+
+
+@pytest.fixture
+def repo(full_stage5_repo_template: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
+    return _own_repo(full_stage5_repo_template, tmp_path / "cli")
+
+
+@pytest.fixture
+def cli_calibrated_template(
+    full_stage5_repo_template: SimpleNamespace,
+    tmp_path_factory: pytest.TempPathFactory,
+    gh_write_guard: list[str],
+    network_guard_fixture: list[str],
+) -> SimpleNamespace:
+    def build(root: Path) -> SimpleNamespace:
+        own = _own_repo(full_stage5_repo_template, root)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_cli(own, "--json")
+        return SimpleNamespace(
+            repos=SimpleNamespace(origin=own.origin, host=own.host), exec_sha=own.exec_sha, stdout=buf.getvalue()
+        )
+
+    root, built = run_guarded_template(
+        tmp_path_factory, "calibrate-full-stage5-cli-json", build, (gh_write_guard, network_guard_fixture)
+    )
+    return SimpleNamespace(root=root, repos=built.repos, exec_sha=built.exec_sha, stdout=built.stdout)
+
+
+@pytest.fixture
+def cli_calibrated(cli_calibrated_template: SimpleNamespace, tmp_path: Path) -> SimpleNamespace:
+    own = _own_repo(cli_calibrated_template, tmp_path / "cli-calibrated")
+    own.stdout = cli_calibrated_template.stdout
+    return own
 
 
 def run_flow(repo: SimpleNamespace) -> StageResult:
@@ -142,20 +196,21 @@ def knowledge_files(repo: SimpleNamespace) -> list[str]:
     return tree.splitlines()
 
 
-def test_cli_produces_the_same_commits_and_ledger_rows_as_the_flow_stage(tmp_path: Path, capsys) -> None:
-    flow_repo, cli_repo = make_repo(tmp_path / "flow"), make_repo(tmp_path / "cli")
+def test_cli_produces_the_same_commits_and_ledger_rows_as_the_flow_stage(
+    full_stage5_repo_template: SimpleNamespace, cli_calibrated: SimpleNamespace, tmp_path: Path
+) -> None:
+    flow_repo = _own_repo(full_stage5_repo_template, tmp_path / "flow")
 
     assert run_flow(flow_repo).status == StageStatus.SUCCESS
-    run_cli(cli_repo)
 
     expected = [
         "chore(calibration): add calibration report for P-2-y",
         "chore(calibration): record stage 5 reconciliation",
         "chore(calibration): record stage 5 promoted knowledge and wisdom",
     ]
-    assert calibrated_subjects(flow_repo) == calibrated_subjects(cli_repo) == expected
-    assert reconciliation_rows(flow_repo) == reconciliation_rows(cli_repo)
-    assert reconciliation_rows(cli_repo) == [
+    assert calibrated_subjects(flow_repo) == calibrated_subjects(cli_calibrated) == expected
+    assert reconciliation_rows(flow_repo) == reconciliation_rows(cli_calibrated)
+    assert reconciliation_rows(cli_calibrated) == [
         {
             "parent_action_id": EXEC,
             "event_type": "reconciliation",
@@ -164,8 +219,10 @@ def test_cli_produces_the_same_commits_and_ledger_rows_as_the_flow_stage(tmp_pat
             "reason": "Stage 5 calibration reconciled execution outcome to success",
         }
     ]
-    assert [r.get("event_type") for r in ledger_rows(flow_repo)] == [r.get("event_type") for r in ledger_rows(cli_repo)]
-    assert knowledge_files(flow_repo) == knowledge_files(cli_repo) != []
+    assert [r.get("event_type") for r in ledger_rows(flow_repo)] == [
+        r.get("event_type") for r in ledger_rows(cli_calibrated)
+    ]
+    assert knowledge_files(flow_repo) == knowledge_files(cli_calibrated) != []
 
 
 def test_report_only_skips_reconciliation_and_promotion_and_says_so(repo: SimpleNamespace, capsys) -> None:
@@ -186,23 +243,19 @@ def test_report_only_json_names_the_mode(repo: SimpleNamespace, capsys) -> None:
     assert stage5["newly_promoted_count"] == 0
 
 
-def test_second_run_appends_no_duplicate_rows_and_promotes_nothing(repo: SimpleNamespace, capsys) -> None:
-    """The second run adds no Stage 5 rows or commits.
+def test_second_run_appends_no_duplicate_rows_and_promotes_nothing(cli_calibrated: SimpleNamespace, capsys) -> None:
+    first_subjects = calibrated_subjects(cli_calibrated)
 
-    ``run_calibrate`` itself still appends its ACT-CAL row and commits the report again, exactly as a flow rerun of
-    Stage 5 does today, so the only new commit is the report commit.
-    """
-    run_cli(repo, "--json", capsys=capsys)
-    first_subjects = calibrated_subjects(repo)
-
-    second = json.loads(run_cli(repo, "--json", capsys=capsys))["stage5"]
+    second = json.loads(run_cli(cli_calibrated, "--json", capsys=capsys))["stage5"]
 
     assert second["reconciliation"]["status"] == "already_recorded"
     assert second["reconciliation"]["rows_appended"] == 0
     assert second["newly_promoted_count"] == 0
-    assert len(reconciliation_rows(repo)) == 1
-    assert calibrated_subjects(repo)[len(first_subjects) :] == ["chore(calibration): add calibration report for P-2-y"]
-    assert knowledge_files(repo) == ["holon-knowledge/kb/failure_modes/KB-failure-stage5fp.json"]
+    assert len(reconciliation_rows(cli_calibrated)) == 1
+    assert calibrated_subjects(cli_calibrated)[len(first_subjects) :] == [
+        "chore(calibration): add calibration report for P-2-y"
+    ]
+    assert knowledge_files(cli_calibrated) == ["holon-knowledge/kb/failure_modes/KB-failure-stage5fp.json"]
 
 
 def test_no_commit_leaves_head_refs_and_ledger_unchanged(repo: SimpleNamespace, capsys) -> None:
@@ -229,8 +282,8 @@ def test_no_commit_leaves_head_refs_and_ledger_unchanged(repo: SimpleNamespace, 
     assert not (repo.host / "holon-knowledge/kb").exists()
 
 
-def test_json_output_is_one_document_with_the_stage5_outcome(repo: SimpleNamespace, capsys) -> None:
-    doc = json.loads(run_cli(repo, "--json", capsys=capsys))
+def test_json_output_is_one_document_with_the_stage5_outcome(cli_calibrated: SimpleNamespace) -> None:
+    doc = json.loads(cli_calibrated.stdout)
 
     assert doc["plan_id"] == "P-2-y"
     assert doc["stage5"] == {

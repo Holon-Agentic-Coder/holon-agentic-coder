@@ -14,6 +14,7 @@ from sandbox_executor.flow.github.adapter_runner import (
     gh_env,
     spawn_gh,
 )
+from sandbox_executor.flow.github.forge import GitForge
 
 PR_TIMEOUT_SECONDS = 60
 MERGE_TIMEOUT_SECONDS = 120
@@ -54,7 +55,7 @@ def _parse_created_pr_number(result: GhResult) -> int | None:
     return int(match.group(1)) if match else None
 
 
-class GitHubAdapter:
+class GitHubAdapter(GitForge):
     def __init__(
         self,
         repo_dir: str,
@@ -64,9 +65,17 @@ class GitHubAdapter:
         which: WhichFn | None = None,
     ) -> None:
         self.repo_dir = repo_dir
-        self.proxy_env = proxy_env
+        self._proxy_env = proxy_env
         self._run = run
         self._which = which
+
+    @property
+    def proxy_env(self) -> dict[str, str] | None:
+        return self._proxy_env
+
+    @proxy_env.setter
+    def proxy_env(self, value: dict[str, str] | None) -> None:
+        self._proxy_env = value
 
     def _runner(self) -> RunFn:
         return self._run or subprocess.run

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
+from sandbox_executor.flow.admission_lock import AdmissionLockError, _live_runner_worktrees
 from sandbox_executor.flow.admission_order import older_waiter_flows
 from sandbox_executor.flow.admission_state import BlockedBy
 from sandbox_executor.flow.base_files import base_branch_name, list_base_files
@@ -77,6 +79,28 @@ def _no_touch_set_reason(plan_branch: str) -> str:
     )
 
 
+def _filter_live_flows_and_waiters(
+    repo_dir: str,
+    flows: list[InFlightFlow],
+    waiters: list[BlockedWaiter],
+    run_git: GitRunner | None,
+) -> tuple[list[InFlightFlow], list[BlockedWaiter]] | AdmissionUnavailable:
+    if not waiters and all(flow.number is not None for flow in flows):
+        return flows, waiters
+    try:
+        live_worktrees = _live_runner_worktrees(repo_dir, run_git)
+    except AdmissionLockError as exc:
+        return AdmissionUnavailable(str(exc))
+    # why: open pull requests always block, while parked local flows release their planned touch set
+    live_flows = [
+        flow
+        for flow in flows
+        if flow.number is not None or (flow.worktree is not None and os.path.realpath(flow.worktree) in live_worktrees)
+    ]
+    live_waiters = [waiter for waiter in waiters if os.path.realpath(waiter.worktree) in live_worktrees]
+    return live_flows, live_waiters
+
+
 def decide_admission(context: FlowContext, run_gh: GhRunner | None, run_git: GitRunner | None) -> AdmissionDecision:
     plan_branch = str(context.plan_branch or "")
     own = read_plan_touch_set(context.target_worktree, plan_branch) if plan_branch else None
@@ -90,7 +114,11 @@ def decide_admission(context: FlowContext, run_gh: GhRunner | None, run_git: Git
     if isinstance(flows, AdmissionUnavailable):
         return refusal(context, reason=f"the flows in flight could not be discovered: {flows.reason}")
     waiters = local_blocked_waiters(context.target_worktree, checkpoints)
-    return _overlap_decision(context, own, flows, waiters, run_git)
+    filtered = _filter_live_flows_and_waiters(context.target_worktree, flows, waiters, run_git)
+    if isinstance(filtered, AdmissionUnavailable):
+        return refusal(context, reason=f"the flows in flight could not be discovered: {filtered.reason}")
+    live_flows, live_waiters = filtered
+    return _overlap_decision(context, own, live_flows, live_waiters, run_git)
 
 
 def _overlap_decision(

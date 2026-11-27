@@ -9,6 +9,7 @@ from sandbox_executor.launcher.proxy_paths import MITM_PROXY_CA_DIR, PROXY_CONNE
 
 logger = logging.getLogger(__name__)
 
+# why: dashboard password env var is forwarded value-less (-e NAME) so the secret never appears in docker run argv
 COHERENCE_WEB_PASSWORD_ENV = "HOLON_COHERENCE_WEB_PASSWORD"
 _DEFAULT_MITM_WEB_PORT = 8081
 _SIDECAR_WRITABLE_DIR_MODE = 0o775
@@ -39,12 +40,14 @@ def _resolve_host_dir(env_var: str, default_dir: str) -> str:
 def _ensure_writable_host_dirs(directories: tuple[str, ...]) -> None:
     for directory in directories:
         try:
+            # why: 0o775 lets non-root container UID 1000 write on Linux hosts without permission errors
             os.chmod(directory, _SIDECAR_WRITABLE_DIR_MODE)
         except OSError as exc:
             logger.debug("Could not chmod 0o775 on %s: %s", directory, exc)
 
 
 def _proxy_host_dirs(ca_cert_path: str, ca_key_path: str) -> tuple[str, str, str, str, str]:
+    # why: mount only narrow proxy-cache read-only, never ~/.holon (holds Root CA private key and auth sessions)
     proxy_cache_dir = os.path.join(proxy_paths._user_state_dir(), "proxy-cache")
     os.makedirs(proxy_cache_dir, exist_ok=True)
 

@@ -3,7 +3,7 @@ import sys
 import time
 from collections.abc import Callable
 
-from sandbox_executor import preflight_outage
+from sandbox_executor import preflight_cooldown, preflight_outage
 from sandbox_executor.agent_defaults import (
     Resolution,
     resolve_agent_runner,
@@ -36,6 +36,16 @@ def flow_dispatches_agent(from_stage: str | None) -> bool:
     return str(from_stage).strip().lower() in _AGENT_FLOW_STAGES
 
 
+def _print_preflight_failure(result: PreflightResult, *, gave_up: bool = False, outage_seconds: float = 0.0) -> None:
+    print(result.format_report(), file=sys.stderr)
+    if gave_up:
+        print(preflight_outage.format_outage_duration(outage_seconds), file=sys.stderr)
+    print(
+        "Aborting before any branch, checkpoint or ledger write. Use --skip-preflight to bypass this check.",
+        file=sys.stderr,
+    )
+
+
 def preflight_gate(
     agent: str,
     model: str,
@@ -48,6 +58,9 @@ def preflight_gate(
     if skip or preflight_skipped_by_env():
         logger.info("Pre-flight probe skipped (--skip-preflight or HOLON_SKIP_PREFLIGHT).")
         return None
+    if cooldown := preflight_cooldown.active_cooldown_result(agent, model):
+        _print_preflight_failure(cooldown)
+        return cooldown
     started_at = clock()
     timeout = resolve_timeout()
 
@@ -56,12 +69,7 @@ def preflight_gate(
 
     outcome = preflight_outage.wait_out_outage(probe, probe(), started_at, sleep=sleep, clock=clock)
     result = outcome.result
+    preflight_cooldown.sync_cooldown_for_result(result)
     if not result.ok:
-        print(result.format_report(), file=sys.stderr)
-        if outcome.gave_up:
-            print(preflight_outage.format_outage_duration(outcome.outage_seconds), file=sys.stderr)
-        print(
-            "Aborting before any branch, checkpoint or ledger write. Use --skip-preflight to bypass this check.",
-            file=sys.stderr,
-        )
+        _print_preflight_failure(result, gave_up=outcome.gave_up, outage_seconds=outcome.outage_seconds)
     return result

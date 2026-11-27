@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import subprocess
 
-from sandbox_executor.flow import FlowContext
+from sandbox_executor.flow import FlowContext, FlowStage, StageResult, StageStatus
+from sandbox_executor.flow.admission import AdmissionDecision, check_admission
 from sandbox_executor.flow.base_files import base_branch_name, list_base_files
+from sandbox_executor.flow.checkpoint import save_checkpoint
 from sandbox_executor.flow.in_flight import AdmissionUnavailable
+from sandbox_executor.git import run_git
 
-from tests.flow.helpers import _git, no_worktrees, seed_base_files
+from tests.flow.helpers import OTHER_PLAN, FakeGh, _git, make_plan_branch, no_worktrees, seed_base_files
 
 
 def test_lists_the_origin_tracking_tree_without_metadata(flow_repos):
@@ -55,3 +58,32 @@ def test_the_base_ref_is_resolved_through_the_injected_runner(flow_repos):
 
     assert isinstance(list_base_files(str(host), "main", recording_git), frozenset)
     assert [call[0] for call in calls] == ["rev-parse", "ls-tree"]
+
+
+def test_only_parked_local_flows_never_list_the_base_branch(flow_repos, tmp_path):
+    host, _origin = flow_repos
+    own_plan = "I-100-own/P-101-cccccccc-claude-agent-claude-opus-5-5/_"
+    make_plan_branch(host, own_plan, [{"path": "src/app.py"}])
+    make_plan_branch(host, OTHER_PLAN, [{"path": "src/"}])
+    second = tmp_path / "second"
+    _git(host, "worktree", "add", "-q", "--detach", str(second), "main")
+    parked = FlowContext(target_worktree=str(second), intent_data={"slug": "parked"}, plan_branch=OTHER_PLAN)
+    for stage in (FlowStage.INTENT, FlowStage.PLAN):
+        parked.stage_results[stage.value] = StageResult(stage=stage, status=StageStatus.SUCCESS)
+    save_checkpoint(parked)
+
+    calls: list[list[str]] = []
+
+    def recording_git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+        calls.append(list(args))
+        return run_git(args, cwd=cwd, check=False)
+
+    context = FlowContext(
+        target_worktree=str(host),
+        plan_branch=own_plan,
+        intent_branch="I-100-own/_",
+        intent_data={"target_branch": "release-9"},
+        token_reduce=False,
+    )
+    assert check_admission(context, FakeGh([], {}), recording_git) == AdmissionDecision(admitted=True)
+    assert not any(call[:1] == ["ls-tree"] for call in calls)

@@ -4,8 +4,11 @@ import sys
 from sandbox_executor.redaction import _MAX_REDACT_INPUT_LEN, redact_agent_secrets, redact_env_literals
 
 _DEFAULT_AGENT_LOG_BYTE_BUDGET: int = 65536
+# why: capping marker reserve at half the budget trades <256B accuracy rather than the never-mid-line guarantee
 _TRUNCATION_MARKER_RESERVE: int = 128
+# why: reaching past the cut keeps preceding key lines in regex scope; cost knob only, front-drop enforces safety
 _ANCHOR_CONTEXT_BYTES: int = 4096
+# why: reserving _ANCHOR_CONTEXT_BYTES under _MAX_REDACT_INPUT_LEN avoids raw redactor cuts that sever secrets
 _AGENT_LOG_BYTE_CEILING: int = _MAX_REDACT_INPUT_LEN - _ANCHOR_CONTEXT_BYTES
 _NO_COMPLETE_LINE_CAUSE: str = "no complete line within budget"
 _ANCHOR_CONTEXT_DROPPED_CAUSE: str = "anchor context dropped"
@@ -88,18 +91,21 @@ def prepare_agent_output_block(
 ) -> tuple[str, bool, int]:
     if max_bytes <= 0:
         max_bytes = _DEFAULT_AGENT_LOG_BYTE_BUDGET
+    # why: clamping keeps the full redaction region inside what redactors process faithfully without dropping output
     if max_bytes > _AGENT_LOG_BYTE_CEILING:
         max_bytes = _AGENT_LOG_BYTE_CEILING
 
     swept = redact_env_literals(raw_output)
     encoded = swept.encode("utf-8")
     if len(encoded) <= max_bytes:
+        # why: redact swept (never raw_output); sweeping shrinks values, avoiding _MAX_REDACT_INPUT_LEN cuts
         redacted = redact_agent_secrets(swept)
         if len(redacted.encode("utf-8")) <= max_bytes:
             return redacted, False, 0
 
     tail_budget = _tail_budget_for(max_bytes)
     redacted_region, dropped_bytes, causes = _redact_cut_region(encoded, tail_budget)
+    # why: dropping whole leading redacted lines avoids refit loops and never commits partial or unredacted lines
     encoded_tail, trimmed_bytes = _trim_leading_lines_to_budget(
         redacted_region.encode("utf-8"),
         tail_budget,
@@ -117,6 +123,7 @@ def _redact_cut_region(encoded: bytes, tail_budget: int) -> tuple[str, int, list
     context_start = max(0, cut_offset - _ANCHOR_CONTEXT_BYTES)
     context_break = encoded.rfind(b"\n", 0, context_start)
     ideal_start = 0 if context_break < 0 else context_break + 1
+    # why: _MAX_REDACT_INPUT_LEN wins over context to avoid raw cuts; _drop_unanchorable_front preserves safety
     region_start = max(ideal_start, len(encoded) - _MAX_REDACT_INPUT_LEN)
     causes: list[str] = []
     if region_start > ideal_start:
@@ -125,6 +132,7 @@ def _redact_cut_region(encoded: bytes, tail_budget: int) -> tuple[str, int, list
     dropped_bytes = region_start
     region = encoded[region_start:].decode("utf-8", errors="replace")
     redacted_region = redact_agent_secrets(region)
+    # why: a non-zero-start region's first line cannot be anchored internally, so drop it to avoid unredacted output
     if region_start:
         redacted_region, front_bytes = _drop_unanchorable_front(redacted_region)
         dropped_bytes += front_bytes

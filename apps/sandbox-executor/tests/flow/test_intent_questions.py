@@ -11,6 +11,7 @@ from sandbox_executor.flow.intent_questions import (
     validate_intent_questions,
 )
 from sandbox_executor.harness_reference_patterns import find_references, sample_reference
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 from sandbox_executor.intent_payload_rules import check_intent_payload
 
 
@@ -32,17 +33,27 @@ from sandbox_executor.intent_payload_rules import check_intent_payload
     ],
 )
 def test_unresolved_questions_keep_their_per_kind_label_and_text(intent, expected):
-    assert validate_intent_questions(intent) == (False, expected)
+    assert validate_intent_questions({**default_assumptions_fields(), **intent}) == (False, expected)
 
 
 def test_a_clarification_is_not_answered_through_its_id():
-    intent = {"clarifications": [{"id": "c1", "clarification": "Which DB?"}], "answers": {"c1": "Postgres"}}
+    intent = {
+        **default_assumptions_fields(),
+        "clarifications": [{"id": "c1", "clarification": "Which DB?"}],
+        "answers": {"c1": "Postgres"},
+    }
     assert validate_intent_questions(intent) == (False, ["Which DB? (unanswered clarification)"])
 
 
 def test_a_question_is_answered_through_its_id_or_text():
-    assert validate_intent_questions({"questions": [{"id": "q1"}], "answers": {"q1": "yes"}}) == (True, [])
-    intent = {"clarifications": [{"clarification": "Which DB?"}], "answers": [{"question": "Which DB?", "answer": "x"}]}
+    assert validate_intent_questions(
+        {**default_assumptions_fields(), "questions": [{"id": "q1"}], "answers": {"q1": "yes"}}
+    ) == (True, [])
+    intent = {
+        **default_assumptions_fields(),
+        "clarifications": [{"clarification": "Which DB?"}],
+        "answers": [{"question": "Which DB?", "answer": "x"}],
+    }
     assert validate_intent_questions(intent) == (True, [])
 
 
@@ -142,6 +153,7 @@ def test_intent_questions_reports_groups_in_order_and_ignores_other_shapes():
 
 def _clean_intent() -> dict[str, object]:
     return {
+        **default_assumptions_fields(),
         "goal": "Reject directory scope entries.",
         "scope": ["src/pkg/core.py", "tests/test_core.py (new)"],
         "acceptance_criteria": ["core.py rejects a directory entry."],

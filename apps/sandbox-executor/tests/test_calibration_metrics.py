@@ -42,6 +42,35 @@ class TestMetricsPhysicsLoader(unittest.TestCase):
             self.assertEqual(l_val, 0.25)
             self.assertEqual(m_val, 0.6)
 
+    def test_load_metrics_physics_typed_errors_return_defaults(self):
+        payloads = [
+            "{not valid json",
+            json.dumps({"lambda": "not-a-float", "mu": 0.6}),
+            json.dumps({"lambda": None, "mu": 0.6}),
+            json.dumps([0.2, 0.4]),
+        ]
+        for payload in payloads:
+            with (
+                self.subTest(payload=payload),
+                patch("os.path.exists", return_value=True),
+                patch("builtins.open", unittest.mock.mock_open(read_data=payload)),
+            ):
+                self.assertEqual(load_metrics_physics(), (0.3, 0.5))
+
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("builtins.open", side_effect=OSError("disk error")),
+        ):
+            self.assertEqual(load_metrics_physics(), (0.3, 0.5))
+
+    def test_load_metrics_physics_unexpected_error_propagates(self):
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("builtins.open", side_effect=RuntimeError("unexpected open bug")),
+            self.assertRaises(RuntimeError),
+        ):
+            load_metrics_physics()
+
 
 class TestMetricsParsing(unittest.TestCase):
     """Test parsing predicted and actual metrics."""

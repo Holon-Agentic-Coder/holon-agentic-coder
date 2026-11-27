@@ -15,10 +15,10 @@ from sandbox_executor.agent_api_error import detect_api_error
 from sandbox_executor.agent_runner import get_runner, get_workspace_dir
 from sandbox_executor.artefacts import PLAN_REQUIRED_METRICS, PLAN_SPEC, plan_write_protocol, validate_artefact
 from sandbox_executor.budgets import (
-    ENV_REPLAN_FEEDBACK,
     BudgetBreach,
     StageTimer,
     load_budgets,
+    read_replan_feedback,
     resolve_entropy_budget,
 )
 from sandbox_executor.decomposition_rule import should_decompose
@@ -311,7 +311,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
     entropy_budget = resolve_entropy_budget({}, intent_data)
 
     # why: re-plan feedback reaches the agent only via prompt and temp intent file, never a ledger or a merge notice
-    raw_feedback = os.getenv(ENV_REPLAN_FEEDBACK, "").strip()
+    raw_feedback = read_replan_feedback(os.environ)
     if "## Target branch merged" in raw_feedback:
         head_part, tail_part = raw_feedback.split("## Target branch merged", 1)
         replan_feedback = head_part.strip()

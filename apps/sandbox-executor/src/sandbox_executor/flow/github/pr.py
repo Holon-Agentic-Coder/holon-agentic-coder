@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 from sandbox_executor.flow.github.adapter import GitHubAdapter
+from sandbox_executor.flow.github.forge import GitForge
 from sandbox_executor.flow.github.mergeability_policy import (
     gh_view_verdict,
     local_error_result,
@@ -40,7 +41,7 @@ def check_pr_mergeability(
     target_branch: str = "main",
     proxy_env: dict[str, str] | None = None,
     *,
-    github: GitHubAdapter | None = None,
+    github: GitForge | None = None,
 ) -> dict[str, Any]:
     clean_branch = branch.strip() if branch else ""
     github = github or GitHubAdapter(repo_dir, proxy_env)
@@ -53,7 +54,7 @@ def check_pr_mergeability(
     return _local_mergeability(repo_dir, clean_branch, target_branch)
 
 
-def _gh_mergeability(github: GitHubAdapter, clean_branch: str) -> dict[str, Any] | None:
+def _gh_mergeability(github: GitForge, clean_branch: str) -> dict[str, Any] | None:
     for attempt in range(_GH_MERGEABILITY_MAX_ATTEMPTS):
         try:
             gh_proc = github.mergeability(clean_branch)
@@ -148,7 +149,7 @@ def create_or_update_pr(  # noqa: PLR0913
     body: str = "",
     proxy_env: dict[str, str] | None = None,
     *,
-    github: GitHubAdapter | None = None,
+    github: GitForge | None = None,
 ) -> dict[str, Any]:
     clean_branch = branch.strip() if branch else ""
     github = github or GitHubAdapter(repo_dir, proxy_env)

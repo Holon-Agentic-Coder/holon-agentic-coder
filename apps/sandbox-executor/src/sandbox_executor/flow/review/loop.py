@@ -21,6 +21,7 @@ from sandbox_executor.flow.git_refs import _resolve_review_commit
 from sandbox_executor.flow.github.adapter import GitHubAdapter
 from sandbox_executor.flow.github.ci import _extract_failed_ci_check_names, _wait_for_ci_registration, probe_ci_checks
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, CiWaitResult
+from sandbox_executor.flow.github.forge import GitForge
 from sandbox_executor.flow.github.pr import check_pr_mergeability, create_or_update_pr, format_review_git_trailers
 from sandbox_executor.flow.github.pr_head import PR_HEAD_TIMEOUT_SECONDS
 from sandbox_executor.flow.github.review_post import post_pr_review_consensus
@@ -136,7 +137,7 @@ def run_review_loop(  # noqa: C901, PLR0912, PLR0913, PLR0915
     skip_post: bool = False,
     first_iteration: int = 1,
     ledger_file: str | None = None,
-    github: GitHubAdapter | None = None,
+    github: GitForge | None = None,
 ) -> dict[str, Any]:
     """Execute the native Stage 4 review loop with the real reviewer ensemble.
 
@@ -913,7 +914,7 @@ def _review_window(context: FlowContext) -> tuple[int, int]:
     return done + 1, context.max_review_iterations - done
 
 
-def _run_engine_review_loop(context: FlowContext, *, github: GitHubAdapter | None = None) -> dict[str, Any]:
+def _run_engine_review_loop(context: FlowContext, *, github: GitForge | None = None) -> dict[str, Any]:
     """Run the remaining engine passes of Stage 4, continuing the checkpointed count; dispatch nothing when spent.
 
     ``github`` is the stage's adapter, handed to every pass of the loop.

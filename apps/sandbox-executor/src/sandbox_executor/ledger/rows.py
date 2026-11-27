@@ -14,6 +14,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
+from sandbox_executor.credential_redactor import CredentialRedactor
 from sandbox_executor.ledger.lock import LedgerRewriteError
 from sandbox_executor.ledger.order import utc_now_z
 from sandbox_executor.ledger.route import atomic_ledger_append
@@ -321,8 +322,6 @@ def try_append_action_record(
     preserve_shape: bool = True,
     log_fn: Callable[[str], None] | None = None,
 ) -> dict[str, Any] | None:
-    from sandbox_executor.knowledge.records import CredentialRedactor
-
     record_id = record.action_id if isinstance(record, ActionRecord) else str(record.get("action_id") or "?")
     try:
         if isinstance(record, ActionRecord):

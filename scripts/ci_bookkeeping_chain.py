@@ -16,10 +16,10 @@ Python 3.9 syntax.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 
-from scripts.ci_bookkeeping_api import GateClient, RunRef, list_earlier_runs, list_jobs
+from scripts.ci_bookkeeping_api import CommitRef, GateClient, RunRef, commit_ref, list_earlier_runs, list_jobs
 
 FULL_RUN_STEP = "Full run completed"
 MAX_CHAIN_HOPS = 20
@@ -175,3 +175,110 @@ def find_real_success(client: GateClient, query: JobQuery) -> ChainResult:
     if len(runs) > MAX_CHAIN_HOPS:
         return ChainResult(None, RULE_CHAIN_TOO_LONG, f"the newest {MAX_CHAIN_HOPS} runs were all skipped")
     return ChainResult(None, RULE_PREVIOUS_RUN_MISSING, "only gate-skipped runs on the branch")
+
+
+@dataclass(frozen=True)
+class MergeChain:
+    merge: CommitRef
+    post_shas: tuple[str, ...]
+
+
+def find_merge_chain(
+    client: GateClient, head_sha: str, diff_rule: Callable[[GateClient, str, str], tuple[Decision | None, int]]
+) -> MergeChain | Decision | None:
+    cursor = head_sha
+    visited: list[str] = []
+    for _ in range(MAX_CHAIN_HOPS):
+        try:
+            commit = commit_ref(client, cursor)
+        except Exception:
+            if cursor == head_sha:
+                return None
+            raise
+        if len(commit.parents) == 2:
+            return MergeChain(commit, tuple(visited))
+        if len(commit.parents) > 2:
+            return Decision(False, "merge-push-not-two-parents", f"{len(commit.parents)} parents")
+        if not commit.parents:
+            return None
+        parent = commit.parents[0]
+        blocked = diff_rule(client, parent, cursor)[0]
+        if blocked is not None:
+            return None if cursor == head_sha else blocked
+        visited.append(cursor)
+        cursor = parent
+    return None
+
+
+def verify_bookkeeping_chain(
+    client: GateClient,
+    ancestor_sha: str,
+    tip_sha: str,
+    diff_rule: Callable[[GateClient, str, str], tuple[Decision | None, int]],
+) -> Decision | None:
+    if ancestor_sha == tip_sha:
+        return None
+    cursor = tip_sha
+    for _ in range(MAX_CHAIN_HOPS):
+        commit = commit_ref(client, cursor)
+        if len(commit.parents) != 1:
+            return Decision(False, "force-push-or-diverged", f"{cursor[:12]} has {len(commit.parents)} parents")
+        parent = commit.parents[0]
+        blocked = diff_rule(client, parent, cursor)[0]
+        if blocked is not None:
+            return blocked
+        cursor = parent
+        if cursor == ancestor_sha:
+            return None
+    return Decision(False, RULE_CHAIN_TOO_LONG, f"more than {MAX_CHAIN_HOPS} commits since {ancestor_sha[:12]}")
+
+
+def _is_cancelled_job(job: dict[str, object]) -> bool:
+    return job.get("status") == "completed" and job.get("conclusion") == "cancelled"
+
+
+def _visit_or_cancelled(client: GateClient, run: RunRef, query: JobQuery) -> tuple[ChainResult | None, bool]:
+    untrusted = _untrusted(run)
+    if untrusted is not None:
+        return untrusted, False
+    where = f"run {run.run_number}"
+    job = match_job(list_jobs(client, run.run_id), query.job_name, query.os_name)
+    if job is None:
+        return ChainResult(None, RULE_PREVIOUS_RUN_MISSING, f"no single matching job in {where}"), False
+    kind = classify_job(job)
+    if kind == REAL_SUCCESS:
+        return ChainResult(run.head_sha, RULE_PREVIOUS_RUN_SUCCEEDED, where), False
+    if kind == GATE_SKIPPED:
+        return None, False
+    if kind == UNVERIFIED:
+        return ChainResult(None, RULE_PREVIOUS_RUN_UNVERIFIED, f"no '{FULL_RUN_STEP}' step in {where}"), False
+    outcome = job.get("conclusion") or job.get("status") or "unknown"
+    return ChainResult(None, RULE_PREVIOUS_RUN_NOT_SUCCESSFUL, f"{outcome} in {where}"), _is_cancelled_job(job)
+
+
+def find_real_success_for_merge_chain(
+    client: GateClient, query: JobQuery, start_shas: Collection[str]
+) -> tuple[ChainResult, bool]:
+    runs = list_earlier_runs(client, query.workflow_file, query.branch, query.run_number)
+    if not runs:
+        return ChainResult(None, RULE_PREVIOUS_RUN_MISSING, "no earlier run of this workflow on the branch"), False
+    if runs[0].head_sha not in set(start_shas) | {query.target_sha}:
+        return ChainResult(None, RULE_PREVIOUS_RUN_MISSING, f"run {runs[0].run_number} is on another commit"), False
+    walked_cancelled = False
+    first_cancelled: ChainResult | None = None
+    for run in runs[:MAX_CHAIN_HOPS]:
+        result, cancelled = _visit_or_cancelled(client, run, query)
+        if cancelled:
+            walked_cancelled = True
+            first_cancelled = first_cancelled or result
+            continue
+        if result is not None:
+            return result, walked_cancelled
+    if len(runs) > MAX_CHAIN_HOPS:
+        return (
+            ChainResult(None, RULE_CHAIN_TOO_LONG, f"the newest {MAX_CHAIN_HOPS} runs were all skipped"),
+            walked_cancelled,
+        )
+    if first_cancelled is not None:
+        return first_cancelled, True
+    return ChainResult(None, RULE_PREVIOUS_RUN_MISSING, "only gate-skipped runs on the branch"), False

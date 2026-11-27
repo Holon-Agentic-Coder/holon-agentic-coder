@@ -1,3 +1,4 @@
+import builtins
 import json
 import logging
 import os
@@ -7,6 +8,7 @@ import unittest
 from pathlib import Path
 
 import pytest
+from sandbox_executor import local_llm
 from sandbox_executor.agent_attribution import ATTRIBUTION_OFF
 from sandbox_executor.agent_runner import (
     AntigravityAgentRunner,
@@ -773,3 +775,84 @@ def test_secret_bundle_failure_warning_is_redacted(monkeypatch, tmp_path, caplog
         _unpack_bundle(monkeypatch, tmp_path, {"~/.config/claude/config.json": "x"})
     assert any("Failed to process secret bundle" in r.getMessage() for r in caplog.records)
     assert secret not in caplog.text
+
+
+@pytest.fixture
+def pi_local_models_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    monkeypatch.delenv("HOLON_AGENT_PROVIDER", raising=False)
+    monkeypatch.delenv(local_llm.ENV_LOCAL_PROVIDER, raising=False)
+    monkeypatch.setenv("HOLON_AGENT_KEY", "dummy")
+    monkeypatch.setenv("HOLON_SECRET_BUNDLE_PATH", str(tmp_path / "nonexistent_auth.json"))
+    monkeypatch.setenv(local_llm.ENV_PI_AGENT_DIR, str(tmp_path))
+    monkeypatch.setattr(local_llm, "local_llm_requested", lambda: True)
+    return tmp_path / "models.json"
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_provider"),
+    [
+        ({"providers": {"ollama": {}}}, "ollama"),
+        ({"providers": {"ollama": {}, "local": {}}}, "local"),
+    ],
+)
+def test_pi_local_models_json_discovers_provider(
+    pi_local_models_path: Path, payload: dict[str, object], expected_provider: str
+) -> None:
+    pi_local_models_path.write_text(json.dumps(payload), encoding="utf-8")
+    cmd = get_runner("pi").build_cmd("local-model", None, None, "prompt")
+    assert os.getenv("HOLON_AGENT_PROVIDER") == expected_provider
+    assert cmd[cmd.index("--provider") + 1] == expected_provider
+
+
+@pytest.mark.parametrize(
+    "raw_content",
+    [
+        "{not valid json",
+        "[]",
+        '{"providers": null}',
+        '{"providers": ["only"]}',
+    ],
+)
+def test_pi_local_models_json_typed_parse_error_logs_warning(
+    pi_local_models_path: Path, raw_content: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    pi_local_models_path.write_text(raw_content, encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.agent_runner"):
+        cmd = get_runner("pi").build_cmd("local-model", None, None, "prompt")
+    assert os.getenv("HOLON_AGENT_PROVIDER") is None
+    assert "--provider" not in cmd
+    assert any("Failed to discover local provider from" in r.getMessage() for r in caplog.records)
+
+
+def test_pi_local_models_json_oserror_warning_is_redacted(
+    pi_local_models_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    pi_local_models_path.write_text('{"providers": {"ollama": {}}}', encoding="utf-8")
+    secret = "ghp_" + "B" * 36
+    real_open = builtins.open
+
+    def failing_open(file, *args, **kwargs):
+        if os.fspath(file) == str(pi_local_models_path):
+            raise OSError(f"cannot read with token {secret}")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", failing_open)
+    with caplog.at_level(logging.WARNING, logger="sandbox_executor.agent_runner"):
+        cmd = get_runner("pi").build_cmd("local-model", None, None, "prompt")
+    assert os.getenv("HOLON_AGENT_PROVIDER") is None
+    assert "--provider" not in cmd
+    assert any("Failed to discover local provider from" in r.getMessage() for r in caplog.records)
+    assert secret not in caplog.text
+
+
+def test_pi_local_models_json_unexpected_exception_propagates(
+    pi_local_models_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pi_local_models_path.write_text('{"providers": {"ollama": {}}}', encoding="utf-8")
+
+    def raise_unexpected(_fp):
+        raise RuntimeError("unexpected bug")
+
+    monkeypatch.setattr(json, "load", raise_unexpected)
+    with pytest.raises(RuntimeError, match="unexpected bug"):
+        get_runner("pi").build_cmd("local-model", None, None, "prompt")

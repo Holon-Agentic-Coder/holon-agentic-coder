@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -31,6 +32,9 @@ MAX_FIX_TURNS = 4
 MAX_DIAGNOSES = MAX_FIX_TURNS + 2
 EVIDENCE_IDS_SHOWN = 5
 EVIDENCE_EXCERPT_CHARS = 400
+UNATTRIBUTED_BLOCKER = "none"
+PARKED_STATUSES = frozenset({"blocked", "exhausted"})
+_BLOCKER_TOKEN = re.compile(r"\b(?:(?P<bean>(?:BEAN|B)-\d+)|(?:PR\s*#|PR-|pull/)(?P<pr>\d+))\b", re.IGNORECASE)
 
 FIX_PROMPT_TEMPLATE = """The project's test suite fails after your change. Classification: {classification}.
 
@@ -67,6 +71,28 @@ class LoopOutcome:
     failing_ids: tuple[str, ...] = ()
     excerpts: Mapping[str, str] = field(default_factory=dict)
     signature: str = ""
+    blocked_on: str | None = None
+    checkpoint_path: str | None = None
+
+    @property
+    def parked(self) -> bool:
+        return self.status in PARKED_STATUSES
+
+    def parked_record(self) -> dict[str, Any] | None:
+        if not self.parked:
+            return None
+        return {
+            "blocked_on": (self.blocked_on or "").strip() or UNATTRIBUTED_BLOCKER,
+            "status": self.status,
+            "classification": self.classification,
+            "failing_ids": list(self.failing_ids),
+            "signature": self.signature,
+            "evidence": self.evidence_text,
+            "blocked_reason": self.blocked_reason,
+            "final_tier": self.final_tier,
+            "rows": [dict(row) for row in self.rows],
+            "checkpoint_path": self.checkpoint_path,
+        }
 
     @property
     def evidence_text(self) -> str:
@@ -85,6 +111,7 @@ class LoopOutcome:
 SelectionRun = Callable[[], "tuple[TestMeasurement, str]"]
 FixTurn = Callable[[FixRequest], object]
 RecordFn = Callable[[TestFailureEvidence], "dict[str, Any] | None"]
+BlockerResolver = Callable[[Diagnosis | None, tuple[str, ...], str], str | None]
 
 
 @dataclass(frozen=True)
@@ -100,6 +127,8 @@ class LoopPorts:
     start_tier: str | None = None
     remaining_seconds: Callable[[], float] = lambda: math.inf
     environment: Callable[[], Mapping[str, str]] = lambda: dict(os.environ)
+    resolve_blocker: BlockerResolver | None = None
+    checkpoint_path: str | None = None
 
 
 @dataclass
@@ -134,6 +163,31 @@ def _case_of(measurement: TestMeasurement, output: str) -> _Case:
     ids = failing_ids_from_output(output)
     excerpts = excerpts_by_test(output, ids)
     return _Case(measurement, ids, excerpts, failure_signature(ids, excerpts))
+
+
+def _blocker_from_text(text: str) -> str | None:
+    if not text:
+        return None
+    match = _BLOCKER_TOKEN.search(text)
+    if match is None:
+        return None
+    if bean := match.group("bean"):
+        return bean.upper()
+    return f"PR#{match.group('pr')}"
+
+
+def _resolve_blocked_on(case: _Case, ports: LoopPorts) -> str:
+    if ports.resolve_blocker is not None:
+        resolved = (ports.resolve_blocker(case.diagnosis, case.failing_ids, case.signature) or "").strip()
+        if resolved:
+            return resolved
+    candidates = [*case.excerpts.values(), case.measurement.run_error or ""]
+    if case.diagnosis is not None:
+        candidates.extend((case.diagnosis.same_env.output, case.diagnosis.scrubbed.output, case.diagnosis.base.output))
+    for text in candidates:
+        if blocker := _blocker_from_text(text):
+            return blocker
+    return UNATTRIBUTED_BLOCKER
 
 
 class TestFailureLoop:
@@ -179,6 +233,7 @@ class TestFailureLoop:
 
     def _finish(self, status: str, case: _Case, reason: str | None = None) -> LoopOutcome:
         classification = case.diagnosis.classification.value if case.diagnosis else None
+        parked = status in PARKED_STATUSES
         return LoopOutcome(
             status,
             case.measurement,
@@ -189,6 +244,8 @@ class TestFailureLoop:
             case.failing_ids,
             case.excerpts,
             case.signature,
+            _resolve_blocked_on(case, self.ports) if parked else None,
+            self.ports.checkpoint_path if parked else None,
         )
 
     def _unmeasured(self, measurement: TestMeasurement) -> LoopOutcome:

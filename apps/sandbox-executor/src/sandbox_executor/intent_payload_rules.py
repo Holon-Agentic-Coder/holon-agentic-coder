@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from sandbox_executor.harness_reference_patterns import find_references
+from sandbox_executor.intent_assumption_rules import assumption_violations
 
 # why: a local copy of the new-file marker rule keeps Stage 1 from importing the git-running scope graph.
 _NEW_PREFIX_RE = re.compile(r"^new:\s*", re.IGNORECASE)
@@ -117,6 +118,10 @@ def harness_reference_violations(payload: dict[str, Any]) -> list[str]:
 def check_intent_payload(payload: dict[str, Any], worktree: str | None = None) -> PayloadFindings:
     entries = [entry for entry in _as_list(payload.get("scope")) if entry.strip()]
     return PayloadFindings(
-        violations=[*scope_shape_violations(entries, worktree), *harness_reference_violations(payload)],
+        violations=[
+            *scope_shape_violations(entries, worktree),
+            *harness_reference_violations(payload),
+            *assumption_violations(payload),
+        ],
         warnings=hub_file_warnings(entries),
     )

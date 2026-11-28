@@ -22,6 +22,7 @@ from sandbox_executor.flow.checkpoint import save_checkpoint
 from sandbox_executor.flow.checkpoint_discovery import get_default_checkpoint_path
 from sandbox_executor.flow.git_refs import _latest_execution_summary
 from sandbox_executor.flow.pipeline import PipelineEngine
+from sandbox_executor.flow.run_lock import acquire_flow_run_lock, release_flow_run_lock
 from sandbox_executor.flow.stages import touch_set_guard
 from sandbox_executor.ledger import query_ledger, read_merged_rows_at_ref
 
@@ -225,14 +226,33 @@ def _default_checkpoint_admission(host: Path) -> dict | None:
     return json.loads(path.read_text(encoding="utf-8")).get("admission") if path.exists() else None
 
 
-def _second_worktree_flow_at_execute(host: Path, tmp_path: Path, touch_set: list[dict] | None = None) -> Path:
+@pytest.fixture(autouse=True)
+def _release_run_locks():
+    yield
+    release_flow_run_lock()
+
+
+def _second_worktree_flow_at_execute(
+    host: Path,
+    tmp_path: Path,
+    touch_set: list[dict] | None = None,
+    live: bool = True,
+    admission_data: dict | None = None,
+) -> Path:
     make_plan_branch(host, THIRD_PLAN, touch_set or [{"path": "docs/"}])
     second = tmp_path / "second"
     _git(host, "worktree", "add", "-q", "--detach", str(second), "main")
-    context = FlowContext(target_worktree=str(second), intent_data={"slug": "third"}, plan_branch=THIRD_PLAN)
+    context = FlowContext(
+        target_worktree=str(second),
+        intent_data={"slug": "third"},
+        plan_branch=THIRD_PLAN,
+        admission=admission_data,
+    )
     for stage in (FlowStage.INTENT, FlowStage.PLAN):
         context.stage_results[stage.value] = StageResult(stage=stage, status=StageStatus.SUCCESS)
     save_checkpoint(context)
+    if live:
+        assert acquire_flow_run_lock(str(second), "third", "live-third") is not None
     return second
 
 
@@ -483,3 +503,28 @@ def test_a_re_planned_branch_owes_its_own_refresh():
 def test_malformed_wait_and_refresh_values_are_ignored():
     record = admission_state.AdmissionRecord.from_dict({"state": "admitted", "waited_since": 5, "refreshed_to": []})
     assert record is not None and record.to_dict() == {"state": "admitted"} and not record.refresh_due(PLAN)
+
+
+PARKED_BLOCKED = {
+    "state": "blocked",
+    "blocked_since": BLOCKED_AT,
+    "blocked_by": [{"kind": "pull_request", "number": 7, "branch": OTHER_HEAD, "files": ["docs/guide.md"]}],
+}
+
+
+@pytest.mark.parametrize("parked_admission", [None, {"state": "admitted"}, PARKED_BLOCKED])
+def test_candidate_overlapping_a_parked_flow_with_no_live_runner_is_admitted(own_plan, tmp_path, parked_admission):
+    _second_worktree_flow_at_execute(
+        own_plan, tmp_path, [{"path": "docs/"}], live=False, admission_data=parked_admission
+    )
+    decision = check_admission(own_context(own_plan), FakeGh([], {}))
+    assert decision == AdmissionDecision(admitted=True)
+
+
+def test_parked_flow_with_an_open_pull_request_still_blocks_admission(own_plan, tmp_path):
+    _second_worktree_flow_at_execute(own_plan, tmp_path, [{"path": "docs/"}], live=False)
+    decision = check_admission(own_context(own_plan), other_pr(["src/app.py"]))
+    assert not decision.admitted
+    assert [(c.label, c.files) for c in decision.conflicts] == [
+        (f"pull request #7 (branch {OTHER_HEAD})", ("src/app.py",))
+    ]

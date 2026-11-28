@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from sandbox_executor.entrypoint import intent_creator
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 
 from tests.leak_assertions import assert_no_fragment, make_gh_probe
 
@@ -25,6 +26,7 @@ class TestIntentCreator(unittest.TestCase):
         mock_exists.return_value = True
 
         intent_json_data = {
+            **default_assumptions_fields(),
             "branch": "I-12345",
             "description": "Test description",
             "goal": "Test goal",
@@ -86,7 +88,12 @@ class TestIntentCreator(unittest.TestCase):
     def test_intent_creator_generate_branch_on_the_fly(self, mock_makedirs, mock_exists, mock_run):
         mock_exists.return_value = True
 
-        intent_json_data = {"description": "Test description", "goal": "Test goal", "slug": "test-slug"}
+        intent_json_data = {
+            **default_assumptions_fields(),
+            "description": "Test description",
+            "goal": "Test goal",
+            "slug": "test-slug",
+        }
 
         file_contents = {}
 
@@ -137,6 +144,7 @@ class TestIntentCreator(unittest.TestCase):
         mock_exists.return_value = True
 
         intent_json_data = {
+            **default_assumptions_fields(),
             "branch": "I-12345",
             "description": "Test description",
             "goal": "Test goal",
@@ -189,6 +197,7 @@ class TestIntentCreator(unittest.TestCase):
         mock_exists.return_value = True
 
         intent_json_data = {
+            **default_assumptions_fields(),
             "description": "Test description",
             "goal": "Test goal",
             "slug": "bootstrap holon cli intent",
@@ -238,7 +247,7 @@ class TestIntentCreator(unittest.TestCase):
         self.assertEqual(written_data["status"], "proposed")
 
     def test_unresolved_base_branch_exits_with_the_error(self):
-        data = json.dumps({"branch": "I-1", "description": "d", "goal": "g"})
+        data = json.dumps({**default_assumptions_fields(), "branch": "I-1", "description": "d", "goal": "g"})
         err = RuntimeError(
             "branch 'main' does not resolve in the mounted workspace; the host fetches it before dispatch"
         )
@@ -255,7 +264,7 @@ class TestIntentCreator(unittest.TestCase):
         mock_run.assert_not_called()
 
     def test_a_supplied_slug_over_the_limit_is_rejected_before_any_branch_exists(self):
-        data = json.dumps({"slug": "s" * 33, "description": "d", "goal": "g"})
+        data = json.dumps({**default_assumptions_fields(), "slug": "s" * 33, "description": "d", "goal": "g"})
         with (
             patch("os.path.exists", return_value=True),
             patch("builtins.open", unittest.mock.mock_open(read_data=data)),
@@ -277,6 +286,7 @@ class TestIntentCreator(unittest.TestCase):
     def test_intent_creator_fails_fast_on_unresolved_questions(self, mock_exists):
         mock_exists.return_value = True
         intent_json_data = {
+            **default_assumptions_fields(),
             "branch": "I-12345",
             "description": "Test description",
             "goal": "Test goal",
@@ -303,6 +313,7 @@ class TestIntentCreator(unittest.TestCase):
     def test_intent_creator_succeeds_with_resolved_questions(self, mock_makedirs, mock_exists, mock_run):
         mock_exists.return_value = True
         intent_json_data = {
+            **default_assumptions_fields(),
             "branch": "I-12345",
             "description": "Test description",
             "goal": "Test goal",

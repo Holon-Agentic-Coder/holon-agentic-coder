@@ -187,7 +187,7 @@ class ExecuteStage:
             depth_error = _sub_intent_depth_error(context)
             if depth_error is not None:
                 return self._fail(depth_error, dispatched=False)
-        # why: a flow admitted after an overlap wait merges origin/<target> into its plan branch before any cut
+        # why: always refresh plan_branch onto origin/<target> before dispatch, even without an admission wait
         return admission_stage_failure(context, state.start_time) or plan_refresh_stage_failure(
             context, state.start_time
         )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import tempfile
 import time
 from typing import Any
@@ -558,3 +559,101 @@ def test_cli_knowledge_commands(temp_dir: str, monkeypatch: pytest.MonkeyPatch, 
     assert exc.value.code == 0
     captured_stats = capsys.readouterr()
     assert "HOLON OPERATIONAL SELF-METRICS" in captured_stats.out
+
+
+class _FailingTelemetryConn:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+        self.closed = False
+
+    def __enter__(self) -> _FailingTelemetryConn:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def execute(self, *_args: object, **_kwargs: object) -> None:
+        raise self.exc
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _StubIndexDB:
+    def __init__(self, conn: _FailingTelemetryConn) -> None:
+        self.conn = conn
+
+    def get_connection(self) -> _FailingTelemetryConn:
+        return self.conn
+
+
+class _TelemetryFailConnProxy:
+    def __init__(self, real_conn: sqlite3.Connection, exc: Exception) -> None:
+        self._real = real_conn
+        self._exc = exc
+
+    def __enter__(self) -> _TelemetryFailConnProxy:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def cursor(self) -> sqlite3.Cursor:
+        return self._real.cursor()
+
+    def execute(self, *_args: object, **_kwargs: object) -> None:
+        raise self._exc
+
+    def close(self) -> None:
+        self._real.close()
+
+
+@pytest.mark.parametrize("exc", [sqlite3.OperationalError("db locked"), OSError("disk full")])
+def test_telemetry_collector_handles_typed_errors_and_closes_connection(exc: Exception) -> None:
+    conn = _FailingTelemetryConn(exc)
+    TelemetryCollector.record_consult(
+        query_labels="python",
+        latency_ms=1.0,
+        matched_count=1,
+        tokens_injected=10,
+        index_db=_StubIndexDB(conn),  # type: ignore[arg-type]
+    )
+    assert conn.closed is True
+
+
+def test_telemetry_collector_propagates_unexpected_error_and_closes_connection() -> None:
+    conn = _FailingTelemetryConn(RuntimeError("unexpected telemetry bug"))
+    with pytest.raises(RuntimeError, match="unexpected telemetry bug"):
+        TelemetryCollector.record_consult(
+            query_labels="python",
+            latency_ms=1.0,
+            matched_count=1,
+            tokens_injected=10,
+            index_db=_StubIndexDB(conn),  # type: ignore[arg-type]
+        )
+    assert conn.closed is True
+
+
+@pytest.mark.parametrize("exc", [sqlite3.OperationalError("db locked"), OSError("disk full")])
+def test_consult_records_handles_typed_telemetry_errors(
+    temp_dir: str, monkeypatch: pytest.MonkeyPatch, exc: Exception
+) -> None:
+    db = ActionIndexDatabase(db_path=os.path.join(temp_dir, "consult_telemetry_err.db"))
+    real_get_conn = db.get_connection
+    monkeypatch.setattr(db, "get_connection", lambda: _TelemetryFailConnProxy(real_get_conn(), exc))
+    engine = ConsultEngine(db=db, auto_sync_ledgers=[])
+    res = engine.consult_records(all_labels=["python"])
+    assert res.total_matched == 0
+
+
+def test_consult_records_propagates_unexpected_telemetry_error(temp_dir: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    db = ActionIndexDatabase(db_path=os.path.join(temp_dir, "consult_telemetry_bug.db"))
+    real_get_conn = db.get_connection
+    monkeypatch.setattr(
+        db,
+        "get_connection",
+        lambda: _TelemetryFailConnProxy(real_get_conn(), RuntimeError("unexpected consult bug")),
+    )
+    engine = ConsultEngine(db=db, auto_sync_ledgers=[])
+    with pytest.raises(RuntimeError, match="unexpected consult bug"):
+        engine.consult_records(all_labels=["python"])

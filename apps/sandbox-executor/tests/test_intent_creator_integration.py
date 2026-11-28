@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 import pytest
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 
 from tests.hermetic_fixtures import (
     create_seeded_remote,
@@ -61,6 +62,7 @@ class TestIntentCreatorIntegration(unittest.TestCase):
 
             intent_json_path = os.path.join(tmp_dir, "intent.json")
             intent_data = {
+                **default_assumptions_fields(),
                 "slug": "test-intent-integration",
                 "description": "Integration test description",
                 "goal": "Verify intent creator via docker",

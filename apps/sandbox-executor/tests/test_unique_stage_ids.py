@@ -5,6 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from sandbox_executor.calibration.run import record_calibration_action
+from sandbox_executor.calibration_record import calibration_action_row
+from sandbox_executor.calibration_rows import row_stage
 from sandbox_executor.flow.review.ids import build_review_id
 from sandbox_executor.ledger import (
     _describe_id_owner,
@@ -12,11 +15,13 @@ from sandbox_executor.ledger import (
     build_execution_id,
     build_plan_id,
     build_stage_disambiguator,
+    read_merged_rows,
     validate_ledger_file_unique_ids,
     validate_ledger_unique_ids,
     validate_stage_ledger,
 )
 from sandbox_executor.plan_paths import PLAN_FILE_PATTERN, plan_file_rel
+from sandbox_executor.ref_names import ensure_stage_segment_fits
 
 
 class TestSameSecondIds(unittest.TestCase):
@@ -93,6 +98,114 @@ class TestSameSecondIds(unittest.TestCase):
         message = str(ctx.exception)
         for expected in ("I-100", "alpha", "t1", "beta", "t2"):
             self.assertIn(expected, message)
+
+    def test_calibration_action_row_ids_differ_within_one_second_across_flows(self):
+        plan_id = "P-1794446836-CLA-CS5.5"
+        expected_keys = [
+            "action_id",
+            "execution_id",
+            "action",
+            "category",
+            "target",
+            "outcome",
+            "entry_type",
+            "action_origin",
+            "labels",
+            "error_context",
+            "plan_branch",
+            "execution_branch",
+            "evaluated_commit_sha",
+            "predicted_metrics",
+            "actual_metrics",
+            "calibration_deltas",
+            "calibration_report_path",
+            "created_at",
+            "touch_set_accuracy",
+        ]
+        first_data = {
+            "plan_id": plan_id,
+            "intent_branch": "I-100-alpha/_",
+            "plan_branch": f"I-100-alpha/{plan_id}/_",
+            "execution_branch": f"I-100-alpha/{plan_id}/E-1794446836-CLA-CS5.5/_",
+            "calibrated_branch": f"I-100-alpha/{plan_id}/E-1794446836-CLA-CS5.5/calibrated",
+        }
+        second_data = {
+            "plan_id": plan_id,
+            "intent_branch": "I-200-beta/_",
+            "plan_branch": f"I-200-beta/{plan_id}/_",
+            "execution_branch": f"I-200-beta/{plan_id}/E-1794446836-CLA-CS5.5/_",
+            "calibrated_branch": f"I-200-beta/{plan_id}/E-1794446836-CLA-CS5.5/calibrated",
+        }
+        with patch("sandbox_executor.calibration_record.time.time", return_value=1794446836.0):
+            first = calibration_action_row(first_data, f"plans/I-100-alpha/{plan_id}_calibration.md", "success", None)
+            second = calibration_action_row(second_data, f"plans/I-200-beta/{plan_id}_calibration.md", "success", None)
+
+        pattern = rf"^CAL-{re.escape(plan_id)}-1794446836-[0-9a-f]{{8}}$"
+        self.assertNotEqual(first["execution_id"], second["execution_id"])
+        for row in (first, second):
+            self.assertRegex(row["execution_id"], pattern)
+            self.assertEqual(list(row.keys()), expected_keys)
+            self.assertEqual(row_stage(row), "calibrate")
+        validate_ledger_unique_ids([first, second], id_key="execution_id", parent_key="plan_branch")
+
+    def test_record_calibration_action_appends_distinct_same_second_ids(self):
+        plan_id = "P-1794446836-CLA-CS5.5"
+        first_report = {
+            "plan_id": plan_id,
+            "plan_branch": f"I-100-alpha/{plan_id}/_",
+            "execution_branch": f"I-100-alpha/{plan_id}/E-1794446836-CLA-CS5.5/_",
+            "calibrated_branch": f"I-100-alpha/{plan_id}/E-1794446836-CLA-CS5.5/calibrated",
+        }
+        second_report = {
+            "plan_id": plan_id,
+            "plan_branch": f"I-200-beta/{plan_id}/_",
+            "execution_branch": f"I-200-beta/{plan_id}/E-1794446836-CLA-CS5.5/_",
+            "calibrated_branch": f"I-200-beta/{plan_id}/E-1794446836-CLA-CS5.5/calibrated",
+        }
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch("sandbox_executor.calibration_record.time.time", return_value=1794446836.0):
+                first = record_calibration_action(first_report, tmp_dir, f"plans/I-100-alpha/{plan_id}_calibration.md")
+                second = record_calibration_action(second_report, tmp_dir, f"plans/I-200-beta/{plan_id}_calibration.md")
+
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            assert first is not None and second is not None
+            self.assertNotEqual(first["execution_id"], second["execution_id"])
+            pattern = rf"^CAL-{re.escape(plan_id)}-1794446836-[0-9a-f]{{8}}$"
+            self.assertRegex(first["execution_id"], pattern)
+            self.assertRegex(second["execution_id"], pattern)
+            self.assertEqual(first["target"], first_report["calibrated_branch"])
+            self.assertEqual(second["target"], second_report["calibrated_branch"])
+
+            ledger_path = Path(tmp_dir) / "holon-knowledge" / "ledger" / "executions.jsonl"
+            rows = read_merged_rows(str(ledger_path))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual({r["execution_id"] for r in rows}, {first["execution_id"], second["execution_id"]})
+            validate_ledger_unique_ids(rows, id_key="execution_id", parent_key="plan_branch")
+
+    def test_calibration_disambiguator_preserves_ensure_stage_segment_fits(self):
+        intent_branch = "I-1795816829-hac-unique-calibrate-id/_"
+        plan_id = build_plan_id(1794446836, intent_branch, "antigravity-agent", "gemini-4-neon")
+        plan_branch = f"I-1795816829-hac-unique-calibrate-id/{plan_id}/_"
+        exec_id = build_execution_id(1794446836, plan_branch, "antigravity-agent", "gemini-4-neon")
+        ensure_stage_segment_fits(intent_branch, plan_id)
+        ensure_stage_segment_fits(plan_branch, exec_id)
+
+        exec_branch = f"I-1795816829-hac-unique-calibrate-id/{plan_id}/{exec_id}/_"
+        cal_branch = f"I-1795816829-hac-unique-calibrate-id/{plan_id}/{exec_id}/calibrated"
+        row = calibration_action_row(
+            {
+                "plan_id": plan_id,
+                "plan_branch": plan_branch,
+                "execution_branch": exec_branch,
+                "calibrated_branch": cal_branch,
+            },
+            f"plans/I-1795816829-hac-unique-calibrate-id/{plan_id}_calibration.md",
+            "success",
+            None,
+        )
+        self.assertRegex(row["execution_id"], rf"^CAL-{re.escape(plan_id)}-\d+-[0-9a-f]{{8}}$")
+        self.assertEqual(row["target"], cal_branch)
 
 
 class TestUniqueStageIDs(unittest.TestCase):

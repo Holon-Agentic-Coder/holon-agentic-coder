@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 from sandbox_executor.preflight import PreflightResult, PreflightStatus, matching_statuses
+from sandbox_executor.preflight_cooldown import COOLDOWN_HINT_PREFIX, sync_cooldown_for_result
 from sandbox_executor.preflight_model_error import is_model_error
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,7 @@ OUTAGE_GIVE_UP_SECONDS = 3600.0
 
 _NO_OUTPUT_REASON = "probe finished with no output"
 _NO_OUTPUT_TIMEOUT_HINT = "did not finish within"
-_NEVER_WAIT_HINT_PREFIXES = ("'docker' CLI command not found", "Unsupported agent runner")
+_NEVER_WAIT_HINT_PREFIXES = ("'docker' CLI command not found", "Unsupported agent runner", COOLDOWN_HINT_PREFIX)
 
 _CONNECTIVITY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
@@ -119,6 +120,8 @@ def wait_out_outage(
         result = probe()
         reason = connectivity_reason(result)
         if reason is None:
+            if result.status is PreflightStatus.QUOTA_EXHAUSTED:
+                sync_cooldown_for_result(result)
             return OutageOutcome(result, waited, clock() - started_at, gave_up=False, attempts=attempts)
     return OutageOutcome(result, waited, clock() - started_at, gave_up=True, attempts=attempts)
 

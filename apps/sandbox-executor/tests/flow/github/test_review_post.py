@@ -126,6 +126,7 @@ class TestSemanticPRAndConsensusReview:
         assert res["official_review"]["self_approval_fallback"] is False
         assert res["official_review"]["flag"] == "--approve"
 
+        # why: only the official review posts, never gh pr comment, to avoid duplicate posts while dual_posted is True
         assert github.methods() == ["post_review"]
         target, flag, body = github.calls[0][1]
         assert (target, flag) == ("42", "--approve")

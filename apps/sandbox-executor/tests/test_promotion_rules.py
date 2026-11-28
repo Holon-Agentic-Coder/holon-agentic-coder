@@ -91,3 +91,22 @@ def test_veto_decay_weight_halves_weekly_and_reads_naive_as_utc() -> None:
 @pytest.mark.parametrize("updated_at", [None, "", "not-a-timestamp"])
 def test_veto_decay_weight_is_full_without_a_usable_timestamp(updated_at: str | None) -> None:
     assert veto_decay_weight(updated_at) == 1.0
+
+
+def test_veto_decay_weight_handles_type_and_overflow_errors() -> None:
+    now = datetime(2026, 11, 21, tzinfo=UTC)
+    invalid_input: object = 12345
+    assert veto_decay_weight(invalid_input, now) == 1.0  # type: ignore[arg-type]
+    far_future = datetime(2100, 1, 1, tzinfo=UTC)
+    assert veto_decay_weight(far_future.isoformat(), now) == 1.0
+
+
+def test_veto_decay_weight_unexpected_error_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime(2026, 11, 21, tzinfo=UTC)
+
+    def broken_exp(_value: float) -> float:
+        raise RuntimeError("unexpected math bug")
+
+    monkeypatch.setattr("sandbox_executor.knowledge.promotion_rules.math.exp", broken_exp)
+    with pytest.raises(RuntimeError, match="unexpected math bug"):
+        veto_decay_weight(now.isoformat(), now)

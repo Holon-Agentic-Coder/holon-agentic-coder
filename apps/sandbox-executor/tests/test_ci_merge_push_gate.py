@@ -51,6 +51,7 @@ from tests.ci_bookkeeping_fakes import (
     WORKFLOW,
     FakeGitHub,
     blob_id,
+    cancelled_job,
     comparison,
     gate_skipped_job,
     job,
@@ -577,7 +578,15 @@ def test_main_prints_one_line_writes_skip_true_and_keeps_the_token_out_of_urls(
 
 
 @pytest.mark.parametrize(
-    "module", ["ci_merge_push_gate", "ci_merge_push_imports", "ci_bookkeeping_api", "ci_bookkeeping_gate"]
+    "module",
+    [
+        "ci_merge_push_gate",
+        "ci_merge_push_imports",
+        "ci_bookkeeping_api",
+        "ci_bookkeeping_chain",
+        "ci_bookkeeping_gate",
+        "ci_main_push_gate",
+    ],
 )
 def test_gate_module_is_python_3_9_syntax_and_standard_library_only(module: str) -> None:
     syntax = ast.parse((ROOT / "scripts" / f"{module}.py").read_text(encoding="utf-8"), feature_version=(3, 9))
@@ -586,6 +595,12 @@ def test_gate_module_is_python_3_9_syntax_and_standard_library_only(module: str)
     imported += [node.module or "" for node in syntax.body if isinstance(node, ast.ImportFrom)]
     for name in imported:
         assert name.startswith("scripts.") or name.partition(".")[0] in sys.stdlib_module_names, name
+    for node in syntax.body:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            bitor = [
+                sub for sub in ast.walk(node.value) if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.BitOr)
+            ]
+            assert not bitor, f"{module}.py evaluates PEP 604 union at module level"
 
 
 # --- pure helpers ---------------------------------------------------------------------------------------------------
@@ -688,3 +703,104 @@ def test_is_test_pair_matches_test_prefix_in_either_order() -> None:
     assert is_test_pair("a/tests/test_engine.py", "b/src/engine.py")
     assert is_test_pair("b/src/engine.py", "a/tests/test_engine.py")
     assert not is_test_pair("a/tests/test_engines.py", "b/src/engine.py")
+
+
+POST_SHA = "7" * 40
+MID_POST_SHA = "6" * 40
+
+
+def stacked_merge_scene(merge_job: dict[str, object] | None = None) -> FakeGitHub:
+    fake = scene()
+    fake.commits[PREVIOUS_HEAD_SHA] = (TREE_IDS["previous"], [OLDER_SHA])
+    fake.commits[POST_SHA] = (TREE_IDS["merged"], [NEW_HEAD_SHA])
+    fake.compares[(OLDER_SHA, PREVIOUS_HEAD_SHA)] = comparison("plans/I-1-intent/P-1.md")
+    fake.compares[(NEW_HEAD_SHA, POST_SHA)] = comparison("executions/E-1.md")
+    fake.compares[(OLDER_SHA, POST_SHA)] = comparison(CODE_FILE, "executions/E-1.md")
+    fake.runs = [entry for entry in fake.runs if entry["event"] == "push"]
+    fake.add_run(47, OLDER_SHA, real_success_job())
+    fake.add_run(48, PREVIOUS_HEAD_SHA, cancelled_job())
+    fake.add_run(49, NEW_HEAD_SHA, merge_job or cancelled_job())
+    return fake
+
+
+@pytest.mark.parametrize("before", [NEW_HEAD_SHA, OLDER_SHA], ids=["before-is-merge", "before-is-green-head"])
+def test_stacked_bookkeeping_chain_over_cancelled_merge_skips(before: str) -> None:
+    fake = stacked_merge_scene()
+
+    decision = gate(fake, context(before=before, head_sha=POST_SHA))
+
+    assert decision.skip is True
+    assert decision.rule == "merge-push-clean-main-merge"
+    assert f"real successes on {OLDER_SHA[:12]} and {BASE_HEAD_SHA[:12]}" in decision.detail
+
+
+def test_stacked_bookkeeping_commit_after_gate_skipped_merge_skips() -> None:
+    fake = stacked_merge_scene(merge_job=gate_skipped_job())
+    fake.jobs[1048] = [gate_skipped_job()]
+
+    decision = gate(fake, context(before=NEW_HEAD_SHA, head_sha=POST_SHA))
+
+    assert decision.skip is True
+    assert decision.rule == "merge-push-clean-main-merge"
+
+
+def test_non_bookkeeping_change_after_merge_forces_full_run() -> None:
+    fake = stacked_merge_scene()
+    fake.compares[(NEW_HEAD_SHA, POST_SHA)] = comparison("executions/E-1.md", CODE_FILE)
+
+    decision = gate(fake, context(before=NEW_HEAD_SHA, head_sha=POST_SHA))
+
+    assert decision == Decision(False, "non-bookkeeping-change", CODE_FILE)
+
+
+def test_non_bookkeeping_intermediate_commit_after_merge_forces_full_run() -> None:
+    fake = stacked_merge_scene()
+    fake.commits[MID_POST_SHA] = (TREE_IDS["merged"], [NEW_HEAD_SHA])
+    fake.commits[POST_SHA] = (TREE_IDS["merged"], [MID_POST_SHA])
+    fake.compares[(NEW_HEAD_SHA, MID_POST_SHA)] = comparison(CODE_FILE)
+    fake.compares[(MID_POST_SHA, POST_SHA)] = comparison("executions/E-1.md")
+    fake.compares[(NEW_HEAD_SHA, POST_SHA)] = comparison(CODE_FILE, "executions/E-1.md")
+
+    decision = gate(fake, context(before=NEW_HEAD_SHA, head_sha=POST_SHA))
+
+    assert decision == Decision(False, "non-bookkeeping-change", CODE_FILE)
+
+
+def test_non_bookkeeping_change_before_merge_forces_full_run() -> None:
+    fake = stacked_merge_scene()
+    fake.compares[(OLDER_SHA, PREVIOUS_HEAD_SHA)] = comparison(CODE_FILE)
+
+    decision = gate(fake, context(before=NEW_HEAD_SHA, head_sha=POST_SHA))
+
+    assert decision == Decision(False, "non-bookkeeping-change", CODE_FILE)
+
+
+@pytest.mark.parametrize(
+    "overrides", [{"job_name": "hygiene"}, {"workflow_file": "test-hygiene.yml"}], ids=["job", "workflow"]
+)
+def test_hygiene_is_never_skipped_on_stacked_merge_bookkeeping_chain(overrides: dict[str, str]) -> None:
+    fake = stacked_merge_scene()
+
+    decision = gate(fake, context(before=NEW_HEAD_SHA, head_sha=POST_SHA, os_name="", **overrides))
+
+    assert (decision.skip, decision.rule) == (False, "merge-push-hygiene-never-skipped")
+
+
+def test_single_push_with_pre_merge_merge_and_post_merge_bookkeeping_skips() -> None:
+    fake = stacked_merge_scene()
+    fake.runs = [entry for entry in fake.runs if entry["head_sha"] not in (PREVIOUS_HEAD_SHA, NEW_HEAD_SHA)]
+
+    decision = gate(fake, context(before=OLDER_SHA, head_sha=POST_SHA))
+
+    assert decision.skip is True
+    assert decision.rule == "merge-push-clean-main-merge"
+    assert f"real successes on {OLDER_SHA[:12]} and {BASE_HEAD_SHA[:12]}" in decision.detail
+
+
+def test_api_error_during_pre_merge_bookkeeping_chain_check_is_merge_push_api_error() -> None:
+    fake = stacked_merge_scene()
+    fake.errors[f"git/commits/{PREVIOUS_HEAD_SHA}"] = http_error(500)
+
+    assert gate(fake, context(before=OLDER_SHA, head_sha=POST_SHA)) == Decision(
+        False, "merge-push-api-error", "HTTPError 500"
+    )

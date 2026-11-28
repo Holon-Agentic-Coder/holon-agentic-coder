@@ -13,6 +13,7 @@ class TestLiveChildGuard(unittest.TestCase):
     TEST_PID = CHILD_PID + 1
 
     def streamed_once(self, children):
+        # why: one streamed token arms the short stall window before waiting on a quiet, zero-CPU, non-exiting child
         stream = TickStream()
         h = Harness(exit_at=None, stdout=stream)
         h.children = children

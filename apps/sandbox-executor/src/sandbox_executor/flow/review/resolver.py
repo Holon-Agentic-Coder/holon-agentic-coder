@@ -109,7 +109,7 @@ def _dispatch_review_resolver(
     finally:
         os.close(fd)
     findings, lookup = resolver_input.findings, dict(resolver_input.action_ids or {})
-    input_payload = {
+    input_payload: dict[str, Any] = {
         "iteration": iteration,
         "target": target.raw,
         "head_branch": target.head_branch,
@@ -119,6 +119,11 @@ def _dispatch_review_resolver(
         ],
         "rejected_findings": [serialize_finding_disposition(item) for item in resolver_input.rejected_findings],
     }
+    from sandbox_executor.flow.stages.touch_set_guard import _resolve_effective_touch_set
+
+    touch_set = _resolve_effective_touch_set(context, head_ref=target.head_sha or None)
+    if touch_set and touch_set.entries:
+        input_payload["touch_set"] = [entry.path for entry in touch_set.entries]
     target_ref = target.raw or target.head_branch or "HEAD"
     container_args = [
         target_ref,

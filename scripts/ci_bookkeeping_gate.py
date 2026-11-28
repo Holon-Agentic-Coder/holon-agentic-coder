@@ -40,7 +40,10 @@ from collections.abc import Mapping, Sequence
 from scripts.ci_bookkeeping_api import GateClient, GateContext, Opener, compare, context_from, load_event
 from scripts.ci_bookkeeping_chain import (
     CHAIN_RULES,
+    RULE_PREVIOUS_RUN_MISSING,
+    RULE_PREVIOUS_RUN_NOT_SUCCESSFUL,
     RULE_PREVIOUS_RUN_SUCCEEDED,
+    ChainResult,
     Decision,
     JobQuery,
     find_real_success,
@@ -142,6 +145,23 @@ def merge_push_or(blocked: Decision, context: GateContext, client: GateClient) -
     return blocked if merged is None else merged
 
 
+def _chain_failure_or_merge(
+    synchronize: bool, chain: ChainResult, context: GateContext, client: GateClient
+) -> Decision:
+    decision = chain.run_decision()
+    if not _can_try_merge_chain(synchronize, chain):
+        return decision
+    merged = decide_merge_push(context, client, GateRules(diff_rule, is_bookkeeping_path))
+    return decision if merged is None else merged
+
+
+def _can_try_merge_chain(synchronize: bool, chain: ChainResult) -> bool:
+    if not synchronize:
+        return False
+    cancelled = chain.rule == RULE_PREVIOUS_RUN_NOT_SUCCESSFUL and chain.detail.startswith("cancelled ")
+    return chain.rule == RULE_PREVIOUS_RUN_MISSING or cancelled
+
+
 def decide(context: GateContext, client: GateClient) -> Decision:
     """Apply the rules in order; only the last statement returns "skip". Exceptions are left to ``safe_decide``."""
     if is_main_push(context):
@@ -161,11 +181,11 @@ def decide(context: GateContext, client: GateClient) -> Decision:
     )
     chain = find_real_success(client, query)
     if chain.real_sha is None:
-        return chain.run_decision()
+        return _chain_failure_or_merge(synchronize, chain, context, client)
     if chain.real_sha not in (target, context.head_sha):
         blocked, changed = diff_rule(client, chain.real_sha, context.head_sha)
         if blocked is not None:
-            return blocked
+            return merge_push_or(blocked, context, client) if synchronize else blocked
     rule = RULE_BOOKKEEPING_ONLY if synchronize else RULE_LABEL_NOT_RESULT_AFFECTING
     return Decision(True, rule, f"{changed} changed paths since the real success on {chain.real_sha[:12]}")
 

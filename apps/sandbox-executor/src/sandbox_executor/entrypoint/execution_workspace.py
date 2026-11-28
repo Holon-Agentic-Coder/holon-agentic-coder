@@ -37,11 +37,13 @@ ENGINE_OWNED_LEDGER_PATHS = (
 ENGINE_OWNED_LEDGER_DIRS = (PENDING_DIR_REL,)
 ENGINE_OWNED_NOTES_GLOB = "executions/E-*.md"
 ENGINE_OWNED_PLAN_DIR_PREFIX = "plans/I-"
+# why: ledgers and execution notes are engine-owned; interrupted runs leave them dirty and salvage never commits them
 _ENGINE_OWNED_EXCLUDES = (
     *(f":(exclude){path}" for path in (*ENGINE_OWNED_LEDGER_PATHS, *ENGINE_OWNED_LEDGER_DIRS)),
     f":(exclude){ENGINE_OWNED_NOTES_GLOB}",
 )
 
+# why: proxy sidecar scratch artifacts (wire logs, cache dirs, SQLite databases) never belong in Stage 3 commits
 _SCRATCH_DIR_NAMES = frozenset({"mitm_wire_logs", "wire_logs", "wire-logs", "cache", "proxy-cache", "to" + "do"})
 _SCRATCH_FILE_RE = re.compile(
     r"(?:^|/)(?:wire_log[^/]*\.(?:json|jsonl|log)|[^/]*\.(?:db|sqlite|sqlite3)(?:-(?:shm|wal|journal))?)$",

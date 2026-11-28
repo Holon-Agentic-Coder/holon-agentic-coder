@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 from sandbox_executor.harness_reference_patterns import HARNESS_PATTERNS, find_references, sample_reference
+from sandbox_executor.intent_assumption_rules import default_assumptions_fields
 from sandbox_executor.intent_payload_rules import (
     check_intent_payload,
     harness_reference_violations,
@@ -16,6 +17,7 @@ from sandbox_executor.intent_payload_rules import (
 
 def _clean_intent() -> dict[str, Any]:
     return {
+        **default_assumptions_fields(),
         "goal": "Make the scope check reject directories and globs.",
         "description": "Two invariants about intent files are enforced by nothing.",
         "rationale": "Hand-kept rules slip.",

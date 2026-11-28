@@ -14,6 +14,7 @@ from sandbox_executor.flow.github.ci_policy import (
     _extract_failed_ci_check_names as _extract_failed_ci_check_names,
 )
 from sandbox_executor.flow.github.ci_policy import local_tests_ci_status, summarise_ci_checks
+from sandbox_executor.flow.github.forge import GitForge
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ def probe_ci_checks(
     timeout: float = 30.0,
     proxy_env: dict[str, str] | None = None,
     *,
-    github: GitHubAdapter | None = None,
+    github: GitForge | None = None,
 ) -> dict[str, Any]:
     clean_target = str(branch_or_pr).strip()
     github = github or GitHubAdapter(repo_dir, proxy_env)

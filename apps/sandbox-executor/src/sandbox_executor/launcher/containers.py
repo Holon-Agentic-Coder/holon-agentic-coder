@@ -8,12 +8,14 @@ from typing import TypedDict, Unpack
 
 from sandbox_executor import agent_runner, git_flow, local_llm
 from sandbox_executor.agent_runner import HOST_WORKTREE_ROLES, SANDBOX_WORKSPACE_MOUNT
+from sandbox_executor.budgets import ENV_REPLAN_FEEDBACK, ENV_REPLAN_FEEDBACK_FILE
 from sandbox_executor.launcher import container_env, env_files, messages, proxy_paths, run_tracking, sidecar
 from sandbox_executor.launcher import mounts as mount_args
 from sandbox_executor.redaction import redact_command
 
 _ENV_FILE_FLAG_INSERT_INDEX = 2
 _INTENT_CONTAINER_PATH = "/tmp/intent.json"
+_REPLAN_FEEDBACK_CONTAINER_PATH = "/tmp/replan_feedback.txt"
 _RESULT_CONTAINER_PATH = "/tmp/review_result.json"
 _LOCAL_LLM_WARNING_ROLES = ("planner", "executor")
 
@@ -52,6 +54,8 @@ class ContainerLaunch:
     workspace_mounts: list[str] = field(default_factory=list, init=False)
     env_file_path: str | None = field(default=None, init=False)
     local_agent_dir: str | None = field(default=None, init=False)
+    replan_feedback_host_path: str | None = field(default=None, init=False)
+    _owned_replan_feedback_file: str | None = field(default=None, init=False)
 
     def run(self) -> int:
         if not shutil.which("docker"):
@@ -61,20 +65,18 @@ class ContainerLaunch:
             self.workspace()
         except _LaunchAborted as aborted:
             return aborted.exit_code
-        self.credentials()
-        self.docker_cmd.extend(proxy_paths._gateway_host_args())
-
-        tr_mounts, tr_envs = sidecar.get_token_reduction_mounts_and_envs(
-            token_reduce=self.token_reduce, mitm_web=self.mitm_web, proxy_attach=self.proxy_attach
-        )
         try:
+            self.credentials()
+            self.docker_cmd.extend(proxy_paths._gateway_host_args())
+
+            tr_mounts, tr_envs = sidecar.get_token_reduction_mounts_and_envs(
+                token_reduce=self.token_reduce, mitm_web=self.mitm_web, proxy_attach=self.proxy_attach
+            )
             self.mounts(tr_mounts, tr_envs)
             self.argv()
             self.env_file()
             messages.print_encodable(f"Executing: {redact_command(self.docker_cmd)}")
-            return run_tracking.run_tracked(
-                self.docker_cmd, env={**os.environ, **self.passthrough_env, "DOCKER_CLI_HINTS": "false"}
-            )
+            return run_tracking.run_tracked(self.docker_cmd, env=self._child_env())
         except _LaunchAborted as aborted:
             return aborted.exit_code
         finally:
@@ -97,8 +99,41 @@ class ContainerLaunch:
         self.forwarded_env = container_env.forwarded_env(
             self.role, self.agent_id, pin_workspace=bool(self.workspace_mounts)
         )
+        self._stage_replan_feedback()
         for key, value in sorted(self.forwarded_env.items()):
             self._add_env(key, value)
+
+    def _stage_replan_feedback(self) -> None:
+        feedback_file = self.forwarded_env.pop(ENV_REPLAN_FEEDBACK_FILE, "").strip()
+        inline_feedback = self.forwarded_env.pop(ENV_REPLAN_FEEDBACK, "")
+        if feedback_file:
+            abs_path = os.path.abspath(feedback_file)
+            if not os.path.isfile(abs_path):
+                print(f"Error: {ENV_REPLAN_FEEDBACK_FILE} '{feedback_file}' does not exist.", file=sys.stderr)
+                raise _LaunchAborted(1)
+            self.replan_feedback_host_path = abs_path
+            self.forwarded_env[ENV_REPLAN_FEEDBACK_FILE] = _REPLAN_FEEDBACK_CONTAINER_PATH
+        elif inline_feedback.strip():
+            try:
+                env_files.sweep_stale_env_files(env_files.env_file_dir())
+                staged_path = env_files.write_replan_feedback_file(inline_feedback)
+            except OSError as exc:
+                print(
+                    f"Error: could not stage replan feedback file: {messages.redact_cli_error(exc)}.",
+                    file=sys.stderr,
+                )
+                raise _LaunchAborted(1) from exc
+            self.replan_feedback_host_path = staged_path
+            self._owned_replan_feedback_file = staged_path
+            self.forwarded_env[ENV_REPLAN_FEEDBACK_FILE] = _REPLAN_FEEDBACK_CONTAINER_PATH
+
+    def _child_env(self) -> dict[str, str]:
+        child_env = dict(os.environ)
+        if self.replan_feedback_host_path is not None:
+            child_env.pop(ENV_REPLAN_FEEDBACK, None)
+        child_env.update(self.passthrough_env)
+        child_env["DOCKER_CLI_HINTS"] = "false"
+        return child_env
 
     def mounts(self, tr_mounts: list[str], tr_envs: dict[str, str]) -> None:
         self.docker_cmd.extend(tr_mounts)
@@ -138,6 +173,11 @@ class ContainerLaunch:
         ]
 
     def _add_env(self, key: str, value: str) -> None:
+        try:
+            env_files.validate_env_var_size(key, value)
+        except ValueError as exc:
+            print(f"Error: {messages.redact_cli_error(exc)}.", file=sys.stderr)
+            raise _LaunchAborted(1) from exc
         if env_files.is_passthrough_env_item(key, value):
             self.passthrough_env[key] = value
             self.docker_cmd.extend(["-e", key])
@@ -191,6 +231,9 @@ class ContainerLaunch:
                 raise _LaunchAborted(1)
             self.docker_cmd.extend(["-v", f"{abs_intent}:{_INTENT_CONTAINER_PATH}:ro"])
 
+        if self.replan_feedback_host_path:
+            self.docker_cmd.extend(["-v", f"{self.replan_feedback_host_path}:{_REPLAN_FEEDBACK_CONTAINER_PATH}:ro"])
+
         if self.result_file:
             abs_result = os.path.abspath(self.result_file)
             self.docker_cmd.extend(["-v", f"{abs_result}:{_RESULT_CONTAINER_PATH}"])
@@ -199,6 +242,9 @@ class ContainerLaunch:
         if self.env_file_path:
             with contextlib.suppress(FileNotFoundError):
                 os.remove(self.env_file_path)
+        if self._owned_replan_feedback_file:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(self._owned_replan_feedback_file)
         sidecar.teardown_token_reduction_proxy()
         if self.local_agent_dir:
             shutil.rmtree(self.local_agent_dir, ignore_errors=True)

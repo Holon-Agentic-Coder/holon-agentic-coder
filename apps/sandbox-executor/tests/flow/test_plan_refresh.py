@@ -233,10 +233,7 @@ def test_ac1_a_flow_admitted_after_a_wait_gets_main_merged_before_dispatch(
     assert len(refresh_rows(host, execution_branch_ref)) == 1
 
 
-def test_ac2_a_flow_admitted_on_its_first_check_is_left_untouched(
-    host_with_overlap_merged_on_main: tuple[Path, str],
-) -> None:
-    host, _main_sha = host_with_overlap_merged_on_main
+def test_ac2_a_flow_admitted_on_its_first_check_is_left_untouched(host: Path) -> None:
     old_tip = git(host, "rev-parse", f"origin/{PLAN}")
     executor = PlanTipRecordingExecutor(host)
 
@@ -356,3 +353,55 @@ def test_a_re_planned_branch_is_refreshed_although_an_earlier_plan_was(
     new_tip = git(host, "rev-parse", f"origin/{PLAN}")
     assert is_ancestor(host, main_sha, new_tip) and is_ancestor(host, old_tip, new_tip)
     assert ctx.admission == {**REFRESHED, "refreshed_to": main_sha} and len(refresh_rows(host)) == 1
+
+
+def test_stale_plan_branch_is_refreshed_without_admission_wait(
+    host_with_overlap_merged_on_main: tuple[Path, str],
+) -> None:
+    host, main_sha = host_with_overlap_merged_on_main
+    old_tip = git(host, "rev-parse", f"origin/{PLAN}")
+    executor = PlanTipRecordingExecutor(host)
+
+    result = run_stage(host, stage_context(host, None), executor)
+
+    assert result.status == StageStatus.SUCCESS, result.error
+    refreshed_plan_tip = git(host, "rev-parse", f"origin/{PLAN}")
+    assert executor.plan_tips == [refreshed_plan_tip]
+    assert is_ancestor(host, main_sha, refreshed_plan_tip) and is_ancestor(host, old_tip, refreshed_plan_tip)
+    assert git(host, "rev-parse", f"refs/heads/{PLAN}") == refreshed_plan_tip
+    [recorded] = refresh_rows(host)
+    assert recorded["refreshed_to"] == main_sha and recorded["waited_since"] is None
+
+
+def test_non_ledger_conflict_halts_fail_closed_without_admission_wait(host: Path) -> None:
+    old_tip = commit_and_push_on_branch(host, PLAN, {"src/app.py": "APP = 2\n"}, "plan edits app", append=False)
+    merge_overlapping_change_on_main(host, {"src/app.py": "APP = 3\n"})
+    executor = PlanTipRecordingExecutor(host)
+
+    result = run_stage(host, stage_context(host, None), executor)
+
+    assert result.status == StageStatus.FAILED and executor.plan_tips == []
+    assert result.payload["dispatched"] is False and result.payload["plan_refresh_conflicts"] == ["src/app.py"]
+    assert "conflicts in src/app.py" in str(result.error) and "Stage 3 stopped before dispatch" in str(result.error)
+    assert git(host, "rev-parse", f"origin/{PLAN}") == old_tip
+    assert subprocess.run(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=host).returncode != 0
+
+
+def test_prior_failed_execution_branch_does_not_skip_plan_refresh_without_wait(
+    host_with_overlap_merged_on_main: tuple[Path, str],
+) -> None:
+    host, main_sha = host_with_overlap_merged_on_main
+    prior_failed = f"{PREFIX}/E-1-claude-agent-claude-opus-5-5/_"
+    git(host, "push", "-q", "origin", f"refs/remotes/origin/{PLAN}:refs/heads/{prior_failed}")
+    git(host, "fetch", "-q", "origin")
+    ctx = stage_context(host, None)
+    ctx.execution_branch = prior_failed
+    executor = PlanTipRecordingExecutor(host)
+
+    result = run_stage(host, ctx, executor)
+
+    assert result.status == StageStatus.SUCCESS, result.error
+    refreshed_plan_tip = git(host, "rev-parse", f"origin/{PLAN}")
+    assert executor.plan_tips == [refreshed_plan_tip]
+    assert is_ancestor(host, main_sha, refreshed_plan_tip)
+    assert not is_ancestor(host, main_sha, f"origin/{prior_failed}")

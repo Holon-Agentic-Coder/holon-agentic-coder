@@ -1,6 +1,7 @@
 import logging
 import math
-from collections.abc import Mapping
+import os
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass, field
 from typing import Literal, overload
 
@@ -214,7 +215,26 @@ def describe_budgets(budgets: Budgets) -> list[str]:
 DEFAULT_ENTROPY_BUDGET = 15.0
 MAX_REPLAN_ATTEMPTS = 2
 ENV_REPLAN_FEEDBACK = "HOLON_REPLAN_FEEDBACK"
+ENV_REPLAN_FEEDBACK_FILE = "HOLON_REPLAN_FEEDBACK_FILE"
+REPLAN_FEEDBACK_INLINE_MAX_BYTES = 32 * 1024
 MAX_SUB_INTENT_DEPTH = 2
+
+
+def read_replan_feedback(env: Mapping[str, str] | None = None, *, consume: bool = False) -> str:
+    source: Mapping[str, str] = os.environ if env is None else env
+    if consume and isinstance(source, MutableMapping):
+        feedback_file = source.pop(ENV_REPLAN_FEEDBACK_FILE, "").strip()
+        inline_feedback = source.pop(ENV_REPLAN_FEEDBACK, "").strip()
+    else:
+        feedback_file = source.get(ENV_REPLAN_FEEDBACK_FILE, "").strip()
+        inline_feedback = source.get(ENV_REPLAN_FEEDBACK, "").strip()
+    if feedback_file:
+        try:
+            with open(feedback_file, encoding="utf-8") as fh:
+                return fh.read().strip()
+        except OSError as exc:
+            logger.warning("Could not read %s (%s): %s", ENV_REPLAN_FEEDBACK_FILE, feedback_file, exc)
+    return inline_feedback
 
 
 def _entropy_budget_from(row: Mapping[str, object] | None) -> float | None:

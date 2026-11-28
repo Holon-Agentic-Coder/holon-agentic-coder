@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from sandbox_executor.runners.spec import RunnerSpec, has_api_key
+from sandbox_executor.runners.spec import ModelCapability, RunnerSpec, SessionMountSpec, has_api_key
 
 
 def _oss_mode_enabled() -> bool:
@@ -29,4 +29,19 @@ SPEC = RunnerSpec(
     ticker=None,
     api_key_env_vars=("HOLON_AGENT_KEY",),
     credential_check=_check_credentials,
+    model_capabilities=(
+        ModelCapability(
+            runner="codex-agent",
+            canonical_model="gpt-5-codex",
+            aliases=["codex"],
+            effort_levels=[],
+            fallback_tier="Secondary (Cloud/CLI)",
+        ),
+    ),
+    provider_api_key_env_vars=("OPENAI_API_KEY", "CODEX_API_KEY"),
+    session_detection_paths=("~/.codex", "/home/holon/.codex"),
+    harness_markers=(("CODEX_", "prefix"),),
+    harness_marker_priority=30,
+    non_marker_env_vars=frozenset({"CODEX_API_KEY", "CODEX_HOME"}),
+    session_mount_specs=(SessionMountSpec(".codex", "/home/holon/.codex", writable_tmpfs_subdirs=("log", "cache")),),
 )

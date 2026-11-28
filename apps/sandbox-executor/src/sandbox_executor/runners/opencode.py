@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sandbox_executor.runners.spec import RunnerSpec, generic_missing_message, has_api_key
+from sandbox_executor.runners.spec import ModelCapability, RunnerSpec, generic_missing_message, has_api_key
 
 
 def _check_credentials(spec: RunnerSpec) -> str | None:
@@ -16,4 +16,17 @@ SPEC = RunnerSpec(
     ticker=None,
     api_key_env_vars=("HOLON_AGENT_KEY",),
     credential_check=_check_credentials,
+    model_capabilities=(
+        ModelCapability(
+            runner="opencode-agent",
+            canonical_model="anthropic/claude-opus-5-5",
+            aliases=["opencode"],
+            effort_levels=[],
+            fallback_tier="Secondary (Cloud/CLI)",
+        ),
+    ),
+    provider_api_key_env_vars=("OPENCODE_API_KEY",),
+    harness_markers=(("OPENCODE", "exact"), ("OPENCODE_", "prefix")),
+    harness_marker_priority=40,
+    non_marker_env_vars=frozenset({"OPENCODE_API_KEY", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR"}),
 )

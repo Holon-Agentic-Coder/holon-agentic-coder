@@ -99,6 +99,10 @@ class OverlappingDiscovery(FakeGh):
         return super().__call__(args, cwd)
 
 
+def _live_runners(*worktrees):
+    return lambda: [f"holon flow --worktree {worktree}" for worktree in worktrees]
+
+
 def _stage3_context(worktree, plan_branch: str, slug: str) -> FlowContext:
     context = FlowContext(
         target_worktree=str(worktree),
@@ -116,15 +120,17 @@ def test_racing_admission_checks_admit_exactly_one_overlapping_flow(flow_repos, 
     host, _origin = flow_repos
     make_plan_branch(host, OWN_PLAN, [{"path": "src/app.py"}])
     make_plan_branch(host, OTHER_PLAN, [{"path": "src/"}])
+    _git(host, "push", "-q", "origin", OWN_PLAN, OTHER_PLAN)
     second = tmp_path / "second"
     _git(host, "worktree", "add", "-q", "--detach", str(second), "main")
+    runners = _live_runners(host, second)
     contexts = {OWN_PLAN: _stage3_context(host, OWN_PLAN, "own"), OTHER_PLAN: _stage3_context(second, OTHER_PLAN, "b")}
     gh, start = OverlappingDiscovery(), threading.Barrier(2, timeout=10)
     decisions: dict[str, AdmissionDecision] = {}
 
     def admit(plan_branch: str) -> None:
         start.wait()
-        decisions[plan_branch] = check_admission(contexts[plan_branch], gh)
+        decisions[plan_branch] = check_admission(contexts[plan_branch], gh, cmdlines=runners)
 
     own_lock = acquire_flow_run_lock(str(host), "own", "race-own")
     other_lock = acquire_flow_run_lock(str(second), "b", "race-b")
@@ -195,8 +201,12 @@ def test_two_parked_flows_resuming_at_once_admit_exactly_one_with_named_live_blo
     host, _origin = flow_repos
     make_plan_branch(host, OWN_PLAN, [{"path": "src/app.py"}])
     make_plan_branch(host, OTHER_PLAN, [{"path": "src/"}])
+    third_head = "I-300-third/P-301-e/E-302-f/_"
+    _git(host, "branch", third_head, "main")
+    _git(host, "push", "-q", "origin", OWN_PLAN, OTHER_PLAN, third_head)
     second = tmp_path / "second"
     _git(host, "worktree", "add", "-q", "--detach", str(second), "main")
+    runners = _live_runners(host, second)
     readings = iter(f"2026-11-20T01:{minute:02d}:00.000Z" for minute in range(20))
     monkeypatch.setattr(admission_state, "utc_now", lambda: next(readings))
 
@@ -205,7 +215,7 @@ def test_two_parked_flows_resuming_at_once_admit_exactly_one_with_named_live_blo
     save_checkpoint(older)
     save_checkpoint(newer)
     open_pr = FakeGh(
-        [{"number": 7, "headRefName": "I-300-third/P-301-e/E-302-f/_", "baseRefName": "main"}], {7: ["src/app.py"]}
+        [{"number": 7, "headRefName": third_head, "baseRefName": "main"}], {7: ["src/app.py"]}
     )
     assert not check_admission(older, open_pr).admitted
     assert not check_admission(newer, open_pr).admitted
@@ -218,7 +228,7 @@ def test_two_parked_flows_resuming_at_once_admit_exactly_one_with_named_live_blo
 
     def resume(plan_branch: str) -> None:
         start.wait()
-        decisions[plan_branch] = check_admission(resumed[plan_branch], gh)
+        decisions[plan_branch] = check_admission(resumed[plan_branch], gh, cmdlines=runners)
 
     older_lock = acquire_flow_run_lock(str(host), "older", "resume-older")
     newer_lock = acquire_flow_run_lock(str(second), "newer", "resume-newer")

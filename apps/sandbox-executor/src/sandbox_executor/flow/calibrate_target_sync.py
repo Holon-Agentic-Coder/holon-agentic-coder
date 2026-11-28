@@ -13,6 +13,7 @@ from sandbox_executor.flow.dispatch import _stage_failure
 from sandbox_executor.flow.git_refs import _resolve_branch_ref, _track_local_branch
 from sandbox_executor.flow.review.approval_carry_over import record_stage5_carry_over
 from sandbox_executor.flow.review.ledger_commit import _commit_pending_ledger_rows
+from sandbox_executor.flow.review.main_baseline_guard import MAIN_BASELINE_FAILING, guard_target_sync
 from sandbox_executor.flow.review.sync_points import (
     compute_rereview_scope,
     format_conflict_block_reason,
@@ -92,6 +93,9 @@ def _run_calibrate_sync(context: FlowContext) -> tuple[SyncResult, str]:
     if checkout_err is not None:
         return SyncResult("blocked", "", "", "", error=checkout_err), target_branch
     try:
+        if baseline := guard_target_sync(context, target_branch, branch):
+            err = f"{MAIN_BASELINE_FAILING}: {baseline.reason}"
+            return SyncResult("blocked", "", "", "", error=err), target_branch
         last_probe = getattr(context, _hooks._PROBE_ATTR, None)
         if _commit_pending_ledger_rows(context, context.review_iterations_done, "before calibration target sync"):
             last_probe = None
@@ -121,6 +125,16 @@ def _run_calibrate_sync(context: FlowContext) -> tuple[SyncResult, str]:
 def sync_before_calibration(context: FlowContext, start_time: str) -> StageResult | None:
     result, target_branch = _run_calibrate_sync(context)
     if result.status == "blocked":
+        if str(result.error or "").startswith(MAIN_BASELINE_FAILING):
+            return _stage_failure(
+                context,
+                FlowStage.CALIBRATE,
+                start_time,
+                f"Calibrate stage blocked: {result.error}",
+                blocked_on=MAIN_BASELINE_FAILING,
+                sync_boundary=SyncBoundary.CALIBRATE.value,
+                sync_error=result.error,
+            )
         reason = f"Calibrate stage failed: {format_conflict_block_reason(result, target_branch)}"
         return _stage_failure(
             context,
@@ -148,6 +162,8 @@ def make_calibrate_retry_sync(
         _leave_calibrated_branch(context)
         result, target_branch = _run_calibrate_sync(context)
         if result.status == "blocked":
+            if str(result.error or "").startswith(MAIN_BASELINE_FAILING):
+                raise CalibrationSyncError(f"target sync before calibration retry {attempt} blocked: {result.error}")
             detail = format_conflict_block_reason(result, target_branch)
             raise CalibrationSyncError(f"target sync before calibration retry {attempt} blocked: {detail}")
         if result.status != "merged":

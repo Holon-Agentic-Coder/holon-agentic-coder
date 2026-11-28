@@ -15,6 +15,7 @@ from sandbox_executor.flow.context import FlowContext, FlowStage
 from sandbox_executor.flow.git_refs import _resolve_branch_ref, _track_local_branch
 from sandbox_executor.flow.github.merge import PROTECTED_BRANCHES, _bare_branch
 from sandbox_executor.flow.review.ledger_commit import _commit_pending_ledger_rows
+from sandbox_executor.flow.review.main_baseline_guard import MAIN_BASELINE_FAILING, guard_target_sync
 from sandbox_executor.flow.review.sync_scope import compute_rereview_scope as compute_rereview_scope
 from sandbox_executor.flow.review.sync_scope import format_conflict_block_reason as format_conflict_block_reason
 from sandbox_executor.flow.review.sync_scope import is_mechanical_only as is_mechanical_only
@@ -78,6 +79,9 @@ def sync_review_head(
             result = SyncResult("unchanged", probe.head_sha, probe.head_sha, probe.target_sha, probe=probe)
         elif boundary is SyncBoundary.TURN and not probe.conflicted_paths:
             result = SyncResult("deferred", probe.head_sha, probe.head_sha, probe.target_sha, probe=probe)
+        elif baseline := guard_target_sync(context, target_branch, branch):
+            err = f"{MAIN_BASELINE_FAILING}: {baseline.reason}"
+            result = SyncResult("blocked", probe.head_sha, probe.head_sha, probe.target_sha, probe=probe, error=err)
         else:
             if _commit_pending_ledger_rows(context, context.review_iterations_done, "before target sync"):
                 probe = None
@@ -110,6 +114,9 @@ def _apply_turn_sync(
         return resolved_target, None
     result = sync_review_head(context, branch, target_branch, SyncBoundary.TURN)
     if result.status == "blocked":
+        if str(result.error or "").startswith(MAIN_BASELINE_FAILING):
+            context.log(f"[Review Loop] Target sync {label} blocked ({result.error}).")
+            return resolved_target, str(result.error)
         reason = format_conflict_block_reason(result, target_branch)
         context.log(f"[Review Loop] Target sync {label} blocked: {reason}.")
         return resolved_target, f"target sync blocked: {reason}"

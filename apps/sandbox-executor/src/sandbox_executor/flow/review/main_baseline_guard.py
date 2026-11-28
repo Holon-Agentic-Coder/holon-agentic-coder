@@ -113,7 +113,7 @@ def gh_failing_paths_lookup(
             if run_id:
                 return _failed_log_paths(repo_dir, run_id, proxy_env)
         # why: fail safe so a transient GitHub API or log lookup failure never suppresses a genuine PR defect
-        except Exception:
+        except (OSError, ValueError, subprocess.SubprocessError):
             return ()
         return ()
 

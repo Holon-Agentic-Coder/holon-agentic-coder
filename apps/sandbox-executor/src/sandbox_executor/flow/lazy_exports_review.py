@@ -58,6 +58,12 @@ REVIEW_LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.flow.review.loop": (
         "_loop_status _review_window _reviewers_objected _run_engine_review_loop run_review_loop"
     ),
+    "sandbox_executor.flow.review.main_baseline_guard": (
+        "BaselineFailure BaselineGuardSeams GUARDED_CHECK_TOKENS MAIN_BASELINE_FAILING baseline_block_for_ci_finding "
+        "baseline_blocked_on_record classify_baseline_block gh_failing_paths_lookup guard_target_sync "
+        "inspect_main_baseline is_pr_already_approved read_origin_target_sha read_pr_diff_paths "
+        "should_preserve_consensus"
+    ),
     "sandbox_executor.flow.review.merged_head_gate": (
         "MergedHeadSeams format_merged_head_ci gate_merged_head_ci gate_record skipped_record stage4_ci_record"
     ),

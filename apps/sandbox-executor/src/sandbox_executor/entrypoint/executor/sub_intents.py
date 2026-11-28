@@ -87,6 +87,7 @@ class SubIntentSteps:
         if decision.decision == DECISION_DECOMPOSED:
             count = len(decision.sub_intents)
             print(f"The plan records an explicit sub-intent list of {count} item(s); referring to it.")
+            # why: the plan row is the only record of the sub-intent list; this summary refers to it, never copies it
             self.exec_entry["plan_decision"] = {
                 "plan_id": self.plan_data.get("plan_id"),
                 "plan_branch": plan_branch,

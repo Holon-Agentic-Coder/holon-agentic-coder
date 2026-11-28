@@ -22,6 +22,7 @@ _LOOKUP_ARGV: dict[str, tuple[str, ...]] = {
     "linux": ("secret-tool", "lookup", "service", SERVICE, "account", ACCOUNT),
 }
 _MACOS_ITEM_NOT_FOUND = 44
+# why: a token outside this set is never composed into the security -i command line read from stdin
 _STORABLE_TOKEN_RE = re.compile(r"[A-Za-z0-9._~+/=-]+")
 
 

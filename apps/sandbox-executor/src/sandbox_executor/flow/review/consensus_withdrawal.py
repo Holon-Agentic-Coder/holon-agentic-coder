@@ -23,6 +23,7 @@ from sandbox_executor.flow.github.ci_head_checks import (
 )
 from sandbox_executor.flow.github.ci_reverify import approved_head_of
 from sandbox_executor.flow.review.approval_coverage import approved_fingerprint_of
+from sandbox_executor.flow.review.main_baseline_guard import MAIN_BASELINE_FAILING, should_preserve_consensus
 from sandbox_executor.knowledge import CredentialRedactor
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.redaction import redact_agent_secrets
@@ -154,6 +155,22 @@ def withdraw_consensus(
     restart: bool = True,
     halted: bool = False,
 ) -> dict[str, Any]:
+    if should_preserve_consensus(record):
+        merged = str(record.get("head_sha") or "")
+        approved = approved_head_of(context) or record.get("approved_head")
+        context.log(
+            f"Consensus withdrawal refused for {short_sha(merged)}: blocked_on={MAIN_BASELINE_FAILING}; "
+            "existing approval preserved."
+        )
+        return {
+            "merged_head": merged,
+            "approved_head": approved,
+            "withdrawn": False,
+            "preserved": True,
+            "blocked_on": MAIN_BASELINE_FAILING,
+            "comment_posted": False,
+            "failed_runs": failed_runs_of(record),
+        }
     # why: imported lazily because the gates import verdict and records, and records imports review_report.
     from sandbox_executor.flow.review.approval_gates import mark_pipeline_red
     from sandbox_executor.flow.review.records import record_review_action

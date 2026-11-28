@@ -11,12 +11,13 @@ from sandbox_executor.flow.github.ci_failure_detail import DetailLookup, parse_r
 from sandbox_executor.flow.github.ci_head_checks import CANCELLED_CONCLUSIONS, PASSING_CONCLUSIONS, PENDING_STATUSES
 from sandbox_executor.flow.review.approval_gates import RED, pipeline_gate_of, record_pipeline_gate
 from sandbox_executor.flow.review.ci_timing_finding import MAX_JOBS_DESCRIBED
+from sandbox_executor.flow.review.main_baseline_guard import MAIN_BASELINE_FAILING
 from sandbox_executor.ledger import generate_action_id
 from sandbox_executor.review_accounting import count_accounting
 
 NOISE_TIMING, NOISE_INFRA, NOISE_CANCELLED, DEFECT = "noise_timing", "noise_infra", "noise_cancelled", "defect"
 NOISE_CLASSES = frozenset({NOISE_TIMING, NOISE_INFRA, NOISE_CANCELLED})
-RERUN, RESOLVE = "rerun", "resolve"
+RERUN, RESOLVE, BLOCK = "rerun", "resolve", "block"
 INFRA_CONCLUSIONS = frozenset({"startup_failure", "timed_out"})
 INFRA_STEP_PREFIXES = ("Set up job", "Checkout", "Install uv", "Set up Python", "Post ", "Complete job")
 CI_NOISE_RERUNS = 1
@@ -104,6 +105,8 @@ def note_rerun(context: FlowContext, head: str, run_ids: Iterable[str]) -> None:
 
 
 def route_failure(context: FlowContext, head: str, cls: str, runs: Sequence[FailedRun]) -> str:
+    if cls == MAIN_BASELINE_FAILING:
+        return BLOCK
     run_ids = _run_ids(runs)
     if cls not in NOISE_CLASSES or not run_ids or not head:
         return RESOLVE
@@ -146,7 +149,15 @@ def record_routing(
 
     run_ids = _run_ids(runs)
     spent = max((_reruns_spent(context, head, run_id) for run_id in run_ids), default=0)
-    last = {"head_sha": head, "classification": cls, "decision": decision, "run_ids": run_ids, "reruns": spent}
+    last: dict[str, Any] = {
+        "head_sha": head,
+        "classification": cls,
+        "decision": decision,
+        "run_ids": run_ids,
+        "reruns": spent,
+    }
+    if cls == MAIN_BASELINE_FAILING:
+        last["blocked_on"] = MAIN_BASELINE_FAILING
     _routing_state(context)["last"] = last
     if decision == RERUN and cls in NOISE_CLASSES:
         count_accounting(context, "non_defect_churn", "ci_noise", event=f"noise:{head}:{','.join(sorted(run_ids))}")

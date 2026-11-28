@@ -7,7 +7,9 @@ from sandbox_executor.flow.github.ci import resolve_ci_registration_timeout
 from sandbox_executor.flow.github.ci_failure_detail import gh_detail_lookup, short_sha
 from sandbox_executor.flow.github.ci_head_checks import CANCELLED_CONCLUSIONS
 from sandbox_executor.flow.review.ci_failure_routing import (
+    BLOCK,
     CLASS_LABELS,
+    DEFECT,
     RERUN,
     RESOLVE,
     FailedRun,
@@ -18,6 +20,11 @@ from sandbox_executor.flow.review.ci_failure_routing import (
     route_failure,
 )
 from sandbox_executor.flow.review.ci_inspection import CiInspection, CiInspectionInputs, inspect_ci
+from sandbox_executor.flow.review.main_baseline_guard import (
+    MAIN_BASELINE_FAILING,
+    BaselineGuardSeams,
+    classify_baseline_block,
+)
 
 RERUN_START_POLL_SECONDS = 5.0
 
@@ -68,6 +75,11 @@ def rerun_noise_once(
     if not head or not runs:
         return ci
     cls = classify_ci_failure(runs, inputs.detail_lookup or gh_detail_lookup(inputs.repo_dir, inputs.proxy_env))
+    if cls == DEFECT:
+        target_branch = str(context.intent_data.get("target_branch") or "main")
+        seams = BaselineGuardSeams(proxy_env=inputs.proxy_env)
+        if classify_baseline_block(context, target_branch, head, [run.name for run in runs], seams):
+            cls = MAIN_BASELINE_FAILING
     decision, dispatched = route_failure(context, head, cls, runs), []
     if decision == RERUN:
         ok, dispatched = _dispatch_all(inputs, runs)
@@ -80,6 +92,12 @@ def rerun_noise_once(
     if decision != RERUN:
         # why: a partial dispatch is counted only after recording, so the record names only inspected reruns
         note_rerun(context, head, dispatched)
+        if decision == BLOCK:
+            context.log(
+                f"[Review Loop] CI failure on {short_sha(head)} blocked on {MAIN_BASELINE_FAILING}: "
+                "resolver not dispatched."
+            )
+            return ci
         context.log(f"[Review Loop] CI failure on {short_sha(head)} classified {cls}: sent to the resolver.")
         return ci
     context.log(

@@ -27,6 +27,7 @@ from sandbox_executor.flow.github.ci_head_reruns import CancelledReruns, gh_run_
 from sandbox_executor.flow.github.ci_slowest_tests import SlowestLookup
 from sandbox_executor.flow.github.ci_wait import CiWaitPolicy, next_poll_interval
 from sandbox_executor.flow.review.consensus_withdrawal import WithdrawalSeams
+from sandbox_executor.flow.review.main_baseline_guard import BaselineGuardSeams
 from sandbox_executor.knowledge import CredentialRedactor
 
 MAX_REASON_CHARS = 300
@@ -45,6 +46,7 @@ class MergedHeadSeams:
     withdrawal: WithdrawalSeams | None = None
     detail_lookup: DetailLookup | None = None
     slowest_lookup: SlowestLookup | None = None
+    baseline_guard: BaselineGuardSeams | None = None
 
 
 def _run_entry(check: Mapping[str, Any]) -> dict[str, Any]:
@@ -147,6 +149,8 @@ def format_merged_head_ci(record: Mapping[str, Any]) -> str:
     line += f"; runs: {runs}" if runs else "; no runs"
     if record.get("reruns"):
         line += f"; re-triggered: {', '.join(record['reruns'])}"
+    if record.get("blocked_on"):
+        line += f"; blocked_on: {record['blocked_on']}"
     return line + (f" ({record['reason']})" if record.get("reason") else "")
 
 

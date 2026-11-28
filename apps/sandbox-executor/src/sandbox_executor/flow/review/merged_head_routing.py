@@ -21,6 +21,7 @@ from sandbox_executor.flow.review.approval_gates import (
 )
 from sandbox_executor.flow.review.carried_findings import serialize_open
 from sandbox_executor.flow.review.ci_failure_routing import (
+    BLOCK,
     CLASS_LABELS,
     NOISE_TIMING,
     RERUN,
@@ -34,6 +35,11 @@ from sandbox_executor.flow.review.ci_failure_routing import (
 )
 from sandbox_executor.flow.review.ci_timing_finding import timing_gate_finding
 from sandbox_executor.flow.review.consensus_withdrawal import failed_runs_of, withdraw_consensus
+from sandbox_executor.flow.review.main_baseline_guard import (
+    MAIN_BASELINE_FAILING,
+    BaselineGuardSeams,
+    classify_baseline_block,
+)
 from sandbox_executor.flow.review.merged_head_gate import (
     MergedHeadSeams,
     _wait_for_rerun_start,
@@ -59,7 +65,10 @@ def refuse_calibration(context: FlowContext, start: str, record: dict[str, Any])
         f"Calibrate stage refused: CI on merged head {record['head_sha']} is {record['state']} ({record['reason']}); "
         "nothing was calibrated or pushed."
     )
-    return _stage_failure(context, FlowStage.CALIBRATE, start, reason, merged_head_ci=record)
+    extra: dict[str, Any] = {"merged_head_ci": record}
+    if record.get("blocked_on"):
+        extra["blocked_on"] = record["blocked_on"]
+    return _stage_failure(context, FlowStage.CALIBRATE, start, reason, **extra)
 
 
 def _withdraw(context: FlowContext, start: str, record: dict[str, Any], seams: MergedHeadSeams, withdraw: Any) -> Any:
@@ -127,9 +136,19 @@ def route_merged_head_failure(
     withdraw: Callable[..., dict[str, Any]] = withdraw_consensus,
 ) -> Decision:
     head = str(record.get("head_sha") or "")
+    runs = failed_runs_from_record(record)
+    target_branch = str(context.intent_data.get("target_branch") or "main")
+    guard_seams = seams.baseline_guard or BaselineGuardSeams(proxy_env=seams.proxy_env)
+    if block := classify_baseline_block(context, target_branch, head, [r.name for r in runs], guard_seams):
+        record_routing(context, head, MAIN_BASELINE_FAILING, BLOCK, runs)
+        context.log(
+            f"Merged-head CI on {short_sha(head)} blocked on {MAIN_BASELINE_FAILING}: "
+            "preserving consensus and refusing resolver dispatch."
+        )
+        blocked_record = {**record, "blocked_on": MAIN_BASELINE_FAILING, "reason": block["reason"]}
+        return refuse_calibration(context, start, blocked_record), blocked_record
     if record.get("withdrawal_reason") or not diff_gate_holds(context, context.target_worktree, head):
         return _withdraw(context, start, record, seams, withdraw), record
-    runs = failed_runs_from_record(record)
 
     def restart_or_withdraw(failed: dict[str, Any]) -> Any:
         # why: at the restart cap Stage 5 must not stop on a standing approval, so the consensus is withdrawn.

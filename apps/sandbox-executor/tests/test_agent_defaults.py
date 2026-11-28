@@ -273,3 +273,42 @@ def test_agent_tables_pinned_and_derived_from_runner_specs():
     assert {agent_id: spec.image for agent_id, spec in RUNNER_SPECS.items()} == AGENT_IMAGE_MAPPING
     assert {agent_id: spec.default_model for agent_id, spec in RUNNER_SPECS.items()} == DEFAULT_MODELS
     assert {agent_id: spec.ticker for agent_id, spec in RUNNER_SPECS.items() if spec.ticker} == AGENT_TICKERS
+
+
+def test_runner_capabilities_come_from_runner_specs():
+    from sandbox_executor.runners import RUNNER_SPECS
+
+    spec_capabilities = [cap for spec in RUNNER_SPECS.values() for cap in spec.discovered_models()]
+    spec_runners = {cap.runner for cap in spec_capabilities}
+    declared = [cap for cap in agent_defaults.RUNNER_CAPABILITIES if cap.runner in spec_runners]
+    assert declared == spec_capabilities
+
+
+def test_harness_markers_and_non_marker_vars_come_from_runner_specs():
+    from sandbox_executor.runners import RUNNER_SPECS
+
+    ordered_agents = list(dict.fromkeys(agent_id for agent_id, _, _ in agent_defaults.HARNESS_MARKERS))
+    assert ordered_agents == ["pi", "claude", "codex", "opencode", "antigravity"]
+    expected_markers = {
+        (spec.agent_id, marker, kind) for spec in RUNNER_SPECS.values() for marker, kind in spec.harness_markers
+    }
+    assert set(agent_defaults.HARNESS_MARKERS) == expected_markers
+    assert agent_defaults.NON_MARKER_VARS == frozenset().union(*(s.non_marker_env_vars for s in RUNNER_SPECS.values()))
+
+
+def test_detect_runner_auth_status_reflects_runner_spec_metadata(monkeypatch):
+    from sandbox_executor.runners import RUNNER_SPECS
+
+    monkeypatch.setattr(agent_defaults.os.path, "exists", lambda path: False)
+    monkeypatch.setattr(agent_defaults.os.path, "isfile", lambda path: False)
+    pi_key = RUNNER_SPECS["pi"].provider_api_key_env_vars[0]
+    assert agent_defaults.detect_runner_auth_status(
+        "pi", {pi_key: "secret"}
+    ) != agent_defaults.detect_runner_auth_status("pi", {})
+    gateway_env = {"HOLON_LOCAL_LLM": "1"}
+    assert agent_defaults.detect_runner_auth_status("pi", gateway_env) != agent_defaults.detect_runner_auth_status(
+        "pi", {}
+    )
+    assert agent_defaults.detect_runner_auth_status("codex", gateway_env) == agent_defaults.detect_runner_auth_status(
+        "codex", {}
+    )

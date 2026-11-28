@@ -99,7 +99,7 @@ def test_every_spec_has_a_role_dispatcher_case() -> None:
 def test_importing_runners_does_not_import_defaults_or_runner() -> None:
     code = (
         "import sys, sandbox_executor.runners\n"
-        "forbidden = ('sandbox_executor.agent_defaults', 'sandbox_executor.agent_runner')\n"
+        "forbidden = ('sandbox_executor.agent_defaults', 'sandbox_executor.agent_runner', 'sandbox_executor.launcher')\n"
         "leaked = [m for m in forbidden if m in sys.modules]\n"
         "assert not leaked, leaked\n"
     )
@@ -187,3 +187,62 @@ def test_pi_accepts_models_json_in_pi_coding_agent_dir(
     assert RUNNER_SPECS["pi"].check_credentials() == EXPECTED_MESSAGES["pi"]
     existing_paths.add(str(agent_dir / "models.json"))
     assert RUNNER_SPECS["pi"].check_credentials() is None
+
+
+@pytest.mark.parametrize("agent_id", list(RUNNER_SPECS))
+def test_every_spec_discovers_models(agent_id: str) -> None:
+    assert RUNNER_SPECS[agent_id].discovered_models()
+
+
+def test_antigravity_normalises_effort_through_its_spec() -> None:
+    canonical, effort = RUNNER_SPECS["antigravity"].normalize_model("gemini-3.8-flash", "high")
+    assert canonical == "gemini-3.8-flash-high"
+    assert effort == "high"
+
+
+@pytest.mark.parametrize("agent_id", ["claude", "codex", "opencode", "pi"])
+def test_other_runners_do_not_normalise_effort(agent_id: str) -> None:
+    assert RUNNER_SPECS[agent_id].normalize_model("some-model", "high") == ("some-model", None)
+
+
+@pytest.mark.parametrize(
+    ("agent_id", "relative_dir", "container_path"),
+    [
+        ("claude", ".config/claude", "/home/holon/.config/claude"),
+        ("codex", ".codex", "/home/holon/.codex"),
+    ],
+)
+def test_declarative_session_mounts(agent_id: str, relative_dir: str, container_path: str, tmp_path: Path) -> None:
+    assert RUNNER_SPECS[agent_id].build_session_mounts(str(tmp_path)) == []
+    (tmp_path / relative_dir).mkdir(parents=True)
+    mounts = RUNNER_SPECS[agent_id].build_session_mounts(str(tmp_path))
+    assert f"{tmp_path / relative_dir}:{container_path}:ro" in mounts
+
+
+def test_codex_mounts_writable_tmpfs_subdirs(tmp_path: Path) -> None:
+    (tmp_path / ".codex").mkdir()
+    mounts = RUNNER_SPECS["codex"].build_session_mounts(str(tmp_path))
+    assert any(m.startswith("/home/holon/.codex/log:") for m in mounts)
+    assert any(m.startswith("/home/holon/.codex/cache:") for m in mounts)
+
+
+def test_opencode_has_no_session_mounts(tmp_path: Path) -> None:
+    assert RUNNER_SPECS["opencode"].build_session_mounts(str(tmp_path)) == []
+
+
+def test_pi_and_antigravity_mounts_come_from_their_builders(tmp_path: Path) -> None:
+    from sandbox_executor.runners import antigravity, pi
+
+    assert RUNNER_SPECS["pi"].session_mounts_builder is pi._session_mounts
+    assert RUNNER_SPECS["antigravity"].session_mounts_builder is antigravity._session_mounts
+
+
+def test_launcher_mount_modules_reexport_runner_objects() -> None:
+    from sandbox_executor.launcher import antigravity_mounts, pi_mounts
+    from sandbox_executor.runners import antigravity, pi
+
+    assert antigravity_mounts.ANTIGRAVITY_WRITABLE_TMPFS is antigravity.ANTIGRAVITY_WRITABLE_TMPFS
+    assert antigravity_mounts.antigravity_session_mounts is antigravity.antigravity_session_mounts
+    assert pi_mounts.CONTAINER_HOME is pi.CONTAINER_HOME
+    assert pi_mounts.OWNED_TMPFS_OPTIONS is pi.OWNED_TMPFS_OPTIONS
+    assert pi_mounts.get_pi_mounts is pi.get_pi_mounts

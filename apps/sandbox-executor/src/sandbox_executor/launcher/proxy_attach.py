@@ -24,6 +24,7 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
     proxy_url = os.getenv("HOLON_PROXY_URL") or proxy_paths._proxy_gateway_url()
     host_port = proxy_paths._proxy_host_port(proxy_url)
     if host_port is None:
+        # why: never echo the raw value because an unparseable URL has no reliable userinfo boundary to mask.
         logger.warning(
             "holon-coherence proxy probe failed: HOLON_PROXY_URL is not a valid proxy URL; ignoring it. "
             "Proceeding with DIRECT egress fallback."
@@ -34,8 +35,10 @@ def _attach_external_proxy() -> tuple[list[str], dict[str, str]]:
         )
         return [], {}
 
+    # why: probe before generating the CA so an unreachable proxy leaves no fresh CA on a direct-egress host.
     ready = False
     probe_host = _probe_host_for_gateway(host_port[0])
+    # why: log host/port only after userinfo validation; otherwise parsed host/port segments may hold credentials.
     trusted = trusted_url_authority(proxy_url) is not None
     probe_target = _format_redacted_target(probe_host, host_port[1], trusted=trusted)
     proxy_target = _format_redacted_target(host_port[0], host_port[1], trusted=trusted)

@@ -69,6 +69,7 @@ def _proxy_port_reachable() -> bool:
     if proxy_url:
         host_port = proxy_paths._proxy_host_port(proxy_url)
         if host_port is None:
+            # why: never echo the raw value because an unparseable URL has no reliable userinfo boundary to mask.
             logger.warning("HOLON_PROXY_URL is not a valid proxy URL; skipping the proxy port probe.")
     else:
         host_port = (_LOOPBACK_HOST, _configured_proxy_port())

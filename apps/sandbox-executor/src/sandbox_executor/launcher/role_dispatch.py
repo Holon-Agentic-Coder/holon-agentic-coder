@@ -5,6 +5,7 @@ from sandbox_executor.agent_runner import INTENT_CREATOR_ROLE
 from sandbox_executor.launcher import containers
 
 INTENT_CREATOR_IMAGE: str = "holon/orchestrator"
+# why: intent-creator never invokes a runner, so its container keeps the historical antigravity mount profile.
 INTENT_CREATOR_AGENT_ID: str = "antigravity"
 
 

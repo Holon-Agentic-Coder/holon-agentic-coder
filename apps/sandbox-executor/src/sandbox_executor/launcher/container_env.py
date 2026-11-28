@@ -38,8 +38,10 @@ def forwarded_env(role: str, agent_id: str, pin_workspace: bool) -> dict[str, st
     _apply_workspace_pin(env_to_forward, pin_workspace)
 
     norm_agent_id = local_llm.normalize_agent_id(agent_id)
+    # why: explicit role parameter must override any HOLON_ROLE forwarded from the host environment.
     env_to_forward["HOLON_ROLE"] = role
     env_to_forward["HOLON_AGENT_ID"] = norm_agent_id
+    # why: host already ran the readiness probe, so nested container invocations must not repeat it.
     env_to_forward["HOLON_SKIP_PREFLIGHT"] = "1"
     _default_local_pi_provider(env_to_forward, norm_agent_id)
     return env_to_forward
@@ -66,6 +68,7 @@ def local_provider(local_config: dict) -> str:
 
 
 def exempt_local_hosts(local_config: dict, tr_envs: dict[str, str], proxy_owned: bool) -> None:
+    # why: rewritten host-local endpoints point at the gateway and would otherwise be intercepted by the sidecar.
     local_hosts = local_llm.rewritten_local_hosts(local_config)
     if local_hosts and tr_envs.get("NO_PROXY"):
         exempted = list(local_hosts)

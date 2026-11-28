@@ -42,10 +42,10 @@ def _saved_stage3_flow(worktree: Path, plan_branch: str, slug: str) -> FlowConte
     return context
 
 
-def _retry_as_resumed_flow(context: FlowContext, gh: FakeGh) -> dict:
+def _retry_as_resumed_flow(context: FlowContext, gh: FakeGh, cmdlines=None) -> dict:
     path = get_default_checkpoint_path(context.target_worktree, context.intent_data["slug"])
     resumed = load_checkpoint(path).context
-    check_admission(resumed, gh)
+    check_admission(resumed, gh, cmdlines=cmdlines)
     return json.loads(Path(path).read_text(encoding="utf-8"))["admission"]
 
 
@@ -54,6 +54,8 @@ def two_waiters(flow_repos, tmp_path, monkeypatch):
     host, _origin = flow_repos
     make_plan_branch(host, OLDER_PLAN, [{"path": "src/app.py"}])
     make_plan_branch(host, NEWER_PLAN, [{"path": "src/"}])
+    _git(host, "branch", MERGING_HEAD, "main")
+    _git(host, "push", "-q", "origin", OLDER_PLAN, MERGING_HEAD)
     second_worktree = tmp_path / "second"
     _git(host, "worktree", "add", "-q", "--detach", str(second_worktree), "main")
     readings = iter(f"2026-11-20T01:{minute:02d}:00.000Z" for minute in range(60))
@@ -85,10 +87,11 @@ def test_newer_flow_retrying_while_older_waiter_is_parked_is_admitted(two_waiter
 def test_newer_flow_retrying_first_defers_to_live_older_waiter(two_waiters):
     older, newer = two_waiters
     first_refusal_time = "2026-11-20T01:01:00.000Z"
+    older_runner = lambda: [f"holon flow --worktree {older.target_worktree}"]  # noqa: E731
     older_lock = acquire_flow_run_lock(older.target_worktree, "older", "live-older")
     assert older_lock is not None
     try:
-        newer_state = _retry_as_resumed_flow(newer, MERGED)
+        newer_state = _retry_as_resumed_flow(newer, MERGED, cmdlines=older_runner)
         assert newer_state["state"] == "blocked" and _local_blockers(newer_state) == [("local_flow", OLDER_PLAN)]
         assert newer_state["blocked_since"] == first_refusal_time
         assert Path(newer_state["blocked_by"][0]["worktree"]).resolve() == Path(older.target_worktree).resolve()
@@ -96,7 +99,7 @@ def test_newer_flow_retrying_first_defers_to_live_older_waiter(two_waiters):
             "state": "admitted",
             "waited_since": "2026-11-20T01:00:00.000Z",
         }
-        again = _retry_as_resumed_flow(newer, MERGED)
+        again = _retry_as_resumed_flow(newer, MERGED, cmdlines=older_runner)
         assert again["state"] == "blocked" and _local_blockers(again) == [("local_flow", OLDER_PLAN)]
     finally:
         release_flow_run_lock(older_lock.path)
@@ -104,6 +107,7 @@ def test_newer_flow_retrying_first_defers_to_live_older_waiter(two_waiters):
 
 def test_older_flow_retrying_first_is_admitted_and_blocks_the_newer(two_waiters):
     older, newer = two_waiters
+    older_runner = lambda: [f"holon flow --worktree {older.target_worktree}"]  # noqa: E731
     older_lock = acquire_flow_run_lock(older.target_worktree, "older", "live-older")
     assert older_lock is not None
     try:
@@ -111,7 +115,7 @@ def test_older_flow_retrying_first_is_admitted_and_blocks_the_newer(two_waiters)
             "state": "admitted",
             "waited_since": "2026-11-20T01:00:00.000Z",
         }
-        newer_state = _retry_as_resumed_flow(newer, MERGED)
+        newer_state = _retry_as_resumed_flow(newer, MERGED, cmdlines=older_runner)
         assert newer_state["state"] == "blocked" and _local_blockers(newer_state) == [("local_flow", OLDER_PLAN)]
     finally:
         release_flow_run_lock(older_lock.path)

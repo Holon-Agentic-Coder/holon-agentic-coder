@@ -32,6 +32,7 @@ from tests.flow_repo_templates import derived_template, replace_with_copy, templ
 THIRD_PLAN = "I-300-third/P-301-eeeeeeee-claude-agent-claude-opus-5-5/_"
 
 OWN_PLAN = "I-100-own/P-101-cccccccc-claude-agent-claude-opus-5-5/_"
+OTHER_PR_LABEL = f"pull request #7 [OPEN] (remote ref refs/remotes/origin/{OTHER_HEAD})"
 REAL_CHECK = check_admission
 
 
@@ -55,8 +56,9 @@ def own_plan_with(flow_repos, tmp_path, tmp_path_factory, _flow_repos_template) 
             if before:
                 seed_base_files(host, list(before))
             make_plan_branch(host, OWN_PLAN, touch_set)
-            # why: the plan branch is pushed so an override row can be appended.
-            _git(host, "push", "-q", "origin", OWN_PLAN)
+            # why: the plan branch and simulated in-flight PR head are pushed so origin refs exist after fetch --prune.
+            _git(host, "branch", OTHER_HEAD, "main")
+            _git(host, "push", "-q", "origin", OWN_PLAN, OTHER_HEAD)
             if after:
                 seed_base_files(host, list(after))
 
@@ -84,13 +86,12 @@ def test_a_pull_request_is_compared_by_its_diff_not_its_planned_touch_set(own_pl
 def test_overlap_with_a_pull_request_diff_is_refused_and_named(own_plan):
     decision = check_admission(own_context(own_plan), other_pr(["src/app.py", "lib/x.py"]), no_worktrees)
     assert not decision.admitted and not decision.overridden
-    assert [(c.label, c.files) for c in decision.conflicts] == [
-        (f"pull request #7 (branch {OTHER_HEAD})", ("src/app.py",))
-    ]
+    assert [(c.label, c.files) for c in decision.conflicts] == [(OTHER_PR_LABEL, ("src/app.py",))]
     assert [entry.files for entry in decision.blocked_by] == [("src/app.py",)]
     message = format_refusal(decision)
     assert message.startswith("Stage 3 refused: the touch set overlaps pull request #7")
-    assert OTHER_HEAD in message and "src/app.py" in message and "--allow-overlap" in message
+    assert OTHER_HEAD in message and "OPEN" in message and "remote" in message
+    assert "src/app.py" in message and "--allow-overlap" in message
 
 
 def test_overlap_with_a_real_pull_request_diff_is_refused(own_plan):
@@ -134,7 +135,7 @@ def test_refusal_result_names_conflicts(own_plan, monkeypatch):
     result = admission.admission_stage_failure(context, "2026-11-14T00:00:00Z")
     assert result is not None and result.status == StageStatus.FAILED
     assert result.payload["admission_refused"] is True and result.payload["dispatched"] is False
-    assert result.payload["conflicts"] == [{"flow": f"pull request #7 (branch {OTHER_HEAD})", "files": ["src/app.py"]}]
+    assert result.payload["conflicts"] == [{"flow": OTHER_PR_LABEL, "files": ["src/app.py"]}]
 
 
 def test_override_appends_exactly_one_row(own_plan, monkeypatch):
@@ -240,6 +241,7 @@ def _second_worktree_flow_at_execute(
     admission_data: dict | None = None,
 ) -> Path:
     make_plan_branch(host, THIRD_PLAN, touch_set or [{"path": "docs/"}])
+    _git(host, "push", "-q", "origin", THIRD_PLAN)
     second = tmp_path / "second"
     _git(host, "worktree", "add", "-q", "--detach", str(second), "main")
     context = FlowContext(
@@ -256,6 +258,10 @@ def _second_worktree_flow_at_execute(
     return second
 
 
+def _live_runner(worktree: Path) -> Callable[[], list[str]]:
+    return lambda: [f"holon flow --worktree {worktree}"]
+
+
 def _clock(monkeypatch: pytest.MonkeyPatch, *times: str) -> None:
     readings = iter(times)
     monkeypatch.setattr(admission_state, "utc_now", lambda: next(readings))
@@ -264,7 +270,7 @@ def _clock(monkeypatch: pytest.MonkeyPatch, *times: str) -> None:
 def test_refusal_records_blocked_with_each_pull_request_and_local_flow(own_plan, tmp_path, monkeypatch):
     second = _second_worktree_flow_at_execute(own_plan, tmp_path)
     _clock(monkeypatch, "2026-11-20T01:00:00.000Z", "2026-11-20T01:00:00.000Z")
-    decision = check_admission(own_context(own_plan), other_pr(["src/app.py"]))
+    decision = check_admission(own_context(own_plan), other_pr(["src/app.py"]), cmdlines=_live_runner(second))
     assert not decision.admitted
     recorded = _default_checkpoint_admission(own_plan)
     assert recorded is not None and recorded["state"] == "blocked"
@@ -286,7 +292,7 @@ def test_override_records_admitted_with_the_override(own_plan):
     assert _default_checkpoint_admission(own_plan) == {
         "state": "admitted",
         "override": True,
-        "override_conflicts": [{"flow": f"pull request #7 (branch {OTHER_HEAD})", "files": ["src/app.py"]}],
+        "override_conflicts": [{"flow": OTHER_PR_LABEL, "files": ["src/app.py"]}],
     }
 
 
@@ -373,8 +379,8 @@ def test_new_files_never_overlap_folder_or_wildcard_entries(own_plan_with, tmp_p
     # why: base files under the wildcards prove the entries match existing files, never the new ones.
     host = own_plan_with(WILDCARDS, after=tuple(BASE_TESTS))
     assert check_admission(own_context(host), other_pr(NEW_TESTS), no_worktrees).admitted
-    _second_worktree_flow_at_execute(host, tmp_path, [{"path": path} for path in NEW_TESTS])
-    decision = check_admission(own_context(host), other_pr([]))
+    second = _second_worktree_flow_at_execute(host, tmp_path, [{"path": path} for path in NEW_TESTS])
+    decision = check_admission(own_context(host), other_pr([]), cmdlines=_live_runner(second))
     assert decision == AdmissionDecision(admitted=True)
 
 
@@ -383,8 +389,8 @@ def test_an_identical_new_literal_path_still_overlaps(own_plan_with, tmp_path):
     assert check_admission(own_context(host), other_pr(["src/new.py"]), no_worktrees).conflicts[0].files == (
         "src/new.py",
     )
-    _second_worktree_flow_at_execute(host, tmp_path, [{"path": "src/new.py"}])
-    decision = check_admission(own_context(host), other_pr([]))
+    second = _second_worktree_flow_at_execute(host, tmp_path, [{"path": "src/new.py"}])
+    decision = check_admission(own_context(host), other_pr([]), cmdlines=_live_runner(second))
     assert not decision.admitted and [c.files for c in decision.conflicts] == [("src/new.py",)]
 
 
@@ -392,10 +398,10 @@ def test_an_existing_file_under_a_folder_entry_still_overlaps_and_is_named_concr
     host = own_plan_with([{"path": "apps/x/tests/"}], after=tuple(BASE_TESTS))
     by_pr = check_admission(own_context(host), other_pr(["apps/x/tests/test_old.py"]), no_worktrees)
     assert not by_pr.admitted and by_pr.conflicts[0].files == ("apps/x/tests/test_old.py",)
-    _second_worktree_flow_at_execute(
+    second = _second_worktree_flow_at_execute(
         host, tmp_path, [{"path": "apps/x/tests/test_old.py"}, {"path": "apps/x/tests/test_new.py"}]
     )
-    by_local = check_admission(own_context(host), other_pr([]))
+    by_local = check_admission(own_context(host), other_pr([]), cmdlines=_live_runner(second))
     assert not by_local.admitted
     assert [c.files for c in by_local.conflicts] == [("apps/x/tests/test_old.py",)]
     assert [entry.files for entry in by_local.blocked_by] == [("apps/x/tests/test_old.py",)]
@@ -407,8 +413,8 @@ def test_an_existing_file_under_a_folder_entry_still_overlaps_and_is_named_concr
 def test_a_folder_against_folder_refusal_lists_twenty_files_and_counts_the_rest(own_plan_with, tmp_path):
     seeded = [f"lib/m{n:02d}.py" for n in range(25)]
     host = own_plan_with([{"path": "lib/"}], after=tuple(seeded))
-    _second_worktree_flow_at_execute(host, tmp_path, [{"path": "lib/"}, {"path": "lib/brand_new.py"}])
-    decision = check_admission(own_context(host), other_pr([]))
+    second = _second_worktree_flow_at_execute(host, tmp_path, [{"path": "lib/"}, {"path": "lib/brand_new.py"}])
+    decision = check_admission(own_context(host), other_pr([]), cmdlines=_live_runner(second))
     assert decision.conflicts[0].files == tuple(seeded) and decision.blocked_by[0].files == tuple(seeded)
     assert decision.to_payload()["conflicts"][0]["files"] == seeded
     message = format_refusal(decision)
@@ -525,6 +531,4 @@ def test_parked_flow_with_an_open_pull_request_still_blocks_admission(own_plan, 
     _second_worktree_flow_at_execute(own_plan, tmp_path, [{"path": "docs/"}], live=False)
     decision = check_admission(own_context(own_plan), other_pr(["src/app.py"]))
     assert not decision.admitted
-    assert [(c.label, c.files) for c in decision.conflicts] == [
-        (f"pull request #7 (branch {OTHER_HEAD})", ("src/app.py",))
-    ]
+    assert [(c.label, c.files) for c in decision.conflicts] == [(OTHER_PR_LABEL, ("src/app.py",))]

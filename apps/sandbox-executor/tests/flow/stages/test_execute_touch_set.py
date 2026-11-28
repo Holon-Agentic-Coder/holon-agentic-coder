@@ -17,10 +17,13 @@ from tests.flow.helpers import (
     FakeGh,
     FakeRoleAgents,
     _dispatch_context,
+    _git,
     _ledger_rows,
     no_worktrees,
     stage4_halts_at_consensus,
 )
+
+OTHER_PR_LABEL = f"pull request #7 [OPEN] (remote ref refs/remotes/origin/{OTHER_HEAD})"
 
 
 class TouchSetRoleAgents(FakeRoleAgents):
@@ -60,28 +63,30 @@ def fake_gh(monkeypatch: pytest.MonkeyPatch):
     return gh
 
 
-def open_overlapping_pr(gh: FakeGh) -> None:
+def open_overlapping_pr(gh: FakeGh, host: Path) -> None:
+    _git(host, "branch", OTHER_HEAD, "main")
+    _git(host, "push", "-q", "origin", OTHER_HEAD)
     gh.prs.append({"number": 7, "headRefName": OTHER_HEAD, "baseRefName": "main"})
     gh.diffs[7] = ["src/app.py"]
 
 
 def test_refusal_happens_before_the_executor_is_dispatched(flow_repos, tmp_path, fake_gh):
     host, origin = flow_repos
-    open_overlapping_pr(fake_gh)
+    open_overlapping_pr(fake_gh, host)
     agents = TouchSetRoleAgents(tmp_path, origin, [["src/"]])
     results = PipelineEngine(_dispatch_context(host, agents)).run()
 
     execute = results["execute"]
     assert execute.status == StageStatus.FAILED
     assert "executor" not in agents.roles()
-    assert f"pull request #7 (branch {OTHER_HEAD}) on src/app.py" in str(execute.error)
+    assert f"{OTHER_PR_LABEL} on src/app.py" in str(execute.error)
     assert "--allow-overlap" in str(execute.error)
     assert execute.payload["admission_refused"] is True and execute.payload["dispatched"] is False
 
 
 def test_allow_overlap_dispatches_once_and_records_one_override(flow_repos, tmp_path, fake_gh):
     host, origin = flow_repos
-    open_overlapping_pr(fake_gh)
+    open_overlapping_pr(fake_gh, host)
     agents = TouchSetRoleAgents(tmp_path, origin, [["src/"]])
     ctx = _dispatch_context(host, agents, allow_overlap=True)
     with stage4_halts_at_consensus():
@@ -92,7 +97,7 @@ def test_allow_overlap_dispatches_once_and_records_one_override(flow_repos, tmp_
     rows = _ledger_rows(host, f"origin/{ctx.plan_branch}", "executions.jsonl")
     overrides = [row for row in rows if row.get("kind") == "admission_override"]
     assert len(overrides) == 1
-    assert overrides[0]["conflicts"] == [{"flow": f"pull request #7 (branch {OTHER_HEAD})", "files": ["src/app.py"]}]
+    assert overrides[0]["conflicts"] == [{"flow": OTHER_PR_LABEL, "files": ["src/app.py"]}]
 
 
 def test_metadata_only_extras_stay_inside_the_touch_set(flow_repos, tmp_path, fake_gh):

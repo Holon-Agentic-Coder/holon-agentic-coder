@@ -28,6 +28,12 @@ OWN_PLAN = "I-100-own/P-101-cccccccc-claude-agent-claude-opus-5-5/_"
 OWN_HEAD = "I-100-own/P-101-cccccccc-claude-agent-claude-opus-5-5/E-102-dddddddd-claude-agent-claude-opus-5-5/_"
 CHILD_PLAN = "I-100-own--1-child/P-103-eeeeeeee-claude-agent-claude-opus-5-5/_"
 CHILD_HEAD = CHILD_PLAN.removesuffix("/_") + "/E-104-ffffffff-claude-agent-claude-opus-5-5/_"
+OTHER_PR_LABEL = f"pull request #7 [OPEN] (remote ref refs/remotes/origin/{OTHER_HEAD})"
+
+
+def _push_head(host: Path, branch: str = OTHER_HEAD) -> None:
+    _git(host, "branch", branch, "main")
+    _git(host, "push", "-q", "origin", branch)
 
 
 def write_checkpoint(
@@ -51,6 +57,7 @@ def test_read_plan_touch_set(flow_repos):
 def test_pull_requests_keep_flow_heads_outside_own_lineage(flow_repos):
     host, _origin = flow_repos
     make_plan_branch(host, OTHER_PLAN, [{"path": "src/app.py"}])
+    _push_head(host)
     gh = FakeGh(
         prs=[
             {"number": 7, "headRefName": OTHER_HEAD, "baseRefName": "main"},
@@ -62,7 +69,7 @@ def test_pull_requests_keep_flow_heads_outside_own_lineage(flow_repos):
     )
     flows = open_flow_pull_requests(str(host), "I-100-own", gh)
     assert not isinstance(flows, AdmissionUnavailable)
-    assert [flow.label for flow in flows] == [f"pull request #7 (branch {OTHER_HEAD})"]
+    assert [flow.label for flow in flows] == [OTHER_PR_LABEL]
     assert flows[0].plan_branch == OTHER_PLAN
     assert flows[0].changed_files == ("src/app.py",)
     # why: a pull request is compared by its diff, never by its planned touch set
@@ -83,6 +90,7 @@ def test_pull_request_without_its_plan_branch_on_the_host_compares_only_its_diff
 def test_a_pull_requests_planned_touch_set_is_never_read(flow_repos, monkeypatch):
     host, _origin = flow_repos
     make_plan_branch(host, OTHER_PLAN, [{"path": "src/"}, {"path": "docs/"}])
+    _push_head(host)
     monkeypatch.setattr(in_flight, "read_plan_touch_set", lambda *args: pytest.fail("a plan row was read"))
     flows = open_flow_pull_requests(str(host), "I-100-own", FakeGh([{"number": 7, "headRefName": OTHER_HEAD}], {7: []}))
     assert not isinstance(flows, AdmissionUnavailable)
@@ -113,6 +121,7 @@ def test_more_open_pull_requests_than_the_limit_fail_closed(flow_repos):
 
 def test_non_flow_pull_requests_do_not_count_toward_the_limit(flow_repos):
     host, _origin = flow_repos
+    _push_head(host)
     prs = [{"number": n, "headRefName": f"feature/{n}"} for n in range(1, MAX_OPEN_PULL_REQUESTS + 2)]
     gh = FakeGh([*prs, {"number": 999, "headRefName": OTHER_HEAD}], {999: ["src/x.py"]})
     result = open_flow_pull_requests(str(host), "I-100-own", gh)
@@ -137,6 +146,7 @@ def _ok(stdout: str) -> subprocess.CompletedProcess[str]:
 def test_local_checkpoints_keep_live_flows_only(flow_repos, tmp_path):
     host, _origin = flow_repos
     make_plan_branch(host, OTHER_PLAN, [{"path": "src/"}])
+    _git(host, "push", "-q", "origin", OTHER_PLAN)
     second = tmp_path / "second"
     _git(host, "worktree", "add", "-q", "--detach", str(second), "main")
     executing = [FlowStage.INTENT, FlowStage.PLAN]
@@ -154,9 +164,10 @@ def test_local_checkpoints_keep_live_flows_only(flow_repos, tmp_path):
 
     checkpoints = other_checkpoints(str(host), "I-100-own")
     assert not isinstance(checkpoints, AdmissionUnavailable)
-    flows = local_in_flight_flows(str(host), checkpoints)
+    flows = local_in_flight_flows(str(host), checkpoints, cmdlines=lambda: [f"holon flow --worktree {second}"])
+    assert not isinstance(flows, AdmissionUnavailable)
     assert [(flow.plan_branch, flow.label) for flow in flows] == [
-        (OTHER_PLAN, f"local flow on branch {OTHER_PLAN} (worktree {second})")
+        (OTHER_PLAN, f"local flow on remote ref refs/remotes/origin/{OTHER_PLAN} (worktree {second})")
     ]
     assert flows[0].declared == TouchSet((TouchSetEntry("src/"),)) and flows[0].changed_files is None
 
@@ -164,13 +175,15 @@ def test_local_checkpoints_keep_live_flows_only(flow_repos, tmp_path):
 def test_local_flow_with_an_open_pull_request_is_listed_once(flow_repos, tmp_path):
     host, _origin = flow_repos
     make_plan_branch(host, OTHER_PLAN, [{"path": "src/"}])
+    _git(host, "push", "-q", "origin", OTHER_PLAN)
+    _push_head(host)
     second = tmp_path / "second"
     _git(host, "worktree", "add", "-q", "--detach", str(second), "main")
     write_checkpoint(second, OTHER_PLAN, [FlowStage.INTENT, FlowStage.PLAN, FlowStage.EXECUTE], "reviewing")
     gh = FakeGh([{"number": 7, "headRefName": OTHER_HEAD}], {7: ["src/app.py"]})
-    flows = discover_in_flight_flows(str(host), OWN_HEAD, gh)
+    flows = discover_in_flight_flows(str(host), OWN_HEAD, gh, cmdlines=lambda: [f"holon flow --worktree {second}"])
     assert not isinstance(flows, AdmissionUnavailable)
-    assert [flow.label for flow in flows] == [f"pull request #7 (branch {OTHER_HEAD})"]
+    assert [flow.label for flow in flows] == [OTHER_PR_LABEL]
 
 
 def test_parent_and_child_intents_share_one_lineage(flow_repos):
@@ -194,6 +207,7 @@ def test_a_blocked_checkpoint_is_not_in_flight_but_is_a_waiter(flow_repos, tmp_p
     host, _origin = flow_repos
     for plan in (OTHER_PLAN, THIRD_PLAN, FOURTH_PLAN):
         make_plan_branch(host, plan, [{"path": "src/"}])
+        _git(host, "push", "-q", "origin", plan)
     second = tmp_path / "second"
     _git(host, "worktree", "add", "-q", "--detach", str(second), "main")
     executing = [FlowStage.INTENT, FlowStage.PLAN]
@@ -203,7 +217,8 @@ def test_a_blocked_checkpoint_is_not_in_flight_but_is_a_waiter(flow_repos, tmp_p
 
     checkpoints = other_checkpoints(str(host), "I-100-own")
     assert not isinstance(checkpoints, AdmissionUnavailable)
-    flows = local_in_flight_flows(str(host), checkpoints)
+    flows = local_in_flight_flows(str(host), checkpoints, cmdlines=lambda: [f"holon flow --worktree {second}"])
+    assert not isinstance(flows, AdmissionUnavailable)
     assert sorted(flow.plan_branch for flow in flows) == sorted([THIRD_PLAN, FOURTH_PLAN])
     assert {(flow.kind, flow.worktree) for flow in flows} == {("local_flow", str(second))}
 
@@ -217,6 +232,7 @@ def test_a_blocked_checkpoint_is_not_in_flight_but_is_a_waiter(flow_repos, tmp_p
 def test_a_blocked_flow_with_an_open_pull_request_stays_in_flight(flow_repos, tmp_path):
     host, _origin = flow_repos
     make_plan_branch(host, OTHER_PLAN, [{"path": "src/"}])
+    _push_head(host)
     second = tmp_path / "second"
     _git(host, "worktree", "add", "-q", "--detach", str(second), "main")
     write_checkpoint(second, OTHER_PLAN, [FlowStage.INTENT, FlowStage.PLAN], "blocked", BLOCKED)
@@ -258,6 +274,7 @@ class _FallbackGh:
 
 def test_diff_http_406_too_large_falls_back_to_paginated_rest_api(flow_repos):
     host, _origin = flow_repos
+    _push_head(host)
     gh = _FallbackGh(
         prs=[{"number": 7, "headRefName": OTHER_HEAD, "baseRefName": "main"}],
         diff_responses={7: (1, "", DIFF_TOO_LARGE_STDERR)},
@@ -274,6 +291,7 @@ def test_diff_http_406_too_large_falls_back_to_paginated_rest_api(flow_repos):
 
 def test_fallback_merges_paginated_pages_normalises_and_deduplicates_in_order(flow_repos):
     host, _origin = flow_repos
+    _push_head(host)
     pages = [
         [{"filename": "./src/a.py"}, {"filename": r"src\b.py"}],
         [{"filename": "src/a.py"}, {"filename": "src/c.py"}],
@@ -291,6 +309,7 @@ def test_fallback_merges_paginated_pages_normalises_and_deduplicates_in_order(fl
 
 def test_fallback_includes_rename_previous_filename_and_filters_metadata(flow_repos):
     host, _origin = flow_repos
+    _push_head(host)
     pages = [
         [
             {"filename": "./src/new_name.py", "previous_filename": r"src\old_name.py"},
@@ -312,6 +331,7 @@ def test_fallback_includes_rename_previous_filename_and_filters_metadata(flow_re
 @pytest.mark.parametrize("empty_pages", [[], [[]]])
 def test_fallback_empty_slurped_pages_returns_empty_tuple(flow_repos, empty_pages):
     host, _origin = flow_repos
+    _push_head(host)
     gh = _FallbackGh(
         prs=[{"number": 7, "headRefName": OTHER_HEAD}],
         diff_responses={7: (1, "", DIFF_TOO_LARGE_STDERR)},
@@ -325,6 +345,7 @@ def test_fallback_empty_slurped_pages_returns_empty_tuple(flow_repos, empty_page
 @pytest.mark.parametrize("stderr", ["HTTP 502 Bad Gateway", "HTTP 404 Not Found", "PR #406 failed: HTTP 500"])
 def test_non_406_diff_errors_fail_closed_without_calling_api(flow_repos, stderr):
     host, _origin = flow_repos
+    _push_head(host)
     gh = _FallbackGh(
         prs=[{"number": 7, "headRefName": OTHER_HEAD}],
         diff_responses={7: (1, "", stderr)},
@@ -337,6 +358,7 @@ def test_non_406_diff_errors_fail_closed_without_calling_api(flow_repos, stderr)
 
 def test_fallback_api_failure_fails_closed_and_redacts_secrets(flow_repos):
     host, _origin = flow_repos
+    _push_head(host)
     secret = "ghp_" + "a" * 36
     gh = _FallbackGh(
         prs=[{"number": 7, "headRefName": OTHER_HEAD}],
@@ -366,6 +388,7 @@ def test_fallback_api_failure_fails_closed_and_redacts_secrets(flow_repos):
 )
 def test_fallback_malformed_or_unexpected_json_fails_closed(flow_repos, payload):
     host, _origin = flow_repos
+    _push_head(host)
     gh = _FallbackGh(
         prs=[{"number": 7, "headRefName": OTHER_HEAD}],
         diff_responses={7: (1, "", DIFF_TOO_LARGE_STDERR)},
@@ -389,6 +412,7 @@ def test_stage3_admission_overlap_refusal_and_disjoint_admit_via_406_fallback(
     host, _origin = flow_repos
     seed_base_files(host, ["src/page2.py", "src/old_name.py", "src/disjoint.py"])
     make_plan_branch(host, plan_branch, [{"path": touch_path}])
+    _push_head(host)
     gh = _FallbackGh(
         prs=[{"number": 7, "headRefName": OTHER_HEAD, "baseRefName": "main"}],
         diff_responses={7: (1, "", DIFF_TOO_LARGE_STDERR)},
@@ -410,9 +434,7 @@ def test_stage3_admission_overlap_refusal_and_disjoint_admit_via_406_fallback(
     if expected_overlap:
         assert not decision.admitted
         assert decision.reason is None
-        assert [(c.label, c.files) for c in decision.conflicts] == [
-            (f"pull request #7 (branch {OTHER_HEAD})", expected_overlap)
-        ]
+        assert [(c.label, c.files) for c in decision.conflicts] == [(OTHER_PR_LABEL, expected_overlap)]
         assert [entry.files for entry in decision.blocked_by] == [expected_overlap]
     else:
         assert decision.admitted

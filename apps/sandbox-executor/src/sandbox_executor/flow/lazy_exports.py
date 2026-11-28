@@ -12,7 +12,9 @@ from sandbox_executor.flow.lazy_exports_sync import SYNC_LAZY_EXPORTS
 LAZY_EXPORTS: dict[str, str] = {
     "sandbox_executor.entrypoint.planner": "parse_metrics",
     "sandbox_executor.flow.admission": "admission_stage_failure check_admission format_refusal record_admission",
-    "sandbox_executor.flow.admission_decision": "AdmissionConflict AdmissionDecision decide_admission refusal",
+    "sandbox_executor.flow.admission_decision": (
+        "AdmissionConflict AdmissionDecision decide_admission format_blocker_provenance refusal"
+    ),
     "sandbox_executor.flow.admission_lock": "AdmissionLockError admission_lock_path",
     "sandbox_executor.flow.admission_order": "blocker_is_clear older_ready_waiter older_waiter_flows waiter_key",
     "sandbox_executor.flow.admission_record": "override_already_recorded",
